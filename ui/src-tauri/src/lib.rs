@@ -1,14 +1,291 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+use std::io::{BufRead, BufReader, Write};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::Mutex;
+
+use serde::{Deserialize, Serialize};
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    Manager, State,
+};
+
+// Hardcoded paths for development
+const PYTHON_PATH: &str = "/Users/georgenijo/Documents/code/local-dictation/venv/bin/python";
+const SCRIPT_PATH: &str = "/Users/georgenijo/Documents/code/local-dictation/dictation_bridge.py";
+
+struct PythonBridge {
+    process: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+}
+
+impl PythonBridge {
+    fn send_command(&mut self, command: &str) -> Result<DictationResponse, String> {
+        // Send the command
+        writeln!(self.stdin, "{}", command)
+            .map_err(|e| format!("Failed to write to stdin: {}", e))?;
+        self.stdin
+            .flush()
+            .map_err(|e| format!("Failed to flush stdin: {}", e))?;
+
+        // Read the response
+        let mut line = String::new();
+        self.stdout
+            .read_line(&mut line)
+            .map_err(|e| format!("Failed to read from stdout: {}", e))?;
+
+        // Parse the JSON response
+        serde_json::from_str(&line)
+            .map_err(|e| format!("Failed to parse response '{}': {}", line.trim(), e))
+    }
+}
+
+impl Drop for PythonBridge {
+    fn drop(&mut self) {
+        // Try to send quit command gracefully
+        let _ = writeln!(self.stdin, "quit");
+        let _ = self.stdin.flush();
+        // Kill the process if it doesn't exit
+        let _ = self.process.kill();
+    }
+}
+
+pub struct AppState {
+    bridge: Mutex<Option<PythonBridge>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct DictationResponse {
+    #[serde(rename = "type")]
+    pub response_type: String,
+    #[serde(default)]
+    pub state: Option<String>,
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub code: Option<String>,
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub device: Option<String>,
+}
+
 #[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
+fn init_dictation(state: State<AppState>) -> Result<DictationResponse, String> {
+    let mut bridge_guard = state
+        .bridge
+        .lock()
+        .map_err(|e| format!("Failed to acquire lock: {}", e))?;
+
+    // Check if already initialized
+    if bridge_guard.is_some() {
+        return Err("Dictation bridge already initialized".to_string());
+    }
+
+    // Spawn the Python process
+    let mut process = Command::new(PYTHON_PATH)
+        .arg("-u") // Unbuffered output
+        .arg(SCRIPT_PATH)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn Python process: {}", e))?;
+
+    let stdin = process
+        .stdin
+        .take()
+        .ok_or("Failed to get stdin handle")?;
+    let stdout = process
+        .stdout
+        .take()
+        .ok_or("Failed to get stdout handle")?;
+
+    let mut stdout_reader = BufReader::new(stdout);
+
+    // Wait for the "ready" message
+    let mut ready_line = String::new();
+    stdout_reader
+        .read_line(&mut ready_line)
+        .map_err(|e| format!("Failed to read ready message: {}", e))?;
+
+    let ready_response: DictationResponse = serde_json::from_str(&ready_line)
+        .map_err(|e| format!("Failed to parse ready message '{}': {}", ready_line.trim(), e))?;
+
+    if ready_response.response_type != "ready" {
+        return Err(format!(
+            "Expected 'ready' message, got '{}'",
+            ready_response.response_type
+        ));
+    }
+
+    // Store the bridge
+    *bridge_guard = Some(PythonBridge {
+        process,
+        stdin,
+        stdout: stdout_reader,
+    });
+
+    Ok(ready_response)
+}
+
+#[tauri::command]
+fn start_recording(state: State<AppState>) -> Result<DictationResponse, String> {
+    let mut bridge_guard = state
+        .bridge
+        .lock()
+        .map_err(|e| format!("Failed to acquire lock: {}", e))?;
+
+    let bridge = bridge_guard
+        .as_mut()
+        .ok_or("Dictation bridge not initialized. Call init_dictation first.")?;
+
+    bridge.send_command("start_recording")
+}
+
+#[tauri::command]
+fn stop_recording(state: State<AppState>) -> Result<DictationResponse, String> {
+    let mut bridge_guard = state
+        .bridge
+        .lock()
+        .map_err(|e| format!("Failed to acquire lock: {}", e))?;
+
+    let bridge = bridge_guard
+        .as_mut()
+        .ok_or("Dictation bridge not initialized. Call init_dictation first.")?;
+
+    bridge.send_command("stop_recording")
+}
+
+#[tauri::command]
+fn get_status(state: State<AppState>) -> Result<DictationResponse, String> {
+    let mut bridge_guard = state
+        .bridge
+        .lock()
+        .map_err(|e| format!("Failed to acquire lock: {}", e))?;
+
+    let bridge = bridge_guard
+        .as_mut()
+        .ok_or("Dictation bridge not initialized. Call init_dictation first.")?;
+
+    bridge.send_command("get_status")
+}
+
+#[derive(Deserialize, Debug)]
+pub struct ConfigureOptions {
+    pub model: Option<String>,
+    pub language: Option<String>,
+}
+
+#[tauri::command]
+fn configure_dictation(
+    state: State<AppState>,
+    options: ConfigureOptions,
+) -> Result<DictationResponse, String> {
+    let mut bridge_guard = state
+        .bridge
+        .lock()
+        .map_err(|e| format!("Failed to acquire lock: {}", e))?;
+
+    let bridge = bridge_guard
+        .as_mut()
+        .ok_or("Dictation bridge not initialized. Call init_dictation first.")?;
+
+    // Build the JSON command
+    let command = serde_json::json!({
+        "cmd": "configure",
+        "model": options.model,
+        "language": options.language
+    });
+
+    bridge.send_command(&command.to_string())
+}
+
+#[tauri::command]
+fn open_system_preferences() -> Result<(), String> {
+    std::process::Command::new("open")
+        .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet])
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .manage(AppState {
+            bridge: Mutex::new(None),
+        })
+        .invoke_handler(tauri::generate_handler![
+            init_dictation,
+            start_recording,
+            stop_recording,
+            get_status,
+            configure_dictation,
+            open_system_preferences
+        ])
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
+        .setup(|app| {
+            // Create tray menu
+            let show = MenuItem::with_id(app, "show", "Show Window", true, None::<&str>)?;
+            let about = MenuItem::with_id(app, "about", "About Local Dictation", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&show, &about, &quit])?;
+
+            // Create tray icon
+            let _tray = TrayIconBuilder::new()
+                .icon(app.default_window_icon().unwrap().clone())
+                .menu(&menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "show" => {
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                    "about" => {
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                            let _ = window.emit("show-about", ());
+                        }
+                    }
+                    "quit" => {
+                        app.exit(0);
+                    }
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        let app = tray.app_handle();
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                })
+                .build(app)?;
+
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

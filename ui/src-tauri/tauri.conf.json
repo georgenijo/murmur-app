@@ -31,6 +31,14 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "macOS": {
+      "entitlements": null,
+      "exceptionDomain": "",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "Local Dictation needs microphone access to record your voice for transcription.",
+        "NSAppleEventsUsageDescription": "Local Dictation needs accessibility access for global hotkeys."
+      }
+    }
   }
 }
