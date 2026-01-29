@@ -28,3 +28,6 @@ dictation_log.jsonl
 
 # Project tickets / notes
 local-voice-dictation-tickets.md
+CONTEXT_NEXT_SESSION.md
+PROJECT_SUMMARY.md
+PROMPT_NEXT_SESSION.md
