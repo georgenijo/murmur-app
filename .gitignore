@@ -1,0 +1,30 @@
+# Environment variables
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+
+# Node
+node_modules/
+
+# Rust / Tauri build artifacts
+target/
+
+# Logs
+*.log
+dictation_log.jsonl
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Project tickets / notes
+local-voice-dictation-tickets.md
