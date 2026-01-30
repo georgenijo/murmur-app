@@ -10,9 +10,19 @@ use tauri::{
     Emitter, Manager, State,
 };
 
-// Hardcoded paths for development
-const PYTHON_PATH: &str = "/Users/georgenijo/Documents/code/local-dictation/venv/bin/python";
-const SCRIPT_PATH: &str = "/Users/georgenijo/Documents/code/local-dictation/dictation_bridge.py";
+fn get_project_root() -> std::path::PathBuf {
+    // CARGO_MANIFEST_DIR is ui/src-tauri, go up 2 levels to project root
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    manifest_dir.parent().unwrap().parent().unwrap().to_path_buf()
+}
+
+fn get_python_path() -> std::path::PathBuf {
+    get_project_root().join("venv/bin/python")
+}
+
+fn get_script_path() -> std::path::PathBuf {
+    get_project_root().join("dictation_bridge.py")
+}
 
 struct PythonBridge {
     process: Child,
@@ -94,9 +104,9 @@ fn init_dictation(state: State<AppState>) -> Result<DictationResponse, String> {
     }
 
     // Spawn the Python process
-    let mut process = Command::new(PYTHON_PATH)
+    let mut process = Command::new(get_python_path())
         .arg("-u") // Unbuffered output
-        .arg(SCRIPT_PATH)
+        .arg(get_script_path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
