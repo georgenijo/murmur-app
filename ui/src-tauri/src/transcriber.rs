@@ -111,6 +111,7 @@ pub fn transcribe(ctx: &WhisperContext, samples: &[f32], language: &str) -> Resu
     params.set_print_timestamps(false);
     params.set_suppress_blank(true);
     params.set_single_segment(true);
+    params.set_debug_mode(false);
 
     state.full(params, samples)
         .map_err(|e| format!("Transcription failed: {}", e))?;

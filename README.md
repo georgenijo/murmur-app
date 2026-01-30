@@ -89,6 +89,31 @@ View your recent transcriptions by clicking the menubar icon. Each entry shows:
 <!-- TODO: Add history screenshot -->
 ![History Panel](docs/images/history-panel.png)
 
+### Download Whisper Model
+
+The app requires a Whisper model file for transcription. Download one of these models:
+
+| Model | Size | Speed | Accuracy | Download |
+|-------|------|-------|----------|----------|
+| `large-v3-turbo` | 1.6GB | Fast | Best | [Download](https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin) |
+| `base.en` | 142MB | Fastest | Good | [Download](https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin) |
+| `small.en` | 466MB | Medium | Better | [Download](https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin) |
+
+**Installation:**
+
+```bash
+# Create the models directory
+mkdir -p ~/Library/Application\ Support/local-dictation/models
+
+# Move your downloaded model (example for large-v3-turbo)
+mv ~/Downloads/ggml-large-v3-turbo.bin ~/Library/Application\ Support/local-dictation/models/
+```
+
+The app searches for models in these locations:
+- `~/Library/Application Support/local-dictation/models/`
+- `~/.cache/whisper.cpp/`
+- Custom path via `WHISPER_MODEL_DIR` environment variable
+
 ### macOS Permissions
 
 The app requires the following permissions (you'll be prompted on first launch):
