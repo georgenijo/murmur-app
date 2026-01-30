@@ -10,6 +10,140 @@ A privacy-first voice-to-text tool for macOS, inspired by Wispr Flow. All proces
 - Global hotkey activation (hold to record, release to transcribe)
 - Works with any application - text is pasted into the focused app
 
+---
+
+## Desktop App (Recommended)
+
+Local Dictation now includes a native macOS desktop app with a modern UI, system tray integration, and easy configuration.
+
+### App Overview
+
+The desktop app provides a polished user experience with:
+
+- **System Tray Integration** - Lives in your menubar for quick access
+- **Visual Recording Indicator** - See when you're recording with a duration timer
+- **Settings Panel** - Configure hotkeys and Whisper models without command line
+- **Transcription History** - View and copy past transcriptions
+- **One-Click Installation** - No Python environment setup required
+
+<!-- TODO: Add screenshot -->
+![App Screenshot](docs/images/app-screenshot.png)
+
+### Installation
+
+#### Option 1: Download DMG (Recommended)
+
+1. Download the latest `.dmg` file from the [Releases](https://github.com/yourusername/local-dictation/releases) page
+2. Open the DMG and drag **Local Dictation** to your Applications folder
+3. Launch the app and grant the required permissions when prompted
+
+#### Option 2: Build from Source
+
+See [Building from Source](#building-the-desktop-app-from-source) below.
+
+### Usage Guide
+
+#### Starting the App
+
+Launch **Local Dictation** from your Applications folder. The app will appear in your menubar.
+
+<!-- TODO: Add menubar screenshot -->
+![Menubar Icon](docs/images/menubar-icon.png)
+
+#### Recording
+
+1. Press and hold your configured hotkey (default: **Shift+Space**)
+2. Speak your text
+3. Release the hotkey
+4. The transcribed text will be pasted into your focused application
+
+#### Hotkey Options
+
+Configure your preferred hotkey in Settings:
+
+| Hotkey | Description |
+|--------|-------------|
+| **Shift+Space** | Default, easy to reach |
+| **Option+Space** | Alternative for Shift conflicts |
+| **Control+Space** | Alternative option |
+
+#### Settings Panel
+
+Click the menubar icon and select **Settings** to configure:
+
+- **Whisper Model** - Choose transcription accuracy vs speed
+- **Hotkey** - Select your preferred activation key
+- **Recording Duration** - View current recording length
+
+<!-- TODO: Add settings screenshot -->
+![Settings Panel](docs/images/settings-panel.png)
+
+#### Transcription History
+
+View your recent transcriptions by clicking the menubar icon. Each entry shows:
+
+- Transcribed text
+- Timestamp
+- One-click copy to clipboard
+
+<!-- TODO: Add history screenshot -->
+![History Panel](docs/images/history-panel.png)
+
+### macOS Permissions
+
+The app requires the following permissions (you'll be prompted on first launch):
+
+| Permission | Why |
+|------------|-----|
+| **Microphone** | To record your voice |
+| **Accessibility** | To paste text into apps |
+
+Go to **System Settings → Privacy & Security** to grant permissions if needed.
+
+### Building the Desktop App from Source
+
+#### Prerequisites
+
+- [Node.js](https://nodejs.org/) 18+
+- [Rust](https://rustup.rs/) (latest stable)
+- [pnpm](https://pnpm.io/) package manager
+
+#### Build Steps
+
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/local-dictation.git
+cd local-dictation/ui
+
+# Install dependencies
+pnpm install
+
+# Development mode (with hot reload)
+pnpm tauri dev
+
+# Production build
+pnpm tauri build
+```
+
+The built app will be in `ui/src-tauri/target/release/bundle/dmg/`.
+
+#### Project Structure (UI)
+
+```
+ui/
+├── src/                    # React frontend
+│   ├── components/         # UI components
+│   ├── hooks/              # Custom React hooks
+│   └── App.tsx             # Main app component
+├── src-tauri/              # Tauri backend (Rust)
+│   ├── src/                # Rust source code
+│   ├── sidecar/            # Python transcription sidecar
+│   └── tauri.conf.json     # Tauri configuration
+└── package.json
+```
+
+---
+
 ## Requirements
 
 - macOS (tested on macOS 14+)
