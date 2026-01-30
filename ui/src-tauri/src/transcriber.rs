@@ -1,7 +1,20 @@
 use hound::WavReader;
 use std::io::Cursor;
 use std::path::PathBuf;
-use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+use std::sync::Once;
+use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, install_whisper_log_trampoline};
+
+static INIT_LOGGING: Once = Once::new();
+
+/// Suppress whisper.cpp verbose logging by installing a trampoline that routes to Rust's log crate
+/// (which we don't configure, so logs go nowhere)
+fn suppress_whisper_logs() {
+    INIT_LOGGING.call_once(|| {
+        // This routes whisper.cpp logs through Rust's log crate
+        // Since we don't have a logger configured, they get discarded
+        install_whisper_log_trampoline();
+    });
+}
 
 /// Get all potential model directories to search
 fn get_model_search_paths() -> Vec<PathBuf> {
@@ -65,6 +78,9 @@ pub fn get_models_dir() -> Result<PathBuf, String> {
 
 /// Initialize a WhisperContext for the given model
 pub fn init_whisper_context(model_name: &str) -> Result<WhisperContext, String> {
+    // Suppress verbose whisper.cpp logging
+    suppress_whisper_logs();
+
     let model_path = get_model_path(model_name)?;
 
     let params = WhisperContextParameters::default();

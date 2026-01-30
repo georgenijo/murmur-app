@@ -215,6 +215,8 @@ async fn start_native_recording(state: tauri::State<'_, State>) -> Result<serde_
     // Start native audio recording
     audio::start_recording()?;
 
+    println!("[Recording] Started");
+
     Ok(serde_json::json!({
         "type": "recording_started",
         "state": "recording"
@@ -234,9 +236,13 @@ async fn stop_native_recording(
 
     // Stop recording and get samples
     let samples = audio::stop_recording()?;
+    let duration_secs = samples.len() as f32 / 16000.0;
+
+    println!("[Recording] Stopped - Duration: {:.1}s", duration_secs);
 
     // Skip if no audio captured
     if samples.is_empty() {
+        println!("[Recording] No audio captured");
         let mut dictation = state.app_state.dictation.lock().map_err(|e| e.to_string())?;
         dictation.status = DictationStatus::Idle;
         return Ok(serde_json::json!({
@@ -253,16 +259,20 @@ async fn stop_native_recording(
     };
 
     // Initialize whisper context if needed and transcribe
+    println!("[Processing] Transcribing audio...");
     let text = {
         let mut ctx_guard = state.app_state.whisper_context.lock().map_err(|e| e.to_string())?;
 
         if ctx_guard.is_none() {
+            println!("[Processing] Loading model: {}", model_name);
             *ctx_guard = Some(transcriber::init_whisper_context(&model_name)?);
         }
 
         let ctx = ctx_guard.as_ref().unwrap();
         transcriber::transcribe(ctx, &samples, &language)?
     };
+
+    println!("[Transcription] \"{}\"", text);
 
     // Inject text on main thread (macOS requires keyboard APIs to run on main thread)
     if !text.is_empty() {

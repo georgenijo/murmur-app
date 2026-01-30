@@ -171,6 +171,7 @@ pub fn stop_recording() -> Result<Vec<f32>, String> {
     }
 }
 
+#[allow(dead_code)]
 pub fn is_recording() -> bool {
     if let Some(state) = RECORDING_STATE.get() {
         if let Ok(guard) = state.lock() {
