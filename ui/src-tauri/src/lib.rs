@@ -1,267 +1,155 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::Mutex;
+mod audio;
+mod injector;
+mod state;
+mod transcriber;
 
-use serde::{Deserialize, Serialize};
+use state::{AppState, DictationStatus};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Emitter, Manager, State,
+    Emitter, Manager,
 };
 
-fn get_project_root() -> std::path::PathBuf {
-    // CARGO_MANIFEST_DIR is ui/src-tauri, go up 2 levels to project root
-    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    manifest_dir.parent().unwrap().parent().unwrap().to_path_buf()
+struct State {
+    app_state: AppState,
 }
 
-fn get_python_path() -> std::path::PathBuf {
-    get_project_root().join("venv/bin/python")
+#[tauri::command]
+async fn init_dictation(_state: tauri::State<'_, State>) -> Result<serde_json::Value, String> {
+    // Lazy initialization - don't load model until first transcription
+    Ok(serde_json::json!({
+        "type": "initialized",
+        "state": "idle"
+    }))
 }
 
-fn get_script_path() -> std::path::PathBuf {
-    get_project_root().join("dictation_bridge.py")
+#[tauri::command]
+async fn start_recording(state: tauri::State<'_, State>) -> Result<serde_json::Value, String> {
+    let mut dictation = state.app_state.dictation.lock().map_err(|e| e.to_string())?;
+    dictation.status = DictationStatus::Recording;
+    Ok(serde_json::json!({
+        "type": "recording_started"
+    }))
 }
 
-struct PythonBridge {
-    process: Child,
-    stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+#[tauri::command]
+async fn stop_recording(state: tauri::State<'_, State>) -> Result<serde_json::Value, String> {
+    let mut dictation = state.app_state.dictation.lock().map_err(|e| e.to_string())?;
+    dictation.status = DictationStatus::Idle;
+    Ok(serde_json::json!({
+        "type": "recording_stopped"
+    }))
 }
 
-impl PythonBridge {
-    fn send_command(&mut self, command: &str) -> Result<DictationResponse, String> {
-        // Wrap simple commands in JSON format expected by Python
-        let json_cmd = format!(r#"{{"cmd": "{}"}}"#, command);
-        self.send_raw(&json_cmd)
+#[tauri::command]
+async fn process_audio(
+    app_handle: tauri::AppHandle,
+    audio_data: String,
+    state: tauri::State<'_, State>,
+) -> Result<serde_json::Value, String> {
+    // Set status to processing
+    {
+        let mut dictation = state.app_state.dictation.lock().map_err(|e| e.to_string())?;
+        dictation.status = DictationStatus::Processing;
     }
 
-    fn send_raw(&mut self, json_command: &str) -> Result<DictationResponse, String> {
-        // Send the command (already in JSON format)
-        writeln!(self.stdin, "{}", json_command)
-            .map_err(|e| format!("Failed to write to stdin: {}", e))?;
-        self.stdin
-            .flush()
-            .map_err(|e| format!("Failed to flush stdin: {}", e))?;
+    // Get model name and language
+    let (model_name, language) = {
+        let dictation = state.app_state.dictation.lock().map_err(|e| e.to_string())?;
+        (dictation.model_name.clone(), dictation.language.clone())
+    };
 
-        // Read the response
-        let mut line = String::new();
-        self.stdout
-            .read_line(&mut line)
-            .map_err(|e| format!("Failed to read from stdout: {}", e))?;
+    // Decode base64 audio
+    let wav_bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &audio_data)
+        .map_err(|e| format!("Failed to decode base64: {}", e))?;
 
-        // Parse the JSON response
-        serde_json::from_str(&line)
-            .map_err(|e| format!("Failed to parse response '{}': {}", line.trim(), e))
-    }
-}
+    // Parse WAV to samples
+    let samples = transcriber::parse_wav_to_samples(&wav_bytes)?;
 
-impl Drop for PythonBridge {
-    fn drop(&mut self) {
-        // Try to send quit command gracefully (in JSON format)
-        let _ = writeln!(self.stdin, r#"{{"cmd": "quit"}}"#);
-        let _ = self.stdin.flush();
-        // Kill the process if it doesn't exit
-        let _ = self.process.kill();
-    }
-}
+    // Initialize or get whisper context
+    let text = {
+        let mut ctx_guard = state.app_state.whisper_context.lock().map_err(|e| e.to_string())?;
 
-pub struct AppState {
-    bridge: Mutex<Option<PythonBridge>>,
-}
+        // Lazy init if needed
+        if ctx_guard.is_none() {
+            *ctx_guard = Some(transcriber::init_whisper_context(&model_name)?);
+        }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct DictationResponse {
-    #[serde(rename = "type")]
-    pub response_type: String,
-    #[serde(default)]
-    pub state: Option<String>,
-    #[serde(default)]
-    pub text: Option<String>,
-    #[serde(default)]
-    pub message: Option<String>,
-    #[serde(default)]
-    pub code: Option<String>,
-    #[serde(default)]
-    pub version: Option<String>,
-    #[serde(default)]
-    pub model: Option<String>,
-    #[serde(default)]
-    pub device: Option<String>,
-}
+        let ctx = ctx_guard.as_ref().unwrap();
+        transcriber::transcribe(ctx, &samples, &language)?
+    };
 
-#[tauri::command]
-fn init_dictation(state: State<AppState>) -> Result<DictationResponse, String> {
-    let mut bridge_guard = state
-        .bridge
-        .lock()
-        .map_err(|e| format!("Failed to acquire lock: {}", e))?;
-
-    // Check if already initialized
-    if bridge_guard.is_some() {
-        return Err("Dictation bridge already initialized".to_string());
+    // Inject text on main thread (macOS requires keyboard APIs to run on main thread)
+    if !text.is_empty() {
+        let text_to_inject = text.clone();
+        app_handle
+            .run_on_main_thread(move || {
+                if let Err(e) = injector::inject_text(&text_to_inject) {
+                    eprintln!("Failed to inject text: {}", e);
+                }
+            })
+            .map_err(|e| format!("Failed to run on main thread: {}", e))?;
     }
 
-    // Spawn the Python process
-    let mut process = Command::new(get_python_path())
-        .arg("-u") // Unbuffered output
-        .arg(get_script_path())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Failed to spawn Python process: {}", e))?;
-
-    let stdin = process
-        .stdin
-        .take()
-        .ok_or("Failed to get stdin handle")?;
-    let stdout = process
-        .stdout
-        .take()
-        .ok_or("Failed to get stdout handle")?;
-
-    let mut stdout_reader = BufReader::new(stdout);
-
-    // Wait for the "ready" message
-    let mut ready_line = String::new();
-    stdout_reader
-        .read_line(&mut ready_line)
-        .map_err(|e| format!("Failed to read ready message: {}", e))?;
-
-    let ready_response: DictationResponse = serde_json::from_str(&ready_line)
-        .map_err(|e| format!("Failed to parse ready message '{}': {}", ready_line.trim(), e))?;
-
-    if ready_response.response_type != "ready" {
-        return Err(format!(
-            "Expected 'ready' message, got '{}'",
-            ready_response.response_type
-        ));
+    // Set status back to idle
+    {
+        let mut dictation = state.app_state.dictation.lock().map_err(|e| e.to_string())?;
+        dictation.status = DictationStatus::Idle;
     }
 
-    // Store the bridge
-    *bridge_guard = Some(PythonBridge {
-        process,
-        stdin,
-        stdout: stdout_reader,
-    });
-
-    Ok(ready_response)
+    Ok(serde_json::json!({
+        "type": "transcription",
+        "text": text
+    }))
 }
 
 #[tauri::command]
-fn start_recording(state: State<AppState>) -> Result<DictationResponse, String> {
-    let mut bridge_guard = state
-        .bridge
-        .lock()
-        .map_err(|e| format!("Failed to acquire lock: {}", e))?;
-
-    let bridge = bridge_guard
-        .as_mut()
-        .ok_or("Dictation bridge not initialized. Call init_dictation first.")?;
-
-    bridge.send_command("start_recording")
+async fn get_status(state: tauri::State<'_, State>) -> Result<serde_json::Value, String> {
+    let dictation = state.app_state.dictation.lock().map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({
+        "type": "status",
+        "state": dictation.status,
+        "model": dictation.model_name,
+        "language": dictation.language
+    }))
 }
 
 #[tauri::command]
-fn stop_recording(state: State<AppState>) -> Result<DictationResponse, String> {
-    let mut bridge_guard = state
-        .bridge
-        .lock()
-        .map_err(|e| format!("Failed to acquire lock: {}", e))?;
+async fn configure_dictation(
+    options: serde_json::Value,
+    state: tauri::State<'_, State>,
+) -> Result<serde_json::Value, String> {
+    let model = options.get("model").and_then(|v| v.as_str()).map(String::from);
+    let language = options.get("language").and_then(|v| v.as_str()).map(String::from);
 
-    let bridge = bridge_guard
-        .as_mut()
-        .ok_or("Dictation bridge not initialized. Call init_dictation first.")?;
+    let mut dictation = state.app_state.dictation.lock().map_err(|e| e.to_string())?;
 
-    bridge.send_command("stop_recording")
-}
+    let model_changed = if let Some(m) = model {
+        if m != dictation.model_name {
+            dictation.model_name = m;
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
 
-#[tauri::command]
-fn process_audio(state: State<AppState>, audio_data: String) -> Result<DictationResponse, String> {
-    let mut bridge_guard = state
-        .bridge
-        .lock()
-        .map_err(|e| format!("Failed to acquire lock: {}", e))?;
+    if let Some(l) = language {
+        dictation.language = l;
+    }
 
-    let bridge = bridge_guard
-        .as_mut()
-        .ok_or("Dictation bridge not initialized. Call init_dictation first.")?;
+    // If model changed, clear the whisper context so it reloads
+    if model_changed {
+        drop(dictation); // Release dictation lock first
+        let mut ctx = state.app_state.whisper_context.lock().map_err(|e| e.to_string())?;
+        *ctx = None;
+    }
 
-    // Decode base64 audio data
-    let audio_bytes = BASE64
-        .decode(&audio_data)
-        .map_err(|e| format!("Failed to decode base64 audio: {}", e))?;
-
-    // Write to temporary file
-    let temp_dir = std::env::temp_dir();
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis();
-    let temp_path = temp_dir.join(format!("dictation_recording_{}.wav", timestamp));
-
-    let mut file = File::create(&temp_path)
-        .map_err(|e| format!("Failed to create temp file: {}", e))?;
-    file.write_all(&audio_bytes)
-        .map_err(|e| format!("Failed to write audio data: {}", e))?;
-    file.flush()
-        .map_err(|e| format!("Failed to flush temp file: {}", e))?;
-
-    // Send transcribe command to Python with file path
-    let command = serde_json::json!({
-        "cmd": "transcribe_file",
-        "path": temp_path.to_string_lossy()
-    });
-
-    bridge.send_raw(&command.to_string())
-}
-
-#[tauri::command]
-fn get_status(state: State<AppState>) -> Result<DictationResponse, String> {
-    let mut bridge_guard = state
-        .bridge
-        .lock()
-        .map_err(|e| format!("Failed to acquire lock: {}", e))?;
-
-    let bridge = bridge_guard
-        .as_mut()
-        .ok_or("Dictation bridge not initialized. Call init_dictation first.")?;
-
-    bridge.send_command("get_status")
-}
-
-#[derive(Deserialize, Debug)]
-pub struct ConfigureOptions {
-    pub model: Option<String>,
-    pub language: Option<String>,
-}
-
-#[tauri::command]
-fn configure_dictation(
-    state: State<AppState>,
-    options: ConfigureOptions,
-) -> Result<DictationResponse, String> {
-    let mut bridge_guard = state
-        .bridge
-        .lock()
-        .map_err(|e| format!("Failed to acquire lock: {}", e))?;
-
-    let bridge = bridge_guard
-        .as_mut()
-        .ok_or("Dictation bridge not initialized. Call init_dictation first.")?;
-
-    // Build the JSON command
-    let command = serde_json::json!({
-        "cmd": "configure",
-        "model": options.model,
-        "language": options.language
-    });
-
-    bridge.send_raw(&command.to_string())
+    Ok(serde_json::json!({
+        "type": "configured"
+    }))
 }
 
 #[tauri::command]
@@ -273,13 +161,141 @@ fn open_system_preferences() -> Result<(), String> {
     Ok(())
 }
 
+/// Check if accessibility permission is granted (macOS)
+#[tauri::command]
+fn check_accessibility_permission() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        // Call AXIsProcessTrusted() from macOS Accessibility framework
+        extern "C" {
+            fn AXIsProcessTrusted() -> bool;
+        }
+        unsafe { AXIsProcessTrusted() }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true // Non-macOS platforms don't need this permission
+    }
+}
+
+/// Request accessibility permission (opens System Settings on macOS)
+#[tauri::command]
+fn request_accessibility_permission() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+            .spawn()
+            .map_err(|e| format!("Failed to open System Settings: {}", e))?;
+    }
+    Ok(())
+}
+
+/// Request microphone permission (opens System Settings on macOS)
+#[tauri::command]
+fn request_microphone_permission() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
+            .spawn()
+            .map_err(|e| format!("Failed to open System Settings: {}", e))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn start_native_recording(state: tauri::State<'_, State>) -> Result<serde_json::Value, String> {
+    // Update dictation status
+    {
+        let mut dictation = state.app_state.dictation.lock().map_err(|e| e.to_string())?;
+        dictation.status = DictationStatus::Recording;
+    }
+
+    // Start native audio recording
+    audio::start_recording()?;
+
+    Ok(serde_json::json!({
+        "type": "recording_started",
+        "state": "recording"
+    }))
+}
+
+#[tauri::command]
+async fn stop_native_recording(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, State>,
+) -> Result<serde_json::Value, String> {
+    // Update status to processing
+    {
+        let mut dictation = state.app_state.dictation.lock().map_err(|e| e.to_string())?;
+        dictation.status = DictationStatus::Processing;
+    }
+
+    // Stop recording and get samples
+    let samples = audio::stop_recording()?;
+
+    // Skip if no audio captured
+    if samples.is_empty() {
+        let mut dictation = state.app_state.dictation.lock().map_err(|e| e.to_string())?;
+        dictation.status = DictationStatus::Idle;
+        return Ok(serde_json::json!({
+            "type": "transcription",
+            "text": "",
+            "state": "idle"
+        }));
+    }
+
+    // Get model and language settings
+    let (model_name, language) = {
+        let dictation = state.app_state.dictation.lock().map_err(|e| e.to_string())?;
+        (dictation.model_name.clone(), dictation.language.clone())
+    };
+
+    // Initialize whisper context if needed and transcribe
+    let text = {
+        let mut ctx_guard = state.app_state.whisper_context.lock().map_err(|e| e.to_string())?;
+
+        if ctx_guard.is_none() {
+            *ctx_guard = Some(transcriber::init_whisper_context(&model_name)?);
+        }
+
+        let ctx = ctx_guard.as_ref().unwrap();
+        transcriber::transcribe(ctx, &samples, &language)?
+    };
+
+    // Inject text on main thread (macOS requires keyboard APIs to run on main thread)
+    if !text.is_empty() {
+        let text_to_inject = text.clone();
+        app_handle
+            .run_on_main_thread(move || {
+                if let Err(e) = injector::inject_text(&text_to_inject) {
+                    eprintln!("Failed to inject text: {}", e);
+                }
+            })
+            .map_err(|e| format!("Failed to run on main thread: {}", e))?;
+    }
+
+    // Update status to idle
+    {
+        let mut dictation = state.app_state.dictation.lock().map_err(|e| e.to_string())?;
+        dictation.status = DictationStatus::Idle;
+    }
+
+    Ok(serde_json::json!({
+        "type": "transcription",
+        "text": text,
+        "state": "idle"
+    }))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        .manage(AppState {
-            bridge: Mutex::new(None),
+        .manage(State {
+            app_state: AppState::default(),
         })
         .invoke_handler(tauri::generate_handler![
             init_dictation,
@@ -288,7 +304,12 @@ pub fn run() {
             process_audio,
             get_status,
             configure_dictation,
-            open_system_preferences
+            open_system_preferences,
+            check_accessibility_permission,
+            request_accessibility_permission,
+            request_microphone_permission,
+            start_native_recording,
+            stop_native_recording
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

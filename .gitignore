@@ -33,6 +33,7 @@ dictation_log.jsonl
 *.wav
 
 # Build artifacts
+ui/dist/
 ui/tauri
 ui/tsc
 ui/ui@*

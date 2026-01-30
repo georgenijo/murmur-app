@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { initDictation, startRecording, stopRecording, DictationState, configure } from './lib/dictation';
+import { initDictation, startRecording, stopRecording, configure } from './lib/dictation';
 import { SettingsPanel } from './components/settings';
 import { HistoryPanel } from './components/history';
 import { PermissionsBanner } from './components/PermissionsBanner';
@@ -12,7 +12,7 @@ import { registerHotkey, unregisterHotkey, hotkeyToShortcut } from './lib/hotkey
 type TabType = 'current' | 'history';
 
 function App() {
-  const [status, setStatus] = useState<DictationState>('idle');
+  const [status, setStatus] = useState<string>('idle');
   const [transcription, setTranscription] = useState<string>('');
   const [error, setError] = useState<string>('');
   const [initialized, setInitialized] = useState(false);
@@ -23,12 +23,9 @@ function App() {
   const [recordingDuration, setRecordingDuration] = useState(0);
   const [activeTab, setActiveTab] = useState<TabType>('current');
   const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>([]);
-  const [showPermissionsBanner, setShowPermissionsBanner] = useState<boolean>(() => {
-    return localStorage.getItem('permissions-dismissed') !== 'true';
-  });
 
   // Refs to access current state in hotkey callback
-  const statusRef = useRef<DictationState>(status);
+  const statusRef = useRef<string>(status);
   const initializedRef = useRef<boolean>(initialized);
   const recordingStartTimeRef = useRef<number | null>(recordingStartTime);
   const historyEntriesRef = useRef<HistoryEntry[]>(historyEntries);
@@ -92,7 +89,7 @@ function App() {
       setError('');
       const res = await startRecording();
       if (res.state) setStatus(res.state);
-      if (res.type === 'error') setError(res.message || 'Unknown error');
+      if (res.type === 'error') setError(res.error || 'Unknown error');
     } catch (err) {
       setError(String(err));
     }
@@ -112,7 +109,7 @@ function App() {
         setHistoryEntries(newHistory);
         saveHistory(newHistory);
       }
-      if (res.type === 'error') setError(res.message || 'Unknown error');
+      if (res.type === 'error') setError(res.error || 'Unknown error');
       // Always reset status to idle after processing completes
       setStatus(res.state || 'idle');
     } catch (err) {
@@ -123,11 +120,6 @@ function App() {
 
   const handleClearHistory = () => {
     setHistoryEntries([]);
-  };
-
-  const handleDismissPermissionsBanner = () => {
-    setShowPermissionsBanner(false);
-    localStorage.setItem('permissions-dismissed', 'true');
   };
 
   // Handle hotkey toggle - uses refs to access current state
@@ -153,7 +145,7 @@ function App() {
           setHistoryEntries(newHistory);
           saveHistory(newHistory);
         }
-        if (res.type === 'error') setError(res.message || 'Unknown error');
+        if (res.type === 'error') setError(res.error || 'Unknown error');
         // Always reset status to idle after processing completes
         setStatus(res.state || 'idle');
       } catch (err) {
@@ -167,7 +159,7 @@ function App() {
         setError('');
         const res = await startRecording();
         if (res.state) setStatus(res.state);
-        if (res.type === 'error') setError(res.message || 'Unknown error');
+        if (res.type === 'error') setError(res.error || 'Unknown error');
       } catch (err) {
         setError(String(err));
       }
@@ -207,7 +199,7 @@ function App() {
     };
   }, []);
 
-  const getStatusColor = (currentStatus: DictationState) => {
+  const getStatusColor = (currentStatus: string) => {
     switch (currentStatus) {
       case 'recording':
         return 'text-red-500';
@@ -271,9 +263,7 @@ function App() {
       </header>
 
       {/* Permissions Banner */}
-      {showPermissionsBanner && (
-        <PermissionsBanner onDismiss={handleDismissPermissionsBanner} />
-      )}
+      <PermissionsBanner />
 
       {/* Main Content Area */}
       <main className="flex-1 flex flex-col overflow-hidden p-4 gap-4">

@@ -1,66 +1,52 @@
 import { invoke } from '@tauri-apps/api/core';
-import { startAudioCapture, stopAudioCapture } from './audioCapture';
-
-export type DictationState = 'idle' | 'recording' | 'processing';
 
 export interface DictationResponse {
   type: string;
-  state?: DictationState;
+  state?: string;
   text?: string;
-  raw_text?: string;
-  message?: string;
-  code?: string;
   model?: string;
-  backend?: string;
+  error?: string;
 }
 
 export async function initDictation(): Promise<DictationResponse> {
-  return invoke('init_dictation');
+  return await invoke('init_dictation');
 }
 
 export async function startRecording(): Promise<DictationResponse> {
   try {
-    await startAudioCapture();
-    return { type: 'ack', state: 'recording' };
+    return await invoke('start_native_recording');
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    if (message.includes('Permission') || message.includes('NotAllowed')) {
+    const errorMessage = err instanceof Error ? err.message : String(err);
+
+    // Check for common permission errors
+    if (errorMessage.includes('permission') || errorMessage.includes('No input device')) {
       return {
         type: 'error',
-        message: 'Microphone access denied. Please grant permission in System Settings.',
-        code: 'MIC_PERMISSION_DENIED',
-        state: 'idle',
+        error: 'Microphone access denied. Please grant permission in System Settings → Privacy & Security → Microphone'
       };
     }
+
     return {
       type: 'error',
-      message: `Recording failed: ${message}`,
-      code: 'RECORDING_FAILED',
-      state: 'idle',
+      error: errorMessage
     };
   }
 }
 
 export async function stopRecording(): Promise<DictationResponse> {
   try {
-    const audioBase64 = await stopAudioCapture();
-    const response: DictationResponse = await invoke('process_audio', {
-      audioData: audioBase64,
-    });
-    return response;
+    // Native recording handles transcription and returns the result directly
+    return await invoke('stop_native_recording');
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
     return {
       type: 'error',
-      message: `Processing failed: ${message}`,
-      code: 'PROCESSING_FAILED',
-      state: 'idle',
+      error: err instanceof Error ? err.message : String(err)
     };
   }
 }
 
 export async function getStatus(): Promise<DictationResponse> {
-  return invoke('get_status');
+  return await invoke('get_status');
 }
 
 export interface ConfigureOptions {
@@ -69,5 +55,5 @@ export interface ConfigureOptions {
 }
 
 export async function configure(options: ConfigureOptions): Promise<DictationResponse> {
-  return invoke('configure_dictation', { options });
+  return await invoke('configure_dictation', { options });
 }
