@@ -105,7 +105,6 @@ function App() {
     try {
       setStatus('processing');
       const res = await stopRecording();
-      if (res.state) setStatus(res.state);
       if (res.text) {
         setTranscription(res.text);
         // Add to history
@@ -114,8 +113,11 @@ function App() {
         saveHistory(newHistory);
       }
       if (res.type === 'error') setError(res.message || 'Unknown error');
+      // Always reset status to idle after processing completes
+      setStatus(res.state || 'idle');
     } catch (err) {
       setError(String(err));
+      setStatus('idle');
     }
   };
 
@@ -143,7 +145,6 @@ function App() {
       try {
         setStatus('processing');
         const res = await stopRecording();
-        if (res.state) setStatus(res.state);
         if (res.text) {
           setTranscription(res.text);
           // Add to history
@@ -153,8 +154,11 @@ function App() {
           saveHistory(newHistory);
         }
         if (res.type === 'error') setError(res.message || 'Unknown error');
+        // Always reset status to idle after processing completes
+        setStatus(res.state || 'idle');
       } catch (err) {
         setError(String(err));
+        setStatus('idle');
       }
     } else {
       // Start recording

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager, State,
+    Emitter, Manager, State,
 };
 
 // Hardcoded paths for development
@@ -22,8 +22,14 @@ struct PythonBridge {
 
 impl PythonBridge {
     fn send_command(&mut self, command: &str) -> Result<DictationResponse, String> {
-        // Send the command
-        writeln!(self.stdin, "{}", command)
+        // Wrap simple commands in JSON format expected by Python
+        let json_cmd = format!(r#"{{"cmd": "{}"}}"#, command);
+        self.send_raw(&json_cmd)
+    }
+
+    fn send_raw(&mut self, json_command: &str) -> Result<DictationResponse, String> {
+        // Send the command (already in JSON format)
+        writeln!(self.stdin, "{}", json_command)
             .map_err(|e| format!("Failed to write to stdin: {}", e))?;
         self.stdin
             .flush()
@@ -43,8 +49,8 @@ impl PythonBridge {
 
 impl Drop for PythonBridge {
     fn drop(&mut self) {
-        // Try to send quit command gracefully
-        let _ = writeln!(self.stdin, "quit");
+        // Try to send quit command gracefully (in JSON format)
+        let _ = writeln!(self.stdin, r#"{{"cmd": "quit"}}"#);
         let _ = self.stdin.flush();
         // Kill the process if it doesn't exit
         let _ = self.process.kill();
@@ -203,7 +209,7 @@ fn configure_dictation(
         "language": options.language
     });
 
-    bridge.send_command(&command.to_string())
+    bridge.send_raw(&command.to_string())
 }
 
 #[tauri::command]

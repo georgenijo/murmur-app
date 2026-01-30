@@ -10,12 +10,21 @@ import os
 from enum import Enum
 from pathlib import Path
 
+# Debug logging to file
+DEBUG_LOG = "/tmp/dictation_bridge_debug.log"
+
+def debug_log(message):
+    with open(DEBUG_LOG, "a") as f:
+        f.write(f"{message}\n")
+        f.flush()
+
 # Ensure we can import from the same directory
 sys.path.insert(0, str(Path(__file__).parent))
 
 # Import existing modules
 from audio_recorder import AudioRecorder
 from transcriber_cpp import WhisperCppTranscriber
+from text_injector import TextInjector
 
 
 class State(Enum):
@@ -35,12 +44,46 @@ class DictationBridge:
         self.language = "en"
         self.recorder = None
         self.transcriber = None
+        self.injector = TextInjector(method="paste")
         self._init_components()
 
     def _init_components(self):
-        """Initialize the audio recorder and transcriber components."""
-        self.recorder = AudioRecorder()
-        self.transcriber = WhisperCppTranscriber(model_name=self.model)
+        """Initialize audio recorder. Transcriber is initialized lazily."""
+        import io
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        sys.stdout = io.StringIO()
+        sys.stderr = io.StringIO()
+        try:
+            self.recorder = AudioRecorder()
+        finally:
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+        self.transcriber = None  # Lazy initialization
+
+    def _get_transcriber(self):
+        """Get the transcriber, initializing it lazily if needed.
+
+        This method suppresses stdout/stderr during model loading to prevent
+        whisper.cpp loading messages from breaking the JSON protocol.
+
+        Returns:
+            WhisperCppTranscriber instance.
+        """
+        if self.transcriber is None:
+            # Redirect stdout/stderr during model loading to suppress
+            # whisper.cpp "Loading whisper.cpp model..." messages
+            import io
+            old_stdout = sys.stdout
+            old_stderr = sys.stderr
+            sys.stdout = io.StringIO()
+            sys.stderr = io.StringIO()
+            try:
+                self.transcriber = WhisperCppTranscriber(model_name=self.model)
+            finally:
+                sys.stdout = old_stdout
+                sys.stderr = old_stderr
+        return self.transcriber
 
     def handle_command(self, cmd_data):
         """Handle an incoming command and return a response.
@@ -93,10 +136,12 @@ class DictationBridge:
             self.recorder.start_recording()
             self.state = State.RECORDING
             return {"type": "ack", "cmd": "start_recording", "state": self.state.value}
-        except RuntimeError as e:
-            return {"type": "error", "message": str(e), "code": "RECORDING_FAILED"}
         except Exception as e:
-            return {"type": "error", "message": str(e), "code": "RECORDING_FAILED"}
+            error_msg = str(e)
+            # Check for common permission errors
+            if "permission" in error_msg.lower() or "denied" in error_msg.lower():
+                return {"type": "error", "message": "Microphone access denied. Please grant permission in System Settings.", "code": "MIC_PERMISSION_DENIED"}
+            return {"type": "error", "message": f"Recording failed: {error_msg}", "code": "RECORDING_FAILED"}
 
     def _stop_recording(self):
         """Stop recording and transcribe the audio.
@@ -109,14 +154,43 @@ class DictationBridge:
 
         try:
             self.state = State.PROCESSING
+            debug_log("Stopping recording...")
+
             audio_file = self.recorder.stop_recording()
 
             if audio_file is None or not audio_file.exists():
+                debug_log("ERROR: No audio file returned")
                 self.state = State.IDLE
                 return {"type": "error", "message": "No audio recorded", "code": "NO_AUDIO"}
 
+            # Log audio file details
+            file_size = audio_file.stat().st_size
+            debug_log(f"Audio file: {audio_file}, size: {file_size} bytes")
+
+            # Get audio duration (rough estimate: 16kHz mono 16-bit = 32000 bytes/sec)
+            duration_estimate = file_size / 32000
+            debug_log(f"Estimated audio duration: {duration_estimate:.2f} seconds")
+
+            if file_size < 5000:  # Less than ~0.15 seconds
+                debug_log("WARNING: Very short recording, might just be noise")
+
+            # Check audio levels to detect silent recordings
+            import numpy as np
+            from scipy.io import wavfile
+
+            try:
+                sample_rate, audio_data = wavfile.read(audio_file)
+                max_level = np.max(np.abs(audio_data))
+                mean_level = np.mean(np.abs(audio_data))
+                debug_log(f"Audio levels - max: {max_level}, mean: {mean_level:.2f}")
+
+                if max_level < 100:
+                    debug_log("WARNING: Audio is SILENT - microphone not capturing! Check permissions.")
+            except Exception as e:
+                debug_log(f"Could not analyze audio levels: {e}")
+
             # Check if the audio file has content
-            if audio_file.stat().st_size == 0:
+            if file_size == 0:
                 self.state = State.IDLE
                 # Clean up empty file
                 try:
@@ -126,25 +200,49 @@ class DictationBridge:
                 return {"type": "error", "message": "No audio recorded", "code": "NO_AUDIO"}
 
             # Transcribe the audio
-            text = self.transcriber.transcribe(str(audio_file), language=self.language)
+            import time
+            start_time = time.time()
+            debug_log("Starting transcription...")
 
-            # Clean up the temporary audio file
+            text = self._get_transcriber().transcribe(str(audio_file), language=self.language)
+
+            transcription_time = time.time() - start_time
+            debug_log(f"Transcription completed in {transcription_time:.2f}s: '{text}'")
+
+            # Save a copy for debugging instead of deleting
+            import shutil
+            debug_audio_path = "/tmp/dictation_last_recording.wav"
             try:
-                audio_file.unlink()
-            except OSError:
-                pass
+                shutil.copy(audio_file, debug_audio_path)
+                debug_log(f"Saved debug copy to {debug_audio_path}")
+                os.unlink(audio_file)
+            except Exception as e:
+                debug_log(f"Failed to save debug copy: {e}")
 
             self.state = State.IDLE
+
+            # Auto-paste the transcription
+            if text and text.strip():
+                try:
+                    debug_log(f"Auto-pasting text: '{text[:50]}...'")
+                    self.injector.inject(text)
+                    debug_log("Text pasted successfully")
+                except Exception as e:
+                    debug_log(f"Failed to auto-paste: {e}")
 
             return {
                 "type": "transcription",
                 "text": text.strip() if text else "",
-                "raw_text": text if text else ""
+                "raw_text": text if text else "",
+                "duration": duration_estimate,
+                "transcription_time": transcription_time
             }
         except RuntimeError as e:
+            debug_log(f"ERROR in stop_recording: {e}")
             self.state = State.IDLE
             return {"type": "error", "message": str(e), "code": "TRANSCRIPTION_FAILED"}
         except Exception as e:
+            debug_log(f"ERROR in stop_recording: {e}")
             self.state = State.IDLE
             return {"type": "error", "message": str(e), "code": "TRANSCRIPTION_FAILED"}
 
@@ -169,9 +267,9 @@ class DictationBridge:
         if "language" in cmd_data:
             self.language = cmd_data["language"]
 
-        # Reinitialize transcriber if model changed
+        # Reset transcriber so it reloads with new model on next use
         if reconfigure_transcriber:
-            self.transcriber = WhisperCppTranscriber(model_name=self.model)
+            self.transcriber = None
 
         return {
             "type": "ack",
@@ -184,29 +282,23 @@ class DictationBridge:
 
 def main():
     """Main entry point for the dictation bridge."""
-    # Redirect stderr to suppress whisper.cpp model loading messages
-    # This prevents them from being mixed with JSON output
-    stderr_backup = sys.stderr
-    sys.stderr = open(os.devnull, 'w')
-
-    try:
-        bridge = DictationBridge()
-    finally:
-        # Restore stderr
-        sys.stderr.close()
-        sys.stderr = stderr_backup
+    bridge = DictationBridge()
 
     # Send ready status
     print(json.dumps({"type": "ready", "state": "idle"}), flush=True)
+    debug_log("Sent ready message")
 
     for line in sys.stdin:
         line = line.strip()
         if not line:
             continue
 
+        debug_log(f"Received: {line}")
+
         try:
             cmd_data = json.loads(line)
             response = bridge.handle_command(cmd_data)
+            debug_log(f"Sending: {response}")
             print(json.dumps(response), flush=True)
 
             if cmd_data.get("cmd") == "shutdown":
