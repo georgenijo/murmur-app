@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { startAudioCapture, stopAudioCapture } from './audioCapture';
 
 export type DictationState = 'idle' | 'recording' | 'processing';
 
@@ -18,11 +19,44 @@ export async function initDictation(): Promise<DictationResponse> {
 }
 
 export async function startRecording(): Promise<DictationResponse> {
-  return invoke('start_recording');
+  try {
+    await startAudioCapture();
+    return { type: 'ack', state: 'recording' };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.includes('Permission') || message.includes('NotAllowed')) {
+      return {
+        type: 'error',
+        message: 'Microphone access denied. Please grant permission in System Settings.',
+        code: 'MIC_PERMISSION_DENIED',
+        state: 'idle',
+      };
+    }
+    return {
+      type: 'error',
+      message: `Recording failed: ${message}`,
+      code: 'RECORDING_FAILED',
+      state: 'idle',
+    };
+  }
 }
 
 export async function stopRecording(): Promise<DictationResponse> {
-  return invoke('stop_recording');
+  try {
+    const audioBase64 = await stopAudioCapture();
+    const response: DictationResponse = await invoke('process_audio', {
+      audioData: audioBase64,
+    });
+    return response;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      type: 'error',
+      message: `Processing failed: ${message}`,
+      code: 'PROCESSING_FAILED',
+      state: 'idle',
+    };
+  }
 }
 
 export async function getStatus(): Promise<DictationResponse> {

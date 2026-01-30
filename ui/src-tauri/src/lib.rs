@@ -1,4 +1,6 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::Mutex;
@@ -10,9 +12,19 @@ use tauri::{
     Emitter, Manager, State,
 };
 
-// Hardcoded paths for development
-const PYTHON_PATH: &str = "/Users/georgenijo/Documents/code/local-dictation/venv/bin/python";
-const SCRIPT_PATH: &str = "/Users/georgenijo/Documents/code/local-dictation/dictation_bridge.py";
+fn get_project_root() -> std::path::PathBuf {
+    // CARGO_MANIFEST_DIR is ui/src-tauri, go up 2 levels to project root
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    manifest_dir.parent().unwrap().parent().unwrap().to_path_buf()
+}
+
+fn get_python_path() -> std::path::PathBuf {
+    get_project_root().join("venv/bin/python")
+}
+
+fn get_script_path() -> std::path::PathBuf {
+    get_project_root().join("dictation_bridge.py")
+}
 
 struct PythonBridge {
     process: Child,
@@ -94,9 +106,9 @@ fn init_dictation(state: State<AppState>) -> Result<DictationResponse, String> {
     }
 
     // Spawn the Python process
-    let mut process = Command::new(PYTHON_PATH)
+    let mut process = Command::new(get_python_path())
         .arg("-u") // Unbuffered output
-        .arg(SCRIPT_PATH)
+        .arg(get_script_path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -169,6 +181,46 @@ fn stop_recording(state: State<AppState>) -> Result<DictationResponse, String> {
 }
 
 #[tauri::command]
+fn process_audio(state: State<AppState>, audio_data: String) -> Result<DictationResponse, String> {
+    let mut bridge_guard = state
+        .bridge
+        .lock()
+        .map_err(|e| format!("Failed to acquire lock: {}", e))?;
+
+    let bridge = bridge_guard
+        .as_mut()
+        .ok_or("Dictation bridge not initialized. Call init_dictation first.")?;
+
+    // Decode base64 audio data
+    let audio_bytes = BASE64
+        .decode(&audio_data)
+        .map_err(|e| format!("Failed to decode base64 audio: {}", e))?;
+
+    // Write to temporary file
+    let temp_dir = std::env::temp_dir();
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    let temp_path = temp_dir.join(format!("dictation_recording_{}.wav", timestamp));
+
+    let mut file = File::create(&temp_path)
+        .map_err(|e| format!("Failed to create temp file: {}", e))?;
+    file.write_all(&audio_bytes)
+        .map_err(|e| format!("Failed to write audio data: {}", e))?;
+    file.flush()
+        .map_err(|e| format!("Failed to flush temp file: {}", e))?;
+
+    // Send transcribe command to Python with file path
+    let command = serde_json::json!({
+        "cmd": "transcribe_file",
+        "path": temp_path.to_string_lossy()
+    });
+
+    bridge.send_raw(&command.to_string())
+}
+
+#[tauri::command]
 fn get_status(state: State<AppState>) -> Result<DictationResponse, String> {
     let mut bridge_guard = state
         .bridge
@@ -233,6 +285,7 @@ pub fn run() {
             init_dictation,
             start_recording,
             stop_recording,
+            process_audio,
             get_status,
             configure_dictation,
             open_system_preferences

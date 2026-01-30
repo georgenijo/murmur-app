@@ -104,6 +104,8 @@ class DictationBridge:
             return self._stop_recording()
         elif cmd == "configure":
             return self._configure(cmd_data)
+        elif cmd == "transcribe_file":
+            return self._transcribe_file(cmd_data)
         elif cmd == "shutdown":
             return {"type": "ack", "cmd": "shutdown"}
         else:
@@ -278,6 +280,137 @@ class DictationBridge:
             "backend": self.backend,
             "language": self.language
         }
+
+    def _apply_noise_reduction(self, audio_file: Path) -> Path:
+        """Apply noise reduction to the audio file.
+
+        Args:
+            audio_file: Path to the input WAV file.
+
+        Returns:
+            Path to the processed WAV file (may be same as input if processing fails).
+        """
+        try:
+            import numpy as np
+            from scipy.io import wavfile
+            import noisereduce as nr
+            import tempfile
+
+            sample_rate, audio_data = wavfile.read(audio_file)
+            debug_log(f"Audio loaded: {sample_rate}Hz, {len(audio_data)} samples, dtype={audio_data.dtype}")
+
+            # Check audio levels
+            if audio_data.dtype == np.int16:
+                max_level = np.max(np.abs(audio_data))
+                mean_level = np.mean(np.abs(audio_data))
+                debug_log(f"Audio levels - max: {max_level}, mean: {mean_level:.2f}")
+
+                if max_level < 100:
+                    debug_log("WARNING: Audio appears to be silent")
+
+                # Convert to float for noise reduction
+                audio_float = audio_data.astype(np.float32) / 32768.0
+            else:
+                audio_float = audio_data.astype(np.float32)
+                max_level = np.max(np.abs(audio_float))
+                debug_log(f"Audio levels (float) - max: {max_level:.4f}")
+
+            # Apply noise reduction
+            audio_float = nr.reduce_noise(y=audio_float, sr=sample_rate, prop_decrease=0.8)
+
+            # Convert back to int16
+            audio_reduced = (audio_float * 32768.0).astype(np.int16)
+
+            # Save to new temp file
+            fd, temp_path_str = tempfile.mkstemp(suffix=".wav")
+            os.close(fd)
+            temp_path = Path(temp_path_str)
+
+            wavfile.write(temp_path, sample_rate, audio_reduced)
+            debug_log(f"Noise-reduced audio saved to: {temp_path}")
+
+            return temp_path
+        except Exception as e:
+            debug_log(f"Noise reduction failed, using original: {e}")
+            return audio_file
+
+    def _transcribe_file(self, cmd_data):
+        """Transcribe an audio file received from WebView.
+
+        Args:
+            cmd_data: Dictionary containing 'path' key with audio file path.
+
+        Returns:
+            Dictionary with transcription result or error.
+        """
+        audio_path = cmd_data.get("path")
+        if not audio_path:
+            return {"type": "error", "message": "No audio path provided", "code": "NO_PATH"}
+
+        audio_file = Path(audio_path)
+
+        if not audio_file.exists():
+            return {"type": "error", "message": f"Audio file not found: {audio_path}", "code": "FILE_NOT_FOUND"}
+
+        try:
+            self.state = State.PROCESSING
+            debug_log(f"Processing audio file: {audio_file}")
+
+            # Log audio file details
+            file_size = audio_file.stat().st_size
+            debug_log(f"Audio file size: {file_size} bytes")
+
+            # Estimate duration (16kHz mono 16-bit = 32000 bytes/sec, minus 44 byte header)
+            duration_estimate = max(0, (file_size - 44)) / 32000
+            debug_log(f"Estimated audio duration: {duration_estimate:.2f} seconds")
+
+            if file_size < 1000:  # Less than ~0.03 seconds
+                debug_log("WARNING: Very short recording, might just be noise")
+
+            # Apply noise reduction
+            processed_file = self._apply_noise_reduction(audio_file)
+
+            # Transcribe the audio
+            import time
+            start_time = time.time()
+            debug_log("Starting transcription...")
+
+            text = self._get_transcriber().transcribe(str(processed_file), language=self.language)
+
+            transcription_time = time.time() - start_time
+            debug_log(f"Transcription completed in {transcription_time:.2f}s: '{text}'")
+
+            # Clean up temp files
+            try:
+                audio_file.unlink()
+                if processed_file != audio_file:
+                    processed_file.unlink()
+            except Exception as e:
+                debug_log(f"Failed to clean up temp files: {e}")
+
+            self.state = State.IDLE
+
+            # Auto-paste the transcription
+            if text and text.strip():
+                try:
+                    debug_log(f"Auto-pasting text: '{text[:50]}...'")
+                    self.injector.inject(text)
+                    debug_log("Text pasted successfully")
+                except Exception as e:
+                    debug_log(f"Failed to auto-paste: {e}")
+
+            return {
+                "type": "transcription",
+                "text": text.strip() if text else "",
+                "raw_text": text if text else "",
+                "duration": duration_estimate,
+                "transcription_time": transcription_time,
+                "state": "idle"
+            }
+        except Exception as e:
+            debug_log(f"ERROR in _transcribe_file: {e}")
+            self.state = State.IDLE
+            return {"type": "error", "message": str(e), "code": "TRANSCRIPTION_FAILED", "state": "idle"}
 
 
 def main():

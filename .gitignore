@@ -11,20 +11,31 @@ venv/
 # Node
 node_modules/
 
-# Rust / Tauri build artifacts
+# Rust / Tauri build artifacts (5.6GB!)
 target/
+ui/src-tauri/target/
 
 # Logs
 *.log
 dictation_log.jsonl
+/tmp/dictation_*.log
 
 # macOS
 .DS_Store
+**/.DS_Store
 
 # IDE
 .idea/
 .vscode/
 *.swp
+
+# Audio files
+*.wav
+
+# Build artifacts
+ui/tauri
+ui/tsc
+ui/ui@*
 
 # Project tickets / notes
 local-voice-dictation-tickets.md
