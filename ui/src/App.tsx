@@ -173,9 +173,6 @@ function App() {
     const shortcut = hotkeyToShortcut(settings.hotkey);
 
     registerHotkey(shortcut, handleHotkeyToggle)
-      .then(() => {
-        console.log(`Registered hotkey: ${shortcut}`);
-      })
       .catch((err) => {
         console.error('Failed to register hotkey:', err);
       });

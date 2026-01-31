@@ -21,11 +21,9 @@ serde_json = "1"
 tokio = { version = "1", features = ["process", "io-util", "sync", "rt"] }
 base64 = "0.22"
 whisper-rs = { version = "0.13", features = ["metal", "whisper-cpp-log"] }
-enigo = "0.6"
 arboard = "3"
 hound = "3.5"
 dirs = "5"
-objc = "0.2"
 cpal = "0.15"
 
 [profile.release]

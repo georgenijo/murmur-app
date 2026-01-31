@@ -58,8 +58,6 @@ pub fn start_recording() -> Result<(), String> {
     // Clear previous samples
     if let Ok(mut samples) = state_guard.shared.samples.lock() {
         samples.clear();
-    } else {
-        eprintln!("Warning: Failed to clear samples buffer");
     }
 
     let (cmd_tx, cmd_rx) = channel::<AudioCommand>();
@@ -70,7 +68,6 @@ pub fn start_recording() -> Result<(), String> {
     let handle = thread::spawn(move || {
         if let Err(e) = run_audio_capture(cmd_rx, shared, ready_tx.clone()) {
             eprintln!("Audio capture error: {}", e);
-            // Signal error if we haven't already signaled ready
             let _ = ready_tx.send(Err(e));
         }
     });
@@ -109,18 +106,17 @@ fn run_audio_capture(
         .map_err(|e| format!("Failed to get input config: {}", e))?;
 
     let device_sample_rate = config.sample_rate().0;
+    let sample_format = config.sample_format();
+    let channels = config.channels() as usize;
+
     if let Ok(mut sr) = shared.sample_rate.lock() {
         *sr = device_sample_rate;
-    } else {
-        eprintln!("Warning: Failed to set sample rate, using default");
     }
 
-    let channels = config.channels() as usize;
     let samples_clone = Arc::clone(&shared);
-
     let err_fn = |err| eprintln!("Audio stream error: {}", err);
 
-    let stream = match config.sample_format() {
+    let stream = match sample_format {
         SampleFormat::F32 => {
             device.build_input_stream(
                 &config.into(),
@@ -154,7 +150,7 @@ fn run_audio_capture(
                 None,
             ).map_err(|e| format!("Failed to build stream: {}", e))?
         },
-        _ => return Err("Unsupported sample format".to_string()),
+        _ => return Err(format!("Unsupported sample format: {:?}", sample_format)),
     };
 
     stream.play().map_err(|e| format!("Failed to start stream: {}", e))?;
@@ -171,7 +167,6 @@ fn run_audio_capture(
         }
     }
 
-    // Stream is dropped here, stopping recording
     Ok(())
 }
 
@@ -184,9 +179,7 @@ pub fn stop_recording() -> Result<Vec<f32>, String> {
 
     // Send stop command
     if let Some(sender) = state_guard.command_sender.take() {
-        if let Err(e) = sender.send(AudioCommand::Stop) {
-            eprintln!("Warning: Failed to send stop command: {:?}", e);
-        }
+        let _ = sender.send(AudioCommand::Stop);
     }
 
     // Wait for thread to finish
