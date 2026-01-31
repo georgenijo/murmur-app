@@ -3,6 +3,23 @@ use enigo::{Direction::{Click, Press, Release}, Enigo, Key, Keyboard, Settings};
 use std::thread;
 use std::time::Duration;
 
+/// Check if accessibility permission is granted (macOS)
+fn is_accessibility_enabled() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        extern "C" {
+            fn AXIsProcessTrusted() -> bool;
+        }
+        // SAFETY: AXIsProcessTrusted is a stable macOS API that queries
+        // accessibility permission status without requiring preconditions
+        unsafe { AXIsProcessTrusted() }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
+}
+
 /// Inject text by copying to clipboard and simulating Cmd+V
 pub fn inject_text(text: &str) -> Result<(), String> {
     // Skip if text is empty
@@ -10,26 +27,24 @@ pub fn inject_text(text: &str) -> Result<(), String> {
         return Ok(());
     }
 
-    // Copy text to clipboard
+    // Copy text to clipboard first (always works)
     let mut clipboard = Clipboard::new()
         .map_err(|e| format!("Failed to access clipboard: {}", e))?;
 
     clipboard.set_text(text)
         .map_err(|e| format!("Failed to copy to clipboard: {}", e))?;
 
+    // Check accessibility permission BEFORE calling enigo to avoid the popup
+    if !is_accessibility_enabled() {
+        println!("[Injector] Accessibility permission not granted - text copied to clipboard only");
+        return Err("Accessibility permission required for auto-paste. Text has been copied to clipboard - press Cmd+V to paste manually.".to_string());
+    }
+
     // Small delay for clipboard to be ready
     thread::sleep(Duration::from_millis(50));
 
-    // Try to simulate Cmd+V with panic recovery
-    let paste_result = std::panic::catch_unwind(|| {
-        simulate_paste()
-    });
-
-    match paste_result {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(e)) => Err(e),
-        Err(_) => Err("Text injection failed - please grant Accessibility permission in System Settings → Privacy & Security → Accessibility".to_string()),
-    }
+    // Simulate Cmd+V
+    simulate_paste()
 }
 
 /// Simulate Cmd+V paste keystroke
