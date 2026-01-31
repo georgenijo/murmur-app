@@ -94,7 +94,7 @@ View your recent transcriptions by clicking the menubar icon. Each entry shows:
 The app requires a Whisper model file for transcription. Download one of these models:
 
 | Model | Size | Speed | Accuracy | Download |
-|-------|------|-------|----------|----------|
+| ------- | ------ | ------- | ---------- | ---------- |
 | `large-v3-turbo` | 1.6GB | Fast | Best | [Download](https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin) |
 | `base.en` | 142MB | Fastest | Good | [Download](https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin) |
 | `small.en` | 466MB | Medium | Better | [Download](https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin) |
