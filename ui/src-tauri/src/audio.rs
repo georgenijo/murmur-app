@@ -39,40 +39,57 @@ fn get_state() -> &'static Mutex<RecordingState> {
 
 pub fn start_recording() -> Result<(), String> {
     let state = get_state();
-    let mut state_guard = state.lock().map_err(|e| e.to_string())?;
+    let mut state_guard = state.lock().unwrap_or_else(|poisoned| {
+        eprintln!("Warning: Recording state mutex was poisoned, recovering");
+        poisoned.into_inner()
+    });
 
     // Stop any existing recording
     if state_guard.command_sender.is_some() {
         drop(state_guard);
         stop_recording()?;
-        state_guard = state.lock().map_err(|e| e.to_string())?;
+        state_guard = state.lock().unwrap_or_else(|poisoned| {
+            eprintln!("Warning: Recording state mutex was poisoned, recovering");
+            poisoned.into_inner()
+        });
     }
 
     // Clear previous samples
     if let Ok(mut samples) = state_guard.shared.samples.lock() {
         samples.clear();
+    } else {
+        eprintln!("Warning: Failed to clear samples buffer");
     }
 
     let (cmd_tx, cmd_rx) = channel::<AudioCommand>();
+    let (ready_tx, ready_rx) = channel::<Result<(), String>>();
     let shared = Arc::clone(&state_guard.shared);
 
     // Spawn audio thread
     let handle = thread::spawn(move || {
-        if let Err(e) = run_audio_capture(cmd_rx, shared) {
+        if let Err(e) = run_audio_capture(cmd_rx, shared, ready_tx.clone()) {
             eprintln!("Audio capture error: {}", e);
+            // Signal error if we haven't already signaled ready
+            let _ = ready_tx.send(Err(e));
         }
     });
 
     state_guard.command_sender = Some(cmd_tx);
     state_guard.thread_handle = Some(handle);
 
-    // Give the thread a moment to initialize
-    thread::sleep(std::time::Duration::from_millis(100));
-
-    Ok(())
+    // Wait for thread to signal ready (with timeout)
+    match ready_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err("Audio thread failed to initialize within timeout".to_string()),
+    }
 }
 
-fn run_audio_capture(cmd_rx: Receiver<AudioCommand>, shared: Arc<SharedSamples>) -> Result<(), String> {
+fn run_audio_capture(
+    cmd_rx: Receiver<AudioCommand>,
+    shared: Arc<SharedSamples>,
+    ready_tx: Sender<Result<(), String>>,
+) -> Result<(), String> {
     let host = cpal::default_host();
 
     let device = host.default_input_device()
@@ -84,6 +101,8 @@ fn run_audio_capture(cmd_rx: Receiver<AudioCommand>, shared: Arc<SharedSamples>)
     let device_sample_rate = config.sample_rate().0;
     if let Ok(mut sr) = shared.sample_rate.lock() {
         *sr = device_sample_rate;
+    } else {
+        eprintln!("Warning: Failed to set sample rate, using default");
     }
 
     let channels = config.channels() as usize;
@@ -130,6 +149,9 @@ fn run_audio_capture(cmd_rx: Receiver<AudioCommand>, shared: Arc<SharedSamples>)
 
     stream.play().map_err(|e| format!("Failed to start stream: {}", e))?;
 
+    // Signal that we're ready to record
+    let _ = ready_tx.send(Ok(()));
+
     // Wait for stop command
     loop {
         match cmd_rx.recv_timeout(std::time::Duration::from_millis(100)) {
@@ -145,11 +167,16 @@ fn run_audio_capture(cmd_rx: Receiver<AudioCommand>, shared: Arc<SharedSamples>)
 
 pub fn stop_recording() -> Result<Vec<f32>, String> {
     let state = get_state();
-    let mut state_guard = state.lock().map_err(|e| e.to_string())?;
+    let mut state_guard = state.lock().unwrap_or_else(|poisoned| {
+        eprintln!("Warning: Recording state mutex was poisoned, recovering");
+        poisoned.into_inner()
+    });
 
     // Send stop command
     if let Some(sender) = state_guard.command_sender.take() {
-        let _ = sender.send(AudioCommand::Stop);
+        if let Err(e) = sender.send(AudioCommand::Stop) {
+            eprintln!("Warning: Failed to send stop command: {:?}", e);
+        }
     }
 
     // Wait for thread to finish
@@ -158,10 +185,14 @@ pub fn stop_recording() -> Result<Vec<f32>, String> {
     }
 
     // Get samples and sample rate
-    let sample_rate = *state_guard.shared.sample_rate.lock().map_err(|e| e.to_string())?;
-    let samples = state_guard.shared.samples.lock()
-        .map_err(|e| e.to_string())?
-        .clone();
+    let sample_rate = *state_guard.shared.sample_rate.lock().unwrap_or_else(|poisoned| {
+        eprintln!("Warning: Sample rate mutex was poisoned, recovering");
+        poisoned.into_inner()
+    });
+    let samples = state_guard.shared.samples.lock().unwrap_or_else(|poisoned| {
+        eprintln!("Warning: Samples mutex was poisoned, recovering");
+        poisoned.into_inner()
+    }).clone();
 
     // Resample to 16kHz if needed
     if sample_rate != 16000 && !samples.is_empty() {

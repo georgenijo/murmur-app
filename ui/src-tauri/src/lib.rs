@@ -5,11 +5,26 @@ mod state;
 mod transcriber;
 
 use state::{AppState, DictationStatus};
+use std::sync::{Mutex, MutexGuard};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Emitter, Manager,
 };
+
+/// Helper trait to recover from poisoned mutexes
+trait MutexExt<T> {
+    fn lock_or_recover(&self) -> MutexGuard<'_, T>;
+}
+
+impl<T> MutexExt<T> for Mutex<T> {
+    fn lock_or_recover(&self) -> MutexGuard<'_, T> {
+        self.lock().unwrap_or_else(|poisoned| {
+            eprintln!("Warning: Mutex was poisoned, recovering data");
+            poisoned.into_inner()
+        })
+    }
+}
 
 struct State {
     app_state: AppState,
@@ -26,7 +41,7 @@ async fn init_dictation(_state: tauri::State<'_, State>) -> Result<serde_json::V
 
 #[tauri::command]
 async fn start_recording(state: tauri::State<'_, State>) -> Result<serde_json::Value, String> {
-    let mut dictation = state.app_state.dictation.lock().map_err(|e| e.to_string())?;
+    let mut dictation = state.app_state.dictation.lock_or_recover();
     dictation.status = DictationStatus::Recording;
     Ok(serde_json::json!({
         "type": "recording_started"
@@ -35,7 +50,7 @@ async fn start_recording(state: tauri::State<'_, State>) -> Result<serde_json::V
 
 #[tauri::command]
 async fn stop_recording(state: tauri::State<'_, State>) -> Result<serde_json::Value, String> {
-    let mut dictation = state.app_state.dictation.lock().map_err(|e| e.to_string())?;
+    let mut dictation = state.app_state.dictation.lock_or_recover();
     dictation.status = DictationStatus::Idle;
     Ok(serde_json::json!({
         "type": "recording_stopped"
@@ -50,13 +65,13 @@ async fn process_audio(
 ) -> Result<serde_json::Value, String> {
     // Set status to processing
     {
-        let mut dictation = state.app_state.dictation.lock().map_err(|e| e.to_string())?;
+        let mut dictation = state.app_state.dictation.lock_or_recover();
         dictation.status = DictationStatus::Processing;
     }
 
     // Get model name and language
     let (model_name, language) = {
-        let dictation = state.app_state.dictation.lock().map_err(|e| e.to_string())?;
+        let dictation = state.app_state.dictation.lock_or_recover();
         (dictation.model_name.clone(), dictation.language.clone())
     };
 
@@ -69,7 +84,7 @@ async fn process_audio(
 
     // Initialize or get whisper context
     let text = {
-        let mut ctx_guard = state.app_state.whisper_context.lock().map_err(|e| e.to_string())?;
+        let mut ctx_guard = state.app_state.whisper_context.lock_or_recover();
 
         // Lazy init if needed
         if ctx_guard.is_none() {
@@ -94,7 +109,7 @@ async fn process_audio(
 
     // Set status back to idle
     {
-        let mut dictation = state.app_state.dictation.lock().map_err(|e| e.to_string())?;
+        let mut dictation = state.app_state.dictation.lock_or_recover();
         dictation.status = DictationStatus::Idle;
     }
 
@@ -106,7 +121,7 @@ async fn process_audio(
 
 #[tauri::command]
 async fn get_status(state: tauri::State<'_, State>) -> Result<serde_json::Value, String> {
-    let dictation = state.app_state.dictation.lock().map_err(|e| e.to_string())?;
+    let dictation = state.app_state.dictation.lock_or_recover();
     Ok(serde_json::json!({
         "type": "status",
         "state": dictation.status,
@@ -123,7 +138,7 @@ async fn configure_dictation(
     let model = options.get("model").and_then(|v| v.as_str()).map(String::from);
     let language = options.get("language").and_then(|v| v.as_str()).map(String::from);
 
-    let mut dictation = state.app_state.dictation.lock().map_err(|e| e.to_string())?;
+    let mut dictation = state.app_state.dictation.lock_or_recover();
 
     let model_changed = if let Some(m) = model {
         if m != dictation.model_name {
@@ -143,7 +158,7 @@ async fn configure_dictation(
     // If model changed, clear the whisper context so it reloads
     if model_changed {
         drop(dictation); // Release dictation lock first
-        let mut ctx = state.app_state.whisper_context.lock().map_err(|e| e.to_string())?;
+        let mut ctx = state.app_state.whisper_context.lock_or_recover();
         *ctx = None;
     }
 
@@ -164,18 +179,7 @@ fn open_system_preferences() -> Result<(), String> {
 /// Check if accessibility permission is granted (macOS)
 #[tauri::command]
 fn check_accessibility_permission() -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        // Call AXIsProcessTrusted() from macOS Accessibility framework
-        extern "C" {
-            fn AXIsProcessTrusted() -> bool;
-        }
-        unsafe { AXIsProcessTrusted() }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        true // Non-macOS platforms don't need this permission
-    }
+    injector::is_accessibility_enabled()
 }
 
 /// Request accessibility permission (opens System Settings on macOS)
@@ -208,7 +212,7 @@ fn request_microphone_permission() -> Result<(), String> {
 async fn start_native_recording(state: tauri::State<'_, State>) -> Result<serde_json::Value, String> {
     // Update dictation status
     {
-        let mut dictation = state.app_state.dictation.lock().map_err(|e| e.to_string())?;
+        let mut dictation = state.app_state.dictation.lock_or_recover();
         dictation.status = DictationStatus::Recording;
     }
 
@@ -230,7 +234,7 @@ async fn stop_native_recording(
 ) -> Result<serde_json::Value, String> {
     // Update status to processing
     {
-        let mut dictation = state.app_state.dictation.lock().map_err(|e| e.to_string())?;
+        let mut dictation = state.app_state.dictation.lock_or_recover();
         dictation.status = DictationStatus::Processing;
     }
 
@@ -243,7 +247,7 @@ async fn stop_native_recording(
     // Skip if no audio captured
     if samples.is_empty() {
         println!("[Recording] No audio captured");
-        let mut dictation = state.app_state.dictation.lock().map_err(|e| e.to_string())?;
+        let mut dictation = state.app_state.dictation.lock_or_recover();
         dictation.status = DictationStatus::Idle;
         return Ok(serde_json::json!({
             "type": "transcription",
@@ -254,14 +258,14 @@ async fn stop_native_recording(
 
     // Get model and language settings
     let (model_name, language) = {
-        let dictation = state.app_state.dictation.lock().map_err(|e| e.to_string())?;
+        let dictation = state.app_state.dictation.lock_or_recover();
         (dictation.model_name.clone(), dictation.language.clone())
     };
 
     // Initialize whisper context if needed and transcribe
     println!("[Processing] Transcribing audio...");
     let text = {
-        let mut ctx_guard = state.app_state.whisper_context.lock().map_err(|e| e.to_string())?;
+        let mut ctx_guard = state.app_state.whisper_context.lock_or_recover();
 
         if ctx_guard.is_none() {
             println!("[Processing] Loading model: {}", model_name);
@@ -288,7 +292,7 @@ async fn stop_native_recording(
 
     // Update status to idle
     {
-        let mut dictation = state.app_state.dictation.lock().map_err(|e| e.to_string())?;
+        let mut dictation = state.app_state.dictation.lock_or_recover();
         dictation.status = DictationStatus::Idle;
     }
 

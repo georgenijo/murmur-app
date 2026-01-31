@@ -82,9 +82,11 @@ pub fn init_whisper_context(model_name: &str) -> Result<WhisperContext, String> 
     suppress_whisper_logs();
 
     let model_path = get_model_path(model_name)?;
+    let path_str = model_path.to_str()
+        .ok_or_else(|| "Model path contains invalid UTF-8 characters".to_string())?;
 
     let params = WhisperContextParameters::default();
-    WhisperContext::new_with_params(model_path.to_str().unwrap(), params)
+    WhisperContext::new_with_params(path_str, params)
         .map_err(|e| format!("Failed to load whisper model: {}", e))
 }
 

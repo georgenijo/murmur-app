@@ -4,7 +4,7 @@ use std::thread;
 use std::time::Duration;
 
 /// Check if accessibility permission is granted (macOS)
-fn is_accessibility_enabled() -> bool {
+pub fn is_accessibility_enabled() -> bool {
     #[cfg(target_os = "macos")]
     {
         extern "C" {
