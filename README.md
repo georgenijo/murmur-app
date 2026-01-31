@@ -99,20 +99,44 @@ The app requires a Whisper model file for transcription. Download one of these m
 | `base.en` | 142MB | Fastest | Good | [Download](https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin) |
 | `small.en` | 466MB | Medium | Better | [Download](https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin) |
 
-**Installation:**
+**Model Search Locations:**
+
+The app searches for models in the following locations (in order):
+
+1. `WHISPER_MODEL_DIR` environment variable (recommended cross-platform override)
+2. `<data-dir>/local-dictation/models/`
+3. `<data-dir>/pywhispercpp/models/`
+4. `~/.cache/whisper.cpp/`
+5. `~/.cache/whisper/`
+6. `~/.whisper/models/`
+
+**Platform-specific data directories (`<data-dir>`):**
+
+| Platform | Data Directory |
+|----------|----------------|
+| **macOS** | `~/Library/Application Support/` |
+| **Linux** | `$XDG_DATA_HOME` (defaults to `~/.local/share/`) |
+| **Windows** | `%APPDATA%` (e.g., `C:\Users\<user>\AppData\Roaming\`) |
+
+**Installation Example (macOS):**
 
 ```bash
 # Create the models directory
 mkdir -p ~/Library/Application\ Support/local-dictation/models
 
-# Move your downloaded model (example for large-v3-turbo)
+# Move your downloaded model
 mv ~/Downloads/ggml-large-v3-turbo.bin ~/Library/Application\ Support/local-dictation/models/
 ```
 
-The app searches for models in these locations:
-- `~/Library/Application Support/local-dictation/models/`
-- `~/.cache/whisper.cpp/`
-- Custom path via `WHISPER_MODEL_DIR` environment variable
+**Cross-platform (using environment variable):**
+
+```bash
+# Set custom model directory
+export WHISPER_MODEL_DIR=/path/to/your/models
+
+# Place model in that directory
+mv ~/Downloads/ggml-large-v3-turbo.bin $WHISPER_MODEL_DIR/
+```
 
 ### macOS Permissions
 
