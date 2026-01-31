@@ -2,7 +2,7 @@
 
 ## Overview
 
-Local Dictation is a macOS desktop app for voice-to-text transcription using whisper.cpp, built entirely in Rust with a React frontend.
+Local Dictation is a cross-platform desktop app for voice-to-text transcription using whisper.cpp, built entirely in Rust with a React frontend. Metal GPU acceleration is available on macOS.
 
 ## Tech Stack
 
@@ -17,7 +17,7 @@ Local Dictation is a macOS desktop app for voice-to-text transcription using whi
 
 ### Tauri Desktop App (ui/)
 
-```
+```text
 ui/
 ├── src/                    # React frontend
 │   ├── components/         # UI components
@@ -34,7 +34,7 @@ ui/
 
 ## Data Flow
 
-```
+```text
 Hotkey pressed
     ↓
 cpal captures audio from microphone
@@ -62,10 +62,10 @@ Text appears at cursor
 
 ## Permissions Required (macOS)
 
-| Permission | Purpose | Settings Location |
-|------------|---------|-------------------|
-| Microphone | Audio capture | Privacy & Security → Microphone |
-| Accessibility | Keyboard simulation | Privacy & Security → Accessibility |
+| Permission    | Purpose             | Settings Location                    |
+|---------------|---------------------|--------------------------------------|
+| Microphone    | Audio capture       | Privacy & Security → Microphone      |
+| Accessibility | Keyboard simulation | Privacy & Security → Accessibility   |
 
 ## Build Outputs
 

@@ -75,12 +75,7 @@ Output:
 
 ## Viewing Logs
 
-During development, view logs with:
-```bash
-tail -f /private/tmp/claude/-Users-*/tasks/*.output
-```
-
-Or check the terminal running `npm run tauri dev` for Rust println! output.
+During development, check the terminal running `npm run tauri dev` for Rust println! output.
 
 ## Common Issues
 
@@ -91,7 +86,10 @@ Dev builds have different signatures each time. Grant Accessibility permission t
 Grant Microphone permission to your terminal app, then restart the dev server.
 
 ### Model Not Found
-Ensure a Whisper model exists in one of these locations:
+Ensure a Whisper model exists in one of these locations (checked in order):
+- `WHISPER_MODEL_DIR` environment variable (recommended)
 - `~/Library/Application Support/local-dictation/models/`
 - `~/Library/Application Support/pywhispercpp/models/`
 - `~/.cache/whisper.cpp/`
+- `~/.cache/whisper/`
+- `~/.whisper/models/`

@@ -169,10 +169,17 @@ async fn configure_dictation(
 
 #[tauri::command]
 fn open_system_preferences() -> Result<(), String> {
-    std::process::Command::new("open")
-        .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
-        .spawn()
-        .map_err(|e| e.to_string())?;
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        return Err("System preferences shortcut not supported on this platform".to_string());
+    }
     Ok(())
 }
 
@@ -217,7 +224,11 @@ async fn start_native_recording(state: tauri::State<'_, State>) -> Result<serde_
     }
 
     // Start native audio recording
-    audio::start_recording()?;
+    if let Err(e) = audio::start_recording() {
+        let mut dictation = state.app_state.dictation.lock_or_recover();
+        dictation.status = DictationStatus::Idle;
+        return Err(e);
+    }
 
     println!("[Recording] Started");
 

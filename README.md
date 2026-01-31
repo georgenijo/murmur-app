@@ -112,10 +112,10 @@ The app searches for models in the following locations (in order):
 
 **Platform-specific data directories (`<data-dir>`):**
 
-| Platform | Data Directory |
-|----------|----------------|
-| **macOS** | `~/Library/Application Support/` |
-| **Linux** | `$XDG_DATA_HOME` (defaults to `~/.local/share/`) |
+| Platform    | Data Directory                                          |
+| ----------- | ------------------------------------------------------- |
+| **macOS**   | `~/Library/Application Support/`                        |
+| **Linux**   | `$XDG_DATA_HOME` (defaults to `~/.local/share/`)       |
 | **Windows** | `%APPDATA%` (e.g., `C:\Users\<user>\AppData\Roaming\`) |
 
 **Installation Example (macOS):**

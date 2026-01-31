@@ -110,9 +110,9 @@ pub fn parse_wav_to_samples(wav_bytes: &[u8]) -> Result<Vec<f32>, String> {
     // Convert i16 samples to f32 (normalized to -1.0 to 1.0)
     let samples: Vec<f32> = reader
         .into_samples::<i16>()
-        .filter_map(|s| s.ok())
-        .map(|s| s as f32 / i16::MAX as f32)
-        .collect();
+        .map(|s| s.map(|v| v as f32 / i16::MAX as f32))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to decode WAV samples: {}", e))?;
 
     Ok(samples)
 }
@@ -140,9 +140,10 @@ pub fn transcribe(ctx: &WhisperContext, samples: &[f32], language: &str) -> Resu
 
     let mut text = String::new();
     for i in 0..num_segments {
-        if let Ok(segment) = state.full_get_segment_text(i) {
-            text.push_str(&segment);
-        }
+        let segment = state
+            .full_get_segment_text(i)
+            .map_err(|e| format!("Failed to get segment {}: {}", i, e))?;
+        text.push_str(&segment);
     }
 
     Ok(text.trim().to_string())

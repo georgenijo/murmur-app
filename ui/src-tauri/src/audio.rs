@@ -79,11 +79,20 @@ pub fn start_recording() -> Result<(), String> {
     state_guard.thread_handle = Some(handle);
 
     // Wait for thread to signal ready (with timeout)
-    match ready_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+    let init_result = match ready_rx.recv_timeout(std::time::Duration::from_secs(5)) {
         Ok(Ok(())) => Ok(()),
         Ok(Err(e)) => Err(e),
         Err(_) => Err("Audio thread failed to initialize within timeout".to_string()),
+    };
+
+    if init_result.is_err() {
+        if let Some(sender) = state_guard.command_sender.take() {
+            let _ = sender.send(AudioCommand::Stop);
+        }
+        state_guard.thread_handle.take();
     }
+
+    init_result
 }
 
 fn run_audio_capture(
