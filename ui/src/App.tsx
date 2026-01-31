@@ -51,7 +51,7 @@ function App() {
         setInitialized(true);
         if (res.state) setStatus(res.state);
         // Apply saved settings to bridge
-        return configure({ model: savedSettings.model, language: savedSettings.language });
+        return configure({ model: savedSettings.model, language: savedSettings.language, autoPaste: savedSettings.autoPaste });
       })
       .catch((err) => setError(String(err)));
   }, []);
