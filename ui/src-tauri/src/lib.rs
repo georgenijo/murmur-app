@@ -95,12 +95,18 @@ async fn process_audio(
         transcriber::transcribe(ctx, &samples, &language)?
     };
 
+    // Get auto_paste setting
+    let auto_paste = {
+        let dictation = state.app_state.dictation.lock_or_recover();
+        dictation.auto_paste
+    };
+
     // Inject text on main thread (macOS requires keyboard APIs to run on main thread)
     if !text.is_empty() {
         let text_to_inject = text.clone();
         app_handle
             .run_on_main_thread(move || {
-                if let Err(e) = injector::inject_text(&text_to_inject) {
+                if let Err(e) = injector::inject_text(&text_to_inject, auto_paste) {
                     eprintln!("Failed to inject text: {}", e);
                 }
             })
@@ -153,6 +159,10 @@ async fn configure_dictation(
 
     if let Some(l) = language {
         dictation.language = l;
+    }
+
+    if let Some(auto_paste) = options.get("autoPaste").and_then(|v| v.as_bool()) {
+        dictation.auto_paste = auto_paste;
     }
 
     // If model changed, clear the whisper context so it reloads
@@ -307,12 +317,18 @@ async fn stop_native_recording(
         transcriber::transcribe(ctx, &samples, &language)?
     };
 
+    // Get auto_paste setting
+    let auto_paste = {
+        let dictation = state.app_state.dictation.lock_or_recover();
+        dictation.auto_paste
+    };
+
     // Inject text on main thread (macOS requires keyboard APIs to run on main thread)
     if !text.is_empty() {
         let text_to_inject = text.clone();
         app_handle
             .run_on_main_thread(move || {
-                if let Err(e) = injector::inject_text(&text_to_inject) {
+                if let Err(e) = injector::inject_text(&text_to_inject, auto_paste) {
                     eprintln!("Failed to inject text: {}", e);
                 }
             })

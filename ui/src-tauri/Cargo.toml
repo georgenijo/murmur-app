@@ -25,6 +25,7 @@ arboard = "3"
 hound = "3.5"
 dirs = "5"
 cpal = "0.15"
+rdev = "0.5"
 
 [profile.release]
 panic = "abort"

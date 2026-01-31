@@ -52,6 +52,7 @@ export async function getStatus(): Promise<DictationResponse> {
 export interface ConfigureOptions {
   model?: string;
   language?: string;
+  autoPaste?: boolean;
 }
 
 export async function configure(options: ConfigureOptions): Promise<DictationResponse> {

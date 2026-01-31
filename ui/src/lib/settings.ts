@@ -2,6 +2,7 @@ export interface Settings {
   model: ModelOption;
   hotkey: HotkeyOption;
   language: string;
+  autoPaste: boolean;
 }
 
 export type ModelOption =
@@ -31,6 +32,7 @@ export const DEFAULT_SETTINGS: Settings = {
   model: 'large-v3-turbo',
   hotkey: 'shift_l',
   language: 'en',
+  autoPaste: false,
 };
 
 const STORAGE_KEY = 'dictation-settings';

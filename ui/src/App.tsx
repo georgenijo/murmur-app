@@ -51,7 +51,7 @@ function App() {
         setInitialized(true);
         if (res.state) setStatus(res.state);
         // Apply saved settings to bridge
-        return configure({ model: savedSettings.model, language: savedSettings.language });
+        return configure({ model: savedSettings.model, language: savedSettings.language, autoPaste: savedSettings.autoPaste });
       })
       .catch((err) => setError(String(err)));
   }, []);
@@ -73,10 +73,10 @@ function App() {
     setSettings(newSettings);
     saveSettings(newSettings);
 
-    // If model or language changed, update the bridge
-    if (updates.model || updates.language) {
+    // If model, language, or autoPaste changed, update the bridge
+    if (updates.model || updates.language || updates.autoPaste !== undefined) {
       try {
-        await configure({ model: newSettings.model, language: newSettings.language });
+        await configure({ model: newSettings.model, language: newSettings.language, autoPaste: newSettings.autoPaste });
       } catch (err) {
         console.error('Failed to configure:', err);
       }

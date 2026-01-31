@@ -24,6 +24,7 @@ pub struct DictationState {
     pub status: DictationStatus,
     pub model_name: String,
     pub language: String,
+    pub auto_paste: bool,
 }
 
 impl Default for DictationState {
@@ -32,6 +33,7 @@ impl Default for DictationState {
             status: DictationStatus::Idle,
             model_name: "base.en".to_string(),
             language: "en".to_string(),
+            auto_paste: false,
         }
     }
 }
