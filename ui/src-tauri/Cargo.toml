@@ -27,7 +27,6 @@ hound = "3.5"
 dirs = "5"
 objc = "0.2"
 cpal = "0.15"
-ringbuf = "0.4"
 
 [profile.release]
 panic = "abort"

@@ -1,3 +1,4 @@
+use crate::state::WHISPER_SAMPLE_RATE;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Sample, SampleFormat};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -31,7 +32,7 @@ fn get_state() -> &'static Mutex<RecordingState> {
             thread_handle: None,
             shared: Arc::new(SharedSamples {
                 samples: Mutex::new(Vec::new()),
-                sample_rate: Mutex::new(16000),
+                sample_rate: Mutex::new(WHISPER_SAMPLE_RATE),
             }),
         })
     })
@@ -194,9 +195,9 @@ pub fn stop_recording() -> Result<Vec<f32>, String> {
         poisoned.into_inner()
     }).clone();
 
-    // Resample to 16kHz if needed
-    if sample_rate != 16000 && !samples.is_empty() {
-        Ok(resample(&samples, sample_rate, 16000))
+    // Resample to Whisper's required sample rate if needed
+    if sample_rate != WHISPER_SAMPLE_RATE && !samples.is_empty() {
+        Ok(resample(&samples, sample_rate, WHISPER_SAMPLE_RATE))
     } else {
         Ok(samples)
     }

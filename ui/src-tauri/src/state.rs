@@ -2,6 +2,9 @@ use std::sync::Mutex;
 use whisper_rs::WhisperContext;
 use serde::{Deserialize, Serialize};
 
+/// Sample rate required by Whisper models (16kHz)
+pub const WHISPER_SAMPLE_RATE: u32 = 16000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DictationStatus {

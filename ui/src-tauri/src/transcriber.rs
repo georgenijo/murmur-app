@@ -1,3 +1,4 @@
+use crate::state::WHISPER_SAMPLE_RATE;
 use hound::WavReader;
 use std::io::Cursor;
 use std::path::PathBuf;
@@ -99,8 +100,8 @@ pub fn parse_wav_to_samples(wav_bytes: &[u8]) -> Result<Vec<f32>, String> {
     let spec = reader.spec();
 
     // Whisper expects 16kHz mono audio
-    if spec.sample_rate != 16000 {
-        return Err(format!("Expected 16kHz sample rate, got {}", spec.sample_rate));
+    if spec.sample_rate != WHISPER_SAMPLE_RATE {
+        return Err(format!("Expected {}Hz sample rate, got {}", WHISPER_SAMPLE_RATE, spec.sample_rate));
     }
     if spec.channels != 1 {
         return Err(format!("Expected mono audio, got {} channels", spec.channels));
