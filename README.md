@@ -89,6 +89,55 @@ View your recent transcriptions by clicking the menubar icon. Each entry shows:
 <!-- TODO: Add history screenshot -->
 ![History Panel](docs/images/history-panel.png)
 
+### Download Whisper Model
+
+The app requires a Whisper model file for transcription. Download one of these models:
+
+| Model | Size | Speed | Accuracy | Download |
+| ------- | ------ | ------- | ---------- | ---------- |
+| `large-v3-turbo` | 1.6GB | Fast | Best | [Download](https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin) |
+| `base.en` | 142MB | Fastest | Good | [Download](https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin) |
+| `small.en` | 466MB | Medium | Better | [Download](https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin) |
+
+**Model Search Locations:**
+
+The app searches for models in the following locations (in order):
+
+1. `WHISPER_MODEL_DIR` environment variable (recommended cross-platform override)
+2. `<data-dir>/local-dictation/models/`
+3. `<data-dir>/pywhispercpp/models/`
+4. `~/.cache/whisper.cpp/`
+5. `~/.cache/whisper/`
+6. `~/.whisper/models/`
+
+**Platform-specific data directories (`<data-dir>`):**
+
+| Platform    | Data Directory                                          |
+| ----------- | ------------------------------------------------------- |
+| **macOS**   | `~/Library/Application Support/`                        |
+| **Linux**   | `$XDG_DATA_HOME` (defaults to `~/.local/share/`)       |
+| **Windows** | `%APPDATA%` (e.g., `C:\Users\<user>\AppData\Roaming\`) |
+
+**Installation Example (macOS):**
+
+```bash
+# Create the models directory
+mkdir -p ~/Library/Application\ Support/local-dictation/models
+
+# Move your downloaded model
+mv ~/Downloads/ggml-large-v3-turbo.bin ~/Library/Application\ Support/local-dictation/models/
+```
+
+**Cross-platform (using environment variable):**
+
+```bash
+# Set custom model directory
+export WHISPER_MODEL_DIR=/path/to/your/models
+
+# Place model in that directory
+mv ~/Downloads/ggml-large-v3-turbo.bin $WHISPER_MODEL_DIR/
+```
+
 ### macOS Permissions
 
 The app requires the following permissions (you'll be prompted on first launch):
