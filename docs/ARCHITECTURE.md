@@ -11,7 +11,6 @@ Local Dictation is a cross-platform desktop app for voice-to-text transcription 
 - **Transcription**: whisper-rs (whisper.cpp with Metal GPU acceleration)
 - **Audio Capture**: cpal (native audio)
 - **Clipboard**: arboard
-- **Keyboard Simulation**: enigo
 
 ## Components
 
@@ -47,9 +46,7 @@ whisper-rs transcribes (Metal GPU)
     ↓
 arboard copies text to clipboard
     ↓
-enigo simulates Cmd+V
-    ↓
-Text appears at cursor
+User pastes with Cmd+V (manual)
 ```
 
 ## Key Design Decisions
@@ -58,14 +55,13 @@ Text appears at cursor
 2. **Native Audio Capture** - Uses cpal instead of WebView's navigator.mediaDevices
 3. **Channel Synchronization** - Audio thread signals readiness via channel (no race conditions)
 4. **Mutex Poison Recovery** - App recovers gracefully from panics
-5. **Clipboard Preservation** - Original clipboard contents restored after paste
+5. **Clipboard-Only Injection** - Text copied to clipboard for user to paste manually
 
 ## Permissions Required (macOS)
 
 | Permission    | Purpose             | Settings Location                    |
 |---------------|---------------------|--------------------------------------|
 | Microphone    | Audio capture       | Privacy & Security → Microphone      |
-| Accessibility | Keyboard simulation | Privacy & Security → Accessibility   |
 
 ## Build Outputs
 

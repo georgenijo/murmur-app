@@ -1,11 +1,13 @@
 # CodeRabbit Review Tickets
 
+All issues resolved in commit e16c5ea (2026-01-30).
+
 Issues from CodeRabbit review on PR #4.
 
 ## Critical (Major)
 
 ### CR-001: Remove unsupported `model` input from GitHub Actions
-**Status:** Open
+**Status:** FIXED
 **Files:** `.github/workflows/claude-code-review.yml:28`, `.github/workflows/claude.yml:38`
 **Description:** The `anthropics/claude-code-action@v1` does not define a `model` input. Remove `model: claude-opus-4-5-20251101` from both workflow files.
 
@@ -20,7 +22,7 @@ Issues from CodeRabbit review on PR #4.
 ---
 
 ### CR-002: Cleanup on audio init failure to avoid stale recording state
-**Status:** Open
+**Status:** FIXED
 **File:** `ui/src-tauri/src/audio.rs:87`
 **Description:** If `ready_rx.recv_timeout` returns error/timeout, the sender/handle stay set, so `is_recording()` may report true and the worker may continue running. Clear state and send stop on failure.
 
@@ -47,7 +49,7 @@ init_result
 ## Minor
 
 ### CR-003: `open_system_preferences` lacks platform-specific handling
-**Status:** Open
+**Status:** FIXED
 **File:** `ui/src-tauri/src/lib.rs:177`
 **Description:** Uses macOS-specific `open` command but lacks `#[cfg(target_os = "macos")]` guard. Add platform gate.
 
@@ -73,7 +75,7 @@ fn open_system_preferences() -> Result<(), String> {
 ---
 
 ### CR-004: Status not reset if `audio::start_recording()` fails
-**Status:** Open
+**Status:** FIXED
 **File:** `ui/src-tauri/src/lib.rs:228`
 **Description:** If `audio::start_recording()` fails, dictation status was already set to `Recording`, leaving state inconsistent.
 
@@ -89,7 +91,7 @@ if let Err(e) = audio::start_recording() {
 ---
 
 ### CR-005: Fix Biome lint - forEach callback should not return value
-**Status:** Open
+**Status:** FIXED
 **File:** `ui/src/components/PermissionsBanner.tsx:29`
 **Description:** Expression-bodied callback returns a value; use block body.
 
@@ -104,7 +106,7 @@ if let Err(e) = audio::start_recording() {
 ---
 
 ### CR-006: Propagate WAV sample decoding errors
-**Status:** Open
+**Status:** FIXED
 **File:** `ui/src-tauri/src/transcriber.rs:118`
 **Description:** `filter_map(|s| s.ok())` silently discards decoding errors. Propagate errors instead.
 
@@ -120,7 +122,7 @@ let samples: Vec<f32> = reader
 ---
 
 ### CR-007: Propagate segment retrieval errors
-**Status:** Open
+**Status:** FIXED
 **File:** `ui/src-tauri/src/transcriber.rs:149`
 **Description:** `full_get_segment_text()` errors are silently skipped. Propagate errors instead.
 
@@ -139,42 +141,42 @@ for i in 0..num_segments {
 ## Documentation
 
 ### CR-008: Correct platform scope in ARCHITECTURE.md
-**Status:** Open
+**Status:** FIXED
 **File:** `docs/ARCHITECTURE.md:5`
 **Description:** App is cross-platform with macOS optimizations, not macOS-only. Update description.
 
 ---
 
 ### CR-009: Add language specifiers to code fences in ARCHITECTURE.md
-**Status:** Open
+**Status:** FIXED
 **File:** `docs/ARCHITECTURE.md:20,37`
 **Description:** Code fences lack language specifiers. Add `text` or `tree`.
 
 ---
 
 ### CR-010: Fix table column alignment in ARCHITECTURE.md
-**Status:** Open
+**Status:** FIXED
 **File:** `docs/ARCHITECTURE.md:68`
 **Description:** Table pipes don't align consistently with header separator row.
 
 ---
 
 ### CR-011: Remove non-standard log path from DEVELOPMENT.md
-**Status:** Open
+**Status:** FIXED
 **File:** `docs/DEVELOPMENT.md:84`
 **Description:** Path `/private/tmp/claude/-Users-*/tasks/*.output` is environment-specific. Remove or document standard log location.
 
 ---
 
 ### CR-012: Document all model search locations in DEVELOPMENT.md
-**Status:** Open
+**Status:** FIXED
 **File:** `docs/DEVELOPMENT.md:97`
 **Description:** "Model Not Found" section lists only 3 locations but README documents 6. Add all locations including `WHISPER_MODEL_DIR`.
 
 ---
 
 ### CR-013: Fix table separator spacing in README.md
-**Status:** Open
+**Status:** FIXED
 **File:** `README.md:116`
 **Description:** Separator row lacks spaces around pipes (MD060). Add spaces for consistency.
 
