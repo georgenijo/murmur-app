@@ -81,6 +81,33 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings }: S
             </p>
           </div>
 
+          {/* Auto-Paste Toggle */}
+          <div>
+            <div className="flex items-center justify-between">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  Auto-Paste
+                </label>
+                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  Automatically paste transcription (requires Accessibility permission)
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => onUpdateSettings({ autoPaste: !settings.autoPaste })}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
+                  settings.autoPaste ? 'bg-blue-500' : 'bg-gray-300 dark:bg-gray-600'
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                    settings.autoPaste ? 'translate-x-6' : 'translate-x-1'
+                  }`}
+                />
+              </button>
+            </div>
+          </div>
+
           {/* Model Info */}
           <div className="pt-4 border-t border-gray-200 dark:border-gray-700">
             <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
