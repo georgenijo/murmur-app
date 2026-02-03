@@ -1,3 +1,5 @@
+import { useState, useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { Settings, ModelOption, HotkeyOption, MODEL_OPTIONS, HOTKEY_OPTIONS } from '../../lib/settings';
 
 interface SettingsPanelProps {
@@ -8,6 +10,31 @@ interface SettingsPanelProps {
 }
 
 export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings }: SettingsPanelProps) {
+  const [accessibilityGranted, setAccessibilityGranted] = useState<boolean | null>(null);
+
+  const checkAccessibility = async () => {
+    try {
+      const granted = await invoke<boolean>('check_accessibility_permission');
+      setAccessibilityGranted(granted);
+    } catch {
+      setAccessibilityGranted(false);
+    }
+  };
+
+  // Check when panel opens
+  useEffect(() => {
+    if (isOpen) checkAccessibility();
+  }, [isOpen]);
+
+  // Re-check when window regains focus
+  useEffect(() => {
+    const handleFocus = () => { if (isOpen) checkAccessibility(); };
+    window.addEventListener('focus', handleFocus);
+    return () => window.removeEventListener('focus', handleFocus);
+  }, [isOpen]);
+
+  const handleRequestPermission = () => invoke('request_accessibility_permission');
+
   return (
     <>
       {/* Backdrop */}
@@ -106,6 +133,31 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings }: S
                 />
               </button>
             </div>
+            {/* Permission Status - only show when auto-paste is ON */}
+            {settings.autoPaste && accessibilityGranted !== null && (
+              <div className={`mt-2 flex items-center gap-2 text-xs ${
+                accessibilityGranted
+                  ? 'text-green-600 dark:text-green-400'
+                  : 'text-amber-600 dark:text-amber-400'
+              }`}>
+                <span className={`w-2 h-2 rounded-full ${
+                  accessibilityGranted ? 'bg-green-500' : 'bg-amber-500'
+                }`} />
+                <span>
+                  {accessibilityGranted
+                    ? 'Accessibility permission granted'
+                    : 'Accessibility permission required'}
+                </span>
+                {!accessibilityGranted && (
+                  <button
+                    onClick={handleRequestPermission}
+                    className="underline hover:no-underline"
+                  >
+                    Grant
+                  </button>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Model Info */}
