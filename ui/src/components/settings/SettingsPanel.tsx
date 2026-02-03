@@ -1,3 +1,5 @@
+import { useState, useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { Settings, ModelOption, HotkeyOption, MODEL_OPTIONS, HOTKEY_OPTIONS } from '../../lib/settings';
 
 interface SettingsPanelProps {
@@ -8,6 +10,31 @@ interface SettingsPanelProps {
 }
 
 export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings }: SettingsPanelProps) {
+  const [accessibilityGranted, setAccessibilityGranted] = useState<boolean | null>(null);
+
+  const checkAccessibility = async () => {
+    try {
+      const granted = await invoke<boolean>('check_accessibility_permission');
+      setAccessibilityGranted(granted);
+    } catch {
+      setAccessibilityGranted(false);
+    }
+  };
+
+  // Check when panel opens
+  useEffect(() => {
+    if (isOpen) checkAccessibility();
+  }, [isOpen]);
+
+  // Re-check when window regains focus
+  useEffect(() => {
+    const handleFocus = () => { if (isOpen) checkAccessibility(); };
+    window.addEventListener('focus', handleFocus);
+    return () => window.removeEventListener('focus', handleFocus);
+  }, [isOpen]);
+
+  const handleRequestPermission = () => invoke('request_accessibility_permission');
+
   return (
     <>
       {/* Backdrop */}
@@ -79,6 +106,58 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings }: S
             <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
               Hold this key to record, release to transcribe
             </p>
+          </div>
+
+          {/* Auto-Paste Toggle */}
+          <div>
+            <div className="flex items-center justify-between">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  Auto-Paste
+                </label>
+                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  Automatically paste transcription (requires Accessibility permission)
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => onUpdateSettings({ autoPaste: !settings.autoPaste })}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
+                  settings.autoPaste ? 'bg-blue-500' : 'bg-gray-300 dark:bg-gray-600'
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                    settings.autoPaste ? 'translate-x-6' : 'translate-x-1'
+                  }`}
+                />
+              </button>
+            </div>
+            {/* Permission Status - only show when auto-paste is ON */}
+            {settings.autoPaste && accessibilityGranted !== null && (
+              <div className={`mt-2 flex items-center gap-2 text-xs ${
+                accessibilityGranted
+                  ? 'text-green-600 dark:text-green-400'
+                  : 'text-amber-600 dark:text-amber-400'
+              }`}>
+                <span className={`w-2 h-2 rounded-full ${
+                  accessibilityGranted ? 'bg-green-500' : 'bg-amber-500'
+                }`} />
+                <span>
+                  {accessibilityGranted
+                    ? 'Accessibility permission granted'
+                    : 'Accessibility permission required'}
+                </span>
+                {!accessibilityGranted && (
+                  <button
+                    onClick={handleRequestPermission}
+                    className="underline hover:no-underline"
+                  >
+                    Grant
+                  </button>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Model Info */}
