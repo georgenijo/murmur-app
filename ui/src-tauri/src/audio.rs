@@ -5,6 +5,29 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
+/// Build an input stream that converts interleaved multi-channel samples to mono f32.
+macro_rules! build_mono_input_stream {
+    ($device:expr, $config:expr, $shared:expr, $channels:expr, $err_fn:expr, $sample_type:ty) => {{
+        let samples_ref = Arc::clone(&$shared);
+        $device.build_input_stream(
+            &$config.into(),
+            move |data: &[$sample_type], _: &_| {
+                let mono: Vec<f32> = data.chunks($channels)
+                    .map(|chunk| {
+                        let sum: f32 = chunk.iter().map(|&s| s.to_float_sample()).sum();
+                        sum / $channels as f32
+                    })
+                    .collect();
+                if let Ok(mut s) = samples_ref.samples.lock() {
+                    s.extend(mono);
+                }
+            },
+            $err_fn,
+            None,
+        ).map_err(|e| format!("Failed to build stream: {}", e))?
+    }};
+}
+
 // Commands to send to the audio thread
 enum AudioCommand {
     Stop,
@@ -113,43 +136,11 @@ fn run_audio_capture(
         *sr = device_sample_rate;
     }
 
-    let samples_clone = Arc::clone(&shared);
     let err_fn = |err| eprintln!("Audio stream error: {}", err);
 
     let stream = match sample_format {
-        SampleFormat::F32 => {
-            device.build_input_stream(
-                &config.into(),
-                move |data: &[f32], _: &_| {
-                    let mono: Vec<f32> = data.chunks(channels)
-                        .map(|chunk| chunk.iter().sum::<f32>() / channels as f32)
-                        .collect();
-                    if let Ok(mut s) = samples_clone.samples.lock() {
-                        s.extend(mono);
-                    }
-                },
-                err_fn,
-                None,
-            ).map_err(|e| format!("Failed to build stream: {}", e))?
-        },
-        SampleFormat::I16 => {
-            device.build_input_stream(
-                &config.into(),
-                move |data: &[i16], _: &_| {
-                    let mono: Vec<f32> = data.chunks(channels)
-                        .map(|chunk| {
-                            let sum: f32 = chunk.iter().map(|&s| s.to_float_sample()).sum();
-                            sum / channels as f32
-                        })
-                        .collect();
-                    if let Ok(mut s) = samples_clone.samples.lock() {
-                        s.extend(mono);
-                    }
-                },
-                err_fn,
-                None,
-            ).map_err(|e| format!("Failed to build stream: {}", e))?
-        },
+        SampleFormat::F32 => build_mono_input_stream!(device, config, shared, channels, err_fn, f32),
+        SampleFormat::I16 => build_mono_input_stream!(device, config, shared, channels, err_fn, i16),
         _ => return Err(format!("Unsupported sample format: {:?}", sample_format)),
     };
 

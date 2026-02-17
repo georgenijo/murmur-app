@@ -38,19 +38,27 @@ clipboard copy (arboard) → optional osascript paste
 
 ### Rust Backend (`ui/src-tauri/src/`)
 
-- **lib.rs** — Tauri command handlers (`start_native_recording`, `stop_native_recording`, `configure_dictation`, permission checks), tray icon setup, window management. Implements `MutexExt` trait for mutex poison recovery.
-- **audio.rs** — Audio capture via cpal on a background thread with channel-based synchronization. Handles multi-channel to mono conversion and resampling to 16kHz.
+- **lib.rs** — Tauri command handlers, tray icon setup, window management. Uses `MutexExt` trait for mutex poison recovery, shared `run_transcription_pipeline()` for both `process_audio` and `stop_native_recording`, and `open_system_preference_pane()` helper for all permission dialogs.
+- **audio.rs** — Audio capture via cpal on a background thread with channel-based synchronization. Uses `build_mono_input_stream!` macro for multi-channel to mono conversion. Handles resampling to 16kHz.
 - **transcriber.rs** — Whisper model loading and inference via whisper-rs. Searches multiple paths for model files (env var, Application Support, cache dirs).
 - **injector.rs** — Clipboard write via arboard, optional paste simulation via osascript with 150ms delay.
 - **state.rs** — `DictationState` (status, model, language, auto_paste) and `AppState` (mutex-wrapped state + whisper context).
 
 ### React Frontend (`ui/src/`)
 
-- **App.tsx** — Main orchestrator: status management, hotkey registration (300ms debounce), recording timer, tab switching.
+- **App.tsx** — Thin orchestrator composing hooks and sub-components (~90 lines).
+- **lib/hooks/** — Custom hooks extracted from App.tsx:
+  - `useInitialization` — Dictation backend init and configuration.
+  - `useSettings` — Settings state with localStorage persistence and backend sync.
+  - `useHistoryManagement` — History entries with localStorage persistence.
+  - `useRecordingState` — Recording status, transcription, duration timer, start/stop/toggle handlers.
+  - `useHotkeyToggle` — Global shortcut registration/unregistration.
+  - `useShowAboutListener` — Tray "About" menu event listener.
+- **components/** — UI sub-components: `StatusHeader`, `RecordingControls`, `TabNavigation`, `TranscriptionView`, `PermissionsBanner`, `SettingsPanel`, `HistoryPanel`, `AboutModal`.
 - **lib/dictation.ts** — Tauri invoke wrappers for all Rust commands.
 - **lib/hotkey.ts** — Global shortcut registration/unregistration via `@tauri-apps/plugin-global-shortcut`.
-- **lib/settings.ts** — localStorage-based settings persistence (model, hotkey, language, autoPaste).
-- **lib/history.ts** — Transcription history in localStorage (max 50 entries).
+- **lib/settings.ts** — Settings types and localStorage persistence (model, hotkey, language, autoPaste).
+- **lib/history.ts** — Transcription history types and localStorage persistence (max 50 entries).
 
 ### Key Design Patterns
 
@@ -78,8 +86,6 @@ Available models: `tiny.en`, `base.en` (default), `small.en`, `medium.en`, `larg
 
 ## Known Cleanup Items
 
-- **`rdev`** is listed in `Cargo.toml` but unused in source code (leftover from a previous auto-paste attempt).
-- **`ui/src/lib/audioCapture.ts`** is a legacy Web Audio capture module from the Python sidecar era — not imported anywhere.
 - **Git remote** is `murmur-app` (the original project name); local directory and app name use `local-dictation`.
 
 ## Key Dependencies
