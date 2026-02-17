@@ -1,0 +1,31 @@
+name: Omen Analysis
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  omen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: panbanda/omen@omen-v4.21.2
+        id: omen
+        with:
+          comment: true
+          label: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Print results
+        run: |
+          echo "Risk: ${{ steps.omen.outputs.risk-level }} (${{ steps.omen.outputs.risk-score }})"
+          echo "Health: ${{ steps.omen.outputs.health-grade }} (${{ steps.omen.outputs.health-score }})"

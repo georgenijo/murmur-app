@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "omen": {
+      "type": "stdio",
+      "command": "omen",
+      "args": ["mcp"]
+    }
+  }
+}
