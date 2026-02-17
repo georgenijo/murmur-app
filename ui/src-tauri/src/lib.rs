@@ -1,6 +1,7 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 mod audio;
 mod injector;
+mod logging;
 mod state;
 mod transcriber;
 
@@ -32,7 +33,7 @@ struct State {
 
 #[tauri::command]
 async fn init_dictation(_state: tauri::State<'_, State>) -> Result<serde_json::Value, String> {
-    // Lazy initialization - don't load model until first transcription
+    log_info!("init_dictation");
     Ok(serde_json::json!({
         "type": "initialized",
         "state": "idle"
@@ -57,48 +58,26 @@ async fn stop_recording(state: tauri::State<'_, State>) -> Result<serde_json::Va
     }))
 }
 
-#[tauri::command]
-async fn process_audio(
-    app_handle: tauri::AppHandle,
-    audio_data: String,
-    state: tauri::State<'_, State>,
-) -> Result<serde_json::Value, String> {
-    // Set status to processing
-    {
-        let mut dictation = state.app_state.dictation.lock_or_recover();
-        dictation.status = DictationStatus::Processing;
-    }
-
-    // Get model name and language
-    let (model_name, language) = {
-        let dictation = state.app_state.dictation.lock_or_recover();
-        (dictation.model_name.clone(), dictation.language.clone())
+/// Shared transcription pipeline: whisper init → transcribe → inject text → set idle
+fn run_transcription_pipeline(
+    samples: &[f32],
+    app_handle: &tauri::AppHandle,
+    app_state: &AppState,
+) -> Result<String, String> {
+    // Read all needed state in one lock
+    let (model_name, language, auto_paste) = {
+        let dictation = app_state.dictation.lock_or_recover();
+        (dictation.model_name.clone(), dictation.language.clone(), dictation.auto_paste)
     };
 
-    // Decode base64 audio
-    let wav_bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &audio_data)
-        .map_err(|e| format!("Failed to decode base64: {}", e))?;
-
-    // Parse WAV to samples
-    let samples = transcriber::parse_wav_to_samples(&wav_bytes)?;
-
-    // Initialize or get whisper context
+    // Initialize whisper context if needed and transcribe
     let text = {
-        let mut ctx_guard = state.app_state.whisper_context.lock_or_recover();
-
-        // Lazy init if needed
+        let mut ctx_guard = app_state.whisper_context.lock_or_recover();
         if ctx_guard.is_none() {
             *ctx_guard = Some(transcriber::init_whisper_context(&model_name)?);
         }
-
         let ctx = ctx_guard.as_ref().unwrap();
-        transcriber::transcribe(ctx, &samples, &language)?
-    };
-
-    // Get auto_paste setting
-    let auto_paste = {
-        let dictation = state.app_state.dictation.lock_or_recover();
-        dictation.auto_paste
+        transcriber::transcribe(ctx, samples, &language)?
     };
 
     // Inject text on main thread (macOS requires keyboard APIs to run on main thread)
@@ -115,9 +94,30 @@ async fn process_audio(
 
     // Set status back to idle
     {
-        let mut dictation = state.app_state.dictation.lock_or_recover();
+        let mut dictation = app_state.dictation.lock_or_recover();
         dictation.status = DictationStatus::Idle;
     }
+
+    Ok(text)
+}
+
+#[tauri::command]
+async fn process_audio(
+    app_handle: tauri::AppHandle,
+    audio_data: String,
+    state: tauri::State<'_, State>,
+) -> Result<serde_json::Value, String> {
+    {
+        let mut dictation = state.app_state.dictation.lock_or_recover();
+        dictation.status = DictationStatus::Processing;
+    }
+
+    // Decode base64 audio and parse WAV to samples
+    let wav_bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &audio_data)
+        .map_err(|e| format!("Failed to decode base64: {}", e))?;
+    let samples = transcriber::parse_wav_to_samples(&wav_bytes)?;
+
+    let text = run_transcription_pipeline(&samples, &app_handle, &state.app_state)?;
 
     Ok(serde_json::json!({
         "type": "transcription",
@@ -177,20 +177,24 @@ async fn configure_dictation(
     }))
 }
 
+#[cfg(target_os = "macos")]
+fn open_system_preference_pane(pane: &str) -> Result<(), String> {
+    std::process::Command::new("open")
+        .arg(format!(
+            "x-apple.systempreferences:com.apple.preference.security?{}",
+            pane
+        ))
+        .spawn()
+        .map_err(|e| format!("Failed to open System Settings: {}", e))?;
+    Ok(())
+}
+
 #[tauri::command]
 fn open_system_preferences() -> Result<(), String> {
     #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open")
-            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
-            .spawn()
-            .map_err(|e| e.to_string())?;
-    }
+    { return open_system_preference_pane("Privacy_Microphone"); }
     #[cfg(not(target_os = "macos"))]
-    {
-        return Err("System preferences shortcut not supported on this platform".to_string());
-    }
-    Ok(())
+    { Err("System preferences shortcut not supported on this platform".to_string()) }
 }
 
 /// Check if accessibility permission is granted (macOS)
@@ -203,53 +207,42 @@ fn check_accessibility_permission() -> bool {
 #[tauri::command]
 fn request_accessibility_permission() -> Result<(), String> {
     #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open")
-            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
-            .spawn()
-            .map_err(|e| format!("Failed to open System Settings: {}", e))?;
-    }
-    Ok(())
+    { return open_system_preference_pane("Privacy_Accessibility"); }
+    #[cfg(not(target_os = "macos"))]
+    { Ok(()) }
 }
 
 /// Request microphone permission (opens System Settings on macOS)
 #[tauri::command]
 fn request_microphone_permission() -> Result<(), String> {
     #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open")
-            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
-            .spawn()
-            .map_err(|e| format!("Failed to open System Settings: {}", e))?;
-    }
-    Ok(())
+    { return open_system_preference_pane("Privacy_Microphone"); }
+    #[cfg(not(target_os = "macos"))]
+    { Ok(()) }
 }
 
 #[tauri::command]
 async fn start_native_recording(state: tauri::State<'_, State>) -> Result<serde_json::Value, String> {
-    // Prevent duplicate starts
+    // Check and update status in one lock
     {
-        let dictation = state.app_state.dictation.lock_or_recover();
+        let mut dictation = state.app_state.dictation.lock_or_recover();
         if dictation.status == DictationStatus::Recording {
+            log_warn!("start_native_recording: already recording");
             return Ok(serde_json::json!({
                 "type": "already_recording",
                 "state": "recording"
             }));
         }
-    }
-
-    // Update dictation status
-    {
-        let mut dictation = state.app_state.dictation.lock_or_recover();
         dictation.status = DictationStatus::Recording;
     }
 
-    // Start native audio recording
     if let Err(e) = audio::start_recording() {
+        log_error!("start_native_recording: audio failed: {}", e);
         let mut dictation = state.app_state.dictation.lock_or_recover();
         dictation.status = DictationStatus::Idle;
         return Err(e);
     }
+    log_info!("start_native_recording: started");
 
     Ok(serde_json::json!({
         "type": "recording_started",
@@ -262,20 +255,22 @@ async fn stop_native_recording(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, State>,
 ) -> Result<serde_json::Value, String> {
-    // Prevent duplicate stops
+    // Prevent duplicate stops — read status in one lock
     {
         let dictation = state.app_state.dictation.lock_or_recover();
-        if dictation.status == DictationStatus::Processing {
-            return Ok(serde_json::json!({
+        match dictation.status {
+            DictationStatus::Processing => return Ok(serde_json::json!({
                 "type": "already_processing",
                 "state": "processing"
-            }));
-        }
-        if dictation.status == DictationStatus::Idle {
-            return Ok(serde_json::json!({
-                "type": "not_recording",
-                "state": "idle"
-            }));
+            })),
+            DictationStatus::Idle => {
+                log_warn!("stop_native_recording: not recording");
+                return Ok(serde_json::json!({
+                    "type": "not_recording",
+                    "state": "idle"
+                }));
+            }
+            _ => {}
         }
     }
 
@@ -285,11 +280,13 @@ async fn stop_native_recording(
         dictation.status = DictationStatus::Processing;
     }
 
-    // Stop recording and get samples
-    let samples = audio::stop_recording()?;
+    let samples = audio::stop_recording().map_err(|e| {
+        log_error!("stop_native_recording: stop_recording failed: {}", e);
+        e
+    })?;
 
-    // Skip if no audio captured
     if samples.is_empty() {
+        log_info!("stop_native_recording: no audio captured");
         let mut dictation = state.app_state.dictation.lock_or_recover();
         dictation.status = DictationStatus::Idle;
         return Ok(serde_json::json!({
@@ -299,53 +296,24 @@ async fn stop_native_recording(
         }));
     }
 
-    // Get model and language settings
-    let (model_name, language) = {
-        let dictation = state.app_state.dictation.lock_or_recover();
-        (dictation.model_name.clone(), dictation.language.clone())
-    };
+    let text = run_transcription_pipeline(&samples, &app_handle, &state.app_state).map_err(|e| {
+        log_error!("stop_native_recording: pipeline failed: {}", e);
+        e
+    })?;
 
-    // Initialize whisper context if needed and transcribe
-    let text = {
-        let mut ctx_guard = state.app_state.whisper_context.lock_or_recover();
-
-        if ctx_guard.is_none() {
-            *ctx_guard = Some(transcriber::init_whisper_context(&model_name)?);
-        }
-
-        let ctx = ctx_guard.as_ref().unwrap();
-        transcriber::transcribe(ctx, &samples, &language)?
-    };
-
-    // Get auto_paste setting
-    let auto_paste = {
-        let dictation = state.app_state.dictation.lock_or_recover();
-        dictation.auto_paste
-    };
-
-    // Inject text on main thread (macOS requires keyboard APIs to run on main thread)
-    if !text.is_empty() {
-        let text_to_inject = text.clone();
-        app_handle
-            .run_on_main_thread(move || {
-                if let Err(e) = injector::inject_text(&text_to_inject, auto_paste) {
-                    eprintln!("Failed to inject text: {}", e);
-                }
-            })
-            .map_err(|e| format!("Failed to run on main thread: {}", e))?;
-    }
-
-    // Update status to idle
-    {
-        let mut dictation = state.app_state.dictation.lock_or_recover();
-        dictation.status = DictationStatus::Idle;
-    }
-
+    log_info!("stop_native_recording: transcribed {} chars", text.len());
     Ok(serde_json::json!({
         "type": "transcription",
         "text": text,
         "state": "idle"
     }))
+}
+
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -377,34 +345,25 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            // Create tray menu
+            log_info!("app setup");
             let show = MenuItem::with_id(app, "show", "Show Window", true, None::<&str>)?;
             let about = MenuItem::with_id(app, "about", "About Local Dictation", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &about, &quit])?;
 
-            // Create tray icon
             let _tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show" => {
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                        }
-                    }
+                    "show" => show_main_window(app),
                     "about" => {
+                        show_main_window(app);
                         if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
                             let _ = window.emit("show-about", ());
                         }
                     }
-                    "quit" => {
-                        app.exit(0);
-                    }
+                    "quit" => app.exit(0),
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
@@ -414,11 +373,7 @@ pub fn run() {
                         ..
                     } = event
                     {
-                        let app = tray.app_handle();
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                        }
+                        show_main_window(tray.app_handle());
                     }
                 })
                 .build(app)?;
