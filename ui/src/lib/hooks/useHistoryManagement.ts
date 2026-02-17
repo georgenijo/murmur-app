@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { HistoryEntry, loadHistory, saveHistory, addHistoryEntry } from '../history';
+import { HistoryEntry, loadHistory, saveHistory, addHistoryEntry, clearHistory as clearPersistedHistory } from '../history';
 
 export function useHistoryManagement() {
   const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>(() => loadHistory());
@@ -14,6 +14,7 @@ export function useHistoryManagement() {
 
   const clearHistory = useCallback(() => {
     setHistoryEntries([]);
+    clearPersistedHistory();
   }, []);
 
   return { historyEntries, addEntry, clearHistory };

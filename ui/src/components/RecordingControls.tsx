@@ -1,5 +1,7 @@
+export type DictationStatus = 'idle' | 'recording' | 'processing';
+
 interface RecordingControlsProps {
-  status: string;
+  status: DictationStatus;
   initialized: boolean;
   onStart: () => void;
   onStop: () => void;

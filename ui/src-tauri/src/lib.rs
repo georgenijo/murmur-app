@@ -86,7 +86,7 @@ fn run_transcription_pipeline(
         app_handle
             .run_on_main_thread(move || {
                 if let Err(e) = injector::inject_text(&text_to_inject, auto_paste) {
-                    eprintln!("Failed to inject text: {}", e);
+                    log_error!("Failed to inject text: {}", e);
                 }
             })
             .map_err(|e| format!("Failed to run on main thread: {}", e))?;
@@ -255,9 +255,9 @@ async fn stop_native_recording(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, State>,
 ) -> Result<serde_json::Value, String> {
-    // Prevent duplicate stops — read status in one lock
+    // Atomic check-and-set in a single lock to avoid TOCTOU gap
     {
-        let dictation = state.app_state.dictation.lock_or_recover();
+        let mut dictation = state.app_state.dictation.lock_or_recover();
         match dictation.status {
             DictationStatus::Processing => return Ok(serde_json::json!({
                 "type": "already_processing",
@@ -270,14 +270,10 @@ async fn stop_native_recording(
                     "state": "idle"
                 }));
             }
-            _ => {}
+            _ => {
+                dictation.status = DictationStatus::Processing;
+            }
         }
-    }
-
-    // Update status to processing
-    {
-        let mut dictation = state.app_state.dictation.lock_or_recover();
-        dictation.status = DictationStatus::Processing;
     }
 
     let samples = audio::stop_recording().map_err(|e| {

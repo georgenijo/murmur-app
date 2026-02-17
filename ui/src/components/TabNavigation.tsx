@@ -8,8 +8,13 @@ interface TabNavigationProps {
 
 export function TabNavigation({ activeTab, onTabChange, historyCount }: TabNavigationProps) {
   return (
-    <div className="flex-shrink-0 flex gap-1 bg-gray-100 dark:bg-gray-800 p-1 rounded-lg">
+    <div role="tablist" className="flex-shrink-0 flex gap-1 bg-gray-100 dark:bg-gray-800 p-1 rounded-lg">
       <button
+        role="tab"
+        id="tab-current"
+        aria-selected={activeTab === 'current'}
+        aria-controls="tabpanel-current"
+        tabIndex={activeTab === 'current' ? 0 : -1}
         onClick={() => onTabChange('current')}
         className={`flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors ${
           activeTab === 'current'
@@ -20,6 +25,11 @@ export function TabNavigation({ activeTab, onTabChange, historyCount }: TabNavig
         Current
       </button>
       <button
+        role="tab"
+        id="tab-history"
+        aria-selected={activeTab === 'history'}
+        aria-controls="tabpanel-history"
+        tabIndex={activeTab === 'history' ? 0 : -1}
         onClick={() => onTabChange('history')}
         className={`flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors ${
           activeTab === 'history'

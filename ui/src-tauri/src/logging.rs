@@ -19,7 +19,7 @@ fn log_dir() -> Option<PathBuf> {
 
 fn ensure_log_dir() -> Option<PathBuf> {
     let dir = log_dir()?;
-    let _ = fs::create_dir_all(&dir);
+    fs::create_dir_all(&dir).ok()?;
     Some(dir)
 }
 

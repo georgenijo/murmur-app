@@ -1,11 +1,12 @@
 import { HistoryPanel } from './history';
 import { HistoryEntry } from '../lib/history';
 import { TabType } from './TabNavigation';
+import { DictationStatus } from './RecordingControls';
 
 interface TranscriptionViewProps {
   activeTab: TabType;
   transcription: string;
-  status: string;
+  status: DictationStatus;
   historyEntries: HistoryEntry[];
   onClearHistory: () => void;
 }

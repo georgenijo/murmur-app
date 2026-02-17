@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { startRecording, stopRecording } from '../dictation';
+import type { DictationStatus } from '../../components/RecordingControls';
 
 interface UseRecordingStateProps {
   addEntry: (text: string, duration: number) => void;
 }
 
 export function useRecordingState({ addEntry }: UseRecordingStateProps) {
-  const [status, setStatus] = useState('idle');
+  const [status, setStatus] = useState<DictationStatus>('idle');
   const [transcription, setTranscription] = useState('');
   const [error, setError] = useState('');
   const [recordingStartTime, setRecordingStartTime] = useState<number | null>(null);
@@ -36,10 +37,14 @@ export function useRecordingState({ addEntry }: UseRecordingStateProps) {
       setRecordingStartTime(Date.now());
       setError('');
       const res = await startRecording();
-      if (res.state) setStatus(res.state);
-      if (res.type === 'error') setError(res.error || 'Unknown error');
+      if (res.state) setStatus(res.state as DictationStatus);
+      if (res.type === 'error') {
+        setError(res.error || 'Unknown error');
+        setRecordingStartTime(null);
+      }
     } catch (err) {
       setError(String(err));
+      setRecordingStartTime(null);
     }
   }, []);
 
@@ -55,7 +60,7 @@ export function useRecordingState({ addEntry }: UseRecordingStateProps) {
         addEntry(res.text, duration);
       }
       if (res.type === 'error') setError(res.error || 'Unknown error');
-      setStatus(res.state || 'idle');
+      setStatus((res.state as DictationStatus) || 'idle');
     } catch (err) {
       setError(String(err));
       setStatus('idle');

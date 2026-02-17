@@ -1,12 +1,14 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { Settings, loadSettings, saveSettings } from '../settings';
 import { configure } from '../dictation';
 
 export function useSettings() {
   const [settings, setSettings] = useState<Settings>(() => loadSettings());
+  const settingsRef = useRef(settings);
 
   const updateSettings = async (updates: Partial<Settings>) => {
-    const newSettings = { ...settings, ...updates };
+    const newSettings = { ...settingsRef.current, ...updates };
+    settingsRef.current = newSettings;
     setSettings(newSettings);
     saveSettings(newSettings);
 
