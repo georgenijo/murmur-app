@@ -1,4 +1,4 @@
-import { DictationStatus } from './RecordingControls';
+import { DictationStatus } from '../lib/types';
 
 interface StatusHeaderProps {
   status: DictationStatus;

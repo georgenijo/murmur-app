@@ -1,4 +1,4 @@
-export type DictationStatus = 'idle' | 'recording' | 'processing';
+import { DictationStatus } from '../lib/types';
 
 interface RecordingControlsProps {
   status: DictationStatus;

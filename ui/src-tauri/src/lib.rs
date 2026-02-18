@@ -58,12 +58,41 @@ async fn stop_recording(state: tauri::State<'_, State>) -> Result<serde_json::Va
     }))
 }
 
+/// RAII guard that resets dictation status to Idle on drop,
+/// ensuring status is restored on any early return or error path.
+struct IdleGuard<'a> {
+    app_state: &'a AppState,
+    disarmed: bool,
+}
+
+impl<'a> IdleGuard<'a> {
+    fn new(app_state: &'a AppState) -> Self {
+        Self { app_state, disarmed: false }
+    }
+
+    fn disarm(&mut self) {
+        self.disarmed = true;
+    }
+}
+
+impl Drop for IdleGuard<'_> {
+    fn drop(&mut self) {
+        if !self.disarmed {
+            let mut dictation = self.app_state.dictation.lock_or_recover();
+            dictation.status = DictationStatus::Idle;
+        }
+    }
+}
+
 /// Shared transcription pipeline: whisper init → transcribe → inject text → set idle
 fn run_transcription_pipeline(
     samples: &[f32],
     app_handle: &tauri::AppHandle,
     app_state: &AppState,
 ) -> Result<String, String> {
+    // Guard resets status to Idle on any early return / error via `?`
+    let mut guard = IdleGuard::new(app_state);
+
     // Read all needed state in one lock
     let (model_name, language, auto_paste) = {
         let dictation = app_state.dictation.lock_or_recover();
@@ -92,7 +121,8 @@ fn run_transcription_pipeline(
             .map_err(|e| format!("Failed to run on main thread: {}", e))?;
     }
 
-    // Set status back to idle
+    // Success — disarm guard and set idle manually (same effect, but explicit)
+    guard.disarm();
     {
         let mut dictation = app_state.dictation.lock_or_recover();
         dictation.status = DictationStatus::Idle;
@@ -112,10 +142,16 @@ async fn process_audio(
         dictation.status = DictationStatus::Processing;
     }
 
+    // Guard resets status to Idle if decode/parse fails before reaching the pipeline
+    let mut guard = IdleGuard::new(&state.app_state);
+
     // Decode base64 audio and parse WAV to samples
     let wav_bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &audio_data)
         .map_err(|e| format!("Failed to decode base64: {}", e))?;
     let samples = transcriber::parse_wav_to_samples(&wav_bytes)?;
+
+    // Pipeline has its own guard, so disarm this one
+    guard.disarm();
 
     let text = run_transcription_pipeline(&samples, &app_handle, &state.app_state)?;
 

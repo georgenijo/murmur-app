@@ -1,7 +1,7 @@
 import { HistoryPanel } from './history';
 import { HistoryEntry } from '../lib/history';
 import { TabType } from './TabNavigation';
-import { DictationStatus } from './RecordingControls';
+import { DictationStatus } from '../lib/types';
 
 interface TranscriptionViewProps {
   activeTab: TabType;

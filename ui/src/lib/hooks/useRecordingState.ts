@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { startRecording, stopRecording } from '../dictation';
-import type { DictationStatus } from '../../components/RecordingControls';
+import type { DictationStatus } from '../types';
 
 interface UseRecordingStateProps {
   addEntry: (text: string, duration: number) => void;

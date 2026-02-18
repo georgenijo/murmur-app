@@ -12,7 +12,7 @@ export function useSettings() {
     setSettings(newSettings);
     saveSettings(newSettings);
 
-    if (updates.model || updates.language || updates.autoPaste !== undefined) {
+    if ('model' in updates || 'language' in updates || 'autoPaste' in updates) {
       try {
         await configure({ model: newSettings.model, language: newSettings.language, autoPaste: newSettings.autoPaste });
       } catch (err) {

@@ -23,7 +23,7 @@ fn ensure_log_dir() -> Option<PathBuf> {
     Some(dir)
 }
 
-/// Format current time as ISO 8601 local time (e.g. "2026-02-17T11:30:45").
+/// Format current time as ISO 8601 UTC (e.g. "2026-02-17T11:30:45Z").
 fn iso_timestamp() -> String {
     let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -63,7 +63,7 @@ fn rotate_if_needed(dir: &PathBuf) {
 }
 
 fn log_impl(level: &str, message: &str) {
-    let _guard = LOG_MUX.lock().ok();
+    let _guard = LOG_MUX.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = match ensure_log_dir() {
         Some(d) => d,
         None => return,
