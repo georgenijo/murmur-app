@@ -51,7 +51,8 @@
     ],
     "macOS": {
       "entitlements": "./entitlements.plist",
-      "exceptionDomain": ""
+      "exceptionDomain": "",
+      "infoPlist": "./macos/Info.plist"
     }
   }
 }

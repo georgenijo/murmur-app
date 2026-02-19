@@ -38,8 +38,13 @@ ui/tauri
 ui/tsc
 ui/ui@*
 
+# Local-only notes, migrations, scratch work (not tracked)
+local/
+docs/
+
 # Project tickets / notes
 local-voice-dictation-tickets.md
 CONTEXT_NEXT_SESSION.md
 PROJECT_SUMMARY.md
 PROMPT_NEXT_SESSION.md
+
