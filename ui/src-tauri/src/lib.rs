@@ -424,6 +424,50 @@ fn hide_overlay(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SIZE: usize = 22;
+
+    #[test]
+    fn tray_icon_data_correct_size() {
+        let data = make_tray_icon_data(255, 0, 0);
+        assert_eq!(data.len(), SIZE * SIZE * 4);
+    }
+
+    #[test]
+    fn tray_icon_center_pixel_is_opaque_and_colored() {
+        let data = make_tray_icon_data(220, 50, 50);
+        let idx = (11 * SIZE + 11) * 4;
+        assert_eq!(data[idx],     220, "R");
+        assert_eq!(data[idx + 1],  50, "G");
+        assert_eq!(data[idx + 2],  50, "B");
+        assert_eq!(data[idx + 3], 255, "A should be opaque");
+    }
+
+    #[test]
+    fn tray_icon_corner_pixel_is_transparent() {
+        let data = make_tray_icon_data(220, 50, 50);
+        // Corners are outside the inscribed circle
+        for &(row, col) in &[(0, 0), (0, 21), (21, 0), (21, 21)] {
+            let idx = (row * SIZE + col) * 4;
+            assert_eq!(data[idx + 3], 0, "corner ({row},{col}) alpha should be 0 (transparent)");
+        }
+    }
+
+    #[test]
+    fn tray_icon_distinct_colors_for_each_state() {
+        let idle       = make_tray_icon_data(140, 140, 140);
+        let recording  = make_tray_icon_data(220,  50,  50);
+        let processing = make_tray_icon_data(200, 150,  40);
+        let center = (11 * SIZE + 11) * 4;
+        // All three center pixels must differ
+        assert_ne!(idle[center],      recording[center]);
+        assert_ne!(recording[center], processing[center]);
+    }
+}
+
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();

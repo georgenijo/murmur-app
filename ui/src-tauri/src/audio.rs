@@ -226,6 +226,49 @@ pub fn is_recording() -> bool {
     false
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rms_empty_slice_returns_zero() {
+        assert_eq!(compute_rms(&[]), 0.0);
+    }
+
+    #[test]
+    fn rms_silence_is_zero() {
+        let result = compute_rms(&[0.0f32; 100]);
+        assert_eq!(result, 0.0);
+    }
+
+    #[test]
+    fn rms_full_amplitude_is_one() {
+        let samples = vec![1.0f32; 100];
+        let result = compute_rms(&samples);
+        assert!((result - 1.0).abs() < 1e-6, "expected 1.0, got {result}");
+    }
+
+    #[test]
+    fn rms_alternating_signs_is_one() {
+        // [1, -1, 1, -1] → each sample squared = 1, mean = 1, sqrt = 1
+        let samples = vec![1.0f32, -1.0, 1.0, -1.0];
+        let result = compute_rms(&samples);
+        assert!((result - 1.0).abs() < 1e-6, "expected 1.0, got {result}");
+    }
+
+    #[test]
+    fn rms_half_amplitude() {
+        let samples = vec![0.5f32; 100];
+        let result = compute_rms(&samples);
+        assert!((result - 0.5).abs() < 1e-6, "expected 0.5, got {result}");
+    }
+
+    #[test]
+    fn rms_single_sample() {
+        assert!((compute_rms(&[0.6f32]) - 0.6).abs() < 1e-6);
+    }
+}
+
 fn resample(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
     if from_rate == to_rate {
         return samples.to_vec();
