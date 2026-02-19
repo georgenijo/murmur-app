@@ -32,6 +32,8 @@ function eventToShortcut(e: KeyboardEvent): string | null {
   if (e.altKey) parts.push('Alt');
   if (e.metaKey) parts.push('Super');
 
+  if (parts.length === 0) return null; // require at least one modifier
+
   let key = e.key;
   if (key === ' ') key = 'Space';
   else if (key.length === 1) key = key.toUpperCase();
