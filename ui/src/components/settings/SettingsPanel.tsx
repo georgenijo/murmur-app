@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import {
   Settings, ModelOption, DoubleTapKey, RecordingMode,
@@ -13,10 +13,28 @@ interface SettingsPanelProps {
   settings: Settings;
   onUpdateSettings: (updates: Partial<Settings>) => void;
   status: DictationStatus;
+  onResetStats: () => void;
 }
 
-export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, status }: SettingsPanelProps) {
+export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, status, onResetStats }: SettingsPanelProps) {
   const [accessibilityGranted, setAccessibilityGranted] = useState<boolean | null>(null);
+  const [confirmReset, setConfirmReset] = useState(false);
+  const confirmResetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleResetClick = () => {
+    if (confirmReset) {
+      if (confirmResetTimeoutRef.current) clearTimeout(confirmResetTimeoutRef.current);
+      confirmResetTimeoutRef.current = null;
+      setConfirmReset(false);
+      onResetStats();
+    } else {
+      setConfirmReset(true);
+      confirmResetTimeoutRef.current = setTimeout(() => {
+        setConfirmReset(false);
+        confirmResetTimeoutRef.current = null;
+      }, 3000);
+    }
+  };
 
   const checkAccessibility = async () => {
     try {
@@ -221,6 +239,24 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
             <p><strong>Model:</strong> {selectedModel?.label}</p>
             <p><strong>Size:</strong> {selectedModel?.size}</p>
           </div>
+        </div>
+
+        {/* Reset Stats */}
+        <div className="pt-4 border-t border-stone-200 dark:border-stone-700">
+          <h3 className="text-sm font-medium text-stone-700 dark:text-stone-300 mb-2">
+            Statistics
+          </h3>
+          <button
+            onClick={handleResetClick}
+            aria-label={confirmReset ? 'Confirm reset statistics' : 'Reset statistics'}
+            className={`w-full px-3 py-2 rounded-lg text-xs font-medium border transition-colors ${
+              confirmReset
+                ? 'border-red-400 dark:border-red-600 bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/40'
+                : 'border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-600'
+            }`}
+          >
+            {confirmReset ? 'Confirm Reset' : 'Reset Stats'}
+          </button>
         </div>
       </div>
     </aside>
