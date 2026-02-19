@@ -52,7 +52,6 @@
     "macOS": {
       "entitlements": "./entitlements.plist",
       "exceptionDomain": "",
-      "signingIdentity": "Developer ID Application: George Nijo (P2U3P8B923)",
       "infoPlist": "./macos/Info.plist"
     }
   }

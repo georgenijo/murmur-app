@@ -229,8 +229,10 @@ fn check_accessibility_permission() -> bool {
 fn request_accessibility_permission() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        // Trigger the system dialog and register the app in the Accessibility list
-        injector::request_accessibility_prompt();
+        // Trigger the system dialog and register the app in the Accessibility list.
+        // Return value is the current trust status — we proceed to open System Settings
+        // regardless, so the result is intentionally discarded here.
+        let _ = injector::request_accessibility_prompt();
         return open_system_preference_pane("Privacy_Accessibility");
     }
     #[cfg(not(target_os = "macos"))]
