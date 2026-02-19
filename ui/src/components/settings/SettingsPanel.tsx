@@ -194,8 +194,8 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
             <button
               type="button"
               onClick={() => onUpdateSettings({ autoPaste: !settings.autoPaste })}
-              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-stone-500 focus:ring-offset-2 ${
-                settings.autoPaste ? 'bg-stone-800 dark:bg-stone-300' : 'bg-stone-300 dark:bg-stone-600'
+              className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-stone-500 focus:ring-offset-2 ${
+                settings.autoPaste ? 'bg-stone-800 dark:bg-stone-300' : 'bg-stone-300 dark:bg-stone-500'
               }`}
             >
               <span
