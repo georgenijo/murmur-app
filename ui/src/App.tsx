@@ -31,6 +31,11 @@ function App() {
 
   return (
     <div className="h-screen bg-stone-50 dark:bg-stone-900 flex flex-col font-[-apple-system,BlinkMacSystemFont,'Segoe_UI',Roboto,sans-serif]">
+      {import.meta.env.DEV && (
+        <div className="bg-amber-400 text-amber-900 text-xs font-semibold text-center py-0.5 tracking-widest uppercase select-none">
+          Dev
+        </div>
+      )}
       <StatusHeader
         status={status}
         initialized={initialized}

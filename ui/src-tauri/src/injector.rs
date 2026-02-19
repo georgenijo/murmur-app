@@ -79,3 +79,50 @@ pub fn is_accessibility_enabled() -> bool {
         true
     }
 }
+
+/// Trigger the macOS accessibility permission prompt.
+/// Registers the app in System Settings > Privacy & Security > Accessibility
+/// and shows the system dialog. Returns current trust status.
+#[cfg(target_os = "macos")]
+pub fn request_accessibility_prompt() -> bool {
+    use std::ffi::c_void;
+
+    #[repr(C)]
+    struct Opaque([u8; 0]);
+
+    extern "C" {
+        fn AXIsProcessTrustedWithOptions(options: *const c_void) -> bool;
+        static kAXTrustedCheckOptionPrompt: *const c_void;
+        static kCFBooleanTrue: *const c_void;
+        static kCFTypeDictionaryKeyCallBacks: Opaque;
+        static kCFTypeDictionaryValueCallBacks: Opaque;
+        fn CFDictionaryCreate(
+            allocator: *const c_void,
+            keys: *const *const c_void,
+            values: *const *const c_void,
+            num_values: isize,
+            key_callbacks: *const c_void,
+            value_callbacks: *const c_void,
+        ) -> *const c_void;
+        fn CFRelease(cf: *const c_void);
+    }
+
+    unsafe {
+        let keys = [kAXTrustedCheckOptionPrompt];
+        let values = [kCFBooleanTrue];
+        let dict = CFDictionaryCreate(
+            std::ptr::null(),
+            keys.as_ptr(),
+            values.as_ptr(),
+            1,
+            &kCFTypeDictionaryKeyCallBacks as *const Opaque as *const c_void,
+            &kCFTypeDictionaryValueCallBacks as *const Opaque as *const c_void,
+        );
+        if dict.is_null() {
+            return false;
+        }
+        let trusted = AXIsProcessTrustedWithOptions(dict);
+        CFRelease(dict);
+        trusted
+    }
+}
