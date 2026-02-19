@@ -15,6 +15,7 @@ import { useDoubleTapToggle } from './lib/hooks/useDoubleTapToggle';
 import { useShowAboutListener } from './lib/hooks/useShowAboutListener';
 import { StatsBar } from './components/StatsBar';
 import { LogViewer } from './components/LogViewer';
+import { ResourceMonitor } from './components/ResourceMonitor';
 import { resetStats } from './lib/stats';
 
 function App() {
@@ -85,6 +86,8 @@ function App() {
           )}
 
           <RecordingControls status={status} initialized={initialized} onStart={handleStart} onStop={handleStop} />
+
+          <ResourceMonitor />
         </main>
 
         <SettingsPanel

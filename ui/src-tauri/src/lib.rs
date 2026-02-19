@@ -3,6 +3,7 @@ mod audio;
 mod injector;
 mod keyboard;
 mod logging;
+mod resource_monitor;
 mod state;
 mod transcriber;
 
@@ -537,7 +538,8 @@ pub fn run() {
             show_overlay,
             hide_overlay,
             get_log_contents,
-            clear_logs
+            clear_logs,
+            resource_monitor::get_resource_usage
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
