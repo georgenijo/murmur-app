@@ -14,6 +14,7 @@ import { useHotkeyToggle } from './lib/hooks/useHotkeyToggle';
 import { useDoubleTapToggle } from './lib/hooks/useDoubleTapToggle';
 import { useShowAboutListener } from './lib/hooks/useShowAboutListener';
 import { StatsBar } from './components/StatsBar';
+import { LogViewer } from './components/LogViewer';
 import { resetStats } from './lib/stats';
 
 function App() {
@@ -47,6 +48,7 @@ function App() {
   const { showAbout, setShowAbout } = useShowAboutListener();
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isLogViewerOpen, setIsLogViewerOpen] = useState(false);
 
   const error = initError || recordingError;
 
@@ -92,12 +94,17 @@ function App() {
           onUpdateSettings={updateSettings}
           status={status}
           onResetStats={handleResetStats}
+          onViewLogs={() => setIsLogViewerOpen(true)}
         />
       </div>
 
       <AboutModal
         isOpen={showAbout}
         onClose={() => setShowAbout(false)}
+      />
+      <LogViewer
+        isOpen={isLogViewerOpen}
+        onClose={() => setIsLogViewerOpen(false)}
       />
     </div>
   );

@@ -14,9 +14,10 @@ interface SettingsPanelProps {
   onUpdateSettings: (updates: Partial<Settings>) => void;
   status: DictationStatus;
   onResetStats: () => void;
+  onViewLogs: () => void;
 }
 
-export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, status, onResetStats }: SettingsPanelProps) {
+export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, status, onResetStats, onViewLogs }: SettingsPanelProps) {
   const [accessibilityGranted, setAccessibilityGranted] = useState<boolean | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
   const confirmResetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -256,6 +257,19 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
             }`}
           >
             {confirmReset ? 'Confirm Reset' : 'Reset Stats'}
+          </button>
+        </div>
+
+        {/* Logs */}
+        <div className="pt-4 border-t border-stone-200 dark:border-stone-700">
+          <h3 className="text-sm font-medium text-stone-700 dark:text-stone-300 mb-2">
+            Logs
+          </h3>
+          <button
+            onClick={onViewLogs}
+            className="w-full px-3 py-2 rounded-lg text-xs font-medium border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-600 transition-colors"
+          >
+            View Logs
           </button>
         </div>
       </div>

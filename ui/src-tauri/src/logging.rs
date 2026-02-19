@@ -115,3 +115,31 @@ macro_rules! log_error {
         $crate::logging::error(&format!($($arg)*));
     }};
 }
+
+/// Return the last `n` lines of the active log file as a newline-joined string.
+pub fn read_last_lines(n: usize) -> String {
+    let _guard = LOG_MUX.lock().unwrap_or_else(|p| p.into_inner());
+    let dir = match log_dir() {
+        Some(d) => d,
+        None => return String::new(),
+    };
+    let path = dir.join(LOG_FILE);
+    let content = match fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(_) => return String::new(),
+    };
+    let lines: Vec<&str> = content.lines().collect();
+    let start = lines.len().saturating_sub(n);
+    lines[start..].join("\n")
+}
+
+/// Truncate the active log file to zero bytes.
+pub fn clear_logs() -> Result<(), String> {
+    let _guard = LOG_MUX.lock().unwrap_or_else(|p| p.into_inner());
+    let dir = match ensure_log_dir() {
+        Some(d) => d,
+        None => return Ok(()),
+    };
+    let path = dir.join(LOG_FILE);
+    fs::write(&path, b"").map_err(|e| e.to_string())
+}
