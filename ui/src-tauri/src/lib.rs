@@ -1,6 +1,7 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 mod audio;
 mod injector;
+mod keyboard;
 mod logging;
 mod state;
 mod transcriber;
@@ -341,6 +342,33 @@ async fn stop_native_recording(
     }))
 }
 
+#[tauri::command]
+fn start_double_tap_listener(app_handle: tauri::AppHandle, hotkey: String) -> Result<(), String> {
+    if !injector::is_accessibility_enabled() {
+        return Err("Accessibility permission is required for double-tap mode. Please grant it in System Settings.".to_string());
+    }
+    keyboard::start_listener(app_handle, &hotkey);
+    log_info!("Double-tap listener started for key: {}", hotkey);
+    Ok(())
+}
+
+#[tauri::command]
+fn stop_double_tap_listener() {
+    keyboard::stop_listener();
+    log_info!("Double-tap listener stopped");
+}
+
+#[tauri::command]
+fn update_double_tap_key(hotkey: String) {
+    keyboard::set_target_key(&hotkey);
+    log_info!("Double-tap key updated to: {}", hotkey);
+}
+
+#[tauri::command]
+fn set_double_tap_recording(recording: bool) {
+    keyboard::set_recording_state(recording);
+}
+
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -368,7 +396,11 @@ pub fn run() {
             request_accessibility_permission,
             request_microphone_permission,
             start_native_recording,
-            stop_native_recording
+            stop_native_recording,
+            start_double_tap_listener,
+            stop_double_tap_listener,
+            update_double_tap_key,
+            set_double_tap_recording
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

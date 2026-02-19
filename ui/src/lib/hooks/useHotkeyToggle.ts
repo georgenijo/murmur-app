@@ -2,19 +2,20 @@ import { useEffect, useRef } from 'react';
 import { registerHotkey, unregisterHotkey, hotkeyToShortcut } from '../hotkey';
 
 interface UseHotkeyToggleProps {
+  enabled: boolean;
   initialized: boolean;
   hotkey: string;
   onToggle: () => void;
 }
 
-export function useHotkeyToggle({ initialized, hotkey, onToggle }: UseHotkeyToggleProps) {
+export function useHotkeyToggle({ enabled, initialized, hotkey, onToggle }: UseHotkeyToggleProps) {
   const initializedRef = useRef(initialized);
   const onToggleRef = useRef(onToggle);
   useEffect(() => { initializedRef.current = initialized; }, [initialized]);
   useEffect(() => { onToggleRef.current = onToggle; }, [onToggle]);
 
   useEffect(() => {
-    if (!initialized) return;
+    if (!enabled || !initialized) return;
 
     const shortcut = hotkeyToShortcut(hotkey);
 
@@ -30,5 +31,5 @@ export function useHotkeyToggle({ initialized, hotkey, onToggle }: UseHotkeyTogg
         console.warn('Failed to unregister hotkey on cleanup:', err);
       });
     };
-  }, [initialized, hotkey]);
+  }, [enabled, initialized, hotkey]);
 }

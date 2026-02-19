@@ -1,8 +1,11 @@
+export type RecordingMode = 'hotkey' | 'double_tap';
+
 export interface Settings {
   model: ModelOption;
   hotkey: HotkeyOption;
   language: string;
   autoPaste: boolean;
+  recordingMode: RecordingMode;
 }
 
 export type ModelOption =
@@ -28,11 +31,23 @@ export const HOTKEY_OPTIONS: { value: HotkeyOption; label: string }[] = [
   { value: 'ctrl_r', label: 'Control + Space' },
 ];
 
+export const DOUBLE_TAP_KEY_OPTIONS: { value: HotkeyOption; label: string }[] = [
+  { value: 'shift_l', label: 'Shift' },
+  { value: 'alt_l', label: 'Option' },
+  { value: 'ctrl_r', label: 'Control' },
+];
+
+export const RECORDING_MODE_OPTIONS: { value: RecordingMode; label: string }[] = [
+  { value: 'hotkey', label: 'Key Combo' },
+  { value: 'double_tap', label: 'Double-Tap' },
+];
+
 export const DEFAULT_SETTINGS: Settings = {
   model: 'large-v3-turbo',
   hotkey: 'shift_l',
   language: 'en',
   autoPaste: false,
+  recordingMode: 'hotkey',
 };
 
 const STORAGE_KEY = 'dictation-settings';

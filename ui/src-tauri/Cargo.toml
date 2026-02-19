@@ -25,6 +25,7 @@ arboard = "3"
 hound = "3.5"
 dirs = "5"
 cpal = "0.15"
+rdev = { git = "https://github.com/Narsil/rdev", branch = "main" }
 
 [profile.release]
 panic = "abort"

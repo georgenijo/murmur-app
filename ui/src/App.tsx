@@ -11,6 +11,7 @@ import { useSettings } from './lib/hooks/useSettings';
 import { useHistoryManagement } from './lib/hooks/useHistoryManagement';
 import { useRecordingState } from './lib/hooks/useRecordingState';
 import { useHotkeyToggle } from './lib/hooks/useHotkeyToggle';
+import { useDoubleTapToggle } from './lib/hooks/useDoubleTapToggle';
 import { useShowAboutListener } from './lib/hooks/useShowAboutListener';
 
 function App() {
@@ -21,7 +22,8 @@ function App() {
     status, transcription, recordingDuration, error: recordingError,
     handleStart, handleStop, toggleRecording,
   } = useRecordingState({ addEntry });
-  useHotkeyToggle({ initialized, hotkey: settings.hotkey, onToggle: toggleRecording });
+  useHotkeyToggle({ enabled: settings.recordingMode === 'hotkey', initialized, hotkey: settings.hotkey, onToggle: toggleRecording });
+  useDoubleTapToggle({ enabled: settings.recordingMode === 'double_tap', initialized, hotkey: settings.hotkey, status, onToggle: toggleRecording });
   const { showAbout, setShowAbout } = useShowAboutListener();
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -75,6 +77,7 @@ function App() {
         onClose={() => setIsSettingsOpen(false)}
         settings={settings}
         onUpdateSettings={updateSettings}
+        status={status}
       />
 
       <AboutModal
