@@ -35,7 +35,7 @@ function getStatusText(status: DictationStatus, initialized: boolean): string {
 
 export function StatusHeader({ status, initialized, recordingDuration }: StatusHeaderProps) {
   return (
-    <header className="flex-shrink-0 px-4 py-3 border-b border-gray-200 dark:border-gray-700 bg-white/80 dark:bg-gray-800/80 backdrop-blur-sm">
+    <header className="shrink-0 px-4 py-3 border-b border-gray-200 dark:border-gray-700 bg-white/80 dark:bg-gray-800/80 backdrop-blur-sm">
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold text-gray-900 dark:text-white tracking-tight">
           Local Dictation

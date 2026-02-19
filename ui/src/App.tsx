@@ -49,7 +49,7 @@ function App() {
         />
 
         {error && (
-          <div className="flex-shrink-0 px-4 py-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
+          <div className="shrink-0 px-4 py-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
             <p className="text-red-600 dark:text-red-400 text-sm">{error}</p>
           </div>
         )}
@@ -57,7 +57,7 @@ function App() {
         <RecordingControls status={status} initialized={initialized} onStart={handleStart} onStop={handleStop} />
       </main>
 
-      <footer className="flex-shrink-0 px-4 py-3 border-t border-gray-200 dark:border-gray-700 bg-white/80 dark:bg-gray-800/80 backdrop-blur-sm">
+      <footer className="shrink-0 px-4 py-3 border-t border-gray-200 dark:border-gray-700 bg-white/80 dark:bg-gray-800/80 backdrop-blur-sm">
         <div className="flex justify-end">
           <button
             className="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"

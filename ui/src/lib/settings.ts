@@ -56,7 +56,12 @@ export function loadSettings(): Settings {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored) {
-      return { ...DEFAULT_SETTINGS, ...JSON.parse(stored) };
+      const parsed = JSON.parse(stored) as Partial<Settings>;
+      const validModes: RecordingMode[] = ['hotkey', 'double_tap'];
+      if (parsed.recordingMode && !validModes.includes(parsed.recordingMode)) {
+        parsed.recordingMode = DEFAULT_SETTINGS.recordingMode;
+      }
+      return { ...DEFAULT_SETTINGS, ...parsed };
     }
   } catch (e) {
     console.error('Failed to load settings:', e);

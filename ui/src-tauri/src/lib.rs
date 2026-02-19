@@ -41,23 +41,6 @@ async fn init_dictation(_state: tauri::State<'_, State>) -> Result<serde_json::V
     }))
 }
 
-#[tauri::command]
-async fn start_recording(state: tauri::State<'_, State>) -> Result<serde_json::Value, String> {
-    let mut dictation = state.app_state.dictation.lock_or_recover();
-    dictation.status = DictationStatus::Recording;
-    Ok(serde_json::json!({
-        "type": "recording_started"
-    }))
-}
-
-#[tauri::command]
-async fn stop_recording(state: tauri::State<'_, State>) -> Result<serde_json::Value, String> {
-    let mut dictation = state.app_state.dictation.lock_or_recover();
-    dictation.status = DictationStatus::Idle;
-    Ok(serde_json::json!({
-        "type": "recording_stopped"
-    }))
-}
 
 /// RAII guard that resets dictation status to Idle on drop,
 /// ensuring status is restored on any early return or error path.
@@ -113,13 +96,17 @@ fn run_transcription_pipeline(
     // Inject text on main thread (macOS requires keyboard APIs to run on main thread)
     if !text.is_empty() {
         let text_to_inject = text.clone();
+        let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
         app_handle
             .run_on_main_thread(move || {
-                if let Err(e) = injector::inject_text(&text_to_inject, auto_paste) {
-                    log_error!("Failed to inject text: {}", e);
-                }
+                let _ = tx.send(injector::inject_text(&text_to_inject, auto_paste));
             })
-            .map_err(|e| format!("Failed to run on main thread: {}", e))?;
+            .map_err(|e| format!("Failed to dispatch to main thread: {}", e))?;
+        match rx.recv_timeout(std::time::Duration::from_secs(2)) {
+            Ok(Err(e)) => log_error!("Text injection failed: {}", e),
+            Err(_) => log_warn!("Text injection timed out"),
+            Ok(Ok(())) => {}
+        }
     }
 
     Ok(text)
@@ -386,8 +373,6 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             init_dictation,
-            start_recording,
-            stop_recording,
             process_audio,
             get_status,
             configure_dictation,

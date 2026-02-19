@@ -48,7 +48,7 @@ The app requires a ggml `.bin` model file. Download one:
 | `base.en` | ~150 MB | Fast | Good |
 | `small.en` | ~500 MB | Medium | Better |
 | `medium.en` | ~1.5 GB | Slow | Great |
-| `large-v3-turbo` | ~3 GB | Fast | Best (recommended) |
+| `large-v3-turbo` | ~1.6 GB | Fast | Best (recommended) |
 
 Download from: `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-{model}.bin`
 

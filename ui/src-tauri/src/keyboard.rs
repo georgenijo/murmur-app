@@ -196,7 +196,7 @@ fn is_modifier(key: Key) -> bool {
     )
 }
 
-/// Check if two keys are the same modifier (treating left/right variants as equivalent for Shift)
+/// Check if two keys are the same modifier, using strict equality
 fn is_same_modifier(a: Key, b: Key) -> bool {
     a == b
 }
@@ -272,6 +272,8 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str) {
 
             if let Err(e) = listen(callback) {
                 eprintln!("[Keyboard] rdev listen error: {:?}", e);
+                LISTENER_THREAD_SPAWNED.store(false, Ordering::SeqCst);
+                LISTENER_ACTIVE.store(false, Ordering::SeqCst);
             }
         });
     }

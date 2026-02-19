@@ -25,6 +25,7 @@ export function useDoubleTapToggle({ enabled, initialized, hotkey, status, onTog
     if (!enabled || !initialized) return;
 
     let unlisten: (() => void) | null = null;
+    let cancelled = false;
 
     const setup = async () => {
       // Listen for double-tap events from the Rust backend
@@ -32,9 +33,17 @@ export function useDoubleTapToggle({ enabled, initialized, hotkey, status, onTog
         onToggleRef.current();
       });
 
+      if (cancelled) {
+        unlisten();
+        return;
+      }
+
       // Start the rdev listener
       try {
         await invoke('start_double_tap_listener', { hotkey });
+        if (cancelled) {
+          invoke('stop_double_tap_listener').catch(() => {});
+        }
       } catch (err) {
         console.error('Failed to start double-tap listener:', err);
       }
@@ -43,6 +52,7 @@ export function useDoubleTapToggle({ enabled, initialized, hotkey, status, onTog
     setup();
 
     return () => {
+      cancelled = true;
       unlisten?.();
       invoke('stop_double_tap_listener').catch((err) => {
         console.warn('Failed to stop double-tap listener on cleanup:', err);

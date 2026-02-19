@@ -9,7 +9,7 @@ interface RecordingControlsProps {
 
 export function RecordingControls({ status, initialized, onStart, onStop }: RecordingControlsProps) {
   return (
-    <div className="flex-shrink-0 flex justify-center gap-3">
+    <div className="shrink-0 flex justify-center gap-3">
       {status === 'recording' ? (
         <button
           onClick={onStop}

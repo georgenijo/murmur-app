@@ -8,7 +8,7 @@ interface TabNavigationProps {
 
 export function TabNavigation({ activeTab, onTabChange, historyCount }: TabNavigationProps) {
   return (
-    <div role="tablist" className="flex-shrink-0 flex gap-1 bg-gray-100 dark:bg-gray-800 p-1 rounded-lg">
+    <div role="tablist" className="shrink-0 flex gap-1 bg-gray-100 dark:bg-gray-800 p-1 rounded-lg">
       <button
         role="tab"
         id="tab-current"

@@ -4,13 +4,14 @@ import {
   Settings, ModelOption, HotkeyOption, RecordingMode,
   MODEL_OPTIONS, HOTKEY_OPTIONS, DOUBLE_TAP_KEY_OPTIONS, RECORDING_MODE_OPTIONS,
 } from '../../lib/settings';
+import type { DictationStatus } from '../../lib/types';
 
 interface SettingsPanelProps {
   isOpen: boolean;
   onClose: () => void;
   settings: Settings;
   onUpdateSettings: (updates: Partial<Settings>) => void;
-  status: string;
+  status: DictationStatus;
 }
 
 export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, status }: SettingsPanelProps) {
@@ -149,7 +150,8 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
             <select
               value={settings.hotkey}
               onChange={(e) => onUpdateSettings({ hotkey: e.target.value as HotkeyOption })}
-              className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              disabled={isRecording}
+              className={`w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent ${isRecording ? 'opacity-50 cursor-not-allowed' : ''}`}
             >
               {keyOptions.map((option) => (
                 <option key={option.value} value={option.value}>

@@ -6,6 +6,11 @@ interface UseRecordingStateProps {
   addEntry: (text: string, duration: number) => void;
 }
 
+const VALID_STATUSES = ['idle', 'recording', 'processing'] as const;
+function isDictationStatus(v: unknown): v is DictationStatus {
+  return typeof v === 'string' && (VALID_STATUSES as readonly string[]).includes(v);
+}
+
 export function useRecordingState({ addEntry }: UseRecordingStateProps) {
   const [status, setStatus] = useState<DictationStatus>('idle');
   const [transcription, setTranscription] = useState('');
@@ -17,7 +22,7 @@ export function useRecordingState({ addEntry }: UseRecordingStateProps) {
   const statusRef = useRef(status);
   const recordingStartTimeRef = useRef(recordingStartTime);
   useEffect(() => { statusRef.current = status; }, [status]);
-  useEffect(() => { recordingStartTimeRef.current = recordingStartTime; }, [recordingStartTime]);
+  const isStartingRef = useRef(false);
 
   // Recording duration timer
   useEffect(() => {
@@ -25,7 +30,7 @@ export function useRecordingState({ addEntry }: UseRecordingStateProps) {
     if (status === 'recording' && recordingStartTime) {
       interval = setInterval(() => {
         setRecordingDuration(Math.floor((Date.now() - recordingStartTime) / 1000));
-      }, 100);
+      }, 1000);
     } else {
       setRecordingDuration(0);
     }
@@ -33,18 +38,25 @@ export function useRecordingState({ addEntry }: UseRecordingStateProps) {
   }, [status, recordingStartTime]);
 
   const handleStart = useCallback(async () => {
+    if (isStartingRef.current) return;
+    isStartingRef.current = true;
     try {
+      recordingStartTimeRef.current = Date.now();
       setRecordingStartTime(Date.now());
       setError('');
       const res = await startRecording();
-      if (res.state) setStatus(res.state as DictationStatus);
+      if (isDictationStatus(res.state)) setStatus(res.state);
       if (res.type === 'error') {
         setError(res.error || 'Unknown error');
         setRecordingStartTime(null);
+        recordingStartTimeRef.current = null;
       }
     } catch (err) {
       setError(String(err));
       setRecordingStartTime(null);
+      recordingStartTimeRef.current = null;
+    } finally {
+      isStartingRef.current = false;
     }
   }, []);
 
@@ -60,7 +72,7 @@ export function useRecordingState({ addEntry }: UseRecordingStateProps) {
         addEntry(res.text, duration);
       }
       if (res.type === 'error') setError(res.error || 'Unknown error');
-      setStatus((res.state as DictationStatus) || 'idle');
+      setStatus(isDictationStatus(res.state) ? res.state : 'idle');
     } catch (err) {
       setError(String(err));
       setStatus('idle');
