@@ -87,7 +87,7 @@ function App() {
 
           <RecordingControls status={status} initialized={initialized} onStart={handleStart} onStop={handleStop} />
 
-          <ResourceMonitor />
+          {import.meta.env.DEV && <ResourceMonitor />}
         </main>
 
         <SettingsPanel
