@@ -402,7 +402,8 @@ fn update_tray_icon(app: tauri::AppHandle, icon_state: String) -> Result<(), Str
     let (r, g, b) = match icon_state.as_str() {
         "recording"  => (220u8, 50u8,  50u8),
         "processing" => (200u8, 150u8, 40u8),
-        _            => (140u8, 140u8, 140u8), // idle — gray
+        _ if cfg!(debug_assertions) => (251u8, 191u8, 36u8), // idle dev — amber
+        _            => (140u8, 140u8, 140u8), // idle prod — gray
     };
     let data = make_tray_icon_data(r, g, b);
     if let Some(tray) = app.tray_by_id("main-tray") {
