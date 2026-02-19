@@ -224,11 +224,15 @@ fn check_accessibility_permission() -> bool {
     injector::is_accessibility_enabled()
 }
 
-/// Request accessibility permission (opens System Settings on macOS)
+/// Request accessibility permission (triggers system prompt + opens System Settings on macOS)
 #[tauri::command]
 fn request_accessibility_permission() -> Result<(), String> {
     #[cfg(target_os = "macos")]
-    { return open_system_preference_pane("Privacy_Accessibility"); }
+    {
+        // Trigger the system dialog and register the app in the Accessibility list
+        injector::request_accessibility_prompt();
+        return open_system_preference_pane("Privacy_Accessibility");
+    }
     #[cfg(not(target_os = "macos"))]
     { Ok(()) }
 }
