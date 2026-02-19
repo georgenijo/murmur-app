@@ -1,19 +1,21 @@
-import { useMemo } from 'react';
+import { useState, useEffect } from 'react';
 import { loadStats, getWPM, getApproxTokens } from '../lib/stats';
+import type { DictationStats } from '../lib/stats';
 
 interface StatsBarProps {
   statsVersion: number;
 }
 
 export function StatsBar({ statsVersion }: StatsBarProps) {
-  const stats = useMemo(() => loadStats(), [statsVersion]);
+  const [stats, setStats] = useState<DictationStats>(() => loadStats());
+  useEffect(() => { setStats(loadStats()); }, [statsVersion]);
   const wpm = getWPM(stats);
   const tokens = getApproxTokens(stats);
 
   return (
     <div className="shrink-0 flex gap-2 px-4 py-2">
       <Chip label="Total Words" value={stats.totalWords.toLocaleString()} />
-      <Chip label="Avg WPM" value={wpm > 0 ? wpm.toString() : '—'} />
+      <Chip label="Avg WPM" value={wpm > 0 ? wpm.toLocaleString() : '—'} />
       <Chip label="Recordings" value={stats.totalRecordings.toLocaleString()} />
       <Chip label="Approx Tokens" value={tokens > 0 ? tokens.toLocaleString() : '—'} />
     </div>

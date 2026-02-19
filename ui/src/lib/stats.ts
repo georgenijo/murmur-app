@@ -20,6 +20,12 @@ export function loadStats(): DictationStats {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored) {
       const parsed = JSON.parse(stored) as Partial<DictationStats>;
+      if (
+        !Array.isArray(parsed.wpmSamples) ||
+        !parsed.wpmSamples.every((v) => typeof v === 'number' && isFinite(v))
+      ) {
+        parsed.wpmSamples = DEFAULT_STATS.wpmSamples;
+      }
       return { ...DEFAULT_STATS, ...parsed };
     }
   } catch (e) {
@@ -37,23 +43,27 @@ export function saveStats(stats: DictationStats): void {
 }
 
 export function updateStats(text: string, durationSeconds: number): void {
-  const stats = loadStats();
-  const wordCount = text.trim() === '' ? 0 : text.trim().split(/\s+/).length;
+  try {
+    const stats = loadStats();
+    const wordCount = text.trim() === '' ? 0 : text.trim().split(/\s+/).length;
 
-  const newSamples = [...stats.wpmSamples];
-  if (durationSeconds > 0 && wordCount > 0) {
-    newSamples.push((wordCount / durationSeconds) * 60);
-    if (newSamples.length > MAX_WPM_SAMPLES) {
-      newSamples.splice(0, newSamples.length - MAX_WPM_SAMPLES);
+    const newSamples = [...stats.wpmSamples];
+    if (durationSeconds > 0 && wordCount > 0) {
+      newSamples.push((wordCount / durationSeconds) * 60);
+      if (newSamples.length > MAX_WPM_SAMPLES) {
+        newSamples.splice(0, newSamples.length - MAX_WPM_SAMPLES);
+      }
     }
-  }
 
-  saveStats({
-    totalWords: stats.totalWords + wordCount,
-    totalRecordings: stats.totalRecordings + 1,
-    totalDurationSeconds: stats.totalDurationSeconds + durationSeconds,
-    wpmSamples: newSamples,
-  });
+    saveStats({
+      totalWords: stats.totalWords + wordCount,
+      totalRecordings: stats.totalRecordings + 1,
+      totalDurationSeconds: stats.totalDurationSeconds + durationSeconds,
+      wpmSamples: newSamples,
+    });
+  } catch (e) {
+    console.error('Failed to update stats:', e);
+  }
 }
 
 export function resetStats(): void {
