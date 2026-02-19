@@ -1,4 +1,5 @@
 use crate::state::WHISPER_SAMPLE_RATE;
+use crate::{log_error, log_warn};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Sample, SampleFormat};
 use std::sync::mpsc::{channel, Receiver, Sender};

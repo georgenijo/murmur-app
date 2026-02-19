@@ -1,3 +1,4 @@
+use crate::{log_info, log_warn};
 use arboard::Clipboard;
 use std::thread;
 use std::time::Duration;
