@@ -310,6 +310,7 @@ async fn stop_native_recording(
             }
         }
     }
+    log_info!("stop_native_recording: stopping");
     let _ = app_handle.emit("recording-status-changed", "processing");
     let _ = update_tray_icon(app_handle.clone(), "processing".into());
 
