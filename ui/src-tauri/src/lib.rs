@@ -336,6 +336,7 @@ async fn stop_native_recording(
     // Hand off status management to the pipeline's own guard
     guard.disarm();
 
+    let t0 = std::time::Instant::now();
     let pipeline_result = run_transcription_pipeline(&samples, &app_handle, &state.app_state);
     let _ = app_handle.emit("recording-status-changed", "idle");
     let _ = update_tray_icon(app_handle.clone(), "idle".into());
@@ -344,7 +345,12 @@ async fn stop_native_recording(
         e
     })?;
 
-    log_info!("stop_native_recording: transcribed {} chars", text.len());
+    let latency_ms = t0.elapsed().as_millis();
+    let recording_secs = samples.len() / 16_000;
+    let word_count = if text.trim().is_empty() { 0 } else { text.split_whitespace().count() };
+    let approx_tokens = (word_count as f64 * 1.3).round() as usize;
+    log_info!("transcription: duration={}s latency={}ms words={} tokens={} chars={}",
+        recording_secs, latency_ms, word_count, approx_tokens, text.len());
     Ok(serde_json::json!({
         "type": "transcription",
         "text": text,
@@ -379,6 +385,15 @@ fn set_double_tap_recording(recording: bool) {
     keyboard::set_recording_state(recording);
 }
 
+#[tauri::command]
+fn get_log_contents(lines: usize) -> String {
+    logging::read_last_lines(lines)
+}
+
+#[tauri::command]
+fn clear_logs() -> Result<(), String> {
+    logging::clear_logs()
+}
 
 /// Generate 22×22 RGBA pixel data for a solid circle of the given colour.
 fn make_tray_icon_data(r: u8, g: u8, b: u8) -> Vec<u8> {
@@ -520,12 +535,15 @@ pub fn run() {
             set_double_tap_recording,
             update_tray_icon,
             show_overlay,
-            hide_overlay
+            hide_overlay,
+            get_log_contents,
+            clear_logs
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let _ = window.hide();
+                log_info!("window hidden on close request");
             }
         })
         .setup(|app| {
