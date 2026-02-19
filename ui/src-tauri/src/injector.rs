@@ -8,11 +8,11 @@ const PRE_PASTE_DELAY_MS: u64 = 150;
 
 /// Copy text to clipboard and optionally simulate paste
 pub fn inject_text(text: &str, auto_paste: bool) -> Result<(), String> {
-    log_info!("inject_text called with auto_paste={}, text_len={}", auto_paste, text.len());
-
+    eprintln!("[Injector] inject_text called with auto_paste={}, text_len={}", auto_paste, text.len());
+    
     // Skip if text is empty
     if text.trim().is_empty() {
-        log_info!("inject_text: text is empty, skipping");
+        eprintln!("[Injector] Text is empty, skipping");
         return Ok(());
     }
 
@@ -22,32 +22,40 @@ pub fn inject_text(text: &str, auto_paste: bool) -> Result<(), String> {
     // Copy transcription to clipboard
     clipboard.set_text(text)
         .map_err(|e| format!("Failed to copy to clipboard: {}", e))?;
-    log_info!("inject_text: text copied to clipboard");
+    eprintln!("[Injector] Text copied to clipboard successfully");
 
     // If auto-paste is disabled, we're done
     if !auto_paste {
+        eprintln!("[Injector] Auto-paste disabled, returning");
         return Ok(());
     }
 
     // Check accessibility permission before attempting paste simulation
-    if !is_accessibility_enabled() {
+    let accessibility_enabled = is_accessibility_enabled();
+    eprintln!("[Injector] Accessibility permission check: {}", accessibility_enabled);
+    
+    if !accessibility_enabled {
         // Don't error - text is in clipboard, user can paste manually
-        log_warn!("inject_text: accessibility permission not granted — text in clipboard only");
+        eprintln!("[Injector] Accessibility permission not granted - text copied to clipboard only");
         return Ok(());
     }
 
     // Wait for clipboard to sync and window focus to settle
+    eprintln!("[Injector] Waiting {}ms before paste simulation", PRE_PASTE_DELAY_MS);
     thread::sleep(Duration::from_millis(PRE_PASTE_DELAY_MS));
 
     // Simulate Cmd+V paste
-    simulate_paste()
+    eprintln!("[Injector] Starting paste simulation...");
+    let result = simulate_paste();
+    eprintln!("[Injector] Paste simulation result: {:?}", result);
+    result
 }
 
 /// Simulate Cmd+V keystroke using osascript (most reliable on macOS Sonoma/Sequoia)
 fn simulate_paste() -> Result<(), String> {
     use std::process::Command;
 
-    log_info!("simulate_paste: using osascript to simulate Cmd+V");
+    eprintln!("[Injector] Using osascript to simulate Cmd+V...");
 
     let output = Command::new("osascript")
         .arg("-e")
@@ -56,7 +64,7 @@ fn simulate_paste() -> Result<(), String> {
         .map_err(|e| format!("Failed to run osascript: {}", e))?;
 
     if output.status.success() {
-        log_info!("simulate_paste: completed successfully");
+        eprintln!("[Injector] Paste simulation completed successfully");
         Ok(())
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -71,7 +79,9 @@ pub fn is_accessibility_enabled() -> bool {
         extern "C" {
             fn AXIsProcessTrusted() -> bool;
         }
-        unsafe { AXIsProcessTrusted() }
+        let result = unsafe { AXIsProcessTrusted() };
+        eprintln!("[Injector] AXIsProcessTrusted() returned: {}", result);
+        result
     }
     #[cfg(not(target_os = "macos"))]
     {
