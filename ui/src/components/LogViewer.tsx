@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
 interface LogViewerProps {
@@ -24,20 +24,31 @@ const LEVEL_COLORS: Record<string, string> = {
   ERROR: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400',
 };
 
+const POLL_INTERVAL_MS = 2000;
+
 export function LogViewer({ isOpen, onClose }: LogViewerProps) {
   const [rawLines, setRawLines] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  const fetchLogs = useCallback(() => {
+    invoke<string>('get_log_contents', { lines: 200 })
+      .then(raw => setRawLines(raw ? raw.split('\n') : []))
+      .catch(e => setError(String(e)));
+  }, []);
+
   useEffect(() => {
     if (!isOpen) return;
+    // Show spinner only on first open (empty state)
     setLoading(true);
     setError('');
     invoke<string>('get_log_contents', { lines: 200 })
       .then(raw => setRawLines(raw ? raw.split('\n') : []))
       .catch(e => setError(String(e)))
       .finally(() => setLoading(false));
-  }, [isOpen]);
+    const interval = setInterval(fetchLogs, POLL_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, [isOpen, fetchLogs]);
 
   const handleClear = async () => {
     await invoke('clear_logs');
