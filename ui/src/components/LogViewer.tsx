@@ -51,8 +51,12 @@ export function LogViewer({ isOpen, onClose }: LogViewerProps) {
   }, [isOpen, fetchLogs]);
 
   const handleClear = async () => {
-    await invoke('clear_logs');
-    setRawLines([]);
+    try {
+      await invoke('clear_logs');
+      setRawLines([]);
+    } catch (e) {
+      setError(String(e));
+    }
   };
 
   const handleCopyAll = () => {
