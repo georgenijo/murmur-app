@@ -1,367 +1,71 @@
-# Local Voice Dictation
+# Local Dictation
 
-A privacy-first voice-to-text tool for macOS, inspired by Wispr Flow. All processing happens locally - no data leaves your machine.
+A privacy-first voice-to-text app for macOS. Speak, and your words appear in any app — no cloud, no internet, everything processed on-device.
 
-## Features
-
-- 100% local processing - no cloud APIs, no data collection
-- Whisper-powered transcription (OpenAI's open-source model)
-- Optional LLM cleanup via Ollama (removes filler words, fixes grammar)
-- Global hotkey activation (toggle recording with key combo or double-tap modifier)
-- Works with any application - text is pasted into the focused app
+Built with Tauri 2 + Rust, powered by [whisper.cpp](https://github.com/ggerganov/whisper.cpp) with Metal GPU acceleration.
 
 ---
-
-## Desktop App (Recommended)
-
-Local Dictation now includes a native macOS desktop app with a modern UI, system tray integration, and easy configuration.
-
-### App Overview
-
-The desktop app provides a polished user experience with:
-
-- **System Tray Integration** - Lives in your menubar for quick access
-- **Visual Recording Indicator** - See when you're recording with a duration timer
-- **Settings Panel** - Configure hotkeys and Whisper models without command line
-- **Transcription History** - View and copy past transcriptions
-- **One-Click Installation** - No Python environment setup required
-
-<!-- TODO: Add screenshot -->
-![App Screenshot](docs/images/app-screenshot.png)
-
-### Installation
-
-#### Option 1: Download DMG (Recommended)
-
-1. Download the latest `.dmg` file from the [Releases](https://github.com/yourusername/local-dictation/releases) page
-2. Open the DMG and drag **Local Dictation** to your Applications folder
-3. Launch the app and grant the required permissions when prompted
-
-#### Option 2: Build from Source
-
-See [Building from Source](#building-the-desktop-app-from-source) below.
-
-### Usage Guide
-
-#### Starting the App
-
-Launch **Local Dictation** from your Applications folder. The app will appear in your menubar.
-
-<!-- TODO: Add menubar screenshot -->
-![Menubar Icon](docs/images/menubar-icon.png)
-
-#### Recording
-
-There are two recording modes, configurable in Settings:
-
-**Key Combo mode** (default):
-1. Press your configured hotkey (default: **Shift+Space**) to start recording
-2. Speak your text
-3. Press the hotkey again to stop
-4. The transcribed text is copied to your clipboard (and optionally pasted)
-
-**Double-Tap mode**:
-1. Quickly double-tap a modifier key (e.g. **Shift**) to start recording
-2. Speak your text
-3. Single tap the same key to stop
-4. The transcribed text is copied to your clipboard (and optionally pasted)
-
-Double-tap mode requires Accessibility permission. Held keys, modifier+letter combos (like Shift+A), and slow taps are ignored — so it won't interfere with normal typing.
-
-#### Key Options
-
-Configure your preferred key in Settings:
-
-| Mode | Options |
-|------|---------|
-| **Key Combo** | Shift+Space, Option+Space, Control+Space |
-| **Double-Tap** | Shift, Option, Control |
-
-#### Settings Panel
-
-Click the menubar icon and select **Settings** to configure:
-
-- **Whisper Model** - Choose transcription accuracy vs speed
-- **Recording Trigger** - Key Combo or Double-Tap mode
-- **Key** - Select your preferred activation key
-- **Auto-Paste** - Automatically paste transcription into focused app
-
-<!-- TODO: Add settings screenshot -->
-![Settings Panel](docs/images/settings-panel.png)
-
-#### Transcription History
-
-View your recent transcriptions by clicking the menubar icon. Each entry shows:
-
-- Transcribed text
-- Timestamp
-- One-click copy to clipboard
-
-<!-- TODO: Add history screenshot -->
-![History Panel](docs/images/history-panel.png)
-
-### Download Whisper Model
-
-The app requires a Whisper model file for transcription. Download one of these models:
-
-| Model | Size | Speed | Accuracy | Download |
-| ------- | ------ | ------- | ---------- | ---------- |
-| `large-v3-turbo` | 1.6GB | Fast | Best | [Download](https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin) |
-| `base.en` | 142MB | Fastest | Good | [Download](https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin) |
-| `small.en` | 466MB | Medium | Better | [Download](https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin) |
-
-**Model Search Locations:**
-
-The app searches for models in the following locations (in order):
-
-1. `WHISPER_MODEL_DIR` environment variable (recommended cross-platform override)
-2. `<data-dir>/local-dictation/models/`
-3. `<data-dir>/pywhispercpp/models/`
-4. `~/.cache/whisper.cpp/`
-5. `~/.cache/whisper/`
-6. `~/.whisper/models/`
-
-**Platform-specific data directories (`<data-dir>`):**
-
-| Platform    | Data Directory                                          |
-| ----------- | ------------------------------------------------------- |
-| **macOS**   | `~/Library/Application Support/`                        |
-| **Linux**   | `$XDG_DATA_HOME` (defaults to `~/.local/share/`)       |
-| **Windows** | `%APPDATA%` (e.g., `C:\Users\<user>\AppData\Roaming\`) |
-
-**Installation Example (macOS):**
-
-```bash
-# Create the models directory
-mkdir -p ~/Library/Application\ Support/local-dictation/models
-
-# Move your downloaded model
-mv ~/Downloads/ggml-large-v3-turbo.bin ~/Library/Application\ Support/local-dictation/models/
-```
-
-**Cross-platform (using environment variable):**
-
-```bash
-# Set custom model directory
-export WHISPER_MODEL_DIR=/path/to/your/models
-
-# Place model in that directory
-mv ~/Downloads/ggml-large-v3-turbo.bin $WHISPER_MODEL_DIR/
-```
-
-### macOS Permissions
-
-The app requires the following permissions (you'll be prompted on first launch):
-
-| Permission | Why |
-|------------|-----|
-| **Microphone** | To record your voice |
-| **Accessibility** | Required for double-tap recording mode and auto-paste |
-
-Go to **System Settings → Privacy & Security** to grant permissions if needed.
-
-### Building the Desktop App from Source
-
-#### Prerequisites
-
-- [Node.js](https://nodejs.org/) 18+
-- [Rust](https://rustup.rs/) (latest stable)
-- [pnpm](https://pnpm.io/) package manager
-
-#### Build Steps
-
-```bash
-# Clone the repository
-git clone https://github.com/yourusername/local-dictation.git
-cd local-dictation/ui
-
-# Install dependencies
-pnpm install
-
-# Development mode (with hot reload)
-pnpm tauri dev
-
-# Production build
-pnpm tauri build
-```
-
-The built app will be in `ui/src-tauri/target/release/bundle/dmg/`.
-
-#### Project Structure (UI)
-
-```
-ui/
-├── src/                    # React frontend
-│   ├── components/         # UI components
-│   ├── hooks/              # Custom React hooks
-│   └── App.tsx             # Main app component
-├── src-tauri/              # Tauri backend (Rust)
-│   ├── src/                # Rust source code
-│   ├── sidecar/            # Python transcription sidecar
-│   └── tauri.conf.json     # Tauri configuration
-└── package.json
-```
-
----
-
-## Requirements
-
-- macOS (tested on macOS 14+)
-- Python 3.11+
-- Homebrew
-- ~3GB disk space (for models)
 
 ## Installation
 
-### 1. Install System Dependencies
+1. Download the latest `.dmg` from the [Releases](https://github.com/georgenijo/murmur-app/releases) page
+2. Open the DMG and drag **Local Dictation** to your Applications folder
+3. Launch the app and grant permissions when prompted
+
+---
+
+## Whisper Model Setup
+
+The app requires a Whisper model file. Download one and place it in `~/Library/Application Support/local-dictation/models/`:
 
 ```bash
-brew install python@3.11 ffmpeg portaudio
+mkdir -p ~/Library/Application\ Support/local-dictation/models
+mv ~/Downloads/ggml-large-v3-turbo.bin ~/Library/Application\ Support/local-dictation/models/
 ```
 
-### 2. Install Ollama (for LLM cleanup)
+| Model | Size | Notes |
+|-------|------|-------|
+| [large-v3-turbo](https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin) | 1.6 GB | Best accuracy |
+| [small.en](https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin) | 488 MB | Good balance |
+| [base.en](https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin) | 142 MB | Fastest |
+
+---
+
+## Permissions
+
+Grant these in **System Settings → Privacy & Security**:
+
+| Permission | Required for |
+|------------|-------------|
+| Microphone | Recording your voice |
+| Accessibility | Double-tap mode |
+
+---
+
+## Recording Modes
+
+Configure in the Settings panel. Two modes available:
+
+**Key Combo** — press a hotkey to start, press again to stop. Customize the key combo freely (e.g. `Alt+D`, `Ctrl+Shift+R`). A modifier key is required.
+
+**Double-Tap** — quickly double-tap Shift, Option, or Control to start recording; single-tap to stop. Requires Accessibility permission.
+
+Transcribed text is always copied to your clipboard. Enable **Auto-Paste** in Settings to have it pasted automatically into your focused app.
+
+---
+
+## Building from Source
 
 ```bash
-brew install ollama
-brew services start ollama
-ollama pull llama3.2:3b
+git clone https://github.com/georgenijo/murmur-app.git
+cd murmur-app/ui
+npm install
+npm run tauri build
 ```
 
-### 3. Set Up Python Environment
+Requires [Node.js](https://nodejs.org/) 18+ and [Rust](https://rustup.rs/) (latest stable).
 
-```bash
-cd /path/to/local-dictation
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-```
-
-### 4. Grant macOS Permissions
-
-The app needs three permissions to function. Go to **System Settings → Privacy & Security**:
-
-| Permission | Why |
-|------------|-----|
-| **Microphone** | To record your voice |
-| **Accessibility** | To paste text into apps |
-| **Input Monitoring** | To detect the global hotkey |
-
-Add **Terminal** (or your IDE) to each of these lists.
-
-> You may need to restart Terminal after granting permissions.
-
-## Usage
-
-### Basic Usage
-
-```bash
-source venv/bin/activate
-python main.py
-```
-
-Then:
-1. Hold the **Right Option** key
-2. Speak
-3. Release the key
-4. Text appears in your focused app
-
-### Command Line Options
-
-```
-python main.py [OPTIONS]
-
-Options:
-  --hotkey KEY        Hotkey to trigger recording (default: alt_r)
-  --no-cleanup        Disable LLM cleanup (use raw transcription)
-  --model MODEL       Ollama model for cleanup (default: llama3.2:3b)
-  --whisper-model M   Whisper model: tiny.en, base.en, small.en, turbo
-  --type              Use typing instead of clipboard paste
-```
-
-### Examples
-
-```bash
-# Use raw transcription (no LLM cleanup)
-python main.py --no-cleanup
-
-# Use a different hotkey (left option key)
-python main.py --hotkey alt_l
-
-# Use the turbo Whisper model for better accuracy
-python main.py --whisper-model turbo
-
-# Use typing instead of paste (slower but doesn't touch clipboard)
-python main.py --type
-```
-
-### Available Hotkeys
-
-- `alt_r` / `option_r` - Right Option key (default)
-- `alt_l` / `option_l` - Left Option key
-- `ctrl_r` / `ctrl_l` - Control keys
-- `cmd_r` / `cmd_l` - Command keys
-- `f13`, `f14`, `f15` - Function keys (if available)
-- `caps_lock` - Caps Lock key
-
-## Whisper Models
-
-| Model | Size | Speed | Accuracy |
-|-------|------|-------|----------|
-| `tiny.en` | 39MB | Fastest | Basic |
-| `base.en` | 74MB | Fast | Good (default) |
-| `small.en` | 244MB | Medium | Better |
-| `turbo` | 809MB | Fast | Best |
-
-Models download automatically on first use to `~/.cache/whisper/`.
-
-## Troubleshooting
-
-### "Permission denied" or hotkey not working
-
-- Ensure Terminal has Accessibility and Input Monitoring permissions
-- Restart Terminal after granting permissions
-- Try running with `sudo` if issues persist
-
-### Ollama not available
-
-If you see "Ollama: Not available", the app will still work but without text cleanup.
-
-```bash
-# Check if Ollama is running
-curl http://localhost:11434/api/tags
-
-# Start Ollama if needed
-brew services start ollama
-```
-
-### No audio recorded
-
-- Check Microphone permission in System Settings
-- Verify your microphone is working: `python audio_recorder.py`
-
-### Slow transcription
-
-- Use a smaller Whisper model: `--whisper-model tiny.en`
-- The first transcription is slower (model loading)
-
-### Text not pasting
-
-- Check Accessibility permission
-- Try `--type` flag to use keystroke simulation instead
-
-## Project Structure
-
-```
-local-dictation/
-├── main.py              # Main application
-├── audio_recorder.py    # Microphone recording
-├── transcriber.py       # Whisper transcription
-├── llm_cleanup.py       # Ollama text cleanup
-├── text_injector.py     # Paste/type into apps
-├── hotkey_listener.py   # Global hotkey detection
-├── requirements.txt     # Python dependencies
-└── README.md
-```
+---
 
 ## License
 

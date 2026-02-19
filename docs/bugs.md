@@ -21,3 +21,23 @@
 **Entry point:** `ui/src-tauri/src/lib.rs` — `start_double_tap_listener`, `stop_double_tap_listener` commands
 
 ---
+
+## Auto-paste toggle is unreliable (BUG-001)
+
+**Status:** Open
+**Affects:** Settings panel — auto-paste toggle
+**Symptom:** The auto-paste toggle button flickers or appears to toggle in and out inconsistently. The setting does not always reflect the true state of auto-paste.
+**Likely cause:** State sync issue between the frontend settings and the Rust injector, or a race condition when the toggle fires before the settings are persisted.
+**Entry point:** `ui/src/components/settings/SettingsPanel.tsx`, `ui/src/lib/settings.ts`, `ui/src-tauri/src/injector.rs`
+
+---
+
+## Model dropdown uses outdated UI (BUG-002)
+
+**Status:** Open
+**Affects:** Settings panel — Whisper model selector
+**Symptom:** The model dropdown does not match the current UI design standards (stone palette, FEAT-001 design language). It uses a native/old-style `<select>` element that looks inconsistent with the rest of the settings panel.
+**Proposed fix:** Replace with a styled custom select component that matches the existing UI — consistent with other inputs in the settings panel.
+**Entry point:** `ui/src/components/settings/SettingsPanel.tsx`
+
+---

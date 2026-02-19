@@ -26,6 +26,7 @@ hound = "3.5"
 dirs = "5"
 cpal = "0.15"
 rdev = { git = "https://github.com/Narsil/rdev", branch = "main" }
+sysinfo = "0.32"
 
 [profile.release]
 panic = "abort"

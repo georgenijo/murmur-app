@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, lazy, Suspense } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { SettingsPanel } from './components/settings';
 import { PermissionsBanner } from './components/PermissionsBanner';
@@ -15,6 +15,7 @@ import { useDoubleTapToggle } from './lib/hooks/useDoubleTapToggle';
 import { useShowAboutListener } from './lib/hooks/useShowAboutListener';
 import { StatsBar } from './components/StatsBar';
 import { LogViewer } from './components/LogViewer';
+const ResourceMonitor = lazy(() => import('./components/ResourceMonitor').then(m => ({ default: m.ResourceMonitor })));
 import { resetStats } from './lib/stats';
 
 function App() {
@@ -85,6 +86,8 @@ function App() {
           )}
 
           <RecordingControls status={status} initialized={initialized} onStart={handleStart} onStop={handleStop} />
+
+          {import.meta.env.DEV && <Suspense fallback={null}><ResourceMonitor /></Suspense>}
         </main>
 
         <SettingsPanel
