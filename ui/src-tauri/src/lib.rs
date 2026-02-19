@@ -288,7 +288,7 @@ async fn stop_native_recording(
                     "state": "idle"
                 }));
             }
-            _ => {
+            DictationStatus::Recording => {
                 dictation.status = DictationStatus::Processing;
             }
         }
