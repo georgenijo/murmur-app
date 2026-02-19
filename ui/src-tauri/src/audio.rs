@@ -19,10 +19,17 @@ fn compute_rms(samples: &[f32]) -> f32 {
 /// Build an input stream that converts interleaved multi-channel samples to mono f32,
 /// computes RMS for each buffer chunk and emits an "audio-level" event if an AppHandle
 /// is provided.
+/// Minimum gap between `audio-level` events (~30 fps).
+const AUDIO_LEVEL_THROTTLE_MS: u64 = 33;
+
+/// Build an input stream that converts interleaved multi-channel samples to mono f32,
+/// computes RMS for each buffer chunk and emits an "audio-level" event if an AppHandle
+/// is provided, throttled to ~30 fps to avoid IPC spam.
 macro_rules! build_mono_input_stream {
     ($device:expr, $config:expr, $shared:expr, $channels:expr, $err_fn:expr, $sample_type:ty, $app_handle:expr) => {{
         let samples_ref = Arc::clone(&$shared);
         let app_handle_opt: Option<tauri::AppHandle> = $app_handle;
+        let last_emit_ms = std::sync::atomic::AtomicU64::new(0);
         $device.build_input_stream(
             &$config.into(),
             move |data: &[$sample_type], _: &_| {
@@ -32,10 +39,18 @@ macro_rules! build_mono_input_stream {
                         sum / $channels as f32
                     })
                     .collect();
-                // Emit audio level for waveform visualisation
+                // Emit audio level throttled to ~30 fps
                 if let Some(ref handle) = app_handle_opt {
-                    let rms = compute_rms(&mono);
-                    let _ = handle.emit("audio-level", rms);
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    let last = last_emit_ms.load(std::sync::atomic::Ordering::Relaxed);
+                    if now.saturating_sub(last) >= AUDIO_LEVEL_THROTTLE_MS {
+                        last_emit_ms.store(now, std::sync::atomic::Ordering::Relaxed);
+                        let rms = compute_rms(&mono);
+                        let _ = handle.emit("audio-level", rms);
+                    }
                 }
                 if let Ok(mut s) = samples_ref.samples.lock() {
                     s.extend(mono);

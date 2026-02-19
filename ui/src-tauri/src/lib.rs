@@ -409,19 +409,25 @@ fn update_tray_icon(app: tauri::AppHandle, icon_state: String) -> Result<(), Str
 /// Show the always-on-top overlay window.
 #[tauri::command]
 fn show_overlay(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(overlay) = app.get_webview_window("overlay") {
-        overlay.show().map_err(|e| e.to_string())?;
+    match app.get_webview_window("overlay") {
+        Some(overlay) => overlay.show().map_err(|e| e.to_string()),
+        None => {
+            log_warn!("show_overlay: overlay window not found — skipping");
+            Ok(())
+        }
     }
-    Ok(())
 }
 
 /// Hide the always-on-top overlay window.
 #[tauri::command]
 fn hide_overlay(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(overlay) = app.get_webview_window("overlay") {
-        overlay.hide().map_err(|e| e.to_string())?;
+    match app.get_webview_window("overlay") {
+        Some(overlay) => overlay.hide().map_err(|e| e.to_string()),
+        None => {
+            log_warn!("hide_overlay: overlay window not found — skipping");
+            Ok(())
+        }
     }
-    Ok(())
 }
 
 #[cfg(test)]

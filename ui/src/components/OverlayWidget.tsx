@@ -2,14 +2,10 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow, primaryMonitor, LogicalPosition } from '@tauri-apps/api/window';
+import { isDictationStatus } from '../lib/types';
 import type { DictationStatus } from '../lib/types';
 
 const BAR_COUNT = 5;
-
-const VALID_STATUSES = ['idle', 'recording', 'processing'] as const;
-function isDictationStatus(v: unknown): v is DictationStatus {
-  return typeof v === 'string' && (VALID_STATUSES as readonly string[]).includes(v);
-}
 
 export function OverlayWidget() {
   const [status, setStatus] = useState<DictationStatus>('idle');
@@ -18,9 +14,17 @@ export function OverlayWidget() {
   const [barHeights, setBarHeights] = useState<number[]>(Array(BAR_COUNT).fill(0.15));
   const statusRef = useRef(status);
   const lockedRef = useRef(lockedMode);
+  const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => { statusRef.current = status; }, [status]);
   useEffect(() => { lockedRef.current = lockedMode; }, [lockedMode]);
+
+  // Clear click debounce timer on unmount
+  useEffect(() => {
+    return () => {
+      if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
+    };
+  }, []);
 
   // Position window at bottom-center of primary monitor on mount
   useEffect(() => {
@@ -43,22 +47,28 @@ export function OverlayWidget() {
 
   // Subscribe to recording status events from Rust
   useEffect(() => {
+    let cancelled = false;
     let unlisten: (() => void) | null = null;
     listen<string>('recording-status-changed', (event) => {
       if (isDictationStatus(event.payload)) {
         setStatus(event.payload);
       }
-    }).then((fn) => { unlisten = fn; });
-    return () => { unlisten?.(); };
+    }).then((fn) => {
+      if (cancelled) { fn(); } else { unlisten = fn; }
+    });
+    return () => { cancelled = true; unlisten?.(); };
   }, []);
 
   // Subscribe to audio level events from Rust
   useEffect(() => {
+    let cancelled = false;
     let unlisten: (() => void) | null = null;
     listen<number>('audio-level', (event) => {
       setAudioLevel(event.payload);
-    }).then((fn) => { unlisten = fn; });
-    return () => { unlisten?.(); };
+    }).then((fn) => {
+      if (cancelled) { fn(); } else { unlisten = fn; }
+    });
+    return () => { cancelled = true; unlisten?.(); };
   }, []);
 
   // Animate waveform bars based on audio level
@@ -77,7 +87,12 @@ export function OverlayWidget() {
     );
   }, [audioLevel, status]);
 
+  // Double-click: toggle locked mode. Cancel any pending single-click first.
   const handleDoubleClick = useCallback(async () => {
+    if (clickTimerRef.current) {
+      clearTimeout(clickTimerRef.current);
+      clickTimerRef.current = null;
+    }
     const currentLocked = lockedRef.current;
     const currentStatus = statusRef.current;
     if (!currentLocked) {
@@ -103,16 +118,20 @@ export function OverlayWidget() {
     }
   }, []);
 
-  const handleClick = useCallback(async () => {
-    // In locked mode, a single click stops recording
-    if (lockedRef.current && statusRef.current === 'recording') {
-      setLockedMode(false);
-      try {
-        await invoke('stop_native_recording');
-      } catch {
-        // status will sync via event
+  // Single-click: debounced so it doesn't fire when the user double-clicks.
+  const handleClick = useCallback(() => {
+    clickTimerRef.current = setTimeout(async () => {
+      clickTimerRef.current = null;
+      // In locked mode, a single click stops recording
+      if (lockedRef.current && statusRef.current === 'recording') {
+        setLockedMode(false);
+        try {
+          await invoke('stop_native_recording');
+        } catch {
+          // status will sync via event
+        }
       }
-    }
+    }, 250);
   }, []);
 
   const statusColor = {

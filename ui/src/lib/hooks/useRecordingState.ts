@@ -1,15 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { startRecording, stopRecording } from '../dictation';
+import { isDictationStatus } from '../types';
 import type { DictationStatus } from '../types';
 
 interface UseRecordingStateProps {
   addEntry: (text: string, duration: number) => void;
-}
-
-const VALID_STATUSES = ['idle', 'recording', 'processing'] as const;
-function isDictationStatus(v: unknown): v is DictationStatus {
-  return typeof v === 'string' && (VALID_STATUSES as readonly string[]).includes(v);
 }
 
 export function useRecordingState({ addEntry }: UseRecordingStateProps) {
@@ -26,6 +22,7 @@ export function useRecordingState({ addEntry }: UseRecordingStateProps) {
   const recordingStartTimeRef = useRef(recordingStartTime);
   useEffect(() => { statusRef.current = status; }, [status]);
   const isStartingRef = useRef(false);
+  const isStoppingRef = useRef(false);
 
   // Recording duration timer
   useEffect(() => {
@@ -42,22 +39,28 @@ export function useRecordingState({ addEntry }: UseRecordingStateProps) {
 
   // Sync status from Rust events — keeps main window in sync when overlay controls recording
   useEffect(() => {
+    let cancelled = false;
     let unlisten: (() => void) | null = null;
     listen<string>('recording-status-changed', (event) => {
       if (isDictationStatus(event.payload)) {
         setStatus(event.payload);
       }
-    }).then((fn) => { unlisten = fn; });
-    return () => { unlisten?.(); };
+    }).then((fn) => {
+      if (cancelled) { fn(); } else { unlisten = fn; }
+    });
+    return () => { cancelled = true; unlisten?.(); };
   }, []);
 
   // Subscribe to live audio level for waveform visualisation
   useEffect(() => {
+    let cancelled = false;
     let unlisten: (() => void) | null = null;
     listen<number>('audio-level', (event) => {
       setAudioLevel(event.payload);
-    }).then((fn) => { unlisten = fn; });
-    return () => { unlisten?.(); };
+    }).then((fn) => {
+      if (cancelled) { fn(); } else { unlisten = fn; }
+    });
+    return () => { cancelled = true; unlisten?.(); };
   }, []);
 
   const handleStart = useCallback(async () => {
@@ -84,6 +87,8 @@ export function useRecordingState({ addEntry }: UseRecordingStateProps) {
   }, []);
 
   const handleStop = useCallback(async () => {
+    if (isStoppingRef.current) return;
+    isStoppingRef.current = true;
     const duration = recordingStartTimeRef.current
       ? Math.floor((Date.now() - recordingStartTimeRef.current) / 1000)
       : 0;
@@ -99,6 +104,8 @@ export function useRecordingState({ addEntry }: UseRecordingStateProps) {
     } catch (err) {
       setError(String(err));
       setStatus('idle');
+    } finally {
+      isStoppingRef.current = false;
     }
   }, [addEntry]);
 
@@ -112,17 +119,16 @@ export function useRecordingState({ addEntry }: UseRecordingStateProps) {
     }
   }, [handleStart, handleStop]);
 
+  // Side effects must live outside the setLockedMode updater to avoid double-firing in StrictMode
   const toggleLockedMode = useCallback(async () => {
-    setLockedMode((prev) => {
-      const next = !prev;
-      if (next && statusRef.current !== 'recording') {
-        handleStart();
-      } else if (!next && statusRef.current === 'recording') {
-        handleStop();
-      }
-      return next;
-    });
-  }, [handleStart, handleStop]);
+    const next = !lockedMode;
+    setLockedMode(next);
+    if (next && statusRef.current !== 'recording') {
+      await handleStart();
+    } else if (!next && statusRef.current === 'recording') {
+      await handleStop();
+    }
+  }, [lockedMode, handleStart, handleStop]);
 
   return {
     status,

@@ -31,7 +31,8 @@
         "transparent": true,
         "skipTaskbar": true,
         "visible": false,
-        "resizable": false
+        "resizable": false,
+        "focusable": false
       }
     ],
     "security": {
