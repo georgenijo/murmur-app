@@ -32,7 +32,8 @@ function toPolylinePoints(
 export function ResourceMonitor() {
   const [isCollapsed, setIsCollapsed] = useState(loadCollapsed);
 
-  const readings = useResourceMonitor(true);
+  // Only poll when expanded — no background work when the chart is hidden.
+  const readings = useResourceMonitor(!isCollapsed);
 
   const latest = readings[readings.length - 1];
   const cpuNow = latest ? latest.cpu_percent.toFixed(1) : '—';
@@ -50,7 +51,10 @@ export function ResourceMonitor() {
   };
 
   return (
-    <div className="shrink-0 rounded-lg border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800/50 overflow-hidden">
+    // CSS vars for chart line colors — theme-aware so SVG strokes match dark mode.
+    <div
+      className="shrink-0 rounded-lg border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800/50 overflow-hidden [--cpu-stroke:#57534e] dark:[--cpu-stroke:#a8a29e] [--mem-stroke:#f59e0b] dark:[--mem-stroke:#fbbf24]"
+    >
       {/* Header row */}
       <button
         onClick={toggle}
@@ -105,7 +109,7 @@ export function ResourceMonitor() {
               <polyline
                 points={cpuPoints}
                 fill="none"
-                stroke="#57534e"
+                stroke="var(--cpu-stroke)"
                 strokeWidth="1.2"
                 strokeLinejoin="round"
                 strokeLinecap="round"
@@ -115,21 +119,21 @@ export function ResourceMonitor() {
               <polyline
                 points={memPoints}
                 fill="none"
-                stroke="#f59e0b"
+                stroke="var(--mem-stroke)"
                 strokeWidth="1.2"
                 strokeLinejoin="round"
                 strokeLinecap="round"
               />
             )}
           </svg>
-          {/* Legend */}
+          {/* Legend — swatches use the same CSS vars as the polylines */}
           <div className="flex gap-3 mt-1">
             <span className="flex items-center gap-1 text-xs text-stone-500 dark:text-stone-400">
-              <span className="inline-block w-2.5 h-0.5 bg-stone-600 dark:bg-stone-400 rounded" />
+              <span className="inline-block w-2.5 h-0.5 rounded" style={{ background: 'var(--cpu-stroke)' }} />
               CPU %
             </span>
             <span className="flex items-center gap-1 text-xs text-stone-500 dark:text-stone-400">
-              <span className="inline-block w-2.5 h-0.5 bg-amber-500 rounded" />
+              <span className="inline-block w-2.5 h-0.5 rounded" style={{ background: 'var(--mem-stroke)' }} />
               Memory MB
             </span>
           </div>

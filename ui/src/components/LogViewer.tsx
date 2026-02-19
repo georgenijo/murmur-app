@@ -108,10 +108,11 @@ export function LogViewer({ isOpen, onClose }: LogViewerProps) {
               <p className="text-stone-400 dark:text-stone-500 text-center py-4">No log entries.</p>
             )}
             {!loading && !error && [...rawLines].reverse().map((raw, i) => {
+              const originalIndex = rawLines.length - 1 - i;
               const p = parseLine(raw);
               if (!p) return null;
               return (
-                <div key={i} className="flex items-baseline gap-2 py-0.5 border-b border-stone-100 dark:border-stone-800 last:border-0">
+                <div key={originalIndex} className="flex items-baseline gap-2 py-0.5 border-b border-stone-100 dark:border-stone-800 last:border-0">
                   <span className="text-stone-400 dark:text-stone-500 shrink-0 tabular-nums">{p.timestamp}</span>
                   <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold shrink-0 ${LEVEL_COLORS[p.level] ?? LEVEL_COLORS['INFO']}`}>
                     {p.level}

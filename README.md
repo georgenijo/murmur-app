@@ -26,7 +26,7 @@ mv ~/Downloads/ggml-large-v3-turbo.bin ~/Library/Application\ Support/local-dict
 | Model | Size | Notes |
 |-------|------|-------|
 | [large-v3-turbo](https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin) | 1.6 GB | Best accuracy |
-| [small.en](https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin) | 466 MB | Good balance |
+| [small.en](https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin) | 488 MB | Good balance |
 | [base.en](https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin) | 142 MB | Fastest |
 
 ---
@@ -48,7 +48,7 @@ Configure in the Settings panel. Two modes available:
 
 **Key Combo** — press a hotkey to start, press again to stop. Customize the key combo freely (e.g. `Alt+D`, `Ctrl+Shift+R`). A modifier key is required.
 
-**Double-Tap** — quickly double-tap Shift, Option, or Control to start recording; single tap to stop. Requires Accessibility permission.
+**Double-Tap** — quickly double-tap Shift, Option, or Control to start recording; single-tap to stop. Requires Accessibility permission.
 
 Transcribed text is always copied to your clipboard. Enable **Auto-Paste** in Settings to have it pasted automatically into your focused app.
 

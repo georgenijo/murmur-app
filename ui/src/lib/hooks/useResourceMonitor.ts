@@ -14,6 +14,9 @@ export function useResourceMonitor(enabled: boolean): ResourceReading[] {
   useEffect(() => {
     if (!enabled) return;
 
+    // Clear stale readings when re-enabled so the chart starts fresh.
+    setReadings([]);
+
     const fetchUsage = async () => {
       try {
         const usage = await invoke<ResourceReading>('get_resource_usage');
@@ -21,8 +24,8 @@ export function useResourceMonitor(enabled: boolean): ResourceReading[] {
           const next = [...prev, usage];
           return next.length > MAX_READINGS ? next.slice(-MAX_READINGS) : next;
         });
-      } catch {
-        // ignore errors silently
+      } catch (e) {
+        if (import.meta.env.DEV) console.debug('[useResourceMonitor]', e);
       }
     };
 
