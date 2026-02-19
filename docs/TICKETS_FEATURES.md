@@ -131,44 +131,71 @@ User wants a Whisperflow-style status indicator. Primary preference: dynamic tra
 ## FEAT-003: Custom Hotkey Binding
 
 **Priority:** P1
-**Type:** Frontend + Rust
+**Type:** Frontend only
 **Branch:** `feat/custom-hotkey`
 **Status:** TODO
 **Depends on:** FEAT-001
 
 ### Context
-Currently hotkey is a dropdown with 3 fixed combos. User wants to capture any key or combo freely. Conflict detection with macOS system shortcuts is deferred to v2.
+Currently the hotkey is a dropdown with 3 fixed modifier+Space combos. User wants to capture any key combo freely for hotkey mode. The double-tap key stays as a fixed dropdown — `keyboard.rs` only supports 3 modifier keys (`ShiftLeft`, `Alt`, `ControlRight`) and expanding Rust is out of scope here.
+
+**Two separate settings fields:** The current codebase uses a single `settings.hotkey` field for both modes, but the two modes use different formats:
+- Hotkey mode passes through `hotkeyToShortcut()` in `hotkey.ts` → Tauri global-shortcut format (e.g. `"Shift+Space"`)
+- Double-tap mode passes the rdev key name directly to Rust (e.g. `"shift_l"`)
+
+FEAT-003 splits these into two fields to make the formats explicit and allow free-form capture for hotkey mode only.
 
 ### Acceptance Criteria
 - [ ] Hotkey field in settings is a key-capture input: click/focus it, press any combo, it registers
-- [ ] Supports modifier+key combos (e.g. `Cmd+Shift+D`, `Option+F1`)
-- [ ] "Disable" option clears the binding (no active hotkey)
-- [ ] Double-tap mode key selector also uses key-capture input
-- [ ] Persists across restarts
+- [ ] Supports modifier+key combos (e.g. `Shift+D`, `Alt+Space`, `Ctrl+Shift+R`)
+- [ ] "Clear" button disables the hotkey binding (no active global shortcut registered)
+- [ ] Double-tap key remains a 3-option dropdown (`Shift`, `Option`, `Control`) — Rust only supports these
+- [ ] Both settings persist across restarts
 - [ ] On hotkey change: old shortcut unregistered before new one registered (no double-registration)
+- [ ] Backwards-compatible: existing stored `"shift_l"` / `"alt_l"` / `"ctrl_r"` values migrate to their Tauri format equivalents on load
 
 ### Technical Design
 
-**`KeyCaptureInput` component (new):**
-- Renders current binding as formatted text (e.g. "⌘⇧D")
-- On focus: listens for `keydown`, captures modifier flags + key, prevents default
-- On non-modifier `keyup`: saves binding, loses focus
-- Formats to `@tauri-apps/plugin-global-shortcut` string format (e.g. "CmdOrCtrl+Shift+D")
-- "Clear" button resets to disabled state
+**Settings split (`settings.ts`):**
+- Remove `HotkeyOption` union type
+- `settings.hotkey: string` — stores Tauri global-shortcut format directly (e.g. `"Shift+Space"`, `"Alt+D"`). Default: `"Shift+Space"`
+- Add `settings.doubleTapKey: DoubleTapKey` where `DoubleTapKey = 'shift_l' | 'alt_l' | 'ctrl_r'`. Default: `"shift_l"`
+- Keep `DOUBLE_TAP_KEY_OPTIONS` array (still needed for the dropdown)
+- Remove `HOTKEY_OPTIONS` array (replaced by `KeyCaptureInput`)
+- In `loadSettings()`: add migration — if stored `hotkey` value is a legacy rdev key name, convert to Tauri format using the same map that was in `hotkeyToShortcut()`
 
-**Settings changes:**
-- `HotkeyOption` type in `settings.ts` changes from union of 3 strings to `string`
-- Remove `HOTKEY_OPTIONS` and `DOUBLE_TAP_KEY_OPTIONS` fixed arrays
-- Update defaults to use string format
+**`hotkey.ts` changes:**
+- Remove `hotkeyToShortcut()` — no longer needed, `settings.hotkey` is already in Tauri format
+- `registerHotkey` and `unregisterHotkey` unchanged
+
+**`KeyCaptureInput` component (`ui/src/components/KeyCaptureInput.tsx`):**
+- Renders current binding as formatted text (e.g. `"⇧ Space"`, `"⌥ D"`)
+- On focus: listen for `keydown`, capture modifier flags + key, prevent default
+- On non-modifier `keyup`: format to Tauri shortcut string, call `onChange`, blur
+- Tauri shortcut format: modifiers as `Shift`, `Alt`, `Ctrl`, `Super`; key names match the plugin's expected format
+- "Clear" button calls `onChange("")` to disable
+- Shows placeholder text when empty: `"Click to set hotkey"`
 
 **Hook changes:**
-- `useHotkeyToggle`: unregister old shortcut before registering new one on hotkey change
+- `useHotkeyToggle`: remove `hotkeyToShortcut()` call — pass `hotkey` directly to `registerHotkey`. If `hotkey` is empty string, skip registration entirely (disabled state).
+- `useDoubleTapToggle`: rename `hotkey` prop to `doubleTapKey`, pass `settings.doubleTapKey` from App
+
+**`SettingsPanel.tsx` changes:**
+- Replace hotkey dropdown with `<KeyCaptureInput value={settings.hotkey} onChange={(v) => onUpdateSettings({ hotkey: v })} />`
+- Double-tap key section keeps the `<select>` dropdown using `DOUBLE_TAP_KEY_OPTIONS`
+
+**`App.tsx` changes:**
+- `useHotkeyToggle`: `hotkey: settings.hotkey`
+- `useDoubleTapToggle`: rename prop `hotkey` → `doubleTapKey`, pass `settings.doubleTapKey`
 
 ### Files to Create/Modify
-- `ui/src/lib/settings.ts` — `HotkeyOption` → `string`, remove fixed option arrays, update defaults
+- `ui/src/lib/settings.ts` — split hotkey field, add `DoubleTapKey` type, add migration in `loadSettings`, update defaults
+- `ui/src/lib/hotkey.ts` — remove `hotkeyToShortcut()`
 - `ui/src/components/KeyCaptureInput.tsx` (new) — key capture UI component
-- `ui/src/components/settings/SettingsPanel.tsx` — replace dropdowns with `KeyCaptureInput`
-- `ui/src/lib/hooks/useHotkeyToggle.ts` — handle unregister before re-register
+- `ui/src/components/settings/SettingsPanel.tsx` — `KeyCaptureInput` for hotkey, keep dropdown for double-tap
+- `ui/src/lib/hooks/useHotkeyToggle.ts` — remove `hotkeyToShortcut` call, handle empty string (disabled)
+- `ui/src/lib/hooks/useDoubleTapToggle.ts` — rename `hotkey` prop to `doubleTapKey`
+- `ui/src/App.tsx` — pass `settings.hotkey` and `settings.doubleTapKey` to respective hooks
 
 ---
 
