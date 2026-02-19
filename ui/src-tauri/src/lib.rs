@@ -123,6 +123,7 @@ async fn process_audio(
         let mut dictation = state.app_state.dictation.lock_or_recover();
         dictation.status = DictationStatus::Processing;
     }
+    let _ = app_handle.emit("recording-status-changed", "processing");
 
     // Guard resets status to Idle if decode/parse fails before reaching the pipeline
     let mut guard = IdleGuard::new(&state.app_state);
@@ -135,7 +136,9 @@ async fn process_audio(
     // Pipeline has its own guard, so disarm this one
     guard.disarm();
 
-    let text = run_transcription_pipeline(&samples, &app_handle, &state.app_state)?;
+    let pipeline_result = run_transcription_pipeline(&samples, &app_handle, &state.app_state);
+    let _ = app_handle.emit("recording-status-changed", "idle");
+    let text = pipeline_result?;
 
     Ok(serde_json::json!({
         "type": "transcription",
@@ -240,7 +243,10 @@ fn request_microphone_permission() -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn start_native_recording(state: tauri::State<'_, State>) -> Result<serde_json::Value, String> {
+async fn start_native_recording(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, State>,
+) -> Result<serde_json::Value, String> {
     // Check and update status in one lock
     {
         let mut dictation = state.app_state.dictation.lock_or_recover();
@@ -254,12 +260,13 @@ async fn start_native_recording(state: tauri::State<'_, State>) -> Result<serde_
         dictation.status = DictationStatus::Recording;
     }
 
-    if let Err(e) = audio::start_recording() {
+    if let Err(e) = audio::start_recording(Some(app_handle.clone())) {
         log_error!("start_native_recording: audio failed: {}", e);
         let mut dictation = state.app_state.dictation.lock_or_recover();
         dictation.status = DictationStatus::Idle;
         return Err(e);
     }
+    let _ = app_handle.emit("recording-status-changed", "recording");
     log_info!("start_native_recording: started");
 
     Ok(serde_json::json!({
@@ -293,6 +300,7 @@ async fn stop_native_recording(
             }
         }
     }
+    let _ = app_handle.emit("recording-status-changed", "processing");
 
     // Guard resets status to Idle if stop_recording fails or samples are empty;
     // disarmed before handing off to run_transcription_pipeline (which has its own guard)
@@ -306,6 +314,7 @@ async fn stop_native_recording(
     if samples.is_empty() {
         log_info!("stop_native_recording: no audio captured");
         // guard drops on return, resetting status to Idle
+        let _ = app_handle.emit("recording-status-changed", "idle");
         return Ok(serde_json::json!({
             "type": "transcription",
             "text": "",
@@ -316,7 +325,9 @@ async fn stop_native_recording(
     // Hand off status management to the pipeline's own guard
     guard.disarm();
 
-    let text = run_transcription_pipeline(&samples, &app_handle, &state.app_state).map_err(|e| {
+    let pipeline_result = run_transcription_pipeline(&samples, &app_handle, &state.app_state);
+    let _ = app_handle.emit("recording-status-changed", "idle");
+    let text = pipeline_result.map_err(|e| {
         log_error!("stop_native_recording: pipeline failed: {}", e);
         e
     })?;
@@ -356,6 +367,113 @@ fn set_double_tap_recording(recording: bool) {
     keyboard::set_recording_state(recording);
 }
 
+/// Generate 22×22 RGBA pixel data for a solid circle of the given colour.
+fn make_tray_icon_data(r: u8, g: u8, b: u8) -> Vec<u8> {
+    const SIZE: u32 = 22;
+    let mut data = vec![0u8; (SIZE * SIZE * 4) as usize];
+    let center = (SIZE as i32) / 2;
+    let radius_sq = ((SIZE as i32 / 2) - 2).pow(2);
+    for y in 0..SIZE as i32 {
+        for x in 0..SIZE as i32 {
+            let dx = x - center;
+            let dy = y - center;
+            if dx * dx + dy * dy <= radius_sq {
+                let idx = ((y as u32 * SIZE + x as u32) * 4) as usize;
+                data[idx] = r;
+                data[idx + 1] = g;
+                data[idx + 2] = b;
+                data[idx + 3] = 255;
+            }
+        }
+    }
+    data
+}
+
+/// Update the tray icon to reflect the current dictation state.
+/// `icon_state`: "idle" | "recording" | "processing"
+#[tauri::command]
+fn update_tray_icon(app: tauri::AppHandle, icon_state: String) -> Result<(), String> {
+    let (r, g, b) = match icon_state.as_str() {
+        "recording"  => (220u8, 50u8,  50u8),
+        "processing" => (200u8, 150u8, 40u8),
+        _            => (140u8, 140u8, 140u8), // idle — gray
+    };
+    let data = make_tray_icon_data(r, g, b);
+    if let Some(tray) = app.tray_by_id("main-tray") {
+        tray.set_icon(Some(tauri::image::Image::new(&data, 22, 22)))
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Show the always-on-top overlay window.
+#[tauri::command]
+fn show_overlay(app: tauri::AppHandle) -> Result<(), String> {
+    match app.get_webview_window("overlay") {
+        Some(overlay) => overlay.show().map_err(|e| e.to_string()),
+        None => {
+            log_warn!("show_overlay: overlay window not found — skipping");
+            Ok(())
+        }
+    }
+}
+
+/// Hide the always-on-top overlay window.
+#[tauri::command]
+fn hide_overlay(app: tauri::AppHandle) -> Result<(), String> {
+    match app.get_webview_window("overlay") {
+        Some(overlay) => overlay.hide().map_err(|e| e.to_string()),
+        None => {
+            log_warn!("hide_overlay: overlay window not found — skipping");
+            Ok(())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SIZE: usize = 22;
+
+    #[test]
+    fn tray_icon_data_correct_size() {
+        let data = make_tray_icon_data(255, 0, 0);
+        assert_eq!(data.len(), SIZE * SIZE * 4);
+    }
+
+    #[test]
+    fn tray_icon_center_pixel_is_opaque_and_colored() {
+        let data = make_tray_icon_data(220, 50, 50);
+        let idx = (11 * SIZE + 11) * 4;
+        assert_eq!(data[idx],     220, "R");
+        assert_eq!(data[idx + 1],  50, "G");
+        assert_eq!(data[idx + 2],  50, "B");
+        assert_eq!(data[idx + 3], 255, "A should be opaque");
+    }
+
+    #[test]
+    fn tray_icon_corner_pixel_is_transparent() {
+        let data = make_tray_icon_data(220, 50, 50);
+        // Corners are outside the inscribed circle
+        for &(row, col) in &[(0, 0), (0, 21), (21, 0), (21, 21)] {
+            let idx = (row * SIZE + col) * 4;
+            assert_eq!(data[idx + 3], 0, "corner ({row},{col}) alpha should be 0 (transparent)");
+        }
+    }
+
+    #[test]
+    fn tray_icon_distinct_colors_for_each_state() {
+        let idle       = make_tray_icon_data(140, 140, 140);
+        let recording  = make_tray_icon_data(220,  50,  50);
+        let processing = make_tray_icon_data(200, 150,  40);
+        let center = (11 * SIZE + 11) * 4;
+        // All three center pixels must differ
+        assert_ne!(idle[center],      recording[center]);
+        assert_ne!(recording[center], processing[center]);
+    }
+}
+
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -385,7 +503,10 @@ pub fn run() {
             start_double_tap_listener,
             stop_double_tap_listener,
             update_double_tap_key,
-            set_double_tap_recording
+            set_double_tap_recording,
+            update_tray_icon,
+            show_overlay,
+            hide_overlay
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -396,16 +517,27 @@ pub fn run() {
         .setup(|app| {
             log_info!("app setup");
             let show = MenuItem::with_id(app, "show", "Show Window", true, None::<&str>)?;
+            let toggle_overlay = MenuItem::with_id(app, "toggle_overlay", "Toggle Overlay", true, None::<&str>)?;
             let about = MenuItem::with_id(app, "about", "About Local Dictation", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &about, &quit])?;
+            let menu = Menu::with_items(app, &[&show, &toggle_overlay, &about, &quit])?;
 
-            let _tray = TrayIconBuilder::new()
+            // Named ID so we can retrieve and update the icon later via update_tray_icon
+            let _tray = TrayIconBuilder::with_id("main-tray")
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => show_main_window(app),
+                    "toggle_overlay" => {
+                        if let Some(overlay) = app.get_webview_window("overlay") {
+                            if overlay.is_visible().unwrap_or(false) {
+                                let _ = overlay.hide();
+                            } else {
+                                let _ = overlay.show();
+                            }
+                        }
+                    }
                     "about" => {
                         show_main_window(app);
                         if let Some(window) = app.get_webview_window("main") {
@@ -415,7 +547,7 @@ pub fn run() {
                     "quit" => app.exit(0),
                     _ => {}
                 })
-                .on_tray_icon_event(|tray, event| {
+                .on_tray_icon_event(|tray: &tauri::tray::TrayIcon, event: TrayIconEvent| {
                     if let TrayIconEvent::Click {
                         button: MouseButton::Left,
                         button_state: MouseButtonState::Up,

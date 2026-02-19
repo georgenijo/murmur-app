@@ -5,11 +5,31 @@ use cpal::{Sample, SampleFormat};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
+use tauri::Emitter;
 
-/// Build an input stream that converts interleaved multi-channel samples to mono f32.
+/// Compute RMS (root mean square) of a sample slice — returns 0.0–1.0 audio level.
+fn compute_rms(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let sum_sq: f32 = samples.iter().map(|s| s * s).sum();
+    (sum_sq / samples.len() as f32).sqrt()
+}
+
+/// Build an input stream that converts interleaved multi-channel samples to mono f32,
+/// computes RMS for each buffer chunk and emits an "audio-level" event if an AppHandle
+/// is provided.
+/// Minimum gap between `audio-level` events (~30 fps).
+const AUDIO_LEVEL_THROTTLE_MS: u64 = 33;
+
+/// Build an input stream that converts interleaved multi-channel samples to mono f32,
+/// computes RMS for each buffer chunk and emits an "audio-level" event if an AppHandle
+/// is provided, throttled to ~30 fps to avoid IPC spam.
 macro_rules! build_mono_input_stream {
-    ($device:expr, $config:expr, $shared:expr, $channels:expr, $err_fn:expr, $sample_type:ty) => {{
+    ($device:expr, $config:expr, $shared:expr, $channels:expr, $err_fn:expr, $sample_type:ty, $app_handle:expr) => {{
         let samples_ref = Arc::clone(&$shared);
+        let app_handle_opt: Option<tauri::AppHandle> = $app_handle;
+        let last_emit_ms = std::sync::atomic::AtomicU64::new(0);
         $device.build_input_stream(
             &$config.into(),
             move |data: &[$sample_type], _: &_| {
@@ -19,6 +39,19 @@ macro_rules! build_mono_input_stream {
                         sum / $channels as f32
                     })
                     .collect();
+                // Emit audio level throttled to ~30 fps
+                if let Some(ref handle) = app_handle_opt {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    let last = last_emit_ms.load(std::sync::atomic::Ordering::Relaxed);
+                    if now.saturating_sub(last) >= AUDIO_LEVEL_THROTTLE_MS {
+                        last_emit_ms.store(now, std::sync::atomic::Ordering::Relaxed);
+                        let rms = compute_rms(&mono);
+                        let _ = handle.emit("audio-level", rms);
+                    }
+                }
                 if let Ok(mut s) = samples_ref.samples.lock() {
                     s.extend(mono);
                 }
@@ -62,7 +95,7 @@ fn get_state() -> &'static Mutex<RecordingState> {
     })
 }
 
-pub fn start_recording() -> Result<(), String> {
+pub fn start_recording(app_handle: Option<tauri::AppHandle>) -> Result<(), String> {
     let state = get_state();
     let mut state_guard = state.lock().unwrap_or_else(|poisoned| {
         log_warn!("start_recording: recording state mutex was poisoned, recovering");
@@ -90,7 +123,7 @@ pub fn start_recording() -> Result<(), String> {
 
     // Spawn audio thread
     let handle = thread::spawn(move || {
-        if let Err(e) = run_audio_capture(cmd_rx, shared, ready_tx.clone()) {
+        if let Err(e) = run_audio_capture(cmd_rx, shared, ready_tx.clone(), app_handle) {
             log_error!("Audio capture error: {}", e);
             let _ = ready_tx.send(Err(e));
         }
@@ -120,6 +153,7 @@ fn run_audio_capture(
     cmd_rx: Receiver<AudioCommand>,
     shared: Arc<SharedSamples>,
     ready_tx: Sender<Result<(), String>>,
+    app_handle: Option<tauri::AppHandle>,
 ) -> Result<(), String> {
     let host = cpal::default_host();
 
@@ -140,8 +174,8 @@ fn run_audio_capture(
     let err_fn = |err| log_error!("Audio stream error: {}", err);
 
     let stream = match sample_format {
-        SampleFormat::F32 => build_mono_input_stream!(device, config, shared, channels, err_fn, f32),
-        SampleFormat::I16 => build_mono_input_stream!(device, config, shared, channels, err_fn, i16),
+        SampleFormat::F32 => build_mono_input_stream!(device, config, shared, channels, err_fn, f32, app_handle.clone()),
+        SampleFormat::I16 => build_mono_input_stream!(device, config, shared, channels, err_fn, i16, app_handle),
         _ => return Err(format!("Unsupported sample format: {:?}", sample_format)),
     };
 
@@ -205,6 +239,49 @@ pub fn is_recording() -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rms_empty_slice_returns_zero() {
+        assert_eq!(compute_rms(&[]), 0.0);
+    }
+
+    #[test]
+    fn rms_silence_is_zero() {
+        let result = compute_rms(&[0.0f32; 100]);
+        assert_eq!(result, 0.0);
+    }
+
+    #[test]
+    fn rms_full_amplitude_is_one() {
+        let samples = vec![1.0f32; 100];
+        let result = compute_rms(&samples);
+        assert!((result - 1.0).abs() < 1e-6, "expected 1.0, got {result}");
+    }
+
+    #[test]
+    fn rms_alternating_signs_is_one() {
+        // [1, -1, 1, -1] → each sample squared = 1, mean = 1, sqrt = 1
+        let samples = vec![1.0f32, -1.0, 1.0, -1.0];
+        let result = compute_rms(&samples);
+        assert!((result - 1.0).abs() < 1e-6, "expected 1.0, got {result}");
+    }
+
+    #[test]
+    fn rms_half_amplitude() {
+        let samples = vec![0.5f32; 100];
+        let result = compute_rms(&samples);
+        assert!((result - 0.5).abs() < 1e-6, "expected 0.5, got {result}");
+    }
+
+    #[test]
+    fn rms_single_sample() {
+        assert!((compute_rms(&[0.6f32]) - 0.6).abs() < 1e-6);
+    }
 }
 
 fn resample(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {

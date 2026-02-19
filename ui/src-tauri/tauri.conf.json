@@ -12,12 +12,27 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "Local Dictation",
         "width": 720,
         "height": 560,
         "minWidth": 520,
         "minHeight": 400,
         "center": true
+      },
+      {
+        "label": "overlay",
+        "title": "",
+        "url": "overlay.html",
+        "width": 200,
+        "height": 60,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "transparent": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "resizable": false,
+        "focusable": false
       }
     ],
     "security": {
