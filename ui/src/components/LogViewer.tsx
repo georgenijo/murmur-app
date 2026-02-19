@@ -107,7 +107,7 @@ export function LogViewer({ isOpen, onClose }: LogViewerProps) {
             {!loading && !error && rawLines.length === 0 && (
               <p className="text-stone-400 dark:text-stone-500 text-center py-4">No log entries.</p>
             )}
-            {!loading && !error && rawLines.map((raw, i) => {
+            {!loading && !error && [...rawLines].reverse().map((raw, i) => {
               const p = parseLine(raw);
               if (!p) return null;
               return (
