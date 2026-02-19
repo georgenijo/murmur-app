@@ -48,3 +48,6 @@ CONTEXT_NEXT_SESSION.md
 PROJECT_SUMMARY.md
 PROMPT_NEXT_SESSION.md
 
+
+# Dev-only Tauri config override
+ui/src-tauri/tauri.dev.conf.json

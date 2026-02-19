@@ -124,6 +124,7 @@ async fn process_audio(
         dictation.status = DictationStatus::Processing;
     }
     let _ = app_handle.emit("recording-status-changed", "processing");
+    let _ = update_tray_icon(app_handle.clone(), "processing".into());
 
     // Guard resets status to Idle if decode/parse fails before reaching the pipeline
     let mut guard = IdleGuard::new(&state.app_state);
@@ -138,6 +139,7 @@ async fn process_audio(
 
     let pipeline_result = run_transcription_pipeline(&samples, &app_handle, &state.app_state);
     let _ = app_handle.emit("recording-status-changed", "idle");
+    let _ = update_tray_icon(app_handle.clone(), "idle".into());
     let text = pipeline_result?;
 
     Ok(serde_json::json!({
@@ -273,6 +275,7 @@ async fn start_native_recording(
         return Err(e);
     }
     let _ = app_handle.emit("recording-status-changed", "recording");
+    let _ = update_tray_icon(app_handle.clone(), "recording".into());
     log_info!("start_native_recording: started");
 
     Ok(serde_json::json!({
@@ -307,6 +310,7 @@ async fn stop_native_recording(
         }
     }
     let _ = app_handle.emit("recording-status-changed", "processing");
+    let _ = update_tray_icon(app_handle.clone(), "processing".into());
 
     // Guard resets status to Idle if stop_recording fails or samples are empty;
     // disarmed before handing off to run_transcription_pipeline (which has its own guard)
@@ -321,6 +325,7 @@ async fn stop_native_recording(
         log_info!("stop_native_recording: no audio captured");
         // guard drops on return, resetting status to Idle
         let _ = app_handle.emit("recording-status-changed", "idle");
+        let _ = update_tray_icon(app_handle.clone(), "idle".into());
         return Ok(serde_json::json!({
             "type": "transcription",
             "text": "",
@@ -333,6 +338,7 @@ async fn stop_native_recording(
 
     let pipeline_result = run_transcription_pipeline(&samples, &app_handle, &state.app_state);
     let _ = app_handle.emit("recording-status-changed", "idle");
+    let _ = update_tray_icon(app_handle.clone(), "idle".into());
     let text = pipeline_result.map_err(|e| {
         log_error!("stop_native_recording: pipeline failed: {}", e);
         e
@@ -373,6 +379,7 @@ fn set_double_tap_recording(recording: bool) {
     keyboard::set_recording_state(recording);
 }
 
+
 /// Generate 22×22 RGBA pixel data for a solid circle of the given colour.
 fn make_tray_icon_data(r: u8, g: u8, b: u8) -> Vec<u8> {
     const SIZE: u32 = 22;
@@ -402,7 +409,8 @@ fn update_tray_icon(app: tauri::AppHandle, icon_state: String) -> Result<(), Str
     let (r, g, b) = match icon_state.as_str() {
         "recording"  => (220u8, 50u8,  50u8),
         "processing" => (200u8, 150u8, 40u8),
-        _            => (140u8, 140u8, 140u8), // idle — gray
+        _ if cfg!(debug_assertions) => (251u8, 191u8, 36u8), // idle dev — amber
+        _            => (140u8, 140u8, 140u8), // idle prod — gray
     };
     let data = make_tray_icon_data(r, g, b);
     if let Some(tray) = app.tray_by_id("main-tray") {
@@ -564,6 +572,10 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+
+            // Set the initial tray icon color (amber for dev, gray for prod)
+            let _ = update_tray_icon(app.app_handle().clone(), "idle".into());
+
 
             Ok(())
         })

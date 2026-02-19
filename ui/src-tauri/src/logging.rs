@@ -10,8 +10,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 static LOG_MUX: Mutex<()> = Mutex::new(());
 
 const MAX_LOG_SIZE: u64 = 5 * 1024 * 1024; // 5 MB
-const LOG_FILE: &str = "app.log";
-const ROTATED_FILE: &str = "app.log.1";
+const LOG_FILE: &str = if cfg!(debug_assertions) { "app.dev.log" } else { "app.log" };
+const ROTATED_FILE: &str = if cfg!(debug_assertions) { "app.dev.log.1" } else { "app.log.1" };
 
 fn log_dir() -> Option<PathBuf> {
     dirs::data_dir().map(|d| d.join("local-dictation").join("logs"))
