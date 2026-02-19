@@ -7,7 +7,7 @@ A privacy-first voice-to-text tool for macOS, inspired by Wispr Flow. All proces
 - 100% local processing - no cloud APIs, no data collection
 - Whisper-powered transcription (OpenAI's open-source model)
 - Optional LLM cleanup via Ollama (removes filler words, fixes grammar)
-- Global hotkey activation (hold to record, release to transcribe)
+- Global hotkey activation (toggle recording with key combo or double-tap modifier)
 - Works with any application - text is pasted into the focused app
 
 ---
@@ -52,28 +52,39 @@ Launch **Local Dictation** from your Applications folder. The app will appear in
 
 #### Recording
 
-1. Press and hold your configured hotkey (default: **Shift+Space**)
+There are two recording modes, configurable in Settings:
+
+**Key Combo mode** (default):
+1. Press your configured hotkey (default: **Shift+Space**) to start recording
 2. Speak your text
-3. Release the hotkey
-4. The transcribed text will be pasted into your focused application
+3. Press the hotkey again to stop
+4. The transcribed text is copied to your clipboard (and optionally pasted)
 
-#### Hotkey Options
+**Double-Tap mode**:
+1. Quickly double-tap a modifier key (e.g. **Shift**) to start recording
+2. Speak your text
+3. Single tap the same key to stop
+4. The transcribed text is copied to your clipboard (and optionally pasted)
 
-Configure your preferred hotkey in Settings:
+Double-tap mode requires Accessibility permission. Held keys, modifier+letter combos (like Shift+A), and slow taps are ignored — so it won't interfere with normal typing.
 
-| Hotkey | Description |
-|--------|-------------|
-| **Shift+Space** | Default, easy to reach |
-| **Option+Space** | Alternative for Shift conflicts |
-| **Control+Space** | Alternative option |
+#### Key Options
+
+Configure your preferred key in Settings:
+
+| Mode | Options |
+|------|---------|
+| **Key Combo** | Shift+Space, Option+Space, Control+Space |
+| **Double-Tap** | Shift, Option, Control |
 
 #### Settings Panel
 
 Click the menubar icon and select **Settings** to configure:
 
 - **Whisper Model** - Choose transcription accuracy vs speed
-- **Hotkey** - Select your preferred activation key
-- **Recording Duration** - View current recording length
+- **Recording Trigger** - Key Combo or Double-Tap mode
+- **Key** - Select your preferred activation key
+- **Auto-Paste** - Automatically paste transcription into focused app
 
 <!-- TODO: Add settings screenshot -->
 ![Settings Panel](docs/images/settings-panel.png)
@@ -145,7 +156,7 @@ The app requires the following permissions (you'll be prompted on first launch):
 | Permission | Why |
 |------------|-----|
 | **Microphone** | To record your voice |
-| **Accessibility** | To paste text into apps |
+| **Accessibility** | Required for double-tap recording mode and auto-paste |
 
 Go to **System Settings → Privacy & Security** to grant permissions if needed.
 

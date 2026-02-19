@@ -113,7 +113,7 @@ export function HistoryPanel({ entries, onClearHistory }: HistoryPanelProps) {
       </div>
 
       {/* Clear history button */}
-      <div className="flex-shrink-0 pt-3 border-t border-gray-200 dark:border-gray-700 mt-3">
+      <div className="shrink-0 pt-3 border-t border-gray-200 dark:border-gray-700 mt-3">
         <button
           onClick={handleClear}
           className="w-full px-3 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"

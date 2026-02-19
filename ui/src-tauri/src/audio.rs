@@ -1,9 +1,33 @@
 use crate::state::WHISPER_SAMPLE_RATE;
+use crate::{log_error, log_warn};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Sample, SampleFormat};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
+
+/// Build an input stream that converts interleaved multi-channel samples to mono f32.
+macro_rules! build_mono_input_stream {
+    ($device:expr, $config:expr, $shared:expr, $channels:expr, $err_fn:expr, $sample_type:ty) => {{
+        let samples_ref = Arc::clone(&$shared);
+        $device.build_input_stream(
+            &$config.into(),
+            move |data: &[$sample_type], _: &_| {
+                let mono: Vec<f32> = data.chunks($channels)
+                    .map(|chunk| {
+                        let sum: f32 = chunk.iter().map(|&s| s.to_float_sample()).sum();
+                        sum / $channels as f32
+                    })
+                    .collect();
+                if let Ok(mut s) = samples_ref.samples.lock() {
+                    s.extend(mono);
+                }
+            },
+            $err_fn,
+            None,
+        ).map_err(|e| format!("Failed to build stream: {}", e))?
+    }};
+}
 
 // Commands to send to the audio thread
 enum AudioCommand {
@@ -41,7 +65,7 @@ fn get_state() -> &'static Mutex<RecordingState> {
 pub fn start_recording() -> Result<(), String> {
     let state = get_state();
     let mut state_guard = state.lock().unwrap_or_else(|poisoned| {
-        eprintln!("Warning: Recording state mutex was poisoned, recovering");
+        log_warn!("start_recording: recording state mutex was poisoned, recovering");
         poisoned.into_inner()
     });
 
@@ -50,7 +74,7 @@ pub fn start_recording() -> Result<(), String> {
         drop(state_guard);
         stop_recording()?;
         state_guard = state.lock().unwrap_or_else(|poisoned| {
-            eprintln!("Warning: Recording state mutex was poisoned, recovering");
+            log_warn!("start_recording: recording state mutex was poisoned, recovering");
             poisoned.into_inner()
         });
     }
@@ -67,7 +91,7 @@ pub fn start_recording() -> Result<(), String> {
     // Spawn audio thread
     let handle = thread::spawn(move || {
         if let Err(e) = run_audio_capture(cmd_rx, shared, ready_tx.clone()) {
-            eprintln!("Audio capture error: {}", e);
+            log_error!("Audio capture error: {}", e);
             let _ = ready_tx.send(Err(e));
         }
     });
@@ -113,43 +137,11 @@ fn run_audio_capture(
         *sr = device_sample_rate;
     }
 
-    let samples_clone = Arc::clone(&shared);
-    let err_fn = |err| eprintln!("Audio stream error: {}", err);
+    let err_fn = |err| log_error!("Audio stream error: {}", err);
 
     let stream = match sample_format {
-        SampleFormat::F32 => {
-            device.build_input_stream(
-                &config.into(),
-                move |data: &[f32], _: &_| {
-                    let mono: Vec<f32> = data.chunks(channels)
-                        .map(|chunk| chunk.iter().sum::<f32>() / channels as f32)
-                        .collect();
-                    if let Ok(mut s) = samples_clone.samples.lock() {
-                        s.extend(mono);
-                    }
-                },
-                err_fn,
-                None,
-            ).map_err(|e| format!("Failed to build stream: {}", e))?
-        },
-        SampleFormat::I16 => {
-            device.build_input_stream(
-                &config.into(),
-                move |data: &[i16], _: &_| {
-                    let mono: Vec<f32> = data.chunks(channels)
-                        .map(|chunk| {
-                            let sum: f32 = chunk.iter().map(|&s| s.to_float_sample()).sum();
-                            sum / channels as f32
-                        })
-                        .collect();
-                    if let Ok(mut s) = samples_clone.samples.lock() {
-                        s.extend(mono);
-                    }
-                },
-                err_fn,
-                None,
-            ).map_err(|e| format!("Failed to build stream: {}", e))?
-        },
+        SampleFormat::F32 => build_mono_input_stream!(device, config, shared, channels, err_fn, f32),
+        SampleFormat::I16 => build_mono_input_stream!(device, config, shared, channels, err_fn, i16),
         _ => return Err(format!("Unsupported sample format: {:?}", sample_format)),
     };
 
@@ -173,7 +165,7 @@ fn run_audio_capture(
 pub fn stop_recording() -> Result<Vec<f32>, String> {
     let state = get_state();
     let mut state_guard = state.lock().unwrap_or_else(|poisoned| {
-        eprintln!("Warning: Recording state mutex was poisoned, recovering");
+        log_warn!("stop_recording: recording state mutex was poisoned, recovering");
         poisoned.into_inner()
     });
 
@@ -189,11 +181,11 @@ pub fn stop_recording() -> Result<Vec<f32>, String> {
 
     // Get samples and sample rate
     let sample_rate = *state_guard.shared.sample_rate.lock().unwrap_or_else(|poisoned| {
-        eprintln!("Warning: Sample rate mutex was poisoned, recovering");
+        log_warn!("stop_recording: sample rate mutex was poisoned, recovering");
         poisoned.into_inner()
     });
     let samples = state_guard.shared.samples.lock().unwrap_or_else(|poisoned| {
-        eprintln!("Warning: Samples mutex was poisoned, recovering");
+        log_warn!("stop_recording: samples mutex was poisoned, recovering");
         poisoned.into_inner()
     }).clone();
 

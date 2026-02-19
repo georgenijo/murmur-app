@@ -1,88 +1,59 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Privacy-first macOS voice-to-text app. Tauri 2 (Rust + React), local whisper.cpp transcription with Metal GPU, clipboard-first output. No cloud services.
 
-## Project Overview
-
-Local Dictation is a privacy-first macOS desktop app for voice-to-text. Built with Tauri 2 (Rust backend + React frontend), it captures audio via a global hotkey, transcribes locally using whisper.cpp (with Metal GPU acceleration), and copies results to the clipboard. All processing is entirely local — no cloud services.
-
-## Build & Development Commands
-
-All commands run from the `ui/` directory:
+## Commands
 
 ```bash
-# Development (full Tauri app with hot reload)
-cd ui && npm run tauri dev
-
-# Frontend only (no Rust backend)
-cd ui && npm run dev
-
-# Production build (outputs .app and .dmg)
-cd ui && npm run tauri build
-
-# Install frontend dependencies
-cd ui && npm install
+cd ui && npm run tauri dev        # Dev with hot reload
+cd ui && npm run tauri build      # Production .app and .dmg
+cd ui/src-tauri && cargo test -- --test-threads=1  # Rust unit tests
+cd ui && npx tsc --noEmit         # TypeScript check
 ```
 
-There are no automated tests in this project currently.
+## Docs
 
-## Architecture
+Read these before working on a feature:
 
-### Data Flow
+- **[docs/onboarding.md](docs/onboarding.md)** — Setup, permissions, model installation, logs
+- **[docs/features/recording-modes.md](docs/features/recording-modes.md)** — Key combo and double-tap modes, state machine, rdev threading
+- **[docs/features/transcription.md](docs/features/transcription.md)** — Audio capture, whisper pipeline, status flow
+- **[docs/features/text-injection.md](docs/features/text-injection.md)** — Clipboard, auto-paste, osascript
 
-```
-Hotkey press → cpal audio capture → f32 samples in memory →
-hotkey release → resample to 16kHz mono → whisper-rs transcription →
-clipboard copy (arboard) → optional osascript paste
-```
+## File Map
 
-### Rust Backend (`ui/src-tauri/src/`)
+### Rust (`ui/src-tauri/src/`)
 
-- **lib.rs** — Tauri command handlers (`start_native_recording`, `stop_native_recording`, `configure_dictation`, permission checks), tray icon setup, window management. Implements `MutexExt` trait for mutex poison recovery.
-- **audio.rs** — Audio capture via cpal on a background thread with channel-based synchronization. Handles multi-channel to mono conversion and resampling to 16kHz.
-- **transcriber.rs** — Whisper model loading and inference via whisper-rs. Searches multiple paths for model files (env var, Application Support, cache dirs).
-- **injector.rs** — Clipboard write via arboard, optional paste simulation via osascript with 150ms delay.
-- **state.rs** — `DictationState` (status, model, language, auto_paste) and `AppState` (mutex-wrapped state + whisper context).
+| File | Purpose |
+|------|---------|
+| `lib.rs` | Tauri commands, tray icon, window management, `MutexExt` |
+| `keyboard.rs` | Double-tap detection state machine, rdev listener thread |
+| `audio.rs` | cpal capture, mono conversion, 16kHz resampling |
+| `transcriber.rs` | whisper-rs model loading and inference |
+| `injector.rs` | Clipboard (arboard) + auto-paste (osascript) |
+| `state.rs` | `DictationState`, `AppState` with mutex-wrapped state |
+| `logging.rs` | File-based logging with rotation |
 
-### React Frontend (`ui/src/`)
+### Frontend (`ui/src/`)
 
-- **App.tsx** — Main orchestrator: status management, hotkey registration (300ms debounce), recording timer, tab switching.
-- **lib/dictation.ts** — Tauri invoke wrappers for all Rust commands.
-- **lib/hotkey.ts** — Global shortcut registration/unregistration via `@tauri-apps/plugin-global-shortcut`.
-- **lib/settings.ts** — localStorage-based settings persistence (model, hotkey, language, autoPaste).
-- **lib/history.ts** — Transcription history in localStorage (max 50 entries).
+| File | Purpose |
+|------|---------|
+| `App.tsx` | Main orchestrator, wires hooks together |
+| `lib/settings.ts` | Settings types, defaults, localStorage persistence |
+| `lib/hooks/useHotkeyToggle.ts` | Key combo mode (global-shortcut plugin) |
+| `lib/hooks/useDoubleTapToggle.ts` | Double-tap mode (rdev events) |
+| `lib/hooks/useRecordingState.ts` | Recording status, transcription, toggle logic |
+| `components/settings/SettingsPanel.tsx` | Settings UI with mode switching |
 
-### Key Design Patterns
+## Key Patterns
 
-- **Clipboard-first**: Text always goes to clipboard. Auto-paste via osascript is optional and requires Accessibility permission.
-- **Lazy model loading**: Whisper context initialized on first transcription, not at startup.
-- **Mutex poison recovery**: Custom `MutexExt` trait on `lib.rs` allows graceful recovery from panics instead of crashing.
-- **Channel-based audio thread**: Audio recording thread signals readiness via channel to prevent race conditions.
+- **Dual recording modes**: Both hooks always called (Rules of Hooks), gated by `enabled` prop
+- **Clipboard-first**: Text always goes to clipboard; auto-paste is optional
+- **Lazy model loading**: Whisper context created on first transcription
+- **Mutex poison recovery**: `MutexExt` trait recovers from panics
+- **rdev thread safety**: `set_is_main_thread(false)` before `listen()` — prevents macOS TIS/TSM segfault
 
-## macOS Permissions
+## Dependencies
 
-- **Microphone** (required): For audio capture via cpal.
-- **Accessibility** (optional): Only needed for auto-paste feature (osascript keystroke simulation).
-
-## Whisper Models
-
-Models are ggml `.bin` files. The app searches these locations in order:
-1. `$WHISPER_MODEL_DIR` env var
-2. `~/Library/Application Support/local-dictation/models/`
-3. `~/Library/Application Support/pywhispercpp/models/`
-4. `~/.cache/whisper.cpp/`
-5. `~/.cache/whisper/`
-6. `~/.whisper/models/`
-
-Available models: `tiny.en`, `base.en` (default), `small.en`, `medium.en`, `large-v3-turbo`.
-
-## Known Cleanup Items
-
-- **`rdev`** is listed in `Cargo.toml` but unused in source code (leftover from a previous auto-paste attempt).
-- **`ui/src/lib/audioCapture.ts`** is a legacy Web Audio capture module from the Python sidecar era — not imported anywhere.
-- **Git remote** is `murmur-app` (the original project name); local directory and app name use `local-dictation`.
-
-## Key Dependencies
-
-- **Rust**: tauri 2, whisper-rs (with Metal), cpal, arboard, hound
+- **Rust**: tauri 2, whisper-rs (Metal), cpal, arboard, hound, rdev (git main branch)
 - **Frontend**: React 18, Tailwind CSS 4, @tauri-apps/api, @tauri-apps/plugin-global-shortcut, Vite 6, TypeScript

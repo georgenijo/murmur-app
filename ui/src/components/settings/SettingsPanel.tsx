@@ -1,15 +1,20 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Settings, ModelOption, HotkeyOption, MODEL_OPTIONS, HOTKEY_OPTIONS } from '../../lib/settings';
+import {
+  Settings, ModelOption, HotkeyOption, RecordingMode,
+  MODEL_OPTIONS, HOTKEY_OPTIONS, DOUBLE_TAP_KEY_OPTIONS, RECORDING_MODE_OPTIONS,
+} from '../../lib/settings';
+import type { DictationStatus } from '../../lib/types';
 
 interface SettingsPanelProps {
   isOpen: boolean;
   onClose: () => void;
   settings: Settings;
   onUpdateSettings: (updates: Partial<Settings>) => void;
+  status: DictationStatus;
 }
 
-export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings }: SettingsPanelProps) {
+export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, status }: SettingsPanelProps) {
   const [accessibilityGranted, setAccessibilityGranted] = useState<boolean | null>(null);
 
   const checkAccessibility = async () => {
@@ -34,6 +39,14 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings }: S
   }, [isOpen]);
 
   const handleRequestPermission = () => invoke('request_accessibility_permission');
+
+  const isDoubleTap = settings.recordingMode === 'double_tap';
+  const keyOptions = isDoubleTap ? DOUBLE_TAP_KEY_OPTIONS : HOTKEY_OPTIONS;
+  const keyLabel = isDoubleTap ? 'Double-Tap Key' : 'Recording Hotkey';
+  const keyHelpText = isDoubleTap
+    ? 'Double-tap to start recording, single tap to stop'
+    : 'Press this combo to toggle recording on/off';
+  const isRecording = status !== 'idle';
 
   return (
     <>
@@ -87,24 +100,67 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings }: S
             </p>
           </div>
 
-          {/* Hotkey Selector */}
+          {/* Recording Trigger */}
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-              Recording Hotkey
+              Recording Trigger
+            </label>
+            <div className="flex gap-2">
+              {RECORDING_MODE_OPTIONS.map((option) => (
+                <button
+                  key={option.value}
+                  disabled={isRecording}
+                  onClick={() => onUpdateSettings({ recordingMode: option.value as RecordingMode })}
+                  className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium border transition-colors ${
+                    settings.recordingMode === option.value
+                      ? 'bg-blue-500 text-white border-blue-500'
+                      : 'bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600'
+                  } ${isRecording ? 'opacity-50 cursor-not-allowed' : ''}`}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+            {isRecording && (
+              <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+                Stop recording before changing mode
+              </p>
+            )}
+          </div>
+
+          {/* Accessibility notice for double-tap mode */}
+          {isDoubleTap && accessibilityGranted !== null && !accessibilityGranted && (
+            <div className="flex items-center gap-2 px-3 py-2 text-xs bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg text-amber-700 dark:text-amber-400">
+              <span className="w-2 h-2 rounded-full bg-amber-500 flex-shrink-0" />
+              <span>Accessibility permission required for double-tap mode</span>
+              <button
+                onClick={handleRequestPermission}
+                className="underline hover:no-underline ml-auto flex-shrink-0"
+              >
+                Grant
+              </button>
+            </div>
+          )}
+
+          {/* Hotkey / Double-Tap Key Selector */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+              {keyLabel}
             </label>
             <select
               value={settings.hotkey}
               onChange={(e) => onUpdateSettings({ hotkey: e.target.value as HotkeyOption })}
-              className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              disabled={isRecording}
+              className={`w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent ${isRecording ? 'opacity-50 cursor-not-allowed' : ''}`}
             >
-              {HOTKEY_OPTIONS.map((option) => (
+              {keyOptions.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
                 </option>
               ))}
             </select>
             <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              Hold this key to record, release to transcribe
+              {keyHelpText}
             </p>
           </div>
 
