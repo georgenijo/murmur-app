@@ -6,12 +6,13 @@ import type { DictationStatus } from '../types';
 interface UseDoubleTapToggleProps {
   enabled: boolean;
   initialized: boolean;
+  accessibilityGranted: boolean;
   doubleTapKey: string;
   status: DictationStatus;
   onToggle: () => void;
 }
 
-export function useDoubleTapToggle({ enabled, initialized, doubleTapKey, status, onToggle }: UseDoubleTapToggleProps) {
+export function useDoubleTapToggle({ enabled, initialized, accessibilityGranted, doubleTapKey, status, onToggle }: UseDoubleTapToggleProps) {
   const onToggleRef = useRef(onToggle);
   useEffect(() => { onToggleRef.current = onToggle; }, [onToggle]);
 
@@ -22,7 +23,7 @@ export function useDoubleTapToggle({ enabled, initialized, doubleTapKey, status,
   }, [enabled, status]);
 
   useEffect(() => {
-    if (!enabled || !initialized) return;
+    if (!enabled || !initialized || !accessibilityGranted) return;
 
     let unlisten: (() => void) | null = null;
     let cancelled = false;
@@ -58,5 +59,5 @@ export function useDoubleTapToggle({ enabled, initialized, doubleTapKey, status,
         console.warn('Failed to stop double-tap listener on cleanup:', err);
       });
     };
-  }, [enabled, initialized, doubleTapKey]);
+  }, [enabled, initialized, accessibilityGranted, doubleTapKey]);
 }

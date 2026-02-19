@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { SettingsPanel } from './components/settings';
 import { PermissionsBanner } from './components/PermissionsBanner';
 import { AboutModal } from './components/AboutModal';
@@ -16,13 +17,28 @@ import { useShowAboutListener } from './lib/hooks/useShowAboutListener';
 function App() {
   const { settings, updateSettings } = useSettings();
   const { initialized, error: initError } = useInitialization(settings);
+
+  // Track accessibility permission — when it transitions false→true the
+  // double-tap listener restarts automatically (rdev silently does nothing
+  // if started without permission).
+  const [accessibilityGranted, setAccessibilityGranted] = useState(false);
+  useEffect(() => {
+    const check = () => {
+      invoke<boolean>('check_accessibility_permission')
+        .then(setAccessibilityGranted)
+        .catch(() => {});
+    };
+    check();
+    window.addEventListener('focus', check);
+    return () => window.removeEventListener('focus', check);
+  }, []);
   const { historyEntries, addEntry, clearHistory } = useHistoryManagement();
   const {
     status, recordingDuration, error: recordingError,
     handleStart, handleStop, toggleRecording,
   } = useRecordingState({ addEntry });
   useHotkeyToggle({ enabled: settings.recordingMode === 'hotkey', initialized, hotkey: settings.hotkey, onToggle: toggleRecording });
-  useDoubleTapToggle({ enabled: settings.recordingMode === 'double_tap', initialized, doubleTapKey: settings.doubleTapKey, status, onToggle: toggleRecording });
+  useDoubleTapToggle({ enabled: settings.recordingMode === 'double_tap', initialized, accessibilityGranted, doubleTapKey: settings.doubleTapKey, status, onToggle: toggleRecording });
   const { showAbout, setShowAbout } = useShowAboutListener();
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
