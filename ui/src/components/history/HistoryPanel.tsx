@@ -89,7 +89,7 @@ export function HistoryPanel({ entries, onClearHistory }: HistoryPanelProps) {
                   </span>
                 ) : (
                   <svg
-                    className="w-3.5 h-3.5 text-stone-400"
+                    className="w-3.5 h-3.5 text-stone-400 dark:text-stone-500"
                     fill="none"
                     stroke="currentColor"
                     viewBox="0 0 24 24"

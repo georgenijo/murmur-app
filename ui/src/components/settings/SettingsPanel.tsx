@@ -45,11 +45,12 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
     ? 'Double-tap to start recording, single tap to stop'
     : 'Press this combo to toggle recording on/off';
   const isRecording = status !== 'idle';
+  const selectedModel = MODEL_OPTIONS.find(m => m.value === settings.model);
 
   return (
     <aside
-      className={`shrink-0 border-l border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 overflow-y-auto transition-all duration-200 ${
-        isOpen ? 'w-[280px]' : 'w-0 overflow-hidden'
+      className={`shrink-0 border-l border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 transition-all duration-200 ${
+        isOpen ? 'w-[280px] overflow-y-auto' : 'w-0 overflow-hidden'
       }`}
     >
       {/* Header */}
@@ -209,8 +210,8 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
             Current Model
           </h3>
           <div className="text-sm text-stone-600 dark:text-stone-400">
-            <p><strong>Model:</strong> {MODEL_OPTIONS.find(m => m.value === settings.model)?.label}</p>
-            <p><strong>Size:</strong> {MODEL_OPTIONS.find(m => m.value === settings.model)?.size}</p>
+            <p><strong>Model:</strong> {selectedModel?.label}</p>
+            <p><strong>Size:</strong> {selectedModel?.size}</p>
           </div>
         </div>
       </div>

@@ -9,7 +9,7 @@ interface StatusHeaderProps {
 }
 
 function getStatusColor(status: DictationStatus, initialized: boolean): string {
-  if (status === 'recording') return 'text-red-500';
+  if (status === 'recording') return 'text-red-500 dark:text-red-400';
   if (status === 'processing') return 'text-amber-600 dark:text-amber-500';
   if (initialized) return 'text-emerald-600 dark:text-emerald-500';
   return 'text-stone-400 dark:text-stone-500';
