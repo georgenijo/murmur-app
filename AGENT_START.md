@@ -34,13 +34,13 @@ After reporting, wait for me to tell you what we're working on. Do not start wri
 |--------|-------------|--------|
 | Pre-Work | Commit & merge feature/add-logging | ✅ Done |
 | FEAT-001 | Structural UI Uplift | ✅ Done |
-| FEAT-002 | Status Widget (tray icon + overlay pill) | TODO |
+| FEAT-002 | Status Widget (tray icon + overlay pill) | ✅ Done |
 | FEAT-003 | Custom Hotkey Binding (free-form key capture) | TODO |
 | FEAT-004 | Word Statistics (stats bar, localStorage) | TODO |
 | FEAT-005 | Logging Viewer (in-app log viewer) | TODO |
 | FEAT-006 | Resource Monitor (CPU/memory graph) | TODO |
 
-FEAT-002 through FEAT-006 are all unblocked and parallelizable. Full specs in `docs/TICKETS_FEATURES.md`.
+FEAT-003 through FEAT-006 are all unblocked and parallelizable. Full specs in `docs/TICKETS_FEATURES.md`.
 
 ## Available Feature Docs
 
