@@ -79,7 +79,7 @@ export function PermissionsBanner() {
             <div className="flex items-center gap-2">
               <span className={`w-2 h-2 rounded-full ${
                 permissions.microphone === 'granted'
-                  ? 'bg-green-500'
+                  ? 'bg-emerald-500'
                   : 'bg-red-500'
               }`} />
               <span className="text-sm text-amber-700 dark:text-amber-300">
@@ -99,7 +99,7 @@ export function PermissionsBanner() {
             <div className="flex items-center gap-2">
               <span className={`w-2 h-2 rounded-full ${
                 permissions.accessibility === 'granted'
-                  ? 'bg-green-500'
+                  ? 'bg-emerald-500'
                   : 'bg-red-500'
               }`} />
               <span className="text-sm text-amber-700 dark:text-amber-300">

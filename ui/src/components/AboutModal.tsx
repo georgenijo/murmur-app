@@ -10,7 +10,7 @@ export function AboutModal({ isOpen, onClose }: AboutModalProps) {
     <>
       {/* Backdrop */}
       <div
-        className="fixed inset-0 bg-black/50 z-50"
+        className="fixed inset-0 bg-stone-900/50 z-50"
         onClick={onClose}
       />
 
@@ -18,7 +18,7 @@ export function AboutModal({ isOpen, onClose }: AboutModalProps) {
       <div className="fixed inset-0 flex items-center justify-center z-50 pointer-events-none">
         <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-xl p-6 w-72 text-center pointer-events-auto">
           {/* Icon */}
-          <div className="w-16 h-16 mx-auto mb-4 bg-purple-500 rounded-2xl flex items-center justify-center">
+          <div className="w-16 h-16 mx-auto mb-4 bg-stone-800 rounded-2xl flex items-center justify-center">
             <svg className="w-10 h-10 text-white" fill="currentColor" viewBox="0 0 24 24">
               <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
               <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>

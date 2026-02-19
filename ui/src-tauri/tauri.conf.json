@@ -13,8 +13,10 @@
     "windows": [
       {
         "title": "Local Dictation",
-        "width": 400,
-        "height": 600,
+        "width": 720,
+        "height": 560,
+        "minWidth": 520,
+        "minHeight": 400,
         "center": true
       }
     ],

@@ -37,7 +37,7 @@ export function HistoryPanel({ entries, onClearHistory }: HistoryPanelProps) {
 
   if (entries.length === 0) {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center text-gray-400 dark:text-gray-500">
+      <div className="flex-1 flex flex-col items-center justify-center text-stone-400 dark:text-stone-500">
         <svg
           className="w-12 h-12 mb-3"
           fill="none"
@@ -70,26 +70,26 @@ export function HistoryPanel({ entries, onClearHistory }: HistoryPanelProps) {
             onClick={() => handleCopy(entry)}
             className={`w-full text-left p-3 rounded-lg border transition-all ${
               copiedId === entry.id
-                ? 'bg-green-50 dark:bg-green-900/20 border-green-300 dark:border-green-700'
-                : 'bg-gray-50 dark:bg-gray-700/50 border-gray-200 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700'
+                ? 'bg-emerald-50 dark:bg-emerald-900/20 border-emerald-300 dark:border-emerald-700'
+                : 'bg-stone-50 dark:bg-stone-700/50 border-stone-200 dark:border-stone-600 hover:bg-stone-100 dark:hover:bg-stone-700'
             }`}
           >
             {/* Header row with timestamp and duration */}
             <div className="flex items-center justify-between mb-1">
-              <span className="text-xs text-gray-500 dark:text-gray-400">
+              <span className="text-xs text-stone-500 dark:text-stone-400">
                 {formatTimestamp(entry.timestamp)}
               </span>
               <div className="flex items-center gap-2">
-                <span className="text-xs text-gray-400 dark:text-gray-500">
+                <span className="text-xs text-stone-400 dark:text-stone-500">
                   {formatDuration(entry.duration)}
                 </span>
                 {copiedId === entry.id ? (
-                  <span className="text-xs text-green-600 dark:text-green-400 font-medium">
+                  <span className="text-xs text-emerald-600 dark:text-emerald-400 font-medium">
                     Copied!
                   </span>
                 ) : (
                   <svg
-                    className="w-3.5 h-3.5 text-gray-400"
+                    className="w-3.5 h-3.5 text-stone-400"
                     fill="none"
                     stroke="currentColor"
                     viewBox="0 0 24 24"
@@ -105,7 +105,7 @@ export function HistoryPanel({ entries, onClearHistory }: HistoryPanelProps) {
               </div>
             </div>
             {/* Text content */}
-            <p className="text-sm text-gray-900 dark:text-gray-100 line-clamp-3">
+            <p className="text-sm text-stone-900 dark:text-stone-100 line-clamp-3">
               {entry.text}
             </p>
           </button>
@@ -113,10 +113,10 @@ export function HistoryPanel({ entries, onClearHistory }: HistoryPanelProps) {
       </div>
 
       {/* Clear history button */}
-      <div className="shrink-0 pt-3 border-t border-gray-200 dark:border-gray-700 mt-3">
+      <div className="shrink-0 pt-3 border-t border-stone-200 dark:border-stone-700 mt-3">
         <button
           onClick={handleClear}
-          className="w-full px-3 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
+          className="w-full px-3 py-2 text-sm text-stone-500 dark:text-stone-400 hover:bg-stone-100 dark:hover:bg-stone-700 rounded-lg transition-colors"
         >
           Clear History
         </button>
