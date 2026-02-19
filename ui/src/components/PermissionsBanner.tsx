@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
 interface PermissionStatus {
@@ -14,7 +14,7 @@ export function PermissionsBanner() {
   const [dismissed, setDismissed] = useState(false);
   const [checking, setChecking] = useState(true);
 
-  const checkPermissions = async () => {
+  const checkPermissions = useCallback(async () => {
     setChecking(true);
     try {
       // Check accessibility permission via Tauri command
@@ -43,16 +43,15 @@ export function PermissionsBanner() {
     } finally {
       setChecking(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     checkPermissions();
 
     // Re-check when window gains focus (user might have granted permission)
-    const handleFocus = () => checkPermissions();
-    window.addEventListener('focus', handleFocus);
-    return () => window.removeEventListener('focus', handleFocus);
-  }, []);
+    window.addEventListener('focus', checkPermissions);
+    return () => window.removeEventListener('focus', checkPermissions);
+  }, [checkPermissions]);
 
   const handleOpenAccessibility = async () => {
     await invoke('request_accessibility_permission');

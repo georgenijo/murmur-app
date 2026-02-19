@@ -64,7 +64,7 @@ fn get_state() -> &'static Mutex<RecordingState> {
 pub fn start_recording() -> Result<(), String> {
     let state = get_state();
     let mut state_guard = state.lock().unwrap_or_else(|poisoned| {
-        eprintln!("Warning: Recording state mutex was poisoned, recovering");
+        log_warn!("start_recording: recording state mutex was poisoned, recovering");
         poisoned.into_inner()
     });
 
@@ -73,7 +73,7 @@ pub fn start_recording() -> Result<(), String> {
         drop(state_guard);
         stop_recording()?;
         state_guard = state.lock().unwrap_or_else(|poisoned| {
-            eprintln!("Warning: Recording state mutex was poisoned, recovering");
+            log_warn!("start_recording: recording state mutex was poisoned, recovering");
             poisoned.into_inner()
         });
     }
@@ -90,7 +90,7 @@ pub fn start_recording() -> Result<(), String> {
     // Spawn audio thread
     let handle = thread::spawn(move || {
         if let Err(e) = run_audio_capture(cmd_rx, shared, ready_tx.clone()) {
-            eprintln!("Audio capture error: {}", e);
+            log_error!("Audio capture error: {}", e);
             let _ = ready_tx.send(Err(e));
         }
     });
@@ -136,7 +136,7 @@ fn run_audio_capture(
         *sr = device_sample_rate;
     }
 
-    let err_fn = |err| eprintln!("Audio stream error: {}", err);
+    let err_fn = |err| log_error!("Audio stream error: {}", err);
 
     let stream = match sample_format {
         SampleFormat::F32 => build_mono_input_stream!(device, config, shared, channels, err_fn, f32),
@@ -164,7 +164,7 @@ fn run_audio_capture(
 pub fn stop_recording() -> Result<Vec<f32>, String> {
     let state = get_state();
     let mut state_guard = state.lock().unwrap_or_else(|poisoned| {
-        eprintln!("Warning: Recording state mutex was poisoned, recovering");
+        log_warn!("stop_recording: recording state mutex was poisoned, recovering");
         poisoned.into_inner()
     });
 
@@ -180,11 +180,11 @@ pub fn stop_recording() -> Result<Vec<f32>, String> {
 
     // Get samples and sample rate
     let sample_rate = *state_guard.shared.sample_rate.lock().unwrap_or_else(|poisoned| {
-        eprintln!("Warning: Sample rate mutex was poisoned, recovering");
+        log_warn!("stop_recording: sample rate mutex was poisoned, recovering");
         poisoned.into_inner()
     });
     let samples = state_guard.shared.samples.lock().unwrap_or_else(|poisoned| {
-        eprintln!("Warning: Samples mutex was poisoned, recovering");
+        log_warn!("stop_recording: samples mutex was poisoned, recovering");
         poisoned.into_inner()
     }).clone();
 

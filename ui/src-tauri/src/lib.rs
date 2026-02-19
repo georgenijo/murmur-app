@@ -21,7 +21,7 @@ trait MutexExt<T> {
 impl<T> MutexExt<T> for Mutex<T> {
     fn lock_or_recover(&self) -> MutexGuard<'_, T> {
         self.lock().unwrap_or_else(|poisoned| {
-            eprintln!("Warning: Mutex was poisoned, recovering data");
+            log_warn!("Mutex was poisoned, recovering data");
             poisoned.into_inner()
         })
     }
@@ -90,8 +90,8 @@ fn run_transcription_pipeline(
     app_handle: &tauri::AppHandle,
     app_state: &AppState,
 ) -> Result<String, String> {
-    // Guard resets status to Idle on any early return / error via `?`
-    let mut guard = IdleGuard::new(app_state);
+    // Guard resets status to Idle on any return path (error or success)
+    let _guard = IdleGuard::new(app_state);
 
     // Read all needed state in one lock
     let (model_name, language, auto_paste) = {
@@ -121,14 +121,8 @@ fn run_transcription_pipeline(
             .map_err(|e| format!("Failed to run on main thread: {}", e))?;
     }
 
-    // Success — disarm guard and set idle manually (same effect, but explicit)
-    guard.disarm();
-    {
-        let mut dictation = app_state.dictation.lock_or_recover();
-        dictation.status = DictationStatus::Idle;
-    }
-
     Ok(text)
+    // _guard drops here, setting status to Idle
 }
 
 #[tauri::command]
@@ -312,6 +306,10 @@ async fn stop_native_recording(
         }
     }
 
+    // Guard resets status to Idle if stop_recording fails or samples are empty;
+    // disarmed before handing off to run_transcription_pipeline (which has its own guard)
+    let mut guard = IdleGuard::new(&state.app_state);
+
     let samples = audio::stop_recording().map_err(|e| {
         log_error!("stop_native_recording: stop_recording failed: {}", e);
         e
@@ -319,14 +317,16 @@ async fn stop_native_recording(
 
     if samples.is_empty() {
         log_info!("stop_native_recording: no audio captured");
-        let mut dictation = state.app_state.dictation.lock_or_recover();
-        dictation.status = DictationStatus::Idle;
+        // guard drops on return, resetting status to Idle
         return Ok(serde_json::json!({
             "type": "transcription",
             "text": "",
             "state": "idle"
         }));
     }
+
+    // Hand off status management to the pipeline's own guard
+    guard.disarm();
 
     let text = run_transcription_pipeline(&samples, &app_handle, &state.app_state).map_err(|e| {
         log_error!("stop_native_recording: pipeline failed: {}", e);
