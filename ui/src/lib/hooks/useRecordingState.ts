@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { listen } from '@tauri-apps/api/event';
 import { startRecording, stopRecording } from '../dictation';
 import type { DictationStatus } from '../types';
 
@@ -17,6 +18,8 @@ export function useRecordingState({ addEntry }: UseRecordingStateProps) {
   const [error, setError] = useState('');
   const [recordingStartTime, setRecordingStartTime] = useState<number | null>(null);
   const [recordingDuration, setRecordingDuration] = useState(0);
+  const [audioLevel, setAudioLevel] = useState(0);
+  const [lockedMode, setLockedMode] = useState(false);
 
   // Refs for stable callbacks (hotkey toggle reads current state)
   const statusRef = useRef(status);
@@ -36,6 +39,26 @@ export function useRecordingState({ addEntry }: UseRecordingStateProps) {
     }
     return () => clearInterval(interval);
   }, [status, recordingStartTime]);
+
+  // Sync status from Rust events — keeps main window in sync when overlay controls recording
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    listen<string>('recording-status-changed', (event) => {
+      if (isDictationStatus(event.payload)) {
+        setStatus(event.payload);
+      }
+    }).then((fn) => { unlisten = fn; });
+    return () => { unlisten?.(); };
+  }, []);
+
+  // Subscribe to live audio level for waveform visualisation
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    listen<number>('audio-level', (event) => {
+      setAudioLevel(event.payload);
+    }).then((fn) => { unlisten = fn; });
+    return () => { unlisten?.(); };
+  }, []);
 
   const handleStart = useCallback(async () => {
     if (isStartingRef.current) return;
@@ -89,6 +112,18 @@ export function useRecordingState({ addEntry }: UseRecordingStateProps) {
     }
   }, [handleStart, handleStop]);
 
+  const toggleLockedMode = useCallback(async () => {
+    setLockedMode((prev) => {
+      const next = !prev;
+      if (next && statusRef.current !== 'recording') {
+        handleStart();
+      } else if (!next && statusRef.current === 'recording') {
+        handleStop();
+      }
+      return next;
+    });
+  }, [handleStart, handleStop]);
+
   return {
     status,
     transcription,
@@ -98,5 +133,8 @@ export function useRecordingState({ addEntry }: UseRecordingStateProps) {
     handleStart,
     handleStop,
     toggleRecording,
+    audioLevel,
+    lockedMode,
+    toggleLockedMode,
   };
 }

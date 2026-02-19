@@ -5,11 +5,24 @@ use cpal::{Sample, SampleFormat};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
+use tauri::Emitter;
 
-/// Build an input stream that converts interleaved multi-channel samples to mono f32.
+/// Compute RMS (root mean square) of a sample slice — returns 0.0–1.0 audio level.
+fn compute_rms(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let sum_sq: f32 = samples.iter().map(|s| s * s).sum();
+    (sum_sq / samples.len() as f32).sqrt()
+}
+
+/// Build an input stream that converts interleaved multi-channel samples to mono f32,
+/// computes RMS for each buffer chunk and emits an "audio-level" event if an AppHandle
+/// is provided.
 macro_rules! build_mono_input_stream {
-    ($device:expr, $config:expr, $shared:expr, $channels:expr, $err_fn:expr, $sample_type:ty) => {{
+    ($device:expr, $config:expr, $shared:expr, $channels:expr, $err_fn:expr, $sample_type:ty, $app_handle:expr) => {{
         let samples_ref = Arc::clone(&$shared);
+        let app_handle_opt: Option<tauri::AppHandle> = $app_handle;
         $device.build_input_stream(
             &$config.into(),
             move |data: &[$sample_type], _: &_| {
@@ -19,6 +32,11 @@ macro_rules! build_mono_input_stream {
                         sum / $channels as f32
                     })
                     .collect();
+                // Emit audio level for waveform visualisation
+                if let Some(ref handle) = app_handle_opt {
+                    let rms = compute_rms(&mono);
+                    let _ = handle.emit("audio-level", rms);
+                }
                 if let Ok(mut s) = samples_ref.samples.lock() {
                     s.extend(mono);
                 }
@@ -62,7 +80,7 @@ fn get_state() -> &'static Mutex<RecordingState> {
     })
 }
 
-pub fn start_recording() -> Result<(), String> {
+pub fn start_recording(app_handle: Option<tauri::AppHandle>) -> Result<(), String> {
     let state = get_state();
     let mut state_guard = state.lock().unwrap_or_else(|poisoned| {
         log_warn!("start_recording: recording state mutex was poisoned, recovering");
@@ -90,7 +108,7 @@ pub fn start_recording() -> Result<(), String> {
 
     // Spawn audio thread
     let handle = thread::spawn(move || {
-        if let Err(e) = run_audio_capture(cmd_rx, shared, ready_tx.clone()) {
+        if let Err(e) = run_audio_capture(cmd_rx, shared, ready_tx.clone(), app_handle) {
             log_error!("Audio capture error: {}", e);
             let _ = ready_tx.send(Err(e));
         }
@@ -120,6 +138,7 @@ fn run_audio_capture(
     cmd_rx: Receiver<AudioCommand>,
     shared: Arc<SharedSamples>,
     ready_tx: Sender<Result<(), String>>,
+    app_handle: Option<tauri::AppHandle>,
 ) -> Result<(), String> {
     let host = cpal::default_host();
 
@@ -140,8 +159,8 @@ fn run_audio_capture(
     let err_fn = |err| log_error!("Audio stream error: {}", err);
 
     let stream = match sample_format {
-        SampleFormat::F32 => build_mono_input_stream!(device, config, shared, channels, err_fn, f32),
-        SampleFormat::I16 => build_mono_input_stream!(device, config, shared, channels, err_fn, i16),
+        SampleFormat::F32 => build_mono_input_stream!(device, config, shared, channels, err_fn, f32, app_handle.clone()),
+        SampleFormat::I16 => build_mono_input_stream!(device, config, shared, channels, err_fn, i16, app_handle),
         _ => return Err(format!("Unsupported sample format: {:?}", sample_format)),
     };
 
