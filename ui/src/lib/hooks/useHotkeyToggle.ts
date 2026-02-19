@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { registerHotkey, unregisterHotkey, hotkeyToShortcut } from '../hotkey';
+import { registerHotkey, unregisterHotkey } from '../hotkey';
 
 interface UseHotkeyToggleProps {
   enabled: boolean;
@@ -15,12 +15,11 @@ export function useHotkeyToggle({ enabled, initialized, hotkey, onToggle }: UseH
   useEffect(() => { onToggleRef.current = onToggle; }, [onToggle]);
 
   useEffect(() => {
-    if (!enabled || !initialized) return;
+    if (!enabled || !initialized || !hotkey) return;
 
-    const shortcut = hotkeyToShortcut(hotkey);
     let cleanedUp = false;
 
-    registerHotkey(shortcut, () => {
+    registerHotkey(hotkey, () => {
       if (!initializedRef.current) return;
       onToggleRef.current();
     }).then(() => {

@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import {
-  Settings, ModelOption, HotkeyOption, RecordingMode,
-  MODEL_OPTIONS, HOTKEY_OPTIONS, DOUBLE_TAP_KEY_OPTIONS, RECORDING_MODE_OPTIONS,
+  Settings, ModelOption, DoubleTapKey, RecordingMode,
+  MODEL_OPTIONS, DOUBLE_TAP_KEY_OPTIONS, RECORDING_MODE_OPTIONS,
 } from '../../lib/settings';
 import type { DictationStatus } from '../../lib/types';
+import { KeyCaptureInput } from '../KeyCaptureInput';
 
 interface SettingsPanelProps {
   isOpen: boolean;
@@ -39,7 +40,6 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
   const handleRequestPermission = () => invoke('request_accessibility_permission');
 
   const isDoubleTap = settings.recordingMode === 'double_tap';
-  const keyOptions = isDoubleTap ? DOUBLE_TAP_KEY_OPTIONS : HOTKEY_OPTIONS;
   const keyLabel = isDoubleTap ? 'Double-Tap Key' : 'Recording Hotkey';
   const keyHelpText = isDoubleTap
     ? 'Double-tap to start recording, single tap to stop'
@@ -136,18 +136,26 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
           <label className="block text-sm font-medium text-stone-700 dark:text-stone-300 mb-2">
             {keyLabel}
           </label>
-          <select
-            value={settings.hotkey}
-            onChange={(e) => onUpdateSettings({ hotkey: e.target.value as HotkeyOption })}
-            disabled={isRecording}
-            className={`w-full px-3 py-2 rounded-lg border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 focus:ring-2 focus:ring-stone-500 focus:border-transparent text-sm ${isRecording ? 'opacity-50 cursor-not-allowed' : ''}`}
-          >
-            {keyOptions.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
+          {isDoubleTap ? (
+            <select
+              value={settings.doubleTapKey}
+              onChange={(e) => onUpdateSettings({ doubleTapKey: e.target.value as DoubleTapKey })}
+              disabled={isRecording}
+              className={`w-full px-3 py-2 rounded-lg border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 focus:ring-2 focus:ring-stone-500 focus:border-transparent text-sm ${isRecording ? 'opacity-50 cursor-not-allowed' : ''}`}
+            >
+              {DOUBLE_TAP_KEY_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <KeyCaptureInput
+              value={settings.hotkey}
+              onChange={(v) => onUpdateSettings({ hotkey: v })}
+              disabled={isRecording}
+            />
+          )}
           <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
             {keyHelpText}
           </p>

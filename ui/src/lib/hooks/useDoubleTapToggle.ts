@@ -6,12 +6,12 @@ import type { DictationStatus } from '../types';
 interface UseDoubleTapToggleProps {
   enabled: boolean;
   initialized: boolean;
-  hotkey: string;
+  doubleTapKey: string;
   status: DictationStatus;
   onToggle: () => void;
 }
 
-export function useDoubleTapToggle({ enabled, initialized, hotkey, status, onToggle }: UseDoubleTapToggleProps) {
+export function useDoubleTapToggle({ enabled, initialized, doubleTapKey, status, onToggle }: UseDoubleTapToggleProps) {
   const onToggleRef = useRef(onToggle);
   useEffect(() => { onToggleRef.current = onToggle; }, [onToggle]);
 
@@ -40,7 +40,7 @@ export function useDoubleTapToggle({ enabled, initialized, hotkey, status, onTog
 
       // Start the rdev listener
       try {
-        await invoke('start_double_tap_listener', { hotkey });
+        await invoke('start_double_tap_listener', { hotkey: doubleTapKey });
         if (cancelled) {
           invoke('stop_double_tap_listener').catch(() => {});
         }
@@ -58,5 +58,5 @@ export function useDoubleTapToggle({ enabled, initialized, hotkey, status, onTog
         console.warn('Failed to stop double-tap listener on cleanup:', err);
       });
     };
-  }, [enabled, initialized, hotkey]);
+  }, [enabled, initialized, doubleTapKey]);
 }

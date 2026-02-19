@@ -1,8 +1,11 @@
 export type RecordingMode = 'hotkey' | 'double_tap';
 
+export type DoubleTapKey = 'shift_l' | 'alt_l' | 'ctrl_r';
+
 export interface Settings {
   model: ModelOption;
-  hotkey: HotkeyOption;
+  hotkey: string;
+  doubleTapKey: DoubleTapKey;
   language: string;
   autoPaste: boolean;
   recordingMode: RecordingMode;
@@ -15,8 +18,6 @@ export type ModelOption =
   | 'medium.en'
   | 'large-v3-turbo';
 
-export type HotkeyOption = 'shift_l' | 'alt_l' | 'ctrl_r';
-
 export const MODEL_OPTIONS: { value: ModelOption; label: string; size: string }[] = [
   { value: 'tiny.en', label: 'Tiny (English)', size: '~75 MB' },
   { value: 'base.en', label: 'Base (English)', size: '~150 MB' },
@@ -25,13 +26,7 @@ export const MODEL_OPTIONS: { value: ModelOption; label: string; size: string }[
   { value: 'large-v3-turbo', label: 'Large Turbo (Recommended)', size: '~3 GB' },
 ];
 
-export const HOTKEY_OPTIONS: { value: HotkeyOption; label: string }[] = [
-  { value: 'shift_l', label: 'Shift + Space' },
-  { value: 'alt_l', label: 'Option + Space' },
-  { value: 'ctrl_r', label: 'Control + Space' },
-];
-
-export const DOUBLE_TAP_KEY_OPTIONS: { value: HotkeyOption; label: string }[] = [
+export const DOUBLE_TAP_KEY_OPTIONS: { value: DoubleTapKey; label: string }[] = [
   { value: 'shift_l', label: 'Shift' },
   { value: 'alt_l', label: 'Option' },
   { value: 'ctrl_r', label: 'Control' },
@@ -44,7 +39,8 @@ export const RECORDING_MODE_OPTIONS: { value: RecordingMode; label: string }[] =
 
 export const DEFAULT_SETTINGS: Settings = {
   model: 'large-v3-turbo',
-  hotkey: 'shift_l',
+  hotkey: 'Shift+Space',
+  doubleTapKey: 'shift_l',
   language: 'en',
   autoPaste: false,
   recordingMode: 'hotkey',
@@ -52,15 +48,31 @@ export const DEFAULT_SETTINGS: Settings = {
 
 const STORAGE_KEY = 'dictation-settings';
 
+// Legacy rdev key names → Tauri shortcut format
+const LEGACY_HOTKEY_MAP: Record<string, string> = {
+  'shift_l': 'Shift+Space',
+  'shift_r': 'Shift+Space',
+  'alt_l': 'Alt+Space',
+  'alt_r': 'Alt+Space',
+  'ctrl_r': 'Ctrl+Space',
+};
+
 export function loadSettings(): Settings {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored) {
       const parsed = JSON.parse(stored) as Partial<Settings>;
+
       const validModes: RecordingMode[] = ['hotkey', 'double_tap'];
       if (parsed.recordingMode && !validModes.includes(parsed.recordingMode)) {
         parsed.recordingMode = DEFAULT_SETTINGS.recordingMode;
       }
+
+      // Migrate legacy rdev key names to Tauri shortcut format
+      if (parsed.hotkey && LEGACY_HOTKEY_MAP[parsed.hotkey]) {
+        parsed.hotkey = LEGACY_HOTKEY_MAP[parsed.hotkey];
+      }
+
       return { ...DEFAULT_SETTINGS, ...parsed };
     }
   } catch (e) {
