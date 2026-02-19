@@ -13,9 +13,10 @@ interface SettingsPanelProps {
   settings: Settings;
   onUpdateSettings: (updates: Partial<Settings>) => void;
   status: DictationStatus;
+  onResetStats: () => void;
 }
 
-export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, status }: SettingsPanelProps) {
+export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, status, onResetStats }: SettingsPanelProps) {
   const [accessibilityGranted, setAccessibilityGranted] = useState<boolean | null>(null);
 
   const checkAccessibility = async () => {
@@ -221,6 +222,19 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
             <p><strong>Model:</strong> {selectedModel?.label}</p>
             <p><strong>Size:</strong> {selectedModel?.size}</p>
           </div>
+        </div>
+
+        {/* Reset Stats */}
+        <div className="pt-4 border-t border-stone-200 dark:border-stone-700">
+          <h3 className="text-sm font-medium text-stone-700 dark:text-stone-300 mb-2">
+            Statistics
+          </h3>
+          <button
+            onClick={onResetStats}
+            className="w-full px-3 py-2 rounded-lg text-xs font-medium border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-600 transition-colors"
+          >
+            Reset Stats
+          </button>
         </div>
       </div>
     </aside>

@@ -3,6 +3,7 @@ import { listen } from '@tauri-apps/api/event';
 import { startRecording, stopRecording } from '../dictation';
 import { isDictationStatus } from '../types';
 import type { DictationStatus } from '../types';
+import { updateStats } from '../stats';
 
 interface UseRecordingStateProps {
   addEntry: (text: string, duration: number) => void;
@@ -16,6 +17,7 @@ export function useRecordingState({ addEntry }: UseRecordingStateProps) {
   const [recordingDuration, setRecordingDuration] = useState(0);
   const [audioLevel, setAudioLevel] = useState(0);
   const [lockedMode, setLockedMode] = useState(false);
+  const [statsVersion, setStatsVersion] = useState(0);
 
   // Refs for stable callbacks (hotkey toggle reads current state)
   const statusRef = useRef(status);
@@ -98,6 +100,8 @@ export function useRecordingState({ addEntry }: UseRecordingStateProps) {
       if (res.text) {
         setTranscription(res.text);
         addEntry(res.text, duration);
+        updateStats(res.text, duration);
+        setStatsVersion(v => v + 1);
       }
       if (res.type === 'error') setError(res.error || 'Unknown error');
       setStatus(isDictationStatus(res.state) ? res.state : 'idle');
@@ -142,5 +146,6 @@ export function useRecordingState({ addEntry }: UseRecordingStateProps) {
     audioLevel,
     lockedMode,
     toggleLockedMode,
+    statsVersion,
   };
 }

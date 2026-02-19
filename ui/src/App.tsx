@@ -13,6 +13,8 @@ import { useRecordingState } from './lib/hooks/useRecordingState';
 import { useHotkeyToggle } from './lib/hooks/useHotkeyToggle';
 import { useDoubleTapToggle } from './lib/hooks/useDoubleTapToggle';
 import { useShowAboutListener } from './lib/hooks/useShowAboutListener';
+import { StatsBar } from './components/StatsBar';
+import { resetStats } from './lib/stats';
 
 function App() {
   const { settings, updateSettings } = useSettings();
@@ -35,8 +37,11 @@ function App() {
   const { historyEntries, addEntry, clearHistory } = useHistoryManagement();
   const {
     status, recordingDuration, error: recordingError,
-    handleStart, handleStop, toggleRecording,
+    handleStart, handleStop, toggleRecording, statsVersion,
   } = useRecordingState({ addEntry });
+  const [statsResetVersion, setStatsResetVersion] = useState(0);
+  const combinedStatsVersion = statsVersion + statsResetVersion;
+  const handleResetStats = () => { resetStats(); setStatsResetVersion(v => v + 1); };
   useHotkeyToggle({ enabled: settings.recordingMode === 'hotkey', initialized, hotkey: settings.hotkey, onToggle: toggleRecording });
   useDoubleTapToggle({ enabled: settings.recordingMode === 'double_tap', initialized, accessibilityGranted, doubleTapKey: settings.doubleTapKey, status, onToggle: toggleRecording });
   const { showAbout, setShowAbout } = useShowAboutListener();
@@ -62,6 +67,8 @@ function App() {
 
       <PermissionsBanner />
 
+      <StatsBar statsVersion={combinedStatsVersion} />
+
       <div className="flex-1 flex overflow-hidden">
         <main className="flex-1 flex flex-col overflow-hidden p-4 gap-4">
           <TranscriptionView
@@ -84,6 +91,7 @@ function App() {
           settings={settings}
           onUpdateSettings={updateSettings}
           status={status}
+          onResetStats={handleResetStats}
         />
       </div>
 
