@@ -18,7 +18,7 @@ function App() {
   const { initialized, error: initError } = useInitialization(settings);
   const { historyEntries, addEntry, clearHistory } = useHistoryManagement();
   const {
-    status, transcription, recordingDuration, error: recordingError,
+    status, recordingDuration, error: recordingError,
     handleStart, handleStop, toggleRecording,
   } = useRecordingState({ addEntry });
   useHotkeyToggle({ enabled: settings.recordingMode === 'hotkey', initialized, hotkey: settings.hotkey, onToggle: toggleRecording });
@@ -44,8 +44,6 @@ function App() {
       <div className="flex-1 flex overflow-hidden">
         <main className="flex-1 flex flex-col overflow-hidden p-4 gap-4">
           <TranscriptionView
-            transcription={transcription}
-            status={status}
             historyEntries={historyEntries}
             onClearHistory={clearHistory}
           />
