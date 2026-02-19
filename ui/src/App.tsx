@@ -22,7 +22,7 @@ function App() {
     handleStart, handleStop, toggleRecording,
   } = useRecordingState({ addEntry });
   useHotkeyToggle({ enabled: settings.recordingMode === 'hotkey', initialized, hotkey: settings.hotkey, onToggle: toggleRecording });
-  useDoubleTapToggle({ enabled: settings.recordingMode === 'double_tap', initialized, hotkey: settings.hotkey, status, onToggle: toggleRecording });
+  useDoubleTapToggle({ enabled: settings.recordingMode === 'double_tap', initialized, doubleTapKey: settings.doubleTapKey, status, onToggle: toggleRecording });
   const { showAbout, setShowAbout } = useShowAboutListener();
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
