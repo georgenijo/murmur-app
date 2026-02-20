@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { getVersion } from '@tauri-apps/api/app';
 import {
   Settings, ModelOption, DoubleTapKey, RecordingMode,
   MODEL_OPTIONS, DOUBLE_TAP_KEY_OPTIONS, RECORDING_MODE_OPTIONS,
@@ -20,6 +21,9 @@ interface SettingsPanelProps {
 export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, status, onResetStats, onViewLogs }: SettingsPanelProps) {
   const [accessibilityGranted, setAccessibilityGranted] = useState<boolean | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
+  const [version, setVersion] = useState('');
+
+  useEffect(() => { getVersion().then(setVersion); }, []);
   const confirmResetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleResetClick = () => {
@@ -273,6 +277,13 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
           </button>
         </div>
       </div>
+
+      {/* Footer */}
+      {version && (
+        <div className="px-4 py-3 border-t border-stone-200 dark:border-stone-700 text-center">
+          <span className="text-xs text-stone-400 dark:text-stone-500">v{version}</span>
+        </div>
+      )}
     </aside>
   );
 }
