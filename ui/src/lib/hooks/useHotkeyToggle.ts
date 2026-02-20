@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { registerHotkey, unregisterHotkey } from '../hotkey';
 
 interface UseHotkeyToggleProps {
@@ -14,7 +14,10 @@ export function useHotkeyToggle({ enabled, initialized, hotkey, onToggle }: UseH
   useEffect(() => { initializedRef.current = initialized; }, [initialized]);
   useEffect(() => { onToggleRef.current = onToggle; }, [onToggle]);
 
+  const [error, setError] = useState<string | null>(null);
+
   useEffect(() => {
+    setError(null);
     if (!enabled || !initialized || !hotkey) return;
 
     let cleanedUp = false;
@@ -28,6 +31,7 @@ export function useHotkeyToggle({ enabled, initialized, hotkey, onToggle }: UseH
       }
     }).catch((err) => {
       console.error('Failed to register hotkey:', err);
+      setError(`Could not register hotkey "${hotkey}". Control shortcuts may conflict with macOS system shortcuts — try a Shift or Option combo instead.`);
     });
 
     return () => {
@@ -37,4 +41,6 @@ export function useHotkeyToggle({ enabled, initialized, hotkey, onToggle }: UseH
       });
     };
   }, [enabled, initialized, hotkey]);
+
+  return { error };
 }

@@ -54,14 +54,14 @@ function App() {
   const [statsResetVersion, setStatsResetVersion] = useState(0);
   const combinedStatsVersion = statsVersion + statsResetVersion;
   const handleResetStats = () => { resetStats(); setStatsResetVersion(v => v + 1); };
-  useHotkeyToggle({ enabled: settings.recordingMode === 'hotkey', initialized, hotkey: settings.hotkey, onToggle: toggleRecording });
+  const { error: hotkeyError } = useHotkeyToggle({ enabled: settings.recordingMode === 'hotkey', initialized, hotkey: settings.hotkey, onToggle: toggleRecording });
   useDoubleTapToggle({ enabled: settings.recordingMode === 'double_tap', initialized, accessibilityGranted, doubleTapKey: settings.doubleTapKey, status, onToggle: toggleRecording });
   const { showAbout, setShowAbout } = useShowAboutListener();
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isLogViewerOpen, setIsLogViewerOpen] = useState(false);
 
-  const error = initError || recordingError;
+  const error = initError || recordingError || hotkeyError;
 
   if (modelReady === null) return <div className="h-screen bg-stone-50 dark:bg-stone-900" />;
   if (modelReady === false) return <ModelDownloader onComplete={markModelReady} />;

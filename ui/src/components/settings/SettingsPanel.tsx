@@ -182,6 +182,11 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
           <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
             {keyHelpText}
           </p>
+          {!isDoubleTap && settings.hotkey.startsWith('Ctrl+') && (
+            <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+              Control shortcuts may conflict with macOS system shortcuts and might not trigger recording. Try a Shift (⇧) or Option (⌥) combo instead.
+            </p>
+          )}
         </div>
 
         {/* Auto-Paste Toggle */}
