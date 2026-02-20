@@ -7,7 +7,6 @@ You are starting a new session on the Local Dictation project in bug-fix mode. F
 Read these files silently:
 - `CLAUDE.md` — project overview, file map, key patterns (may already be loaded)
 - `docs/onboarding.md` — setup, permissions, models, logs
-- `docs/bugs.md` — known bugs and backlog
 
 ## 2. Health Check (silent)
 
@@ -19,12 +18,22 @@ Only surface results if: tests fail, or there are unexpected uncommitted changes
 
 ## 3. Pick the Next Bug
 
-Find the **first bug** in `docs/bugs.md` with status `Open`. Read its full entry including symptom, likely cause, and entry points.
+Run:
+```bash
+gh issue list --label "bug" --state open --json number,title,labels --repo georgenijo/murmur-app
+```
+
+From the results, pick the open issue with the highest priority label (p1 > p2 > p3). Then run:
+```bash
+gh issue view <number> --json title,body --repo georgenijo/murmur-app
+```
+
+Use the issue body as the full bug spec.
 
 ## 4. Present Your Plan
 
 Tell me:
-- Which bug you're fixing (name, one line description)
+- Which bug you're fixing (issue number + name, one line description)
 - Your investigation and fix plan: root cause hypothesis, files to change, approach
 
 Then ask: **"Confirm to proceed?"**
