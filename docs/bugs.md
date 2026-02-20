@@ -32,6 +32,17 @@
 
 ---
 
+## App goes to sleep / becomes unresponsive (BUG-003)
+
+**Status:** Open
+**Affects:** General — app responsiveness
+**Symptom:** App appears to go to sleep intermittently. Hotkeys stop responding or the app becomes unresponsive until restarted.
+**Likely cause:** Unknown — could be macOS suspending the process, rdev listener dying silently, or the audio device going idle. Needs logging to diagnose.
+**Next step:** Reproduce and check `app.log` for any events around the time it goes unresponsive. Add a periodic heartbeat log or watchdog if the pattern becomes clearer.
+**Entry point:** `ui/src-tauri/src/lib.rs`, `ui/src-tauri/src/keyboard.rs`
+
+---
+
 ## Model dropdown uses outdated UI (BUG-002)
 
 **Status:** Open

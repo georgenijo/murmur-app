@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { getVersion } from '@tauri-apps/api/app';
 import {
   Settings, ModelOption, DoubleTapKey, RecordingMode,
   MODEL_OPTIONS, DOUBLE_TAP_KEY_OPTIONS, RECORDING_MODE_OPTIONS,
@@ -20,6 +21,9 @@ interface SettingsPanelProps {
 export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, status, onResetStats, onViewLogs }: SettingsPanelProps) {
   const [accessibilityGranted, setAccessibilityGranted] = useState<boolean | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
+  const [version, setVersion] = useState('');
+
+  useEffect(() => { getVersion().then(setVersion); }, []);
   const confirmResetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleResetClick = () => {
@@ -194,8 +198,8 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
             <button
               type="button"
               onClick={() => onUpdateSettings({ autoPaste: !settings.autoPaste })}
-              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-stone-500 focus:ring-offset-2 ${
-                settings.autoPaste ? 'bg-stone-800 dark:bg-stone-300' : 'bg-stone-300 dark:bg-stone-600'
+              className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-stone-500 focus:ring-offset-2 ${
+                settings.autoPaste ? 'bg-stone-800 dark:bg-stone-300' : 'bg-stone-300 dark:bg-stone-500'
               }`}
             >
               <span
@@ -273,6 +277,13 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
           </button>
         </div>
       </div>
+
+      {/* Footer */}
+      {version && (
+        <div className="px-4 py-3 border-t border-stone-200 dark:border-stone-700 text-center">
+          <span className="text-xs text-stone-400 dark:text-stone-500">v{version}</span>
+        </div>
+      )}
     </aside>
   );
 }

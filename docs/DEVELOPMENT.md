@@ -82,6 +82,14 @@ During development, check the terminal running `npm run tauri dev` for Rust prin
 ### Permission Popup Every Rebuild
 Dev builds have different signatures each time. Grant Accessibility permission to your terminal app instead of the dev build.
 
+### Accessibility Silently Broken After Local Production Build
+When you build and copy a new `.app` to `/Applications`, macOS carries over the old accessibility permission but it's stale — the new binary has a different code signature so the permission doesn't actually apply. Microphone carries over fine, but anything keyboard-related (double-tap, auto-paste) silently fails.
+
+Use the `build` shell function which handles this automatically, or reset manually:
+```bash
+tccutil reset Accessibility com.localdictation
+```
+
 ### "No input device available"
 Grant Microphone permission to your terminal app, then restart the dev server.
 
