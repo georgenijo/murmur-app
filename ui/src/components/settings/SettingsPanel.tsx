@@ -16,9 +16,10 @@ interface SettingsPanelProps {
   status: DictationStatus;
   onResetStats: () => void;
   onViewLogs: () => void;
+  hotkeyError: string | null;
 }
 
-export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, status, onResetStats, onViewLogs }: SettingsPanelProps) {
+export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, status, onResetStats, onViewLogs, hotkeyError }: SettingsPanelProps) {
   const [accessibilityGranted, setAccessibilityGranted] = useState<boolean | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
   const [version, setVersion] = useState('');
@@ -182,7 +183,10 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
           <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
             {keyHelpText}
           </p>
-          {!isDoubleTap && settings.hotkey.startsWith('Ctrl+') && (
+          {!isDoubleTap && hotkeyError && (
+            <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">{hotkeyError}</p>
+          )}
+          {!isDoubleTap && !hotkeyError && settings.hotkey.startsWith('Ctrl+') && (
             <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
               Control shortcuts may conflict with macOS system shortcuts and might not trigger recording. Try a Shift (⇧) or Option (⌥) combo instead.
             </p>

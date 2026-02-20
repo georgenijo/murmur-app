@@ -61,7 +61,7 @@ function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isLogViewerOpen, setIsLogViewerOpen] = useState(false);
 
-  const error = initError || recordingError || hotkeyError;
+  const error = initError || recordingError;
 
   if (modelReady === null) return <div className="h-screen bg-stone-50 dark:bg-stone-900" />;
   if (modelReady === false) return <ModelDownloader onComplete={markModelReady} />;
@@ -111,6 +111,7 @@ function App() {
           status={status}
           onResetStats={handleResetStats}
           onViewLogs={() => setIsLogViewerOpen(true)}
+          hotkeyError={hotkeyError ?? null}
         />
       </div>
 
