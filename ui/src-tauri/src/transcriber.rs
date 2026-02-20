@@ -131,20 +131,21 @@ pub fn parse_wav_to_samples(wav_bytes: &[u8]) -> Result<Vec<f32>, String> {
     Ok(samples)
 }
 
-/// Transcribe audio samples using the given WhisperContext.
+/// Transcribe audio samples using the given WhisperContext and an explicit SamplingStrategy.
 ///
 /// `on_segment`: optional callback fired as each segment is decoded during inference.
 /// Enables live display of partial text in the UI while whisper is still running.
-pub fn transcribe(
+pub fn transcribe_with_strategy(
     ctx: &WhisperContext,
     samples: &[f32],
     language: &str,
+    strategy: SamplingStrategy,
     on_segment: Option<impl Fn(String) + Send + 'static>,
 ) -> Result<String, String> {
     let mut state = ctx.create_state()
         .map_err(|e| format!("Failed to create whisper state: {}", e))?;
 
-    let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+    let mut params = FullParams::new(strategy);
     params.set_language(Some(language));
     params.set_print_special(false);
     params.set_print_progress(false);
@@ -182,4 +183,232 @@ pub fn transcribe(
     }
 
     Ok(text.trim().to_string())
+}
+
+/// Transcribe audio samples using the default Greedy strategy.
+///
+/// This is the production entry point. Use `transcribe_with_strategy` to specify
+/// a different sampling strategy (e.g. for benchmarking).
+pub fn transcribe(
+    ctx: &WhisperContext,
+    samples: &[f32],
+    language: &str,
+    on_segment: Option<impl Fn(String) + Send + 'static>,
+) -> Result<String, String> {
+    transcribe_with_strategy(ctx, samples, language, SamplingStrategy::Greedy { best_of: 1 }, on_segment)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::c_int;
+    use std::sync::{Arc, Mutex};
+    use std::time::Instant;
+
+    const DEFAULT_MODEL: &str = "base.en";
+
+    fn load_test_samples() -> Vec<f32> {
+        let wav_path = std::env::var("BENCH_AUDIO_WAV")
+            .expect("BENCH_AUDIO_WAV env var required — point it at a 16kHz mono WAV file.\n\
+                     Record one with: ffmpeg -f avfoundation -i \":0\" -ar 16000 -ac 1 -t 5 /tmp/bench.wav");
+        let wav_bytes = std::fs::read(&wav_path)
+            .unwrap_or_else(|e| panic!("Failed to read {}: {}", wav_path, e));
+        parse_wav_to_samples(&wav_bytes)
+            .unwrap_or_else(|e| panic!("Failed to parse {}: {}", wav_path, e))
+    }
+
+    fn load_bench_context() -> WhisperContext {
+        let model = std::env::var("BENCH_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_string());
+        eprintln!("Loading model: {} (override with BENCH_MODEL env var)", model);
+        init_whisper_context(&model)
+            .unwrap_or_else(|e| panic!("Failed to load model '{}': {}", model, e))
+    }
+
+    struct BenchConfig {
+        name: String,
+        strategy: SamplingStrategy,
+        temperature: Option<f32>,
+        temperature_inc: Option<f32>,
+        n_threads: Option<c_int>,
+    }
+
+    struct BenchResult {
+        name: String,
+        total_ms: u128,
+        ttfs_ms: Option<u128>,
+        segment_count: usize,
+        text: String,
+    }
+
+    impl std::fmt::Display for BenchResult {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{:<35} total={:>6}ms  ttfs={:>6}  segments={:>2}  chars={}",
+                self.name,
+                self.total_ms,
+                self.ttfs_ms.map_or("n/a".to_string(), |t| format!("{}ms", t)),
+                self.segment_count,
+                self.text.len(),
+            )
+        }
+    }
+
+    fn run_bench(ctx: &WhisperContext, samples: &[f32], language: &str, config: &BenchConfig) -> BenchResult {
+        let first_segment_at: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
+        let segment_count = Arc::new(Mutex::new(0usize));
+
+        let fst = Arc::clone(&first_segment_at);
+        let sc = Arc::clone(&segment_count);
+
+        let on_segment = move |_text: String| {
+            let mut count = sc.lock().unwrap();
+            *count += 1;
+            if *count == 1 {
+                *fst.lock().unwrap() = Some(Instant::now());
+            }
+        };
+
+        let mut state = ctx.create_state().expect("Failed to create whisper state");
+        let mut params = FullParams::new(config.strategy.clone());
+        params.set_language(Some(language));
+        params.set_print_special(false);
+        params.set_print_progress(false);
+        params.set_print_realtime(false);
+        params.set_print_timestamps(false);
+        params.set_suppress_blank(true);
+        params.set_debug_mode(false);
+
+        if let Some(t) = config.temperature {
+            params.set_temperature(t);
+        }
+        if let Some(ti) = config.temperature_inc {
+            params.set_temperature_inc(ti);
+        }
+        if let Some(n) = config.n_threads {
+            params.set_n_threads(n);
+        }
+
+        let mut cb = on_segment;
+        params.set_segment_callback_safe_lossy(move |data: whisper_rs::SegmentCallbackData| {
+            let text = data.text.trim().to_string();
+            if !text.is_empty() {
+                cb(text);
+            }
+        });
+
+        let start = Instant::now();
+        let inference_ok = state.full(params, samples);
+        let total_elapsed = start.elapsed();
+
+        let text = if inference_ok.is_ok() {
+            let n = state.full_n_segments().unwrap_or(0);
+            let mut t = String::new();
+            for i in 0..n {
+                if let Ok(seg) = state.full_get_segment_text(i) {
+                    t.push_str(&seg);
+                }
+            }
+            t.trim().to_string()
+        } else {
+            eprintln!("  [{}] transcription failed: {:?}", config.name, inference_ok);
+            String::new()
+        };
+
+        let ttfs_ms = first_segment_at.lock().unwrap().map(|at| (at - start).as_millis());
+        let segments = *segment_count.lock().unwrap();
+
+        BenchResult {
+            name: config.name.clone(),
+            total_ms: total_elapsed.as_millis(),
+            ttfs_ms,
+            segment_count: segments,
+            text,
+        }
+    }
+
+    #[test]
+    #[ignore] // Requires model + GPU + BENCH_AUDIO_WAV env var
+    fn benchmark_strategies() {
+        let ctx = load_bench_context();
+        let samples = load_test_samples();
+        let language = std::env::var("BENCH_LANG").unwrap_or_else(|_| "en".to_string());
+
+        let configs = vec![
+            // Baseline: whisper default
+            BenchConfig {
+                name: "BeamSearch(5)".into(),
+                strategy: SamplingStrategy::BeamSearch { beam_size: 5, patience: -1.0 },
+                temperature: None, temperature_inc: None, n_threads: None,
+            },
+            // Current production setting
+            BenchConfig {
+                name: "Greedy(1)".into(),
+                strategy: SamplingStrategy::Greedy { best_of: 1 },
+                temperature: None, temperature_inc: None, n_threads: None,
+            },
+            // Middle ground beam
+            BenchConfig {
+                name: "BeamSearch(2)".into(),
+                strategy: SamplingStrategy::BeamSearch { beam_size: 2, patience: -1.0 },
+                temperature: None, temperature_inc: None, n_threads: None,
+            },
+            // Greedy + temp=0 (no fallback retries)
+            BenchConfig {
+                name: "Greedy(1)+temp0".into(),
+                strategy: SamplingStrategy::Greedy { best_of: 1 },
+                temperature: Some(0.0), temperature_inc: Some(0.0), n_threads: None,
+            },
+            // Greedy + temp=0 + 4 threads (perf cores only)
+            BenchConfig {
+                name: "Greedy(1)+temp0+4t".into(),
+                strategy: SamplingStrategy::Greedy { best_of: 1 },
+                temperature: Some(0.0), temperature_inc: Some(0.0), n_threads: Some(4),
+            },
+            // Greedy + temp=0 + 8 threads
+            BenchConfig {
+                name: "Greedy(1)+temp0+8t".into(),
+                strategy: SamplingStrategy::Greedy { best_of: 1 },
+                temperature: Some(0.0), temperature_inc: Some(0.0), n_threads: Some(8),
+            },
+        ];
+
+        eprintln!("\n=== Whisper Transcription Strategy Benchmark ===");
+        eprintln!("Audio: {} samples ({:.1}s at {}Hz)",
+            samples.len(),
+            samples.len() as f64 / WHISPER_SAMPLE_RATE as f64,
+            WHISPER_SAMPLE_RATE
+        );
+        eprintln!("{}\n", "-".repeat(80));
+
+        let mut results: Vec<BenchResult> = Vec::new();
+        for config in &configs {
+            let result = run_bench(&ctx, &samples, &language, config);
+            eprintln!("{}", result);
+            eprintln!("  text: {:?}\n", result.text);
+            results.push(result);
+        }
+
+        // Summary table
+        let baseline_ms = results[0].total_ms;
+        let baseline_ttfs = results[0].ttfs_ms;
+        eprintln!("{}", "=".repeat(80));
+        eprintln!("{:<35} {:>8} {:>8} {:>10} {:>10}", "Strategy", "Total", "TTFS", "vs Base", "TTFS vs");
+        eprintln!("{}", "-".repeat(80));
+        for r in &results {
+            let vs_base = if baseline_ms > 0 {
+                format!("{:.2}x", baseline_ms as f64 / r.total_ms as f64)
+            } else { "n/a".into() };
+            let vs_ttfs = match (baseline_ttfs, r.ttfs_ms) {
+                (Some(b), Some(t)) if t > 0 => format!("{:.2}x", b as f64 / t as f64),
+                _ => "n/a".into(),
+            };
+            eprintln!("{:<35} {:>6}ms {:>6} {:>10} {:>10}",
+                r.name,
+                r.total_ms,
+                r.ttfs_ms.map_or("n/a".to_string(), |t| format!("{}ms", t)),
+                vs_base,
+                vs_ttfs,
+            );
+        }
+        eprintln!("{}\n", "=".repeat(80));
+    }
 }
