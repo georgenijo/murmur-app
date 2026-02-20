@@ -4,6 +4,7 @@ version = "0.3.2"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
+default-run = "ui"
 
 [lib]
 name = "ui_lib"
