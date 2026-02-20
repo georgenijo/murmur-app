@@ -24,6 +24,7 @@ CONFIG_BACKUP="${CONFIG}.qa-backup"
 KEY_FILE="$HOME/.tauri/murmur-test.key"
 SERVER_DIR="/tmp/murmur-update-server"
 PORT=8080
+TAURI_BIN="$UI_DIR/node_modules/.bin/tauri"
 
 # ── colours ──────────────────────────────────────────────────────────────────
 BOLD='\033[1m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; RESET='\033[0m'
@@ -46,6 +47,13 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# ── step 0: install frontend deps if needed ───────────────────────────────────
+if [ ! -f "$TAURI_BIN" ]; then
+  step "Installing frontend dependencies (npm install)"
+  (cd "$UI_DIR" && npm install)
+  ok "Dependencies installed"
+fi
+
 # ── step 1: keypair ───────────────────────────────────────────────────────────
 step "Signing keypair"
 if [ -f "$KEY_FILE" ]; then
@@ -53,7 +61,7 @@ if [ -f "$KEY_FILE" ]; then
 else
   mkdir -p "$(dirname "$KEY_FILE")"
   warn "Generating new keypair at $KEY_FILE (one-time)"
-  (cd "$UI_DIR" && npm run tauri -- signer generate -w "$KEY_FILE")
+  "$TAURI_BIN" signer generate -w "$KEY_FILE"
   ok "Keypair generated"
 fi
 
@@ -81,7 +89,7 @@ ok "pubkey + localhost endpoint written"
 
 # ── step 3: build ─────────────────────────────────────────────────────────────
 step "Building signed release app (takes a few minutes)"
-(cd "$UI_DIR" && TAURI_SIGNING_PRIVATE_KEY="$PRIVATE_KEY" npm run tauri build)
+(cd "$UI_DIR" && TAURI_SIGNING_PRIVATE_KEY="$PRIVATE_KEY" "$TAURI_BIN" build)
 ok "Build complete"
 
 # ── step 4: locate artifacts ──────────────────────────────────────────────────
