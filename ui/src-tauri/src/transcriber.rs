@@ -131,6 +131,14 @@ pub fn parse_wav_to_samples(wav_bytes: &[u8]) -> Result<Vec<f32>, String> {
     Ok(samples)
 }
 
+/// Normalize a whisper segment's text for streaming display.
+/// Uses trim_end() (not trim()) to preserve leading spaces that act as word separators
+/// between segments. Without leading spaces, concatenated segments run words together.
+fn normalize_segment_text(raw: &str) -> Option<String> {
+    let text = raw.trim_end().to_string();
+    if text.is_empty() { None } else { Some(text) }
+}
+
 /// Transcribe audio samples using the given WhisperContext and an explicit SamplingStrategy.
 ///
 /// `on_segment`: optional callback fired as each segment is decoded during inference.
@@ -161,8 +169,7 @@ pub fn transcribe_with_strategy(
         // The closure must be FnMut — we wrap the Fn in a mut wrapper.
         let mut cb = cb;
         params.set_segment_callback_safe_lossy(move |data: whisper_rs::SegmentCallbackData| {
-            let text = data.text.trim_end().to_string();
-            if !text.is_empty() {
+            if let Some(text) = normalize_segment_text(&data.text) {
                 cb(text);
             }
         });
@@ -204,6 +211,34 @@ mod tests {
     use std::ffi::c_int;
     use std::sync::{Arc, Mutex};
     use std::time::Instant;
+
+    #[test]
+    fn segment_text_preserves_leading_space() {
+        // Whisper segments typically start with a leading space as a word separator
+        assert_eq!(normalize_segment_text(" hello world"), Some(" hello world".into()));
+    }
+
+    #[test]
+    fn segment_text_strips_trailing_whitespace() {
+        assert_eq!(normalize_segment_text(" hello world  \n"), Some(" hello world".into()));
+    }
+
+    #[test]
+    fn segment_text_rejects_empty() {
+        assert_eq!(normalize_segment_text(""), None);
+        assert_eq!(normalize_segment_text("   "), None);
+        assert_eq!(normalize_segment_text("\n"), None);
+    }
+
+    #[test]
+    fn segment_text_concatenation_preserves_spacing() {
+        // Simulates how the frontend concatenates streamed segments
+        let segments = vec![" The quick brown", " fox jumped", " over the lazy dog"];
+        let result: String = segments.iter()
+            .filter_map(|s| normalize_segment_text(s))
+            .collect();
+        assert_eq!(result, " The quick brown fox jumped over the lazy dog");
+    }
 
     const DEFAULT_MODEL: &str = "base.en";
 
