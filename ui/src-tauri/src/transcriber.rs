@@ -161,7 +161,7 @@ pub fn transcribe_with_strategy(
         // The closure must be FnMut — we wrap the Fn in a mut wrapper.
         let mut cb = cb;
         params.set_segment_callback_safe_lossy(move |data: whisper_rs::SegmentCallbackData| {
-            let text = data.text.trim().to_string();
+            let text = data.text.trim_end().to_string();
             if !text.is_empty() {
                 cb(text);
             }
