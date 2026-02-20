@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 use tauri::Emitter;
+use crate::{log_error, log_info};
 
 /// Max duration a single tap can be held before it's rejected
 const MAX_HOLD_DURATION_MS: u128 = 300;
@@ -243,13 +244,17 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str) {
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_ok()
     {
+        // Two clones: one moves into the callback closure, one stays in the
+        // outer thread closure for use after listen() returns with an error.
         let handle = app_handle.clone();
+        let error_handle = app_handle.clone();
         std::thread::spawn(move || {
             // CRITICAL: rdev's keyboard translation calls TIS/TSM APIs that must
             // run on the main thread on macOS. This flag tells rdev to dispatch
             // those calls to the main queue via dispatch_sync instead of calling
             // them directly from this background thread.
             set_is_main_thread(false);
+            log_info!("keyboard: rdev listener thread started");
 
             let callback = move |event: Event| {
                 if !LISTENER_ACTIVE.load(Ordering::SeqCst) {
@@ -271,9 +276,22 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str) {
             };
 
             if let Err(e) = listen(callback) {
-                eprintln!("[Keyboard] rdev listen error: {:?}", e);
+                log_error!("keyboard: rdev listener error: {:?}", e);
                 LISTENER_THREAD_SPAWNED.store(false, Ordering::SeqCst);
                 LISTENER_ACTIVE.store(false, Ordering::SeqCst);
+                let _ = error_handle.emit("keyboard-listener-error", format!("{:?}", e));
+            }
+        });
+
+        // Heartbeat monitor: logs every 60 s while the listener is supposed to
+        // be active, so app.log shows a gap if the thread goes silent.
+        std::thread::spawn(|| loop {
+            std::thread::sleep(std::time::Duration::from_secs(60));
+            if LISTENER_ACTIVE.load(Ordering::SeqCst) {
+                log_info!("keyboard: listener heartbeat — active");
+            } else if !LISTENER_THREAD_SPAWNED.load(Ordering::SeqCst) {
+                // Listener thread has exited; stop monitoring.
+                break;
             }
         });
     }
