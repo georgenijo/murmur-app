@@ -14,6 +14,7 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Emitter, Manager,
 };
+use tauri_plugin_updater::UpdaterExt;
 
 /// Helper trait to recover from poisoned mutexes
 trait MutexExt<T> {
@@ -515,6 +516,7 @@ fn show_main_window(app: &tauri::AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(State {
@@ -597,6 +599,29 @@ pub fn run() {
             // Set the initial tray icon color (amber for dev, gray for prod)
             let _ = update_tray_icon(app.app_handle().clone(), "idle".into());
 
+            // Check for updates on launch (non-blocking; fails gracefully if offline or key unset)
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                match handle.updater() {
+                    Ok(updater) => {
+                        let check: Result<Option<tauri_plugin_updater::Update>, _> =
+                            updater.check().await;
+                        match check {
+                            Ok(Some(update)) => {
+                                log_info!("Update available: v{}", update.version);
+                                if let Err(e) =
+                                    update.download_and_install(|_, _| {}, || {}).await
+                                {
+                                    log_warn!("Update install failed: {}", e);
+                                }
+                            }
+                            Ok(None) => log_info!("App is up to date"),
+                            Err(e) => log_warn!("Update check failed: {}", e),
+                        }
+                    }
+                    Err(e) => log_warn!("Updater unavailable: {}", e),
+                }
+            });
 
             Ok(())
         })

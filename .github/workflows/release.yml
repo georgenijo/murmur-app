@@ -41,12 +41,55 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Tauri update signing — set TAURI_SIGNING_PRIVATE_KEY in repo secrets.
+          # To generate a keypair: npx @tauri-apps/cli signer generate -w ~/.tauri/murmur.key
+          # Then copy the public key into tauri.conf.json > plugins.updater.pubkey,
+          # and store the private key content in the TAURI_SIGNING_PRIVATE_KEY secret.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: ui
           tagName: ${{ github.ref_name }}
           releaseName: ${{ github.ref_name }}
           releaseDraft: true
           prerelease: false
+
+      - name: Generate and upload latest.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ github.ref_name }}"
+          VERSION_NUM="${VERSION#v}"
+
+          # Find the signed .app.tar.gz and its .sig produced by tauri-action
+          TARBALL=$(find ui/target/release/bundle/macos -name "*.app.tar.gz" | head -1)
+          SIG_FILE="${TARBALL}.sig"
+
+          if [ -z "$TARBALL" ] || [ ! -f "$SIG_FILE" ]; then
+            echo "Error: could not find .app.tar.gz or .sig — was TAURI_SIGNING_PRIVATE_KEY set?" >&2
+            exit 1
+          fi
+
+          TARBALL_NAME=$(basename "$TARBALL")
+          SIGNATURE=$(cat "$SIG_FILE")
+          PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          NOTES=$(gh release view "$VERSION" --json body -q .body --repo ${{ github.repository }} 2>/dev/null || echo "")
+
+          cat > latest.json <<EOF
+          {
+            "version": "${VERSION_NUM}",
+            "notes": $(echo "$NOTES" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read().strip()))"),
+            "pub_date": "${PUB_DATE}",
+            "platforms": {
+              "darwin-aarch64": {
+                "signature": "${SIGNATURE}",
+                "url": "https://github.com/${{ github.repository }}/releases/download/${VERSION}/${TARBALL_NAME}"
+              }
+            }
+          }
+          EOF
+
+          gh release upload "$VERSION" latest.json --repo ${{ github.repository }}
 
       - name: Publish release
         env:

@@ -39,6 +39,15 @@
       "csp": null
     }
   },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/georgenijo/murmur-app/releases/latest/download/latest.json"
+      ],
+      "dialog": true,
+      "pubkey": "RWQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",
