@@ -131,8 +131,16 @@ pub fn parse_wav_to_samples(wav_bytes: &[u8]) -> Result<Vec<f32>, String> {
     Ok(samples)
 }
 
-/// Transcribe audio samples using the given WhisperContext
-pub fn transcribe(ctx: &WhisperContext, samples: &[f32], language: &str) -> Result<String, String> {
+/// Transcribe audio samples using the given WhisperContext.
+///
+/// `on_segment`: optional callback fired as each segment is decoded during inference.
+/// Enables live display of partial text in the UI while whisper is still running.
+pub fn transcribe(
+    ctx: &WhisperContext,
+    samples: &[f32],
+    language: &str,
+    on_segment: Option<impl Fn(String) + Send + 'static>,
+) -> Result<String, String> {
     let mut state = ctx.create_state()
         .map_err(|e| format!("Failed to create whisper state: {}", e))?;
 
@@ -143,8 +151,21 @@ pub fn transcribe(ctx: &WhisperContext, samples: &[f32], language: &str) -> Resu
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
     params.set_suppress_blank(true);
-    params.set_single_segment(true);
+    // Note: set_single_segment is intentionally omitted so that whisper fires
+    // new_segment_callback progressively as each segment is decoded.
     params.set_debug_mode(false);
+
+    if let Some(cb) = on_segment {
+        // set_segment_callback_safe_lossy handles the unsafe FFI trampoline internally.
+        // The closure must be FnMut — we wrap the Fn in a mut wrapper.
+        let mut cb = cb;
+        params.set_segment_callback_safe_lossy(move |data: whisper_rs::SegmentCallbackData| {
+            let text = data.text.trim().to_string();
+            if !text.is_empty() {
+                cb(text);
+            }
+        });
+    }
 
     state.full(params, samples)
         .map_err(|e| format!("Transcription failed: {}", e))?;

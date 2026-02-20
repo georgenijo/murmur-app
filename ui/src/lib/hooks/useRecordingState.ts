@@ -12,6 +12,7 @@ interface UseRecordingStateProps {
 export function useRecordingState({ addEntry }: UseRecordingStateProps) {
   const [status, setStatus] = useState<DictationStatus>('idle');
   const [transcription, setTranscription] = useState('');
+  const [partialText, setPartialText] = useState('');
   const [error, setError] = useState('');
   const [recordingStartTime, setRecordingStartTime] = useState<number | null>(null);
   const [recordingDuration, setRecordingDuration] = useState(0);
@@ -65,12 +66,25 @@ export function useRecordingState({ addEntry }: UseRecordingStateProps) {
     return () => { cancelled = true; unlisten?.(); };
   }, []);
 
+  // Accumulate partial text segments emitted by whisper during inference
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    listen<string>('transcription-partial', (event) => {
+      setPartialText(prev => prev + event.payload);
+    }).then((fn) => {
+      if (cancelled) { fn(); } else { unlisten = fn; }
+    });
+    return () => { cancelled = true; unlisten?.(); };
+  }, []);
+
   const handleStart = useCallback(async () => {
     if (isStartingRef.current) return;
     isStartingRef.current = true;
     try {
       recordingStartTimeRef.current = Date.now();
       setRecordingStartTime(Date.now());
+      setPartialText('');
       setError('');
       const res = await startRecording();
       if (isDictationStatus(res.state)) setStatus(res.state);
@@ -97,6 +111,7 @@ export function useRecordingState({ addEntry }: UseRecordingStateProps) {
     try {
       setStatus('processing');
       const res = await stopRecording();
+      setPartialText('');
       if (res.text) {
         setTranscription(res.text);
         addEntry(res.text, duration);
@@ -137,6 +152,7 @@ export function useRecordingState({ addEntry }: UseRecordingStateProps) {
   return {
     status,
     transcription,
+    partialText,
     recordingDuration,
     error,
     setError,

@@ -84,6 +84,13 @@ fn run_transcription_pipeline(
         (dictation.model_name.clone(), dictation.language.clone(), dictation.auto_paste)
     };
 
+    // Segment callback: emit partial text to the frontend as each whisper segment decodes.
+    // The frontend listens for "transcription-partial" and displays it in-progress.
+    let handle_for_cb = app_handle.clone();
+    let on_segment = move |text: String| {
+        let _ = handle_for_cb.emit("transcription-partial", &text);
+    };
+
     // Phase: Whisper inference (includes lazy context init on first run)
     let t_whisper = std::time::Instant::now();
     let text = {
@@ -92,7 +99,7 @@ fn run_transcription_pipeline(
             *ctx_guard = Some(transcriber::init_whisper_context(&model_name)?);
         }
         let ctx = ctx_guard.as_ref().unwrap();
-        transcriber::transcribe(ctx, samples, &language)?
+        transcriber::transcribe(ctx, samples, &language, Some(on_segment))?
     };
     log_info!("pipeline: whisper inference ({} samples): {:?}", samples.len(), t_whisper.elapsed());
 

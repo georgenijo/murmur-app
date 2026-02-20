@@ -49,7 +49,7 @@ function App() {
   const { historyEntries, addEntry, clearHistory } = useHistoryManagement();
   const {
     status, recordingDuration, error: recordingError,
-    handleStart, handleStop, toggleRecording, statsVersion,
+    handleStart, handleStop, toggleRecording, statsVersion, partialText,
   } = useRecordingState({ addEntry });
   const [statsResetVersion, setStatsResetVersion] = useState(0);
   const combinedStatsVersion = statsVersion + statsResetVersion;
@@ -90,6 +90,8 @@ function App() {
           <TranscriptionView
             historyEntries={historyEntries}
             onClearHistory={clearHistory}
+            partialText={partialText}
+            status={status}
           />
 
           {error && (
