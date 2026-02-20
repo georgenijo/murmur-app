@@ -31,7 +31,7 @@ export function useHotkeyToggle({ enabled, initialized, hotkey, onToggle }: UseH
       }
     }).catch((err) => {
       console.error('Failed to register hotkey:', err);
-      setError(`Could not register hotkey "${hotkey}". Control shortcuts may conflict with macOS system shortcuts — try a Shift or Option combo instead.`);
+      setError(`Could not register hotkey "${hotkey}". It may already be in use by another app or macOS.`);
     });
 
     return () => {
