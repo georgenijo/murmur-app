@@ -31,7 +31,7 @@ jobs:
       - name: Install frontend dependencies
         run: cd ui && npm ci
 
-      - name: Build and publish release
+      - name: Build and upload release assets
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -45,5 +45,10 @@ jobs:
           projectPath: ui
           tagName: ${{ github.ref_name }}
           releaseName: ${{ github.ref_name }}
-          releaseDraft: false
+          releaseDraft: true
           prerelease: false
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "${{ github.ref_name }}" --draft=false --repo ${{ github.repository }}
