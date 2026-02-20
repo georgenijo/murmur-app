@@ -63,7 +63,7 @@ function App() {
 
   const error = initError || recordingError;
 
-  if (modelReady === null) return null;
+  if (modelReady === null) return <div className="h-screen bg-stone-50 dark:bg-stone-900" />;
   if (modelReady === false) return <ModelDownloader onComplete={markModelReady} />;
 
   return (

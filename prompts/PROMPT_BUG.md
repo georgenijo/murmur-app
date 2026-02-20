@@ -23,7 +23,7 @@ Run:
 gh issue list --label "bug" --state open --json number,title,labels --repo georgenijo/murmur-app
 ```
 
-From the results, pick the open issue with the highest priority label (p1 > p2 > p3). Then run:
+From the results, pick the open issue with the highest priority label (p1 > p2 > p3). If no issues carry a p1/p2/p3 label, run `gh issue list --label "bug" --state open --sort updated --limit 1 --repo georgenijo/murmur-app` and pick the most recently updated open issue; if that also returns nothing, stop and report "no open bug issues found" with no further action. Then run:
 ```bash
 gh issue view <number> --json title,body --repo georgenijo/murmur-app
 ```
@@ -33,7 +33,7 @@ Use the issue body as the full bug spec.
 ## 4. Present Your Plan
 
 Tell me:
-- Which bug you're fixing (issue number + name, one line description)
+- Which bug you're fixing (issue number + name, one-line description)
 - Your investigation and fix plan: root cause hypothesis, files to change, approach
 
 Then ask: **"Confirm to proceed?"**

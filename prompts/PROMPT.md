@@ -23,7 +23,7 @@ Run:
 gh issue list --label "enhancement" --state open --json number,title,labels --repo georgenijo/murmur-app
 ```
 
-From the results, pick the open issue with the highest priority label (p1 > p2 > p3). Then run:
+From the results, pick the open issue with the highest priority label (p1 > p2 > p3). If no issues carry a p1/p2/p3 label, run `gh issue list --label "enhancement" --state open --sort updated --limit 1 --repo georgenijo/murmur-app` and pick the most recently updated open issue; if that also returns nothing, stop and report "no open enhancement issues found" with no further action. Then run:
 ```bash
 gh issue view <number> --json title,body --repo georgenijo/murmur-app
 ```

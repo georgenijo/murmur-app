@@ -404,8 +404,14 @@ fn check_model_exists() -> bool {
 
 #[tauri::command]
 async fn download_model(app_handle: tauri::AppHandle, model_name: String) -> Result<(), String> {
+    const ALLOWED_MODELS: &[&str] = &["large-v3-turbo", "small.en", "base.en"];
+    if !ALLOWED_MODELS.contains(&model_name.as_str()) {
+        return Err(format!("Unknown model '{}'. Allowed: {}", model_name, ALLOWED_MODELS.join(", ")));
+    }
+
     let models_dir = transcriber::get_models_dir()?;
-    std::fs::create_dir_all(&models_dir)
+    tokio::fs::create_dir_all(&models_dir)
+        .await
         .map_err(|e| format!("Failed to create models directory: {}", e))?;
 
     let filename = format!("ggml-{}.bin", model_name);
@@ -414,6 +420,7 @@ async fn download_model(app_handle: tauri::AppHandle, model_name: String) -> Res
         filename
     );
     let dest_path = models_dir.join(&filename);
+    let temp_path = models_dir.join(format!("{}.tmp", filename));
 
     let client = reqwest::Client::builder()
         .build()
@@ -433,27 +440,41 @@ async fn download_model(app_handle: tauri::AppHandle, model_name: String) -> Res
     let mut received: u64 = 0;
 
     use tokio::io::AsyncWriteExt;
-    let mut file = tokio::fs::File::create(&dest_path)
+    let mut file = tokio::fs::File::create(&temp_path)
         .await
-        .map_err(|e| format!("Failed to create file: {}", e))?;
+        .map_err(|e| format!("Failed to create temp file: {}", e))?;
 
     let mut stream = response.bytes_stream();
     use futures_util::StreamExt;
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| format!("Download error: {}", e))?;
-        file.write_all(&chunk)
+    let stream_result = async {
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| format!("Download error: {}", e))?;
+            file.write_all(&chunk)
+                .await
+                .map_err(|e| format!("Failed to write to file: {}", e))?;
+            received += chunk.len() as u64;
+            let _ = app_handle.emit("download-progress", serde_json::json!({
+                "received": received,
+                "total": total
+            }));
+        }
+        file.flush()
             .await
-            .map_err(|e| format!("Failed to write to file: {}", e))?;
-        received += chunk.len() as u64;
-        let _ = app_handle.emit("download-progress", serde_json::json!({
-            "received": received,
-            "total": total
-        }));
+            .map_err(|e| format!("Failed to flush file: {}", e))?;
+        Ok::<(), String>(())
+    }.await;
+
+    if let Err(e) = stream_result {
+        let _ = tokio::fs::remove_file(&temp_path).await;
+        return Err(e);
     }
 
-    file.flush()
+    tokio::fs::rename(&temp_path, &dest_path)
         .await
-        .map_err(|e| format!("Failed to flush file: {}", e))?;
+        .map_err(|e| {
+            let _ = std::fs::remove_file(&temp_path);
+            format!("Failed to finalize download: {}", e)
+        })?;
 
     log_info!("Model downloaded: {} ({} bytes)", filename, received);
     Ok(())

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
@@ -13,7 +13,7 @@ const MODELS: Model[] = [
   {
     name: 'large-v3-turbo',
     label: 'Large v3 Turbo',
-    size: '~800 MB',
+    size: '~1.5 GB',
     description: 'Best accuracy — recommended for most users',
   },
   {
@@ -42,6 +42,14 @@ type DownloadState =
 export function ModelDownloader({ onComplete }: Props) {
   const [selected, setSelected] = useState<string>(MODELS[0].name);
   const [downloadState, setDownloadState] = useState<DownloadState>({ phase: 'idle' });
+  const downloadUnlistenRef = useRef<(() => void) | null>(null);
+
+  useEffect(() => {
+    return () => {
+      downloadUnlistenRef.current?.();
+      downloadUnlistenRef.current = null;
+    };
+  }, []);
 
   const handleDownload = async () => {
     setDownloadState({ phase: 'downloading', received: 0, total: 0 });
@@ -56,13 +64,16 @@ export function ModelDownloader({ onComplete }: Props) {
         });
       }
     );
+    downloadUnlistenRef.current = unlisten;
 
     try {
       await invoke('download_model', { modelName: selected });
       unlisten();
+      downloadUnlistenRef.current = null;
       onComplete();
     } catch (err) {
       unlisten();
+      downloadUnlistenRef.current = null;
       setDownloadState({
         phase: 'error',
         message: String(err),
@@ -146,7 +157,7 @@ export function ModelDownloader({ onComplete }: Props) {
         )}
 
         <button
-          onClick={downloadState.phase === 'error' ? handleDownload : handleDownload}
+          onClick={handleDownload}
           disabled={isDownloading}
           className="w-full py-2.5 px-4 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors"
         >
