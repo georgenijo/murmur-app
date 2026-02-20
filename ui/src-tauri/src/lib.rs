@@ -84,7 +84,8 @@ fn run_transcription_pipeline(
         (dictation.model_name.clone(), dictation.language.clone(), dictation.auto_paste)
     };
 
-    // Initialize whisper context if needed and transcribe
+    // Phase: Whisper inference (includes lazy context init on first run)
+    let t_whisper = std::time::Instant::now();
     let text = {
         let mut ctx_guard = app_state.whisper_context.lock_or_recover();
         if ctx_guard.is_none() {
@@ -93,8 +94,10 @@ fn run_transcription_pipeline(
         let ctx = ctx_guard.as_ref().unwrap();
         transcriber::transcribe(ctx, samples, &language)?
     };
+    log_info!("pipeline: whisper inference ({} samples): {:?}", samples.len(), t_whisper.elapsed());
 
-    // Inject text on main thread (macOS requires keyboard APIs to run on main thread)
+    // Phase: Text injection (clipboard write + optional osascript paste)
+    let t_inject = std::time::Instant::now();
     if !text.is_empty() {
         let text_to_inject = text.clone();
         let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
@@ -109,6 +112,7 @@ fn run_transcription_pipeline(
             Ok(Ok(())) => {}
         }
     }
+    log_info!("pipeline: inject (clipboard + paste): {:?}", t_inject.elapsed());
 
     Ok(text)
     // _guard drops here, setting status to Idle
@@ -130,10 +134,12 @@ async fn process_audio(
     // Guard resets status to Idle if decode/parse fails before reaching the pipeline
     let mut guard = IdleGuard::new(&state.app_state);
 
-    // Decode base64 audio and parse WAV to samples
+    // Phase: Audio parse (base64 decode + WAV to samples)
+    let t_parse = std::time::Instant::now();
     let wav_bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &audio_data)
         .map_err(|e| format!("Failed to decode base64: {}", e))?;
     let samples = transcriber::parse_wav_to_samples(&wav_bytes)?;
+    log_info!("pipeline: audio parse (base64 + WAV): {:?}", t_parse.elapsed());
 
     // Pipeline has its own guard, so disarm this one
     guard.disarm();
@@ -318,10 +324,13 @@ async fn stop_native_recording(
     // disarmed before handing off to run_transcription_pipeline (which has its own guard)
     let mut guard = IdleGuard::new(&state.app_state);
 
+    // Phase: Audio teardown + 16kHz resample
+    let t_total = std::time::Instant::now();
     let samples = audio::stop_recording().map_err(|e| {
         log_error!("stop_native_recording: stop_recording failed: {}", e);
         e
     })?;
+    log_info!("pipeline: audio teardown + resample: {:?}", t_total.elapsed());
 
     if samples.is_empty() {
         log_info!("stop_native_recording: no audio captured");
@@ -338,7 +347,6 @@ async fn stop_native_recording(
     // Hand off status management to the pipeline's own guard
     guard.disarm();
 
-    let t0 = std::time::Instant::now();
     let pipeline_result = run_transcription_pipeline(&samples, &app_handle, &state.app_state);
     let _ = app_handle.emit("recording-status-changed", "idle");
     let _ = update_tray_icon(app_handle.clone(), "idle".into());
@@ -347,12 +355,11 @@ async fn stop_native_recording(
         e
     })?;
 
-    let latency_ms = t0.elapsed().as_millis();
     let recording_secs = samples.len() / 16_000;
     let word_count = if text.trim().is_empty() { 0 } else { text.split_whitespace().count() };
     let approx_tokens = (word_count as f64 * 1.3).round() as usize;
-    log_info!("transcription: duration={}s latency={}ms words={} tokens={} chars={}",
-        recording_secs, latency_ms, word_count, approx_tokens, text.len());
+    log_info!("pipeline: total end-to-end: {:?} (duration={}s words={} tokens={} chars={})",
+        t_total.elapsed(), recording_secs, word_count, approx_tokens, text.len());
     Ok(serde_json::json!({
         "type": "transcription",
         "text": text,
