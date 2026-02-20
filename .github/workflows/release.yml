@@ -74,20 +74,13 @@ jobs:
           SIGNATURE=$(cat "$SIG_FILE")
           PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           NOTES=$(gh release view "$VERSION" --json body -q .body --repo ${{ github.repository }} 2>/dev/null || echo "")
+          URL="https://github.com/${{ github.repository }}/releases/download/${VERSION}/${TARBALL_NAME}"
 
-          cat > latest.json <<EOF
-          {
-            "version": "${VERSION_NUM}",
-            "notes": $(echo "$NOTES" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read().strip()))"),
-            "pub_date": "${PUB_DATE}",
-            "platforms": {
-              "darwin-aarch64": {
-                "signature": "${SIGNATURE}",
-                "url": "https://github.com/${{ github.repository }}/releases/download/${VERSION}/${TARBALL_NAME}"
-              }
-            }
-          }
-          EOF
+          # Use the gen_latest_json binary (built by tauri-action above) so that
+          # the manifest format is covered by unit tests and not a shell heredoc.
+          ui/src-tauri/target/release/gen_latest_json \
+            "$VERSION_NUM" "$PUB_DATE" "$SIGNATURE" "$URL" "$NOTES" \
+            > latest.json
 
           gh release upload "$VERSION" latest.json --repo ${{ github.repository }}
 

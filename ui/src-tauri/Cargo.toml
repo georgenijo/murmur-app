@@ -9,6 +9,10 @@ edition = "2021"
 name = "ui_lib"
 crate-type = ["lib", "cdylib", "staticlib"]
 
+[[bin]]
+name = "gen_latest_json"
+path = "src/bin/gen_latest_json.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
