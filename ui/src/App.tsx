@@ -54,7 +54,7 @@ function App() {
   const [statsResetVersion, setStatsResetVersion] = useState(0);
   const combinedStatsVersion = statsVersion + statsResetVersion;
   const handleResetStats = () => { resetStats(); setStatsResetVersion(v => v + 1); };
-  useHotkeyToggle({ enabled: settings.recordingMode === 'hotkey', initialized, hotkey: settings.hotkey, onToggle: toggleRecording });
+  const { error: hotkeyError } = useHotkeyToggle({ enabled: settings.recordingMode === 'hotkey', initialized, hotkey: settings.hotkey, onToggle: toggleRecording });
   useDoubleTapToggle({ enabled: settings.recordingMode === 'double_tap', initialized, accessibilityGranted, doubleTapKey: settings.doubleTapKey, status, onToggle: toggleRecording });
   const { showAbout, setShowAbout } = useShowAboutListener();
 
@@ -111,6 +111,7 @@ function App() {
           status={status}
           onResetStats={handleResetStats}
           onViewLogs={() => setIsLogViewerOpen(true)}
+          hotkeyError={hotkeyError ?? null}
         />
       </div>
 
