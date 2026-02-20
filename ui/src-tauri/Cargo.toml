@@ -18,7 +18,7 @@ tauri-plugin-opener = "2"
 tauri-plugin-global-shortcut = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["process", "io-util", "sync", "rt"] }
+tokio = { version = "1", features = ["process", "io-util", "sync", "rt", "fs"] }
 base64 = "0.22"
 whisper-rs = { version = "0.13", features = ["metal", "whisper-cpp-log"] }
 arboard = "3"
@@ -27,6 +27,8 @@ dirs = "5"
 cpal = "0.15"
 rdev = { git = "https://github.com/Narsil/rdev", branch = "main" }
 sysinfo = "0.32"
+reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls"] }
+futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
 
 [profile.release]
 panic = "abort"

@@ -397,6 +397,89 @@ fn clear_logs() -> Result<(), String> {
     logging::clear_logs()
 }
 
+#[tauri::command]
+fn check_model_exists() -> bool {
+    transcriber::check_model_exists()
+}
+
+#[tauri::command]
+async fn download_model(app_handle: tauri::AppHandle, model_name: String) -> Result<(), String> {
+    const ALLOWED_MODELS: &[&str] = &["large-v3-turbo", "small.en", "base.en"];
+    if !ALLOWED_MODELS.contains(&model_name.as_str()) {
+        return Err(format!("Unknown model '{}'. Allowed: {}", model_name, ALLOWED_MODELS.join(", ")));
+    }
+
+    let models_dir = transcriber::get_models_dir()?;
+    tokio::fs::create_dir_all(&models_dir)
+        .await
+        .map_err(|e| format!("Failed to create models directory: {}", e))?;
+
+    let filename = format!("ggml-{}.bin", model_name);
+    let url = format!(
+        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{}",
+        filename
+    );
+    let dest_path = models_dir.join(&filename);
+    let temp_path = models_dir.join(format!("{}.tmp", filename));
+
+    let client = reqwest::Client::builder()
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Download request failed: {}", e))?;
+
+    if !response.status().is_success() {
+        return Err(format!("Download failed with status: {}", response.status()));
+    }
+
+    let total = response.content_length().unwrap_or(0);
+    let mut received: u64 = 0;
+
+    use tokio::io::AsyncWriteExt;
+    let mut file = tokio::fs::File::create(&temp_path)
+        .await
+        .map_err(|e| format!("Failed to create temp file: {}", e))?;
+
+    let mut stream = response.bytes_stream();
+    use futures_util::StreamExt;
+    let stream_result = async {
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| format!("Download error: {}", e))?;
+            file.write_all(&chunk)
+                .await
+                .map_err(|e| format!("Failed to write to file: {}", e))?;
+            received += chunk.len() as u64;
+            let _ = app_handle.emit("download-progress", serde_json::json!({
+                "received": received,
+                "total": total
+            }));
+        }
+        file.flush()
+            .await
+            .map_err(|e| format!("Failed to flush file: {}", e))?;
+        Ok::<(), String>(())
+    }.await;
+
+    if let Err(e) = stream_result {
+        let _ = tokio::fs::remove_file(&temp_path).await;
+        return Err(e);
+    }
+
+    tokio::fs::rename(&temp_path, &dest_path)
+        .await
+        .map_err(|e| {
+            let _ = std::fs::remove_file(&temp_path);
+            format!("Failed to finalize download: {}", e)
+        })?;
+
+    log_info!("Model downloaded: {} ({} bytes)", filename, received);
+    Ok(())
+}
+
 /// Generate 22×22 RGBA pixel data for a solid circle of the given colour.
 fn make_tray_icon_data(r: u8, g: u8, b: u8) -> Vec<u8> {
     const SIZE: u32 = 22;
@@ -540,6 +623,8 @@ pub fn run() {
             hide_overlay,
             get_log_contents,
             clear_logs,
+            check_model_exists,
+            download_model,
             resource_monitor::get_resource_usage
         ])
         .on_window_event(|window, event| {

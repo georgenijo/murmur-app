@@ -1,4 +1,4 @@
-import { useState, useEffect, lazy, Suspense } from 'react';
+import { useState, useEffect, lazy, Suspense, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { SettingsPanel } from './components/settings';
 import { PermissionsBanner } from './components/PermissionsBanner';
@@ -17,8 +17,18 @@ import { StatsBar } from './components/StatsBar';
 import { LogViewer } from './components/LogViewer';
 const ResourceMonitor = lazy(() => import('./components/ResourceMonitor').then(m => ({ default: m.ResourceMonitor })));
 import { resetStats } from './lib/stats';
+import { ModelDownloader } from './components/ModelDownloader';
 
 function App() {
+  const [modelReady, setModelReady] = useState<boolean | null>(null);
+  const markModelReady = useCallback(() => setModelReady(true), []);
+
+  useEffect(() => {
+    invoke<boolean>('check_model_exists')
+      .then(setModelReady)
+      .catch(() => setModelReady(true)); // fail open so main UI still loads
+  }, []);
+
   const { settings, updateSettings } = useSettings();
   const { initialized, error: initError } = useInitialization(settings);
 
@@ -52,6 +62,9 @@ function App() {
   const [isLogViewerOpen, setIsLogViewerOpen] = useState(false);
 
   const error = initError || recordingError;
+
+  if (modelReady === null) return <div className="h-screen bg-stone-50 dark:bg-stone-900" />;
+  if (modelReady === false) return <ModelDownloader onComplete={markModelReady} />;
 
   return (
     <div className="h-screen bg-stone-50 dark:bg-stone-900 flex flex-col font-[-apple-system,BlinkMacSystemFont,'Segoe_UI',Roboto,sans-serif]">

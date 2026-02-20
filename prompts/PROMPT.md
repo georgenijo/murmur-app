@@ -7,7 +7,6 @@ You are starting a new session on the Local Dictation project. Follow these step
 Read these files silently:
 - `CLAUDE.md` — project overview, file map, key patterns (may already be loaded)
 - `docs/onboarding.md` — setup, permissions, models, logs
-- `docs/TICKETS_FEATURES.md` — full ticket specs
 
 ## 2. Health Check (silent)
 
@@ -19,12 +18,22 @@ Only surface results if: tests fail, or there are unexpected uncommitted changes
 
 ## 3. Pick the Next Ticket
 
-Find the **first ticket** in the Status Summary table of `docs/TICKETS_FEATURES.md` whose status is `TODO`. Read its full spec section in that file. If a matching doc exists under `docs/features/`, read that too.
+Run:
+```bash
+gh issue list --label "enhancement" --state open --json number,title,labels --repo georgenijo/murmur-app
+```
+
+From the results, pick the open issue with the highest priority label (p1 > p2 > p3). If no issues carry a p1/p2/p3 label, run `gh issue list --label "enhancement" --state open --sort updated --limit 1 --repo georgenijo/murmur-app` and pick the most recently updated open issue; if that also returns nothing, stop and report "no open enhancement issues found" with no further action. Then run:
+```bash
+gh issue view <number> --json title,body --repo georgenijo/murmur-app
+```
+
+Use the issue body as the full ticket spec. If a matching doc exists under `docs/features/`, read that too.
 
 ## 4. Present Your Plan
 
 Tell me:
-- Which ticket you're working on (ID + name, one line)
+- Which ticket you're working on (issue number + name, one line)
 - A concise implementation plan: files to change, approach, any open questions or risks
 
 Then ask: **"Confirm to proceed?"**

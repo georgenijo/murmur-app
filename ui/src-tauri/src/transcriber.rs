@@ -69,8 +69,22 @@ pub fn get_model_path(model_name: &str) -> Result<PathBuf, String> {
     ))
 }
 
+/// Check if any whisper model (.bin) file exists in any of the search paths
+pub fn check_model_exists() -> bool {
+    let search_paths = get_model_search_paths();
+    for dir in &search_paths {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                if entry.path().extension().and_then(|e| e.to_str()) == Some("bin") {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 /// Get the primary models directory (for downloads)
-#[allow(dead_code)]
 pub fn get_models_dir() -> Result<PathBuf, String> {
     let data_dir = dirs::data_dir()
         .ok_or_else(|| "Could not find application data directory".to_string())?;
