@@ -133,10 +133,15 @@ pub fn parse_wav_to_samples(wav_bytes: &[u8]) -> Result<Vec<f32>, String> {
 
 /// Normalize a whisper segment's text for streaming display.
 /// Uses trim_end() (not trim()) to preserve leading spaces that act as word separators
-/// between segments. Without leading spaces, concatenated segments run words together.
+/// between segments. Strips whisper artifact tokens like [BLANK_AUDIO].
 fn normalize_segment_text(raw: &str) -> Option<String> {
-    let text = raw.trim_end().to_string();
+    let text = raw.replace("[BLANK_AUDIO]", "").trim_end().to_string();
     if text.is_empty() { None } else { Some(text) }
+}
+
+/// Strip whisper artifact tokens from the final transcription output.
+fn clean_transcription(raw: &str) -> String {
+    raw.replace("[BLANK_AUDIO]", "").trim().to_string()
 }
 
 /// Transcribe audio samples using the given WhisperContext and an explicit SamplingStrategy.
@@ -166,8 +171,7 @@ pub fn transcribe_with_strategy(
 
     if let Some(cb) = on_segment {
         // set_segment_callback_safe_lossy handles the unsafe FFI trampoline internally.
-        // The closure must be FnMut — we wrap the Fn in a mut wrapper.
-        let mut cb = cb;
+        let cb = cb;
         params.set_segment_callback_safe_lossy(move |data: whisper_rs::SegmentCallbackData| {
             if let Some(text) = normalize_segment_text(&data.text) {
                 cb(text);
@@ -189,7 +193,7 @@ pub fn transcribe_with_strategy(
         text.push_str(&segment);
     }
 
-    Ok(text.trim().to_string())
+    Ok(clean_transcription(&text))
 }
 
 /// Transcribe audio samples using the default Greedy strategy.
@@ -228,6 +232,19 @@ mod tests {
         assert_eq!(normalize_segment_text(""), None);
         assert_eq!(normalize_segment_text("   "), None);
         assert_eq!(normalize_segment_text("\n"), None);
+    }
+
+    #[test]
+    fn segment_text_strips_blank_audio_token() {
+        assert_eq!(normalize_segment_text("[BLANK_AUDIO]"), None);
+        assert_eq!(normalize_segment_text(" hello [BLANK_AUDIO]"), Some(" hello".into()));
+    }
+
+    #[test]
+    fn clean_transcription_strips_blank_audio() {
+        assert_eq!(clean_transcription(" hello world [BLANK_AUDIO]"), "hello world");
+        assert_eq!(clean_transcription("[BLANK_AUDIO]"), "");
+        assert_eq!(clean_transcription(" hello [BLANK_AUDIO] world "), "hello  world");
     }
 
     #[test]
@@ -322,7 +339,7 @@ mod tests {
             params.set_n_threads(n);
         }
 
-        let mut cb = on_segment;
+        let cb = on_segment;
         params.set_segment_callback_safe_lossy(move |data: whisper_rs::SegmentCallbackData| {
             let text = data.text.trim().to_string();
             if !text.is_empty() {
