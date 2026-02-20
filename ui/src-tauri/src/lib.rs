@@ -709,11 +709,8 @@ pub fn run() {
                         match check {
                             Ok(Some(update)) => {
                                 log_info!("Update available: v{}", update.version);
-                                if let Err(e) =
-                                    update.download_and_install(|_, _| {}, || {}).await
-                                {
-                                    log_warn!("Update install failed: {}", e);
-                                }
+                                // dialog: true in tauri.conf.json means the native dialog
+                                // already handled download + install — nothing to do here.
                             }
                             Ok(None) => log_info!("App is up to date"),
                             Err(e) => log_warn!("Update check failed: {}", e),
