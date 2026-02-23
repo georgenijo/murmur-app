@@ -1,0 +1,10 @@
+[package]
+name = "moonshine-bench"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sherpa-rs = { version = "0.6", default-features = false, features = ["download-binaries"] }
+whisper-rs = { version = "0.13", features = ["metal"] }
+hound = "3.5"
+libc = "0.2"
