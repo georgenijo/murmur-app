@@ -36,7 +36,7 @@
 - Version footer
 
 ### System Tray
-- Color-coded icon: gray (idle), red (recording), amber (processing), amber (idle in dev mode)
+- Color-coded icon: gray (idle), red (recording), dark amber (processing), bright amber (idle — dev builds only, distinguishes from production)
 - Menu: Show Window, Toggle Overlay, About, Quit
 - Click to show window
 - Hide-on-close (doesn't quit)
