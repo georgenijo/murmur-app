@@ -30,12 +30,12 @@ gh issue view <number> --json title,body --repo georgenijo/murmur-app
 
 Use the issue body as the full ticket spec. If a matching doc exists under `docs/features/`, read that too.
 
-## 4. Present Your Plan
+## 4. Plan Mode
 
-Tell me:
-- Which ticket you're working on (issue number + name, one line)
-- A concise implementation plan: files to change, approach, any open questions or risks
+Enter plan mode (use the `EnterPlanMode` tool). While in plan mode:
+- Read all files relevant to the ticket using sub-agents
+- Design your implementation approach
+- Write a plan covering: which ticket (issue number + name), files to change, approach, and any risks
+- Exit plan mode for user approval
 
-Then ask: **"Confirm to proceed?"**
-
-Do not write any code until I confirm.
+Do not write any code until the user approves the plan.
