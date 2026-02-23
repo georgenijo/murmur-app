@@ -12,6 +12,8 @@ export interface Settings {
 }
 
 export type ModelOption =
+  | 'moonshine-tiny'
+  | 'moonshine-base'
   | 'tiny.en'
   | 'base.en'
   | 'small.en'
@@ -19,11 +21,13 @@ export type ModelOption =
   | 'large-v3-turbo';
 
 export const MODEL_OPTIONS: { value: ModelOption; label: string; size: string }[] = [
-  { value: 'tiny.en', label: 'Tiny (English)', size: '~75 MB' },
-  { value: 'base.en', label: 'Base (English)', size: '~150 MB' },
-  { value: 'small.en', label: 'Small (English)', size: '~500 MB' },
-  { value: 'medium.en', label: 'Medium (English)', size: '~1.5 GB' },
-  { value: 'large-v3-turbo', label: 'Large Turbo (Recommended)', size: '~3 GB' },
+  { value: 'moonshine-tiny', label: 'Moonshine Tiny (Fastest)', size: '~124 MB' },
+  { value: 'moonshine-base', label: 'Moonshine Base', size: '~286 MB' },
+  { value: 'tiny.en', label: 'Whisper Tiny (English)', size: '~75 MB' },
+  { value: 'base.en', label: 'Whisper Base (English)', size: '~150 MB' },
+  { value: 'small.en', label: 'Whisper Small (English)', size: '~500 MB' },
+  { value: 'medium.en', label: 'Whisper Medium (English)', size: '~1.5 GB' },
+  { value: 'large-v3-turbo', label: 'Whisper Large Turbo', size: '~3 GB' },
 ];
 
 export const DOUBLE_TAP_KEY_OPTIONS: { value: DoubleTapKey; label: string }[] = [

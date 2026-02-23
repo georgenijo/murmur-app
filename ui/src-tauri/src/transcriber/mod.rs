@@ -1,5 +1,7 @@
 mod whisper;
+pub mod moonshine;
 
+pub use moonshine::MoonshineBackend;
 pub use whisper::WhisperBackend;
 
 use hound::{SampleFormat, WavReader};
@@ -19,7 +21,7 @@ pub trait TranscriptionBackend: Send + Sync {
     fn load_model(&mut self, model_name: &str) -> Result<(), String>;
 
     /// Run inference on 16kHz mono f32 samples.
-    fn transcribe(&self, samples: &[f32], language: &str) -> Result<String, String>;
+    fn transcribe(&mut self, samples: &[f32], language: &str) -> Result<String, String>;
 
     /// Check if any model file exists in search paths.
     fn model_exists(&self) -> bool;
@@ -29,6 +31,11 @@ pub trait TranscriptionBackend: Send + Sync {
 
     /// Reset loaded model so next transcription triggers a reload.
     fn reset(&mut self);
+}
+
+/// Returns true if the model name refers to a Moonshine backend.
+pub fn is_moonshine_model(model_name: &str) -> bool {
+    model_name.starts_with("moonshine-")
 }
 
 /// Parse WAV audio bytes and convert to f32 samples for transcription.

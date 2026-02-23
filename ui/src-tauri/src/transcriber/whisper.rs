@@ -119,7 +119,7 @@ impl TranscriptionBackend for WhisperBackend {
         Ok(())
     }
 
-    fn transcribe(&self, samples: &[f32], language: &str) -> Result<String, String> {
+    fn transcribe(&mut self, samples: &[f32], language: &str) -> Result<String, String> {
         let ctx = self
             .context
             .as_ref()

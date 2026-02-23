@@ -11,22 +11,28 @@ interface Model {
 
 const MODELS: Model[] = [
   {
-    name: 'large-v3-turbo',
-    label: 'Large v3 Turbo',
-    size: '~1.5 GB',
-    description: 'Best accuracy — recommended for most users',
+    name: 'moonshine-tiny',
+    label: 'Moonshine Tiny',
+    size: '~124 MB',
+    description: 'Fastest — sub-20ms for typical dictation',
   },
   {
-    name: 'small.en',
-    label: 'Small (English)',
-    size: '~150 MB',
-    description: 'Faster, English-only',
+    name: 'moonshine-base',
+    label: 'Moonshine Base',
+    size: '~286 MB',
+    description: 'Better accuracy, still very fast',
+  },
+  {
+    name: 'large-v3-turbo',
+    label: 'Whisper Large v3 Turbo',
+    size: '~1.5 GB',
+    description: 'Highest accuracy, slower (1-2 seconds)',
   },
   {
     name: 'base.en',
-    label: 'Base (English)',
+    label: 'Whisper Base (English)',
     size: '~75 MB',
-    description: 'Fastest, lower accuracy, English-only',
+    description: 'Good balance of speed and accuracy',
   },
 ];
 
@@ -92,7 +98,7 @@ export function ModelDownloader({ onComplete }: Props) {
     <div className="h-screen bg-stone-50 dark:bg-stone-900 flex flex-col items-center justify-center p-8">
       <div className="w-full max-w-md">
         <h1 className="text-xl font-semibold text-stone-800 dark:text-stone-100 mb-1">
-          Download a Whisper Model
+          Download a Model
         </h1>
         <p className="text-sm text-stone-500 dark:text-stone-400 mb-6">
           A model file is required for transcription. Choose one to download.
