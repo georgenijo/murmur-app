@@ -2,8 +2,7 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use crate::transcriber::{TranscriptionBackend, WhisperBackend};
 
-/// Sample rate required by Whisper models (16kHz)
-pub const WHISPER_SAMPLE_RATE: u32 = 16000;
+pub use crate::transcriber::WHISPER_SAMPLE_RATE;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

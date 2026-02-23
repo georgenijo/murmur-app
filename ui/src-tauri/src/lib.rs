@@ -402,18 +402,18 @@ fn clear_logs() -> Result<(), String> {
 }
 
 #[tauri::command]
-fn check_model_exists() -> bool {
-    transcriber::check_model_exists()
+fn check_model_exists(state: tauri::State<'_, State>) -> bool {
+    state.app_state.backend.lock_or_recover().model_exists()
 }
 
 #[tauri::command]
-async fn download_model(app_handle: tauri::AppHandle, model_name: String) -> Result<(), String> {
+async fn download_model(app_handle: tauri::AppHandle, model_name: String, state: tauri::State<'_, State>) -> Result<(), String> {
     const ALLOWED_MODELS: &[&str] = &["large-v3-turbo", "small.en", "base.en"];
     if !ALLOWED_MODELS.contains(&model_name.as_str()) {
         return Err(format!("Unknown model '{}'. Allowed: {}", model_name, ALLOWED_MODELS.join(", ")));
     }
 
-    let models_dir = transcriber::get_models_dir()?;
+    let models_dir = state.app_state.backend.lock_or_recover().models_dir()?;
     tokio::fs::create_dir_all(&models_dir)
         .await
         .map_err(|e| format!("Failed to create models directory: {}", e))?;

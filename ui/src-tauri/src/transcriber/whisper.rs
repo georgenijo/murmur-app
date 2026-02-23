@@ -1,5 +1,5 @@
 use super::TranscriptionBackend;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Once;
 use whisper_rs::{
     FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters,
@@ -8,12 +8,20 @@ use whisper_rs::{
 
 static INIT_LOGGING: Once = Once::new();
 
+/// Relative path under the platform data directory for app models.
+const APP_MODELS_REL: &[&str] = &["local-dictation", "models"];
+
 /// Suppress whisper.cpp verbose logging by installing a trampoline that routes to Rust's log crate
 /// (which we don't configure, so logs go nowhere).
 fn suppress_whisper_logs() {
     INIT_LOGGING.call_once(|| {
         install_whisper_log_trampoline();
     });
+}
+
+/// Build the app's primary models directory from a data dir root.
+fn app_models_dir(data_dir: &Path) -> PathBuf {
+    APP_MODELS_REL.iter().fold(data_dir.to_path_buf(), |p, s| p.join(s))
 }
 
 /// Get all potential model directories to search.
@@ -25,7 +33,7 @@ fn get_model_search_paths() -> Vec<PathBuf> {
     }
 
     if let Some(data_dir) = dirs::data_dir() {
-        paths.push(data_dir.join("local-dictation").join("models"));
+        paths.push(app_models_dir(&data_dir));
         paths.push(data_dir.join("pywhispercpp").join("models"));
     }
 
@@ -64,11 +72,21 @@ fn get_model_path(model_name: &str) -> Result<PathBuf, String> {
 
 pub struct WhisperBackend {
     context: Option<WhisperContext>,
+    loaded_model_name: Option<String>,
 }
 
 impl WhisperBackend {
     pub fn new() -> Self {
-        Self { context: None }
+        Self::default()
+    }
+}
+
+impl Default for WhisperBackend {
+    fn default() -> Self {
+        Self {
+            context: None,
+            loaded_model_name: None,
+        }
     }
 }
 
@@ -78,8 +96,11 @@ impl TranscriptionBackend for WhisperBackend {
     }
 
     fn load_model(&mut self, model_name: &str) -> Result<(), String> {
-        if self.context.is_some() {
-            return Ok(());
+        if let Some(ref loaded) = self.loaded_model_name {
+            if loaded == model_name {
+                return Ok(());
+            }
+            self.reset();
         }
 
         suppress_whisper_logs();
@@ -94,6 +115,7 @@ impl TranscriptionBackend for WhisperBackend {
             .map_err(|e| format!("Failed to load whisper model: {}", e))?;
 
         self.context = Some(ctx);
+        self.loaded_model_name = Some(model_name.to_string());
         Ok(())
     }
 
@@ -153,10 +175,11 @@ impl TranscriptionBackend for WhisperBackend {
     fn models_dir(&self) -> Result<PathBuf, String> {
         let data_dir =
             dirs::data_dir().ok_or_else(|| "Could not find application data directory".to_string())?;
-        Ok(data_dir.join("local-dictation").join("models"))
+        Ok(app_models_dir(&data_dir))
     }
 
     fn reset(&mut self) {
         self.context = None;
+        self.loaded_model_name = None;
     }
 }

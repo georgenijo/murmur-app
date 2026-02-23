@@ -2,15 +2,17 @@ mod whisper;
 
 pub use whisper::WhisperBackend;
 
-use crate::state::WHISPER_SAMPLE_RATE;
-use hound::WavReader;
+use hound::{SampleFormat, WavReader};
 use std::io::Cursor;
 use std::path::PathBuf;
 
+/// Sample rate required by transcription models (16kHz).
+pub const WHISPER_SAMPLE_RATE: u32 = 16000;
+
 /// Abstraction over transcription engines (whisper, moonshine, etc.)
-#[allow(dead_code)]
 pub trait TranscriptionBackend: Send + Sync {
     /// Human-readable backend name (e.g., "whisper", "moonshine")
+    #[allow(dead_code)]
     fn name(&self) -> &str;
 
     /// Load model by name. Called lazily on first transcription.
@@ -49,6 +51,12 @@ pub fn parse_wav_to_samples(wav_bytes: &[u8]) -> Result<Vec<f32>, String> {
             spec.channels
         ));
     }
+    if spec.sample_format != SampleFormat::Int || spec.bits_per_sample != 16 {
+        return Err(format!(
+            "Expected 16-bit integer PCM, got {:?} with {} bits per sample",
+            spec.sample_format, spec.bits_per_sample
+        ));
+    }
 
     let samples: Vec<f32> = reader
         .into_samples::<i16>()
@@ -57,14 +65,4 @@ pub fn parse_wav_to_samples(wav_bytes: &[u8]) -> Result<Vec<f32>, String> {
         .map_err(|e| format!("Failed to decode WAV samples: {}", e))?;
 
     Ok(samples)
-}
-
-/// Check if any model file exists for the default backend.
-pub fn check_model_exists() -> bool {
-    WhisperBackend::new().model_exists()
-}
-
-/// Get the primary models directory (for downloads) from the default backend.
-pub fn get_models_dir() -> Result<PathBuf, String> {
-    WhisperBackend::new().models_dir()
 }
