@@ -48,3 +48,6 @@ PROJECT_SUMMARY.md
 
 # Claude Code generated session files
 .claude/
+
+# Scripts
+agents.sh
