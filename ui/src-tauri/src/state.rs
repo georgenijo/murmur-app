@@ -1,9 +1,8 @@
 use std::sync::Mutex;
-use whisper_rs::WhisperContext;
 use serde::{Deserialize, Serialize};
+use crate::transcriber::{TranscriptionBackend, WhisperBackend};
 
-/// Sample rate required by Whisper models (16kHz)
-pub const WHISPER_SAMPLE_RATE: u32 = 16000;
+pub use crate::transcriber::WHISPER_SAMPLE_RATE;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -40,14 +39,14 @@ impl Default for DictationState {
 
 pub struct AppState {
     pub dictation: Mutex<DictationState>,
-    pub whisper_context: Mutex<Option<WhisperContext>>,
+    pub backend: Mutex<Box<dyn TranscriptionBackend>>,
 }
 
 impl Default for AppState {
     fn default() -> Self {
         Self {
             dictation: Mutex::new(DictationState::default()),
-            whisper_context: Mutex::new(None),
+            backend: Mutex::new(Box::new(WhisperBackend::new())),
         }
     }
 }

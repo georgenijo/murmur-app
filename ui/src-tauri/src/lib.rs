@@ -69,7 +69,7 @@ impl Drop for IdleGuard<'_> {
     }
 }
 
-/// Shared transcription pipeline: whisper init → transcribe → inject text → set idle
+/// Shared transcription pipeline: model init → transcribe → inject text → set idle
 fn run_transcription_pipeline(
     samples: &[f32],
     app_handle: &tauri::AppHandle,
@@ -84,17 +84,14 @@ fn run_transcription_pipeline(
         (dictation.model_name.clone(), dictation.language.clone(), dictation.auto_paste)
     };
 
-    // Phase: Whisper inference (includes lazy context init on first run)
-    let t_whisper = std::time::Instant::now();
+    // Phase: Transcription (includes lazy model load on first run)
+    let t_transcribe = std::time::Instant::now();
     let text = {
-        let mut ctx_guard = app_state.whisper_context.lock_or_recover();
-        if ctx_guard.is_none() {
-            *ctx_guard = Some(transcriber::init_whisper_context(&model_name)?);
-        }
-        let ctx = ctx_guard.as_ref().unwrap();
-        transcriber::transcribe(ctx, samples, &language)?
+        let mut backend = app_state.backend.lock_or_recover();
+        backend.load_model(&model_name)?;
+        backend.transcribe(samples, &language)?
     };
-    log_info!("pipeline: whisper inference ({} samples): {:?}", samples.len(), t_whisper.elapsed());
+    log_info!("pipeline: transcription ({} samples): {:?}", samples.len(), t_transcribe.elapsed());
 
     // Phase: Text injection (clipboard write + optional osascript paste)
     let t_inject = std::time::Instant::now();
@@ -195,11 +192,11 @@ async fn configure_dictation(
         dictation.auto_paste = auto_paste;
     }
 
-    // If model changed, clear the whisper context so it reloads
+    // If model changed, reset the backend so it reloads
     if model_changed {
         drop(dictation); // Release dictation lock first
-        let mut ctx = state.app_state.whisper_context.lock_or_recover();
-        *ctx = None;
+        let mut backend = state.app_state.backend.lock_or_recover();
+        backend.reset();
     }
 
     Ok(serde_json::json!({
@@ -405,18 +402,18 @@ fn clear_logs() -> Result<(), String> {
 }
 
 #[tauri::command]
-fn check_model_exists() -> bool {
-    transcriber::check_model_exists()
+fn check_model_exists(state: tauri::State<'_, State>) -> bool {
+    state.app_state.backend.lock_or_recover().model_exists()
 }
 
 #[tauri::command]
-async fn download_model(app_handle: tauri::AppHandle, model_name: String) -> Result<(), String> {
+async fn download_model(app_handle: tauri::AppHandle, model_name: String, state: tauri::State<'_, State>) -> Result<(), String> {
     const ALLOWED_MODELS: &[&str] = &["large-v3-turbo", "small.en", "base.en"];
     if !ALLOWED_MODELS.contains(&model_name.as_str()) {
         return Err(format!("Unknown model '{}'. Allowed: {}", model_name, ALLOWED_MODELS.join(", ")));
     }
 
-    let models_dir = transcriber::get_models_dir()?;
+    let models_dir = state.app_state.backend.lock_or_recover().models_dir()?;
     tokio::fs::create_dir_all(&models_dir)
         .await
         .map_err(|e| format!("Failed to create models directory: {}", e))?;
