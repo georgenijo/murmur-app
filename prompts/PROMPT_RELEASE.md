@@ -47,6 +47,24 @@ On confirmation, run these steps in order:
 4. Push: `git push origin main`
 5. Tag: `git tag v{new_version}`
 6. Push tag: `git push origin v{new_version}`
+7. Wait for the GitHub release to be created by CI (~1–2 min), then update its notes:
+   ```
+   gh release edit v{new_version} --repo georgenijo/murmur-app --notes "$(cat <<'EOF'
+   ## What's New
+   - bullet per `feat:` commit (human-readable, not the raw commit message)
+
+   ## Improvements
+   - bullet per `perf:` / `refactor:` commit (omit section if none)
+
+   ## Fixes
+   - bullet per `fix:` commit (omit section if none)
+
+   ## Full Changelog
+   https://github.com/georgenijo/murmur-app/compare/v{previous_version}...v{new_version}
+   EOF
+   )"
+   ```
+   Write the notes yourself from the commit list in Step 3 — use clear, user-facing language (not raw commit messages). Omit any section that has no entries. Skip `chore:`, `docs:`, `test:` commits.
 
 ## 6. Hand Off
 
