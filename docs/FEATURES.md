@@ -36,7 +36,7 @@
 - Version footer
 
 ### System Tray
-- Color-coded icon: gray (idle), red (recording), yellow (processing), amber (dev mode)
+- Color-coded icon: gray (idle), red (recording), amber (processing), amber (idle in dev mode)
 - Menu: Show Window, Toggle Overlay, About, Quit
 - Click to show window
 - Hide-on-close (doesn't quit)
@@ -45,7 +45,7 @@
 - Floating always-on-top 200x60 window
 - 5-bar animated waveform driven by real-time audio levels
 - Click to toggle recording, double-click for locked mode
-- Color changes by state (stone/red/amber)
+- Color-coded states: stone (idle), red (recording), amber (processing)
 
 ### Model Downloader
 - First-launch onboarding screen if no model found
