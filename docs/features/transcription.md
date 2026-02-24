@@ -6,7 +6,7 @@
 cpal audio capture → f32 samples in memory → resample to 16kHz mono → backend inference → text
 ```
 
-All processing is local. No network calls. Two transcription backends are available:
+All processing is local during transcription (network only required to download models beforehand). Two transcription backends are available:
 
 - **Whisper** (`whisper-rs`) — Metal GPU acceleration, higher accuracy, slower on short clips
 - **Moonshine** (`sherpa-rs`) — CPU inference with int8 quantization, extremely fast on short clips

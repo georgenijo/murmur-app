@@ -1,40 +1,21 @@
 import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { MODEL_OPTIONS, type ModelOption } from '../lib/settings';
 
-interface Model {
-  name: string;
-  label: string;
-  size: string;
-  description: string;
-}
+const MODEL_DESCRIPTIONS: Record<string, string> = {
+  'moonshine-tiny': 'Fastest — sub-20ms for typical dictation',
+  'moonshine-base': 'Better accuracy, still very fast',
+  'large-v3-turbo': 'Highest accuracy, slower (1-2 seconds)',
+  'base.en': 'Good balance of speed and accuracy',
+};
 
-const MODELS: Model[] = [
-  {
-    name: 'moonshine-tiny',
-    label: 'Moonshine Tiny',
-    size: '~124 MB',
-    description: 'Fastest — sub-20ms for typical dictation',
-  },
-  {
-    name: 'moonshine-base',
-    label: 'Moonshine Base',
-    size: '~286 MB',
-    description: 'Better accuracy, still very fast',
-  },
-  {
-    name: 'large-v3-turbo',
-    label: 'Whisper Large v3 Turbo',
-    size: '~1.5 GB',
-    description: 'Highest accuracy, slower (1-2 seconds)',
-  },
-  {
-    name: 'base.en',
-    label: 'Whisper Base (English)',
-    size: '~75 MB',
-    description: 'Good balance of speed and accuracy',
-  },
-];
+/** Subset of models shown on the initial download screen. */
+const DOWNLOAD_MODEL_KEYS: ModelOption[] = ['moonshine-tiny', 'moonshine-base', 'large-v3-turbo', 'base.en'];
+const MODELS = DOWNLOAD_MODEL_KEYS.map((key) => {
+  const opt = MODEL_OPTIONS.find((m) => m.value === key)!;
+  return { name: opt.value, label: opt.label, size: opt.size, description: MODEL_DESCRIPTIONS[key] ?? '' };
+});
 
 interface Props {
   onComplete: () => void;

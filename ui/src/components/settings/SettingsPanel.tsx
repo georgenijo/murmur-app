@@ -72,6 +72,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
     | { phase: 'error'; message: string }
   >({ phase: 'idle' });
   const downloadUnlistenRef = useRef<(() => void) | null>(null);
+  const downloadModelRef = useRef<string | null>(null);
 
   useEffect(() => {
     setModelAvailable(null);
@@ -88,10 +89,13 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
   }, []);
 
   const handleModelDownload = useCallback(async () => {
+    const modelName = settings.model;
+    downloadModelRef.current = modelName;
     setModelDownload({ phase: 'downloading', received: 0, total: 0 });
     const unlisten = await listen<{ received: number; total: number }>(
       'download-progress',
       (event) => {
+        if (downloadModelRef.current !== modelName) return;
         setModelDownload({
           phase: 'downloading',
           received: event.payload.received,
@@ -101,15 +105,21 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
     );
     downloadUnlistenRef.current = unlisten;
     try {
-      await invoke('download_model', { modelName: settings.model });
+      await invoke('download_model', { modelName });
       unlisten();
       downloadUnlistenRef.current = null;
-      setModelDownload({ phase: 'idle' });
-      setModelAvailable(true);
+      downloadModelRef.current = null;
+      if (settings.model === modelName) {
+        setModelDownload({ phase: 'idle' });
+        setModelAvailable(true);
+      }
     } catch (err) {
       unlisten();
       downloadUnlistenRef.current = null;
-      setModelDownload({ phase: 'error', message: String(err) });
+      downloadModelRef.current = null;
+      if (settings.model === modelName) {
+        setModelDownload({ phase: 'error', message: String(err) });
+      }
     }
   }, [settings.model]);
 

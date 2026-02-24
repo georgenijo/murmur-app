@@ -31,6 +31,23 @@ pub fn download_url(model_name: &str) -> String {
     )
 }
 
+/// Required files for a complete moonshine model directory.
+const REQUIRED_MODEL_FILES: &[&str] = &[
+    "preprocess.onnx",
+    "encode.int8.onnx",
+    "uncached_decode.int8.onnx",
+    "cached_decode.int8.onnx",
+    "tokens.txt",
+];
+
+/// Check that a model directory contains all required files with non-zero size.
+fn is_complete_model_dir(dir: &std::path::Path) -> bool {
+    REQUIRED_MODEL_FILES.iter().all(|f| {
+        let path = dir.join(f);
+        path.is_file() && path.metadata().map_or(false, |m| m.len() > 0)
+    })
+}
+
 pub struct MoonshineBackend {
     recognizer: Option<MoonshineRecognizer>,
     loaded_model_name: Option<String>,
@@ -120,7 +137,9 @@ impl TranscriptionBackend for MoonshineBackend {
             for entry in entries.flatten() {
                 if let Some(name) = entry.file_name().to_str() {
                     if name.starts_with("sherpa-onnx-moonshine-") && entry.path().is_dir() {
-                        return true;
+                        if is_complete_model_dir(&entry.path()) {
+                            return true;
+                        }
                     }
                 }
             }

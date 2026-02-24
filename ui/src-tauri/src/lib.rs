@@ -429,7 +429,7 @@ fn check_model_exists(state: tauri::State<'_, State>) -> bool {
 }
 
 #[tauri::command]
-fn check_specific_model_exists(model_name: String, state: tauri::State<'_, State>) -> bool {
+fn check_specific_model_exists(model_name: String) -> bool {
     if transcriber::is_moonshine_model(&model_name) {
         let backend = transcriber::MoonshineBackend::new();
         let models_dir = match backend.models_dir() {
@@ -438,8 +438,7 @@ fn check_specific_model_exists(model_name: String, state: tauri::State<'_, State
         };
         models_dir.join(transcriber::moonshine::model_dir_name(&model_name)).exists()
     } else {
-        let backend = state.app_state.backend.lock_or_recover();
-        // For whisper, check if the specific ggml file exists in the models dir
+        let backend = transcriber::WhisperBackend::new();
         let models_dir = match backend.models_dir() {
             Ok(d) => d,
             Err(_) => return false,
@@ -512,24 +511,31 @@ async fn download_moonshine_model(
     // Extract tar.bz2 archive on a blocking thread
     let temp_clone = temp_path.clone();
     let models_dir_owned = models_dir.to_path_buf();
-    tokio::task::spawn_blocking(move || {
+    let dir_name = transcriber::moonshine::model_dir_name(model_name);
+    let extracted_dir = models_dir.join(&dir_name);
+    let extracted_dir_clone = extracted_dir.clone();
+    let extraction_result = tokio::task::spawn_blocking(move || {
         let file = std::fs::File::open(&temp_clone)
             .map_err(|e| format!("Failed to open archive: {}", e))?;
         let decompressor = bzip2::read::BzDecoder::new(file);
         let mut archive = tar::Archive::new(decompressor);
         archive
             .unpack(&models_dir_owned)
-            .map_err(|e| format!("Failed to extract archive: {}", e))?;
+            .map_err(|e| {
+                // Clean up partially extracted directory
+                let _ = std::fs::remove_dir_all(&extracted_dir_clone);
+                format!("Failed to extract archive: {}", e)
+            })?;
         Ok::<(), String>(())
     })
     .await
-    .map_err(|e| format!("Extraction task failed: {}", e))?
-    .map_err(|e: String| e)?;
+    .map_err(|e| format!("Extraction task failed: {}", e))?;
 
-    // Clean up the archive temp file
+    // Clean up temp archive file regardless of extraction result
     let _ = tokio::fs::remove_file(&temp_path).await;
 
-    let dir_name = transcriber::moonshine::model_dir_name(model_name);
+    extraction_result?;
+
     log_info!("Moonshine model downloaded and extracted: {} ({} bytes)", dir_name, received);
     Ok(())
 }
@@ -541,6 +547,7 @@ async fn stream_download(
     dest: &std::path::Path,
 ) -> Result<u64, String> {
     let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
