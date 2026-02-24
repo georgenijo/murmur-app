@@ -1,10 +1,9 @@
-export type RecordingMode = 'hotkey' | 'double_tap';
+export type RecordingMode = 'hold_down' | 'double_tap';
 
 export type DoubleTapKey = 'shift_l' | 'alt_l' | 'ctrl_r';
 
 export interface Settings {
   model: ModelOption;
-  hotkey: string;
   doubleTapKey: DoubleTapKey;
   language: string;
   autoPaste: boolean;
@@ -37,47 +36,36 @@ export const DOUBLE_TAP_KEY_OPTIONS: { value: DoubleTapKey; label: string }[] = 
 ];
 
 export const RECORDING_MODE_OPTIONS: { value: RecordingMode; label: string }[] = [
-  { value: 'hotkey', label: 'Key Combo' },
+  { value: 'hold_down', label: 'Hold Down' },
   { value: 'double_tap', label: 'Double-Tap' },
 ];
 
 export const DEFAULT_SETTINGS: Settings = {
   model: 'large-v3-turbo',
-  hotkey: 'Shift+Space',
   doubleTapKey: 'shift_l',
   language: 'en',
   autoPaste: false,
-  recordingMode: 'hotkey',
+  recordingMode: 'hold_down',
 };
 
 const STORAGE_KEY = 'dictation-settings';
-
-// Legacy rdev key names → Tauri shortcut format
-const LEGACY_HOTKEY_MAP: Record<string, string> = {
-  'shift_l': 'Shift+Space',
-  'shift_r': 'Shift+Space',
-  'alt_l': 'Alt+Space',
-  'alt_r': 'Alt+Space',
-  'ctrl_r': 'Ctrl+Space',
-};
 
 export function loadSettings(): Settings {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored) {
-      const parsed = JSON.parse(stored) as Partial<Settings>;
+      const parsed = JSON.parse(stored) as Partial<Settings> & { hotkey?: string; recordingMode?: string };
 
-      const validModes: RecordingMode[] = ['hotkey', 'double_tap'];
-      if (parsed.recordingMode && !validModes.includes(parsed.recordingMode)) {
+      // Migrate: 'hotkey' mode no longer exists → default to 'hold_down'
+      const validModes: RecordingMode[] = ['hold_down', 'double_tap'];
+      if (!parsed.recordingMode || !validModes.includes(parsed.recordingMode as RecordingMode)) {
         parsed.recordingMode = DEFAULT_SETTINGS.recordingMode;
       }
 
-      // Migrate legacy rdev key names to Tauri shortcut format
-      if (parsed.hotkey && LEGACY_HOTKEY_MAP[parsed.hotkey]) {
-        parsed.hotkey = LEGACY_HOTKEY_MAP[parsed.hotkey];
-      }
+      // Remove legacy hotkey field if present
+      delete parsed.hotkey;
 
-      return { ...DEFAULT_SETTINGS, ...parsed };
+      return { ...DEFAULT_SETTINGS, ...parsed } as Settings;
     }
   } catch (e) {
     console.error('Failed to load settings:', e);

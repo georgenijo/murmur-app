@@ -6,7 +6,7 @@ import type { DictationStatus } from '../types';
 interface UseDoubleTapToggleProps {
   enabled: boolean;
   initialized: boolean;
-  accessibilityGranted: boolean;
+  accessibilityGranted: boolean | null;
   doubleTapKey: string;
   status: DictationStatus;
   onToggle: () => void;
@@ -19,7 +19,7 @@ export function useDoubleTapToggle({ enabled, initialized, accessibilityGranted,
   // Keep the backend in sync with recording state
   useEffect(() => {
     if (!enabled) return;
-    invoke('set_double_tap_recording', { recording: status === 'recording' }).catch(() => {});
+    invoke('set_keyboard_recording', { recording: status === 'recording' }).catch(() => {});
   }, [enabled, status]);
 
   useEffect(() => {
@@ -46,7 +46,7 @@ export function useDoubleTapToggle({ enabled, initialized, accessibilityGranted,
         await new Promise<void>((r) => setTimeout(r, 2000));
         if (!cancelled) {
           try {
-            await invoke('start_double_tap_listener', { hotkey: doubleTapKey });
+            await invoke('start_keyboard_listener', { hotkey: doubleTapKey, mode: 'double_tap' });
           } catch (err) {
             console.error('Failed to restart double-tap listener after error:', err);
           }
@@ -61,9 +61,9 @@ export function useDoubleTapToggle({ enabled, initialized, accessibilityGranted,
 
       // Start the rdev listener
       try {
-        await invoke('start_double_tap_listener', { hotkey: doubleTapKey });
+        await invoke('start_keyboard_listener', { hotkey: doubleTapKey, mode: 'double_tap' });
         if (cancelled) {
-          invoke('stop_double_tap_listener').catch(() => {});
+          invoke('stop_keyboard_listener').catch(() => {});
         }
       } catch (err) {
         console.error('Failed to start double-tap listener:', err);
@@ -76,7 +76,7 @@ export function useDoubleTapToggle({ enabled, initialized, accessibilityGranted,
       cancelled = true;
       unlisten?.();
       unlistenError?.();
-      invoke('stop_double_tap_listener').catch((err) => {
+      invoke('stop_keyboard_listener').catch((err) => {
         console.warn('Failed to stop double-tap listener on cleanup:', err);
       });
     };

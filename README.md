@@ -38,7 +38,7 @@ Grant these in **System Settings → Privacy & Security**:
 | Permission | Required for |
 |------------|-------------|
 | Microphone | Recording your voice |
-| Accessibility | Double-tap mode |
+| Accessibility | Keyboard detection (both recording modes) |
 
 ---
 
@@ -46,9 +46,9 @@ Grant these in **System Settings → Privacy & Security**:
 
 Configure in the Settings panel. Two modes available:
 
-**Key Combo** — press a hotkey to start, press again to stop. Customize the key combo freely (e.g. `Alt+D`, `Ctrl+Shift+R`). A modifier key is required.
+**Hold Down** — hold a modifier key (Shift, Option, or Control) to record; release to stop and transcribe.
 
-**Double-Tap** — quickly double-tap Shift, Option, or Control to start recording; single-tap to stop. Requires Accessibility permission.
+**Double-Tap** — quickly double-tap Shift, Option, or Control to start recording; single-tap to stop.
 
 Transcribed text is always copied to your clipboard. Enable **Auto-Paste** in Settings to have it pasted automatically into your focused app.
 

@@ -377,29 +377,38 @@ async fn stop_native_recording(
 }
 
 #[tauri::command]
-fn start_double_tap_listener(app_handle: tauri::AppHandle, hotkey: String) -> Result<(), String> {
-    if !injector::is_accessibility_enabled() {
-        return Err("Accessibility permission is required for double-tap mode. Please grant it in System Settings.".to_string());
+fn start_keyboard_listener(app_handle: tauri::AppHandle, hotkey: String, mode: String) -> Result<(), String> {
+    const VALID_MODES: &[&str] = &["double_tap", "hold_down"];
+    if !VALID_MODES.contains(&mode.as_str()) {
+        log_error!("Invalid keyboard listener mode: {}", mode);
+        return Err(format!("Invalid mode '{}'. Expected one of: {}", mode, VALID_MODES.join(", ")));
     }
-    keyboard::start_listener(app_handle, &hotkey);
-    log_info!("Double-tap listener started for key: {}", hotkey);
+    if !injector::is_accessibility_enabled() {
+        return Err("Accessibility permission is required. Please grant it in System Settings.".to_string());
+    }
+    keyboard::start_listener(app_handle, &hotkey, &mode);
+    log_info!("Keyboard listener started: mode={}, key={}", mode, hotkey);
     Ok(())
 }
 
 #[tauri::command]
-fn stop_double_tap_listener() {
+fn stop_keyboard_listener() {
     keyboard::stop_listener();
-    log_info!("Double-tap listener stopped");
+    log_info!("Keyboard listener stopped");
 }
 
 #[tauri::command]
-fn update_double_tap_key(hotkey: String) {
-    keyboard::set_target_key(&hotkey);
-    log_info!("Double-tap key updated to: {}", hotkey);
+fn update_keyboard_key(app_handle: tauri::AppHandle, hotkey: String) {
+    let should_stop = keyboard::set_target_key(&hotkey);
+    if should_stop {
+        let _ = app_handle.emit("hold-down-stop", ());
+        log_info!("Keyboard key changed while held — emitted stop");
+    }
+    log_info!("Keyboard key updated to: {}", hotkey);
 }
 
 #[tauri::command]
-fn set_double_tap_recording(recording: bool) {
+fn set_keyboard_recording(recording: bool) {
     keyboard::set_recording_state(recording);
 }
 
@@ -716,7 +725,6 @@ fn show_main_window(app: &tauri::AppHandle) {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(State {
             app_state: AppState::default(),
         })
@@ -731,10 +739,10 @@ pub fn run() {
             request_microphone_permission,
             start_native_recording,
             stop_native_recording,
-            start_double_tap_listener,
-            stop_double_tap_listener,
-            update_double_tap_key,
-            set_double_tap_recording,
+            start_keyboard_listener,
+            stop_keyboard_listener,
+            update_keyboard_key,
+            set_keyboard_recording,
             update_tray_icon,
             show_overlay,
             hide_overlay,
