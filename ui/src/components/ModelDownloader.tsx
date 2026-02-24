@@ -1,34 +1,21 @@
 import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { MODEL_OPTIONS, type ModelOption } from '../lib/settings';
 
-interface Model {
-  name: string;
-  label: string;
-  size: string;
-  description: string;
-}
+const MODEL_DESCRIPTIONS: Record<string, string> = {
+  'moonshine-tiny': 'Fastest — sub-20ms for typical dictation',
+  'moonshine-base': 'Better accuracy, still very fast',
+  'large-v3-turbo': 'Highest accuracy, slower (1-2 seconds)',
+  'base.en': 'Good balance of speed and accuracy',
+};
 
-const MODELS: Model[] = [
-  {
-    name: 'large-v3-turbo',
-    label: 'Large v3 Turbo',
-    size: '~1.5 GB',
-    description: 'Best accuracy — recommended for most users',
-  },
-  {
-    name: 'small.en',
-    label: 'Small (English)',
-    size: '~150 MB',
-    description: 'Faster, English-only',
-  },
-  {
-    name: 'base.en',
-    label: 'Base (English)',
-    size: '~75 MB',
-    description: 'Fastest, lower accuracy, English-only',
-  },
-];
+/** Subset of models shown on the initial download screen. */
+const DOWNLOAD_MODEL_KEYS: ModelOption[] = ['moonshine-tiny', 'moonshine-base', 'large-v3-turbo', 'base.en'];
+const MODELS = DOWNLOAD_MODEL_KEYS.map((key) => {
+  const opt = MODEL_OPTIONS.find((m) => m.value === key)!;
+  return { name: opt.value, label: opt.label, size: opt.size, description: MODEL_DESCRIPTIONS[key] ?? '' };
+});
 
 interface Props {
   onComplete: () => void;
@@ -92,7 +79,7 @@ export function ModelDownloader({ onComplete }: Props) {
     <div className="h-screen bg-stone-50 dark:bg-stone-900 flex flex-col items-center justify-center p-8">
       <div className="w-full max-w-md">
         <h1 className="text-xl font-semibold text-stone-800 dark:text-stone-100 mb-1">
-          Download a Whisper Model
+          Download a Model
         </h1>
         <p className="text-sm text-stone-500 dark:text-stone-400 mb-6">
           A model file is required for transcription. Choose one to download.

@@ -1,5 +1,6 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { getVersion } from '@tauri-apps/api/app';
 import {
   Settings, ModelOption, DoubleTapKey, RecordingMode,
@@ -63,6 +64,70 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
 
   const handleRequestPermission = () => invoke('request_accessibility_permission');
 
+  // Model availability check and inline download
+  const [modelAvailable, setModelAvailable] = useState<boolean | null>(null);
+  const [modelDownload, setModelDownload] = useState<
+    | { phase: 'idle' }
+    | { phase: 'downloading'; received: number; total: number }
+    | { phase: 'error'; message: string }
+  >({ phase: 'idle' });
+  const downloadUnlistenRef = useRef<(() => void) | null>(null);
+  const downloadModelRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    let stale = false;
+    setModelAvailable(null);
+    setModelDownload({ phase: 'idle' });
+    downloadModelRef.current = null;
+    invoke<boolean>('check_specific_model_exists', { modelName: settings.model })
+      .then((v) => { if (!stale) setModelAvailable(v); })
+      .catch(() => { if (!stale) setModelAvailable(null); });
+    return () => { stale = true; };
+  }, [settings.model]);
+
+  useEffect(() => {
+    return () => {
+      downloadUnlistenRef.current?.();
+      downloadUnlistenRef.current = null;
+    };
+  }, []);
+
+  const handleModelDownload = useCallback(async () => {
+    const modelName = settings.model;
+    downloadModelRef.current = modelName;
+    setModelDownload({ phase: 'downloading', received: 0, total: 0 });
+    let unlisten: (() => void) | null = null;
+    try {
+      unlisten = await listen<{ received: number; total: number }>(
+        'download-progress',
+        (event) => {
+          if (downloadModelRef.current !== modelName) return;
+          setModelDownload({
+            phase: 'downloading',
+            received: event.payload.received,
+            total: event.payload.total,
+          });
+        }
+      );
+      downloadUnlistenRef.current = unlisten;
+      await invoke('download_model', { modelName });
+      unlisten();
+      downloadUnlistenRef.current = null;
+      if (downloadModelRef.current === modelName) {
+        downloadModelRef.current = null;
+        setModelDownload({ phase: 'idle' });
+        setModelAvailable(true);
+      }
+    } catch (err) {
+      unlisten?.();
+      downloadUnlistenRef.current = null;
+      if (downloadModelRef.current === modelName) {
+        downloadModelRef.current = null;
+        setModelDownload({ phase: 'error', message: String(err) });
+      }
+    }
+  }, [settings.model]);
+
   const isDoubleTap = settings.recordingMode === 'double_tap';
   const keyLabel = isDoubleTap ? 'Double-Tap Key' : 'Recording Hotkey';
   const keyHelpText = isDoubleTap
@@ -70,6 +135,10 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
     : 'Press this combo to toggle recording on/off';
   const isRecording = status !== 'idle';
   const selectedModel = MODEL_OPTIONS.find(m => m.value === settings.model);
+  const downloadProgressPercent =
+    modelDownload.phase === 'downloading' && modelDownload.total > 0
+      ? Math.round((modelDownload.received / modelDownload.total) * 100)
+      : null;
 
   return (
     <aside
@@ -111,6 +180,58 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
           <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
             Larger models are more accurate but slower
           </p>
+
+          {/* Model not downloaded — inline download prompt */}
+          {modelAvailable === false && modelDownload.phase === 'idle' && (
+            <div className="mt-2 flex items-center gap-2 px-3 py-2 text-xs bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg text-amber-700 dark:text-amber-400">
+              <span className="w-2 h-2 rounded-full bg-amber-500 flex-shrink-0" />
+              <span>Model not downloaded</span>
+              <button
+                onClick={handleModelDownload}
+                className="underline hover:no-underline ml-auto flex-shrink-0"
+              >
+                Download
+              </button>
+            </div>
+          )}
+
+          {/* Download in progress */}
+          {modelDownload.phase === 'downloading' && (
+            <div className="mt-2">
+              <div className="flex justify-between text-xs text-stone-500 dark:text-stone-400 mb-1">
+                <span>Downloading…</span>
+                {downloadProgressPercent !== null ? (
+                  <span>{downloadProgressPercent}%</span>
+                ) : (
+                  <span>Starting…</span>
+                )}
+              </div>
+              <div className="w-full h-1.5 bg-stone-200 dark:bg-stone-700 rounded-full overflow-hidden">
+                <div
+                  role="progressbar"
+                  aria-valuenow={downloadProgressPercent ?? 0}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuetext={`Download progress: ${downloadProgressPercent ?? 0} percent`}
+                  className="h-full bg-blue-500 rounded-full transition-all duration-200"
+                  style={{ width: `${downloadProgressPercent ?? 0}%` }}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Download error */}
+          {modelDownload.phase === 'error' && (
+            <div className="mt-2 flex items-center gap-2 px-3 py-2 text-xs bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg text-red-600 dark:text-red-400">
+              <span>{modelDownload.message}</span>
+              <button
+                onClick={handleModelDownload}
+                className="underline hover:no-underline ml-auto flex-shrink-0"
+              >
+                Retry
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Recording Trigger */}
