@@ -77,6 +77,8 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
   useEffect(() => {
     let stale = false;
     setModelAvailable(null);
+    setModelDownload({ phase: 'idle' });
+    downloadModelRef.current = null;
     invoke<boolean>('check_specific_model_exists', { modelName: settings.model })
       .then((v) => { if (!stale) setModelAvailable(v); })
       .catch(() => { if (!stale) setModelAvailable(null); });
@@ -94,32 +96,33 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
     const modelName = settings.model;
     downloadModelRef.current = modelName;
     setModelDownload({ phase: 'downloading', received: 0, total: 0 });
-    const unlisten = await listen<{ received: number; total: number }>(
-      'download-progress',
-      (event) => {
-        if (downloadModelRef.current !== modelName) return;
-        setModelDownload({
-          phase: 'downloading',
-          received: event.payload.received,
-          total: event.payload.total,
-        });
-      }
-    );
-    downloadUnlistenRef.current = unlisten;
+    let unlisten: (() => void) | null = null;
     try {
+      unlisten = await listen<{ received: number; total: number }>(
+        'download-progress',
+        (event) => {
+          if (downloadModelRef.current !== modelName) return;
+          setModelDownload({
+            phase: 'downloading',
+            received: event.payload.received,
+            total: event.payload.total,
+          });
+        }
+      );
+      downloadUnlistenRef.current = unlisten;
       await invoke('download_model', { modelName });
       unlisten();
       downloadUnlistenRef.current = null;
-      downloadModelRef.current = null;
-      if (settings.model === modelName) {
+      if (downloadModelRef.current === modelName) {
+        downloadModelRef.current = null;
         setModelDownload({ phase: 'idle' });
         setModelAvailable(true);
       }
     } catch (err) {
-      unlisten();
+      unlisten?.();
       downloadUnlistenRef.current = null;
-      downloadModelRef.current = null;
-      if (settings.model === modelName) {
+      if (downloadModelRef.current === modelName) {
+        downloadModelRef.current = null;
         setModelDownload({ phase: 'error', message: String(err) });
       }
     }
@@ -205,6 +208,11 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
               </div>
               <div className="w-full h-1.5 bg-stone-200 dark:bg-stone-700 rounded-full overflow-hidden">
                 <div
+                  role="progressbar"
+                  aria-valuenow={downloadProgressPercent ?? 0}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuetext={`Download progress: ${downloadProgressPercent ?? 0} percent`}
                   className="h-full bg-blue-500 rounded-full transition-all duration-200"
                   style={{ width: `${downloadProgressPercent ?? 0}%` }}
                 />
