@@ -30,13 +30,21 @@ cd ui && npm run tauri build
 
 ```bash
 # Rust unit tests (single-threaded — timing-sensitive tests use sleep)
-cd ui/src-tauri && cargo test -- --test-threads=1
+cd ui/src-tauri && cargo test --lib -- --test-threads=1
+
+# Transcription integration tests (requires models on disk, skips if absent)
+cd ui/src-tauri && cargo test --test transcription_integration -- --test-threads=1
+
+# Frontend unit tests (settings migration)
+cd ui && npm test
 
 # TypeScript type check
 cd ui && npx tsc --noEmit
 ```
 
-There are no frontend tests yet. Rust tests cover the double-tap detector state machine (23 tests in `keyboard.rs`).
+Rust unit tests (52) cover keyboard detection, audio RMS, tray icon rendering, and WAV parsing. Frontend tests (7) cover settings migration from legacy formats. Integration tests validate the Whisper and Moonshine transcription pipelines end-to-end — they auto-skip when models aren't installed.
+
+CI runs `cargo check`, `cargo test --lib`, `npx tsc --noEmit`, and `npm test` on every push to main and on PRs.
 
 ## Whisper Models
 
