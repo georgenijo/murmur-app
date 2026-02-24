@@ -95,6 +95,10 @@ jobs:
           ARTIFACTS='${{ steps.tauri-build.outputs.artifactPaths }}'
           echo "Artifacts: $ARTIFACTS"
           echo "$ARTIFACTS" | jq -r '.[]' | while read -r artifact; do
+            if [ ! -f "$artifact" ]; then
+              echo "Skipping (not a file): $artifact"
+              continue
+            fi
             echo "Uploading: $artifact"
             gh release upload "${{ github.ref_name }}" "$artifact" \
               --repo "${{ github.repository }}"
