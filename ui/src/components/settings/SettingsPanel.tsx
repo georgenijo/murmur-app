@@ -4,7 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { getVersion } from '@tauri-apps/api/app';
 import {
   Settings, ModelOption, DoubleTapKey, RecordingMode,
-  MODEL_OPTIONS, DOUBLE_TAP_KEY_OPTIONS, RECORDING_MODE_OPTIONS,
+  MODEL_OPTIONS, MOONSHINE_MODELS, WHISPER_MODELS, DOUBLE_TAP_KEY_OPTIONS, RECORDING_MODE_OPTIONS,
 } from '../../lib/settings';
 import type { DictationStatus } from '../../lib/types';
 
@@ -150,14 +150,23 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
             onChange={(e) => onUpdateSettings({ model: e.target.value as ModelOption })}
             className="w-full px-3 py-2 rounded-lg border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 focus:ring-2 focus:ring-stone-500 focus:border-transparent text-sm"
           >
-            {MODEL_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label} ({option.size})
-              </option>
-            ))}
+            <optgroup label="Moonshine (Fast, CPU)">
+              {MOONSHINE_MODELS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label} ({option.size})
+                </option>
+              ))}
+            </optgroup>
+            <optgroup label="Whisper (Metal GPU)">
+              {WHISPER_MODELS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label} ({option.size})
+                </option>
+              ))}
+            </optgroup>
           </select>
           <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
-            Larger models are more accurate but slower
+            Moonshine runs on CPU; Whisper uses Metal GPU. Larger models are more accurate but slower.
           </p>
 
           {/* Model not downloaded — inline download prompt */}
@@ -335,6 +344,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
           </h3>
           <div className="text-sm text-stone-600 dark:text-stone-400">
             <p><strong>Model:</strong> {selectedModel?.label}</p>
+            <p><strong>Backend:</strong> {selectedModel?.backend === 'moonshine' ? 'Moonshine (CPU)' : 'Whisper (Metal GPU)'}</p>
             <p><strong>Size:</strong> {selectedModel?.size}</p>
           </div>
         </div>
