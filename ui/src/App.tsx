@@ -35,7 +35,7 @@ function App() {
   // Track accessibility permission — when it transitions false→true the
   // double-tap listener restarts automatically (rdev silently does nothing
   // if started without permission).
-  const [accessibilityGranted, setAccessibilityGranted] = useState(false);
+  const [accessibilityGranted, setAccessibilityGranted] = useState<boolean | null>(null);
   useEffect(() => {
     const check = () => {
       invoke<boolean>('check_accessibility_permission')

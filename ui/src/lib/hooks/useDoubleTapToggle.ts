@@ -6,7 +6,7 @@ import type { DictationStatus } from '../types';
 interface UseDoubleTapToggleProps {
   enabled: boolean;
   initialized: boolean;
-  accessibilityGranted: boolean;
+  accessibilityGranted: boolean | null;
   doubleTapKey: string;
   status: DictationStatus;
   onToggle: () => void;

@@ -5,7 +5,7 @@ import { listen } from '@tauri-apps/api/event';
 interface UseHoldDownToggleProps {
   enabled: boolean;
   initialized: boolean;
-  accessibilityGranted: boolean;
+  accessibilityGranted: boolean | null;
   holdDownKey: string;
   onStart: () => void;
   onStop: () => void;
