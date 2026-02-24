@@ -243,13 +243,16 @@ impl HoldDownDetector {
         }
     }
 
-    fn set_target(&mut self, key: Option<Key>) {
-        if self.state == HoldState::Held {
-            // Changing key while held — treat as stop
+    /// Set the target key. Returns `true` if the detector was in `Held` state
+    /// (i.e. the caller should emit a stop event to the frontend).
+    fn set_target(&mut self, key: Option<Key>) -> bool {
+        let was_held = self.state == HoldState::Held;
+        if was_held {
             self.state = HoldState::Idle;
             self.last_stopped_at = Some(Instant::now());
         }
         self.target_key = key;
+        was_held
     }
 
     fn reset(&mut self) {
@@ -365,10 +368,10 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
         DetectorMode::HoldDown => {
             let mut det = HOLD_DOWN_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
             match det.as_mut() {
-                Some(d) => d.set_target(target),
+                Some(d) => { let _ = d.set_target(target); },
                 None => {
                     let mut d = HoldDownDetector::new();
-                    d.set_target(target);
+                    let _ = d.set_target(target);
                     *det = Some(d);
                 }
             }
@@ -478,7 +481,8 @@ pub fn stop_listener() {
 }
 
 /// Update the target key without stopping/restarting the listener.
-pub fn set_target_key(hotkey: &str) {
+/// Returns `true` if a hold-down stop event should be emitted (key changed while held).
+pub fn set_target_key(hotkey: &str) -> bool {
     let target = hotkey_to_rdev_key(hotkey);
     let mode = {
         let m = ACTIVE_MODE.lock().unwrap_or_else(|p| p.into_inner());
@@ -490,11 +494,14 @@ pub fn set_target_key(hotkey: &str) {
             if let Some(d) = det.as_mut() {
                 d.set_target(target);
             }
+            false
         }
         DetectorMode::HoldDown => {
             let mut det = HOLD_DOWN_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
             if let Some(d) = det.as_mut() {
-                d.set_target(target);
+                d.set_target(target)
+            } else {
+                false
             }
         }
     }
@@ -969,8 +976,12 @@ mod tests {
         assert_eq!(d.handle_event(&press(Key::ShiftLeft)), HoldDownEvent::Start);
         assert_eq!(d.state, HoldState::Held);
 
-        // Change target while held — resets to Idle
-        d.set_target(Some(Key::Alt));
+        // Change target while held — resets to Idle, returns true (should emit stop)
+        assert!(d.set_target(Some(Key::Alt)));
+        assert_eq!(d.state, HoldState::Idle);
+
+        // Changing target while idle — returns false
+        assert!(!d.set_target(Some(Key::ControlRight)));
         assert_eq!(d.state, HoldState::Idle);
     }
 

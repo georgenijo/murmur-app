@@ -9,6 +9,7 @@ Hold a modifier key to record, release to stop and transcribe.
 **Behavior:** Press and hold modifier to start recording. Release to stop recording and begin transcription.
 
 **Available keys:**
+
 | Setting Value | Key |
 |---------------|-----|
 | `shift_l` | Left Shift |
@@ -20,12 +21,14 @@ Hold a modifier key to record, release to stop and transcribe.
 ### State Machine (`HoldDownDetector` in `keyboard.rs`)
 
 To start:
-```
+
+```text
 Idle → KeyPress(target) → Held  (emit hold-down-start)
 ```
 
 To stop:
-```
+
+```text
 Held → KeyRelease(target) → Idle (emit hold-down-stop)
 ```
 
@@ -56,7 +59,8 @@ Uses `rdev` for low-level keyboard event listening. Detects quick double-taps on
 ### State Machine (`DoubleTapDetector` in `keyboard.rs`)
 
 To start (when not recording):
-```
+
+```text
 Idle → KeyDown(target) → WaitingFirstUp
 WaitingFirstUp → KeyUp(target) within 300ms → WaitingSecondDown
 WaitingSecondDown → KeyDown(target) within 400ms → WaitingSecondUp
@@ -64,7 +68,8 @@ WaitingSecondUp → KeyUp(target) within 300ms → FIRE
 ```
 
 To stop (when recording):
-```
+
+```text
 Idle → KeyDown(target) → WaitingFirstUp
 WaitingFirstUp → KeyUp(target) within 300ms → FIRE
 ```

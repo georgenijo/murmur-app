@@ -366,6 +366,11 @@ async fn stop_native_recording(
 
 #[tauri::command]
 fn start_keyboard_listener(app_handle: tauri::AppHandle, hotkey: String, mode: String) -> Result<(), String> {
+    const VALID_MODES: &[&str] = &["double_tap", "hold_down"];
+    if !VALID_MODES.contains(&mode.as_str()) {
+        log_error!("Invalid keyboard listener mode: {}", mode);
+        return Err(format!("Invalid mode '{}'. Expected one of: {}", mode, VALID_MODES.join(", ")));
+    }
     if !injector::is_accessibility_enabled() {
         return Err("Accessibility permission is required. Please grant it in System Settings.".to_string());
     }
@@ -381,8 +386,12 @@ fn stop_keyboard_listener() {
 }
 
 #[tauri::command]
-fn update_keyboard_key(hotkey: String) {
-    keyboard::set_target_key(&hotkey);
+fn update_keyboard_key(app_handle: tauri::AppHandle, hotkey: String) {
+    let should_stop = keyboard::set_target_key(&hotkey);
+    if should_stop {
+        let _ = app_handle.emit("hold-down-stop", ());
+        log_info!("Keyboard key changed while held — emitted stop");
+    }
     log_info!("Keyboard key updated to: {}", hotkey);
 }
 
