@@ -75,10 +75,12 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
   const downloadModelRef = useRef<string | null>(null);
 
   useEffect(() => {
+    let stale = false;
     setModelAvailable(null);
     invoke<boolean>('check_specific_model_exists', { modelName: settings.model })
-      .then(setModelAvailable)
-      .catch(() => setModelAvailable(null));
+      .then((v) => { if (!stale) setModelAvailable(v); })
+      .catch(() => { if (!stale) setModelAvailable(null); });
+    return () => { stale = true; };
   }, [settings.model]);
 
   useEffect(() => {
