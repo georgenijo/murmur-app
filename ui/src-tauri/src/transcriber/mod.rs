@@ -1,4 +1,4 @@
-mod whisper;
+pub mod whisper;
 pub mod moonshine;
 
 pub use moonshine::MoonshineBackend;
@@ -72,4 +72,88 @@ pub fn parse_wav_to_samples(wav_bytes: &[u8]) -> Result<Vec<f32>, String> {
         .map_err(|e| format!("Failed to decode WAV samples: {}", e))?;
 
     Ok(samples)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a minimal valid 16kHz mono 16-bit PCM WAV in memory.
+    fn make_test_wav(samples: &[i16]) -> Vec<u8> {
+        let num_samples = samples.len() as u32;
+        let data_size = num_samples * 2;
+        let file_size = 36 + data_size;
+
+        let mut buf = Vec::with_capacity(file_size as usize + 8);
+        buf.extend_from_slice(b"RIFF");
+        buf.extend_from_slice(&file_size.to_le_bytes());
+        buf.extend_from_slice(b"WAVE");
+        buf.extend_from_slice(b"fmt ");
+        buf.extend_from_slice(&16u32.to_le_bytes());
+        buf.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        buf.extend_from_slice(&1u16.to_le_bytes()); // mono
+        buf.extend_from_slice(&16000u32.to_le_bytes()); // sample rate
+        buf.extend_from_slice(&32000u32.to_le_bytes()); // byte rate
+        buf.extend_from_slice(&2u16.to_le_bytes()); // block align
+        buf.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
+        buf.extend_from_slice(b"data");
+        buf.extend_from_slice(&data_size.to_le_bytes());
+        for &s in samples {
+            buf.extend_from_slice(&s.to_le_bytes());
+        }
+        buf
+    }
+
+    #[test]
+    fn parse_wav_silence() {
+        let wav = make_test_wav(&[0i16; 160]);
+        let samples = parse_wav_to_samples(&wav).unwrap();
+        assert_eq!(samples.len(), 160);
+        assert!(samples.iter().all(|&s| s == 0.0));
+    }
+
+    #[test]
+    fn parse_wav_normalization() {
+        let wav = make_test_wav(&[i16::MAX, i16::MIN]);
+        let samples = parse_wav_to_samples(&wav).unwrap();
+        assert_eq!(samples.len(), 2);
+        assert!((samples[0] - 1.0).abs() < 1e-4);
+        assert!((samples[1] - (-1.0)).abs() < 0.001);
+    }
+
+    #[test]
+    fn parse_wav_rejects_wrong_sample_rate() {
+        let mut wav = make_test_wav(&[0i16; 10]);
+        wav[24..28].copy_from_slice(&44100u32.to_le_bytes());
+        wav[28..32].copy_from_slice(&88200u32.to_le_bytes());
+        let result = parse_wav_to_samples(&wav);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("16000"));
+    }
+
+    #[test]
+    fn parse_wav_rejects_stereo() {
+        let mut wav = make_test_wav(&[0i16; 10]);
+        // Update channels, block_align, and byte_rate for a consistent stereo header
+        wav[22..24].copy_from_slice(&2u16.to_le_bytes()); // channels = 2
+        wav[28..32].copy_from_slice(&64000u32.to_le_bytes()); // byte_rate = 16000 * 2 * 2
+        wav[32..34].copy_from_slice(&4u16.to_le_bytes()); // block_align = 2 * 2
+        let result = parse_wav_to_samples(&wav);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("mono"));
+    }
+
+    #[test]
+    fn parse_wav_rejects_garbage() {
+        let result = parse_wav_to_samples(b"not a wav file");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn is_moonshine_model_classification() {
+        assert!(is_moonshine_model("moonshine-tiny"));
+        assert!(is_moonshine_model("moonshine-base"));
+        assert!(!is_moonshine_model("base.en"));
+        assert!(!is_moonshine_model("large-v3-turbo"));
+    }
 }

@@ -22,3 +22,25 @@ jobs:
 
       - name: TypeScript check
         run: cd ui && npx tsc --noEmit
+
+      - name: Unit tests
+        run: cd ui && npm test
+
+  rust:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ui/src-tauri
+
+      - name: Compile check
+        run: cd ui/src-tauri && cargo check
+
+      - name: Run tests
+        run: cd ui/src-tauri && cargo test --lib -- --test-threads=1
