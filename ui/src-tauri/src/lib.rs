@@ -5,7 +5,7 @@ mod keyboard;
 mod logging;
 mod resource_monitor;
 mod state;
-mod transcriber;
+pub mod transcriber;
 
 use state::{AppState, DictationStatus};
 use transcriber::TranscriptionBackend;
