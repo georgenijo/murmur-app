@@ -31,7 +31,8 @@ jobs:
       - name: Install frontend dependencies
         run: cd ui && npm ci
 
-      - name: Build and upload release assets
+      - name: Build, sign, and notarize
+        id: tauri-build
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -43,12 +44,63 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           projectPath: ui
-          tagName: ${{ github.ref_name }}
-          releaseName: ${{ github.ref_name }}
-          releaseDraft: true
-          prerelease: false
+
+      - name: Smoke test — verify .app launches
+        run: |
+          APP="ui/src-tauri/target/release/bundle/macos/Local Dictation.app"
+          BINARY="$APP/Contents/MacOS/ui"
+
+          echo "=== Verifying bundle exists ==="
+          ls -la "$APP/Contents/MacOS/"
+
+          echo "=== Launching binary ==="
+          "$BINARY" &
+          PID=$!
+          echo "Started with PID $PID"
+
+          echo "=== Waiting 5 seconds ==="
+          for i in 1 2 3 4 5; do
+            sleep 1
+            if ! kill -0 "$PID" 2>/dev/null; then
+              echo "FAIL: Process died after ${i}s"
+              echo "=== Crash logs ==="
+              find ~/Library/Logs/DiagnosticReports -name "ui-*" -newer "$BINARY" 2>/dev/null \
+                | head -5 | while read -r f; do
+                  echo "--- $f ---"
+                  cat "$f"
+                done
+              exit 1
+            fi
+            echo "  Alive at ${i}s"
+          done
+
+          echo "=== Smoke test passed — killing process ==="
+          kill "$PID" 2>/dev/null || true
+          wait "$PID" 2>/dev/null || true
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --title "${{ github.ref_name }}" \
+            --generate-notes \
+            --draft
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ARTIFACTS='${{ steps.tauri-build.outputs.artifactPaths }}'
+          echo "Artifacts: $ARTIFACTS"
+          echo "$ARTIFACTS" | jq -r '.[]' | while read -r artifact; do
+            echo "Uploading: $artifact"
+            gh release upload "${{ github.ref_name }}" "$artifact" \
+              --repo "${{ github.repository }}"
+          done
 
       - name: Publish release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit "${{ github.ref_name }}" --draft=false --repo ${{ github.repository }}
+        run: gh release edit "${{ github.ref_name }}" --draft=false --repo "${{ github.repository }}"
