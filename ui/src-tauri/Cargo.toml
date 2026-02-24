@@ -28,7 +28,7 @@ rdev = { git = "https://github.com/Narsil/rdev", branch = "main" }
 sysinfo = "0.32"
 reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls"] }
 futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
-sherpa-rs = { version = "0.6", default-features = false, features = ["download-binaries"] }
+sherpa-rs = { version = "0.6", default-features = false, features = ["download-binaries", "static"] }
 tar = "0.4"
 bzip2 = "0.5"
 
