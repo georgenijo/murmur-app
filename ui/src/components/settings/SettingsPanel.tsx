@@ -344,7 +344,10 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
           </h3>
           <div className="text-sm text-stone-600 dark:text-stone-400">
             <p><strong>Model:</strong> {selectedModel?.label}</p>
-            <p><strong>Backend:</strong> {selectedModel?.backend === 'moonshine' ? 'Moonshine (CPU)' : 'Whisper (Metal GPU)'}</p>
+            <p><strong>Backend:</strong> {selectedModel
+              ? (selectedModel.backend === 'moonshine' ? 'Moonshine (CPU)' : 'Whisper (Metal GPU)')
+              : 'Unknown'}
+            </p>
             <p><strong>Size:</strong> {selectedModel?.size}</p>
           </div>
         </div>
