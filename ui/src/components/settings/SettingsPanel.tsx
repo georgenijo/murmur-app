@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { getVersion } from '@tauri-apps/api/app';
 import {
@@ -6,7 +6,6 @@ import {
   MODEL_OPTIONS, DOUBLE_TAP_KEY_OPTIONS, RECORDING_MODE_OPTIONS,
 } from '../../lib/settings';
 import type { DictationStatus } from '../../lib/types';
-import { KeyCaptureInput } from '../KeyCaptureInput';
 
 interface SettingsPanelProps {
   isOpen: boolean;
@@ -16,11 +15,10 @@ interface SettingsPanelProps {
   status: DictationStatus;
   onResetStats: () => void;
   onViewLogs: () => void;
-  hotkeyError: string | null;
+  accessibilityGranted: boolean;
 }
 
-export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, status, onResetStats, onViewLogs, hotkeyError }: SettingsPanelProps) {
-  const [accessibilityGranted, setAccessibilityGranted] = useState<boolean | null>(null);
+export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, status, onResetStats, onViewLogs, accessibilityGranted }: SettingsPanelProps) {
   const [confirmReset, setConfirmReset] = useState(false);
   const [version, setVersion] = useState('');
 
@@ -42,32 +40,13 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
     }
   };
 
-  const checkAccessibility = async () => {
-    try {
-      const granted = await invoke<boolean>('check_accessibility_permission');
-      setAccessibilityGranted(granted);
-    } catch {
-      setAccessibilityGranted(false);
-    }
-  };
-
-  useEffect(() => {
-    if (isOpen) checkAccessibility();
-  }, [isOpen]);
-
-  useEffect(() => {
-    const handleFocus = () => { if (isOpen) checkAccessibility(); };
-    window.addEventListener('focus', handleFocus);
-    return () => window.removeEventListener('focus', handleFocus);
-  }, [isOpen]);
-
   const handleRequestPermission = () => invoke('request_accessibility_permission');
 
   const isDoubleTap = settings.recordingMode === 'double_tap';
-  const keyLabel = isDoubleTap ? 'Double-Tap Key' : 'Recording Hotkey';
+  const keyLabel = isDoubleTap ? 'Double-Tap Key' : 'Hold Key';
   const keyHelpText = isDoubleTap
     ? 'Double-tap to start recording, single tap to stop'
-    : 'Press this combo to toggle recording on/off';
+    : 'Hold to start recording, release to stop';
   const isRecording = status !== 'idle';
   const selectedModel = MODEL_OPTIONS.find(m => m.value === settings.model);
 
@@ -141,11 +120,11 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
           )}
         </div>
 
-        {/* Accessibility notice for double-tap mode */}
-        {isDoubleTap && accessibilityGranted !== null && !accessibilityGranted && (
+        {/* Accessibility notice — both modes use rdev which requires it */}
+        {!accessibilityGranted && (
           <div className="flex items-center gap-2 px-3 py-2 text-xs bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg text-amber-700 dark:text-amber-400">
             <span className="w-2 h-2 rounded-full bg-amber-500 flex-shrink-0" />
-            <span>Accessibility permission required for double-tap mode</span>
+            <span>Accessibility permission required for keyboard detection</span>
             <button
               onClick={handleRequestPermission}
               className="underline hover:no-underline ml-auto flex-shrink-0"
@@ -155,42 +134,26 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
           </div>
         )}
 
-        {/* Hotkey / Double-Tap Key Selector */}
+        {/* Trigger Key Selector */}
         <div>
           <label className="block text-sm font-medium text-stone-700 dark:text-stone-300 mb-2">
             {keyLabel}
           </label>
-          {isDoubleTap ? (
-            <select
-              value={settings.doubleTapKey}
-              onChange={(e) => onUpdateSettings({ doubleTapKey: e.target.value as DoubleTapKey })}
-              disabled={isRecording}
-              className={`w-full px-3 py-2 rounded-lg border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 focus:ring-2 focus:ring-stone-500 focus:border-transparent text-sm ${isRecording ? 'opacity-50 cursor-not-allowed' : ''}`}
-            >
-              {DOUBLE_TAP_KEY_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          ) : (
-            <KeyCaptureInput
-              value={settings.hotkey}
-              onChange={(v) => onUpdateSettings({ hotkey: v })}
-              disabled={isRecording}
-            />
-          )}
+          <select
+            value={settings.doubleTapKey}
+            onChange={(e) => onUpdateSettings({ doubleTapKey: e.target.value as DoubleTapKey })}
+            disabled={isRecording}
+            className={`w-full px-3 py-2 rounded-lg border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 focus:ring-2 focus:ring-stone-500 focus:border-transparent text-sm ${isRecording ? 'opacity-50 cursor-not-allowed' : ''}`}
+          >
+            {DOUBLE_TAP_KEY_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
           <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
             {keyHelpText}
           </p>
-          {!isDoubleTap && hotkeyError && (
-            <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">{hotkeyError}</p>
-          )}
-          {!isDoubleTap && !hotkeyError && settings.hotkey.startsWith('Ctrl+') && (
-            <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
-              Control shortcuts may conflict with macOS system shortcuts and might not trigger recording. Try a Shift (⇧) or Option (⌥) combo instead.
-            </p>
-          )}
         </div>
 
         {/* Auto-Paste Toggle */}
@@ -218,7 +181,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
               />
             </button>
           </div>
-          {settings.autoPaste && accessibilityGranted !== null && (
+          {settings.autoPaste && (
             <div className={`mt-2 flex items-center gap-2 text-xs ${
               accessibilityGranted
                 ? 'text-emerald-600 dark:text-emerald-400'

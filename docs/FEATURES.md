@@ -9,7 +9,7 @@
 - Zero cloud dependencies — fully offline
 
 ### Recording Activation (2 modes)
-- **Key Combo** — configurable global shortcut (e.g. Shift+Space), captured via free-form key input with macOS symbols
+- **Hold Down** — hold a modifier key (Shift, Option, or Control) to record, release to stop and transcribe
 - **Double-Tap** — tap a modifier key twice to start, once to stop. Rejects held keys, combos, slow taps, triple-tap spam
 
 ### Text Output
@@ -28,8 +28,8 @@
 
 ### Settings Panel
 - Model selector dropdown with sizes
-- Recording mode toggle (Key Combo / Double-Tap)
-- Key capture input (hotkey mode) or modifier dropdown (double-tap mode)
+- Recording mode toggle (Hold Down / Double-Tap)
+- Modifier key dropdown (shared by both modes)
 - Auto-paste toggle with accessibility status
 - Reset stats button (two-click confirm)
 - View logs button

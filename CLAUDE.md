@@ -16,7 +16,7 @@ cd ui && npx tsc --noEmit         # TypeScript check
 Read these before working on a feature:
 
 - **[docs/onboarding.md](docs/onboarding.md)** — Setup, permissions, model installation, logs
-- **[docs/features/recording-modes.md](docs/features/recording-modes.md)** — Key combo and double-tap modes, state machine, rdev threading
+- **[docs/features/recording-modes.md](docs/features/recording-modes.md)** — Hold-down and double-tap modes, state machine, rdev threading
 - **[docs/features/transcription.md](docs/features/transcription.md)** — Audio capture, whisper pipeline, status flow
 - **[docs/features/text-injection.md](docs/features/text-injection.md)** — Clipboard, auto-paste, osascript
 
@@ -27,7 +27,7 @@ Read these before working on a feature:
 | File | Purpose |
 |------|---------|
 | `lib.rs` | Tauri commands, tray icon, window management, `MutexExt` |
-| `keyboard.rs` | Double-tap detection state machine, rdev listener thread |
+| `keyboard.rs` | Hold-down and double-tap detectors, shared rdev listener thread |
 | `audio.rs` | cpal capture, mono conversion, 16kHz resampling |
 | `transcriber.rs` | whisper-rs model loading and inference |
 | `injector.rs` | Clipboard (arboard) + auto-paste (osascript) |
@@ -40,7 +40,7 @@ Read these before working on a feature:
 |------|---------|
 | `App.tsx` | Main orchestrator, wires hooks together |
 | `lib/settings.ts` | Settings types, defaults, localStorage persistence |
-| `lib/hooks/useHotkeyToggle.ts` | Key combo mode (global-shortcut plugin) |
+| `lib/hooks/useHoldDownToggle.ts` | Hold-down mode (rdev press/release events) |
 | `lib/hooks/useDoubleTapToggle.ts` | Double-tap mode (rdev events) |
 | `lib/hooks/useRecordingState.ts` | Recording status, transcription, toggle logic |
 | `components/settings/SettingsPanel.tsx` | Settings UI with mode switching |
@@ -56,4 +56,4 @@ Read these before working on a feature:
 ## Dependencies
 
 - **Rust**: tauri 2, whisper-rs (Metal), cpal, arboard, hound, rdev (git main branch)
-- **Frontend**: React 18, Tailwind CSS 4, @tauri-apps/api, @tauri-apps/plugin-global-shortcut, Vite 6, TypeScript
+- **Frontend**: React 18, Tailwind CSS 4, @tauri-apps/api, Vite 6, TypeScript

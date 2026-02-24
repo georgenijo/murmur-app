@@ -10,7 +10,7 @@ import { useInitialization } from './lib/hooks/useInitialization';
 import { useSettings } from './lib/hooks/useSettings';
 import { useHistoryManagement } from './lib/hooks/useHistoryManagement';
 import { useRecordingState } from './lib/hooks/useRecordingState';
-import { useHotkeyToggle } from './lib/hooks/useHotkeyToggle';
+import { useHoldDownToggle } from './lib/hooks/useHoldDownToggle';
 import { useDoubleTapToggle } from './lib/hooks/useDoubleTapToggle';
 import { useShowAboutListener } from './lib/hooks/useShowAboutListener';
 import { StatsBar } from './components/StatsBar';
@@ -54,7 +54,7 @@ function App() {
   const [statsResetVersion, setStatsResetVersion] = useState(0);
   const combinedStatsVersion = statsVersion + statsResetVersion;
   const handleResetStats = () => { resetStats(); setStatsResetVersion(v => v + 1); };
-  const { error: hotkeyError } = useHotkeyToggle({ enabled: settings.recordingMode === 'hotkey', initialized, hotkey: settings.hotkey, onToggle: toggleRecording });
+  useHoldDownToggle({ enabled: settings.recordingMode === 'hold_down', initialized, accessibilityGranted, holdDownKey: settings.doubleTapKey, onStart: handleStart, onStop: handleStop });
   useDoubleTapToggle({ enabled: settings.recordingMode === 'double_tap', initialized, accessibilityGranted, doubleTapKey: settings.doubleTapKey, status, onToggle: toggleRecording });
   const { showAbout, setShowAbout } = useShowAboutListener();
 
@@ -111,7 +111,7 @@ function App() {
           status={status}
           onResetStats={handleResetStats}
           onViewLogs={() => setIsLogViewerOpen(true)}
-          hotkeyError={hotkeyError ?? null}
+          accessibilityGranted={accessibilityGranted}
         />
       </div>
 
