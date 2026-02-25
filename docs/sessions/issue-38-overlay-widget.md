@@ -91,7 +91,7 @@ Through visual iteration with screenshots, the overlay evolved from a vertical-e
 - `safeAreaInsets.top` gives the notch/menu bar height (~37pt on notched Macs).
 - `auxiliaryTopLeftArea` and `auxiliaryTopRightArea` are the menu bar regions on either side of the notch.
 - The `focusable: false` + `set_ignore_cursor_events(false)` combo gives us mouse events without focus stealing — the two NSWindow properties (`canBecomeKey` and `ignoresMouseEvents`) are independent.
-- Tauri 2 custom commands (`#[tauri::command]`) are globally available to all windows — no capability permission needed.
+- Tauri 2 custom commands (`#[tauri::command]`) are available to all windows by default, but core/plugin commands require explicit capability permissions (see `capabilities/overlay.json`).
 - Notch info is cached at setup time (main thread safe) — never call `detect_notch_info()` from command threads.
 
 ## PR

@@ -640,7 +640,8 @@ fn make_tray_icon_data(r: u8, g: u8, b: u8) -> Vec<u8> {
 #[tauri::command]
 fn update_tray_icon(app: tauri::AppHandle, icon_state: String) -> Result<(), String> {
     let (r, g, b) = match icon_state.as_str() {
-        "processing" => (200u8, 150u8, 40u8),
+        "recording"  => (220u8,  50u8,  50u8), // red
+        "processing" => (200u8, 150u8,  40u8), // amber
         _ if cfg!(debug_assertions) => (251u8, 191u8, 36u8), // dev — amber
         _            => (140u8, 140u8, 140u8), // prod — gray
     };
@@ -689,7 +690,15 @@ fn raise_window_above_menubar(overlay: &tauri::WebviewWindow) {
         ns_window.setHasShadow(false);
         // Prevent clicking the overlay from activating the app (which unhides the main window).
         // Private API — macOSPrivateApi is already enabled in tauri.conf.json.
-        let _: () = unsafe { objc2::msg_send![ns_window, _setPreventsActivation: true] };
+        // Tested on macOS 15 (Sequoia). Guard with respondsToSelector in case Apple
+        // removes this in a future version.
+        let sel = objc2::sel!(_setPreventsActivation:);
+        let responds: bool = unsafe { objc2::msg_send![ns_window, respondsToSelector: sel] };
+        if responds {
+            let _: () = unsafe { objc2::msg_send![ns_window, _setPreventsActivation: true] };
+        } else {
+            log_warn!("_setPreventsActivation: not available on this macOS version");
+        }
     }
 }
 
@@ -860,7 +869,7 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            log_info!("app setup");
+            log_info!("app setup — Local Dictation v{}", env!("CARGO_PKG_VERSION"));
 
             // Cache notch dimensions on the main thread (safe for NSScreen APIs).
             let notch = detect_notch_info();
