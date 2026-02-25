@@ -11,8 +11,8 @@
 ### Dynamic Island-style notch integration
 - **Notch detection**: Uses `objc2-app-kit` NSScreen APIs (`auxiliaryTopLeftArea`, `auxiliaryTopRightArea`, `safeAreaInsets`) to detect the exact notch width and height in logical points
 - **Window level 25**: Set via `NSWindow.setLevel(25)` (mainMenu + 1) so the overlay renders above the menu bar and can overlap the notch area
-- **Window auto-sizing**: `set_size(notch_width + 10, 52)` to match the notch with a 5px border on each side
-- **Positioning**: `y = notch_height - 8` (overlaps 8px behind the notch, rest protrudes below)
+- **Window auto-sizing**: `set_size(notch_width + NOTCH_EXPAND, notch_height)` where `NOTCH_EXPAND = 120.0` provides room for horizontal expansion; `overlay_h = notch_height` (same height as notch, no vertical extension)
+- **Positioning**: `y = 0.0` (window anchored at top of screen; frontend uses cached `notch_height` to position content within the pill)
 
 ### Overlay capabilities
 - Created `ui/src-tauri/capabilities/overlay.json` with permissions for event listening, dragging, positioning

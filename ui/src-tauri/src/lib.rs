@@ -701,8 +701,10 @@ fn position_overlay_default(overlay: &tauri::WebviewWindow, notch_info: Option<(
     let overlay_h = notch_info.map(|(_, h)| h).unwrap_or(37.0);
     log_info!("position_overlay_default: notch_info={:?}, overlay_w={}, overlay_h={}", notch_info, overlay_w, overlay_h);
 
-    // Resize window: notch area + content area below
-    let _ = overlay.set_size(tauri::LogicalSize::new(overlay_w, overlay_h));
+    // Resize window to match notch area
+    if let Err(e) = overlay.set_size(tauri::LogicalSize::new(overlay_w, overlay_h)) {
+        log_warn!("position_overlay_default: set_size({}, {}) failed: {}", overlay_w, overlay_h, e);
+    }
 
     // Raise above the menu bar so the window can overlap the notch
     raise_window_above_menubar(overlay);
@@ -712,7 +714,9 @@ fn position_overlay_default(overlay: &tauri::WebviewWindow, notch_info: Option<(
         let sf = monitor.scale_factor();
         let x = (size.width as f64 / sf - overlay_w) / 2.0;
         log_info!("position_overlay_default: x={}, y=0, sf={}", x, sf);
-        let _ = overlay.set_position(tauri::LogicalPosition::new(x, 0.0));
+        if let Err(e) = overlay.set_position(tauri::LogicalPosition::new(x, 0.0)) {
+            log_warn!("position_overlay_default: set_position({}, 0) failed: {}", x, e);
+        }
     } else {
         log_warn!("position_overlay_default: no current monitor, falling back to (100, 100)");
         let _ = overlay.set_position(tauri::LogicalPosition::new(100.0, 100.0));

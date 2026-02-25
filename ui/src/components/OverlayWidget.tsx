@@ -9,7 +9,7 @@ const BAR_COUNT = 7;
 export function OverlayWidget() {
   const [status, setStatus] = useState<DictationStatus>('idle');
   const [lockedMode, setLockedMode] = useState(false);
-  const [_notchHeight, setNotchHeight] = useState(0);
+  const notchHeightRef = useRef(0);
   const [notchWidth, setNotchWidth] = useState(185);
   const statusRef = useRef(status);
   const lockedRef = useRef(lockedMode);
@@ -27,7 +27,7 @@ export function OverlayWidget() {
       .then((info) => {
         if (info) {
           console.log('[overlay] notch info:', info);
-          setNotchHeight(info.notch_height);
+          notchHeightRef.current = info.notch_height;
           setNotchWidth(info.notch_width);
         } else {
           console.log('[overlay] no notch detected');
