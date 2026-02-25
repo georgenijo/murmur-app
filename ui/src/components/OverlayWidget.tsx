@@ -71,6 +71,9 @@ export function OverlayWidget() {
       if (isDictationStatus(event.payload)) {
         flog.info('overlay', 'status changed', { status: event.payload });
         setStatus(event.payload);
+        if (event.payload === 'idle') {
+          setLockedMode(false);
+        }
       }
     }).then((fn) => {
       if (cancelled) { fn(); } else { unlisten = fn; }
@@ -125,12 +128,13 @@ export function OverlayWidget() {
       x: Math.round(e.clientX), y: Math.round(e.clientY),
       target: (e.target as HTMLElement).tagName,
     });
+    const currentStatus = statusRef.current;
+    if (currentStatus === 'processing') return;
     if (clickTimerRef.current) {
       clearTimeout(clickTimerRef.current);
       clickTimerRef.current = null;
     }
     const currentLocked = lockedRef.current;
-    const currentStatus = statusRef.current;
     if (!currentLocked) {
       // Enter locked mode — start recording
       setLockedMode(true);
