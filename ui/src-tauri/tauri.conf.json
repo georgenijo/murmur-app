@@ -32,7 +32,8 @@
         "skipTaskbar": true,
         "visible": false,
         "resizable": false,
-        "focusable": false
+        "focusable": false,
+        "visibleOnAllWorkspaces": true
       }
     ],
     "macOSPrivateApi": true,

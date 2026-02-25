@@ -5,7 +5,7 @@ import { getCurrentWindow, PhysicalPosition } from '@tauri-apps/api/window';
 import { isDictationStatus } from '../lib/types';
 import type { DictationStatus } from '../lib/types';
 
-const BAR_COUNT = 5;
+const BAR_COUNT = 7;
 const POSITION_KEY = 'overlay-position';
 
 export function OverlayWidget() {
@@ -30,22 +30,23 @@ export function OverlayWidget() {
   }, []);
 
   // Restore saved position (Rust handles default positioning)
-  useEffect(() => {
-    (async () => {
-      try {
-        const saved = localStorage.getItem(POSITION_KEY);
-        if (saved) {
-          const { x, y } = JSON.parse(saved) as { x: number; y: number };
-          console.log('[overlay] restoring saved position:', { x, y });
-          await getCurrentWindow().setPosition(new PhysicalPosition(x, y));
-        } else {
-          console.log('[overlay] no saved position, using Rust default');
-        }
-      } catch (e) {
-        console.warn('[overlay] position restore failed:', e);
-      }
-    })();
-  }, []);
+  // TODO: re-enable after notch positioning is stable
+  // useEffect(() => {
+  //   (async () => {
+  //     try {
+  //       const saved = localStorage.getItem(POSITION_KEY);
+  //       if (saved) {
+  //         const { x, y } = JSON.parse(saved) as { x: number; y: number };
+  //         console.log('[overlay] restoring saved position:', { x, y });
+  //         await getCurrentWindow().setPosition(new PhysicalPosition(x, y));
+  //       } else {
+  //         console.log('[overlay] no saved position, using Rust default');
+  //       }
+  //     } catch (e) {
+  //       console.warn('[overlay] position restore failed:', e);
+  //     }
+  //   })();
+  // }, []);
 
   // Persist overlay position on move (debounced)
   useEffect(() => {
@@ -112,12 +113,17 @@ export function OverlayWidget() {
       setBarHeights(Array(BAR_COUNT).fill(0.15));
       return;
     }
-    const clampedLevel = Math.min(1, audioLevel * 4); // amplify for visibility
+    const level = Math.min(1, audioLevel * 16); // very aggressive — reacts to whispers
     setBarHeights(
       Array.from({ length: BAR_COUNT }, (_, i) => {
-        const phase = (i / BAR_COUNT) * Math.PI * 2;
-        const jitter = Math.random() * 0.25;
-        return Math.min(1, Math.max(0.1, clampedLevel * (0.6 + 0.4 * Math.sin(phase)) + jitter));
+        const baseline = 0.08 + Math.random() * 0.07;
+        const center = (BAR_COUNT - 1) / 2;
+        const distFromCenter = 1 - Math.abs(i - center) / center;
+        const envelope = 0.5 + 0.5 * distFromCenter;
+        const reactiveHeight = level * envelope;
+        // Square the level to make loud sounds WAY bigger
+        const boost = level * level * 0.4 * Math.random();
+        return Math.min(1, baseline + reactiveHeight + boost);
       })
     );
   }, [audioLevel, status]);
@@ -195,7 +201,7 @@ export function OverlayWidget() {
         className="bg-black cursor-pointer select-none overflow-hidden transition-all duration-[400ms] ease-[cubic-bezier(0.4,0,0.2,1)]"
         style={{
           borderRadius: '0 0 14px 14px',
-          width: isActive ? 220 : 80,
+          width: isActive ? '100%' : 80,
           height: isActive ? 44 : 4,
         }}
       >
@@ -210,16 +216,16 @@ export function OverlayWidget() {
           )}
 
           {/* Waveform bars */}
-          <div className="flex items-center gap-[3px] h-5">
+          <div className="flex items-center gap-[2px] h-6">
             {barHeights.map((h, i) => (
               <div
                 key={i}
-                className={`w-[3px] rounded-full transition-all ${
+                className={`w-[2.5px] rounded-full ${
                   status === 'recording' ? 'bg-white/90' : 'bg-white/40'
                 }`}
                 style={{
-                  height: `${Math.round(h * 20)}px`,
-                  transitionDuration: status === 'recording' ? '80ms' : '300ms',
+                  height: `${Math.max(2, Math.round(h * 24))}px`,
+                  transition: `height ${status === 'recording' ? '50ms' : '300ms'} ease-out`,
                 }}
               />
             ))}

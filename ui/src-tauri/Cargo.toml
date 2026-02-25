@@ -32,6 +32,11 @@ sherpa-rs = { version = "0.6", default-features = false, features = ["download-b
 tar = "0.4"
 bzip2 = "0.5"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSScreen", "NSApplication", "NSRunningApplication"] }
+objc2-foundation = "0.3"
+
 [profile.release]
 panic = "abort"
 codegen-units = 1

@@ -646,15 +646,68 @@ fn update_tray_icon(app: tauri::AppHandle, icon_state: String) -> Result<(), Str
     Ok(())
 }
 
-/// Position the overlay at top-center, flush with the notch.
-/// Called from Rust so it works regardless of frontend IPC permissions.
+/// Detect notch width and configure the overlay as a notch-level window.
+/// Uses native NSScreen APIs — no subprocess needed.
+#[cfg(target_os = "macos")]
+fn detect_notch_info() -> Option<(f64, f64)> {
+    // Returns (notch_width, menu_bar_height) in logical points
+    use objc2_app_kit::NSScreen;
+    use objc2_foundation::MainThreadMarker;
+
+    let mtm = unsafe { MainThreadMarker::new_unchecked() };
+    let screen = NSScreen::mainScreen(mtm)?;
+    let insets = screen.safeAreaInsets();
+    if insets.top <= 0.0 {
+        return None; // No notch
+    }
+    let frame = screen.frame();
+    let left_w = screen.auxiliaryTopLeftArea().size.width;
+    let right_w = screen.auxiliaryTopRightArea().size.width;
+    let notch_w = frame.size.width - left_w - right_w;
+    log_info!("detect_notch_info: notch_w={}, menu_bar_h={}, screen_w={}", notch_w, insets.top, frame.size.width);
+    Some((notch_w, insets.top))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn detect_notch_info() -> Option<(f64, f64)> { None }
+
+/// Raise the overlay window above the menu bar so it overlaps the notch.
+#[cfg(target_os = "macos")]
+fn raise_window_above_menubar(overlay: &tauri::WebviewWindow) {
+    // NSMainMenuWindowLevel = 24, so +1 = 25 puts us just above the menu bar.
+    // This is what boring.notch and mew-notch use.
+    let raw = overlay.ns_window();
+    if let Ok(ptr) = raw {
+        let ns_window: &objc2_app_kit::NSWindow = unsafe { &*(ptr.cast()) };
+        ns_window.setLevel(25);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn raise_window_above_menubar(_overlay: &tauri::WebviewWindow) {}
+
+const NOTCH_BORDER: f64 = 10.0; // 5px wider on each side of the notch
+const FALLBACK_OVERLAY_W: f64 = 200.0;
+
+/// Position and size the overlay to match the notch, centered at the top of the screen.
 fn position_overlay_default(overlay: &tauri::WebviewWindow) {
+    let notch_info = detect_notch_info();
+    let overlay_w = notch_info.map(|(w, _)| w + NOTCH_BORDER).unwrap_or(FALLBACK_OVERLAY_W);
+    let notch_overlap = 8.0;
+    let y_offset = notch_info.map(|(_, h)| h - notch_overlap).unwrap_or(0.0);
+    log_info!("position_overlay_default: notch_info={:?}, overlay_w={}, y_offset={}", notch_info, overlay_w, y_offset);
+
+    // Resize window to match the notch
+    let _ = overlay.set_size(tauri::LogicalSize::new(overlay_w, 52.0));
+
+    // Raise above the menu bar so the window can overlap the notch
+    raise_window_above_menubar(overlay);
+
     if let Some(monitor) = overlay.primary_monitor().ok().flatten() {
         let size = monitor.size();
         let sf = monitor.scale_factor();
-        let overlay_w = 260.0;
         let x = (size.width as f64 / sf - overlay_w) / 2.0;
-        let y = 0.0; // flush with top — merges with the notch
+        let y = y_offset;
         log_info!("position_overlay_default: x={}, y={}, sf={}", x, y, sf);
         let _ = overlay.set_position(tauri::LogicalPosition::new(x, y));
     } else {

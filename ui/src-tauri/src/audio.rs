@@ -19,8 +19,8 @@ fn compute_rms(samples: &[f32]) -> f32 {
 /// Build an input stream that converts interleaved multi-channel samples to mono f32,
 /// computes RMS for each buffer chunk and emits an "audio-level" event if an AppHandle
 /// is provided.
-/// Minimum gap between `audio-level` events (~30 fps).
-const AUDIO_LEVEL_THROTTLE_MS: u64 = 33;
+/// Minimum gap between `audio-level` events (~60 fps).
+const AUDIO_LEVEL_THROTTLE_MS: u64 = 16;
 
 /// Build an input stream that converts interleaved multi-channel samples to mono f32,
 /// computes RMS for each buffer chunk and emits an "audio-level" event if an AppHandle
