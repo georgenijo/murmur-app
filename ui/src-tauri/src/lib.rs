@@ -10,11 +10,7 @@ pub mod transcriber;
 use state::{AppState, DictationStatus};
 use transcriber::TranscriptionBackend;
 use std::sync::{Mutex, MutexGuard};
-use tauri::{
-    menu::{Menu, MenuItem},
-    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Emitter, Manager,
-};
+use tauri::{Emitter, Manager};
 
 /// Helper trait to recover from poisoned mutexes
 trait MutexExt<T> {
@@ -32,6 +28,8 @@ impl<T> MutexExt<T> for Mutex<T> {
 
 struct State {
     app_state: AppState,
+    /// Cached notch dimensions (notch_width, menu_bar_height) from setup (main thread).
+    notch_info: Mutex<Option<(f64, f64)>>,
 }
 
 #[tauri::command]
@@ -127,7 +125,6 @@ async fn process_audio(
         dictation.status = DictationStatus::Processing;
     }
     let _ = app_handle.emit("recording-status-changed", "processing");
-    let _ = update_tray_icon(app_handle.clone(), "processing".into());
 
     // Guard resets status to Idle if decode/parse fails before reaching the pipeline
     let mut guard = IdleGuard::new(&state.app_state);
@@ -144,7 +141,6 @@ async fn process_audio(
 
     let pipeline_result = run_transcription_pipeline(&samples, &app_handle, &state.app_state);
     let _ = app_handle.emit("recording-status-changed", "idle");
-    let _ = update_tray_icon(app_handle.clone(), "idle".into());
     let text = pipeline_result?;
 
     Ok(serde_json::json!({
@@ -291,7 +287,6 @@ async fn start_native_recording(
         return Err(e);
     }
     let _ = app_handle.emit("recording-status-changed", "recording");
-    let _ = update_tray_icon(app_handle.clone(), "recording".into());
     log_info!("start_native_recording: started");
 
     Ok(serde_json::json!({
@@ -327,7 +322,6 @@ async fn stop_native_recording(
     }
     log_info!("stop_native_recording: stopping");
     let _ = app_handle.emit("recording-status-changed", "processing");
-    let _ = update_tray_icon(app_handle.clone(), "processing".into());
 
     // Guard resets status to Idle if stop_recording fails or samples are empty;
     // disarmed before handing off to run_transcription_pipeline (which has its own guard)
@@ -345,7 +339,6 @@ async fn stop_native_recording(
         log_info!("stop_native_recording: no audio captured");
         // guard drops on return, resetting status to Idle
         let _ = app_handle.emit("recording-status-changed", "idle");
-        let _ = update_tray_icon(app_handle.clone(), "idle".into());
         return Ok(serde_json::json!({
             "type": "transcription",
             "text": "",
@@ -358,7 +351,6 @@ async fn stop_native_recording(
 
     let pipeline_result = run_transcription_pipeline(&samples, &app_handle, &state.app_state);
     let _ = app_handle.emit("recording-status-changed", "idle");
-    let _ = update_tray_icon(app_handle.clone(), "idle".into());
     let text = pipeline_result.map_err(|e| {
         log_error!("stop_native_recording: pipeline failed: {}", e);
         e
@@ -369,6 +361,16 @@ async fn stop_native_recording(
     let approx_tokens = (word_count as f64 * 1.3).round() as usize;
     log_info!("pipeline: total end-to-end: {:?} (duration={}s words={} tokens={} chars={})",
         t_total.elapsed(), recording_secs, word_count, approx_tokens, text.len());
+
+    // Broadcast transcription result to all windows (so the main window can update
+    // its history even when recording was initiated from the overlay).
+    if !text.is_empty() {
+        let _ = app_handle.emit("transcription-complete", serde_json::json!({
+            "text": text,
+            "duration": recording_secs
+        }));
+    }
+
     Ok(serde_json::json!({
         "type": "transcription",
         "text": text,
@@ -420,6 +422,11 @@ fn get_log_contents(lines: usize) -> String {
 #[tauri::command]
 fn clear_logs() -> Result<(), String> {
     logging::clear_logs()
+}
+
+#[tauri::command]
+fn log_frontend(level: String, message: String) {
+    logging::frontend(&level, &message);
 }
 
 #[tauri::command]
@@ -633,10 +640,10 @@ fn make_tray_icon_data(r: u8, g: u8, b: u8) -> Vec<u8> {
 #[tauri::command]
 fn update_tray_icon(app: tauri::AppHandle, icon_state: String) -> Result<(), String> {
     let (r, g, b) = match icon_state.as_str() {
-        "recording"  => (220u8, 50u8,  50u8),
-        "processing" => (200u8, 150u8, 40u8),
-        _ if cfg!(debug_assertions) => (251u8, 191u8, 36u8), // idle dev — amber
-        _            => (140u8, 140u8, 140u8), // idle prod — gray
+        "recording"  => (220u8,  50u8,  50u8), // red
+        "processing" => (200u8, 150u8,  40u8), // amber
+        _ if cfg!(debug_assertions) => (251u8, 191u8, 36u8), // dev — amber
+        _            => (140u8, 140u8, 140u8), // prod — gray
     };
     let data = make_tray_icon_data(r, g, b);
     if let Some(tray) = app.tray_by_id("main-tray") {
@@ -646,11 +653,115 @@ fn update_tray_icon(app: tauri::AppHandle, icon_state: String) -> Result<(), Str
     Ok(())
 }
 
+/// Detect notch width and configure the overlay as a notch-level window.
+/// Uses native NSScreen APIs — no subprocess needed.
+#[cfg(target_os = "macos")]
+fn detect_notch_info() -> Option<(f64, f64)> {
+    // Returns (notch_width, menu_bar_height) in logical points
+    use objc2_app_kit::NSScreen;
+    use objc2_foundation::MainThreadMarker;
+
+    let mtm = unsafe { MainThreadMarker::new_unchecked() };
+    let screen = NSScreen::mainScreen(mtm)?;
+    let insets = screen.safeAreaInsets();
+    if insets.top <= 0.0 {
+        return None; // No notch
+    }
+    let frame = screen.frame();
+    let left_w = screen.auxiliaryTopLeftArea().size.width;
+    let right_w = screen.auxiliaryTopRightArea().size.width;
+    let notch_w = frame.size.width - left_w - right_w;
+    log_info!("detect_notch_info: notch_w={}, menu_bar_h={}, screen_w={}", notch_w, insets.top, frame.size.width);
+    Some((notch_w, insets.top))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn detect_notch_info() -> Option<(f64, f64)> { None }
+
+/// Raise the overlay window above the menu bar so it overlaps the notch.
+#[cfg(target_os = "macos")]
+fn raise_window_above_menubar(overlay: &tauri::WebviewWindow) {
+    // NSMainMenuWindowLevel = 24, so +1 = 25 puts us just above the menu bar.
+    // This is what boring.notch and mew-notch use.
+    let raw = overlay.ns_window();
+    if let Ok(ptr) = raw {
+        let ns_window: &objc2_app_kit::NSWindow = unsafe { &*(ptr.cast()) };
+        ns_window.setLevel(25);
+        ns_window.setHasShadow(false);
+        // Prevent clicking the overlay from activating the app (which unhides the main window).
+        // Private API — macOSPrivateApi is already enabled in tauri.conf.json.
+        // Tested on macOS 15 (Sequoia). Guard with respondsToSelector in case Apple
+        // removes this in a future version.
+        let sel = objc2::sel!(_setPreventsActivation:);
+        let responds: bool = unsafe { objc2::msg_send![ns_window, respondsToSelector: sel] };
+        if responds {
+            let _: () = unsafe { objc2::msg_send![ns_window, _setPreventsActivation: true] };
+        } else {
+            log_warn!("_setPreventsActivation: not available on this macOS version");
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn raise_window_above_menubar(_overlay: &tauri::WebviewWindow) {}
+
+const NOTCH_EXPAND: f64 = 120.0; // 60px expansion room on each side
+const FALLBACK_OVERLAY_W: f64 = 200.0;
+
+#[derive(serde::Serialize, Clone)]
+struct NotchInfo {
+    notch_width: f64,
+    notch_height: f64,
+}
+
+/// Return cached notch dimensions so the frontend can position content precisely.
+#[tauri::command]
+fn get_notch_info(state: tauri::State<'_, State>) -> Option<NotchInfo> {
+    state.notch_info.lock_or_recover().map(|(w, h)| NotchInfo { notch_width: w, notch_height: h })
+}
+
+/// Position and size the overlay to match the notch, anchored at the top of the screen.
+/// The window is notch-height tall and wide enough for horizontal expansion.
+/// Takes cached notch_info to avoid calling NSScreen APIs off the main thread.
+fn position_overlay_default(overlay: &tauri::WebviewWindow, notch_info: Option<(f64, f64)>) {
+    let overlay_w = notch_info.map(|(w, _)| w + NOTCH_EXPAND).unwrap_or(FALLBACK_OVERLAY_W);
+    let overlay_h = notch_info.map(|(_, h)| h).unwrap_or(37.0);
+    log_info!("position_overlay_default: notch_info={:?}, overlay_w={}, overlay_h={}", notch_info, overlay_w, overlay_h);
+
+    // Resize window to match notch area
+    if let Err(e) = overlay.set_size(tauri::LogicalSize::new(overlay_w, overlay_h)) {
+        log_warn!("position_overlay_default: set_size({}, {}) failed: {}", overlay_w, overlay_h, e);
+    }
+
+    // Raise above the menu bar so the window can overlap the notch
+    raise_window_above_menubar(overlay);
+
+    if let Some(monitor) = overlay.current_monitor().ok().flatten() {
+        let size = monitor.size();
+        let sf = monitor.scale_factor();
+        let x = (size.width as f64 / sf - overlay_w) / 2.0;
+        log_info!("position_overlay_default: x={}, y=0, sf={}", x, sf);
+        if let Err(e) = overlay.set_position(tauri::LogicalPosition::new(x, 0.0)) {
+            log_warn!("position_overlay_default: set_position({}, 0) failed: {}", x, e);
+        }
+    } else {
+        log_warn!("position_overlay_default: no current monitor, falling back to (100, 100)");
+        let _ = overlay.set_position(tauri::LogicalPosition::new(100.0, 100.0));
+    }
+}
+
 /// Show the always-on-top overlay window.
 #[tauri::command]
-fn show_overlay(app: tauri::AppHandle) -> Result<(), String> {
+fn show_overlay(app: tauri::AppHandle, state: tauri::State<'_, State>) -> Result<(), String> {
+    let notch = *state.notch_info.lock_or_recover();
     match app.get_webview_window("overlay") {
-        Some(overlay) => overlay.show().map_err(|e| e.to_string()),
+        Some(overlay) => {
+            position_overlay_default(&overlay, notch);
+            overlay.show().map_err(|e| e.to_string())?;
+            // Re-enable mouse events (focusable:false disables them on macOS)
+            let _ = overlay.set_ignore_cursor_events(false);
+            Ok(())
+        }
         None => {
             log_warn!("show_overlay: overlay window not found — skipping");
             Ok(())
@@ -714,19 +825,14 @@ mod tests {
     }
 }
 
-fn show_main_window(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.show();
-        let _ = window.set_focus();
-    }
-}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(State {
             app_state: AppState::default(),
+            notch_info: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             init_dictation,
@@ -746,8 +852,10 @@ pub fn run() {
             update_tray_icon,
             show_overlay,
             hide_overlay,
+            get_notch_info,
             get_log_contents,
             clear_logs,
+            log_frontend,
             check_model_exists,
             check_specific_model_exists,
             download_model,
@@ -761,56 +869,33 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            log_info!("app setup");
-            let show = MenuItem::with_id(app, "show", "Show Window", true, None::<&str>)?;
-            let toggle_overlay = MenuItem::with_id(app, "toggle_overlay", "Toggle Overlay", true, None::<&str>)?;
-            let about = MenuItem::with_id(app, "about", "About Local Dictation", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &toggle_overlay, &about, &quit])?;
+            log_info!("app setup — Local Dictation v{}", env!("CARGO_PKG_VERSION"));
 
-            // Named ID so we can retrieve and update the icon later via update_tray_icon
-            let _tray = TrayIconBuilder::with_id("main-tray")
-                .icon(app.default_window_icon().unwrap().clone())
-                .menu(&menu)
-                .show_menu_on_left_click(false)
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show" => show_main_window(app),
-                    "toggle_overlay" => {
-                        if let Some(overlay) = app.get_webview_window("overlay") {
-                            if overlay.is_visible().unwrap_or(false) {
-                                let _ = overlay.hide();
-                            } else {
-                                let _ = overlay.show();
-                            }
-                        }
-                    }
-                    "about" => {
-                        show_main_window(app);
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.emit("show-about", ());
-                        }
-                    }
-                    "quit" => app.exit(0),
-                    _ => {}
-                })
-                .on_tray_icon_event(|tray: &tauri::tray::TrayIcon, event: TrayIconEvent| {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
-                        show_main_window(tray.app_handle());
-                    }
-                })
-                .build(app)?;
+            // Cache notch dimensions on the main thread (safe for NSScreen APIs).
+            let notch = detect_notch_info();
+            {
+                let state = app.state::<State>();
+                *state.notch_info.lock_or_recover() = notch;
+            }
 
-            // Set the initial tray icon color (amber for dev, gray for prod)
-            let _ = update_tray_icon(app.app_handle().clone(), "idle".into());
-
+            // Re-enable mouse events on the overlay window.
+            // focusable:false sets ignoresMouseEvents=true on macOS;
+            // we override that while keeping the window non-activating.
+            if let Some(overlay) = app.get_webview_window("overlay") {
+                log_info!("setup: overlay window found, enabling cursor events");
+                position_overlay_default(&overlay, notch);
+                let _ = overlay.show();
+                if let Err(e) = overlay.set_ignore_cursor_events(false) {
+                    log_warn!("Failed to set overlay cursor events: {}", e);
+                }
+            } else {
+                log_warn!("setup: overlay window NOT found");
+            }
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|_, _| {});
 }

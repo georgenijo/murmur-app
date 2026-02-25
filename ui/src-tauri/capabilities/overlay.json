@@ -1,0 +1,12 @@
+{
+  "$schema": "https://schemas.tauri.app/config/2/capability",
+  "identifier": "overlay",
+  "description": "Capability for the overlay window",
+  "windows": ["overlay"],
+  "permissions": [
+    "core:event:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-set-position",
+    "core:default"
+  ]
+}

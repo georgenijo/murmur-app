@@ -19,12 +19,12 @@ fn compute_rms(samples: &[f32]) -> f32 {
 /// Build an input stream that converts interleaved multi-channel samples to mono f32,
 /// computes RMS for each buffer chunk and emits an "audio-level" event if an AppHandle
 /// is provided.
-/// Minimum gap between `audio-level` events (~30 fps).
-const AUDIO_LEVEL_THROTTLE_MS: u64 = 33;
+/// Minimum gap between `audio-level` events (~60 fps).
+const AUDIO_LEVEL_THROTTLE_MS: u64 = 16;
 
 /// Build an input stream that converts interleaved multi-channel samples to mono f32,
 /// computes RMS for each buffer chunk and emits an "audio-level" event if an AppHandle
-/// is provided, throttled to ~30 fps to avoid IPC spam.
+/// is provided, throttled to ~60 fps to avoid IPC spam.
 macro_rules! build_mono_input_stream {
     ($device:expr, $config:expr, $shared:expr, $channels:expr, $err_fn:expr, $sample_type:ty, $app_handle:expr) => {{
         let samples_ref = Arc::clone(&$shared);
@@ -39,7 +39,7 @@ macro_rules! build_mono_input_stream {
                         sum / $channels as f32
                     })
                     .collect();
-                // Emit audio level throttled to ~30 fps
+                // Emit audio level throttled to ~60 fps
                 if let Some(ref handle) = app_handle_opt {
                     let now = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)

@@ -24,17 +24,19 @@
         "label": "overlay",
         "title": "",
         "url": "overlay.html",
-        "width": 200,
-        "height": 60,
+        "width": 260,
+        "height": 100,
         "decorations": false,
         "alwaysOnTop": true,
         "transparent": true,
         "skipTaskbar": true,
         "visible": false,
         "resizable": false,
-        "focusable": false
+        "focusable": false,
+        "visibleOnAllWorkspaces": true
       }
     ],
+    "macOSPrivateApi": true,
     "security": {
       "csp": null
     }

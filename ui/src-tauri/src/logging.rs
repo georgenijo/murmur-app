@@ -12,6 +12,8 @@ static LOG_MUX: Mutex<()> = Mutex::new(());
 const MAX_LOG_SIZE: u64 = 5 * 1024 * 1024; // 5 MB
 const LOG_FILE: &str = if cfg!(debug_assertions) { "app.dev.log" } else { "app.log" };
 const ROTATED_FILE: &str = if cfg!(debug_assertions) { "app.dev.log.1" } else { "app.log.1" };
+const FRONTEND_LOG_FILE: &str = if cfg!(debug_assertions) { "frontend.dev.log" } else { "frontend.log" };
+const FRONTEND_ROTATED_FILE: &str = if cfg!(debug_assertions) { "frontend.dev.log.1" } else { "frontend.log.1" };
 
 fn log_dir() -> Option<PathBuf> {
     dirs::data_dir().map(|d| d.join("local-dictation").join("logs"))
@@ -52,26 +54,26 @@ fn iso_timestamp() -> String {
     format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", y, m, d, hours, minutes, seconds)
 }
 
-/// Rotate log if it exceeds MAX_LOG_SIZE. Keeps one rotated backup.
-fn rotate_if_needed(dir: &PathBuf) {
-    let path = dir.join(LOG_FILE);
+/// Rotate a log file if it exceeds MAX_LOG_SIZE. Keeps one rotated backup.
+fn rotate_if_needed_file(dir: &PathBuf, log_file: &str, rotated_file: &str) {
+    let path = dir.join(log_file);
     let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
     if size >= MAX_LOG_SIZE {
-        let rotated = dir.join(ROTATED_FILE);
+        let rotated = dir.join(rotated_file);
         let _ = fs::rename(&path, &rotated);
     }
 }
 
-fn log_impl(level: &str, message: &str) {
+fn log_to_file(log_file: &str, rotated_file: &str, level: &str, message: &str) {
     let _guard = LOG_MUX.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = match ensure_log_dir() {
         Some(d) => d,
         None => return,
     };
 
-    rotate_if_needed(&dir);
+    rotate_if_needed_file(&dir, log_file, rotated_file);
 
-    let path = dir.join(LOG_FILE);
+    let path = dir.join(log_file);
     let mut file = match OpenOptions::new().create(true).append(true).open(&path) {
         Ok(f) => f,
         Err(_) => return,
@@ -79,6 +81,10 @@ fn log_impl(level: &str, message: &str) {
     let line = format!("{} [{}] {}\n", iso_timestamp(), level, message);
     let _ = file.write_all(line.as_bytes());
     let _ = file.flush();
+}
+
+fn log_impl(level: &str, message: &str) {
+    log_to_file(LOG_FILE, ROTATED_FILE, level, message);
 }
 
 /// Log an informational message.
@@ -114,6 +120,11 @@ macro_rules! log_error {
     ($($arg:tt)*) => {{
         $crate::logging::error(&format!($($arg)*));
     }};
+}
+
+/// Write a frontend log line to the separate frontend log file.
+pub fn frontend(level: &str, message: &str) {
+    log_to_file(FRONTEND_LOG_FILE, FRONTEND_ROTATED_FILE, level, message);
 }
 
 /// Return the last `n` lines of the active log file as a newline-joined string.
