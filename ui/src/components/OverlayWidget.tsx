@@ -3,6 +3,7 @@ import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { isDictationStatus } from '../lib/types';
 import type { DictationStatus } from '../lib/types';
+import { flog } from '../lib/log';
 
 const BAR_COUNT = 7;
 
@@ -22,20 +23,20 @@ export function OverlayWidget() {
 
   // Log mount + fetch notch dimensions
   useEffect(() => {
-    console.log('[overlay] mounted');
+    flog.info('overlay', 'mounted');
     invoke<{ notch_width: number; notch_height: number } | null>('get_notch_info')
       .then((info) => {
         if (info) {
-          console.log('[overlay] notch info:', info);
+          flog.info('overlay', 'notch info', { notch_width: info.notch_width, notch_height: info.notch_height });
           notchHeightRef.current = info.notch_height;
           setNotchWidth(info.notch_width);
         } else {
-          console.log('[overlay] no notch detected');
+          flog.info('overlay', 'no notch detected');
         }
       })
-      .catch((e) => console.warn('[overlay] get_notch_info failed:', e));
+      .catch((e) => flog.warn('overlay', 'get_notch_info failed', { error: String(e) }));
     return () => {
-      console.log('[overlay] unmounted');
+      flog.info('overlay', 'unmounted');
       if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
     };
   }, []);
@@ -68,7 +69,7 @@ export function OverlayWidget() {
     let unlisten: (() => void) | null = null;
     listen<string>('recording-status-changed', (event) => {
       if (isDictationStatus(event.payload)) {
-        console.log('[overlay] status changed:', event.payload);
+        flog.info('overlay', 'status changed', { status: event.payload });
         setStatus(event.payload);
       }
     }).then((fn) => {
@@ -118,8 +119,12 @@ export function OverlayWidget() {
   }, [status]);
 
   // Double-click: toggle locked mode. Cancel any pending single-click first.
-  const handleDoubleClick = useCallback(async () => {
-    console.log('[overlay] double-click', { locked: lockedRef.current, status: statusRef.current });
+  const handleDoubleClick = useCallback(async (e: React.MouseEvent) => {
+    flog.info('overlay', 'DOUBLE-CLICK', {
+      locked: lockedRef.current, status: statusRef.current,
+      x: Math.round(e.clientX), y: Math.round(e.clientY),
+      target: (e.target as HTMLElement).tagName,
+    });
     if (clickTimerRef.current) {
       clearTimeout(clickTimerRef.current);
       clickTimerRef.current = null;
@@ -131,8 +136,11 @@ export function OverlayWidget() {
       setLockedMode(true);
       if (currentStatus !== 'recording') {
         try {
-          await invoke('start_native_recording');
-        } catch {
+          flog.info('overlay', 'invoking start_native_recording');
+          const res = await invoke('start_native_recording');
+          flog.info('overlay', 'start_native_recording result', { res: res as Record<string, unknown> });
+        } catch (err) {
+          flog.error('overlay', 'start_native_recording error', { error: String(err) });
           setLockedMode(false);
         }
       }
@@ -141,22 +149,31 @@ export function OverlayWidget() {
       setLockedMode(false);
       if (currentStatus === 'recording') {
         try {
-          await invoke('stop_native_recording');
-        } catch {
-          // status will sync via recording-status-changed event
+          flog.info('overlay', 'invoking stop_native_recording');
+          const res = await invoke('stop_native_recording');
+          flog.info('overlay', 'stop_native_recording result', { res: res as Record<string, unknown> });
+        } catch (err) {
+          flog.error('overlay', 'stop_native_recording error', { error: String(err) });
         }
       }
     }
   }, []);
 
   // Single-click: debounced so it doesn't fire when the user double-clicks.
-  const handleClick = useCallback(() => {
-    console.log('[overlay] click (pending 250ms debounce)', { locked: lockedRef.current, status: statusRef.current });
+  const handleClick = useCallback((e: React.MouseEvent) => {
+    if (clickTimerRef.current) {
+      clearTimeout(clickTimerRef.current);
+    }
+    flog.info('overlay', 'CLICK (pending 250ms debounce)', {
+      locked: lockedRef.current, status: statusRef.current,
+      x: Math.round(e.clientX), y: Math.round(e.clientY),
+      target: (e.target as HTMLElement).tagName,
+    });
     clickTimerRef.current = setTimeout(async () => {
       clickTimerRef.current = null;
-      console.log('[overlay] click fired', { locked: lockedRef.current, status: statusRef.current });
-      // In locked mode, a single click stops recording
-      if (lockedRef.current && statusRef.current === 'recording') {
+      flog.info('overlay', 'click fired', { locked: lockedRef.current, status: statusRef.current });
+      // Single click stops recording (regardless of locked mode)
+      if (statusRef.current === 'recording') {
         setLockedMode(false);
         try {
           await invoke('stop_native_recording');
@@ -169,12 +186,22 @@ export function OverlayWidget() {
 
   const isActive = status === 'recording' || status === 'processing';
 
+  // Raw mousedown — fires before click/double-click debouncing
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    flog.info('overlay', 'MOUSEDOWN', {
+      button: e.button, x: Math.round(e.clientX), y: Math.round(e.clientY),
+      target: (e.target as HTMLElement).tagName,
+      className: (e.target as HTMLElement).className?.slice(0, 50),
+      locked: lockedRef.current, status: statusRef.current,
+    });
+  }, []);
 
   return (
     <div
       data-tauri-drag-region
       className="w-full h-full flex"
       style={{ background: 'transparent' }}
+      onMouseDown={handleMouseDown}
       onDoubleClick={handleDoubleClick}
       onClick={handleClick}
     >

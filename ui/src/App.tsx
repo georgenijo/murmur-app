@@ -1,5 +1,6 @@
 import { useState, useEffect, lazy, Suspense, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { flog } from './lib/log';
 import { SettingsPanel } from './components/settings';
 import { PermissionsBanner } from './components/PermissionsBanner';
 import { AboutModal } from './components/AboutModal';
@@ -20,6 +21,22 @@ import { resetStats } from './lib/stats';
 import { ModelDownloader } from './components/ModelDownloader';
 
 function App() {
+  // --- Diagnostic: track when main window becomes visible/focused ---
+  useEffect(() => {
+    const onFocus = () => flog.info('main', 'FOCUS');
+    const onBlur = () => flog.info('main', 'BLUR');
+    const onVisibility = () => flog.info('main', 'VISIBILITY', { hidden: document.hidden });
+    window.addEventListener('focus', onFocus);
+    window.addEventListener('blur', onBlur);
+    document.addEventListener('visibilitychange', onVisibility);
+    flog.info('main', 'App mounted');
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('blur', onBlur);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, []);
+
   const [modelReady, setModelReady] = useState<boolean | null>(null);
   const markModelReady = useCallback(() => setModelReady(true), []);
 

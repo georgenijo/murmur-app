@@ -4,6 +4,7 @@ import { startRecording, stopRecording } from '../dictation';
 import { isDictationStatus } from '../types';
 import type { DictationStatus } from '../types';
 import { updateStats } from '../stats';
+import { flog } from '../log';
 
 interface UseRecordingStateProps {
   addEntry: (text: string, duration: number) => void;
@@ -45,7 +46,24 @@ export function useRecordingState({ addEntry }: UseRecordingStateProps) {
     let unlisten: (() => void) | null = null;
     listen<string>('recording-status-changed', (event) => {
       if (isDictationStatus(event.payload)) {
+        flog.info('recording', 'status event: ' + event.payload, {
+          prevStatus: statusRef.current,
+          recordingStartTime: recordingStartTimeRef.current,
+          isStopping: isStoppingRef.current,
+        });
         setStatus(event.payload);
+        // When recording starts from the overlay, handleStart doesn't run in this window.
+        // Seed recordingStartTime so the duration timer ticks.
+        if (event.payload === 'recording' && !recordingStartTimeRef.current) {
+          const now = Date.now();
+          recordingStartTimeRef.current = now;
+          setRecordingStartTime(now);
+        }
+        // When recording stops, clear recordingStartTime.
+        if (event.payload === 'idle' || event.payload === 'processing') {
+          recordingStartTimeRef.current = null;
+          setRecordingStartTime(null);
+        }
       }
     }).then((fn) => {
       if (cancelled) { fn(); } else { unlisten = fn; }
@@ -65,12 +83,43 @@ export function useRecordingState({ addEntry }: UseRecordingStateProps) {
     return () => { cancelled = true; unlisten?.(); };
   }, []);
 
+  // Sync transcription results from Rust — picks up text when recording was
+  // initiated from the overlay (where handleStop doesn't run in this window).
+  // Skip if isStoppingRef is true — handleStop is active and will handle it.
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    listen<{ text: string; duration: number }>('transcription-complete', (event) => {
+      flog.info('recording', 'transcription-complete event', {
+        textLen: event.payload.text?.length, duration: event.payload.duration,
+        isStopping: isStoppingRef.current,
+      });
+      // Single source of truth for history entries — always handle here,
+      // never in handleStop, to avoid race-condition duplicates.
+      const { text, duration } = event.payload;
+      if (text) {
+        setTranscription(text);
+        addEntry(text, duration);
+        updateStats(text, duration);
+        setStatsVersion(v => v + 1);
+      }
+    }).then((fn) => {
+      if (cancelled) { fn(); } else { unlisten = fn; }
+    });
+    return () => { cancelled = true; unlisten?.(); };
+  }, [addEntry]);
+
   const handleStart = useCallback(async () => {
+    flog.info('recording', 'handleStart called', {
+      isStarting: isStartingRef.current, status: statusRef.current,
+    });
     if (isStartingRef.current) return;
     isStartingRef.current = true;
     try {
-      recordingStartTimeRef.current = Date.now();
-      setRecordingStartTime(Date.now());
+      const now = Date.now();
+      flog.info('recording', 'setting recordingStartTime', { value: now });
+      recordingStartTimeRef.current = now;
+      setRecordingStartTime(now);
       setError('');
       const res = await startRecording();
       if (isDictationStatus(res.state)) setStatus(res.state);
@@ -89,19 +138,23 @@ export function useRecordingState({ addEntry }: UseRecordingStateProps) {
   }, []);
 
   const handleStop = useCallback(async () => {
+    flog.info('recording', 'handleStop called', {
+      isStopping: isStoppingRef.current, status: statusRef.current,
+      recordingStartTime: recordingStartTimeRef.current,
+    });
     if (isStoppingRef.current) return;
     isStoppingRef.current = true;
     const duration = recordingStartTimeRef.current
       ? Math.floor((Date.now() - recordingStartTimeRef.current) / 1000)
       : 0;
+    flog.info('recording', 'computed duration', { duration });
     try {
       setStatus('processing');
       const res = await stopRecording();
       if (res.text) {
         setTranscription(res.text);
-        addEntry(res.text, duration);
-        updateStats(res.text, duration);
-        setStatsVersion(v => v + 1);
+        // addEntry/updateStats handled by transcription-complete event listener
+        // to avoid race-condition duplicates.
       }
       if (res.type === 'error') setError(res.error || 'Unknown error');
       setStatus(isDictationStatus(res.state) ? res.state : 'idle');
@@ -115,6 +168,7 @@ export function useRecordingState({ addEntry }: UseRecordingStateProps) {
 
   // Stable toggle for hotkey use — reads status from ref
   const toggleRecording = useCallback(async () => {
+    flog.info('recording', 'toggleRecording', { status: statusRef.current });
     if (statusRef.current === 'processing') return;
     if (statusRef.current === 'recording') {
       await handleStop();

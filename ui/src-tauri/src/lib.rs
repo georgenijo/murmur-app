@@ -361,6 +361,16 @@ async fn stop_native_recording(
     let approx_tokens = (word_count as f64 * 1.3).round() as usize;
     log_info!("pipeline: total end-to-end: {:?} (duration={}s words={} tokens={} chars={})",
         t_total.elapsed(), recording_secs, word_count, approx_tokens, text.len());
+
+    // Broadcast transcription result to all windows (so the main window can update
+    // its history even when recording was initiated from the overlay).
+    if !text.is_empty() {
+        let _ = app_handle.emit("transcription-complete", serde_json::json!({
+            "text": text,
+            "duration": recording_secs
+        }));
+    }
+
     Ok(serde_json::json!({
         "type": "transcription",
         "text": text,
@@ -412,6 +422,11 @@ fn get_log_contents(lines: usize) -> String {
 #[tauri::command]
 fn clear_logs() -> Result<(), String> {
     logging::clear_logs()
+}
+
+#[tauri::command]
+fn log_frontend(level: String, message: String) {
+    logging::frontend(&level, &message);
 }
 
 #[tauri::command]
@@ -672,6 +687,9 @@ fn raise_window_above_menubar(overlay: &tauri::WebviewWindow) {
         let ns_window: &objc2_app_kit::NSWindow = unsafe { &*(ptr.cast()) };
         ns_window.setLevel(25);
         ns_window.setHasShadow(false);
+        // Prevent clicking the overlay from activating the app (which unhides the main window).
+        // Private API — macOSPrivateApi is already enabled in tauri.conf.json.
+        let _: () = unsafe { objc2::msg_send![ns_window, _setPreventsActivation: true] };
     }
 }
 
@@ -801,7 +819,7 @@ mod tests {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(State {
             app_state: AppState::default(),
@@ -828,6 +846,7 @@ pub fn run() {
             get_notch_info,
             get_log_contents,
             clear_logs,
+            log_frontend,
             check_model_exists,
             check_specific_model_exists,
             download_model,
@@ -866,6 +885,8 @@ pub fn run() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|_, _| {});
 }
