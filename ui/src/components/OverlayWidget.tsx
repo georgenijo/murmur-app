@@ -209,14 +209,15 @@ export function OverlayWidget() {
         className="cursor-pointer select-none overflow-hidden transition-all duration-[500ms] ease-[cubic-bezier(0.34,1.56,0.64,1)]"
         style={{
           borderRadius: isActive ? '0 0 22px 22px' : '0 0 12px 12px',
-          width: isActive ? '100%' : notchWidth,
+          width: isActive ? '100%' : notchWidth + 28,
+          transform: isActive ? 'none' : 'translateX(-14px)',
           height: '100%',
           background: 'rgba(20, 20, 20, 0.92)',
           backdropFilter: 'blur(40px)',
           WebkitBackdropFilter: 'blur(40px)',
         }}
       >
-        <div className="flex items-center h-full px-4">
+        <div className="flex items-center h-full" style={{ paddingLeft: isActive ? 16 : 10, paddingRight: 16 }}>
           {/* Left side */}
           <div className="shrink-0 transition-all duration-300">
             {isActive ? (
