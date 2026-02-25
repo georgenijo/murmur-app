@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
-import { getCurrentWindow, PhysicalPosition } from '@tauri-apps/api/window';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { isDictationStatus } from '../lib/types';
 import type { DictationStatus } from '../lib/types';
 
@@ -13,6 +13,8 @@ export function OverlayWidget() {
   const [audioLevel, setAudioLevel] = useState(0);
   const [lockedMode, setLockedMode] = useState(false);
   const [barHeights, setBarHeights] = useState<number[]>(Array(BAR_COUNT).fill(0.15));
+  const [_notchHeight, setNotchHeight] = useState(0);
+  const [notchWidth, setNotchWidth] = useState(185);
   const statusRef = useRef(status);
   const lockedRef = useRef(lockedMode);
   const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -20,9 +22,20 @@ export function OverlayWidget() {
   useEffect(() => { statusRef.current = status; }, [status]);
   useEffect(() => { lockedRef.current = lockedMode; }, [lockedMode]);
 
-  // Log mount
+  // Log mount + fetch notch dimensions
   useEffect(() => {
     console.log('[overlay] mounted');
+    invoke<{ notch_width: number; notch_height: number } | null>('get_notch_info')
+      .then((info) => {
+        if (info) {
+          console.log('[overlay] notch info:', info);
+          setNotchHeight(info.notch_height);
+          setNotchWidth(info.notch_width);
+        } else {
+          console.log('[overlay] no notch detected');
+        }
+      })
+      .catch((e) => console.warn('[overlay] get_notch_info failed:', e));
     return () => {
       console.log('[overlay] unmounted');
       if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
@@ -180,11 +193,6 @@ export function OverlayWidget() {
 
   const isActive = status === 'recording' || status === 'processing';
 
-  const statusLabel = {
-    idle: 'Idle',
-    recording: lockedMode ? 'Locked' : 'Recording',
-    processing: 'Processing…',
-  }[status];
 
   return (
     <div
@@ -194,57 +202,63 @@ export function OverlayWidget() {
       onDoubleClick={handleDoubleClick}
       onClick={handleClick}
     >
-      {/* Notch extension: flat top merges with notch, rounded bottom.
-          Idle = tiny 4px nub hidden behind notch.
-          Active = expands down to reveal content. */}
+      {/* Dynamic Island: same height as notch, expands horizontally.
+          Idle = small icon on the left showing app is alive.
+          Active = expands with red dot on left, waveform on right. */}
       <div
-        className="bg-black cursor-pointer select-none overflow-hidden transition-all duration-[400ms] ease-[cubic-bezier(0.4,0,0.2,1)]"
+        className="cursor-pointer select-none overflow-hidden transition-all duration-[500ms] ease-[cubic-bezier(0.34,1.56,0.64,1)]"
         style={{
-          borderRadius: '0 0 14px 14px',
-          width: isActive ? '100%' : 80,
-          height: isActive ? 44 : 4,
+          borderRadius: isActive ? '0 0 22px 22px' : '0 0 12px 12px',
+          width: isActive ? '100%' : notchWidth,
+          height: '100%',
+          background: 'rgba(20, 20, 20, 0.92)',
+          backdropFilter: 'blur(40px)',
+          WebkitBackdropFilter: 'blur(40px)',
         }}
       >
-        {/* Content only visible when expanded */}
-        <div
-          className="flex items-center justify-center gap-2.5 h-full px-4 transition-opacity duration-300"
-          style={{ opacity: isActive ? 1 : 0 }}
-        >
-          {/* Recording dot */}
-          {status === 'recording' && (
-            <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse shrink-0" />
-          )}
+        <div className="flex items-center h-full px-4">
+          {/* Left side */}
+          <div className="shrink-0 transition-all duration-300">
+            {isActive ? (
+              <>
+                {status === 'recording' && (
+                  <div className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse" />
+                )}
+                {status === 'processing' && (
+                  <span className="w-3 h-3 border-[1.5px] border-white/20 border-t-white/70 rounded-full animate-spin block" />
+                )}
+              </>
+            ) : (
+              /* Idle — small mic icon to show app is alive */
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.4)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="9" y="1" width="6" height="12" rx="3" />
+                <path d="M5 10a7 7 0 0 0 14 0" />
+                <line x1="12" y1="17" x2="12" y2="21" />
+              </svg>
+            )}
+          </div>
 
-          {/* Waveform bars */}
-          <div className="flex items-center gap-[2px] h-6">
+          {/* Spacer */}
+          <div className="flex-1" />
+
+          {/* Right side — waveform (only when active) */}
+          <div
+            className="flex items-center gap-[1.5px] h-4 shrink-0 transition-opacity duration-300"
+            style={{ opacity: isActive ? 1 : 0 }}
+          >
             {barHeights.map((h, i) => (
               <div
                 key={i}
-                className={`w-[2.5px] rounded-full ${
+                className={`w-[2px] rounded-full ${
                   status === 'recording' ? 'bg-white/90' : 'bg-white/40'
                 }`}
                 style={{
-                  height: `${Math.max(2, Math.round(h * 24))}px`,
+                  height: `${Math.max(2, Math.round(h * 14))}px`,
                   transition: `height ${status === 'recording' ? '50ms' : '300ms'} ease-out`,
                 }}
               />
             ))}
           </div>
-
-          {/* Status label */}
-          <span className="text-white/70 text-[11px] font-medium tracking-wide whitespace-nowrap">
-            {statusLabel}
-          </span>
-
-          {/* Lock indicator */}
-          {lockedMode && (
-            <span className="text-white/40 text-[10px]">🔒</span>
-          )}
-
-          {/* Processing spinner */}
-          {status === 'processing' && (
-            <span className="w-3 h-3 border-[1.5px] border-white/20 border-t-white/70 rounded-full animate-spin shrink-0" />
-          )}
         </div>
       </div>
     </div>
