@@ -646,11 +646,34 @@ fn update_tray_icon(app: tauri::AppHandle, icon_state: String) -> Result<(), Str
     Ok(())
 }
 
+/// Position the overlay at top-center, flush with the notch.
+/// Called from Rust so it works regardless of frontend IPC permissions.
+fn position_overlay_default(overlay: &tauri::WebviewWindow) {
+    if let Some(monitor) = overlay.primary_monitor().ok().flatten() {
+        let size = monitor.size();
+        let sf = monitor.scale_factor();
+        let overlay_w = 260.0;
+        let x = (size.width as f64 / sf - overlay_w) / 2.0;
+        let y = 0.0; // flush with top — merges with the notch
+        log_info!("position_overlay_default: x={}, y={}, sf={}", x, y, sf);
+        let _ = overlay.set_position(tauri::LogicalPosition::new(x, y));
+    } else {
+        log_warn!("position_overlay_default: no primary monitor, falling back to (100, 100)");
+        let _ = overlay.set_position(tauri::LogicalPosition::new(100.0, 100.0));
+    }
+}
+
 /// Show the always-on-top overlay window.
 #[tauri::command]
 fn show_overlay(app: tauri::AppHandle) -> Result<(), String> {
     match app.get_webview_window("overlay") {
-        Some(overlay) => overlay.show().map_err(|e| e.to_string()),
+        Some(overlay) => {
+            position_overlay_default(&overlay);
+            overlay.show().map_err(|e| e.to_string())?;
+            // Re-enable mouse events (focusable:false disables them on macOS)
+            let _ = overlay.set_ignore_cursor_events(false);
+            Ok(())
+        }
         None => {
             log_warn!("show_overlay: overlay window not found — skipping");
             Ok(())
@@ -777,11 +800,18 @@ pub fn run() {
                     "show" => show_main_window(app),
                     "toggle_overlay" => {
                         if let Some(overlay) = app.get_webview_window("overlay") {
-                            if overlay.is_visible().unwrap_or(false) {
+                            let visible = overlay.is_visible().unwrap_or(false);
+                            log_info!("toggle_overlay: visible={}", visible);
+                            if visible {
                                 let _ = overlay.hide();
                             } else {
-                                let _ = overlay.show();
+                                position_overlay_default(&overlay);
+                                let r = overlay.show();
+                                log_info!("toggle_overlay: show result={:?}", r);
+                                let _ = overlay.set_ignore_cursor_events(false);
                             }
+                        } else {
+                            log_warn!("toggle_overlay: overlay window not found");
                         }
                     }
                     "about" => {
@@ -808,6 +838,19 @@ pub fn run() {
             // Set the initial tray icon color (amber for dev, gray for prod)
             let _ = update_tray_icon(app.app_handle().clone(), "idle".into());
 
+            // Re-enable mouse events on the overlay window.
+            // focusable:false sets ignoresMouseEvents=true on macOS;
+            // we override that while keeping the window non-activating.
+            if let Some(overlay) = app.get_webview_window("overlay") {
+                log_info!("setup: overlay window found, enabling cursor events");
+                position_overlay_default(&overlay);
+                let _ = overlay.show();
+                if let Err(e) = overlay.set_ignore_cursor_events(false) {
+                    log_warn!("Failed to set overlay cursor events: {}", e);
+                }
+            } else {
+                log_warn!("setup: overlay window NOT found");
+            }
 
             Ok(())
         })

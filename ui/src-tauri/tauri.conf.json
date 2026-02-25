@@ -24,8 +24,8 @@
         "label": "overlay",
         "title": "",
         "url": "overlay.html",
-        "width": 200,
-        "height": 60,
+        "width": 260,
+        "height": 52,
         "decorations": false,
         "alwaysOnTop": true,
         "transparent": true,
@@ -35,6 +35,7 @@
         "focusable": false
       }
     ],
+    "macOSPrivateApi": true,
     "security": {
       "csp": null
     }
