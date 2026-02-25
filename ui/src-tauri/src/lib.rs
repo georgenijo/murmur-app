@@ -28,6 +28,8 @@ impl<T> MutexExt<T> for Mutex<T> {
 
 struct State {
     app_state: AppState,
+    /// Cached notch dimensions (notch_width, menu_bar_height) from setup (main thread).
+    notch_info: Mutex<Option<(f64, f64)>>,
 }
 
 #[tauri::command]
@@ -685,16 +687,16 @@ struct NotchInfo {
     notch_height: f64,
 }
 
-/// Return notch dimensions so the frontend can position content precisely.
+/// Return cached notch dimensions so the frontend can position content precisely.
 #[tauri::command]
-fn get_notch_info() -> Option<NotchInfo> {
-    detect_notch_info().map(|(w, h)| NotchInfo { notch_width: w, notch_height: h })
+fn get_notch_info(state: tauri::State<'_, State>) -> Option<NotchInfo> {
+    state.notch_info.lock_or_recover().map(|(w, h)| NotchInfo { notch_width: w, notch_height: h })
 }
 
 /// Position and size the overlay to match the notch, anchored at the top of the screen.
 /// The window is notch-height tall and wide enough for horizontal expansion.
-fn position_overlay_default(overlay: &tauri::WebviewWindow) {
-    let notch_info = detect_notch_info();
+/// Takes cached notch_info to avoid calling NSScreen APIs off the main thread.
+fn position_overlay_default(overlay: &tauri::WebviewWindow, notch_info: Option<(f64, f64)>) {
     let overlay_w = notch_info.map(|(w, _)| w + NOTCH_EXPAND).unwrap_or(FALLBACK_OVERLAY_W);
     let overlay_h = notch_info.map(|(_, h)| h).unwrap_or(37.0);
     log_info!("position_overlay_default: notch_info={:?}, overlay_w={}, overlay_h={}", notch_info, overlay_w, overlay_h);
@@ -705,24 +707,25 @@ fn position_overlay_default(overlay: &tauri::WebviewWindow) {
     // Raise above the menu bar so the window can overlap the notch
     raise_window_above_menubar(overlay);
 
-    if let Some(monitor) = overlay.primary_monitor().ok().flatten() {
+    if let Some(monitor) = overlay.current_monitor().ok().flatten() {
         let size = monitor.size();
         let sf = monitor.scale_factor();
         let x = (size.width as f64 / sf - overlay_w) / 2.0;
         log_info!("position_overlay_default: x={}, y=0, sf={}", x, sf);
         let _ = overlay.set_position(tauri::LogicalPosition::new(x, 0.0));
     } else {
-        log_warn!("position_overlay_default: no primary monitor, falling back to (100, 100)");
+        log_warn!("position_overlay_default: no current monitor, falling back to (100, 100)");
         let _ = overlay.set_position(tauri::LogicalPosition::new(100.0, 100.0));
     }
 }
 
 /// Show the always-on-top overlay window.
 #[tauri::command]
-fn show_overlay(app: tauri::AppHandle) -> Result<(), String> {
+fn show_overlay(app: tauri::AppHandle, state: tauri::State<'_, State>) -> Result<(), String> {
+    let notch = *state.notch_info.lock_or_recover();
     match app.get_webview_window("overlay") {
         Some(overlay) => {
-            position_overlay_default(&overlay);
+            position_overlay_default(&overlay, notch);
             overlay.show().map_err(|e| e.to_string())?;
             // Re-enable mouse events (focusable:false disables them on macOS)
             let _ = overlay.set_ignore_cursor_events(false);
@@ -798,6 +801,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(State {
             app_state: AppState::default(),
+            notch_info: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             init_dictation,
@@ -835,12 +839,19 @@ pub fn run() {
         .setup(|app| {
             log_info!("app setup");
 
+            // Cache notch dimensions on the main thread (safe for NSScreen APIs).
+            let notch = detect_notch_info();
+            {
+                let state = app.state::<State>();
+                *state.notch_info.lock_or_recover() = notch;
+            }
+
             // Re-enable mouse events on the overlay window.
             // focusable:false sets ignoresMouseEvents=true on macOS;
             // we override that while keeping the window non-activating.
             if let Some(overlay) = app.get_webview_window("overlay") {
                 log_info!("setup: overlay window found, enabling cursor events");
-                position_overlay_default(&overlay);
+                position_overlay_default(&overlay, notch);
                 let _ = overlay.show();
                 if let Err(e) = overlay.set_ignore_cursor_events(false) {
                     log_warn!("Failed to set overlay cursor events: {}", e);

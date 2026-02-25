@@ -1,23 +1,21 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
-import { getCurrentWindow } from '@tauri-apps/api/window';
 import { isDictationStatus } from '../lib/types';
 import type { DictationStatus } from '../lib/types';
 
 const BAR_COUNT = 7;
-const POSITION_KEY = 'overlay-position';
 
 export function OverlayWidget() {
   const [status, setStatus] = useState<DictationStatus>('idle');
-  const [audioLevel, setAudioLevel] = useState(0);
   const [lockedMode, setLockedMode] = useState(false);
-  const [barHeights, setBarHeights] = useState<number[]>(Array(BAR_COUNT).fill(0.15));
   const [_notchHeight, setNotchHeight] = useState(0);
   const [notchWidth, setNotchWidth] = useState(185);
   const statusRef = useRef(status);
   const lockedRef = useRef(lockedMode);
   const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const audioLevelRef = useRef(0);
+  const barRefs = useRef<(HTMLDivElement | null)[]>([]);
 
   useEffect(() => { statusRef.current = status; }, [status]);
   useEffect(() => { lockedRef.current = lockedMode; }, [lockedMode]);
@@ -61,37 +59,8 @@ export function OverlayWidget() {
   //   })();
   // }, []);
 
-  // Persist overlay position on move (debounced)
-  useEffect(() => {
-    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-    let cancelled = false;
-    let unlisten: (() => void) | null = null;
-
-    getCurrentWindow().onMoved(({ payload }) => {
-      if (debounceTimer) clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(() => {
-        if (!cancelled) {
-          console.log('[overlay] saving position:', { x: payload.x, y: payload.y });
-          try {
-            localStorage.setItem(POSITION_KEY, JSON.stringify({
-              x: payload.x,
-              y: payload.y,
-            }));
-          } catch (e) {
-            console.warn('[overlay] position save failed:', e);
-          }
-        }
-      }, 500);
-    }).then((fn) => {
-      if (cancelled) { fn(); } else { unlisten = fn; }
-    });
-
-    return () => {
-      cancelled = true;
-      if (debounceTimer) clearTimeout(debounceTimer);
-      unlisten?.();
-    };
-  }, []);
+  // TODO: re-enable position persistence after notch positioning is stable.
+  // Both save (onMoved) and restore are disabled to avoid saving programmatic repositions.
 
   // Subscribe to recording status events from Rust
   useEffect(() => {
@@ -108,38 +77,45 @@ export function OverlayWidget() {
     return () => { cancelled = true; unlisten?.(); };
   }, []);
 
-  // Subscribe to audio level events from Rust
+  // Subscribe to audio level events from Rust (store in ref, no state update)
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | null = null;
     listen<number>('audio-level', (event) => {
-      setAudioLevel(event.payload);
+      audioLevelRef.current = event.payload;
     }).then((fn) => {
       if (cancelled) { fn(); } else { unlisten = fn; }
     });
     return () => { cancelled = true; unlisten?.(); };
   }, []);
 
-  // Animate waveform bars based on audio level
+  // Animate waveform bars via rAF (direct DOM updates, no React reconciliation)
   useEffect(() => {
     if (status !== 'recording') {
-      setBarHeights(Array(BAR_COUNT).fill(0.15));
+      barRefs.current.forEach(el => {
+        if (el) el.style.height = '2px';
+      });
       return;
     }
-    const level = Math.min(1, audioLevel * 16); // very aggressive — reacts to whispers
-    setBarHeights(
-      Array.from({ length: BAR_COUNT }, (_, i) => {
+    let rafId: number;
+    const animate = () => {
+      const level = Math.min(1, audioLevelRef.current * 16);
+      barRefs.current.forEach((el, i) => {
+        if (!el) return;
         const baseline = 0.08 + Math.random() * 0.07;
         const center = (BAR_COUNT - 1) / 2;
         const distFromCenter = 1 - Math.abs(i - center) / center;
         const envelope = 0.5 + 0.5 * distFromCenter;
         const reactiveHeight = level * envelope;
-        // Square the level to make loud sounds WAY bigger
         const boost = level * level * 0.4 * Math.random();
-        return Math.min(1, baseline + reactiveHeight + boost);
-      })
-    );
-  }, [audioLevel, status]);
+        const h = Math.min(1, baseline + reactiveHeight + boost);
+        el.style.height = `${Math.max(2, Math.round(h * 14))}px`;
+      });
+      rafId = requestAnimationFrame(animate);
+    };
+    rafId = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(rafId);
+  }, [status]);
 
   // Double-click: toggle locked mode. Cancel any pending single-click first.
   const handleDoubleClick = useCallback(async () => {
@@ -241,14 +217,15 @@ export function OverlayWidget() {
             className="flex items-center gap-[1.5px] h-4 shrink-0 transition-opacity duration-300"
             style={{ opacity: isActive ? 1 : 0 }}
           >
-            {barHeights.map((h, i) => (
+            {Array.from({ length: BAR_COUNT }, (_, i) => (
               <div
                 key={i}
+                ref={el => { barRefs.current[i] = el; }}
                 className={`w-[2px] rounded-full ${
                   status === 'recording' ? 'bg-white/90' : 'bg-white/40'
                 }`}
                 style={{
-                  height: `${Math.max(2, Math.round(h * 14))}px`,
+                  height: '2px',
                   transition: `height ${status === 'recording' ? '50ms' : '300ms'} ease-out`,
                 }}
               />
