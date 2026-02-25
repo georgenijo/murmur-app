@@ -197,7 +197,7 @@ export function OverlayWidget() {
   return (
     <div
       data-tauri-drag-region
-      className="w-full h-full flex justify-center"
+      className="w-full h-full flex"
       style={{ background: 'transparent' }}
       onDoubleClick={handleDoubleClick}
       onClick={handleClick}
@@ -208,29 +208,23 @@ export function OverlayWidget() {
       <div
         className="cursor-pointer select-none overflow-hidden transition-all duration-[500ms] ease-[cubic-bezier(0.34,1.56,0.64,1)]"
         style={{
-          borderRadius: isActive ? '0 0 22px 22px' : '0 0 12px 12px',
-          width: isActive ? '100%' : notchWidth + 28,
-          transform: isActive ? 'none' : 'translateX(-14px)',
+          borderRadius: '0 0 12px 12px',
+          width: isActive ? notchWidth + 68 : notchWidth + 28,
+          marginLeft: 32,
           height: '100%',
           background: 'rgba(20, 20, 20, 0.92)',
           backdropFilter: 'blur(40px)',
           WebkitBackdropFilter: 'blur(40px)',
         }}
       >
-        <div className="flex items-center h-full" style={{ paddingLeft: isActive ? 16 : 10, paddingRight: 16 }}>
-          {/* Left side */}
-          <div className="shrink-0 transition-all duration-300">
-            {isActive ? (
-              <>
-                {status === 'recording' && (
-                  <div className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse" />
-                )}
-                {status === 'processing' && (
-                  <span className="w-3 h-3 border-[1.5px] border-white/20 border-t-white/70 rounded-full animate-spin block" />
-                )}
-              </>
+        <div className="flex items-center h-full" style={{ paddingLeft: 10, paddingRight: 10 }}>
+          {/* Left side — mic icon (idle) or red dot (recording) or spinner (processing), all same position */}
+          <div className="shrink-0 w-3 h-3 flex items-center justify-center">
+            {status === 'recording' ? (
+              <div className="w-2.5 h-2.5 rounded-full bg-red-500" style={{ animation: 'pulse 0.8s ease-in-out infinite' }} />
+            ) : status === 'processing' ? (
+              <span className="w-3 h-3 border-[1.5px] border-white/20 border-t-white/70 rounded-full animate-spin block" />
             ) : (
-              /* Idle — small mic icon to show app is alive */
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.4)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <rect x="9" y="1" width="6" height="12" rx="3" />
                 <path d="M5 10a7 7 0 0 0 14 0" />
