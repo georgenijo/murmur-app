@@ -6,7 +6,47 @@ on:
       - 'v*'
 
 jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install dependencies
+        run: cd ui && npm ci
+
+      - name: TypeScript check
+        run: cd ui && npx tsc --noEmit
+
+      - name: Unit tests
+        run: cd ui && npm test
+
+  rust:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ui/src-tauri
+
+      - name: Compile check
+        run: cd ui/src-tauri && cargo check
+
+      - name: Run tests
+        run: cd ui/src-tauri && cargo test --lib -- --test-threads=1
+
   release:
+    needs: [typecheck, rust]
     runs-on: macos-latest
     permissions:
       contents: write
