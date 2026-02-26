@@ -140,8 +140,19 @@ export function OverlayWidget() {
       setLockedMode(true);
       if (currentStatus !== 'recording') {
         try {
-          flog.info('overlay', 'invoking start_native_recording');
-          const res = await invoke('start_native_recording');
+          // Read microphone setting from localStorage (overlay has no React settings context)
+          let deviceName: string | null = null;
+          try {
+            const stored = localStorage.getItem('dictation-settings');
+            if (stored) {
+              const parsed = JSON.parse(stored);
+              if (parsed.microphone && parsed.microphone !== 'system_default') {
+                deviceName = parsed.microphone;
+              }
+            }
+          } catch { /* ignore parse errors */ }
+          flog.info('overlay', 'invoking start_native_recording', { deviceName });
+          const res = await invoke('start_native_recording', { deviceName });
           flog.info('overlay', 'start_native_recording result', { res: res as Record<string, unknown> });
         } catch (err) {
           flog.error('overlay', 'start_native_recording error', { error: String(err) });

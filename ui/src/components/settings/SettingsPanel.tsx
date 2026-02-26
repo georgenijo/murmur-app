@@ -107,6 +107,20 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
     }
   }, [settings.model]);
 
+  // Audio device enumeration
+  const [audioDevices, setAudioDevices] = useState<string[]>([]);
+  useEffect(() => {
+    if (!isOpen) return;
+    invoke<string[]>('list_audio_devices')
+      .then(setAudioDevices)
+      .catch(() => setAudioDevices([]));
+  }, [isOpen]);
+
+  const savedDeviceMissing =
+    settings.microphone !== 'system_default' &&
+    audioDevices.length > 0 &&
+    !audioDevices.includes(settings.microphone);
+
   const isDoubleTap = settings.recordingMode === 'double_tap';
   const keyLabel = isDoubleTap ? 'Double-Tap Key' : 'Hold Key';
   const keyHelpText = isDoubleTap
@@ -148,7 +162,8 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
           <select
             value={settings.model}
             onChange={(e) => onUpdateSettings({ model: e.target.value as ModelOption })}
-            className="w-full px-3 py-2 rounded-lg border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 focus:ring-2 focus:ring-stone-500 focus:border-transparent text-sm"
+            disabled={isRecording}
+            className={`w-full px-3 py-2 rounded-lg border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 focus:ring-2 focus:ring-stone-500 focus:border-transparent text-sm ${isRecording ? 'opacity-50 cursor-not-allowed' : ''}`}
           >
             <optgroup label="Moonshine (Fast, CPU)">
               {MOONSHINE_MODELS.map((option) => (
@@ -168,6 +183,11 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
           <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
             Moonshine runs on CPU; Whisper uses Metal GPU. Larger models are more accurate but slower.
           </p>
+          {isRecording && (
+            <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+              Stop recording before changing model
+            </p>
+          )}
 
           {/* Model not downloaded — inline download prompt */}
           {modelAvailable === false && modelDownload.phase === 'idle' && (
@@ -218,6 +238,30 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
               >
                 Retry
               </button>
+            </div>
+          )}
+        </div>
+
+        {/* Microphone Selector */}
+        <div>
+          <label className="block text-sm font-medium text-stone-700 dark:text-stone-300 mb-2">
+            Microphone
+          </label>
+          <select
+            value={settings.microphone}
+            onChange={(e) => onUpdateSettings({ microphone: e.target.value })}
+            disabled={isRecording}
+            className={`w-full px-3 py-2 rounded-lg border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 focus:ring-2 focus:ring-stone-500 focus:border-transparent text-sm ${isRecording ? 'opacity-50 cursor-not-allowed' : ''}`}
+          >
+            <option value="system_default">System Default</option>
+            {audioDevices.map((name) => (
+              <option key={name} value={name}>{name}</option>
+            ))}
+          </select>
+          {savedDeviceMissing && (
+            <div className="mt-2 flex items-center gap-2 px-3 py-2 text-xs bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg text-amber-700 dark:text-amber-400">
+              <span className="w-2 h-2 rounded-full bg-amber-500 flex-shrink-0" />
+              <span>Selected device not found — will use System Default</span>
             </div>
           )}
         </div>

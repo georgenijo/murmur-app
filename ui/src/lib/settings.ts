@@ -8,6 +8,7 @@ export interface Settings {
   language: string;
   autoPaste: boolean;
   recordingMode: RecordingMode;
+  microphone: string;
 }
 
 export type ModelOption =
@@ -51,6 +52,7 @@ export const DEFAULT_SETTINGS: Settings = {
   language: 'en',
   autoPaste: false,
   recordingMode: 'hold_down',
+  microphone: 'system_default',
 };
 
 const STORAGE_KEY = 'dictation-settings';

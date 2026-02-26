@@ -8,9 +8,10 @@ import { flog } from '../log';
 
 interface UseRecordingStateProps {
   addEntry: (text: string, duration: number) => void;
+  microphone: string;
 }
 
-export function useRecordingState({ addEntry }: UseRecordingStateProps) {
+export function useRecordingState({ addEntry, microphone }: UseRecordingStateProps) {
   const [status, setStatus] = useState<DictationStatus>('idle');
   const [transcription, setTranscription] = useState('');
   const [error, setError] = useState('');
@@ -22,8 +23,10 @@ export function useRecordingState({ addEntry }: UseRecordingStateProps) {
 
   // Refs for stable callbacks (hotkey toggle reads current state)
   const statusRef = useRef(status);
+  const microphoneRef = useRef(microphone);
   const recordingStartTimeRef = useRef(recordingStartTime);
   useEffect(() => { statusRef.current = status; }, [status]);
+  useEffect(() => { microphoneRef.current = microphone; }, [microphone]);
   const isStartingRef = useRef(false);
   const isStoppingRef = useRef(false);
 
@@ -121,7 +124,7 @@ export function useRecordingState({ addEntry }: UseRecordingStateProps) {
       recordingStartTimeRef.current = now;
       setRecordingStartTime(now);
       setError('');
-      const res = await startRecording();
+      const res = await startRecording(microphoneRef.current);
       if (isDictationStatus(res.state)) setStatus(res.state);
       if (res.type === 'error') {
         setError(res.error || 'Unknown error');

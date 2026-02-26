@@ -12,9 +12,11 @@ export async function initDictation(): Promise<DictationResponse> {
   return await invoke('init_dictation');
 }
 
-export async function startRecording(): Promise<DictationResponse> {
+export async function startRecording(deviceName?: string): Promise<DictationResponse> {
   try {
-    return await invoke('start_native_recording');
+    return await invoke('start_native_recording', {
+      deviceName: deviceName && deviceName !== 'system_default' ? deviceName : null,
+    });
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
 
