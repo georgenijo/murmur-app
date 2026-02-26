@@ -20,6 +20,7 @@ export interface SelectProps<T extends string = string> {
   items: SelectItems<T>;
   disabled?: boolean;
   placeholder?: string;
+  'aria-label'?: string;
 }
 
 function isGrouped<T extends string>(
@@ -34,6 +35,7 @@ export function Select<T extends string = string>({
   items,
   disabled,
   placeholder,
+  'aria-label': ariaLabel,
 }: SelectProps<T>) {
   const id = useId();
   const [isOpen, setIsOpen] = useState(false);
@@ -197,8 +199,13 @@ export function Select<T extends string = string>({
     );
   }
 
-  // Build a flat index offset for grouped items
-  let flatIndex = 0;
+  // Precompute flat index offsets for grouped items
+  const groupOffsets = isGrouped(items)
+    ? items.reduce<number[]>((offsets, _, i) => {
+        offsets.push(i === 0 ? 0 : offsets[i - 1] + items[i - 1].options.length);
+        return offsets;
+      }, [])
+    : [];
 
   return (
     <div className="relative w-full" onKeyDown={handleKeyDown}>
@@ -214,6 +221,7 @@ export function Select<T extends string = string>({
             ? `${id}-option-${highlightedIndex}`
             : undefined
         }
+        aria-label={ariaLabel}
         disabled={disabled}
         onClick={() => (isOpen ? close() : open())}
         className={`w-full px-3 py-2 rounded-lg border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 text-sm text-left focus:ring-2 focus:ring-stone-500 focus:border-transparent transition-colors flex items-center justify-between ${
@@ -246,10 +254,7 @@ export function Select<T extends string = string>({
           className="absolute z-10 mt-1 w-full max-h-60 overflow-auto rounded-lg border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 shadow-lg py-1"
         >
           {isGrouped(items)
-            ? items.map((group, gi) => {
-                const startIndex = flatIndex;
-                flatIndex += group.options.length;
-                return (
+            ? items.map((group, gi) => (
                   <li
                     key={gi}
                     role="group"
@@ -263,12 +268,11 @@ export function Select<T extends string = string>({
                     </span>
                     <ul role="none">
                       {group.options.map((option, oi) =>
-                        renderOption(option, startIndex + oi),
+                        renderOption(option, groupOffsets[gi] + oi),
                       )}
                     </ul>
                   </li>
-                );
-              })
+                ))
             : flatOptions.map((option, idx) => renderOption(option, idx))}
         </ul>
       )}
