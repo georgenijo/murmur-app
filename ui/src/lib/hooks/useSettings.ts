@@ -31,12 +31,17 @@ export function useSettings() {
     saveSettings(newSettings);
 
     if ('launchAtLogin' in updates) {
-      const action = newSettings.launchAtLogin ? enable() : disable();
+      const attemptedValue = newSettings.launchAtLogin;
+      const action = attemptedValue ? enable() : disable();
       action.catch((err) => {
         console.error('Failed to update autostart:', err);
-        settingsRef.current = previousSettings;
-        setSettings(previousSettings);
-        saveSettings(previousSettings);
+        // Only rollback launchAtLogin if it hasn't been changed again since
+        if (settingsRef.current.launchAtLogin === attemptedValue) {
+          const reverted = { ...settingsRef.current, launchAtLogin: previousSettings.launchAtLogin };
+          settingsRef.current = reverted;
+          setSettings(reverted);
+          saveSettings(reverted);
+        }
       });
     }
 
