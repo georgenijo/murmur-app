@@ -8,6 +8,7 @@ export interface Settings {
   language: string;
   autoPaste: boolean;
   recordingMode: RecordingMode;
+  microphone: string;
   launchAtLogin: boolean;
 }
 
@@ -52,10 +53,11 @@ export const DEFAULT_SETTINGS: Settings = {
   language: 'en',
   autoPaste: false,
   recordingMode: 'hold_down',
+  microphone: 'system_default',
   launchAtLogin: false,
 };
 
-const STORAGE_KEY = 'dictation-settings';
+export const STORAGE_KEY = 'dictation-settings';
 
 export function loadSettings(): Settings {
   try {

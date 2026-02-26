@@ -1,5 +1,5 @@
 use crate::state::WHISPER_SAMPLE_RATE;
-use crate::{log_error, log_warn};
+use crate::{log_error, log_info, log_warn};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Sample, SampleFormat};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -95,7 +95,18 @@ fn get_state() -> &'static Mutex<RecordingState> {
     })
 }
 
-pub fn start_recording(app_handle: Option<tauri::AppHandle>) -> Result<(), String> {
+/// List available input device names.
+pub fn list_input_devices() -> Result<Vec<String>, String> {
+    let host = cpal::default_host();
+    let devices = host.input_devices()
+        .map_err(|e| format!("Failed to enumerate input devices: {}", e))?;
+    let names: Vec<String> = devices
+        .filter_map(|d| d.name().ok())
+        .collect();
+    Ok(names)
+}
+
+pub fn start_recording(app_handle: Option<tauri::AppHandle>, device_name: Option<String>) -> Result<(), String> {
     let state = get_state();
     let mut state_guard = state.lock().unwrap_or_else(|poisoned| {
         log_warn!("start_recording: recording state mutex was poisoned, recovering");
@@ -123,7 +134,7 @@ pub fn start_recording(app_handle: Option<tauri::AppHandle>) -> Result<(), Strin
 
     // Spawn audio thread
     let handle = thread::spawn(move || {
-        if let Err(e) = run_audio_capture(cmd_rx, shared, ready_tx.clone(), app_handle) {
+        if let Err(e) = run_audio_capture(cmd_rx, shared, ready_tx.clone(), app_handle, device_name) {
             log_error!("Audio capture error: {}", e);
             let _ = ready_tx.send(Err(e));
         }
@@ -154,11 +165,35 @@ fn run_audio_capture(
     shared: Arc<SharedSamples>,
     ready_tx: Sender<Result<(), String>>,
     app_handle: Option<tauri::AppHandle>,
+    device_name: Option<String>,
 ) -> Result<(), String> {
     let host = cpal::default_host();
 
-    let device = host.default_input_device()
-        .ok_or_else(|| "No input device available. Please grant microphone permission.".to_string())?;
+    let device = if let Some(ref name) = device_name {
+        match host.input_devices() {
+            Ok(mut devices) => {
+                match devices.find(|d| d.name().ok().as_deref() == Some(name)) {
+                    Some(d) => d,
+                    None => {
+                        log_warn!("Requested device '{}' not found, falling back to default", name);
+                        host.default_input_device()
+                            .ok_or_else(|| "No input device available. Please grant microphone permission.".to_string())?
+                    }
+                }
+            }
+            Err(e) => {
+                log_warn!("Failed to enumerate devices: {}, falling back to default", e);
+                host.default_input_device()
+                    .ok_or_else(|| "No input device available. Please grant microphone permission.".to_string())?
+            }
+        }
+    } else {
+        host.default_input_device()
+            .ok_or_else(|| "No input device available. Please grant microphone permission.".to_string())?
+    };
+
+    let actual_name = device.name().unwrap_or_else(|_| "unknown".to_string());
+    log_info!("run_audio_capture: using device '{}'", actual_name);
 
     let config = device.default_input_config()
         .map_err(|e| format!("Failed to get input config: {}", e))?;

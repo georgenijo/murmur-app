@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { isDictationStatus } from '../lib/types';
 import type { DictationStatus } from '../lib/types';
 import { flog } from '../lib/log';
+import { STORAGE_KEY, DEFAULT_SETTINGS } from '../lib/settings';
 
 const BAR_COUNT = 7;
 
@@ -140,8 +141,19 @@ export function OverlayWidget() {
       setLockedMode(true);
       if (currentStatus !== 'recording') {
         try {
-          flog.info('overlay', 'invoking start_native_recording');
-          const res = await invoke('start_native_recording');
+          // Read microphone setting from localStorage (overlay has no React settings context)
+          let deviceName: string | null = null;
+          try {
+            const stored = localStorage.getItem(STORAGE_KEY);
+            if (stored) {
+              const parsed = JSON.parse(stored);
+              if (parsed.microphone && parsed.microphone !== DEFAULT_SETTINGS.microphone) {
+                deviceName = parsed.microphone;
+              }
+            }
+          } catch { /* ignore parse errors */ }
+          flog.info('overlay', 'invoking start_native_recording', { deviceName });
+          const res = await invoke('start_native_recording', { deviceName });
           flog.info('overlay', 'start_native_recording result', { res: res as Record<string, unknown> });
         } catch (err) {
           flog.error('overlay', 'start_native_recording error', { error: String(err) });

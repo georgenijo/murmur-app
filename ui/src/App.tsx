@@ -67,7 +67,7 @@ function App() {
   const {
     status, recordingDuration, error: recordingError,
     handleStart, handleStop, toggleRecording, statsVersion,
-  } = useRecordingState({ addEntry });
+  } = useRecordingState({ addEntry, microphone: settings.microphone });
   const [statsResetVersion, setStatsResetVersion] = useState(0);
   const combinedStatsVersion = statsVersion + statsResetVersion;
   const handleResetStats = () => { resetStats(); setStatsResetVersion(v => v + 1); };

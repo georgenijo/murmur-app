@@ -263,9 +263,15 @@ fn request_microphone_permission() -> Result<(), String> {
 }
 
 #[tauri::command]
+fn list_audio_devices() -> Result<Vec<String>, String> {
+    audio::list_input_devices()
+}
+
+#[tauri::command]
 async fn start_native_recording(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, State>,
+    device_name: Option<String>,
 ) -> Result<serde_json::Value, String> {
     // Check and update status in one lock
     {
@@ -280,7 +286,8 @@ async fn start_native_recording(
         dictation.status = DictationStatus::Recording;
     }
 
-    if let Err(e) = audio::start_recording(Some(app_handle.clone())) {
+    log_info!("start_native_recording: device={}", device_name.as_deref().unwrap_or("system_default"));
+    if let Err(e) = audio::start_recording(Some(app_handle.clone()), device_name) {
         log_error!("start_native_recording: audio failed: {}", e);
         let mut dictation = state.app_state.dictation.lock_or_recover();
         dictation.status = DictationStatus::Idle;
@@ -847,6 +854,7 @@ pub fn run() {
             check_accessibility_permission,
             request_accessibility_permission,
             request_microphone_permission,
+            list_audio_devices,
             start_native_recording,
             stop_native_recording,
             start_keyboard_listener,
