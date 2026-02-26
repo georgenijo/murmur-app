@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { isDictationStatus } from '../lib/types';
 import type { DictationStatus } from '../lib/types';
 import { flog } from '../lib/log';
+import { STORAGE_KEY, DEFAULT_SETTINGS } from '../lib/settings';
 
 const BAR_COUNT = 7;
 
@@ -143,10 +144,10 @@ export function OverlayWidget() {
           // Read microphone setting from localStorage (overlay has no React settings context)
           let deviceName: string | null = null;
           try {
-            const stored = localStorage.getItem('dictation-settings');
+            const stored = localStorage.getItem(STORAGE_KEY);
             if (stored) {
               const parsed = JSON.parse(stored);
-              if (parsed.microphone && parsed.microphone !== 'system_default') {
+              if (parsed.microphone && parsed.microphone !== DEFAULT_SETTINGS.microphone) {
                 deviceName = parsed.microphone;
               }
             }

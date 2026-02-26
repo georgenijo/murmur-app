@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { DEFAULT_SETTINGS } from './settings';
 
 export interface DictationResponse {
   type: string;
@@ -15,7 +16,7 @@ export async function initDictation(): Promise<DictationResponse> {
 export async function startRecording(deviceName?: string): Promise<DictationResponse> {
   try {
     return await invoke('start_native_recording', {
-      deviceName: deviceName && deviceName !== 'system_default' ? deviceName : null,
+      deviceName: deviceName && deviceName !== DEFAULT_SETTINGS.microphone ? deviceName : null,
     });
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);

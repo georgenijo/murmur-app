@@ -55,7 +55,7 @@ export const DEFAULT_SETTINGS: Settings = {
   microphone: 'system_default',
 };
 
-const STORAGE_KEY = 'dictation-settings';
+export const STORAGE_KEY = 'dictation-settings';
 
 export function loadSettings(): Settings {
   try {

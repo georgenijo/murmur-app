@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getVersion } from '@tauri-apps/api/app';
 import {
-  Settings, ModelOption, DoubleTapKey, RecordingMode,
+  Settings, ModelOption, DoubleTapKey, RecordingMode, DEFAULT_SETTINGS,
   MODEL_OPTIONS, MOONSHINE_MODELS, WHISPER_MODELS, DOUBLE_TAP_KEY_OPTIONS, RECORDING_MODE_OPTIONS,
 } from '../../lib/settings';
 import type { DictationStatus } from '../../lib/types';
@@ -117,7 +117,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
   }, [isOpen]);
 
   const savedDeviceMissing =
-    settings.microphone !== 'system_default' &&
+    settings.microphone !== DEFAULT_SETTINGS.microphone &&
     audioDevices.length > 0 &&
     !audioDevices.includes(settings.microphone);
 
