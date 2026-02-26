@@ -3,9 +3,10 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getVersion } from '@tauri-apps/api/app';
 import {
-  Settings, ModelOption, DoubleTapKey, RecordingMode, DEFAULT_SETTINGS,
+  Settings, RecordingMode, DEFAULT_SETTINGS,
   MODEL_OPTIONS, MOONSHINE_MODELS, WHISPER_MODELS, DOUBLE_TAP_KEY_OPTIONS, RECORDING_MODE_OPTIONS,
 } from '../../lib/settings';
+import { Select } from '../ui/Select';
 import type { DictationStatus } from '../../lib/types';
 
 interface SettingsPanelProps {
@@ -159,27 +160,21 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
           <label className="block text-sm font-medium text-stone-700 dark:text-stone-300 mb-2">
             Transcription Model
           </label>
-          <select
+          <Select
             value={settings.model}
-            onChange={(e) => onUpdateSettings({ model: e.target.value as ModelOption })}
+            onChange={(value) => onUpdateSettings({ model: value })}
             disabled={isRecording}
-            className={`w-full px-3 py-2 rounded-lg border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 focus:ring-2 focus:ring-stone-500 focus:border-transparent text-sm ${isRecording ? 'opacity-50 cursor-not-allowed' : ''}`}
-          >
-            <optgroup label="Moonshine (Fast, CPU)">
-              {MOONSHINE_MODELS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label} ({option.size})
-                </option>
-              ))}
-            </optgroup>
-            <optgroup label="Whisper (Metal GPU)">
-              {WHISPER_MODELS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label} ({option.size})
-                </option>
-              ))}
-            </optgroup>
-          </select>
+            items={[
+              {
+                label: 'Moonshine (Fast, CPU)',
+                options: MOONSHINE_MODELS.map((m) => ({ value: m.value, label: `${m.label} (${m.size})` })),
+              },
+              {
+                label: 'Whisper (Metal GPU)',
+                options: WHISPER_MODELS.map((m) => ({ value: m.value, label: `${m.label} (${m.size})` })),
+              },
+            ]}
+          />
           <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
             Moonshine runs on CPU; Whisper uses Metal GPU. Larger models are more accurate but slower.
           </p>
@@ -247,17 +242,15 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
           <label className="block text-sm font-medium text-stone-700 dark:text-stone-300 mb-2">
             Microphone
           </label>
-          <select
+          <Select
             value={settings.microphone}
-            onChange={(e) => onUpdateSettings({ microphone: e.target.value })}
+            onChange={(value) => onUpdateSettings({ microphone: value })}
             disabled={isRecording}
-            className={`w-full px-3 py-2 rounded-lg border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 focus:ring-2 focus:ring-stone-500 focus:border-transparent text-sm ${isRecording ? 'opacity-50 cursor-not-allowed' : ''}`}
-          >
-            <option value="system_default">System Default</option>
-            {audioDevices.map((name) => (
-              <option key={name} value={name}>{name}</option>
-            ))}
-          </select>
+            items={[
+              { value: 'system_default', label: 'System Default' },
+              ...audioDevices.map((name) => ({ value: name, label: name })),
+            ]}
+          />
           {savedDeviceMissing && (
             <div className="mt-2 flex items-center gap-2 px-3 py-2 text-xs bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg text-amber-700 dark:text-amber-400">
               <span className="w-2 h-2 rounded-full bg-amber-500 flex-shrink-0" />
@@ -313,18 +306,12 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
           <label className="block text-sm font-medium text-stone-700 dark:text-stone-300 mb-2">
             {keyLabel}
           </label>
-          <select
+          <Select
             value={settings.doubleTapKey}
-            onChange={(e) => onUpdateSettings({ doubleTapKey: e.target.value as DoubleTapKey })}
+            onChange={(value) => onUpdateSettings({ doubleTapKey: value })}
             disabled={isRecording}
-            className={`w-full px-3 py-2 rounded-lg border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 focus:ring-2 focus:ring-stone-500 focus:border-transparent text-sm ${isRecording ? 'opacity-50 cursor-not-allowed' : ''}`}
-          >
-            {DOUBLE_TAP_KEY_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
+            items={DOUBLE_TAP_KEY_OPTIONS}
+          />
           <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
             {keyHelpText}
           </p>
