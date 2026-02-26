@@ -396,14 +396,14 @@ fn start_keyboard_listener(app_handle: tauri::AppHandle, hotkey: String, mode: S
         return Err("Accessibility permission is required. Please grant it in System Settings.".to_string());
     }
     keyboard::start_listener(app_handle, &hotkey, &mode);
-    log_info!("Keyboard listener started: mode={}, key={}", mode, hotkey);
+    log_info!("Keyboard listener started: mode={}, key={}, accessibility={}", mode, hotkey, injector::is_accessibility_enabled());
     Ok(())
 }
 
 #[tauri::command]
 fn stop_keyboard_listener() {
     keyboard::stop_listener();
-    log_info!("Keyboard listener stopped");
+    log_info!("Keyboard listener stopped: accessibility={}", injector::is_accessibility_enabled());
 }
 
 #[tauri::command]
