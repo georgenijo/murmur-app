@@ -8,6 +8,7 @@ import {
 } from '../../lib/settings';
 import { Select } from '../ui/Select';
 import type { DictationStatus } from '../../lib/types';
+import type { UpdateStatus } from '../../lib/updater';
 
 interface SettingsPanelProps {
   isOpen: boolean;
@@ -18,9 +19,11 @@ interface SettingsPanelProps {
   onResetStats: () => void;
   onViewLogs: () => void;
   accessibilityGranted: boolean | null;
+  onCheckForUpdate: () => Promise<void>;
+  updateStatus: UpdateStatus;
 }
 
-export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, status, onResetStats, onViewLogs, accessibilityGranted }: SettingsPanelProps) {
+export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, status, onResetStats, onViewLogs, accessibilityGranted, onCheckForUpdate, updateStatus }: SettingsPanelProps) {
   const [confirmReset, setConfirmReset] = useState(false);
   const [version, setVersion] = useState('');
 
@@ -445,6 +448,35 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
           >
             View Logs
           </button>
+        </div>
+
+        {/* Updates */}
+        <div className="pt-4 border-t border-stone-200 dark:border-stone-700">
+          <h3 className="text-sm font-medium text-stone-700 dark:text-stone-300 mb-2">
+            Updates
+          </h3>
+          <button
+            onClick={onCheckForUpdate}
+            disabled={updateStatus.phase === 'checking' || updateStatus.phase === 'downloading'}
+            className="w-full px-3 py-2 rounded-lg text-xs font-medium border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {updateStatus.phase === 'checking' ? 'Checking...' : 'Check for Updates'}
+          </button>
+          {updateStatus.phase === 'up-to-date' && (
+            <p className="mt-1.5 text-xs text-emerald-600 dark:text-emerald-400">
+              You're up to date
+            </p>
+          )}
+          {updateStatus.phase === 'available' && (
+            <p className="mt-1.5 text-xs text-blue-600 dark:text-blue-400">
+              v{updateStatus.version} available
+            </p>
+          )}
+          {updateStatus.phase === 'error' && (
+            <p className="mt-1.5 text-xs text-red-600 dark:text-red-400">
+              Update check failed
+            </p>
+          )}
         </div>
       </div>
 

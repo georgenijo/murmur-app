@@ -39,6 +39,7 @@ macro_rules! build_mono_input_stream {
                         sum / $channels as f32
                     })
                     .collect();
+
                 // Emit audio level throttled to ~60 fps
                 if let Some(ref handle) = app_handle_opt {
                     let now = std::time::SystemTime::now()
@@ -52,7 +53,8 @@ macro_rules! build_mono_input_stream {
                         let _ = handle.emit("audio-level", rms);
                     }
                 }
-                if let Ok(mut s) = samples_ref.samples.lock() {
+
+                if let Ok(mut s) = samples_ref.lock() {
                     s.extend(mono);
                 }
             },
@@ -67,19 +69,21 @@ enum AudioCommand {
     Stop,
 }
 
-// Shared state for collecting samples
-struct SharedSamples {
-    samples: Mutex<Vec<f32>>,
-    sample_rate: Mutex<u32>,
-}
-
-// Global state
+// Global state — the OnceLock holds the RecordingState container, but the sample
+// buffer inside is created fresh for each recording (Option<Arc<...>>).
 static RECORDING_STATE: std::sync::OnceLock<Mutex<RecordingState>> = std::sync::OnceLock::new();
 
 struct RecordingState {
     command_sender: Option<Sender<AudioCommand>>,
     thread_handle: Option<JoinHandle<()>>,
-    shared: Arc<SharedSamples>,
+    /// Per-recording sample buffer. Created fresh on start, taken on stop.
+    /// The cpal callback holds an Arc clone — when the stream drops and the
+    /// thread joins, that clone drops too. Next recording gets a fresh Vec.
+    shared: Option<Arc<Mutex<Vec<f32>>>>,
+    /// Device sample rate for the current/last recording.
+    sample_rate: u32,
+    /// Wall-clock instant when recording started.
+    started_at: Option<std::time::Instant>,
 }
 
 fn get_state() -> &'static Mutex<RecordingState> {
@@ -87,10 +91,9 @@ fn get_state() -> &'static Mutex<RecordingState> {
         Mutex::new(RecordingState {
             command_sender: None,
             thread_handle: None,
-            shared: Arc::new(SharedSamples {
-                samples: Mutex::new(Vec::new()),
-                sample_rate: Mutex::new(WHISPER_SAMPLE_RATE),
-            }),
+            shared: None,
+            sample_rate: WHISPER_SAMPLE_RATE,
+            started_at: None,
         })
     })
 }
@@ -123,18 +126,17 @@ pub fn start_recording(app_handle: Option<tauri::AppHandle>, device_name: Option
         });
     }
 
-    // Clear previous samples
-    if let Ok(mut samples) = state_guard.shared.samples.lock() {
-        samples.clear();
-    }
+    // Create a brand-new buffer for this recording — no stale data possible
+    let new_buffer = Arc::new(Mutex::new(Vec::<f32>::new()));
+    state_guard.shared = Some(Arc::clone(&new_buffer));
+    log_info!("start_recording: created fresh sample buffer");
 
     let (cmd_tx, cmd_rx) = channel::<AudioCommand>();
-    let (ready_tx, ready_rx) = channel::<Result<(), String>>();
-    let shared = Arc::clone(&state_guard.shared);
+    let (ready_tx, ready_rx) = channel::<Result<u32, String>>();
 
     // Spawn audio thread
     let handle = thread::spawn(move || {
-        if let Err(e) = run_audio_capture(cmd_rx, shared, ready_tx.clone(), app_handle, device_name) {
+        if let Err(e) = run_audio_capture(cmd_rx, new_buffer, ready_tx.clone(), app_handle, device_name) {
             log_error!("Audio capture error: {}", e);
             let _ = ready_tx.send(Err(e));
         }
@@ -145,7 +147,11 @@ pub fn start_recording(app_handle: Option<tauri::AppHandle>, device_name: Option
 
     // Wait for thread to signal ready (with timeout)
     let init_result = match ready_rx.recv_timeout(std::time::Duration::from_secs(5)) {
-        Ok(Ok(())) => Ok(()),
+        Ok(Ok(device_sample_rate)) => {
+            state_guard.sample_rate = device_sample_rate;
+            state_guard.started_at = Some(std::time::Instant::now());
+            Ok(())
+        }
         Ok(Err(e)) => Err(e),
         Err(_) => Err("Audio thread failed to initialize within timeout".to_string()),
     };
@@ -155,6 +161,7 @@ pub fn start_recording(app_handle: Option<tauri::AppHandle>, device_name: Option
             let _ = sender.send(AudioCommand::Stop);
         }
         state_guard.thread_handle.take();
+        state_guard.shared.take();
     }
 
     init_result
@@ -162,8 +169,8 @@ pub fn start_recording(app_handle: Option<tauri::AppHandle>, device_name: Option
 
 fn run_audio_capture(
     cmd_rx: Receiver<AudioCommand>,
-    shared: Arc<SharedSamples>,
-    ready_tx: Sender<Result<(), String>>,
+    shared: Arc<Mutex<Vec<f32>>>,
+    ready_tx: Sender<Result<u32, String>>,
     app_handle: Option<tauri::AppHandle>,
     device_name: Option<String>,
 ) -> Result<(), String> {
@@ -193,7 +200,6 @@ fn run_audio_capture(
     };
 
     let actual_name = device.name().unwrap_or_else(|_| "unknown".to_string());
-    log_info!("run_audio_capture: using device '{}'", actual_name);
 
     let config = device.default_input_config()
         .map_err(|e| format!("Failed to get input config: {}", e))?;
@@ -202,9 +208,8 @@ fn run_audio_capture(
     let sample_format = config.sample_format();
     let channels = config.channels() as usize;
 
-    if let Ok(mut sr) = shared.sample_rate.lock() {
-        *sr = device_sample_rate;
-    }
+    log_info!("run_audio_capture: device='{}', sample_rate={}, channels={}, format={:?}",
+        actual_name, device_sample_rate, channels, sample_format);
 
     let err_fn = |err| log_error!("Audio stream error: {}", err);
 
@@ -216,8 +221,8 @@ fn run_audio_capture(
 
     stream.play().map_err(|e| format!("Failed to start stream: {}", e))?;
 
-    // Signal that we're ready to record
-    let _ = ready_tx.send(Ok(()));
+    // Signal ready with the device sample rate
+    let _ = ready_tx.send(Ok(device_sample_rate));
 
     // Wait for stop command
     loop {
@@ -243,20 +248,37 @@ pub fn stop_recording() -> Result<Vec<f32>, String> {
         let _ = sender.send(AudioCommand::Stop);
     }
 
-    // Wait for thread to finish
+    // Wait for thread to finish — this also drops the cpal stream and
+    // the callback's Arc clone, so no more writes to the buffer.
     if let Some(handle) = state_guard.thread_handle.take() {
         let _ = handle.join();
     }
 
-    // Get samples and sample rate
-    let sample_rate = *state_guard.shared.sample_rate.lock().unwrap_or_else(|poisoned| {
-        log_warn!("stop_recording: sample rate mutex was poisoned, recovering");
-        poisoned.into_inner()
-    });
-    let samples = state_guard.shared.samples.lock().unwrap_or_else(|poisoned| {
-        log_warn!("stop_recording: samples mutex was poisoned, recovering");
-        poisoned.into_inner()
-    }).clone();
+    // Take this recording's buffer — leaves None for next recording
+    let buffer = state_guard.shared.take();
+    let started_at = state_guard.started_at.take();
+    let sample_rate = state_guard.sample_rate;
+
+    let samples = if let Some(buf) = buffer {
+        let guard = buf.lock().unwrap_or_else(|poisoned| {
+            log_warn!("stop_recording: samples mutex was poisoned, recovering");
+            poisoned.into_inner()
+        });
+        let raw_count = guard.len();
+        let raw_duration = if sample_rate > 0 { raw_count as f64 / sample_rate as f64 } else { 0.0 };
+        if let Some(started) = started_at {
+            log_info!("stop_recording: raw_samples={}, sample_rate={}, wall_secs={:.1}, audio_secs={:.1}",
+                raw_count, sample_rate, started.elapsed().as_secs_f64(), raw_duration);
+        } else {
+            log_info!("stop_recording: raw_samples={}, sample_rate={}, duration_secs={:.1} (no timestamp)",
+                raw_count, sample_rate, raw_duration);
+        }
+        guard.clone()
+        // guard drops, buf drops — buffer is gone, zero stale data
+    } else {
+        log_info!("stop_recording: no buffer (was not recording)");
+        Vec::new()
+    };
 
     // Resample to Whisper's required sample rate if needed
     if sample_rate != WHISPER_SAMPLE_RATE && !samples.is_empty() {

@@ -82,6 +82,8 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: ui
 
@@ -143,6 +145,55 @@ jobs:
             gh release upload "${{ github.ref_name }}" "$artifact" \
               --repo "${{ github.repository }}"
           done
+
+      - name: Generate and upload latest.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.ref_name }}"
+          VERSION="${TAG#v}"
+
+          # Discover the .app.tar.gz artifact and its .sig sibling from build outputs
+          ARTIFACTS='${{ steps.tauri-build.outputs.artifactPaths }}'
+          TAR_GZ_FILE=$(echo "$ARTIFACTS" | jq -r '.[]' | grep '\.app\.tar\.gz$' | head -1)
+          if [ -z "$TAR_GZ_FILE" ] || [ ! -f "$TAR_GZ_FILE" ]; then
+            echo "ERROR: No .app.tar.gz artifact found in build outputs"
+            echo "Artifacts: $ARTIFACTS"
+            exit 1
+          fi
+          TAR_GZ_BASENAME=$(basename "$TAR_GZ_FILE")
+          # Extract arch from basename: "Local Dictation_0.7.0_aarch64.app.tar.gz" → "aarch64"
+          ARCH="${TAR_GZ_BASENAME%.app.tar.gz}"
+          ARCH="${ARCH##*_}"
+          PLATFORM="darwin-${ARCH}"
+
+          SIG_FILE="${TAR_GZ_FILE}.sig"
+          SIGNATURE=""
+          if [ -f "$SIG_FILE" ]; then
+            SIGNATURE=$(cat "$SIG_FILE")
+          else
+            echo "WARNING: No .sig file found at ${SIG_FILE}"
+          fi
+
+          TAR_GZ_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/${TAR_GZ_BASENAME}"
+
+          cat > latest.json <<ENDJSON
+          {
+            "version": "${VERSION}",
+            "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "platforms": {
+              "${PLATFORM}": {
+                "url": "${TAR_GZ_URL}",
+                "signature": "${SIGNATURE}"
+              }
+            },
+            "notes": "See release notes at https://github.com/${{ github.repository }}/releases/tag/${TAG}"
+          }
+          ENDJSON
+
+          gh release upload "${TAG}" latest.json \
+            --repo "${{ github.repository }}" \
+            --clobber
 
       - name: Publish release
         env:

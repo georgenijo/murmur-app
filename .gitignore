@@ -1,3 +1,6 @@
+# Signing keys
+.tauri/
+
 # Environment variables
 .env
 
