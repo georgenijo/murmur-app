@@ -342,6 +342,35 @@ struct BothModeState {
 static HOLD_PRESS_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// Set to true by the timer thread when it promotes a press to a real hold.
 static HOLD_PROMOTED: AtomicBool = AtomicBool::new(false);
+/// When true, the Both-mode callback ignores all key events.
+/// Set by lib.rs when the transcription pipeline is running.
+static IS_PROCESSING: AtomicBool = AtomicBool::new(false);
+
+/// Called by lib.rs to tell the keyboard module whether the app is processing.
+/// When transitioning out of processing, reset both detectors and apply a
+/// cooldown so rapid post-processing taps don't immediately toggle.
+pub fn set_processing(processing: bool) {
+    let was_processing = IS_PROCESSING.swap(processing, Ordering::SeqCst);
+    if was_processing && !processing {
+        // Reset detectors to clean state
+        if let Ok(mut det) = HOLD_DOWN_DETECTOR.lock() {
+            if let Some(d) = det.as_mut() {
+                d.reset();
+                // Set a cooldown so hold doesn't fire immediately
+                d.last_stopped_at = Some(Instant::now());
+            }
+        }
+        if let Ok(mut det) = DOUBLE_TAP_DETECTOR.lock() {
+            if let Some(d) = det.as_mut() {
+                d.reset();
+                // Set a cooldown so double-tap doesn't fire immediately
+                d.last_fired_at = Some(Instant::now());
+            }
+        }
+        HOLD_PROMOTED.store(false, Ordering::SeqCst);
+        HOLD_PRESS_COUNTER.fetch_add(1, Ordering::SeqCst);
+    }
+}
 
 // -- Global listener state --
 
@@ -485,6 +514,11 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
                         }
                     }
                     DetectorMode::Both => {
+                        // Skip all events while the app is processing a transcription.
+                        if IS_PROCESSING.load(Ordering::SeqCst) {
+                            return;
+                        }
+
                         // Deferred hold: on press, start a background timer.
                         // After MAX_HOLD_DURATION_MS, if the key is still held,
                         // the timer emits hold-down-start (promoting to a real hold).

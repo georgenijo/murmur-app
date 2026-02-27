@@ -66,6 +66,7 @@ impl Drop for IdleGuard<'_> {
         if !self.disarmed {
             let mut dictation = self.app_state.dictation.lock_or_recover();
             dictation.status = DictationStatus::Idle;
+            keyboard::set_processing(false);
         }
     }
 }
@@ -126,6 +127,7 @@ async fn process_audio(
         let mut dictation = state.app_state.dictation.lock_or_recover();
         dictation.status = DictationStatus::Processing;
     }
+    keyboard::set_processing(true);
     let _ = app_handle.emit("recording-status-changed", "processing");
 
     // Guard resets status to Idle if decode/parse fails before reaching the pipeline
@@ -142,6 +144,7 @@ async fn process_audio(
     guard.disarm();
 
     let pipeline_result = run_transcription_pipeline(&samples, &app_handle, &state.app_state);
+    keyboard::set_processing(false);
     let _ = app_handle.emit("recording-status-changed", "idle");
     let text = pipeline_result?;
 
@@ -329,6 +332,7 @@ async fn stop_native_recording(
             }
         }
     }
+    keyboard::set_processing(true);
     log_info!("stop_native_recording: stopping");
     let _ = app_handle.emit("recording-status-changed", "processing");
 
@@ -359,6 +363,7 @@ async fn stop_native_recording(
     guard.disarm();
 
     let pipeline_result = run_transcription_pipeline(&samples, &app_handle, &state.app_state);
+    keyboard::set_processing(false);
     let _ = app_handle.emit("recording-status-changed", "idle");
     let text = pipeline_result.map_err(|e| {
         log_error!("stop_native_recording: pipeline failed: {}", e);
