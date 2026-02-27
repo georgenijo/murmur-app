@@ -14,6 +14,8 @@ import { useRecordingState } from './lib/hooks/useRecordingState';
 import { useHoldDownToggle } from './lib/hooks/useHoldDownToggle';
 import { useDoubleTapToggle } from './lib/hooks/useDoubleTapToggle';
 import { useShowAboutListener } from './lib/hooks/useShowAboutListener';
+import { useAutoUpdater } from './lib/hooks/useAutoUpdater';
+import { UpdateModal } from './components/UpdateModal';
 import { StatsBar } from './components/StatsBar';
 import { LogViewer } from './components/LogViewer';
 const ResourceMonitor = lazy(() => import('./components/ResourceMonitor').then(m => ({ default: m.ResourceMonitor })));
@@ -74,6 +76,7 @@ function App() {
   useHoldDownToggle({ enabled: settings.recordingMode === 'hold_down', initialized, accessibilityGranted, holdDownKey: settings.doubleTapKey, onStart: handleStart, onStop: handleStop });
   useDoubleTapToggle({ enabled: settings.recordingMode === 'double_tap', initialized, accessibilityGranted, doubleTapKey: settings.doubleTapKey, status, onToggle: toggleRecording });
   const { showAbout, setShowAbout } = useShowAboutListener();
+  const { updateStatus, checkForUpdate, startDownload, skipVersion, dismissUpdate } = useAutoUpdater();
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isLogViewerOpen, setIsLogViewerOpen] = useState(false);
@@ -129,6 +132,8 @@ function App() {
           onResetStats={handleResetStats}
           onViewLogs={() => setIsLogViewerOpen(true)}
           accessibilityGranted={accessibilityGranted}
+          onCheckForUpdate={checkForUpdate}
+          updateStatus={updateStatus}
         />
       </div>
 
@@ -139,6 +144,12 @@ function App() {
       <LogViewer
         isOpen={isLogViewerOpen}
         onClose={() => setIsLogViewerOpen(false)}
+      />
+      <UpdateModal
+        status={updateStatus}
+        onDownload={startDownload}
+        onSkip={skipVersion}
+        onDismiss={dismissUpdate}
       />
     </div>
   );

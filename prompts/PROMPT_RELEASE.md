@@ -28,6 +28,19 @@ Analyse the commits using these rules (in priority order):
 
 Determine the new version by applying the bump to the current version in `tauri.conf.json`.
 
+## 3b. Assess min_version
+
+Check if any commits since the last tag contain:
+- Security fixes
+- Breaking changes to the update mechanism itself
+- Data format changes that make old versions incompatible
+
+If any of the above apply, ask: **"Is this a critical update? Should min_version be set to this release?"**
+- Default: No (optional update — users can skip or defer)
+- If yes: after the release publishes, manually edit `latest.json` in the GitHub release assets to add `"min_version": "{new_version}"`. Users running versions older than min_version will see a non-dismissable forced update modal.
+
+Include the min_version decision in the release summary.
+
 ## 4. Summarise and Confirm
 
 Present a concise release summary:
