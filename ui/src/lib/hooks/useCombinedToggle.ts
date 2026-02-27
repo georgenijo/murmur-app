@@ -73,7 +73,8 @@ export function useCombinedToggle({ enabled, initialized, accessibilityGranted, 
       });
       if (cancelled) { unlistenStart(); unlistenStop(); unlistenCancel(); unlistenToggle(); return; }
 
-      unlistenError = await listen<string>('keyboard-listener-error', async () => {
+      unlistenError = await listen<string>('keyboard-listener-error', async (event) => {
+        console.error('Keyboard listener error:', event.payload);
         if (cancelled) return;
         await new Promise<void>((r) => setTimeout(r, 2000));
         if (!cancelled) {

@@ -328,15 +328,6 @@ fn hotkey_to_rdev_key(hotkey: &str) -> Option<Key> {
 
 // -- Both-mode arbitration state --
 
-/// Tracks deferred hold-down emission in Both mode.
-/// On key press, we DON'T emit hold-down-start immediately — a background
-/// timer checks after MAX_HOLD_DURATION_MS whether the key is still held.
-/// If yes, it emits hold-down-start (promoting to a real hold).  Short taps
-/// never start recording, so double-taps cause zero state thrash.
-struct BothModeState {
-    hold_press_at: Option<Instant>,
-    hold_start_emitted: bool,
-}
 
 /// Monotonic counter to invalidate stale hold-promotion timers.
 static HOLD_PRESS_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -380,10 +371,6 @@ static LISTENER_THREAD_SPAWNED: AtomicBool = AtomicBool::new(false);
 static ACTIVE_MODE: Mutex<DetectorMode> = Mutex::new(DetectorMode::DoubleTap);
 static DOUBLE_TAP_DETECTOR: Mutex<Option<DoubleTapDetector>> = Mutex::new(None);
 static HOLD_DOWN_DETECTOR: Mutex<Option<HoldDownDetector>> = Mutex::new(None);
-static BOTH_MODE_STATE: Mutex<BothModeState> = Mutex::new(BothModeState {
-    hold_press_at: None,
-    hold_start_emitted: false,
-});
 
 /// Start the keyboard listener. Spawns the rdev listener thread if not already running.
 /// If already running, just updates the target key, mode, and re-enables.
@@ -642,11 +629,6 @@ pub fn stop_listener() {
         if let Some(d) = det.as_mut() {
             d.reset();
         }
-    }
-    {
-        let mut bs = BOTH_MODE_STATE.lock().unwrap_or_else(|p| p.into_inner());
-        bs.hold_press_at = None;
-        bs.hold_start_emitted = false;
     }
     HOLD_PROMOTED.store(false, Ordering::SeqCst);
     HOLD_PRESS_COUNTER.fetch_add(1, Ordering::SeqCst); // invalidate pending timers
