@@ -89,8 +89,8 @@ jobs:
 
       - name: Smoke test — verify .app launches
         run: |
-          APP="ui/src-tauri/target/release/bundle/macos/Local Dictation.app"
-          BINARY="$APP/Contents/MacOS/ui"
+          APP=$(find ui/src-tauri/target/release/bundle/macos -maxdepth 1 -name "*.app" | head -1)
+          BINARY="$APP/Contents/MacOS/$(ls "$APP/Contents/MacOS/" | head -1)"
 
           echo "=== Verifying bundle exists ==="
           ls -la "$APP/Contents/MacOS/"
