@@ -105,7 +105,7 @@ export function HistoryPanel({ entries, onClearHistory }: HistoryPanelProps) {
               </div>
             </div>
             {/* Text content */}
-            <p className="text-sm text-stone-900 dark:text-stone-100 line-clamp-3">
+            <p className="text-sm text-stone-900 dark:text-stone-100 overflow-y-auto max-h-32">
               {entry.text}
             </p>
           </button>
