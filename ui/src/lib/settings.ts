@@ -1,4 +1,4 @@
-export type RecordingMode = 'hold_down' | 'double_tap';
+export type RecordingMode = 'hold_down' | 'double_tap' | 'both';
 
 export type DoubleTapKey = 'shift_l' | 'alt_l' | 'ctrl_r';
 
@@ -45,6 +45,7 @@ export const DOUBLE_TAP_KEY_OPTIONS: { value: DoubleTapKey; label: string }[] = 
 export const RECORDING_MODE_OPTIONS: { value: RecordingMode; label: string }[] = [
   { value: 'hold_down', label: 'Hold Down' },
   { value: 'double_tap', label: 'Double-Tap' },
+  { value: 'both', label: 'Both' },
 ];
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -66,7 +67,7 @@ export function loadSettings(): Settings {
       const parsed = JSON.parse(stored) as Partial<Settings> & { hotkey?: string; recordingMode?: string };
 
       // Migrate: 'hotkey' mode no longer exists → default to 'hold_down'
-      const validModes: RecordingMode[] = ['hold_down', 'double_tap'];
+      const validModes: RecordingMode[] = ['hold_down', 'double_tap', 'both'];
       if (!parsed.recordingMode || !validModes.includes(parsed.recordingMode as RecordingMode)) {
         parsed.recordingMode = DEFAULT_SETTINGS.recordingMode;
       }

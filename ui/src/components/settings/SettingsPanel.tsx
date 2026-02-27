@@ -126,10 +126,13 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
     !audioDevices.includes(settings.microphone);
 
   const isDoubleTap = settings.recordingMode === 'double_tap';
-  const keyLabel = isDoubleTap ? 'Double-Tap Key' : 'Hold Key';
-  const keyHelpText = isDoubleTap
-    ? 'Double-tap to start recording, single tap to stop'
-    : 'Hold to start recording, release to stop';
+  const isBoth = settings.recordingMode === 'both';
+  const keyLabel = isBoth ? 'Trigger Key' : isDoubleTap ? 'Double-Tap Key' : 'Hold Key';
+  const keyHelpText = isBoth
+    ? 'Hold to record, or double-tap to start and single tap to stop'
+    : isDoubleTap
+      ? 'Double-tap to start recording, single tap to stop'
+      : 'Hold to start recording, release to stop';
   const isRecording = status !== 'idle';
   const selectedModel = MODEL_OPTIONS.find(m => m.value === settings.model);
   const downloadProgressPercent =
