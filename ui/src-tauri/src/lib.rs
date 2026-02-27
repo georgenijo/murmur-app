@@ -10,7 +10,9 @@ pub mod transcriber;
 use state::{AppState, DictationStatus};
 use transcriber::TranscriptionBackend;
 use std::sync::{Mutex, MutexGuard};
-use tauri::{Emitter, Manager};
+use tauri::{Emitter, Manager, RunEvent};
+use tauri::menu::{MenuBuilder, MenuItemBuilder};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
 /// Helper trait to recover from poisoned mutexes
 trait MutexExt<T> {
@@ -620,43 +622,60 @@ async fn stream_download(
     Ok(received)
 }
 
-/// Generate 22×22 RGBA pixel data for a solid circle of the given colour.
-fn make_tray_icon_data(r: u8, g: u8, b: u8) -> Vec<u8> {
-    const SIZE: u32 = 22;
+/// Generate 66×66 RGBA pixel data for an audio-bar tray icon (static white).
+/// 66px = 3× resolution for a 22pt menu-bar icon (crisp on Retina).
+/// Draws 5 vertical capsule bars at varying heights (waveform / equalizer style).
+fn make_tray_icon_data() -> Vec<u8> {
+    let (r, g, b): (u8, u8, u8) = (255, 255, 255);
+    const SIZE: u32 = 66;
     let mut data = vec![0u8; (SIZE * SIZE * 4) as usize];
-    let center = (SIZE as i32) / 2;
-    let radius_sq = ((SIZE as i32 / 2) - 2).pow(2);
-    for y in 0..SIZE as i32 {
-        for x in 0..SIZE as i32 {
-            let dx = x - center;
-            let dy = y - center;
-            if dx * dx + dy * dy <= radius_sq {
-                let idx = ((y as u32 * SIZE + x as u32) * 4) as usize;
+
+    // 5 vertical bars: (x-center, height) — all coords in 3× pixel space
+    let bars: [(f64, f64); 5] = [
+        (9.0, 18.0),
+        (21.0, 36.0),
+        (33.0, 48.0),
+        (45.0, 30.0),
+        (57.0, 18.0),
+    ];
+    let half_w: f64 = 3.0; // 6px wide bars (2pt at 3×)
+    let cy: f64 = 33.0;    // vertical center of canvas
+    let rr: f64 = 3.0;     // corner rounding (= half_w → capsule ends)
+    let aa: f64 = 1.0;     // anti-alias transition width
+
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let px = x as f64 + 0.5;
+            let py = y as f64 + 0.5;
+            let mut alpha: f64 = 0.0;
+
+            for &(cx, h) in &bars {
+                let half_h = h / 2.0;
+                // Rounded-rect signed distance (capsule when rr == half_w)
+                let qx = (px - cx).abs() - half_w + rr;
+                let qy = (py - cy).abs() - half_h + rr;
+                let outside = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt();
+                let inside = qx.max(qy).min(0.0);
+                let sdf = outside + inside - rr;
+                let a = (1.0 - sdf.max(0.0) / aa).max(0.0);
+                alpha = alpha.max(a);
+            }
+
+            if alpha > 0.0 {
+                let idx = ((y * SIZE + x) * 4) as usize;
                 data[idx] = r;
                 data[idx + 1] = g;
                 data[idx + 2] = b;
-                data[idx + 3] = 255;
+                data[idx + 3] = (alpha * 255.0).round() as u8;
             }
         }
     }
     data
 }
 
-/// Update the tray icon to reflect the current dictation state.
-/// `icon_state`: "idle" | "recording" | "processing"
+/// No-op — tray icon is static white. Kept so the registered command doesn't break.
 #[tauri::command]
-fn update_tray_icon(app: tauri::AppHandle, icon_state: String) -> Result<(), String> {
-    let (r, g, b) = match icon_state.as_str() {
-        "recording"  => (220u8,  50u8,  50u8), // red
-        "processing" => (200u8, 150u8,  40u8), // amber
-        _ if cfg!(debug_assertions) => (251u8, 191u8, 36u8), // dev — amber
-        _            => (140u8, 140u8, 140u8), // prod — gray
-    };
-    let data = make_tray_icon_data(r, g, b);
-    if let Some(tray) = app.tray_by_id("main-tray") {
-        tray.set_icon(Some(tauri::image::Image::new(&data, 22, 22)))
-            .map_err(|e| e.to_string())?;
-    }
+fn update_tray_icon(_app: tauri::AppHandle, _icon_state: String) -> Result<(), String> {
     Ok(())
 }
 
@@ -792,43 +811,31 @@ fn hide_overlay(app: tauri::AppHandle) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    const SIZE: usize = 22;
+    const SIZE: usize = 66;
 
     #[test]
     fn tray_icon_data_correct_size() {
-        let data = make_tray_icon_data(255, 0, 0);
+        let data = make_tray_icon_data();
         assert_eq!(data.len(), SIZE * SIZE * 4);
     }
 
     #[test]
-    fn tray_icon_center_pixel_is_opaque_and_colored() {
-        let data = make_tray_icon_data(220, 50, 50);
-        let idx = (11 * SIZE + 11) * 4;
-        assert_eq!(data[idx],     220, "R");
-        assert_eq!(data[idx + 1],  50, "G");
-        assert_eq!(data[idx + 2],  50, "B");
+    fn tray_icon_center_pixel_is_opaque_white() {
+        let data = make_tray_icon_data();
+        let idx = (33 * SIZE + 33) * 4;
+        assert_eq!(data[idx],     255, "R");
+        assert_eq!(data[idx + 1], 255, "G");
+        assert_eq!(data[idx + 2], 255, "B");
         assert_eq!(data[idx + 3], 255, "A should be opaque");
     }
 
     #[test]
     fn tray_icon_corner_pixel_is_transparent() {
-        let data = make_tray_icon_data(220, 50, 50);
-        // Corners are outside the inscribed circle
-        for &(row, col) in &[(0, 0), (0, 21), (21, 0), (21, 21)] {
+        let data = make_tray_icon_data();
+        for &(row, col) in &[(0, 0), (0, 65), (65, 0), (65, 65)] {
             let idx = (row * SIZE + col) * 4;
             assert_eq!(data[idx + 3], 0, "corner ({row},{col}) alpha should be 0 (transparent)");
         }
-    }
-
-    #[test]
-    fn tray_icon_distinct_colors_for_each_state() {
-        let idle       = make_tray_icon_data(140, 140, 140);
-        let recording  = make_tray_icon_data(220,  50,  50);
-        let processing = make_tray_icon_data(200, 150,  40);
-        let center = (11 * SIZE + 11) * 4;
-        // All three center pixels must differ
-        assert_ne!(idle[center],      recording[center]);
-        assert_ne!(recording[center], processing[center]);
     }
 }
 
@@ -907,10 +914,68 @@ pub fn run() {
                 log_warn!("setup: overlay window NOT found");
             }
 
+            // Restore tray icon (removed by PR #63 overlay work).
+            let idle_icon_data = make_tray_icon_data();
+            let show_item = MenuItemBuilder::with_id("show", "Show Murmur").build(app)?;
+            let quit_item = MenuItemBuilder::with_id("quit", "Quit Murmur").build(app)?;
+            let tray_menu = MenuBuilder::new(app)
+                .item(&show_item)
+                .separator()
+                .item(&quit_item)
+                .build()?;
+            let handle = app.handle().clone();
+            TrayIconBuilder::with_id("main-tray")
+                .icon(tauri::image::Image::new(&idle_icon_data, 66, 66))
+                .icon_as_template(false)
+                .tooltip("Murmur")
+                .menu(&tray_menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(move |app_handle, event| {
+                    match event.id().as_ref() {
+                        "show" => {
+                            if let Some(win) = app_handle.get_webview_window("main") {
+                                let _ = win.show();
+                                let _ = win.set_focus();
+                            }
+                        }
+                        "quit" => {
+                            app_handle.exit(0);
+                        }
+                        _ => {}
+                    }
+                })
+                .on_tray_icon_event(move |_tray, event| {
+                    if matches!(event, TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    }) {
+                        if let Some(win) = handle.get_webview_window("main") {
+                            let _ = win.show();
+                            let _ = win.set_focus();
+                        }
+                    }
+                })
+                .build(app)?;
+
             Ok(())
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
-    app.run(|_, _| {});
+    app.run(|app_handle, event| {
+        // Suppress Tauri's default RunEvent::Reopen behaviour which shows
+        // the main window whenever the macOS app is activated — including
+        // when the overlay is clicked.  We only re-show the main window
+        // when there are truly no visible windows (e.g. dock-icon click
+        // after the user closed everything).
+        if let RunEvent::Reopen { has_visible_windows, .. } = &event {
+            if !has_visible_windows {
+                if let Some(win) = app_handle.get_webview_window("main") {
+                    let _ = win.show();
+                    let _ = win.set_focus();
+                }
+            }
+        }
+    });
 }
