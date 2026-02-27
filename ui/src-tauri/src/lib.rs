@@ -673,7 +673,7 @@ fn make_tray_icon_data() -> Vec<u8> {
     data
 }
 
-/// No-op — tray icon is static gray. Kept so the registered command doesn't break.
+/// No-op — tray icon is static white. Kept so the registered command doesn't break.
 #[tauri::command]
 fn update_tray_icon(_app: tauri::AppHandle, _icon_state: String) -> Result<(), String> {
     Ok(())
