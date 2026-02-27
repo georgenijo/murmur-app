@@ -31,7 +31,7 @@ export function StatusHeader({ status, initialized, recordingDuration, onSetting
       data-tauri-drag-region
       className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-stone-200 dark:border-stone-700 bg-white/80 dark:bg-stone-800/80 backdrop-blur-sm"
     >
-      <span className="text-sm font-semibold text-stone-800 dark:text-stone-100">Local Dictation</span>
+      <span className="text-sm font-semibold text-stone-800 dark:text-stone-100">Murmur</span>
 
       <div className="flex items-center gap-3">
         <div className={`flex items-center gap-1.5 text-sm font-medium ${statusColor}`}>
