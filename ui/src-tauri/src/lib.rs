@@ -12,7 +12,7 @@ use transcriber::TranscriptionBackend;
 use std::sync::{Mutex, MutexGuard};
 use tauri::{Emitter, Manager, RunEvent};
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
-use tauri::tray::{TrayIconBuilder, TrayIconEvent};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
 /// Helper trait to recover from poisoned mutexes
 trait MutexExt<T> {
@@ -945,7 +945,11 @@ pub fn run() {
                     }
                 })
                 .on_tray_icon_event(move |_tray, event| {
-                    if matches!(event, TrayIconEvent::Click { .. }) {
+                    if matches!(event, TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    }) {
                         if let Some(win) = handle.get_webview_window("main") {
                             let _ = win.show();
                             let _ = win.set_focus();
