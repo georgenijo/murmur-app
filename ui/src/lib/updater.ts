@@ -8,19 +8,19 @@ const LATEST_JSON_URL =
 // --- Semver comparison ---
 
 export function parseSemver(version: string): [number, number, number] | null {
-  const match = version.match(/^(\d+)\.(\d+)\.(\d+)/);
+  const match = version.trim().match(/^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/);
   if (!match) return null;
   return [parseInt(match[1], 10), parseInt(match[2], 10), parseInt(match[3], 10)];
 }
 
 /**
  * Returns -1 if a < b, 0 if equal, 1 if a > b.
- * Returns 0 if either version is unparseable (fail-safe: treat as equal).
+ * Returns null if either version is unparseable — callers must handle this.
  */
-export function compareSemver(a: string, b: string): -1 | 0 | 1 {
+export function compareSemver(a: string, b: string): -1 | 0 | 1 | null {
   const pa = parseSemver(a);
   const pb = parseSemver(b);
-  if (!pa || !pb) return 0;
+  if (!pa || !pb) return null;
   for (let i = 0; i < 3; i++) {
     if (pa[i] < pb[i]) return -1;
     if (pa[i] > pb[i]) return 1;
@@ -34,10 +34,9 @@ export function compareSemver(a: string, b: string): -1 | 0 | 1 {
  * so that malformed versions cannot bypass min_version enforcement.
  */
 export function isBelowMinVersion(currentVersion: string, minVersion: string): boolean {
-  const current = parseSemver(currentVersion);
-  const min = parseSemver(minVersion);
-  if (!current || !min) return true;
-  return compareSemver(currentVersion, minVersion) < 0;
+  const result = compareSemver(currentVersion, minVersion);
+  if (result === null) return true; // unparseable → force update
+  return result < 0;
 }
 
 // --- Skipped version management ---

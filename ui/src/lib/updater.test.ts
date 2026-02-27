@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   parseSemver,
   compareSemver,
+  isBelowMinVersion,
   getSkippedVersion,
   setSkippedVersion,
   clearSkippedVersion,
@@ -18,8 +19,16 @@ describe('parseSemver', () => {
     expect(parseSemver('10.20.30')).toEqual([10, 20, 30]);
   });
 
-  it('parses semver with extra text after patch', () => {
+  it('parses semver with pre-release and build metadata', () => {
     expect(parseSemver('1.2.3-beta.1')).toEqual([1, 2, 3]);
+    expect(parseSemver('1.2.3+build.123')).toEqual([1, 2, 3]);
+    expect(parseSemver('1.2.3-rc.1+build')).toEqual([1, 2, 3]);
+  });
+
+  it('handles v prefix and whitespace', () => {
+    expect(parseSemver('v1.2.3')).toEqual([1, 2, 3]);
+    expect(parseSemver(' 1.2.3 ')).toEqual([1, 2, 3]);
+    expect(parseSemver(' v0.6.2 ')).toEqual([0, 6, 2]);
   });
 
   it('returns null for invalid strings', () => {
@@ -46,10 +55,27 @@ describe('compareSemver', () => {
     expect(compareSemver('1.0.0', '0.9.9')).toBe(1);
   });
 
-  it('returns 0 for unparseable versions (fail-safe)', () => {
-    expect(compareSemver('bad', '0.6.2')).toBe(0);
-    expect(compareSemver('0.6.2', 'bad')).toBe(0);
-    expect(compareSemver('bad', 'bad')).toBe(0);
+  it('returns null for unparseable versions', () => {
+    expect(compareSemver('bad', '0.6.2')).toBeNull();
+    expect(compareSemver('0.6.2', 'bad')).toBeNull();
+    expect(compareSemver('bad', 'bad')).toBeNull();
+  });
+});
+
+describe('isBelowMinVersion', () => {
+  it('returns true when current < min', () => {
+    expect(isBelowMinVersion('0.6.0', '0.7.0')).toBe(true);
+  });
+
+  it('returns false when current >= min', () => {
+    expect(isBelowMinVersion('0.7.0', '0.7.0')).toBe(false);
+    expect(isBelowMinVersion('0.8.0', '0.7.0')).toBe(false);
+  });
+
+  it('returns true (force update) when versions are unparseable', () => {
+    expect(isBelowMinVersion('bad', '0.7.0')).toBe(true);
+    expect(isBelowMinVersion('0.7.0', 'bad')).toBe(true);
+    expect(isBelowMinVersion('bad', 'bad')).toBe(true);
   });
 });
 
