@@ -10,7 +10,7 @@ import {
 import { flog } from '../log';
 import {
   type UpdateStatus,
-  compareSemver,
+  isBelowMinVersion,
   getSkippedVersion,
   setSkippedVersion,
   clearSkippedVersion,
@@ -32,6 +32,7 @@ export function useAutoUpdater(): UseAutoUpdaterReturn {
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ phase: 'idle' });
   const updateRef = useRef<Update | null>(null);
   const isCheckingRef = useRef(false);
+  const isForcedRef = useRef(false);
 
   const performCheck = useCallback(async (opts: { isBackground: boolean }) => {
     if (isCheckingRef.current) return;
@@ -61,7 +62,7 @@ export function useAutoUpdater(): UseAutoUpdaterReturn {
       // Check min_version (custom field not exposed by Tauri updater)
       const currentVersion = await getVersion();
       const minVersion = await fetchMinVersion();
-      const isForced = minVersion !== null && compareSemver(currentVersion, minVersion) < 0;
+      const isForced = minVersion !== null && isBelowMinVersion(currentVersion, minVersion);
 
       // If not forced and user previously skipped this version, suppress
       if (!isForced && getSkippedVersion() === update.version) {
@@ -71,6 +72,7 @@ export function useAutoUpdater(): UseAutoUpdaterReturn {
       }
 
       updateRef.current = update;
+      isForcedRef.current = isForced;
       setUpdateStatus({
         phase: 'available',
         version: update.version,
@@ -99,7 +101,7 @@ export function useAutoUpdater(): UseAutoUpdaterReturn {
     } catch (err) {
       flog.error('updater', 'check failed', { error: String(err) });
       if (!opts.isBackground) {
-        setUpdateStatus({ phase: 'error', message: String(err) });
+        setUpdateStatus({ phase: 'error', message: String(err), isForced: isForcedRef.current });
       }
       // Background errors are silent
     } finally {
@@ -107,14 +109,14 @@ export function useAutoUpdater(): UseAutoUpdaterReturn {
     }
   }, []);
 
-  // On mount: check on launch if due, then set up 24h interval
+  // On mount: always check on launch, then set up 24h periodic interval
   useEffect(() => {
-    if (isDueForCheck()) {
-      performCheck({ isBackground: true });
-    }
+    performCheck({ isBackground: true });
 
     const interval = setInterval(() => {
-      performCheck({ isBackground: true });
+      if (isDueForCheck()) {
+        performCheck({ isBackground: true });
+      }
     }, CHECK_INTERVAL_MS);
 
     return () => clearInterval(interval);
@@ -129,7 +131,8 @@ export function useAutoUpdater(): UseAutoUpdaterReturn {
     if (!update) return;
 
     const version =
-      updateStatus.phase === 'available' ? updateStatus.version : 'unknown';
+      updateStatus.phase === 'available' ? updateStatus.version
+      : updateRef.current?.version ?? 'unknown';
 
     setUpdateStatus({ phase: 'downloading', version, progress: 0 });
     flog.info('updater', 'starting download', { version });
@@ -166,7 +169,7 @@ export function useAutoUpdater(): UseAutoUpdaterReturn {
       await relaunch();
     } catch (err) {
       flog.error('updater', 'download/install failed', { error: String(err) });
-      setUpdateStatus({ phase: 'error', message: String(err) });
+      setUpdateStatus({ phase: 'error', message: String(err), isForced: isForcedRef.current });
     }
   }, [updateStatus]);
 

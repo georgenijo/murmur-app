@@ -153,15 +153,25 @@ jobs:
           TAG="${{ github.ref_name }}"
           VERSION="${TAG#v}"
 
-          # Find the .sig file from the build artifacts
+          # Discover the .app.tar.gz artifact and its .sig sibling from build outputs
           ARTIFACTS='${{ steps.tauri-build.outputs.artifactPaths }}'
-          SIG_FILE=$(echo "$ARTIFACTS" | jq -r '.[]' | grep '\.sig$' | head -1)
+          TAR_GZ_FILE=$(echo "$ARTIFACTS" | jq -r '.[]' | grep '\.app\.tar\.gz$' | head -1)
+          if [ -z "$TAR_GZ_FILE" ] || [ ! -f "$TAR_GZ_FILE" ]; then
+            echo "ERROR: No .app.tar.gz artifact found in build outputs"
+            echo "Artifacts: $ARTIFACTS"
+            exit 1
+          fi
+          TAR_GZ_BASENAME=$(basename "$TAR_GZ_FILE")
+
+          SIG_FILE="${TAR_GZ_FILE}.sig"
           SIGNATURE=""
           if [ -f "$SIG_FILE" ]; then
             SIGNATURE=$(cat "$SIG_FILE")
+          else
+            echo "WARNING: No .sig file found at ${SIG_FILE}"
           fi
 
-          TAR_GZ_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/Local.Dictation.app.tar.gz"
+          TAR_GZ_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/${TAR_GZ_BASENAME}"
 
           cat > latest.json <<ENDJSON
           {

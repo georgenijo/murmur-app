@@ -1,4 +1,6 @@
 import { exit } from '@tauri-apps/plugin-process';
+import Markdown from 'react-markdown';
+import rehypeSanitize from 'rehype-sanitize';
 import type { UpdateStatus } from '../lib/updater';
 
 interface UpdateModalProps {
@@ -18,7 +20,7 @@ export function UpdateModal({ status, onDownload, onSkip, onDismiss }: UpdateMod
     return null;
   }
 
-  const isForced = status.phase === 'available' && status.isForced;
+  const isForced = (status.phase === 'available' || status.phase === 'error') && status.isForced;
   const isDownloading = status.phase === 'downloading';
   const isReady = status.phase === 'ready';
   const isError = status.phase === 'error';
@@ -39,7 +41,19 @@ export function UpdateModal({ status, onDownload, onSkip, onDismiss }: UpdateMod
 
       {/* Modal */}
       <div className="fixed inset-0 flex items-center justify-center z-50 pointer-events-none">
-        <div className="bg-white dark:bg-stone-800 rounded-2xl shadow-xl p-6 w-96 pointer-events-auto">
+        <div className="bg-white dark:bg-stone-800 rounded-2xl shadow-xl p-6 w-96 pointer-events-auto relative">
+          {/* Close button — shown on non-forced error and non-forced available states */}
+          {((isError && !isForced) || (status.phase === 'available' && !isForced)) && (
+            <button
+              onClick={onDismiss}
+              className="absolute top-4 right-4 p-1 rounded-md hover:bg-stone-100 dark:hover:bg-stone-700 transition-colors"
+            >
+              <svg className="w-4 h-4 text-stone-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          )}
+
           {/* Icon */}
           <div className="w-12 h-12 mx-auto mb-4 bg-blue-100 dark:bg-blue-900/30 rounded-xl flex items-center justify-center">
             <svg className="w-6 h-6 text-blue-600 dark:text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -65,8 +79,8 @@ export function UpdateModal({ status, onDownload, onSkip, onDismiss }: UpdateMod
 
           {/* Release notes */}
           {status.phase === 'available' && status.notes && (
-            <div className="mb-4 max-h-32 overflow-y-auto px-3 py-2 bg-stone-50 dark:bg-stone-900 rounded-lg text-xs text-stone-600 dark:text-stone-400 whitespace-pre-wrap">
-              {status.notes}
+            <div className="mb-4 max-h-32 overflow-y-auto px-3 py-2 bg-stone-50 dark:bg-stone-900 rounded-lg text-xs text-stone-600 dark:text-stone-400 [&_h1]:text-sm [&_h1]:font-semibold [&_h1]:mb-1 [&_h1]:mt-2 [&_h2]:text-xs [&_h2]:font-semibold [&_h2]:mb-1 [&_h2]:mt-2 [&_h3]:text-xs [&_h3]:font-medium [&_h3]:mb-1 [&_h3]:mt-1 [&_p]:my-1 [&_ul]:my-1 [&_ul]:pl-4 [&_ul]:list-disc [&_ol]:my-1 [&_ol]:pl-4 [&_ol]:list-decimal [&_li]:my-0 [&_a]:text-blue-600 [&_a]:underline dark:[&_a]:text-blue-400 [&_code]:bg-stone-200 dark:[&_code]:bg-stone-700 [&_code]:px-1 [&_code]:rounded">
+              <Markdown rehypePlugins={[rehypeSanitize]}>{status.notes}</Markdown>
             </div>
           )}
 
@@ -128,7 +142,7 @@ export function UpdateModal({ status, onDownload, onSkip, onDismiss }: UpdateMod
               </>
             )}
 
-            {status.phase === 'available' && isForced && (
+            {(status.phase === 'available' || isError) && isForced && (
               <button
                 onClick={() => exit(0)}
                 className="w-full py-2 px-4 border border-red-300 dark:border-red-700 bg-white dark:bg-stone-700 text-red-600 dark:text-red-400 text-sm font-medium rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"

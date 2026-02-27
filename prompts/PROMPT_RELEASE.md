@@ -37,7 +37,7 @@ Check if any commits since the last tag contain:
 
 If any of the above apply, ask: **"Is this a critical update? Should min_version be set to this release?"**
 - Default: No (optional update — users can skip or defer)
-- If yes: after the release publishes, manually edit `latest.json` in the GitHub release assets to add `"min_version": "{new_version}"`. Users running versions older than min_version will see a non-dismissable forced update modal.
+- If yes: after the release publishes, download `latest.json` from the GitHub release assets, add `"min_version": "{new_version}"` to the JSON, then re-upload with `gh release upload v{new_version} latest.json --clobber` to replace the asset. Users running versions older than min_version will see a non-dismissable forced update modal.
 
 Include the min_version decision in the release summary.
 

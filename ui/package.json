@@ -18,11 +18,13 @@
     "@tailwindcss/vite": "^4.1.18",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-autostart": "^2",
-    "@tauri-apps/plugin-updater": "^2",
     "@tauri-apps/plugin-notification": "^2",
     "@tauri-apps/plugin-process": "^2",
+    "@tauri-apps/plugin-updater": "^2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "react-markdown": "^10.1.0",
+    "rehype-sanitize": "^6.0.0",
     "tailwindcss": "^4.1.18"
   },
   "devDependencies": {

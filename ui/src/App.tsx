@@ -1,4 +1,4 @@
-import { useState, useEffect, lazy, Suspense, useCallback } from 'react';
+import { useState, useEffect, lazy, Suspense, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { flog } from './lib/log';
 import { SettingsPanel } from './components/settings';
@@ -16,6 +16,7 @@ import { useDoubleTapToggle } from './lib/hooks/useDoubleTapToggle';
 import { useShowAboutListener } from './lib/hooks/useShowAboutListener';
 import { useAutoUpdater } from './lib/hooks/useAutoUpdater';
 import { UpdateModal } from './components/UpdateModal';
+import type { UpdateStatus } from './lib/updater';
 import { StatsBar } from './components/StatsBar';
 import { LogViewer } from './components/LogViewer';
 const ResourceMonitor = lazy(() => import('./components/ResourceMonitor').then(m => ({ default: m.ResourceMonitor })));
@@ -76,7 +77,37 @@ function App() {
   useHoldDownToggle({ enabled: settings.recordingMode === 'hold_down', initialized, accessibilityGranted, holdDownKey: settings.doubleTapKey, onStart: handleStart, onStop: handleStop });
   useDoubleTapToggle({ enabled: settings.recordingMode === 'double_tap', initialized, accessibilityGranted, doubleTapKey: settings.doubleTapKey, status, onToggle: toggleRecording });
   const { showAbout, setShowAbout } = useShowAboutListener();
-  const { updateStatus, checkForUpdate, startDownload, skipVersion, dismissUpdate } = useAutoUpdater();
+  const updater = useAutoUpdater();
+
+  // DEV ONLY: cycle through mock update modal states for visual testing
+  const devUpdateIndex = useRef(-1);
+  const devMockStates: UpdateStatus[] = import.meta.env.DEV ? [
+    { phase: 'available', version: '0.7.0', notes: '## What\'s New\n- OTA auto-updater\n- Bug fixes\n- Performance improvements', isForced: false },
+    { phase: 'available', version: '0.7.0', notes: 'Critical security fix.', isForced: true },
+    { phase: 'downloading', version: '0.7.0', progress: 65 },
+    { phase: 'error', message: 'Network request failed: could not resolve host', isForced: false },
+  ] : [];
+  const [devUpdateStatus, setDevUpdateStatus] = useState<UpdateStatus | null>(null);
+
+  const checkForUpdate = useCallback(async () => {
+    if (import.meta.env.DEV) {
+      devUpdateIndex.current = (devUpdateIndex.current + 1) % devMockStates.length;
+      setDevUpdateStatus(devMockStates[devUpdateIndex.current]);
+      return;
+    }
+    return updater.checkForUpdate();
+  }, [updater.checkForUpdate]);
+
+  const updateStatus = devUpdateStatus ?? updater.updateStatus;
+  const dismissUpdate = useCallback(() => {
+    if (devUpdateStatus) { setDevUpdateStatus(null); return; }
+    updater.dismissUpdate();
+  }, [devUpdateStatus, updater.dismissUpdate]);
+  const skipVersion = useCallback(() => {
+    if (devUpdateStatus) { setDevUpdateStatus(null); return; }
+    updater.skipVersion();
+  }, [devUpdateStatus, updater.skipVersion]);
+  const startDownload = updater.startDownload;
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isLogViewerOpen, setIsLogViewerOpen] = useState(false);

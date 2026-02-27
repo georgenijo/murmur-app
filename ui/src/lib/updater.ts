@@ -28,6 +28,18 @@ export function compareSemver(a: string, b: string): -1 | 0 | 1 {
   return 0;
 }
 
+/**
+ * Check if currentVersion is below minVersion.
+ * Returns true (force update) if either version is unparseable — fail-safe
+ * so that malformed versions cannot bypass min_version enforcement.
+ */
+export function isBelowMinVersion(currentVersion: string, minVersion: string): boolean {
+  const current = parseSemver(currentVersion);
+  const min = parseSemver(minVersion);
+  if (!current || !min) return true;
+  return compareSemver(currentVersion, minVersion) < 0;
+}
+
 // --- Skipped version management ---
 
 export function getSkippedVersion(): string | null {
@@ -55,7 +67,9 @@ export function clearSkippedVersion(): void {
 export function getLastCheckTimestamp(): number {
   try {
     const val = localStorage.getItem(LAST_CHECK_KEY);
-    return val ? parseInt(val, 10) : 0;
+    if (!val) return 0;
+    const parsed = parseInt(val, 10);
+    return Number.isFinite(parsed) ? parsed : 0;
   } catch {
     return 0;
   }
@@ -79,7 +93,7 @@ export function isDueForCheck(): boolean {
  */
 export async function fetchMinVersion(): Promise<string | null> {
   try {
-    const response = await fetch(LATEST_JSON_URL);
+    const response = await fetch(LATEST_JSON_URL, { cache: 'no-store' });
     if (!response.ok) return null;
     const data = await response.json();
     if (typeof data.min_version === 'string') return data.min_version;
@@ -97,5 +111,5 @@ export type UpdateStatus =
   | { phase: 'available'; version: string; notes: string; isForced: boolean }
   | { phase: 'downloading'; version: string; progress: number }
   | { phase: 'ready'; version: string }
-  | { phase: 'error'; message: string }
+  | { phase: 'error'; message: string; isForced: boolean }
   | { phase: 'up-to-date' };
