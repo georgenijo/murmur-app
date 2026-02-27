@@ -162,6 +162,10 @@ jobs:
             exit 1
           fi
           TAR_GZ_BASENAME=$(basename "$TAR_GZ_FILE")
+          # Extract arch from basename: "Local Dictation_0.7.0_aarch64.app.tar.gz" → "aarch64"
+          ARCH="${TAR_GZ_BASENAME%.app.tar.gz}"
+          ARCH="${ARCH##*_}"
+          PLATFORM="darwin-${ARCH}"
 
           SIG_FILE="${TAR_GZ_FILE}.sig"
           SIGNATURE=""
@@ -178,7 +182,7 @@ jobs:
             "version": "${VERSION}",
             "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
             "platforms": {
-              "darwin-aarch64": {
+              "${PLATFORM}": {
                 "url": "${TAR_GZ_URL}",
                 "signature": "${SIGNATURE}"
               }
