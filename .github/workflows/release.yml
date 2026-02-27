@@ -162,10 +162,11 @@ jobs:
             exit 1
           fi
           TAR_GZ_BASENAME=$(basename "$TAR_GZ_FILE")
-          # Extract arch from basename: "Local Dictation_0.7.0_aarch64.app.tar.gz" → "aarch64"
-          ARCH="${TAR_GZ_BASENAME%.app.tar.gz}"
-          ARCH="${ARCH##*_}"
-          PLATFORM="darwin-${ARCH}"
+          # Derive platform from runner arch — uname -m returns arm64 on Apple Silicon,
+          # map to aarch64 to match Tauri's platform key convention.
+          RUNNER_ARCH=$(uname -m)
+          [ "$RUNNER_ARCH" = "arm64" ] && RUNNER_ARCH="aarch64"
+          PLATFORM="darwin-${RUNNER_ARCH}"
 
           SIG_FILE="${TAR_GZ_FILE}.sig"
           SIGNATURE=""
