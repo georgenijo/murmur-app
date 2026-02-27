@@ -929,6 +929,7 @@ pub fn run() {
                 .icon_as_template(false)
                 .tooltip("Murmur")
                 .menu(&tray_menu)
+                .show_menu_on_left_click(false)
                 .on_menu_event(move |app_handle, event| {
                     match event.id().as_ref() {
                         "show" => {
