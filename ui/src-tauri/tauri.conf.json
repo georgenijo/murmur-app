@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Local Dictation",
+  "productName": "Murmur",
   "version": "0.6.5",
   "identifier": "com.localdictation",
   "build": {
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Local Dictation",
+        "title": "Murmur",
         "width": 720,
         "height": 560,
         "minWidth": 520,

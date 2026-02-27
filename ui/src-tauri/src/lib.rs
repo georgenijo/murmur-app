@@ -884,7 +884,7 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            log_info!("app setup — Local Dictation v{}", env!("CARGO_PKG_VERSION"));
+            log_info!("app setup — Murmur v{}", env!("CARGO_PKG_VERSION"));
 
             // Cache notch dimensions on the main thread (safe for NSScreen APIs).
             let notch = detect_notch_info();

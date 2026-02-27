@@ -1,9 +1,20 @@
+import { useState, useEffect } from 'react';
+import { getVersion } from '@tauri-apps/api/app';
+
 interface AboutModalProps {
   isOpen: boolean;
   onClose: () => void;
 }
 
 export function AboutModal({ isOpen, onClose }: AboutModalProps) {
+  const [version, setVersion] = useState<string>('...');
+
+  useEffect(() => {
+    if (isOpen) {
+      getVersion().then(setVersion).catch(() => setVersion('—'));
+    }
+  }, [isOpen]);
+
   if (!isOpen) return null;
 
   return (
@@ -26,10 +37,10 @@ export function AboutModal({ isOpen, onClose }: AboutModalProps) {
           </div>
 
           <h2 className="text-xl font-bold text-stone-900 dark:text-stone-100 mb-1">
-            Local Dictation
+            Murmur
           </h2>
           <p className="text-sm text-stone-500 dark:text-stone-400 mb-4">
-            Version 0.1.0
+            Version {version}
           </p>
 
           <p className="text-sm text-stone-600 dark:text-stone-300 mb-4">
@@ -37,7 +48,7 @@ export function AboutModal({ isOpen, onClose }: AboutModalProps) {
           </p>
 
           <p className="text-xs text-stone-400 dark:text-stone-500">
-            © 2024 Local Dictation
+            © 2026 Murmur
           </p>
 
           <button

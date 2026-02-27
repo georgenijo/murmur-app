@@ -91,7 +91,7 @@ export function useAutoUpdater(): UseAutoUpdaterReturn {
           if (permGranted) {
             sendNotification({
               title: 'Update Available',
-              body: `Local Dictation v${update.version} is ready to install.`,
+              body: `Murmur v${update.version} is ready to install.`,
             });
           }
         } catch (err) {
