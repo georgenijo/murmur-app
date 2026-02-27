@@ -13,6 +13,7 @@ import { useHistoryManagement } from './lib/hooks/useHistoryManagement';
 import { useRecordingState } from './lib/hooks/useRecordingState';
 import { useHoldDownToggle } from './lib/hooks/useHoldDownToggle';
 import { useDoubleTapToggle } from './lib/hooks/useDoubleTapToggle';
+import { useCombinedToggle } from './lib/hooks/useCombinedToggle';
 import { useShowAboutListener } from './lib/hooks/useShowAboutListener';
 import { useAutoUpdater } from './lib/hooks/useAutoUpdater';
 import { UpdateModal } from './components/UpdateModal';
@@ -76,6 +77,7 @@ function App() {
   const handleResetStats = () => { resetStats(); setStatsResetVersion(v => v + 1); };
   useHoldDownToggle({ enabled: settings.recordingMode === 'hold_down', initialized, accessibilityGranted, holdDownKey: settings.doubleTapKey, onStart: handleStart, onStop: handleStop });
   useDoubleTapToggle({ enabled: settings.recordingMode === 'double_tap', initialized, accessibilityGranted, doubleTapKey: settings.doubleTapKey, status, onToggle: toggleRecording });
+  useCombinedToggle({ enabled: settings.recordingMode === 'both', initialized, accessibilityGranted, triggerKey: settings.doubleTapKey, status, onStart: handleStart, onStop: handleStop, onToggle: toggleRecording });
   const { showAbout, setShowAbout } = useShowAboutListener();
   const updater = useAutoUpdater();
 

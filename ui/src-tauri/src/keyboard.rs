@@ -13,23 +13,23 @@
 //! Both modes reject modifier+letter combos (e.g. Shift+A).
 
 use rdev::{listen, set_is_main_thread, Event, EventType, Key};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 use tauri::Emitter;
 use crate::{log_error, log_info};
 
 /// Max duration a single tap can be held before it's rejected
-const MAX_HOLD_DURATION_MS: u128 = 300;
+const MAX_HOLD_DURATION_MS: u128 = 200;
 
 /// Max gap between first key-up and second key-down
 const DOUBLE_TAP_WINDOW_MS: u128 = 400;
 
 /// Cooldown after firing to prevent triple-tap spam
-const COOLDOWN_MS: u128 = 500;
+const COOLDOWN_MS: u128 = 50;
 
 /// Cooldown after hold-down stop to prevent accidental re-trigger
-const HOLD_DOWN_COOLDOWN_MS: u128 = 300;
+const HOLD_DOWN_COOLDOWN_MS: u128 = 50;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum DetectorState {
@@ -313,6 +313,7 @@ impl HoldDownDetector {
 enum DetectorMode {
     DoubleTap,
     HoldDown,
+    Both,
 }
 
 /// Map hotkey string from settings to rdev Key
@@ -325,6 +326,23 @@ fn hotkey_to_rdev_key(hotkey: &str) -> Option<Key> {
     }
 }
 
+// -- Both-mode arbitration state --
+
+/// Tracks deferred hold-down emission in Both mode.
+/// On key press, we DON'T emit hold-down-start immediately — a background
+/// timer checks after MAX_HOLD_DURATION_MS whether the key is still held.
+/// If yes, it emits hold-down-start (promoting to a real hold).  Short taps
+/// never start recording, so double-taps cause zero state thrash.
+struct BothModeState {
+    hold_press_at: Option<Instant>,
+    hold_start_emitted: bool,
+}
+
+/// Monotonic counter to invalidate stale hold-promotion timers.
+static HOLD_PRESS_COUNTER: AtomicU64 = AtomicU64::new(0);
+/// Set to true by the timer thread when it promotes a press to a real hold.
+static HOLD_PROMOTED: AtomicBool = AtomicBool::new(false);
+
 // -- Global listener state --
 
 static LISTENER_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -333,6 +351,10 @@ static LISTENER_THREAD_SPAWNED: AtomicBool = AtomicBool::new(false);
 static ACTIVE_MODE: Mutex<DetectorMode> = Mutex::new(DetectorMode::DoubleTap);
 static DOUBLE_TAP_DETECTOR: Mutex<Option<DoubleTapDetector>> = Mutex::new(None);
 static HOLD_DOWN_DETECTOR: Mutex<Option<HoldDownDetector>> = Mutex::new(None);
+static BOTH_MODE_STATE: Mutex<BothModeState> = Mutex::new(BothModeState {
+    hold_press_at: None,
+    hold_start_emitted: false,
+});
 
 /// Start the keyboard listener. Spawns the rdev listener thread if not already running.
 /// If already running, just updates the target key, mode, and re-enables.
@@ -343,6 +365,7 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
 
     let detector_mode = match mode {
         "hold_down" => DetectorMode::HoldDown,
+        "both" => DetectorMode::Both,
         _ => DetectorMode::DoubleTap,
     };
 
@@ -352,7 +375,7 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
         *m = detector_mode;
     }
 
-    // Initialize or update the appropriate detector
+    // Initialize or update the appropriate detector(s)
     match detector_mode {
         DetectorMode::DoubleTap => {
             let mut det = DOUBLE_TAP_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
@@ -373,6 +396,31 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
                     let mut d = HoldDownDetector::new();
                     let _ = d.set_target(target);
                     *det = Some(d);
+                }
+            }
+        }
+        DetectorMode::Both => {
+            // Initialize both detectors with the same target key
+            {
+                let mut det = HOLD_DOWN_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
+                match det.as_mut() {
+                    Some(d) => { let _ = d.set_target(target); },
+                    None => {
+                        let mut d = HoldDownDetector::new();
+                        let _ = d.set_target(target);
+                        *det = Some(d);
+                    }
+                }
+            }
+            {
+                let mut det = DOUBLE_TAP_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
+                match det.as_mut() {
+                    Some(d) => d.set_target(target),
+                    None => {
+                        let mut d = DoubleTapDetector::new();
+                        d.set_target(target);
+                        *det = Some(d);
+                    }
                 }
             }
         }
@@ -436,6 +484,89 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
                             HoldDownEvent::None => {}
                         }
                     }
+                    DetectorMode::Both => {
+                        // Deferred hold: on press, start a background timer.
+                        // After MAX_HOLD_DURATION_MS, if the key is still held,
+                        // the timer emits hold-down-start (promoting to a real hold).
+                        // Short taps never start recording → no state thrash during double-tap.
+
+                        // Check dtap phase BEFORE feeding — also verify the window hasn't expired
+                        let dtap_second_phase = {
+                            let det = DOUBLE_TAP_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
+                            det.as_ref().map(|d| matches!(d.state,
+                                DetectorState::WaitingSecondDown | DetectorState::WaitingSecondUp
+                            ) && d.elapsed_ms() <= DOUBLE_TAP_WINDOW_MS).unwrap_or(false)
+                        };
+
+                        // Only feed hold-down when NOT in second phase
+                        let hold_result = if !dtap_second_phase {
+                            let mut det = HOLD_DOWN_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
+                            if let Some(d) = det.as_mut() {
+                                d.handle_event(&event.event_type)
+                            } else {
+                                HoldDownEvent::None
+                            }
+                        } else {
+                            HoldDownEvent::None
+                        };
+
+                        // Always feed double-tap
+                        let dtap_fired = {
+                            let mut det = DOUBLE_TAP_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
+                            if let Some(d) = det.as_mut() {
+                                d.handle_event(&event.event_type)
+                            } else {
+                                false
+                            }
+                        };
+
+                        match hold_result {
+                            HoldDownEvent::Start => {
+                                // Don't emit hold-down-start yet — start a timer.
+                                // The timer will promote after MAX_HOLD_DURATION_MS.
+                                HOLD_PROMOTED.store(false, Ordering::SeqCst);
+                                let press_id = HOLD_PRESS_COUNTER.fetch_add(1, Ordering::SeqCst) + 1;
+                                let timer_handle = handle.clone();
+                                std::thread::spawn(move || {
+                                    std::thread::sleep(std::time::Duration::from_millis(MAX_HOLD_DURATION_MS as u64));
+                                    if HOLD_PRESS_COUNTER.load(Ordering::SeqCst) == press_id {
+                                        let still_held = {
+                                            let det = HOLD_DOWN_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
+                                            det.as_ref().map(|d| d.state == HoldState::Held).unwrap_or(false)
+                                        };
+                                        if still_held {
+                                            HOLD_PROMOTED.store(true, Ordering::SeqCst);
+                                            log_info!("keyboard: BOTH -> timer promoted to hold-down-start");
+                                            let _ = timer_handle.emit("hold-down-start", ());
+                                        }
+                                    }
+                                });
+                            }
+                            HoldDownEvent::Stop => {
+                                let promoted = HOLD_PROMOTED.load(Ordering::SeqCst);
+                                HOLD_PROMOTED.store(false, Ordering::SeqCst);
+                                // Invalidate any pending timer
+                                HOLD_PRESS_COUNTER.fetch_add(1, Ordering::SeqCst);
+
+                                if promoted {
+                                    // Real hold ended — stop + transcribe
+                                    log_info!("keyboard: BOTH -> emit hold-down-stop (promoted hold)");
+                                    let _ = handle.emit("hold-down-stop", ());
+                                } else if dtap_fired {
+                                    // Double-tap completed
+                                    log_info!("keyboard: BOTH -> emit double-tap-toggle");
+                                    let _ = handle.emit("double-tap-toggle", ());
+                                }
+                                // else: short single tap, no recording was started, nothing to do
+                            }
+                            HoldDownEvent::None => {
+                                if dtap_fired {
+                                    log_info!("keyboard: BOTH -> emit double-tap-toggle (hold=None)");
+                                    let _ = handle.emit("double-tap-toggle", ());
+                                }
+                            }
+                        }
+                    }
                 }
             };
 
@@ -465,7 +596,7 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
 pub fn stop_listener() {
     LISTENER_ACTIVE.store(false, Ordering::SeqCst);
 
-    // Reset both detectors
+    // Reset both detectors and Both-mode state
     {
         let mut det = DOUBLE_TAP_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(d) = det.as_mut() {
@@ -478,6 +609,13 @@ pub fn stop_listener() {
             d.reset();
         }
     }
+    {
+        let mut bs = BOTH_MODE_STATE.lock().unwrap_or_else(|p| p.into_inner());
+        bs.hold_press_at = None;
+        bs.hold_start_emitted = false;
+    }
+    HOLD_PROMOTED.store(false, Ordering::SeqCst);
+    HOLD_PRESS_COUNTER.fetch_add(1, Ordering::SeqCst); // invalidate pending timers
 }
 
 /// Update the target key without stopping/restarting the listener.
@@ -503,6 +641,23 @@ pub fn set_target_key(hotkey: &str) -> bool {
             } else {
                 false
             }
+        }
+        DetectorMode::Both => {
+            let was_held = {
+                let mut det = HOLD_DOWN_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
+                if let Some(d) = det.as_mut() {
+                    d.set_target(target)
+                } else {
+                    false
+                }
+            };
+            {
+                let mut det = DOUBLE_TAP_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
+                if let Some(d) = det.as_mut() {
+                    d.set_target(target);
+                }
+            }
+            was_held
         }
     }
 }
@@ -1005,5 +1160,144 @@ mod tests {
 
         // Immediate re-press should be blocked by cooldown
         assert_eq!(d.handle_event(&press(Key::ShiftLeft)), HoldDownEvent::None);
+    }
+
+    // -- Both-mode tests (deferred hold with second-phase suppression) --
+
+    /// Events that the Both-mode callback would emit synchronously.
+    /// hold-down-start is emitted asynchronously by a timer thread and is
+    /// NOT part of the synchronous return value.
+    #[derive(Debug, PartialEq)]
+    enum BothEmit {
+        HoldStop,
+        DoubleTapToggle,
+    }
+
+    /// Simulate the Both-mode deferred-hold arbitration logic.
+    /// `promoted` simulates whether the timer thread promoted the press
+    /// to a real hold (i.e. HOLD_PROMOTED was true).
+    fn both_handle_event(
+        hold: &mut HoldDownDetector,
+        dtap: &mut DoubleTapDetector,
+        event_type: &EventType,
+        promoted: bool,
+    ) -> Vec<BothEmit> {
+        // Check dtap phase BEFORE feeding — also verify the window hasn't expired
+        let dtap_second_phase = matches!(dtap.state,
+            DetectorState::WaitingSecondDown | DetectorState::WaitingSecondUp)
+            && dtap.elapsed_ms() <= DOUBLE_TAP_WINDOW_MS;
+
+        // Only feed hold-down when NOT in second phase
+        let hold_result = if !dtap_second_phase {
+            hold.handle_event(event_type)
+        } else {
+            HoldDownEvent::None
+        };
+
+        // Always feed double-tap
+        let dtap_fired = dtap.handle_event(event_type);
+        let mut emitted = Vec::new();
+
+        match hold_result {
+            HoldDownEvent::Start => {
+                // In real code: spawns a timer thread, no synchronous emission
+            }
+            HoldDownEvent::Stop => {
+                if promoted {
+                    emitted.push(BothEmit::HoldStop);
+                } else if dtap_fired {
+                    emitted.push(BothEmit::DoubleTapToggle);
+                }
+                // else: short single tap, nothing to do
+            }
+            HoldDownEvent::None => {
+                if dtap_fired {
+                    emitted.push(BothEmit::DoubleTapToggle);
+                }
+            }
+        }
+        emitted
+    }
+
+    #[test]
+    fn both_long_hold_starts_and_stops() {
+        let mut hold = make_hold_detector(Key::ShiftLeft);
+        let mut dtap = make_detector(Key::ShiftLeft);
+
+        // Press — no synchronous emission (timer deferred)
+        let e = both_handle_event(&mut hold, &mut dtap, &press(Key::ShiftLeft), false);
+        assert_eq!(e, vec![]);
+
+        // Wait past the tap threshold (timer would have promoted)
+        sleep(Duration::from_millis(250));
+
+        // Release — promoted hold → stop
+        let e = both_handle_event(&mut hold, &mut dtap, &release(Key::ShiftLeft), true);
+        assert_eq!(e, vec![BothEmit::HoldStop]);
+    }
+
+    #[test]
+    fn both_short_tap_emits_nothing() {
+        let mut hold = make_hold_detector(Key::ShiftLeft);
+        let mut dtap = make_detector(Key::ShiftLeft);
+
+        // Quick press + release — no promotion, no emission
+        let e = both_handle_event(&mut hold, &mut dtap, &press(Key::ShiftLeft), false);
+        assert_eq!(e, vec![]);
+
+        let e = both_handle_event(&mut hold, &mut dtap, &release(Key::ShiftLeft), false);
+        assert_eq!(e, vec![]);
+        assert_eq!(dtap.state, DetectorState::WaitingSecondDown);
+    }
+
+    #[test]
+    fn both_double_tap_fires() {
+        let mut hold = make_hold_detector(Key::ShiftLeft);
+        let mut dtap = make_detector(Key::ShiftLeft);
+
+        // First tap
+        both_handle_event(&mut hold, &mut dtap, &press(Key::ShiftLeft), false);
+        both_handle_event(&mut hold, &mut dtap, &release(Key::ShiftLeft), false);
+        assert_eq!(dtap.state, DetectorState::WaitingSecondDown);
+
+        // Second tap — hold suppressed (second phase), dtap completes
+        let e = both_handle_event(&mut hold, &mut dtap, &press(Key::ShiftLeft), false);
+        assert_eq!(e, vec![]); // hold suppressed
+        assert_eq!(dtap.state, DetectorState::WaitingSecondUp);
+
+        let e = both_handle_event(&mut hold, &mut dtap, &release(Key::ShiftLeft), false);
+        assert_eq!(e, vec![BothEmit::DoubleTapToggle]);
+    }
+
+    #[test]
+    fn both_single_tap_stops_when_recording() {
+        let mut hold = make_hold_detector(Key::ShiftLeft);
+        let mut dtap = make_detector(Key::ShiftLeft);
+        dtap.recording = true;
+
+        // Press — no sync emission
+        let e = both_handle_event(&mut hold, &mut dtap, &press(Key::ShiftLeft), false);
+        assert_eq!(e, vec![]);
+
+        // Quick release — dtap fires (single tap to stop)
+        let e = both_handle_event(&mut hold, &mut dtap, &release(Key::ShiftLeft), false);
+        assert_eq!(e, vec![BothEmit::DoubleTapToggle]);
+    }
+
+    #[test]
+    fn both_no_phantom_toggle_after_expired_window() {
+        let mut hold = make_hold_detector(Key::ShiftLeft);
+        let mut dtap = make_detector(Key::ShiftLeft);
+
+        // First tap
+        both_handle_event(&mut hold, &mut dtap, &press(Key::ShiftLeft), false);
+        both_handle_event(&mut hold, &mut dtap, &release(Key::ShiftLeft), false);
+
+        // Wait for double-tap window + hold cooldown to expire
+        sleep(Duration::from_millis(550));
+
+        // Next press — fresh sequence, timer would start (no sync emission)
+        let e = both_handle_event(&mut hold, &mut dtap, &press(Key::ShiftLeft), false);
+        assert_eq!(e, vec![]);
     }
 }

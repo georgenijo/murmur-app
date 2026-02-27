@@ -387,9 +387,30 @@ async fn stop_native_recording(
     }))
 }
 
+/// Cancel an in-progress recording without transcribing (used by Both mode
+/// to silently discard the speculative recording from a short tap).
+#[tauri::command]
+async fn cancel_native_recording(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, State>,
+) -> Result<(), String> {
+    {
+        let mut dictation = state.app_state.dictation.lock_or_recover();
+        if dictation.status != DictationStatus::Recording {
+            return Ok(());
+        }
+        dictation.status = DictationStatus::Idle;
+    }
+    // Stop audio capture and discard samples
+    let _ = audio::stop_recording();
+    let _ = app_handle.emit("recording-status-changed", "idle");
+    log_info!("cancel_native_recording: speculative recording discarded");
+    Ok(())
+}
+
 #[tauri::command]
 fn start_keyboard_listener(app_handle: tauri::AppHandle, hotkey: String, mode: String) -> Result<(), String> {
-    const VALID_MODES: &[&str] = &["double_tap", "hold_down"];
+    const VALID_MODES: &[&str] = &["double_tap", "hold_down", "both"];
     if !VALID_MODES.contains(&mode.as_str()) {
         log_error!("Invalid keyboard listener mode: {}", mode);
         return Err(format!("Invalid mode '{}'. Expected one of: {}", mode, VALID_MODES.join(", ")));
@@ -867,6 +888,7 @@ pub fn run() {
             list_audio_devices,
             start_native_recording,
             stop_native_recording,
+            cancel_native_recording,
             start_keyboard_listener,
             stop_keyboard_listener,
             update_keyboard_key,
