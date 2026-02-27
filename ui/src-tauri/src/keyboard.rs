@@ -342,19 +342,29 @@ static IS_PROCESSING: AtomicBool = AtomicBool::new(false);
 /// cooldown so rapid post-processing taps don't immediately toggle.
 pub fn set_processing(processing: bool) {
     let was_processing = IS_PROCESSING.swap(processing, Ordering::SeqCst);
-    if was_processing && !processing {
-        // Reset detectors to clean state
+    if !was_processing && processing {
+        // Entering processing: invalidate any pending hold-promotion timer
+        // so it can't fire hold-down-start during active processing.
+        HOLD_PROMOTED.store(false, Ordering::SeqCst);
+        HOLD_PRESS_COUNTER.fetch_add(1, Ordering::SeqCst);
+        if let Ok(mut det) = HOLD_DOWN_DETECTOR.lock() {
+            if let Some(d) = det.as_mut() { d.reset(); }
+        }
+        if let Ok(mut det) = DOUBLE_TAP_DETECTOR.lock() {
+            if let Some(d) = det.as_mut() { d.reset(); }
+        }
+    } else if was_processing && !processing {
+        // Exiting processing: reset detectors with cooldown so rapid
+        // post-processing taps don't immediately toggle.
         if let Ok(mut det) = HOLD_DOWN_DETECTOR.lock() {
             if let Some(d) = det.as_mut() {
                 d.reset();
-                // Set a cooldown so hold doesn't fire immediately
                 d.last_stopped_at = Some(Instant::now());
             }
         }
         if let Ok(mut det) = DOUBLE_TAP_DETECTOR.lock() {
             if let Some(d) = det.as_mut() {
                 d.reset();
-                // Set a cooldown so double-tap doesn't fire immediately
                 d.last_fired_at = Some(Instant::now());
             }
         }
