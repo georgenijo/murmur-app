@@ -49,12 +49,17 @@ async fn run_transcription_pipeline(
 
     // Phase: Transcription (includes lazy model load on first run)
     let t_transcribe = std::time::Instant::now();
-    let text = {
+    let (text, backend_name) = {
         let mut backend = app_state.backend.lock_or_recover();
         backend.load_model(&model_name)?;
-        backend.transcribe(samples, &language)?
+        let text = backend.transcribe(samples, &language)?;
+        let name = backend.name().to_string();
+        (text, name)
     };
+    let transcribe_secs = t_transcribe.elapsed().as_secs_f64();
+    let audio_secs = samples.len() as f64 / 16_000.0;
     log_info!("pipeline: transcription ({} samples): {:?}", samples.len(), t_transcribe.elapsed());
+    crate::logging::log_transcription(&model_name, &backend_name, audio_secs, transcribe_secs, &text);
 
     // Phase: Text injection (clipboard write + optional osascript paste)
     let t_inject = std::time::Instant::now();
@@ -285,6 +290,21 @@ pub async fn stop_native_recording(
     if samples.is_empty() {
         log_info!("stop_native_recording: no audio captured");
         // guard drops on return, resetting status to Idle
+        let _ = app_handle.emit("recording-status-changed", "idle");
+        return Ok(serde_json::json!({
+            "type": "transcription",
+            "text": "",
+            "state": "idle"
+        }));
+    }
+
+    /// Minimum recording duration to process. Recordings shorter than this
+    /// are discarded as phantom triggers (e.g. from residual key presses).
+    const MIN_RECORDING_SAMPLES: usize = 4_800; // 0.3s at 16kHz
+
+    if samples.len() < MIN_RECORDING_SAMPLES {
+        log_info!("stop_native_recording: recording too short ({}ms), discarding",
+            samples.len() / 16); // samples / 16_000 * 1000
         let _ = app_handle.emit("recording-status-changed", "idle");
         return Ok(serde_json::json!({
             "type": "transcription",
