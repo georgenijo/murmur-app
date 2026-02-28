@@ -6,6 +6,7 @@ mod logging;
 mod resource_monitor;
 mod state;
 pub mod transcriber;
+mod vad;
 
 use state::AppState;
 use std::sync::{Mutex, MutexGuard};

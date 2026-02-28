@@ -1,7 +1,7 @@
 use crate::{MutexExt, State};
 use crate::state::{AppState, DictationStatus};
 use crate::transcriber;
-use crate::{audio, injector, keyboard};
+use crate::{audio, injector, keyboard, vad};
 use crate::{log_info, log_warn, log_error};
 use tauri::Emitter;
 
@@ -47,18 +47,58 @@ async fn run_transcription_pipeline(
         (dictation.model_name.clone(), dictation.language.clone(), dictation.auto_paste)
     };
 
+    // Phase: VAD — filter out silence to prevent Whisper hallucination loops
+    let t_vad = std::time::Instant::now();
+    let samples_for_transcription = match vad::vad_model_path() {
+        Some(vad_path) if vad_path.exists() => {
+            let vad_path_str = vad_path.to_string_lossy().to_string();
+            let samples_owned = samples.to_vec();
+            let vad_result = tokio::task::spawn_blocking(move || {
+                vad::filter_speech(&vad_path_str, &samples_owned)
+            })
+            .await
+            .map_err(|e| format!("VAD task failed: {}", e))?;
+
+            match vad_result {
+                Ok(vad::VadResult::NoSpeech) => {
+                    log_info!("pipeline: VAD detected no speech ({} samples, {:?}), skipping transcription",
+                        samples.len(), t_vad.elapsed());
+                    return Ok(String::new());
+                }
+                Ok(vad::VadResult::Speech(trimmed)) => {
+                    log_info!("pipeline: VAD trimmed {} → {} samples ({:.0}% speech, {:?})",
+                        samples.len(), trimmed.len(),
+                        trimmed.len() as f64 / samples.len() as f64 * 100.0,
+                        t_vad.elapsed());
+                    trimmed
+                }
+                Err(e) => {
+                    log_warn!("pipeline: VAD failed ({}), proceeding without filtering", e);
+                    samples.to_vec()
+                }
+            }
+        }
+        _ => {
+            // VAD model not available — try to download for next time, proceed without filtering
+            if let Err(e) = super::models::ensure_vad_model(app_handle).await {
+                log_warn!("pipeline: VAD model download failed ({}), skipping VAD", e);
+            }
+            samples.to_vec()
+        }
+    };
+
     // Phase: Transcription (includes lazy model load on first run)
     let t_transcribe = std::time::Instant::now();
     let (text, backend_name) = {
         let mut backend = app_state.backend.lock_or_recover();
         backend.load_model(&model_name)?;
-        let text = backend.transcribe(samples, &language)?;
+        let text = backend.transcribe(&samples_for_transcription, &language)?;
         let name = backend.name().to_string();
         (text, name)
     };
     let transcribe_secs = t_transcribe.elapsed().as_secs_f64();
-    let audio_secs = samples.len() as f64 / 16_000.0;
-    log_info!("pipeline: transcription ({} samples): {:?}", samples.len(), t_transcribe.elapsed());
+    let audio_secs = samples_for_transcription.len() as f64 / 16_000.0;
+    log_info!("pipeline: transcription ({} samples): {:?}", samples_for_transcription.len(), t_transcribe.elapsed());
     crate::logging::log_transcription(&model_name, &backend_name, audio_secs, transcribe_secs, &text);
 
     // Phase: Text injection (clipboard write + optional osascript paste)

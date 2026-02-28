@@ -1,6 +1,7 @@
 use crate::{MutexExt, State};
 use crate::transcriber::{self, TranscriptionBackend};
-use crate::log_info;
+use crate::{log_info, log_warn};
+use crate::vad;
 use tauri::Emitter;
 
 #[tauri::command]
@@ -57,10 +58,31 @@ pub async fn download_model(app_handle: tauri::AppHandle, model_name: String, st
         .map_err(|e| format!("Failed to create models directory: {}", e))?;
 
     if transcriber::is_moonshine_model(&model_name) {
-        download_moonshine_model(&app_handle, &model_name, &models_dir).await
+        download_moonshine_model(&app_handle, &model_name, &models_dir).await?;
     } else {
-        download_whisper_model(&app_handle, &model_name, &models_dir).await
+        download_whisper_model(&app_handle, &model_name, &models_dir).await?;
     }
+
+    // Co-download VAD model alongside the transcription model (~1.8MB)
+    if !vad::vad_model_exists() {
+        let vad_dest = models_dir.join(vad::VAD_MODEL_FILENAME);
+        let vad_tmp = models_dir.join(format!("{}.tmp", vad::VAD_MODEL_FILENAME));
+        match stream_download(&app_handle, vad::VAD_MODEL_URL, &vad_tmp).await {
+            Ok(bytes) => {
+                if let Err(e) = tokio::fs::rename(&vad_tmp, &vad_dest).await {
+                    let _ = tokio::fs::remove_file(&vad_tmp).await;
+                    log_warn!("Failed to finalize VAD model download: {}", e);
+                } else {
+                    log_info!("VAD model co-downloaded: {} ({} bytes)", vad::VAD_MODEL_FILENAME, bytes);
+                }
+            }
+            Err(e) => {
+                log_warn!("VAD model co-download failed (non-fatal): {}", e);
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Download a single whisper ggml .bin file from Hugging Face.
@@ -134,8 +156,43 @@ async fn download_moonshine_model(
     Ok(())
 }
 
+/// Ensure the VAD model is present, downloading it if necessary.
+/// This is the fallback for users who have a transcription model but not the
+/// VAD model (e.g. upgrade from a pre-VAD version or manual model install).
+pub(crate) async fn ensure_vad_model(app_handle: &tauri::AppHandle) -> Result<(), String> {
+    if vad::vad_model_exists() {
+        return Ok(());
+    }
+
+    let model_path = vad::vad_model_path()
+        .ok_or_else(|| "Could not determine VAD model path".to_string())?;
+    let models_dir = model_path.parent()
+        .ok_or_else(|| "Could not determine models directory".to_string())?;
+
+    tokio::fs::create_dir_all(models_dir)
+        .await
+        .map_err(|e| format!("Failed to create models directory: {}", e))?;
+
+    log_info!("VAD model not found, downloading...");
+    let _ = app_handle.emit("recording-status-changed", "downloading-vad");
+
+    let temp_path = models_dir.join(format!("{}.tmp", vad::VAD_MODEL_FILENAME));
+    let received = stream_download(app_handle, vad::VAD_MODEL_URL, &temp_path).await?;
+
+    tokio::fs::rename(&temp_path, &model_path)
+        .await
+        .map_err(|e| {
+            let _ = std::fs::remove_file(&temp_path);
+            format!("Failed to finalize VAD model download: {}", e)
+        })?;
+
+    log_info!("VAD model downloaded: {} ({} bytes)", vad::VAD_MODEL_FILENAME, received);
+    let _ = app_handle.emit("recording-status-changed", "processing");
+    Ok(())
+}
+
 /// Stream a file download with progress events. Returns total bytes received.
-async fn stream_download(
+pub(crate) async fn stream_download(
     app_handle: &tauri::AppHandle,
     url: &str,
     dest: &std::path::Path,
