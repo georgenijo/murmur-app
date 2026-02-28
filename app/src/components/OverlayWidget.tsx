@@ -94,7 +94,7 @@ export function OverlayWidget() {
       } else {
         flog.info('overlay', 'notch removed (no notch on new display)');
         notchHeightRef.current = 0;
-        setNotchWidth(185);
+        setNotchWidth(140);
       }
     }).then((fn) => {
       if (cancelled) { fn(); } else { unlisten = fn; }
