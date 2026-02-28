@@ -106,8 +106,14 @@ pub async fn process_audio(
     // Phase: Audio parse (base64 decode + WAV to samples)
     let t_parse = std::time::Instant::now();
     let wav_bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &audio_data)
-        .map_err(|e| format!("Failed to decode base64: {}", e))?;
-    let samples = transcriber::parse_wav_to_samples(&wav_bytes)?;
+        .map_err(|e| {
+            let _ = app_handle.emit("recording-status-changed", "idle");
+            format!("Failed to decode base64: {}", e)
+        })?;
+    let samples = transcriber::parse_wav_to_samples(&wav_bytes).map_err(|e| {
+        let _ = app_handle.emit("recording-status-changed", "idle");
+        e
+    })?;
     log_info!("pipeline: audio parse (base64 + WAV): {:?}", t_parse.elapsed());
 
     // Pipeline has its own guard, so disarm this one
@@ -196,14 +202,25 @@ pub async fn start_native_recording(
     // Check and update status in one lock
     {
         let mut dictation = state.app_state.dictation.lock_or_recover();
-        if dictation.status == DictationStatus::Recording {
-            log_warn!("start_native_recording: already recording");
-            return Ok(serde_json::json!({
-                "type": "already_recording",
-                "state": "recording"
-            }));
+        match dictation.status {
+            DictationStatus::Recording => {
+                log_warn!("start_native_recording: already recording");
+                return Ok(serde_json::json!({
+                    "type": "already_recording",
+                    "state": "recording"
+                }));
+            }
+            DictationStatus::Processing => {
+                log_warn!("start_native_recording: currently processing");
+                return Ok(serde_json::json!({
+                    "type": "already_processing",
+                    "state": "processing"
+                }));
+            }
+            DictationStatus::Idle => {
+                dictation.status = DictationStatus::Recording;
+            }
         }
-        dictation.status = DictationStatus::Recording;
     }
 
     log_info!("start_native_recording: device={}", device_name.as_deref().unwrap_or("system_default"));
@@ -259,6 +276,7 @@ pub async fn stop_native_recording(
     let t_total = std::time::Instant::now();
     let samples = audio::stop_recording().map_err(|e| {
         log_error!("stop_native_recording: stop_recording failed: {}", e);
+        let _ = app_handle.emit("recording-status-changed", "idle");
         e
     })?;
     log_info!("pipeline: audio teardown + resample: {:?}", t_total.elapsed());

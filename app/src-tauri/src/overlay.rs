@@ -19,6 +19,9 @@ pub(crate) fn detect_notch_info() -> Option<(f64, f64)> {
     use objc2_app_kit::NSScreen;
     use objc2_foundation::MainThreadMarker;
 
+    // SAFETY: detect_notch_info() is only called from Tauri's setup() callback,
+    // which runs on the main thread. MainThreadMarker::new_unchecked() requires
+    // the caller to be on the main thread, which setup() guarantees.
     let mtm = unsafe { MainThreadMarker::new_unchecked() };
     let screen = NSScreen::mainScreen(mtm)?;
     let insets = screen.safeAreaInsets();

@@ -20,6 +20,10 @@ pub fn check_model_exists(state: tauri::State<'_, State>) -> bool {
 
 #[tauri::command]
 pub fn check_specific_model_exists(model_name: String) -> bool {
+    // Reject path traversal or absolute paths in untrusted input
+    if model_name.contains("..") || model_name.contains('/') || model_name.contains('\\') {
+        return false;
+    }
     if transcriber::is_moonshine_model(&model_name) {
         let backend = transcriber::MoonshineBackend::new();
         let models_dir = match backend.models_dir() {
@@ -138,6 +142,7 @@ async fn stream_download(
 ) -> Result<u64, String> {
     let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(15 * 60))
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 

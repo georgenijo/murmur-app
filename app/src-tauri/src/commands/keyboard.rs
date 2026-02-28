@@ -28,9 +28,10 @@ pub fn update_keyboard_key(app_handle: tauri::AppHandle, hotkey: String) {
     let should_stop = keyboard::set_target_key(&hotkey);
     if should_stop {
         let _ = app_handle.emit("hold-down-stop", ());
-        log_info!("Keyboard key changed while held — emitted stop");
+        log_info!("Keyboard key changed while held — emitted stop; updated to: {}", hotkey);
+    } else {
+        log_info!("Keyboard key updated to: {}", hotkey);
     }
-    log_info!("Keyboard key updated to: {}", hotkey);
 }
 
 #[tauri::command]
