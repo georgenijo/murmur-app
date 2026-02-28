@@ -3,9 +3,9 @@ use arboard::Clipboard;
 use std::thread;
 use std::time::Duration;
 
-/// Copy text to clipboard and optionally simulate paste.
-/// `delay_ms` controls the pause before simulating Cmd+V (window focus settling).
-/// On paste failure, retries once after 100ms.
+/// Copy text to clipboard and optionally simulate Cmd+V paste.
+/// `delay_ms` controls the pause before pasting (window focus settling).
+/// On paste failure, retries once after a 100ms backoff.
 pub fn inject_text(text: &str, auto_paste: bool, delay_ms: u64) -> Result<(), String> {
     log_info!("inject_text called with auto_paste={}, delay_ms={}, text_len={}", auto_paste, delay_ms, text.len());
 
