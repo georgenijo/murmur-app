@@ -33,7 +33,7 @@ impl Drop for IdleGuard<'_> {
 }
 
 /// Shared transcription pipeline: model init → transcribe → inject text → set idle
-fn run_transcription_pipeline(
+async fn run_transcription_pipeline(
     samples: &[f32],
     app_handle: &tauri::AppHandle,
     app_state: &AppState,
@@ -60,16 +60,17 @@ fn run_transcription_pipeline(
     let t_inject = std::time::Instant::now();
     if !text.is_empty() {
         let text_to_inject = text.clone();
-        let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
+        let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
         app_handle
             .run_on_main_thread(move || {
                 let _ = tx.send(injector::inject_text(&text_to_inject, auto_paste));
             })
             .map_err(|e| format!("Failed to dispatch to main thread: {}", e))?;
-        match rx.recv_timeout(std::time::Duration::from_secs(2)) {
-            Ok(Err(e)) => log_error!("Text injection failed: {}", e),
+        match tokio::time::timeout(std::time::Duration::from_secs(2), rx).await {
+            Ok(Ok(Err(e))) => log_error!("Text injection failed: {}", e),
+            Ok(Err(_)) => log_warn!("Text injection sender dropped"),
             Err(_) => log_warn!("Text injection timed out"),
-            Ok(Ok(())) => {}
+            Ok(Ok(Ok(()))) => {}
         }
     }
     log_info!("pipeline: inject (clipboard + paste): {:?}", t_inject.elapsed());
@@ -119,7 +120,7 @@ pub async fn process_audio(
     // Pipeline has its own guard, so disarm this one
     guard.disarm();
 
-    let pipeline_result = run_transcription_pipeline(&samples, &app_handle, &state.app_state);
+    let pipeline_result = run_transcription_pipeline(&samples, &app_handle, &state.app_state).await;
     keyboard::set_processing(false);
     let _ = app_handle.emit("recording-status-changed", "idle");
     let text = pipeline_result?;
@@ -295,7 +296,7 @@ pub async fn stop_native_recording(
     // Hand off status management to the pipeline's own guard
     guard.disarm();
 
-    let pipeline_result = run_transcription_pipeline(&samples, &app_handle, &state.app_state);
+    let pipeline_result = run_transcription_pipeline(&samples, &app_handle, &state.app_state).await;
     keyboard::set_processing(false);
     let _ = app_handle.emit("recording-status-changed", "idle");
     let text = pipeline_result.map_err(|e| {
