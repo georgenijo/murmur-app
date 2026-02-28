@@ -57,7 +57,9 @@ async fn run_transcription_pipeline(
                 vad::filter_speech(&vad_path_str, &samples_owned)
             })
             .await
-            .map_err(|e| format!("VAD task failed: {}", e))?;
+            .unwrap_or_else(|e| {
+                Err(format!("VAD task panicked: {}", e))
+            });
 
             match vad_result {
                 Ok(vad::VadResult::NoSpeech) => {
@@ -79,10 +81,13 @@ async fn run_transcription_pipeline(
             }
         }
         _ => {
-            // VAD model not available — try to download for next time, proceed without filtering
-            if let Err(e) = super::models::ensure_vad_model(app_handle).await {
-                log_warn!("pipeline: VAD model download failed ({}), skipping VAD", e);
-            }
+            // VAD model not available — kick off background download for next time
+            let handle = app_handle.clone();
+            tokio::spawn(async move {
+                if let Err(e) = super::models::ensure_vad_model(&handle).await {
+                    log_warn!("pipeline: VAD model download failed ({}), skipping VAD", e);
+                }
+            });
             samples.to_vec()
         }
     };

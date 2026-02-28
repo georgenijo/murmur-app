@@ -24,7 +24,7 @@ pub enum VadResult {
 
 /// Run Silero VAD on the given 16kHz mono samples and return only speech segments.
 ///
-/// `model_path` must point to a valid `ggml-silero-vad.bin` file.
+/// `model_path` must point to a valid Silero VAD GGML model file.
 /// This function creates a `WhisperVadContext` which is `!Send`, so it must
 /// run entirely within a single thread (use `spawn_blocking`).
 pub fn filter_speech(model_path: &str, samples: &[f32]) -> Result<VadResult, String> {
