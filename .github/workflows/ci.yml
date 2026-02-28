@@ -40,7 +40,13 @@ jobs:
           workspaces: app/src-tauri
 
       - name: Compile check
+        env:
+          CMAKE_C_FLAGS: "-march=armv8.5-a"
+          CMAKE_CXX_FLAGS: "-march=armv8.5-a"
         run: cd app/src-tauri && cargo check
 
       - name: Run tests
+        env:
+          CMAKE_C_FLAGS: "-march=armv8.5-a"
+          CMAKE_CXX_FLAGS: "-march=armv8.5-a"
         run: cd app/src-tauri && cargo test --lib -- --test-threads=1
