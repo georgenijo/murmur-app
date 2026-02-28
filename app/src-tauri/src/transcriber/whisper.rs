@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Once;
 use whisper_rs::{
     FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters,
-    install_whisper_log_trampoline,
+    install_logging_hooks,
 };
 
 static INIT_LOGGING: Once = Once::new();
@@ -15,7 +15,7 @@ const APP_MODELS_REL: &[&str] = &["local-dictation", "models"];
 /// (which we don't configure, so logs go nowhere).
 fn suppress_whisper_logs() {
     INIT_LOGGING.call_once(|| {
-        install_whisper_log_trampoline();
+        install_logging_hooks();
     });
 }
 
@@ -143,16 +143,17 @@ impl TranscriptionBackend for WhisperBackend {
             .full(params, samples)
             .map_err(|e| format!("Transcription failed: {}", e))?;
 
-        let num_segments = state
-            .full_n_segments()
-            .map_err(|e| format!("Failed to get segments: {}", e))?;
+        let num_segments = state.full_n_segments();
 
         let mut text = String::new();
         for i in 0..num_segments {
             let segment = state
-                .full_get_segment_text(i)
-                .map_err(|e| format!("Failed to get segment {}: {}", i, e))?;
-            text.push_str(&segment);
+                .get_segment(i)
+                .ok_or_else(|| format!("Failed to get segment {}", i))?;
+            let segment_text = segment
+                .to_str()
+                .map_err(|e| format!("Failed to get text for segment {}: {}", i, e))?;
+            text.push_str(segment_text);
         }
 
         Ok(text.trim().to_string())
