@@ -39,7 +39,7 @@ Whisperflow-style stats visible on the main page. Cumulative over time, stored a
 
 ### Technical Design
 
-**`ui/src/lib/stats.ts` (new):**
+**`app/src/lib/stats.ts` (new):**
 ```typescript
 interface DictationStats {
   totalWords: number;
@@ -59,11 +59,11 @@ interface DictationStats {
 - `useRecordingState` calls `updateStats(text, recordingDuration)` after each successful transcription
 
 ### Files to Create/Modify
-- `ui/src/lib/stats.ts` (new) — stats persistence and calculation
-- `ui/src/components/StatsBar.tsx` (new) — horizontal stats display
-- `ui/src/lib/hooks/useRecordingState.ts` — call `updateStats` after transcription
-- `ui/src/App.tsx` — render `<StatsBar />` in main content area
-- `ui/src/components/settings/SettingsPanel.tsx` — add "Reset Stats" button
+- `app/src/lib/stats.ts` (new) — stats persistence and calculation
+- `app/src/components/StatsBar.tsx` (new) — horizontal stats display
+- `app/src/lib/hooks/useRecordingState.ts` — call `updateStats` after transcription
+- `app/src/App.tsx` — render `<StatsBar />` in main content area
+- `app/src/components/settings/SettingsPanel.tsx` — add "Reset Stats" button
 
 ---
 
@@ -104,10 +104,10 @@ interface DictationStats {
 - "Clear" calls `invoke('clear_logs')` then refetches; "Copy All" copies raw text
 
 ### Files to Modify
-- `ui/src-tauri/src/logging.rs` — add `read_last_lines`, `clear_log`
-- `ui/src-tauri/src/lib.rs` — transcription timing log, app close log, new commands
-- `ui/src/components/LogViewer.tsx` (new) — log viewer modal
-- `ui/src/components/settings/SettingsPanel.tsx` — "View Logs" button
+- `app/src-tauri/src/logging.rs` — add `read_last_lines`, `clear_log`
+- `app/src-tauri/src/lib.rs` — transcription timing log, app close log, new commands
+- `app/src/components/LogViewer.tsx` (new) — log viewer modal
+- `app/src/components/settings/SettingsPanel.tsx` — "View Logs" button
 
 ---
 
@@ -149,9 +149,9 @@ Live CPU/memory usage SVG chart that spikes during transcription. Lives as a col
 - Two colored lines, y-axis min/max labels, current values as text
 
 ### Files to Create/Modify
-- `ui/src-tauri/Cargo.toml` — add `sysinfo = "0.32"`
-- `ui/src-tauri/src/resource_monitor.rs` (new)
-- `ui/src-tauri/src/lib.rs` — `mod resource_monitor`, register `get_resource_usage` command
-- `ui/src/lib/hooks/useResourceMonitor.ts` (new)
-- `ui/src/components/ResourceMonitor.tsx` (new)
-- `ui/src/App.tsx` — render `<ResourceMonitor />` in main content area
+- `app/src-tauri/Cargo.toml` — add `sysinfo = "0.32"`
+- `app/src-tauri/src/resource_monitor.rs` (new)
+- `app/src-tauri/src/lib.rs` — `mod resource_monitor`, register `get_resource_usage` command
+- `app/src/lib/hooks/useResourceMonitor.ts` (new)
+- `app/src/components/ResourceMonitor.tsx` (new)
+- `app/src/App.tsx` — render `<ResourceMonitor />` in main content area

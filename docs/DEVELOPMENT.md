@@ -16,7 +16,7 @@
 
 2. Install Node dependencies:
    ```bash
-   cd ui
+   cd app
    npm install
    ```
 
@@ -29,7 +29,7 @@
 
 4. Run in development mode:
    ```bash
-   cd ui
+   cd app
    npm run tauri dev
    ```
 
@@ -46,7 +46,7 @@ After granting permissions, restart the dev server.
 
 ```
 murmur-app/
-├── ui/                     # Tauri desktop app
+├── app/                    # Tauri desktop app
 │   ├── src/                # React frontend
 │   │   ├── components/     # UI components
 │   │   ├── lib/           # Utilities
@@ -65,13 +65,13 @@ murmur-app/
 ## Building for Production
 
 ```bash
-cd ui
+cd app
 npm run tauri build
 ```
 
 Output:
-- `ui/src-tauri/target/release/bundle/macos/Local Dictation.app`
-- `ui/src-tauri/target/release/bundle/dmg/Local Dictation_x.x.x_aarch64.dmg`
+- `app/src-tauri/target/release/bundle/macos/Local Dictation.app`
+- `app/src-tauri/target/release/bundle/dmg/Local Dictation_x.x.x_aarch64.dmg`
 
 ## Viewing Logs
 

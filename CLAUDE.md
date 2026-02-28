@@ -5,10 +5,10 @@ Privacy-first macOS voice-to-text app. Tauri 2 (Rust + React), local whisper.cpp
 ## Commands
 
 ```bash
-cd ui && npm run tauri dev        # Dev with hot reload
-cd ui && npm run tauri build      # Production .app and .dmg
-cd ui/src-tauri && cargo test -- --test-threads=1  # Rust unit tests
-cd ui && npx tsc --noEmit         # TypeScript check
+cd app && npm run tauri dev        # Dev with hot reload
+cd app && npm run tauri build      # Production .app and .dmg
+cd app/src-tauri && cargo test -- --test-threads=1  # Rust unit tests
+cd app && npx tsc --noEmit         # TypeScript check
 ```
 
 ## Docs
@@ -22,7 +22,7 @@ Read these before working on a feature:
 
 ## File Map
 
-### Rust (`ui/src-tauri/src/`)
+### Rust (`app/src-tauri/src/`)
 
 | File | Purpose |
 |------|---------|
@@ -34,7 +34,7 @@ Read these before working on a feature:
 | `state.rs` | `DictationState`, `AppState` with mutex-wrapped state |
 | `logging.rs` | File-based logging with rotation |
 
-### Frontend (`ui/src/`)
+### Frontend (`app/src/`)
 
 | File | Purpose |
 |------|---------|

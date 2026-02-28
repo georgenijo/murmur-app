@@ -4,7 +4,7 @@
 //! when models are not present. They are intended for local development,
 //! not CI.
 //!
-//! Run: cd ui/src-tauri && cargo test --test transcription_integration -- --test-threads=1
+//! Run: cd app/src-tauri && cargo test --test transcription_integration -- --test-threads=1
 
 use ui_lib::transcriber::{
     parse_wav_to_samples, MoonshineBackend, TranscriptionBackend, WhisperBackend,

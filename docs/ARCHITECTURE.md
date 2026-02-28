@@ -14,10 +14,10 @@ Local Dictation is a cross-platform desktop app for voice-to-text transcription 
 
 ## Components
 
-### Tauri Desktop App (ui/)
+### Tauri Desktop App (app/)
 
 ```text
-ui/
+app/
 ├── src/                    # React frontend
 │   ├── components/         # UI components
 │   ├── lib/               # Utilities (dictation.ts)

@@ -15,16 +15,16 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-          cache-dependency-path: ui/package-lock.json
+          cache-dependency-path: app/package-lock.json
 
       - name: Install dependencies
-        run: cd ui && npm ci
+        run: cd app && npm ci
 
       - name: TypeScript check
-        run: cd ui && npx tsc --noEmit
+        run: cd app && npx tsc --noEmit
 
       - name: Unit tests
-        run: cd ui && npm test
+        run: cd app && npm test
 
   rust:
     runs-on: macos-latest
@@ -37,10 +37,10 @@ jobs:
       - name: Cache Rust dependencies
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: ui/src-tauri
+          workspaces: app/src-tauri
 
       - name: Compile check
-        run: cd ui/src-tauri && cargo check
+        run: cd app/src-tauri && cargo check
 
       - name: Run tests
-        run: cd ui/src-tauri && cargo test --lib -- --test-threads=1
+        run: cd app/src-tauri && cargo test --lib -- --test-threads=1

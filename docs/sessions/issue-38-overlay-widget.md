@@ -77,12 +77,12 @@ Through visual iteration with screenshots, the overlay evolved from a vertical-e
 
 | File | What it does |
 |------|-------------|
-| `ui/src-tauri/src/lib.rs` | `detect_notch_info()`, `raise_window_above_menubar()`, `position_overlay_default()`, `show_overlay`, notch caching in `State` |
-| `ui/src/components/OverlayWidget.tsx` | Dynamic Island UI, rAF waveform animation, click/drag handlers, `get_notch_info` call |
-| `ui/src-tauri/src/audio.rs` | Audio level throttle (16ms / ~60fps) |
-| `ui/src-tauri/tauri.conf.json` | Overlay window config, macOSPrivateApi, visibleOnAllWorkspaces |
-| `ui/src-tauri/capabilities/overlay.json` | IPC permissions for the overlay window |
-| `ui/src-tauri/Cargo.toml` | objc2, objc2-app-kit, objc2-foundation dependencies |
+| `app/src-tauri/src/lib.rs` | `detect_notch_info()`, `raise_window_above_menubar()`, `position_overlay_default()`, `show_overlay`, notch caching in `State` |
+| `app/src/components/OverlayWidget.tsx` | Dynamic Island UI, rAF waveform animation, click/drag handlers, `get_notch_info` call |
+| `app/src-tauri/src/audio.rs` | Audio level throttle (16ms / ~60fps) |
+| `app/src-tauri/tauri.conf.json` | Overlay window config, macOSPrivateApi, visibleOnAllWorkspaces |
+| `app/src-tauri/capabilities/overlay.json` | IPC permissions for the overlay window |
+| `app/src-tauri/Cargo.toml` | objc2, objc2-app-kit, objc2-foundation dependencies |
 
 ## Key technical notes
 

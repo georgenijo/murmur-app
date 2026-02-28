@@ -10,36 +10,36 @@
 ## Setup
 
 ```bash
-cd ui && npm install
+cd app && npm install
 ```
 
 ## Development
 
 ```bash
 # Full Tauri app with hot reload
-cd ui && npm run tauri dev
+cd app && npm run tauri dev
 
 # Frontend only (no Rust backend)
-cd ui && npm run dev
+cd app && npm run dev
 
 # Production build (outputs .app and .dmg)
-cd ui && npm run tauri build
+cd app && npm run tauri build
 ```
 
 ## Tests
 
 ```bash
 # Rust unit tests (single-threaded — timing-sensitive tests use sleep)
-cd ui/src-tauri && cargo test --lib -- --test-threads=1
+cd app/src-tauri && cargo test --lib -- --test-threads=1
 
 # Transcription integration tests (requires models on disk, skips if absent)
-cd ui/src-tauri && cargo test --test transcription_integration -- --test-threads=1
+cd app/src-tauri && cargo test --test transcription_integration -- --test-threads=1
 
 # Frontend unit tests (settings migration)
-cd ui && npm test
+cd app && npm test
 
 # TypeScript type check
-cd ui && npx tsc --noEmit
+cd app && npx tsc --noEmit
 ```
 
 Rust unit tests (52) cover keyboard detection, audio RMS, tray icon rendering, and WAV parsing. Frontend tests (7) cover settings migration from legacy formats. Integration tests validate the Whisper and Moonshine transcription pipelines end-to-end — they auto-skip when models aren't installed.

@@ -12,7 +12,7 @@ Read these files silently:
 
 Run the following in the background:
 - `git status` — check branch and working tree
-- `cd ui/src-tauri && cargo test -- --test-threads=1` — verify tests pass
+- `cd app/src-tauri && cargo test -- --test-threads=1` — verify tests pass
 
 Only surface results if: tests fail, or there are unexpected uncommitted changes. Otherwise say nothing about health checks.
 

@@ -5,8 +5,8 @@ You are starting a release session for the Local Dictation project. Work autonom
 ## 1. Load Context
 
 Read silently:
-- `ui/src-tauri/tauri.conf.json` — current version
-- `ui/src-tauri/Cargo.toml` — current version (must stay in sync)
+- `app/src-tauri/tauri.conf.json` — current version
+- `app/src-tauri/Cargo.toml` — current version (must stay in sync)
 
 ## 2. Assess Current State
 
@@ -54,9 +54,9 @@ Stop and wait for confirmation.
 
 On confirmation, run these steps in order:
 
-1. Bump `"version"` in `ui/src-tauri/tauri.conf.json`
-2. Bump `version` (package field only) in `ui/src-tauri/Cargo.toml`
-3. Commit: `git add ui/src-tauri/tauri.conf.json ui/src-tauri/Cargo.toml && git commit -m "chore: bump version to {new_version}"`
+1. Bump `"version"` in `app/src-tauri/tauri.conf.json`
+2. Bump `version` (package field only) in `app/src-tauri/Cargo.toml`
+3. Commit: `git add app/src-tauri/tauri.conf.json app/src-tauri/Cargo.toml && git commit -m "chore: bump version to {new_version}"`
 4. Push: `git push origin main`
 5. Tag: `git tag v{new_version}`
 6. Push tag: `git push origin v{new_version}`
