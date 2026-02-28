@@ -1,6 +1,6 @@
 use crate::{MutexExt, State};
 use crate::{log_info, log_warn};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 const NOTCH_EXPAND: f64 = 120.0; // 60px expansion room on each side
 const FALLBACK_OVERLAY_W: f64 = 200.0;
@@ -38,6 +38,50 @@ pub(crate) fn detect_notch_info() -> Option<(f64, f64)> {
 
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn detect_notch_info() -> Option<(f64, f64)> { None }
+
+/// Subscribe to macOS display configuration changes (plug/unplug monitor, lid open/close).
+/// Re-detects notch info, repositions the overlay, and notifies the frontend.
+#[cfg(target_os = "macos")]
+pub(crate) fn register_screen_change_observer(app_handle: tauri::AppHandle) {
+    use objc2_foundation::{NSNotificationCenter, NSNotificationName, NSNotification, NSOperationQueue};
+
+    let notification_name = NSNotificationName::from_str("NSApplicationDidChangeScreenParametersNotification");
+
+    let block = block2::RcBlock::new(move |_notification: std::ptr::NonNull<NSNotification>| {
+        log_info!("screen parameters changed — re-detecting notch info");
+        let notch = detect_notch_info();
+        let handle = &app_handle;
+        // Update cached notch info
+        {
+            let state = handle.state::<State>();
+            *state.notch_info.lock_or_recover() = notch;
+        }
+        // Reposition overlay window
+        if let Some(overlay) = handle.get_webview_window("overlay") {
+            position_overlay_default(&overlay, notch);
+        }
+        // Notify frontend
+        let _ = handle.emit("notch-info-changed", notch.map(|(w, h)| NotchInfo {
+            notch_width: w,
+            notch_height: h,
+        }));
+    });
+
+    unsafe {
+        let center = NSNotificationCenter::defaultCenter();
+        let observer = center.addObserverForName_object_queue_usingBlock(
+            Some(&notification_name),
+            None,
+            Some(&NSOperationQueue::mainQueue()),
+            &block,
+        );
+        // App-lifetime observer — intentionally leak to avoid premature deallocation
+        std::mem::forget(observer);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn register_screen_change_observer(_app_handle: tauri::AppHandle) {}
 
 /// Raise the overlay window above the menu bar so it overlaps the notch.
 #[cfg(target_os = "macos")]

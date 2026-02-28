@@ -82,6 +82,26 @@ export function OverlayWidget() {
     return () => { cancelled = true; unlisten?.(); };
   }, []);
 
+  // Subscribe to notch info changes (display config change: monitor plug/unplug, lid)
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    listen<{ notch_width: number; notch_height: number } | null>('notch-info-changed', (event) => {
+      if (event.payload) {
+        flog.info('overlay', 'notch info changed', { notch_width: event.payload.notch_width, notch_height: event.payload.notch_height });
+        notchHeightRef.current = event.payload.notch_height;
+        setNotchWidth(event.payload.notch_width);
+      } else {
+        flog.info('overlay', 'notch removed (no notch on new display)');
+        notchHeightRef.current = 0;
+        setNotchWidth(140);
+      }
+    }).then((fn) => {
+      if (cancelled) { fn(); } else { unlisten = fn; }
+    });
+    return () => { cancelled = true; unlisten?.(); };
+  }, []);
+
   // Subscribe to audio level events from Rust (store in ref, no state update)
   useEffect(() => {
     let cancelled = false;
