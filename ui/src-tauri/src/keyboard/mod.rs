@@ -157,13 +157,19 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
         DetectorMode::HoldDown => {
             let mut det = HOLD_DOWN_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
             match det.as_mut() {
-                Some(d) => { let _ = d.set_target(target); },
+                Some(d) => {
+                    if d.set_target(target) {
+                        // Detector was held — caller should emit stop event
+                        // Note: app_handle is available here if needed
+                    }
+                },
                 None => {
                     let mut d = HoldDownDetector::new();
-                    let _ = d.set_target(target);
+                    d.set_target(target); // New detector, can't be held
                     *det = Some(d);
                 }
             }
+        }
         }
         DetectorMode::Both => {
             // Initialize both detectors with the same target key
