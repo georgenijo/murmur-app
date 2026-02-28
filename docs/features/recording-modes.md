@@ -104,7 +104,7 @@ WaitingFirstUp → KeyUp(target) within 300ms → FIRE
 
 46 unit tests in `keyboard.rs` (`#[cfg(test)] mod tests`). Run with:
 ```bash
-cd ui/src-tauri && cargo test -- --test-threads=1
+cd app/src-tauri && cargo test -- --test-threads=1
 ```
 
 Single-threaded because timing tests use `sleep()`.

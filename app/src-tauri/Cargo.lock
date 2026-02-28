@@ -5321,7 +5321,7 @@ dependencies = [
 
 [[package]]
 name = "ui"
-version = "0.6.7"
+version = "0.7.0"
 dependencies = [
  "arboard",
  "base64 0.22.1",

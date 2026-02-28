@@ -82,7 +82,7 @@ Transcribed text is always copied to your clipboard. Enable **Auto-Paste** in Se
 
 ```bash
 git clone https://github.com/georgenijo/murmur-app.git
-cd murmur-app/ui
+cd murmur-app/app
 npm install
 npm run tauri dev        # Dev with hot reload
 npm run tauri build      # Production .app and .dmg
@@ -93,8 +93,8 @@ Requires macOS 12+, [Node.js](https://nodejs.org/) 18+, and [Rust](https://rustu
 ### Running Tests
 
 ```bash
-cd ui/src-tauri && cargo test -- --test-threads=1   # Rust unit tests
-cd ui && npx tsc --noEmit                            # TypeScript type check
+cd app/src-tauri && cargo test -- --test-threads=1   # Rust unit tests
+cd app && npx tsc --noEmit                            # TypeScript type check
 ```
 
 ## Architecture

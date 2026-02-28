@@ -16,7 +16,7 @@ node_modules/
 
 # Rust / Tauri build artifacts (5.6GB!)
 target/
-ui/src-tauri/target/
+app/src-tauri/target/
 
 # Logs
 *.log
@@ -36,10 +36,10 @@ dictation_log.jsonl
 *.wav
 
 # Build artifacts
-ui/dist/
-ui/tauri
-ui/tsc
-ui/ui@*
+app/dist/
+app/tauri
+app/tsc
+app/ui@*
 
 # Local-only notes, migrations, scratch work (not tracked)
 local/
