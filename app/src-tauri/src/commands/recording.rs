@@ -42,9 +42,9 @@ async fn run_transcription_pipeline(
     let _guard = IdleGuard::new(app_state);
 
     // Read all needed state in one lock
-    let (model_name, language, auto_paste) = {
+    let (model_name, language, auto_paste, paste_delay_ms) = {
         let dictation = app_state.dictation.lock_or_recover();
-        (dictation.model_name.clone(), dictation.language.clone(), dictation.auto_paste)
+        (dictation.model_name.clone(), dictation.language.clone(), dictation.auto_paste, dictation.auto_paste_delay_ms)
     };
 
     // Phase: Transcription (includes lazy model load on first run)
@@ -68,13 +68,23 @@ async fn run_transcription_pipeline(
         let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
         app_handle
             .run_on_main_thread(move || {
-                let _ = tx.send(injector::inject_text(&text_to_inject, auto_paste));
+                let _ = tx.send(injector::inject_text(&text_to_inject, auto_paste, paste_delay_ms));
             })
             .map_err(|e| format!("Failed to dispatch to main thread: {}", e))?;
+        let paste_hint = "Text is in your clipboard — press Cmd+V to paste manually.";
         match tokio::time::timeout(std::time::Duration::from_secs(2), rx).await {
-            Ok(Ok(Err(e))) => log_error!("Text injection failed: {}", e),
-            Ok(Err(_)) => log_warn!("Text injection sender dropped"),
-            Err(_) => log_warn!("Text injection timed out"),
+            Ok(Ok(Err(e))) => {
+                log_error!("Text injection failed: {}", e);
+                let _ = app_handle.emit("auto-paste-failed", paste_hint);
+            }
+            Ok(Err(_)) => {
+                log_warn!("Text injection sender dropped");
+                let _ = app_handle.emit("auto-paste-failed", paste_hint);
+            }
+            Err(_) => {
+                log_warn!("Text injection timed out");
+                let _ = app_handle.emit("auto-paste-failed", paste_hint);
+            }
             Ok(Ok(Ok(()))) => {}
         }
     }
@@ -152,6 +162,8 @@ pub async fn configure_dictation(
     options: serde_json::Value,
     state: tauri::State<'_, State>,
 ) -> Result<serde_json::Value, String> {
+    log_info!("configure_dictation: {}", options);
+
     let model = options.get("model").and_then(|v| v.as_str()).map(String::from);
     let language = options.get("language").and_then(|v| v.as_str()).map(String::from);
 
@@ -174,6 +186,10 @@ pub async fn configure_dictation(
 
     if let Some(auto_paste) = options.get("autoPaste").and_then(|v| v.as_bool()) {
         dictation.auto_paste = auto_paste;
+    }
+
+    if let Some(delay) = options.get("autoPasteDelayMs").and_then(|v| v.as_u64()) {
+        dictation.auto_paste_delay_ms = delay.clamp(10, 500);
     }
 
     // If model changed, swap backend type if needed, or just reset for reload

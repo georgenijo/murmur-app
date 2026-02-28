@@ -3,13 +3,11 @@ use arboard::Clipboard;
 use std::thread;
 use std::time::Duration;
 
-/// Delay after setting clipboard before simulating paste (ms)
-/// This allows macOS clipboard to sync and window focus to settle
-const PRE_PASTE_DELAY_MS: u64 = 150;
-
-/// Copy text to clipboard and optionally simulate paste
-pub fn inject_text(text: &str, auto_paste: bool) -> Result<(), String> {
-    log_info!("inject_text called with auto_paste={}, text_len={}", auto_paste, text.len());
+/// Copy text to clipboard and optionally simulate paste.
+/// `delay_ms` controls the pause before simulating Cmd+V (window focus settling).
+/// On paste failure, retries once after 100ms.
+pub fn inject_text(text: &str, auto_paste: bool, delay_ms: u64) -> Result<(), String> {
+    log_info!("inject_text called with auto_paste={}, delay_ms={}, text_len={}", auto_paste, delay_ms, text.len());
 
     // Skip if text is empty
     if text.trim().is_empty() {
@@ -37,11 +35,20 @@ pub fn inject_text(text: &str, auto_paste: bool) -> Result<(), String> {
         return Ok(());
     }
 
-    // Wait for clipboard to sync and window focus to settle
-    thread::sleep(Duration::from_millis(PRE_PASTE_DELAY_MS));
+    // Wait for window focus to settle (clipboard write via NSPasteboard is synchronous)
+    thread::sleep(Duration::from_millis(delay_ms));
 
-    // Simulate Cmd+V paste
-    simulate_paste()
+    // Simulate Cmd+V paste, retry once on failure
+    match simulate_paste() {
+        Ok(()) => Ok(()),
+        Err(first_err) => {
+            log_warn!("inject_text: first paste attempt failed: {}, retrying in 100ms", first_err);
+            thread::sleep(Duration::from_millis(100));
+            simulate_paste().map_err(|retry_err| {
+                format!("Auto-paste failed after retry: {}", retry_err)
+            })
+        }
+    }
 }
 
 /// Simulate Cmd+V keystroke using osascript (most reliable on macOS Sonoma/Sequoia)

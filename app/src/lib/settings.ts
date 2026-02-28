@@ -7,6 +7,7 @@ export interface Settings {
   doubleTapKey: DoubleTapKey;
   language: string;
   autoPaste: boolean;
+  autoPasteDelayMs: number;
   recordingMode: RecordingMode;
   microphone: string;
   launchAtLogin: boolean;
@@ -53,6 +54,7 @@ export const DEFAULT_SETTINGS: Settings = {
   doubleTapKey: 'shift_l',
   language: 'en',
   autoPaste: false,
+  autoPasteDelayMs: 50,
   recordingMode: 'hold_down',
   microphone: 'system_default',
   launchAtLogin: false,

@@ -24,6 +24,7 @@ pub struct DictationState {
     pub model_name: String,
     pub language: String,
     pub auto_paste: bool,
+    pub auto_paste_delay_ms: u64,
 }
 
 impl Default for DictationState {
@@ -33,6 +34,7 @@ impl Default for DictationState {
             model_name: "base.en".to_string(),
             language: "en".to_string(),
             auto_paste: false,
+            auto_paste_delay_ms: 50,
         }
     }
 }
