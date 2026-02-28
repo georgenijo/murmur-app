@@ -14,6 +14,9 @@ const LOG_FILE: &str = if cfg!(debug_assertions) { "app.dev.log" } else { "app.l
 const ROTATED_FILE: &str = if cfg!(debug_assertions) { "app.dev.log.1" } else { "app.log.1" };
 const FRONTEND_LOG_FILE: &str = if cfg!(debug_assertions) { "frontend.dev.log" } else { "frontend.log" };
 const FRONTEND_ROTATED_FILE: &str = if cfg!(debug_assertions) { "frontend.dev.log.1" } else { "frontend.log.1" };
+const TRANSCRIPTION_LOG_FILE: &str = if cfg!(debug_assertions) { "transcriptions.dev.jsonl" } else { "transcriptions.jsonl" };
+const TRANSCRIPTION_ROTATED_FILE: &str = if cfg!(debug_assertions) { "transcriptions.dev.jsonl.1" } else { "transcriptions.jsonl.1" };
+const MAX_TRANSCRIPTION_LOG_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
 
 fn log_dir() -> Option<PathBuf> {
     dirs::data_dir().map(|d| d.join("local-dictation").join("logs"))
@@ -54,11 +57,11 @@ fn iso_timestamp() -> String {
     format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", y, m, d, hours, minutes, seconds)
 }
 
-/// Rotate a log file if it exceeds MAX_LOG_SIZE. Keeps one rotated backup.
-fn rotate_if_needed_file(dir: &PathBuf, log_file: &str, rotated_file: &str) {
+/// Rotate a log file if it exceeds `max_size`. Keeps one rotated backup.
+fn rotate_if_needed(dir: &PathBuf, log_file: &str, rotated_file: &str, max_size: u64) {
     let path = dir.join(log_file);
     let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-    if size >= MAX_LOG_SIZE {
+    if size >= max_size {
         let rotated = dir.join(rotated_file);
         let _ = fs::rename(&path, &rotated);
     }
@@ -71,7 +74,7 @@ fn log_to_file(log_file: &str, rotated_file: &str, level: &str, message: &str) {
         None => return,
     };
 
-    rotate_if_needed_file(&dir, log_file, rotated_file);
+    rotate_if_needed(&dir, log_file, rotated_file, MAX_LOG_SIZE);
 
     let path = dir.join(log_file);
     let mut file = match OpenOptions::new().create(true).append(true).open(&path) {
@@ -142,6 +145,35 @@ pub fn read_last_lines(n: usize) -> String {
     let lines: Vec<&str> = content.lines().collect();
     let start = lines.len().saturating_sub(n);
     lines[start..].join("\n")
+}
+
+/// Append a JSONL entry to the transcription log with model metadata and output text.
+pub fn log_transcription(model: &str, backend: &str, audio_secs: f64, transcribe_secs: f64, text: &str) {
+    let _guard = LOG_MUX.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let dir = match ensure_log_dir() {
+        Some(d) => d,
+        None => return,
+    };
+
+    rotate_if_needed(&dir, TRANSCRIPTION_LOG_FILE, TRANSCRIPTION_ROTATED_FILE, MAX_TRANSCRIPTION_LOG_SIZE);
+
+    let path = dir.join(TRANSCRIPTION_LOG_FILE);
+    let mut file = match OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(f) => f,
+        Err(_) => return,
+    };
+    let entry = serde_json::json!({
+        "ts": iso_timestamp(),
+        "model": model,
+        "backend": backend,
+        "audio_secs": audio_secs,
+        "transcribe_secs": transcribe_secs,
+        "text": text,
+    });
+    let mut line = entry.to_string();
+    line.push('\n');
+    let _ = file.write_all(line.as_bytes());
+    let _ = file.flush();
 }
 
 /// Truncate the active log file to zero bytes.
