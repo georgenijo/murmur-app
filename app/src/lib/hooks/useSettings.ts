@@ -47,9 +47,9 @@ export function useSettings() {
       });
     }
 
-    if ('model' in updates || 'language' in updates || 'autoPaste' in updates) {
+    if ('model' in updates || 'language' in updates || 'autoPaste' in updates || 'autoPasteDelayMs' in updates) {
       const version = ++configureVersionRef.current;
-      configure({ model: newSettings.model, language: newSettings.language, autoPaste: newSettings.autoPaste })
+      configure({ model: newSettings.model, language: newSettings.language, autoPaste: newSettings.autoPaste, autoPasteDelayMs: newSettings.autoPasteDelayMs })
         .catch((err) => {
           console.error('Failed to configure:', err);
           if (configureVersionRef.current === version) {
@@ -58,6 +58,7 @@ export function useSettings() {
               model: previousSettings.model,
               language: previousSettings.language,
               autoPaste: previousSettings.autoPaste,
+              autoPasteDelayMs: previousSettings.autoPasteDelayMs,
             };
             settingsRef.current = reverted;
             setSettings(reverted);

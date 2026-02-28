@@ -10,6 +10,37 @@ import { Select } from '../ui/Select';
 import type { DictationStatus } from '../../lib/types';
 import type { UpdateStatus } from '../../lib/updater';
 
+function PasteDelaySlider({ value, onCommit }: { value: number; onCommit: (v: number) => void }) {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => { setDraft(value); }, [value]);
+
+  return (
+    <div className="mt-3">
+      <div className="flex items-center justify-between mb-1">
+        <label className="text-xs text-stone-600 dark:text-stone-400">
+          Paste Delay
+        </label>
+        <span className="text-xs font-medium text-stone-700 dark:text-stone-300">
+          {draft}ms
+        </span>
+      </div>
+      <input
+        type="range"
+        min={10}
+        max={500}
+        step={10}
+        value={draft}
+        onChange={(e) => setDraft(Number(e.target.value))}
+        onPointerUp={() => onCommit(draft)}
+        className="w-full h-1.5 bg-stone-200 dark:bg-stone-600 rounded-full appearance-none cursor-pointer accent-stone-800 dark:accent-stone-300"
+      />
+      <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
+        Delay before paste. Increase if paste lands in the wrong window.
+      </p>
+    </div>
+  );
+}
+
 interface SettingsPanelProps {
   isOpen: boolean;
   onClose: () => void;
@@ -374,6 +405,12 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
                 </button>
               )}
             </div>
+          )}
+          {settings.autoPaste && (
+            <PasteDelaySlider
+              value={settings.autoPasteDelayMs}
+              onCommit={(value) => onUpdateSettings({ autoPasteDelayMs: value })}
+            />
           )}
         </div>
 

@@ -86,6 +86,25 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
     return () => { cancelled = true; unlisten?.(); };
   }, []);
 
+  // Listen for auto-paste failures and surface a hint to the user
+  const pasteErrorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    listen<string>('auto-paste-failed', (event) => {
+      setError(event.payload);
+      if (pasteErrorTimerRef.current) clearTimeout(pasteErrorTimerRef.current);
+      pasteErrorTimerRef.current = setTimeout(() => setError(''), 5000);
+    }).then((fn) => {
+      if (cancelled) { fn(); } else { unlisten = fn; }
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+      if (pasteErrorTimerRef.current) clearTimeout(pasteErrorTimerRef.current);
+    };
+  }, []);
+
   // Sync transcription results from Rust — picks up text when recording was
   // initiated from the overlay (where handleStop doesn't run in this window).
   // Skip if isStoppingRef is true — handleStop is active and will handle it.

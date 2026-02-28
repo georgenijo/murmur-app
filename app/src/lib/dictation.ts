@@ -56,6 +56,7 @@ export interface ConfigureOptions {
   model?: string;
   language?: string;
   autoPaste?: boolean;
+  autoPasteDelayMs?: number;
 }
 
 export async function configure(options: ConfigureOptions): Promise<DictationResponse> {
