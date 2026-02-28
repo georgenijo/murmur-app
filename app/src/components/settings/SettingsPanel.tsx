@@ -5,6 +5,7 @@ import { getVersion } from '@tauri-apps/api/app';
 import {
   Settings, RecordingMode, DEFAULT_SETTINGS,
   MODEL_OPTIONS, MOONSHINE_MODELS, WHISPER_MODELS, DOUBLE_TAP_KEY_OPTIONS, RECORDING_MODE_OPTIONS,
+  LANGUAGE_OPTIONS, isEnglishOnlyModel, isMultilingualLanguage,
 } from '../../lib/settings';
 import { Select } from '../ui/Select';
 import type { DictationStatus } from '../../lib/types';
@@ -270,6 +271,32 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
               >
                 Retry
               </button>
+            </div>
+          )}
+        </div>
+
+        {/* Language Selector */}
+        <div>
+          <label className="block text-sm font-medium text-stone-700 dark:text-stone-300 mb-2">
+            Language
+          </label>
+          <Select
+            value={settings.language}
+            onChange={(value) => onUpdateSettings({ language: value })}
+            disabled={isRecording}
+            items={LANGUAGE_OPTIONS}
+          />
+          <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
+            Language spoken for transcription. Auto-detect works for most languages.
+          </p>
+          {isMultilingualLanguage(settings.language) && selectedModel && isEnglishOnlyModel(selectedModel.value) && (
+            <div className="mt-2 flex items-center gap-2 px-3 py-2 text-xs bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg text-amber-700 dark:text-amber-400">
+              <span className="w-2 h-2 rounded-full bg-amber-500 flex-shrink-0" />
+              <span>
+                {selectedModel.backend === 'moonshine'
+                  ? 'Moonshine models only support English. Switch to a Whisper model for other languages.'
+                  : 'English-only model selected. Switch to Whisper Large Turbo for multilingual support.'}
+              </span>
             </div>
           )}
         </div>

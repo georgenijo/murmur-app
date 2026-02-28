@@ -1,9 +1,10 @@
 use super::TranscriptionBackend;
+use crate::log_info;
 use std::path::{Path, PathBuf};
 use std::sync::Once;
 use whisper_rs::{
     FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters,
-    install_logging_hooks,
+    install_logging_hooks, get_lang_str,
 };
 
 static INIT_LOGGING: Once = Once::new();
@@ -142,6 +143,13 @@ impl TranscriptionBackend for WhisperBackend {
         state
             .full(params, samples)
             .map_err(|e| format!("Transcription failed: {}", e))?;
+
+        let detected_lang_id = state.full_lang_id_from_state();
+        let detected_lang = get_lang_str(detected_lang_id).unwrap_or("unknown");
+        log_info!(
+            "whisper: language requested={}, detected={} (id={})",
+            language, detected_lang, detected_lang_id
+        );
 
         let num_segments = state.full_n_segments();
 
