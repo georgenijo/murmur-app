@@ -373,6 +373,11 @@ pub fn set_processing(processing: bool) {
     }
 }
 
+/// Returns whether the app is currently in the processing state.
+pub fn is_processing() -> bool {
+    IS_PROCESSING.load(Ordering::SeqCst)
+}
+
 // -- Global listener state --
 
 static LISTENER_ACTIVE: AtomicBool = AtomicBool::new(false);
