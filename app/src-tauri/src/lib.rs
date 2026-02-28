@@ -108,6 +108,10 @@ pub fn run() {
                 log_warn!("setup: overlay window NOT found");
             }
 
+            // Listen for display config changes (monitor plug/unplug, lid open/close)
+            // to re-detect notch info and reposition the overlay.
+            commands::overlay::register_screen_change_observer(app.handle().clone());
+
             // Restore tray icon (removed by PR #63 overlay work).
             let idle_icon_data = commands::tray::make_tray_icon_data();
             let show_item = MenuItemBuilder::with_id("show", "Show Murmur").build(app)?;
