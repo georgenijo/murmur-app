@@ -162,27 +162,49 @@ pub fn log_transcription(model: &str, backend: &str, audio_secs: f64, transcribe
         Ok(f) => f,
         Err(_) => return,
     };
-    let entry = serde_json::json!({
-        "ts": iso_timestamp(),
-        "model": model,
-        "backend": backend,
-        "audio_secs": audio_secs,
-        "transcribe_secs": transcribe_secs,
-        "text": text,
-    });
+    // In release builds, omit raw text for privacy; log char count instead.
+    let entry = if cfg!(debug_assertions) {
+        serde_json::json!({
+            "ts": iso_timestamp(),
+            "model": model,
+            "backend": backend,
+            "audio_secs": audio_secs,
+            "transcribe_secs": transcribe_secs,
+            "text": text,
+        })
+    } else {
+        serde_json::json!({
+            "ts": iso_timestamp(),
+            "model": model,
+            "backend": backend,
+            "audio_secs": audio_secs,
+            "transcribe_secs": transcribe_secs,
+            "text_len": text.len(),
+        })
+    };
     let mut line = entry.to_string();
     line.push('\n');
     let _ = file.write_all(line.as_bytes());
     let _ = file.flush();
 }
 
-/// Truncate the active log file to zero bytes.
+/// Clear all log files (app, frontend, and transcription logs plus rotated backups).
 pub fn clear_logs() -> Result<(), String> {
     let _guard = LOG_MUX.lock().unwrap_or_else(|p| p.into_inner());
     let dir = match ensure_log_dir() {
         Some(d) => d,
         None => return Ok(()),
     };
-    let path = dir.join(LOG_FILE);
-    fs::write(&path, b"").map_err(|e| e.to_string())
+    for file in [
+        LOG_FILE,
+        ROTATED_FILE,
+        FRONTEND_LOG_FILE,
+        FRONTEND_ROTATED_FILE,
+        TRANSCRIPTION_LOG_FILE,
+        TRANSCRIPTION_ROTATED_FILE,
+    ] {
+        let path = dir.join(file);
+        let _ = fs::remove_file(&path);
+    }
+    Ok(())
 }
