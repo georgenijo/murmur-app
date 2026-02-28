@@ -3,10 +3,8 @@ mod commands;
 mod injector;
 mod keyboard;
 mod logging;
-mod overlay;
 mod resource_monitor;
 mod state;
-mod tray;
 pub mod transcriber;
 
 use state::AppState;
@@ -73,10 +71,10 @@ pub fn run() {
             commands::models::check_model_exists,
             commands::models::check_specific_model_exists,
             commands::models::download_model,
-            tray::update_tray_icon,
-            overlay::show_overlay,
-            overlay::hide_overlay,
-            overlay::get_notch_info,
+            commands::tray::update_tray_icon,
+            commands::overlay::show_overlay,
+            commands::overlay::hide_overlay,
+            commands::overlay::get_notch_info,
             resource_monitor::get_resource_usage
         ])
         .on_window_event(|window, event| {
@@ -90,7 +88,7 @@ pub fn run() {
             log_info!("app setup — Murmur v{}", env!("CARGO_PKG_VERSION"));
 
             // Cache notch dimensions on the main thread (safe for NSScreen APIs).
-            let notch = overlay::detect_notch_info();
+            let notch = commands::overlay::detect_notch_info();
             {
                 let state = app.state::<State>();
                 *state.notch_info.lock_or_recover() = notch;
@@ -101,7 +99,7 @@ pub fn run() {
             // we override that while keeping the window non-activating.
             if let Some(overlay_win) = app.get_webview_window("overlay") {
                 log_info!("setup: overlay window found, enabling cursor events");
-                overlay::position_overlay_default(&overlay_win, notch);
+                commands::overlay::position_overlay_default(&overlay_win, notch);
                 let _ = overlay_win.show();
                 if let Err(e) = overlay_win.set_ignore_cursor_events(false) {
                     log_warn!("Failed to set overlay cursor events: {}", e);
@@ -111,7 +109,7 @@ pub fn run() {
             }
 
             // Restore tray icon (removed by PR #63 overlay work).
-            let idle_icon_data = tray::make_tray_icon_data();
+            let idle_icon_data = commands::tray::make_tray_icon_data();
             let show_item = MenuItemBuilder::with_id("show", "Show Murmur").build(app)?;
             let quit_item = MenuItemBuilder::with_id("quit", "Quit Murmur").build(app)?;
             let tray_menu = MenuBuilder::new(app)

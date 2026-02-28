@@ -27,14 +27,14 @@ Read these before working on a feature:
 | File | Purpose |
 |------|---------|
 | `lib.rs` | App wiring: mod declarations, `State`, `MutexExt`, `run()` |
-| `tray.rs` | Tray icon rendering (`make_tray_icon_data`, `update_tray_icon`) |
-| `overlay.rs` | Notch detection, overlay positioning, show/hide commands |
 | `commands/mod.rs` | Re-exports command sub-modules |
 | `commands/recording.rs` | `IdleGuard`, transcription pipeline, 7 recording/status commands |
 | `commands/permissions.rs` | 6 permission and audio device commands |
 | `commands/keyboard.rs` | 4 keyboard listener commands |
 | `commands/logging.rs` | 3 logging commands |
 | `commands/models.rs` | Model download pipeline and existence checks |
+| `commands/tray.rs` | Tray icon rendering (`make_tray_icon_data`, `update_tray_icon`) |
+| `commands/overlay.rs` | Notch detection, overlay positioning, show/hide commands |
 | `keyboard.rs` | Hold-down and double-tap detectors, shared rdev listener thread |
 | `audio.rs` | cpal capture, mono conversion, 16kHz resampling |
 | `transcriber/` | whisper-rs and moonshine model loading and inference |
