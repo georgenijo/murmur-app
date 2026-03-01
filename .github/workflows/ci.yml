@@ -41,12 +41,14 @@ jobs:
 
       - name: Compile check
         env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
           CMAKE_C_FLAGS: "-march=armv8.5-a"
           CMAKE_CXX_FLAGS: "-march=armv8.5-a"
         run: cd app/src-tauri && cargo check
 
       - name: Run tests
         env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
           CMAKE_C_FLAGS: "-march=armv8.5-a"
           CMAKE_CXX_FLAGS: "-march=armv8.5-a"
         run: cd app/src-tauri && cargo test --lib -- --test-threads=1
