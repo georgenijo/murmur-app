@@ -77,8 +77,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MACOSX_DEPLOYMENT_TARGET: "11.0"
-          CMAKE_C_FLAGS: "-march=armv8.5-a"
-          CMAKE_CXX_FLAGS: "-march=armv8.5-a"
+          CMAKE_C_FLAGS: "-march=armv8.5-a -mmacosx-version-min=11.0"
+          CMAKE_CXX_FLAGS: "-march=armv8.5-a -mmacosx-version-min=11.0"
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
