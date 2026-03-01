@@ -3,7 +3,12 @@ use crate::state::{AppState, DictationStatus};
 use crate::transcriber;
 use crate::{audio, injector, keyboard, vad};
 use crate::{log_info, log_warn, log_error};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Emitter;
+
+/// When true, the transcription pipeline skips text injection and discards the result.
+/// Set by escape_cancel_recording, cleared by start_native_recording.
+static CANCELLED: AtomicBool = AtomicBool::new(false);
 
 /// RAII guard that resets dictation status to Idle on drop,
 /// ensuring status is restored on any early return or error path.
@@ -105,6 +110,12 @@ async fn run_transcription_pipeline(
     let audio_secs = samples_for_transcription.len() as f64 / 16_000.0;
     log_info!("pipeline: transcription ({} samples): {:?}", samples_for_transcription.len(), t_transcribe.elapsed());
     crate::logging::log_transcription(&model_name, &backend_name, audio_secs, transcribe_secs, &text);
+
+    // Check if escape-cancel was requested during transcription
+    if CANCELLED.swap(false, Ordering::SeqCst) {
+        log_info!("pipeline: cancelled by user — discarding transcription result");
+        return Ok(String::new());
+    }
 
     // Phase: Text injection (clipboard write + optional osascript paste)
     let t_inject = std::time::Instant::now();
@@ -266,6 +277,9 @@ pub async fn start_native_recording(
     state: tauri::State<'_, State>,
     device_name: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    // Clear any stale cancellation flag from a previous session
+    CANCELLED.store(false, Ordering::SeqCst);
+
     // Check and update status in one lock
     {
         let mut dictation = state.app_state.dictation.lock_or_recover();
@@ -297,6 +311,7 @@ pub async fn start_native_recording(
         dictation.status = DictationStatus::Idle;
         return Err(e);
     }
+    keyboard::set_recording(true);
     let _ = app_handle.emit("recording-status-changed", "recording");
     log_info!("start_native_recording: started");
 
@@ -331,6 +346,7 @@ pub async fn stop_native_recording(
             }
         }
     }
+    keyboard::set_recording(false);
     keyboard::set_processing(true);
     log_info!("stop_native_recording: stopping");
     let _ = app_handle.emit("recording-status-changed", "processing");
@@ -423,8 +439,48 @@ pub async fn cancel_native_recording(
     }
     // Stop audio capture and discard samples
     let _ = audio::stop_recording();
+    keyboard::set_recording(false);
     let _ = app_handle.emit("recording-status-changed", "idle");
     log_info!("cancel_native_recording: speculative recording discarded");
+    Ok(())
+}
+
+/// Cancel recording or transcription in response to Escape key.
+/// During recording: stops audio capture, discards samples, resets to idle.
+/// During processing: sets cancellation flag so the pipeline discards its result.
+#[tauri::command]
+pub async fn escape_cancel_recording(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, State>,
+) -> Result<(), String> {
+    let prev_status = {
+        let mut dictation = state.app_state.dictation.lock_or_recover();
+        let prev = dictation.status;
+        if prev == DictationStatus::Idle {
+            return Ok(());
+        }
+        dictation.status = DictationStatus::Idle;
+        prev
+    };
+
+    match prev_status {
+        DictationStatus::Recording => {
+            // Stop audio capture and discard samples
+            let _ = audio::stop_recording();
+            keyboard::set_recording(false);
+            log_info!("escape_cancel_recording: recording cancelled");
+        }
+        DictationStatus::Processing => {
+            // Signal the pipeline to discard its result
+            CANCELLED.store(true, Ordering::SeqCst);
+            keyboard::set_processing(false);
+            log_info!("escape_cancel_recording: processing cancelled");
+        }
+        DictationStatus::Idle => unreachable!(),
+    }
+
+    let _ = app_handle.emit("recording-status-changed", "idle");
+    let _ = app_handle.emit("recording-cancelled", ());
     Ok(())
 }
 

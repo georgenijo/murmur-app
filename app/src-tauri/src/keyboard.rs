@@ -337,6 +337,12 @@ static HOLD_PROMOTED: AtomicBool = AtomicBool::new(false);
 /// Set by lib.rs when the transcription pipeline is running.
 static IS_PROCESSING: AtomicBool = AtomicBool::new(false);
 
+/// Tracks whether the app is currently recording audio.
+static IS_RECORDING: AtomicBool = AtomicBool::new(false);
+
+/// Guards against Escape key repeat — only fire once per press.
+static ESCAPE_FIRED: AtomicBool = AtomicBool::new(false);
+
 /// Called by lib.rs to tell the keyboard module whether the app is processing.
 /// When transitioning out of processing, reset both detectors and apply a
 /// cooldown so rapid post-processing taps don't immediately toggle.
@@ -376,6 +382,16 @@ pub fn set_processing(processing: bool) {
 /// Returns whether the app is currently in the processing state.
 pub fn is_processing() -> bool {
     IS_PROCESSING.load(Ordering::SeqCst)
+}
+
+/// Called by recording commands to track whether the app is recording audio.
+pub fn set_recording(recording: bool) {
+    IS_RECORDING.store(recording, Ordering::SeqCst);
+}
+
+/// Returns whether the app is currently recording audio.
+pub fn is_recording() -> bool {
+    IS_RECORDING.load(Ordering::SeqCst)
 }
 
 // -- Global listener state --
@@ -479,6 +495,22 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
             let callback = move |event: Event| {
                 if !LISTENER_ACTIVE.load(Ordering::SeqCst) {
                     return;
+                }
+
+                // Escape key: cancel recording/processing regardless of mode
+                match &event.event_type {
+                    EventType::KeyPress(Key::Escape) => {
+                        if !ESCAPE_FIRED.swap(true, Ordering::SeqCst)
+                            && (IS_RECORDING.load(Ordering::SeqCst) || IS_PROCESSING.load(Ordering::SeqCst))
+                        {
+                            log_info!("keyboard: Escape pressed — emitting escape-cancel");
+                            let _ = handle.emit("escape-cancel", ());
+                        }
+                    }
+                    EventType::KeyRelease(Key::Escape) => {
+                        ESCAPE_FIRED.store(false, Ordering::SeqCst);
+                    }
+                    _ => {}
                 }
 
                 let mode = {

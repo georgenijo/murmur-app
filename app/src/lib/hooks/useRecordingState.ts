@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { startRecording, stopRecording } from '../dictation';
+import { startRecording, stopRecording, cancelRecording } from '../dictation';
 import { isDictationStatus } from '../types';
 import type { DictationStatus } from '../types';
 import { updateStats } from '../stats';
@@ -102,6 +102,41 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
       cancelled = true;
       unlisten?.();
       if (pasteErrorTimerRef.current) clearTimeout(pasteErrorTimerRef.current);
+    };
+  }, []);
+
+  // Listen for Escape key cancel from Rust — invoke backend cancel command
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    listen('escape-cancel', () => {
+      flog.info('recording', 'escape-cancel event received', { status: statusRef.current });
+      cancelRecording().catch((err) => {
+        flog.warn('recording', 'escape_cancel_recording failed', { error: String(err) });
+      });
+    }).then((fn) => {
+      if (cancelled) { fn(); } else { unlisten = fn; }
+    });
+    return () => { cancelled = true; unlisten?.(); };
+  }, []);
+
+  // Show brief "Recording cancelled" feedback when escape cancellation completes
+  const cancelTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    listen('recording-cancelled', () => {
+      flog.info('recording', 'recording-cancelled feedback');
+      setError('Recording cancelled');
+      if (cancelTimerRef.current) clearTimeout(cancelTimerRef.current);
+      cancelTimerRef.current = setTimeout(() => setError(''), 1500);
+    }).then((fn) => {
+      if (cancelled) { fn(); } else { unlisten = fn; }
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+      if (cancelTimerRef.current) clearTimeout(cancelTimerRef.current);
     };
   }, []);
 
