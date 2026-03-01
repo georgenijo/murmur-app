@@ -11,6 +11,7 @@ export function SettingsSection({ title, subtitle, defaultExpanded = true, child
   const [expanded, setExpanded] = useState(defaultExpanded);
   const [overflowVisible, setOverflowVisible] = useState(defaultExpanded);
   const contentId = useId();
+  const headerId = useId();
 
   const handleToggle = useCallback(() => {
     setExpanded((prev) => {
@@ -27,6 +28,7 @@ export function SettingsSection({ title, subtitle, defaultExpanded = true, child
     <div className="border-b border-stone-200 dark:border-stone-700">
       <button
         type="button"
+        id={headerId}
         aria-expanded={expanded}
         aria-controls={contentId}
         onClick={handleToggle}
@@ -52,7 +54,7 @@ export function SettingsSection({ title, subtitle, defaultExpanded = true, child
       <div
         id={contentId}
         role="region"
-        aria-labelledby={undefined}
+        aria-labelledby={headerId}
         className={`grid transition-[grid-template-rows] duration-200 ${
           expanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'
         }`}
