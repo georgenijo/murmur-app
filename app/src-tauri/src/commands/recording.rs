@@ -42,19 +42,26 @@ async fn run_transcription_pipeline(
     let _guard = IdleGuard::new(app_state);
 
     // Read all needed state in one lock
-    let (model_name, language, auto_paste, paste_delay_ms) = {
+    let (model_name, language, auto_paste, paste_delay_ms, vad_sensitivity) = {
         let dictation = app_state.dictation.lock_or_recover();
-        (dictation.model_name.clone(), dictation.language.clone(), dictation.auto_paste, dictation.auto_paste_delay_ms)
+        (dictation.model_name.clone(), dictation.language.clone(), dictation.auto_paste, dictation.auto_paste_delay_ms, dictation.vad_sensitivity)
     };
 
+    // Pre-VAD signal level logging for mic diagnosis
+    let rms = audio::compute_rms(samples);
+    let peak = audio::compute_peak(samples);
+    let device = audio::last_device_name().unwrap_or_else(|| "unknown".to_string());
+    log_info!("pipeline: audio rms={:.4} peak={:.4} (device={})", rms, peak, device);
+
     // Phase: VAD — filter out silence to prevent Whisper hallucination loops
+    let vad_threshold = 1.0 - (vad_sensitivity as f32 / 100.0);
     let t_vad = std::time::Instant::now();
     let samples_for_transcription = match vad::vad_model_path() {
         Some(vad_path) if vad_path.exists() => {
             let vad_path_str = vad_path.to_string_lossy().to_string();
             let samples_owned = samples.to_vec();
             let vad_result = tokio::task::spawn_blocking(move || {
-                vad::filter_speech(&vad_path_str, &samples_owned)
+                vad::filter_speech(&vad_path_str, &samples_owned, vad_threshold)
             })
             .await
             .unwrap_or_else(|e| {
@@ -235,6 +242,10 @@ pub async fn configure_dictation(
 
     if let Some(delay) = options.get("autoPasteDelayMs").and_then(|v| v.as_u64()) {
         dictation.auto_paste_delay_ms = delay.clamp(10, 500);
+    }
+
+    if let Some(sensitivity) = options.get("vadSensitivity").and_then(|v| v.as_u64()) {
+        dictation.vad_sensitivity = (sensitivity as u32).clamp(0, 100);
     }
 
     // If model changed, swap backend type if needed, or just reset for reload
