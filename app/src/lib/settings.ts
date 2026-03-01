@@ -11,6 +11,7 @@ export interface Settings {
   recordingMode: RecordingMode;
   microphone: string;
   launchAtLogin: boolean;
+  verboseLogs: boolean;
 }
 
 export type ModelOption =
@@ -58,6 +59,7 @@ export const DEFAULT_SETTINGS: Settings = {
   recordingMode: 'hold_down',
   microphone: 'system_default',
   launchAtLogin: false,
+  verboseLogs: false,
 };
 
 export const STORAGE_KEY = 'dictation-settings';

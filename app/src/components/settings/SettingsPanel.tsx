@@ -482,6 +482,32 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
           <h3 className="text-sm font-medium text-stone-700 dark:text-stone-300 mb-2">
             Logs
           </h3>
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <label className="block text-sm font-medium text-stone-700 dark:text-stone-300">
+                Verbose Logs
+              </label>
+              <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
+                Log keyboard heartbeats and event details
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={settings.verboseLogs}
+              aria-label="Verbose logs"
+              onClick={() => onUpdateSettings({ verboseLogs: !settings.verboseLogs })}
+              className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-stone-500 focus:ring-offset-2 ${
+                settings.verboseLogs ? 'bg-stone-800 dark:bg-stone-300' : 'bg-stone-300 dark:bg-stone-500'
+              }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                  settings.verboseLogs ? 'translate-x-6' : 'translate-x-1'
+                }`}
+              />
+            </button>
+          </div>
           <button
             onClick={onViewLogs}
             className="w-full px-3 py-2 rounded-lg text-xs font-medium border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-600 transition-colors"

@@ -378,10 +378,16 @@ pub fn is_processing() -> bool {
     IS_PROCESSING.load(Ordering::SeqCst)
 }
 
+/// Enable or disable verbose diagnostic logging (heartbeat, key event details).
+pub fn set_verbose_logging(enabled: bool) {
+    VERBOSE_LOGGING.store(enabled, Ordering::Relaxed);
+}
+
 // -- Global listener state --
 
 static LISTENER_ACTIVE: AtomicBool = AtomicBool::new(false);
 static LISTENER_THREAD_SPAWNED: AtomicBool = AtomicBool::new(false);
+static VERBOSE_LOGGING: AtomicBool = AtomicBool::new(false);
 
 static ACTIVE_MODE: Mutex<DetectorMode> = Mutex::new(DetectorMode::DoubleTap);
 static DOUBLE_TAP_DETECTOR: Mutex<Option<DoubleTapDetector>> = Mutex::new(None);
@@ -572,7 +578,9 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
                                         };
                                         if still_held {
                                             HOLD_PROMOTED.store(true, Ordering::SeqCst);
-                                            log_info!("keyboard: BOTH -> timer promoted to hold-down-start");
+                                            if VERBOSE_LOGGING.load(Ordering::Relaxed) {
+                                                log_info!("keyboard: BOTH -> timer promoted to hold-down-start");
+                                            }
                                             let _ = timer_handle.emit("hold-down-start", ());
                                         }
                                     }
@@ -586,18 +594,24 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
 
                                 if promoted {
                                     // Real hold ended — stop + transcribe
-                                    log_info!("keyboard: BOTH -> emit hold-down-stop (promoted hold)");
+                                    if VERBOSE_LOGGING.load(Ordering::Relaxed) {
+                                        log_info!("keyboard: BOTH -> emit hold-down-stop (promoted hold)");
+                                    }
                                     let _ = handle.emit("hold-down-stop", ());
                                 } else if dtap_fired {
                                     // Double-tap completed
-                                    log_info!("keyboard: BOTH -> emit double-tap-toggle");
+                                    if VERBOSE_LOGGING.load(Ordering::Relaxed) {
+                                        log_info!("keyboard: BOTH -> emit double-tap-toggle");
+                                    }
                                     let _ = handle.emit("double-tap-toggle", ());
                                 }
                                 // else: short single tap, no recording was started, nothing to do
                             }
                             HoldDownEvent::None => {
                                 if dtap_fired {
-                                    log_info!("keyboard: BOTH -> emit double-tap-toggle (hold=None)");
+                                    if VERBOSE_LOGGING.load(Ordering::Relaxed) {
+                                        log_info!("keyboard: BOTH -> emit double-tap-toggle (hold=None)");
+                                    }
                                     let _ = handle.emit("double-tap-toggle", ());
                                 }
                             }
@@ -618,7 +632,7 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
         // be active, so app.log shows a gap if the thread goes silent.
         std::thread::spawn(|| loop {
             std::thread::sleep(std::time::Duration::from_secs(60));
-            if LISTENER_ACTIVE.load(Ordering::SeqCst) {
+            if LISTENER_ACTIVE.load(Ordering::SeqCst) && VERBOSE_LOGGING.load(Ordering::Relaxed) {
                 log_info!("keyboard: listener heartbeat — active");
             } else if !LISTENER_THREAD_SPAWNED.load(Ordering::SeqCst) {
                 // Listener thread has exited; stop monitoring.

@@ -66,6 +66,7 @@ pub fn run() {
             commands::keyboard::stop_keyboard_listener,
             commands::keyboard::update_keyboard_key,
             commands::keyboard::set_keyboard_recording,
+            commands::keyboard::set_verbose_logging,
             commands::logging::get_log_contents,
             commands::logging::clear_logs,
             commands::logging::log_frontend,

@@ -38,3 +38,8 @@ pub fn update_keyboard_key(app_handle: tauri::AppHandle, hotkey: String) {
 pub fn set_keyboard_recording(recording: bool) {
     keyboard::set_recording_state(recording);
 }
+
+#[tauri::command]
+pub fn set_verbose_logging(verbose: bool) {
+    keyboard::set_verbose_logging(verbose);
+}

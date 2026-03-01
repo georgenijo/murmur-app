@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { Settings, loadSettings, saveSettings } from '../settings';
 import { configure } from '../dictation';
 import { enable, disable, isEnabled } from '@tauri-apps/plugin-autostart';
@@ -9,6 +10,11 @@ export function useSettings() {
   const [settings, setSettings] = useState<Settings>(() => loadSettings());
   const settingsRef = useRef(settings);
   const configureVersionRef = useRef(0);
+
+  // Sync verboseLogs to backend on mount.
+  useEffect(() => {
+    invoke('set_verbose_logging', { verbose: settingsRef.current.verboseLogs }).catch(() => {});
+  }, []);
 
   // Sync launchAtLogin with OS state on mount.
   // Handles the case where a user removed the login item from System Settings.
@@ -44,6 +50,12 @@ export function useSettings() {
           setSettings(reverted);
           saveSettings(reverted);
         }
+      });
+    }
+
+    if ('verboseLogs' in updates) {
+      invoke('set_verbose_logging', { verbose: newSettings.verboseLogs }).catch((err) => {
+        console.error('Failed to set verbose logging:', err);
       });
     }
 
