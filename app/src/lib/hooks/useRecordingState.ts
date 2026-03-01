@@ -4,6 +4,7 @@ import { startRecording, stopRecording } from '../dictation';
 import { isDictationStatus } from '../types';
 import type { DictationStatus } from '../types';
 import { updateStats } from '../stats';
+import { addMetric } from '../metrics';
 import { flog } from '../log';
 
 interface UseRecordingStateProps {
@@ -20,6 +21,7 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
   const [audioLevel, setAudioLevel] = useState(0);
   const [lockedMode, setLockedMode] = useState(false);
   const [statsVersion, setStatsVersion] = useState(0);
+  const [metricsVersion, setMetricsVersion] = useState(0);
 
   // Refs for stable callbacks (hotkey toggle reads current state)
   const statusRef = useRef(status);
@@ -111,19 +113,28 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | null = null;
-    listen<{ text: string; duration: number }>('transcription-complete', (event) => {
+    listen<{ text: string; duration: number; inference_ms?: number; word_count?: number; model?: string }>('transcription-complete', (event) => {
       flog.info('recording', 'transcription-complete event', {
         textLen: event.payload.text?.length, duration: event.payload.duration,
         isStopping: isStoppingRef.current,
       });
       // Single source of truth for history entries — always handle here,
       // never in handleStop, to avoid race-condition duplicates.
-      const { text, duration } = event.payload;
+      const { text, duration, inference_ms, word_count, model } = event.payload;
       if (text) {
         setTranscription(text);
         addEntry(text, duration);
         updateStats(text, duration);
         setStatsVersion(v => v + 1);
+        if (typeof inference_ms === 'number') {
+          addMetric({
+            recordingDurationSecs: duration,
+            inferenceMs: inference_ms,
+            wordCount: word_count ?? 0,
+            model: model ?? 'unknown',
+          });
+          setMetricsVersion(v => v + 1);
+        }
       }
     }).then((fn) => {
       if (cancelled) { fn(); } else { unlisten = fn; }
@@ -223,5 +234,6 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
     lockedMode,
     toggleLockedMode,
     statsVersion,
+    metricsVersion,
   };
 }

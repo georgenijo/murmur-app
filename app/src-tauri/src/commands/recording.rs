@@ -33,11 +33,12 @@ impl Drop for IdleGuard<'_> {
 }
 
 /// Shared transcription pipeline: model init → transcribe → inject text → set idle
+/// Returns (transcribed_text, inference_ms).
 async fn run_transcription_pipeline(
     samples: &[f32],
     app_handle: &tauri::AppHandle,
     app_state: &AppState,
-) -> Result<String, String> {
+) -> Result<(String, u128), String> {
     // Guard resets status to Idle on any return path (error or success)
     let _guard = IdleGuard::new(app_state);
 
@@ -65,7 +66,7 @@ async fn run_transcription_pipeline(
                 Ok(vad::VadResult::NoSpeech) => {
                     log_info!("pipeline: VAD detected no speech ({} samples, {:?}), skipping transcription",
                         samples.len(), t_vad.elapsed());
-                    return Ok(String::new());
+                    return Ok((String::new(), 0));
                 }
                 Ok(vad::VadResult::Speech(trimmed)) => {
                     log_info!("pipeline: VAD trimmed {} → {} samples ({:.0}% speech, {:?})",
@@ -101,6 +102,7 @@ async fn run_transcription_pipeline(
         let name = backend.name().to_string();
         (text, name)
     };
+    let inference_ms = t_transcribe.elapsed().as_millis();
     let transcribe_secs = t_transcribe.elapsed().as_secs_f64();
     let audio_secs = samples_for_transcription.len() as f64 / 16_000.0;
     log_info!("pipeline: transcription ({} samples): {:?}", samples_for_transcription.len(), t_transcribe.elapsed());
@@ -135,7 +137,7 @@ async fn run_transcription_pipeline(
     }
     log_info!("pipeline: inject (clipboard + paste): {:?}", t_inject.elapsed());
 
-    Ok(text)
+    Ok((text, inference_ms))
     // _guard drops here, setting status to Idle
 }
 
@@ -183,7 +185,7 @@ pub async fn process_audio(
     let pipeline_result = run_transcription_pipeline(&samples, &app_handle, &state.app_state).await;
     keyboard::set_processing(false);
     let _ = app_handle.emit("recording-status-changed", "idle");
-    let text = pipeline_result?;
+    let (text, _inference_ms) = pipeline_result?;
 
     Ok(serde_json::json!({
         "type": "transcription",
@@ -377,10 +379,16 @@ pub async fn stop_native_recording(
     // Hand off status management to the pipeline's own guard
     guard.disarm();
 
+    // Read model name before pipeline (needed for metrics event)
+    let model_name = {
+        let dictation = state.app_state.dictation.lock_or_recover();
+        dictation.model_name.clone()
+    };
+
     let pipeline_result = run_transcription_pipeline(&samples, &app_handle, &state.app_state).await;
     keyboard::set_processing(false);
     let _ = app_handle.emit("recording-status-changed", "idle");
-    let text = pipeline_result.map_err(|e| {
+    let (text, inference_ms) = pipeline_result.map_err(|e| {
         log_error!("stop_native_recording: pipeline failed: {}", e);
         e
     })?;
@@ -396,7 +404,10 @@ pub async fn stop_native_recording(
     if !text.is_empty() {
         let _ = app_handle.emit("transcription-complete", serde_json::json!({
             "text": text,
-            "duration": recording_secs
+            "duration": recording_secs,
+            "inference_ms": inference_ms,
+            "word_count": word_count,
+            "model": model_name
         }));
     }
 

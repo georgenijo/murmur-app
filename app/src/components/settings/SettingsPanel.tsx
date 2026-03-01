@@ -7,6 +7,7 @@ import {
   MODEL_OPTIONS, MOONSHINE_MODELS, WHISPER_MODELS, DOUBLE_TAP_KEY_OPTIONS, RECORDING_MODE_OPTIONS,
 } from '../../lib/settings';
 import { Select } from '../ui/Select';
+import { PerformanceMetrics } from '../PerformanceMetrics';
 import type { DictationStatus } from '../../lib/types';
 import type { UpdateStatus } from '../../lib/updater';
 
@@ -52,9 +53,10 @@ interface SettingsPanelProps {
   accessibilityGranted: boolean | null;
   onCheckForUpdate: () => Promise<void>;
   updateStatus: UpdateStatus;
+  metricsVersion: number;
 }
 
-export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, status, onResetStats, onViewLogs, accessibilityGranted, onCheckForUpdate, updateStatus }: SettingsPanelProps) {
+export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, status, onResetStats, onViewLogs, accessibilityGranted, onCheckForUpdate, updateStatus, metricsVersion }: SettingsPanelProps) {
   const [confirmReset, setConfirmReset] = useState(false);
   const [version, setVersion] = useState('');
 
@@ -475,6 +477,14 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
           >
             {confirmReset ? 'Confirm Reset' : 'Reset Stats'}
           </button>
+        </div>
+
+        {/* Performance Metrics */}
+        <div className="pt-4 border-t border-stone-200 dark:border-stone-700">
+          <h3 className="text-sm font-medium text-stone-700 dark:text-stone-300 mb-2">
+            Performance
+          </h3>
+          <PerformanceMetrics metricsVersion={metricsVersion} />
         </div>
 
         {/* Logs */}

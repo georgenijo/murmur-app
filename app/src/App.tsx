@@ -70,7 +70,7 @@ function App() {
   const { historyEntries, addEntry, clearHistory } = useHistoryManagement();
   const {
     status, recordingDuration, error: recordingError,
-    handleStart, handleStop, toggleRecording, statsVersion,
+    handleStart, handleStop, toggleRecording, statsVersion, metricsVersion,
   } = useRecordingState({ addEntry, microphone: settings.microphone });
   const [statsResetVersion, setStatsResetVersion] = useState(0);
   const combinedStatsVersion = statsVersion + statsResetVersion;
@@ -167,6 +167,7 @@ function App() {
           accessibilityGranted={accessibilityGranted}
           onCheckForUpdate={checkForUpdate}
           updateStatus={updateStatus}
+          metricsVersion={metricsVersion}
         />
       </div>
 
