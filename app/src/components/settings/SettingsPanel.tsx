@@ -56,10 +56,13 @@ interface SettingsPanelProps {
 
 export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, status, onResetStats, onViewLogs, accessibilityGranted, onCheckForUpdate, updateStatus }: SettingsPanelProps) {
   const [confirmReset, setConfirmReset] = useState(false);
+  const [confirmResetApp, setConfirmResetApp] = useState(false);
+  const [deleteLogs, setDeleteLogs] = useState(true);
   const [version, setVersion] = useState('');
 
   useEffect(() => { getVersion().then(setVersion); }, []);
   const confirmResetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const confirmResetAppTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleResetClick = () => {
     if (confirmReset) {
@@ -72,6 +75,25 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
       confirmResetTimeoutRef.current = setTimeout(() => {
         setConfirmReset(false);
         confirmResetTimeoutRef.current = null;
+      }, 3000);
+    }
+  };
+
+  const handleResetAppDataClick = async () => {
+    if (confirmResetApp) {
+      if (confirmResetAppTimeoutRef.current) clearTimeout(confirmResetAppTimeoutRef.current);
+      confirmResetAppTimeoutRef.current = null;
+      setConfirmResetApp(false);
+      localStorage.clear();
+      if (deleteLogs) {
+        try { await invoke('clear_logs'); } catch (_) { /* best effort */ }
+      }
+      window.location.reload();
+    } else {
+      setConfirmResetApp(true);
+      confirmResetAppTimeoutRef.current = setTimeout(() => {
+        setConfirmResetApp(false);
+        confirmResetAppTimeoutRef.current = null;
       }, 3000);
     }
   };
@@ -517,6 +539,36 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
               Update check failed
             </p>
           )}
+        </div>
+
+        {/* Reset App Data */}
+        <div className="pt-4 border-t border-stone-200 dark:border-stone-700">
+          <h3 className="text-sm font-medium text-stone-700 dark:text-stone-300 mb-2">
+            Danger Zone
+          </h3>
+          <label className="flex items-center gap-2 mb-2 text-xs text-stone-600 dark:text-stone-400 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={deleteLogs}
+              onChange={(e) => setDeleteLogs(e.target.checked)}
+              className="rounded border-stone-300 dark:border-stone-600"
+            />
+            Also delete log files
+          </label>
+          <button
+            onClick={handleResetAppDataClick}
+            aria-label={confirmResetApp ? 'Confirm reset app data' : 'Reset app data'}
+            className={`w-full px-3 py-2 rounded-lg text-xs font-medium border transition-colors ${
+              confirmResetApp
+                ? 'border-red-400 dark:border-red-600 bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/40'
+                : 'border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-600'
+            }`}
+          >
+            {confirmResetApp ? 'Confirm Reset' : 'Reset App Data'}
+          </button>
+          <p className="mt-1.5 text-xs text-stone-500 dark:text-stone-400">
+            Clears settings, statistics, and transcription history. The app will reload with defaults.
+          </p>
         </div>
       </div>
 
