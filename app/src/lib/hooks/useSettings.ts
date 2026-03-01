@@ -47,9 +47,9 @@ export function useSettings() {
       });
     }
 
-    if ('model' in updates || 'language' in updates || 'autoPaste' in updates || 'autoPasteDelayMs' in updates) {
+    if ('model' in updates || 'language' in updates || 'autoPaste' in updates || 'autoPasteDelayMs' in updates || 'vadSensitivity' in updates) {
       const version = ++configureVersionRef.current;
-      configure({ model: newSettings.model, language: newSettings.language, autoPaste: newSettings.autoPaste, autoPasteDelayMs: newSettings.autoPasteDelayMs })
+      configure({ model: newSettings.model, language: newSettings.language, autoPaste: newSettings.autoPaste, autoPasteDelayMs: newSettings.autoPasteDelayMs, vadSensitivity: newSettings.vadSensitivity })
         .catch((err) => {
           console.error('Failed to configure:', err);
           if (configureVersionRef.current === version) {
@@ -59,6 +59,7 @@ export function useSettings() {
               language: previousSettings.language,
               autoPaste: previousSettings.autoPaste,
               autoPasteDelayMs: previousSettings.autoPasteDelayMs,
+              vadSensitivity: previousSettings.vadSensitivity,
             };
             settingsRef.current = reverted;
             setSettings(reverted);

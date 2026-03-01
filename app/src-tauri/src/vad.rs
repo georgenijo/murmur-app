@@ -27,7 +27,7 @@ pub enum VadResult {
 /// `model_path` must point to a valid Silero VAD GGML model file.
 /// This function creates a `WhisperVadContext` which is `!Send`, so it must
 /// run entirely within a single thread (use `spawn_blocking`).
-pub fn filter_speech(model_path: &str, samples: &[f32]) -> Result<VadResult, String> {
+pub fn filter_speech(model_path: &str, samples: &[f32], threshold: f32) -> Result<VadResult, String> {
     let mut ctx_params = WhisperVadContextParams::default();
     ctx_params.set_n_threads(1);
     ctx_params.set_use_gpu(false);
@@ -35,10 +35,8 @@ pub fn filter_speech(model_path: &str, samples: &[f32]) -> Result<VadResult, Str
     let mut ctx = WhisperVadContext::new(model_path, ctx_params)
         .map_err(|e| format!("Failed to create VAD context: {}", e))?;
 
-    let vad_params = WhisperVadParams::default();
-    // Default params already match our desired values:
-    //   threshold: 0.5, min_speech_duration: 250ms,
-    //   min_silence_duration: 100ms, speech_pad: 30ms
+    let mut vad_params = WhisperVadParams::default();
+    vad_params.set_threshold(threshold);
 
     let segments = ctx
         .segments_from_samples(vad_params, samples)

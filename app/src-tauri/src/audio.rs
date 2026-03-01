@@ -8,12 +8,17 @@ use std::thread::{self, JoinHandle};
 use tauri::Emitter;
 
 /// Compute RMS (root mean square) of a sample slice — returns 0.0–1.0 audio level.
-fn compute_rms(samples: &[f32]) -> f32 {
+pub fn compute_rms(samples: &[f32]) -> f32 {
     if samples.is_empty() {
         return 0.0;
     }
     let sum_sq: f32 = samples.iter().map(|s| s * s).sum();
     (sum_sq / samples.len() as f32).sqrt()
+}
+
+/// Compute peak (max absolute value) of a sample slice — returns 0.0–1.0.
+pub fn compute_peak(samples: &[f32]) -> f32 {
+    samples.iter().map(|s| s.abs()).fold(0.0_f32, f32::max)
 }
 
 /// Build an input stream that converts interleaved multi-channel samples to mono f32,
@@ -84,6 +89,8 @@ struct RecordingState {
     sample_rate: u32,
     /// Wall-clock instant when recording started.
     started_at: Option<std::time::Instant>,
+    /// Name of the audio input device used for the current/last recording.
+    device_name: Option<String>,
 }
 
 fn get_state() -> &'static Mutex<RecordingState> {
@@ -94,6 +101,7 @@ fn get_state() -> &'static Mutex<RecordingState> {
             shared: None,
             sample_rate: WHISPER_SAMPLE_RATE,
             started_at: None,
+            device_name: None,
         })
     })
 }
@@ -132,7 +140,7 @@ pub fn start_recording(app_handle: Option<tauri::AppHandle>, device_name: Option
     log_info!("start_recording: created fresh sample buffer");
 
     let (cmd_tx, cmd_rx) = channel::<AudioCommand>();
-    let (ready_tx, ready_rx) = channel::<Result<u32, String>>();
+    let (ready_tx, ready_rx) = channel::<Result<(u32, String), String>>();
 
     // Spawn audio thread
     let handle = thread::spawn(move || {
@@ -147,8 +155,9 @@ pub fn start_recording(app_handle: Option<tauri::AppHandle>, device_name: Option
 
     // Wait for thread to signal ready (with timeout)
     let init_result = match ready_rx.recv_timeout(std::time::Duration::from_secs(5)) {
-        Ok(Ok(device_sample_rate)) => {
+        Ok(Ok((device_sample_rate, actual_device_name))) => {
             state_guard.sample_rate = device_sample_rate;
+            state_guard.device_name = Some(actual_device_name);
             state_guard.started_at = Some(std::time::Instant::now());
             Ok(())
         }
@@ -170,7 +179,7 @@ pub fn start_recording(app_handle: Option<tauri::AppHandle>, device_name: Option
 fn run_audio_capture(
     cmd_rx: Receiver<AudioCommand>,
     shared: Arc<Mutex<Vec<f32>>>,
-    ready_tx: Sender<Result<u32, String>>,
+    ready_tx: Sender<Result<(u32, String), String>>,
     app_handle: Option<tauri::AppHandle>,
     device_name: Option<String>,
 ) -> Result<(), String> {
@@ -221,8 +230,8 @@ fn run_audio_capture(
 
     stream.play().map_err(|e| format!("Failed to start stream: {}", e))?;
 
-    // Signal ready with the device sample rate
-    let _ = ready_tx.send(Ok(device_sample_rate));
+    // Signal ready with the device sample rate and name
+    let _ = ready_tx.send(Ok((device_sample_rate, actual_name.clone())));
 
     // Wait for stop command
     loop {
@@ -298,6 +307,16 @@ pub fn is_recording() -> bool {
     false
 }
 
+/// Return the device name from the most recent recording session.
+pub fn last_device_name() -> Option<String> {
+    if let Some(state) = RECORDING_STATE.get() {
+        if let Ok(guard) = state.lock() {
+            return guard.device_name.clone();
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -338,6 +357,28 @@ mod tests {
     #[test]
     fn rms_single_sample() {
         assert!((compute_rms(&[0.6f32]) - 0.6).abs() < 1e-6);
+    }
+
+    #[test]
+    fn peak_empty_slice_returns_zero() {
+        assert_eq!(compute_peak(&[]), 0.0);
+    }
+
+    #[test]
+    fn peak_silence_is_zero() {
+        assert_eq!(compute_peak(&[0.0f32; 100]), 0.0);
+    }
+
+    #[test]
+    fn peak_positive() {
+        let samples = vec![0.1f32, 0.5, 0.3, 0.2];
+        assert!((compute_peak(&samples) - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn peak_negative() {
+        let samples = vec![0.1f32, -0.8, 0.3, 0.2];
+        assert!((compute_peak(&samples) - 0.8).abs() < 1e-6);
     }
 }
 
