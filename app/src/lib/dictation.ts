@@ -48,10 +48,6 @@ export async function stopRecording(): Promise<DictationResponse> {
   }
 }
 
-export async function cancelRecording(): Promise<void> {
-  await invoke('escape_cancel_recording');
-}
-
 export async function getStatus(): Promise<DictationResponse> {
   return await invoke('get_status');
 }

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { startRecording, stopRecording, cancelRecording } from '../dictation';
+import { invoke } from '@tauri-apps/api/core';
+import { startRecording, stopRecording } from '../dictation';
 import { isDictationStatus } from '../types';
 import type { DictationStatus } from '../types';
 import { updateStats } from '../stats';
@@ -111,7 +112,7 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
     let unlisten: (() => void) | null = null;
     listen('escape-cancel', () => {
       flog.info('recording', 'escape-cancel event received', { status: statusRef.current });
-      cancelRecording().catch((err) => {
+      invoke('escape_cancel_recording').catch((err) => {
         flog.warn('recording', 'escape_cancel_recording failed', { error: String(err) });
       });
     }).then((fn) => {
