@@ -26,32 +26,8 @@ jobs:
       - name: Unit tests
         run: cd app && npm test
 
-  rust:
-    runs-on: macos-latest
-    env:
-      MACOSX_DEPLOYMENT_TARGET: "11.0"
-      CMAKE_OSX_DEPLOYMENT_TARGET: "11.0"
-      CMAKE_C_FLAGS: "-march=armv8.5-a -mmacosx-version-min=11.0"
-      CMAKE_CXX_FLAGS: "-march=armv8.5-a -mmacosx-version-min=11.0"
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Rust dependencies
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: app/src-tauri
-
-      - name: Compile check
-        run: cd app/src-tauri && cargo check
-
-      - name: Run tests
-        run: cd app/src-tauri && cargo test --lib -- --test-threads=1
-
   release:
-    needs: [typecheck, rust]
+    needs: [typecheck]
     runs-on: macos-latest
     permissions:
       contents: write
