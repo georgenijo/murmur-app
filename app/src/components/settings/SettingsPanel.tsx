@@ -7,6 +7,7 @@ import {
   MODEL_OPTIONS, MOONSHINE_MODELS, WHISPER_MODELS, DOUBLE_TAP_KEY_OPTIONS, RECORDING_MODE_OPTIONS,
 } from '../../lib/settings';
 import { Select } from '../ui/Select';
+import { SettingsSection } from './SettingsSection';
 import type { DictationStatus } from '../../lib/types';
 import type { UpdateStatus } from '../../lib/updater';
 
@@ -222,7 +223,8 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
       </div>
 
       {/* Content */}
-      <div className="p-4 space-y-6">
+      <div className="px-4 pt-1">
+        <SettingsSection title="Transcription" subtitle="Model, microphone">
         {/* Model Selector */}
         <div>
           <label className="block text-sm font-medium text-stone-700 dark:text-stone-300 mb-2">
@@ -326,7 +328,9 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
             </div>
           )}
         </div>
+        </SettingsSection>
 
+        <SettingsSection title="Recording" subtitle="Trigger mode, shortcut key">
         {/* Voice Detection */}
         <div>
           <label className="block text-sm font-medium text-stone-700 dark:text-stone-300 mb-2">
@@ -395,7 +399,9 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
             {keyHelpText}
           </p>
         </div>
+        </SettingsSection>
 
+        <SettingsSection title="Output" subtitle="Auto-paste, launch at login">
         {/* Auto-Paste Toggle */}
         <div>
           <div className="flex items-center justify-between">
@@ -485,12 +491,11 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
             </button>
           </div>
         </div>
+        </SettingsSection>
 
+        <SettingsSection title="About" subtitle="Stats, logs, updates" defaultExpanded={false}>
         {/* Model Info */}
-        <div className="pt-4 border-t border-stone-200 dark:border-stone-700">
-          <h3 className="text-sm font-medium text-stone-700 dark:text-stone-300 mb-2">
-            Current Model
-          </h3>
+        <div>
           <div className="text-sm text-stone-600 dark:text-stone-400">
             <p><strong>Model:</strong> {selectedModel?.label}</p>
             <p><strong>Backend:</strong> {selectedModel
@@ -502,10 +507,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
         </div>
 
         {/* Reset Stats */}
-        <div className="pt-4 border-t border-stone-200 dark:border-stone-700">
-          <h3 className="text-sm font-medium text-stone-700 dark:text-stone-300 mb-2">
-            Statistics
-          </h3>
+        <div>
           <button
             onClick={handleResetClick}
             aria-label={confirmReset ? 'Confirm reset statistics' : 'Reset statistics'}
@@ -520,10 +522,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
         </div>
 
         {/* Logs */}
-        <div className="pt-4 border-t border-stone-200 dark:border-stone-700">
-          <h3 className="text-sm font-medium text-stone-700 dark:text-stone-300 mb-2">
-            Logs
-          </h3>
+        <div>
           <button
             onClick={onViewLogs}
             className="w-full px-3 py-2 rounded-lg text-xs font-medium border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-600 transition-colors"
@@ -533,10 +532,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
         </div>
 
         {/* Updates */}
-        <div className="pt-4 border-t border-stone-200 dark:border-stone-700">
-          <h3 className="text-sm font-medium text-stone-700 dark:text-stone-300 mb-2">
-            Updates
-          </h3>
+        <div>
           <button
             onClick={onCheckForUpdate}
             disabled={updateStatus.phase === 'checking' || updateStatus.phase === 'downloading'}
@@ -560,14 +556,15 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
             </p>
           )}
         </div>
-      </div>
 
-      {/* Footer */}
-      {version && (
-        <div className="px-4 py-3 border-t border-stone-200 dark:border-stone-700 text-center">
-          <span className="text-xs text-stone-400 dark:text-stone-500">v{version}</span>
-        </div>
-      )}
+        {/* Version */}
+        {version && (
+          <div className="text-center">
+            <span className="text-xs text-stone-400 dark:text-stone-500">v{version}</span>
+          </div>
+        )}
+        </SettingsSection>
+      </div>
     </aside>
   );
 }
