@@ -2,18 +2,24 @@ use crate::{MutexExt, State};
 use crate::state::{AppState, DictationStatus};
 use crate::transcriber;
 use crate::{audio, injector, keyboard, vad};
+use std::sync::atomic::Ordering;
 use tauri::Emitter;
 
 /// RAII guard that resets dictation status to Idle on drop,
 /// ensuring status is restored on any early return or error path.
+///
+/// Tracks `recording_id` so it only resets state if this recording is still
+/// the active one — prevents a stale pipeline from clobbering a new recording
+/// that started after an Escape cancel.
 struct IdleGuard<'a> {
     app_state: &'a AppState,
+    recording_id: u64,
     disarmed: bool,
 }
 
 impl<'a> IdleGuard<'a> {
-    fn new(app_state: &'a AppState) -> Self {
-        Self { app_state, disarmed: false }
+    fn new(app_state: &'a AppState, recording_id: u64) -> Self {
+        Self { app_state, recording_id, disarmed: false }
     }
 
     fn disarm(&mut self) {
@@ -24,6 +30,13 @@ impl<'a> IdleGuard<'a> {
 impl Drop for IdleGuard<'_> {
     fn drop(&mut self) {
         if !self.disarmed {
+            // Only reset if this recording is still the active one.
+            // If cancel + new recording happened, current_rid will differ
+            // and we must not clobber the new recording's state.
+            let current_rid = self.app_state.recording_id.load(Ordering::SeqCst);
+            if current_rid != self.recording_id {
+                return;
+            }
             let mut dictation = self.app_state.dictation.lock_or_recover();
             dictation.status = DictationStatus::Idle;
             keyboard::set_processing(false);
@@ -37,14 +50,18 @@ pub(crate) struct PipelineTimings {
     pub paste_ms: u64,
 }
 
-/// Shared transcription pipeline: model init -> transcribe -> inject text -> set idle
+/// Shared transcription pipeline: model init -> transcribe -> inject text -> set idle.
+/// `recording_id` is checked against `app_state.cancelled_id` at checkpoints;
+/// if cancelled, returns empty text without clipboard write or paste.
 async fn run_transcription_pipeline(
     samples: &[f32],
     app_handle: &tauri::AppHandle,
     app_state: &AppState,
+    recording_id: u64,
 ) -> Result<(String, PipelineTimings), String> {
-    // Guard resets status to Idle on any return path (error or success)
-    let _guard = IdleGuard::new(app_state);
+    // Guard resets status to Idle on any return path (error or success),
+    // but only if this recording is still the active one
+    let _guard = IdleGuard::new(app_state, recording_id);
 
     // Read all needed state in one lock
     let (model_name, language, auto_paste, paste_delay_ms, vad_sensitivity) = {
@@ -57,6 +74,12 @@ async fn run_transcription_pipeline(
     let peak = audio::compute_peak(samples);
     let device = audio::last_device_name().unwrap_or_else(|| "unknown".to_string());
     tracing::info!(target: "pipeline", "audio rms={:.4} peak={:.4} (device={})", rms, peak, device);
+
+    // Checkpoint 1: cancelled before VAD?
+    if app_state.is_cancelled(recording_id) {
+        tracing::info!(target: "pipeline", "cancelled before VAD (recording_id={})", recording_id);
+        return Ok((String::new(), PipelineTimings { vad_ms: 0, inference_ms: 0, paste_ms: 0 }));
+    }
 
     // Phase: VAD -- filter out silence to prevent Whisper hallucination loops
     let vad_threshold = 1.0 - (vad_sensitivity as f32 / 100.0);
@@ -105,6 +128,12 @@ async fn run_transcription_pipeline(
     };
     let vad_ms = t_vad.elapsed().as_millis() as u64;
 
+    // Checkpoint 2: cancelled before transcription?
+    if app_state.is_cancelled(recording_id) {
+        tracing::info!(target: "pipeline", "cancelled before transcription (recording_id={})", recording_id);
+        return Ok((String::new(), PipelineTimings { vad_ms, inference_ms: 0, paste_ms: 0 }));
+    }
+
     // Phase: Transcription (includes lazy model load on first run)
     let t_transcribe = std::time::Instant::now();
     let text = {
@@ -114,6 +143,12 @@ async fn run_transcription_pipeline(
     };
     let inference_ms = t_transcribe.elapsed().as_millis() as u64;
     tracing::info!(target: "pipeline", "transcription ({} samples): {:?}", samples_for_transcription.len(), t_transcribe.elapsed());
+
+    // Checkpoint 3: cancelled before text injection?
+    if app_state.is_cancelled(recording_id) {
+        tracing::info!(target: "pipeline", "cancelled before injection (recording_id={})", recording_id);
+        return Ok((String::new(), PipelineTimings { vad_ms, inference_ms, paste_ms: 0 }));
+    }
 
     // Phase: Text injection (clipboard write + optional osascript paste)
     let t_inject = std::time::Instant::now();
@@ -176,7 +211,8 @@ pub async fn process_audio(
     let _ = app_handle.emit("recording-status-changed", "processing");
 
     // Guard resets status to Idle if decode/parse fails before reaching the pipeline
-    let mut guard = IdleGuard::new(&state.app_state);
+    let rid = state.app_state.recording_id.load(Ordering::SeqCst);
+    let mut guard = IdleGuard::new(&state.app_state, rid);
 
     // Phase: Audio parse (base64 decode + WAV to samples)
     let t_parse = std::time::Instant::now();
@@ -195,9 +231,13 @@ pub async fn process_audio(
     guard.disarm();
 
     let t_total = std::time::Instant::now();
-    let pipeline_result = run_transcription_pipeline(&samples, &app_handle, &state.app_state).await;
-    keyboard::set_processing(false);
-    let _ = app_handle.emit("recording-status-changed", "idle");
+    let pipeline_result = run_transcription_pipeline(&samples, &app_handle, &state.app_state, rid).await;
+    // Only emit idle if this recording wasn't cancelled/superseded
+    let current_rid = state.app_state.recording_id.load(Ordering::SeqCst);
+    if current_rid == rid {
+        keyboard::set_processing(false);
+        let _ = app_handle.emit("recording-status-changed", "idle");
+    }
     let (text, timings) = pipeline_result?;
 
     let total_ms = t_total.elapsed().as_millis() as u64;
@@ -335,7 +375,9 @@ pub async fn start_native_recording(
         }
     }
 
-    tracing::info!(target: "pipeline", "start_native_recording: device={}", device_name.as_deref().unwrap_or("system_default"));
+    // Assign a unique ID to this recording session
+    let rid = state.app_state.next_recording_id();
+    tracing::info!(target: "pipeline", "start_native_recording: device={} recording_id={}", device_name.as_deref().unwrap_or("system_default"), rid);
     if let Err(e) = audio::start_recording(Some(app_handle.clone()), device_name) {
         tracing::error!(target: "audio", "start_native_recording: audio failed: {}", e);
         let mut dictation = state.app_state.dictation.lock_or_recover();
@@ -382,7 +424,8 @@ pub async fn stop_native_recording(
 
     // Guard resets status to Idle if stop_recording fails or samples are empty;
     // disarmed before handing off to run_transcription_pipeline (which has its own guard)
-    let mut guard = IdleGuard::new(&state.app_state);
+    let rid = state.app_state.recording_id.load(Ordering::SeqCst);
+    let mut guard = IdleGuard::new(&state.app_state, rid);
 
     // Phase: Audio teardown + 16kHz resample
     let t_total = std::time::Instant::now();
@@ -422,9 +465,14 @@ pub async fn stop_native_recording(
     // Hand off status management to the pipeline's own guard
     guard.disarm();
 
-    let pipeline_result = run_transcription_pipeline(&samples, &app_handle, &state.app_state).await;
-    keyboard::set_processing(false);
-    let _ = app_handle.emit("recording-status-changed", "idle");
+    let pipeline_result = run_transcription_pipeline(&samples, &app_handle, &state.app_state, rid).await;
+    // Only emit idle if this recording wasn't cancelled/superseded by a new one.
+    // Cancel already handled status reset and set_processing(false).
+    let current_rid = state.app_state.recording_id.load(Ordering::SeqCst);
+    if current_rid == rid {
+        keyboard::set_processing(false);
+        let _ = app_handle.emit("recording-status-changed", "idle");
+    }
     let (text, timings) = pipeline_result.map_err(|e| {
         tracing::error!(target: "pipeline", "stop_native_recording: pipeline failed: {}", e);
         e
@@ -474,24 +522,48 @@ pub async fn stop_native_recording(
     }))
 }
 
-/// Cancel an in-progress recording without transcribing (used by Both mode
-/// to silently discard the speculative recording from a short tap).
+/// Cancel an in-progress recording or transcription.
+///
+/// - **Recording**: stops audio capture, discards samples, resets to Idle.
+/// - **Processing**: marks the current recording_id as cancelled so the
+///   pipeline discards its result at the next checkpoint; immediately
+///   emits idle status so the UI resets without waiting for whisper.
+/// - **Idle**: no-op.
 #[tauri::command]
 pub async fn cancel_native_recording(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, State>,
 ) -> Result<(), String> {
-    {
+    let prev_status = {
         let mut dictation = state.app_state.dictation.lock_or_recover();
-        if dictation.status != DictationStatus::Recording {
-            return Ok(());
+        let prev = dictation.status;
+        match prev {
+            DictationStatus::Idle => return Ok(()),
+            DictationStatus::Recording | DictationStatus::Processing => {
+                dictation.status = DictationStatus::Idle;
+            }
         }
-        dictation.status = DictationStatus::Idle;
+        prev
+    };
+
+    match prev_status {
+        DictationStatus::Recording => {
+            // Stop audio capture and discard samples
+            let _ = audio::stop_recording();
+            tracing::info!(target: "pipeline", "cancel_native_recording: recording discarded");
+        }
+        DictationStatus::Processing => {
+            // Mark current recording as cancelled — pipeline will check at next checkpoint
+            let rid = state.app_state.recording_id.load(std::sync::atomic::Ordering::SeqCst);
+            state.app_state.cancel_recording(rid);
+            tracing::info!(target: "pipeline", "cancel_native_recording: processing cancelled (recording_id={})", rid);
+        }
+        DictationStatus::Idle => unreachable!(),
     }
-    // Stop audio capture and discard samples
-    let _ = audio::stop_recording();
+
+    keyboard::set_processing(false);
     let _ = app_handle.emit("recording-status-changed", "idle");
-    tracing::info!(target: "pipeline", "cancel_native_recording: speculative recording discarded");
+    let _ = app_handle.emit("recording-cancelled", ());
     Ok(())
 }
 
@@ -502,12 +574,13 @@ mod tests {
     #[test]
     fn idle_guard_resets_status_on_drop() {
         let app_state = AppState::default();
+        let rid = app_state.next_recording_id();
         {
             let mut dictation = app_state.dictation.lock().unwrap();
             dictation.status = DictationStatus::Processing;
         }
         {
-            let _guard = IdleGuard::new(&app_state);
+            let _guard = IdleGuard::new(&app_state, rid);
             // guard drops here
         }
         let dictation = app_state.dictation.lock().unwrap();
@@ -517,12 +590,13 @@ mod tests {
     #[test]
     fn idle_guard_disarm_prevents_reset() {
         let app_state = AppState::default();
+        let rid = app_state.next_recording_id();
         {
             let mut dictation = app_state.dictation.lock().unwrap();
             dictation.status = DictationStatus::Processing;
         }
         {
-            let mut guard = IdleGuard::new(&app_state);
+            let mut guard = IdleGuard::new(&app_state, rid);
             guard.disarm();
             // guard drops here, but disarmed -- no reset
         }
@@ -534,9 +608,58 @@ mod tests {
     fn idle_guard_calls_set_processing_false() {
         keyboard::set_processing(true);
         let app_state = AppState::default();
+        let rid = app_state.next_recording_id();
         {
-            let _guard = IdleGuard::new(&app_state);
+            let _guard = IdleGuard::new(&app_state, rid);
         }
         assert!(!keyboard::is_processing());
+    }
+
+    #[test]
+    fn idle_guard_skips_reset_when_recording_superseded() {
+        let app_state = AppState::default();
+        let rid1 = app_state.next_recording_id(); // 1
+        {
+            let mut dictation = app_state.dictation.lock().unwrap();
+            dictation.status = DictationStatus::Recording;
+        }
+        // Simulate new recording starting (increments rid)
+        let _rid2 = app_state.next_recording_id(); // 2
+        {
+            let _guard = IdleGuard::new(&app_state, rid1);
+            // guard drops here, but rid1 != current_rid(2), so no reset
+        }
+        let dictation = app_state.dictation.lock().unwrap();
+        assert_eq!(dictation.status, DictationStatus::Recording);
+    }
+
+    #[test]
+    fn generation_counter_cancel_current_recording() {
+        let app_state = AppState::default();
+        let id = app_state.next_recording_id(); // 1
+        assert!(!app_state.is_cancelled(id));
+        app_state.cancel_recording(id);
+        assert!(app_state.is_cancelled(id));
+    }
+
+    #[test]
+    fn generation_counter_new_recording_not_cancelled() {
+        let app_state = AppState::default();
+        let id1 = app_state.next_recording_id(); // 1
+        app_state.cancel_recording(id1);
+        let id2 = app_state.next_recording_id(); // 2
+        assert!(app_state.is_cancelled(id1));
+        assert!(!app_state.is_cancelled(id2));
+    }
+
+    #[test]
+    fn generation_counter_monotonic_ids() {
+        let app_state = AppState::default();
+        let id1 = app_state.next_recording_id();
+        let id2 = app_state.next_recording_id();
+        let id3 = app_state.next_recording_id();
+        assert_eq!(id1, 1);
+        assert_eq!(id2, 2);
+        assert_eq!(id3, 3);
     }
 }

@@ -67,6 +67,11 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
           recordingStartTimeRef.current = null;
           setRecordingStartTime(null);
         }
+        // If idle arrived externally (e.g. Escape cancel), unblock handleStop
+        // so the next recording cycle can stop normally.
+        if (event.payload === 'idle') {
+          isStoppingRef.current = false;
+        }
       }
     }).then((fn) => {
       if (cancelled) { fn(); } else { unlisten = fn; }
@@ -179,7 +184,12 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
         // to avoid race-condition duplicates.
       }
       if (res.type === 'error') setError(res.error || 'Unknown error');
-      setStatus(isDictationStatus(res.state) ? res.state : 'idle');
+      // Only update status from the return value if we're still in
+      // processing. If cancel already set us to idle (or a new recording
+      // started), don't clobber the current state with a stale result.
+      if (statusRef.current === 'processing') {
+        setStatus(isDictationStatus(res.state) ? res.state : 'idle');
+      }
     } catch (err) {
       setError(String(err));
       setStatus('idle');
