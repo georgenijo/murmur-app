@@ -19,9 +19,12 @@ export function useEventStore() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+
     // Hydrate from backend
     invoke<AppEvent[]>('get_event_history')
       .then((history) => {
+        if (cancelled) return;
         bufRef.current = history.slice(-MAX_EVENTS);
         setEvents([...bufRef.current]);
       })
@@ -30,15 +33,20 @@ export function useEventStore() {
     // Listen for new events
     let unlisten: (() => void) | undefined;
     listen<AppEvent>('app-event', (e) => {
+      if (cancelled) return;
       const buf = bufRef.current;
       buf.push(e.payload);
       if (buf.length > MAX_EVENTS) {
         buf.splice(0, buf.length - MAX_EVENTS);
       }
       scheduleUpdate();
-    }).then((fn) => { unlisten = fn; });
+    }).then((fn) => {
+      if (cancelled) { fn(); return; }
+      unlisten = fn;
+    });
 
     return () => {
+      cancelled = true;
       unlisten?.();
       if (rafRef.current !== null) {
         cancelAnimationFrame(rafRef.current);
