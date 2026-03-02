@@ -173,27 +173,19 @@ pub(crate) async fn ensure_vad_model(app_handle: &tauri::AppHandle) -> Result<()
         .map_err(|e| format!("Failed to create models directory: {}", e))?;
 
     tracing::info!(target: "system", "VAD model not found, downloading...");
-    let _ = app_handle.emit("recording-status-changed", "downloading-vad");
 
-    let result = async {
-        let temp_path = models_dir.join(format!("{}.tmp", vad::VAD_MODEL_FILENAME));
-        let received = stream_download(app_handle, vad::VAD_MODEL_URL, &temp_path).await?;
+    let temp_path = models_dir.join(format!("{}.tmp", vad::VAD_MODEL_FILENAME));
+    let received = stream_download(app_handle, vad::VAD_MODEL_URL, &temp_path).await?;
 
-        tokio::fs::rename(&temp_path, &model_path)
-            .await
-            .map_err(|e| {
-                let _ = std::fs::remove_file(&temp_path);
-                format!("Failed to finalize VAD model download: {}", e)
-            })?;
+    tokio::fs::rename(&temp_path, &model_path)
+        .await
+        .map_err(|e| {
+            let _ = std::fs::remove_file(&temp_path);
+            format!("Failed to finalize VAD model download: {}", e)
+        })?;
 
-        tracing::info!(target: "system", "VAD model downloaded: {} ({} bytes)", vad::VAD_MODEL_FILENAME, received);
-        Ok::<(), String>(())
-    }
-    .await;
-
-    // Always restore status so the UI doesn't get stuck at "downloading-vad"
-    let _ = app_handle.emit("recording-status-changed", "processing");
-    result
+    tracing::info!(target: "system", "VAD model downloaded: {} ({} bytes)", vad::VAD_MODEL_FILENAME, received);
+    Ok(())
 }
 
 /// Stream a file download with progress events. Returns total bytes received.
