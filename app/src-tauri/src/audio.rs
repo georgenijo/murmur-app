@@ -1,5 +1,4 @@
 use crate::state::WHISPER_SAMPLE_RATE;
-use crate::{log_error, log_info, log_warn};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Sample, SampleFormat};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -120,7 +119,7 @@ pub fn list_input_devices() -> Result<Vec<String>, String> {
 pub fn start_recording(app_handle: Option<tauri::AppHandle>, device_name: Option<String>) -> Result<(), String> {
     let state = get_state();
     let mut state_guard = state.lock().unwrap_or_else(|poisoned| {
-        log_warn!("start_recording: recording state mutex was poisoned, recovering");
+        tracing::warn!(target: "audio", "start_recording: recording state mutex was poisoned, recovering");
         poisoned.into_inner()
     });
 
@@ -129,7 +128,7 @@ pub fn start_recording(app_handle: Option<tauri::AppHandle>, device_name: Option
         drop(state_guard);
         stop_recording()?;
         state_guard = state.lock().unwrap_or_else(|poisoned| {
-            log_warn!("start_recording: recording state mutex was poisoned, recovering");
+            tracing::warn!(target: "audio", "start_recording: recording state mutex was poisoned, recovering");
             poisoned.into_inner()
         });
     }
@@ -137,7 +136,7 @@ pub fn start_recording(app_handle: Option<tauri::AppHandle>, device_name: Option
     // Create a brand-new buffer for this recording — no stale data possible
     let new_buffer = Arc::new(Mutex::new(Vec::<f32>::new()));
     state_guard.shared = Some(Arc::clone(&new_buffer));
-    log_info!("start_recording: created fresh sample buffer");
+    tracing::info!(target: "audio", "start_recording: created fresh sample buffer");
 
     let (cmd_tx, cmd_rx) = channel::<AudioCommand>();
     let (ready_tx, ready_rx) = channel::<Result<(u32, String), String>>();
@@ -145,7 +144,7 @@ pub fn start_recording(app_handle: Option<tauri::AppHandle>, device_name: Option
     // Spawn audio thread
     let handle = thread::spawn(move || {
         if let Err(e) = run_audio_capture(cmd_rx, new_buffer, ready_tx.clone(), app_handle, device_name) {
-            log_error!("Audio capture error: {}", e);
+            tracing::error!(target: "audio", "Audio capture error: {}", e);
             let _ = ready_tx.send(Err(e));
         }
     });
@@ -191,14 +190,14 @@ fn run_audio_capture(
                 match devices.find(|d| d.name().ok().as_deref() == Some(name)) {
                     Some(d) => d,
                     None => {
-                        log_warn!("Requested device '{}' not found, falling back to default", name);
+                        tracing::warn!(target: "audio", "Requested device '{}' not found, falling back to default", name);
                         host.default_input_device()
                             .ok_or_else(|| "No input device available. Please grant microphone permission.".to_string())?
                     }
                 }
             }
             Err(e) => {
-                log_warn!("Failed to enumerate devices: {}, falling back to default", e);
+                tracing::warn!(target: "audio", "Failed to enumerate devices: {}, falling back to default", e);
                 host.default_input_device()
                     .ok_or_else(|| "No input device available. Please grant microphone permission.".to_string())?
             }
@@ -217,10 +216,15 @@ fn run_audio_capture(
     let sample_format = config.sample_format();
     let channels = config.channels() as usize;
 
-    log_info!("run_audio_capture: device='{}', sample_rate={}, channels={}, format={:?}",
-        actual_name, device_sample_rate, channels, sample_format);
+    let telemetry_device = if cfg!(debug_assertions) {
+        actual_name.clone()
+    } else {
+        "<redacted>".to_string()
+    };
+    tracing::info!(target: "audio", "run_audio_capture: device='{}', sample_rate={}, channels={}, format={:?}",
+        telemetry_device, device_sample_rate, channels, sample_format);
 
-    let err_fn = |err| log_error!("Audio stream error: {}", err);
+    let err_fn = |err| tracing::error!(target: "audio", "Audio stream error: {}", err);
 
     let stream = match sample_format {
         SampleFormat::F32 => build_mono_input_stream!(device, config, shared, channels, err_fn, f32, app_handle.clone()),
@@ -248,7 +252,7 @@ fn run_audio_capture(
 pub fn stop_recording() -> Result<Vec<f32>, String> {
     let state = get_state();
     let mut state_guard = state.lock().unwrap_or_else(|poisoned| {
-        log_warn!("stop_recording: recording state mutex was poisoned, recovering");
+        tracing::warn!(target: "audio", "stop_recording: recording state mutex was poisoned, recovering");
         poisoned.into_inner()
     });
 
@@ -270,22 +274,22 @@ pub fn stop_recording() -> Result<Vec<f32>, String> {
 
     let samples = if let Some(buf) = buffer {
         let guard = buf.lock().unwrap_or_else(|poisoned| {
-            log_warn!("stop_recording: samples mutex was poisoned, recovering");
+            tracing::warn!(target: "audio", "stop_recording: samples mutex was poisoned, recovering");
             poisoned.into_inner()
         });
         let raw_count = guard.len();
         let raw_duration = if sample_rate > 0 { raw_count as f64 / sample_rate as f64 } else { 0.0 };
         if let Some(started) = started_at {
-            log_info!("stop_recording: raw_samples={}, sample_rate={}, wall_secs={:.1}, audio_secs={:.1}",
+            tracing::info!(target: "audio", "stop_recording: raw_samples={}, sample_rate={}, wall_secs={:.1}, audio_secs={:.1}",
                 raw_count, sample_rate, started.elapsed().as_secs_f64(), raw_duration);
         } else {
-            log_info!("stop_recording: raw_samples={}, sample_rate={}, duration_secs={:.1} (no timestamp)",
+            tracing::info!(target: "audio", "stop_recording: raw_samples={}, sample_rate={}, duration_secs={:.1} (no timestamp)",
                 raw_count, sample_rate, raw_duration);
         }
         guard.clone()
         // guard drops, buf drops — buffer is gone, zero stale data
     } else {
-        log_info!("stop_recording: no buffer (was not recording)");
+        tracing::info!(target: "audio", "stop_recording: no buffer (was not recording)");
         Vec::new()
     };
 

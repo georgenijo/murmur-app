@@ -1,5 +1,4 @@
 use crate::{MutexExt, State};
-use crate::{log_info, log_warn};
 use tauri::{Emitter, Manager};
 
 const NOTCH_EXPAND: f64 = 120.0; // 60px expansion room on each side
@@ -32,7 +31,7 @@ pub(crate) fn detect_notch_info() -> Option<(f64, f64)> {
     let left_w = screen.auxiliaryTopLeftArea().size.width;
     let right_w = screen.auxiliaryTopRightArea().size.width;
     let notch_w = frame.size.width - left_w - right_w;
-    log_info!("detect_notch_info: notch_w={}, menu_bar_h={}, screen_w={}", notch_w, insets.top, frame.size.width);
+    tracing::info!(target: "system", "detect_notch_info: notch_w={}, menu_bar_h={}, screen_w={}", notch_w, insets.top, frame.size.width);
     Some((notch_w, insets.top))
 }
 
@@ -48,7 +47,7 @@ pub(crate) fn register_screen_change_observer(app_handle: tauri::AppHandle) {
     let notification_name = NSNotificationName::from_str("NSApplicationDidChangeScreenParametersNotification");
 
     let block = block2::RcBlock::new(move |_notification: std::ptr::NonNull<NSNotification>| {
-        log_info!("screen parameters changed — re-detecting notch info");
+        tracing::info!(target: "system", "screen parameters changed — re-detecting notch info");
         let notch = detect_notch_info();
         let handle = &app_handle;
         // Update cached notch info
@@ -102,7 +101,7 @@ fn raise_window_above_menubar(overlay: &tauri::WebviewWindow) {
         if responds {
             let _: () = unsafe { objc2::msg_send![ns_window, _setPreventsActivation: true] };
         } else {
-            log_warn!("_setPreventsActivation: not available on this macOS version");
+            tracing::warn!(target: "system", "_setPreventsActivation: not available on this macOS version");
         }
     }
 }
@@ -116,11 +115,11 @@ fn raise_window_above_menubar(_overlay: &tauri::WebviewWindow) {}
 pub(crate) fn position_overlay_default(overlay: &tauri::WebviewWindow, notch_info: Option<(f64, f64)>) {
     let overlay_w = notch_info.map(|(w, _)| w + NOTCH_EXPAND).unwrap_or(FALLBACK_OVERLAY_W);
     let overlay_h = notch_info.map(|(_, h)| h).unwrap_or(37.0);
-    log_info!("position_overlay_default: notch_info={:?}, overlay_w={}, overlay_h={}", notch_info, overlay_w, overlay_h);
+    tracing::info!(target: "system", "position_overlay_default: notch_info={:?}, overlay_w={}, overlay_h={}", notch_info, overlay_w, overlay_h);
 
     // Resize window to match notch area
     if let Err(e) = overlay.set_size(tauri::LogicalSize::new(overlay_w, overlay_h)) {
-        log_warn!("position_overlay_default: set_size({}, {}) failed: {}", overlay_w, overlay_h, e);
+        tracing::warn!(target: "system", "position_overlay_default: set_size({}, {}) failed: {}", overlay_w, overlay_h, e);
     }
 
     // Raise above the menu bar so the window can overlap the notch
@@ -130,12 +129,12 @@ pub(crate) fn position_overlay_default(overlay: &tauri::WebviewWindow, notch_inf
         let size = monitor.size();
         let sf = monitor.scale_factor();
         let x = (size.width as f64 / sf - overlay_w) / 2.0;
-        log_info!("position_overlay_default: x={}, y=0, sf={}", x, sf);
+        tracing::info!(target: "system", "position_overlay_default: x={}, y=0, sf={}", x, sf);
         if let Err(e) = overlay.set_position(tauri::LogicalPosition::new(x, 0.0)) {
-            log_warn!("position_overlay_default: set_position({}, 0) failed: {}", x, e);
+            tracing::warn!(target: "system", "position_overlay_default: set_position({}, 0) failed: {}", x, e);
         }
     } else {
-        log_warn!("position_overlay_default: no current monitor, falling back to (100, 100)");
+        tracing::warn!(target: "system", "position_overlay_default: no current monitor, falling back to (100, 100)");
         let _ = overlay.set_position(tauri::LogicalPosition::new(100.0, 100.0));
     }
 }
@@ -159,7 +158,7 @@ pub fn show_overlay(app: tauri::AppHandle, state: tauri::State<'_, State>) -> Re
             Ok(())
         }
         None => {
-            log_warn!("show_overlay: overlay window not found — skipping");
+            tracing::warn!(target: "system", "show_overlay: overlay window not found — skipping");
             Ok(())
         }
     }
@@ -171,7 +170,7 @@ pub fn hide_overlay(app: tauri::AppHandle) -> Result<(), String> {
     match app.get_webview_window("overlay") {
         Some(overlay) => overlay.hide().map_err(|e| e.to_string()),
         None => {
-            log_warn!("hide_overlay: overlay window not found — skipping");
+            tracing::warn!(target: "system", "hide_overlay: overlay window not found — skipping");
             Ok(())
         }
     }

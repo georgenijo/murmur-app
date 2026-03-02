@@ -34,6 +34,17 @@
         "resizable": false,
         "focusable": false,
         "visibleOnAllWorkspaces": true
+      },
+      {
+        "label": "log-viewer",
+        "title": "Murmur — Log Viewer",
+        "url": "log-viewer.html",
+        "width": 800,
+        "height": 600,
+        "minWidth": 600,
+        "minHeight": 400,
+        "center": true,
+        "visible": false
       }
     ],
     "macOSPrivateApi": true,

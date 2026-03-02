@@ -1,6 +1,5 @@
 use crate::{MutexExt, State};
 use crate::transcriber::{self, TranscriptionBackend};
-use crate::{log_info, log_warn};
 use crate::vad;
 use tauri::Emitter;
 
@@ -71,13 +70,13 @@ pub async fn download_model(app_handle: tauri::AppHandle, model_name: String, st
             Ok(bytes) => {
                 if let Err(e) = tokio::fs::rename(&vad_tmp, &vad_dest).await {
                     let _ = tokio::fs::remove_file(&vad_tmp).await;
-                    log_warn!("Failed to finalize VAD model download: {}", e);
+                    tracing::warn!(target: "system", "Failed to finalize VAD model download: {}", e);
                 } else {
-                    log_info!("VAD model co-downloaded: {} ({} bytes)", vad::VAD_MODEL_FILENAME, bytes);
+                    tracing::info!(target: "system", "VAD model co-downloaded: {} ({} bytes)", vad::VAD_MODEL_FILENAME, bytes);
                 }
             }
             Err(e) => {
-                log_warn!("VAD model co-download failed (non-fatal): {}", e);
+                tracing::warn!(target: "system", "VAD model co-download failed (non-fatal): {}", e);
             }
         }
     }
@@ -108,7 +107,7 @@ async fn download_whisper_model(
             format!("Failed to finalize download: {}", e)
         })?;
 
-    log_info!("Model downloaded: {} ({} bytes)", filename, received);
+    tracing::info!(target: "system", "Model downloaded: {} ({} bytes)", filename, received);
     Ok(())
 }
 
@@ -152,7 +151,7 @@ async fn download_moonshine_model(
 
     extraction_result?;
 
-    log_info!("Moonshine model downloaded and extracted: {} ({} bytes)", dir_name, received);
+    tracing::info!(target: "system", "Moonshine model downloaded and extracted: {} ({} bytes)", dir_name, received);
     Ok(())
 }
 
@@ -173,7 +172,7 @@ pub(crate) async fn ensure_vad_model(app_handle: &tauri::AppHandle) -> Result<()
         .await
         .map_err(|e| format!("Failed to create models directory: {}", e))?;
 
-    log_info!("VAD model not found, downloading...");
+    tracing::info!(target: "system", "VAD model not found, downloading...");
     let _ = app_handle.emit("recording-status-changed", "downloading-vad");
 
     let result = async {
@@ -187,7 +186,7 @@ pub(crate) async fn ensure_vad_model(app_handle: &tauri::AppHandle) -> Result<()
                 format!("Failed to finalize VAD model download: {}", e)
             })?;
 
-        log_info!("VAD model downloaded: {} ({} bytes)", vad::VAD_MODEL_FILENAME, received);
+        tracing::info!(target: "system", "VAD model downloaded: {} ({} bytes)", vad::VAD_MODEL_FILENAME, received);
         Ok::<(), String>(())
     }
     .await;

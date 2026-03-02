@@ -2,9 +2,9 @@ mod audio;
 mod commands;
 mod injector;
 mod keyboard;
-mod logging;
 mod resource_monitor;
 mod state;
+pub mod telemetry;
 pub mod transcriber;
 mod vad;
 
@@ -22,7 +22,7 @@ pub(crate) trait MutexExt<T> {
 impl<T> MutexExt<T> for Mutex<T> {
     fn lock_or_recover(&self) -> MutexGuard<'_, T> {
         self.lock().unwrap_or_else(|poisoned| {
-            log_warn!("Mutex was poisoned, recovering data");
+            tracing::warn!(target: "system", "Mutex was poisoned, recovering data");
             poisoned.into_inner()
         })
     }
@@ -69,6 +69,7 @@ pub fn run() {
             commands::logging::get_log_contents,
             commands::logging::clear_logs,
             commands::logging::log_frontend,
+            commands::logging::open_log_viewer,
             commands::models::check_model_exists,
             commands::models::check_specific_model_exists,
             commands::models::download_model,
@@ -76,17 +77,24 @@ pub fn run() {
             commands::overlay::show_overlay,
             commands::overlay::hide_overlay,
             commands::overlay::get_notch_info,
+            telemetry::get_event_history,
+            telemetry::clear_event_history,
             resource_monitor::get_resource_usage
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
-                log_info!("window hidden on close request");
+                // Hide instead of destroy for persistent windows
+                if window.label() == "main" || window.label() == "log-viewer" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                    tracing::info!(target: "system", "{} window hidden on close request", window.label());
+                }
             }
         })
         .setup(|app| {
-            log_info!("app setup — Murmur v{}", env!("CARGO_PKG_VERSION"));
+            telemetry::init(app.handle().clone());
+
+            tracing::info!(target: "system", "app setup — Murmur v{}", env!("CARGO_PKG_VERSION"));
 
             // Cache notch dimensions on the main thread (safe for NSScreen APIs).
             let notch = commands::overlay::detect_notch_info();
@@ -99,14 +107,14 @@ pub fn run() {
             // focusable:false sets ignoresMouseEvents=true on macOS;
             // we override that while keeping the window non-activating.
             if let Some(overlay_win) = app.get_webview_window("overlay") {
-                log_info!("setup: overlay window found, enabling cursor events");
+                tracing::info!(target: "system", "setup: overlay window found, enabling cursor events");
                 commands::overlay::position_overlay_default(&overlay_win, notch);
                 let _ = overlay_win.show();
                 if let Err(e) = overlay_win.set_ignore_cursor_events(false) {
-                    log_warn!("Failed to set overlay cursor events: {}", e);
+                    tracing::warn!(target: "system", "Failed to set overlay cursor events: {}", e);
                 }
             } else {
-                log_warn!("setup: overlay window NOT found");
+                tracing::warn!(target: "system", "setup: overlay window NOT found");
             }
 
             // Listen for display config changes (monitor plug/unplug, lid open/close)

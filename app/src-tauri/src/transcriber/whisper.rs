@@ -1,5 +1,4 @@
 use super::TranscriptionBackend;
-use crate::log_info;
 use std::path::{Path, PathBuf};
 use std::sync::Once;
 use whisper_rs::{
@@ -120,7 +119,7 @@ impl TranscriptionBackend for WhisperBackend {
         let state = ctx
             .create_state()
             .map_err(|e| format!("Failed to create whisper state: {}", e))?;
-        log_info!("whisper: model '{}' loaded, state cached for reuse", model_name);
+        tracing::info!(target: "pipeline", "whisper: model '{}' loaded, state cached for reuse", model_name);
         self.context = Some(ctx);
         self.state = Some(state);
         self.loaded_model_name = Some(model_name.to_string());
@@ -132,7 +131,7 @@ impl TranscriptionBackend for WhisperBackend {
             .state
             .as_mut()
             .ok_or_else(|| "Whisper state not initialized. Call load_model() first.".to_string())?;
-        log_info!("whisper: reusing cached state for transcription");
+        tracing::info!(target: "pipeline", "whisper: reusing cached state for transcription");
 
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
         params.set_language(Some(language));
@@ -185,7 +184,7 @@ impl TranscriptionBackend for WhisperBackend {
     }
 
     fn reset(&mut self) {
-        log_info!("whisper: releasing cached state and model");
+        tracing::info!(target: "pipeline", "whisper: releasing cached state and model");
         drop(self.state.take());
         drop(self.context.take());
         self.loaded_model_name = None;
