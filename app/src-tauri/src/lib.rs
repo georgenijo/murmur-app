@@ -83,11 +83,11 @@ pub fn run() {
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                // Only hide the main window on close; let other windows close normally
-                if window.label() == "main" {
+                // Hide instead of destroy for persistent windows
+                if window.label() == "main" || window.label() == "log-viewer" {
                     api.prevent_close();
                     let _ = window.hide();
-                    tracing::info!(target: "system", "main window hidden on close request");
+                    tracing::info!(target: "system", "{} window hidden on close request", window.label());
                 }
             }
         })
