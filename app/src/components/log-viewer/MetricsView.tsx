@@ -9,7 +9,7 @@ interface TranscriptionMetric {
   inference_ms: number;
   paste_ms: number;
   total_ms: number;
-  timestamp: string;
+  index: number;
 }
 
 function extractMetrics(events: AppEvent[]): TranscriptionMetric[] {
@@ -22,23 +22,164 @@ function extractMetrics(events: AppEvent[]): TranscriptionMetric[] {
       typeof e.data.paste_ms === 'number'
     )
     .slice(-20)
-    .map(e => ({
+    .map((e, i) => ({
       vad_ms: e.data.vad_ms as number,
       inference_ms: e.data.inference_ms as number,
       paste_ms: e.data.paste_ms as number,
       total_ms: (e.data.total_ms as number) || ((e.data.vad_ms as number) + (e.data.inference_ms as number) + (e.data.paste_ms as number)),
-      timestamp: e.timestamp,
+      index: i,
     }));
 }
 
-const BAR_COLORS = {
-  vad:       { fill: '#a8a29e', label: 'VAD' },         // stone-400
-  inference: { fill: '#fbbf24', label: 'Inference' },    // amber-400
-  paste:     { fill: '#64748b', label: 'Paste' },        // slate-500
-  outlier:   { fill: '#ef4444', label: 'Outlier' },      // red-500
+function avg(values: number[]): number {
+  if (values.length === 0) return 0;
+  return Math.round(values.reduce((a, b) => a + b, 0) / values.length);
+}
+
+// --- Stat Card ---
+
+interface StatCardProps {
+  label: string;
+  value: number;
+  average: number;
+  color: string;
+  unit?: string;
+}
+
+function StatCard({ label, value, average, color, unit = 'ms' }: StatCardProps) {
+  const diff = value - average;
+  const trend = diff > average * 0.1 ? 'up' : diff < -average * 0.1 ? 'down' : 'flat';
+
+  return (
+    <div className="flex-1 rounded-lg border border-stone-200 dark:border-stone-700 p-3 min-w-0">
+      <div className="flex items-center gap-2 mb-1">
+        <span className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />
+        <span className="text-[11px] text-stone-500 dark:text-stone-400 truncate">{label}</span>
+      </div>
+      <div className="flex items-baseline gap-1.5">
+        <span className="text-lg font-semibold tabular-nums text-stone-900 dark:text-stone-100">
+          {value}
+        </span>
+        <span className="text-[11px] text-stone-400 dark:text-stone-500">{unit}</span>
+        <span className={`text-[10px] ml-auto ${
+          trend === 'up' ? 'text-red-500' : trend === 'down' ? 'text-emerald-500' : 'text-stone-400 dark:text-stone-500'
+        }`}>
+          {trend === 'up' ? '\u25B2' : trend === 'down' ? '\u25BC' : '\u2014'} avg {average}{unit}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// --- Line Chart ---
+
+const SERIES_CONFIG = {
+  total:     { color: '#57534e', label: 'Total' },      // stone-600
+  inference: { color: '#f59e0b', label: 'Inference' },   // amber-500
+  vad:       { color: '#a8a29e', label: 'VAD' },         // stone-400
+  paste:     { color: '#64748b', label: 'Paste' },       // slate-500
 };
 
-function StackedBarChart({ metrics }: { metrics: TranscriptionMetric[] }) {
+interface Series {
+  key: string;
+  color: string;
+  values: number[];
+}
+
+function LineChart({ series, height = 140 }: { series: Series[]; height?: number }) {
+  const count = series[0]?.values.length ?? 0;
+  if (count === 0) return null;
+
+  const padding = { top: 12, right: 16, bottom: 24, left: 48 };
+  const chartW = 700;
+  const chartH = height;
+  const innerW = chartW - padding.left - padding.right;
+  const innerH = chartH - padding.top - padding.bottom;
+
+  // Compute shared max across all series for this chart
+  const allValues = series.flatMap(s => s.values);
+  const maxVal = Math.max(...allValues, 1);
+  // Nice round max for y-axis
+  const magnitude = Math.pow(10, Math.floor(Math.log10(maxVal)));
+  const niceMax = Math.ceil(maxVal / magnitude) * magnitude;
+
+  const xStep = count > 1 ? innerW / (count - 1) : 0;
+  const yScale = innerH / niceMax;
+
+  // Y-axis ticks (0, mid, max)
+  const yTicks = [0, Math.round(niceMax / 2), niceMax];
+
+  function toX(i: number) {
+    return padding.left + (count > 1 ? i * xStep : innerW / 2);
+  }
+  function toY(v: number) {
+    return padding.top + innerH - v * yScale;
+  }
+
+  return (
+    <svg viewBox={`0 0 ${chartW} ${chartH}`} className="w-full" preserveAspectRatio="xMidYMid meet">
+      {/* Grid lines + y labels */}
+      {yTicks.map(tick => (
+        <g key={tick}>
+          <line
+            x1={padding.left} y1={toY(tick)}
+            x2={chartW - padding.right} y2={toY(tick)}
+            stroke="currentColor" strokeOpacity={0.08}
+          />
+          <text x={padding.left - 8} y={toY(tick) + 3.5} textAnchor="end" className="fill-stone-400 dark:fill-stone-500" fontSize="9">
+            {tick}
+          </text>
+        </g>
+      ))}
+
+      {/* X-axis labels (transcription index) */}
+      {Array.from({ length: count }, (_, i) => (
+        <text key={i} x={toX(i)} y={chartH - 4} textAnchor="middle" className="fill-stone-300 dark:fill-stone-600" fontSize="8">
+          {i + 1}
+        </text>
+      ))}
+
+      {/* Lines + dots for each series */}
+      {series.map(s => {
+        // Build polyline path
+        const points = s.values.map((v, i) => `${toX(i)},${toY(v)}`).join(' ');
+        return (
+          <g key={s.key}>
+            <polyline
+              points={points}
+              fill="none"
+              stroke={s.color}
+              strokeWidth={1.5}
+              strokeLinejoin="round"
+              strokeLinecap="round"
+            />
+            {/* Dots */}
+            {s.values.map((v, i) => (
+              <circle key={i} cx={toX(i)} cy={toY(v)} r={2.5} fill={s.color} />
+            ))}
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+// --- Section Label ---
+
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="text-[11px] font-medium text-stone-400 dark:text-stone-500 uppercase tracking-wider">
+      {children}
+    </div>
+  );
+}
+
+// --- Main Component ---
+
+export function MetricsView({ events }: MetricsViewProps) {
+  const metrics = extractMetrics(events);
+  const latest = metrics[metrics.length - 1];
+
   if (metrics.length === 0) {
     return (
       <div className="flex items-center justify-center h-48 text-stone-400 dark:text-stone-500 text-sm">
@@ -47,121 +188,56 @@ function StackedBarChart({ metrics }: { metrics: TranscriptionMetric[] }) {
     );
   }
 
-  const padding = { top: 20, right: 20, bottom: 40, left: 50 };
-  const chartW = 700;
-  const chartH = 250;
-  const innerW = chartW - padding.left - padding.right;
-  const innerH = chartH - padding.top - padding.bottom;
-
-  const maxTotal = Math.max(...metrics.map(m => m.vad_ms + m.inference_ms + m.paste_ms), 100);
-  const barW = Math.min(30, (innerW / metrics.length) * 0.7);
-  const gap = (innerW - barW * metrics.length) / Math.max(metrics.length - 1, 1);
-
-  // Rolling average for outlier detection
-  const inferenceValues = metrics.map(m => m.inference_ms);
-  const rollingAvg = inferenceValues.map((_, i) => {
-    const start = Math.max(0, i - 4);
-    const slice = inferenceValues.slice(start, i + 1);
-    return slice.reduce((a, b) => a + b, 0) / slice.length;
-  });
-
-  // Y-axis ticks
-  const yTicks = [0, Math.round(maxTotal / 2), maxTotal];
+  const totals = metrics.map(m => m.total_ms);
+  const inferences = metrics.map(m => m.inference_ms);
+  const vads = metrics.map(m => m.vad_ms);
+  const pastes = metrics.map(m => m.paste_ms);
 
   return (
-    <svg viewBox={`0 0 ${chartW} ${chartH}`} className="w-full" preserveAspectRatio="xMidYMid meet">
-      {/* Y-axis */}
-      {yTicks.map(tick => {
-        const y = padding.top + innerH - (tick / maxTotal) * innerH;
-        return (
-          <g key={tick}>
-            <line x1={padding.left} y1={y} x2={chartW - padding.right} y2={y} stroke="currentColor" strokeOpacity={0.1} />
-            <text x={padding.left - 8} y={y + 4} textAnchor="end" className="fill-stone-400 dark:fill-stone-500" fontSize="10">
-              {tick}ms
-            </text>
-          </g>
-        );
-      })}
-
-      {/* Bars */}
-      {metrics.map((m, i) => {
-        const x = padding.left + i * (barW + gap);
-        const total = m.vad_ms + m.inference_ms + m.paste_ms;
-        const scale = innerH / maxTotal;
-
-        const pasteH = m.paste_ms * scale;
-        const inferenceH = m.inference_ms * scale;
-        const vadH = m.vad_ms * scale;
-
-        const isOutlier = i > 0 && m.inference_ms > rollingAvg[i] * 2;
-
-        const baseY = padding.top + innerH;
-
-        return (
-          <g key={i}>
-            {/* Paste (bottom) */}
-            <rect x={x} y={baseY - pasteH} width={barW} height={Math.max(pasteH, 0.5)} fill={BAR_COLORS.paste.fill} rx={1} />
-            {/* Inference (middle) */}
-            <rect
-              x={x}
-              y={baseY - pasteH - inferenceH}
-              width={barW}
-              height={Math.max(inferenceH, 0.5)}
-              fill={isOutlier ? BAR_COLORS.outlier.fill : BAR_COLORS.inference.fill}
-              rx={1}
-            />
-            {/* VAD (top) */}
-            <rect x={x} y={baseY - pasteH - inferenceH - vadH} width={barW} height={Math.max(vadH, 0.5)} fill={BAR_COLORS.vad.fill} rx={1} />
-
-            {/* Outlier marker */}
-            {isOutlier && (
-              <text x={x + barW / 2} y={baseY - pasteH - inferenceH - vadH - 4} textAnchor="middle" fill={BAR_COLORS.outlier.fill} fontSize="10" fontWeight="bold">
-                !
-              </text>
-            )}
-
-            {/* Total label */}
-            <text x={x + barW / 2} y={baseY + 14} textAnchor="middle" className="fill-stone-400 dark:fill-stone-500" fontSize="9">
-              {total}
-            </text>
-          </g>
-        );
-      })}
-    </svg>
-  );
-}
-
-export function MetricsView({ events }: MetricsViewProps) {
-  const metrics = extractMetrics(events);
-  const latest = metrics[metrics.length - 1];
-
-  return (
-    <div className="flex flex-col gap-4 p-4">
-      {/* Latest summary */}
+    <div className="flex flex-col gap-5 p-4">
+      {/* Stat Cards */}
       {latest && (
-        <div className="text-xs text-stone-500 dark:text-stone-400">
-          Last: VAD {latest.vad_ms}ms · Inference {latest.inference_ms}ms · Paste {latest.paste_ms}ms
+        <div className="flex gap-3">
+          <StatCard label="Total" value={latest.total_ms} average={avg(totals)} color={SERIES_CONFIG.total.color} />
+          <StatCard label="Inference" value={latest.inference_ms} average={avg(inferences)} color={SERIES_CONFIG.inference.color} />
+          <StatCard label="VAD" value={latest.vad_ms} average={avg(vads)} color={SERIES_CONFIG.vad.color} />
+          <StatCard label="Paste" value={latest.paste_ms} average={avg(pastes)} color={SERIES_CONFIG.paste.color} />
         </div>
       )}
 
-      {/* Legend */}
-      <div className="flex gap-4 text-xs">
-        <div className="flex items-center gap-1.5">
-          <span className="w-3 h-2 rounded-sm" style={{ background: BAR_COLORS.vad.fill }} />
-          <span className="text-stone-500 dark:text-stone-400">VAD</span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span className="w-3 h-2 rounded-sm" style={{ background: BAR_COLORS.inference.fill }} />
-          <span className="text-stone-500 dark:text-stone-400">Inference</span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span className="w-3 h-2 rounded-sm" style={{ background: BAR_COLORS.paste.fill }} />
-          <span className="text-stone-500 dark:text-stone-400">Paste</span>
-        </div>
+      {/* Total + Inference chart */}
+      <div>
+        <SectionLabel>Total &amp; Inference (ms)</SectionLabel>
+        <LineChart
+          height={150}
+          series={[
+            { key: 'total', color: SERIES_CONFIG.total.color, values: totals },
+            { key: 'inference', color: SERIES_CONFIG.inference.color, values: inferences },
+          ]}
+        />
       </div>
 
-      {/* Chart */}
-      <StackedBarChart metrics={metrics} />
+      {/* VAD + Paste chart */}
+      <div>
+        <SectionLabel>VAD &amp; Paste (ms)</SectionLabel>
+        <LineChart
+          height={120}
+          series={[
+            { key: 'vad', color: SERIES_CONFIG.vad.color, values: vads },
+            { key: 'paste', color: SERIES_CONFIG.paste.color, values: pastes },
+          ]}
+        />
+      </div>
+
+      {/* Legend */}
+      <div className="flex gap-4 text-xs justify-center">
+        {Object.entries(SERIES_CONFIG).map(([key, { color, label }]) => (
+          <div key={key} className="flex items-center gap-1.5">
+            <span className="w-3 h-0.5 rounded-full" style={{ background: color }} />
+            <span className="text-stone-500 dark:text-stone-400">{label}</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
