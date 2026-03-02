@@ -2,7 +2,6 @@ use crate::{MutexExt, State};
 use crate::state::{AppState, DictationStatus};
 use crate::transcriber;
 use crate::{audio, injector, keyboard, vad};
-use crate::{log_info, log_warn, log_error};
 use tauri::Emitter;
 
 /// RAII guard that resets dictation status to Idle on drop,
@@ -32,12 +31,18 @@ impl Drop for IdleGuard<'_> {
     }
 }
 
-/// Shared transcription pipeline: model init → transcribe → inject text → set idle
+pub(crate) struct PipelineTimings {
+    pub vad_ms: u64,
+    pub inference_ms: u64,
+    pub paste_ms: u64,
+}
+
+/// Shared transcription pipeline: model init -> transcribe -> inject text -> set idle
 async fn run_transcription_pipeline(
     samples: &[f32],
     app_handle: &tauri::AppHandle,
     app_state: &AppState,
-) -> Result<String, String> {
+) -> Result<(String, PipelineTimings), String> {
     // Guard resets status to Idle on any return path (error or success)
     let _guard = IdleGuard::new(app_state);
 
@@ -51,9 +56,9 @@ async fn run_transcription_pipeline(
     let rms = audio::compute_rms(samples);
     let peak = audio::compute_peak(samples);
     let device = audio::last_device_name().unwrap_or_else(|| "unknown".to_string());
-    log_info!("pipeline: audio rms={:.4} peak={:.4} (device={})", rms, peak, device);
+    tracing::info!(target: "pipeline", "audio rms={:.4} peak={:.4} (device={})", rms, peak, device);
 
-    // Phase: VAD — filter out silence to prevent Whisper hallucination loops
+    // Phase: VAD -- filter out silence to prevent Whisper hallucination loops
     let vad_threshold = 1.0 - (vad_sensitivity as f32 / 100.0);
     let t_vad = std::time::Instant::now();
     let samples_for_transcription = match vad::vad_model_path() {
@@ -70,48 +75,45 @@ async fn run_transcription_pipeline(
 
             match vad_result {
                 Ok(vad::VadResult::NoSpeech) => {
-                    log_info!("pipeline: VAD detected no speech ({} samples, {:?}), skipping transcription",
+                    tracing::info!(target: "pipeline", "VAD detected no speech ({} samples, {:?}), skipping transcription",
                         samples.len(), t_vad.elapsed());
-                    return Ok(String::new());
+                    return Ok((String::new(), PipelineTimings { vad_ms: t_vad.elapsed().as_millis() as u64, inference_ms: 0, paste_ms: 0 }));
                 }
                 Ok(vad::VadResult::Speech(trimmed)) => {
-                    log_info!("pipeline: VAD trimmed {} → {} samples ({:.0}% speech, {:?})",
+                    tracing::info!(target: "pipeline", "VAD trimmed {} -> {} samples ({:.0}% speech, {:?})",
                         samples.len(), trimmed.len(),
                         trimmed.len() as f64 / samples.len() as f64 * 100.0,
                         t_vad.elapsed());
                     trimmed
                 }
                 Err(e) => {
-                    log_warn!("pipeline: VAD failed ({}), proceeding without filtering", e);
+                    tracing::warn!(target: "pipeline", "VAD failed ({}), proceeding without filtering", e);
                     samples.to_vec()
                 }
             }
         }
         _ => {
-            // VAD model not available — kick off background download for next time
+            // VAD model not available -- kick off background download for next time
             let handle = app_handle.clone();
             tokio::spawn(async move {
                 if let Err(e) = super::models::ensure_vad_model(&handle).await {
-                    log_warn!("pipeline: VAD model download failed ({}), skipping VAD", e);
+                    tracing::warn!(target: "pipeline", "VAD model download failed ({}), skipping VAD", e);
                 }
             });
             samples.to_vec()
         }
     };
+    let vad_ms = t_vad.elapsed().as_millis() as u64;
 
     // Phase: Transcription (includes lazy model load on first run)
     let t_transcribe = std::time::Instant::now();
-    let (text, backend_name) = {
+    let text = {
         let mut backend = app_state.backend.lock_or_recover();
         backend.load_model(&model_name)?;
-        let text = backend.transcribe(&samples_for_transcription, &language)?;
-        let name = backend.name().to_string();
-        (text, name)
+        backend.transcribe(&samples_for_transcription, &language)?
     };
-    let transcribe_secs = t_transcribe.elapsed().as_secs_f64();
-    let audio_secs = samples_for_transcription.len() as f64 / 16_000.0;
-    log_info!("pipeline: transcription ({} samples): {:?}", samples_for_transcription.len(), t_transcribe.elapsed());
-    crate::logging::log_transcription(&model_name, &backend_name, audio_secs, transcribe_secs, &text);
+    let inference_ms = t_transcribe.elapsed().as_millis() as u64;
+    tracing::info!(target: "pipeline", "transcription ({} samples): {:?}", samples_for_transcription.len(), t_transcribe.elapsed());
 
     // Phase: Text injection (clipboard write + optional osascript paste)
     let t_inject = std::time::Instant::now();
@@ -123,32 +125,33 @@ async fn run_transcription_pipeline(
                 let _ = tx.send(injector::inject_text(&text_to_inject, auto_paste, paste_delay_ms));
             })
             .map_err(|e| format!("Failed to dispatch to main thread: {}", e))?;
-        let paste_hint = "Text is in your clipboard — press Cmd+V to paste manually.";
+        let paste_hint = "Text is in your clipboard -- press Cmd+V to paste manually.";
         match tokio::time::timeout(std::time::Duration::from_secs(2), rx).await {
             Ok(Ok(Err(e))) => {
-                log_error!("Text injection failed: {}", e);
+                tracing::error!(target: "pipeline", "Text injection failed: {}", e);
                 let _ = app_handle.emit("auto-paste-failed", paste_hint);
             }
             Ok(Err(_)) => {
-                log_warn!("Text injection sender dropped");
+                tracing::warn!(target: "pipeline", "Text injection sender dropped");
                 let _ = app_handle.emit("auto-paste-failed", paste_hint);
             }
             Err(_) => {
-                log_warn!("Text injection timed out");
+                tracing::warn!(target: "pipeline", "Text injection timed out");
                 let _ = app_handle.emit("auto-paste-failed", paste_hint);
             }
             Ok(Ok(Ok(()))) => {}
         }
     }
-    log_info!("pipeline: inject (clipboard + paste): {:?}", t_inject.elapsed());
+    let paste_ms = t_inject.elapsed().as_millis() as u64;
+    tracing::info!(target: "pipeline", "inject (clipboard + paste): {:?}", t_inject.elapsed());
 
-    Ok(text)
+    Ok((text, PipelineTimings { vad_ms, inference_ms, paste_ms }))
     // _guard drops here, setting status to Idle
 }
 
 #[tauri::command]
 pub async fn init_dictation(_state: tauri::State<'_, State>) -> Result<serde_json::Value, String> {
-    log_info!("init_dictation");
+    tracing::info!(target: "pipeline", "init_dictation");
     Ok(serde_json::json!({
         "type": "initialized",
         "state": "idle"
@@ -182,7 +185,7 @@ pub async fn process_audio(
         let _ = app_handle.emit("recording-status-changed", "idle");
         e
     })?;
-    log_info!("pipeline: audio parse (base64 + WAV): {:?}", t_parse.elapsed());
+    tracing::info!(target: "pipeline", "audio parse (base64 + WAV): {:?}", t_parse.elapsed());
 
     // Pipeline has its own guard, so disarm this one
     guard.disarm();
@@ -190,7 +193,7 @@ pub async fn process_audio(
     let pipeline_result = run_transcription_pipeline(&samples, &app_handle, &state.app_state).await;
     keyboard::set_processing(false);
     let _ = app_handle.emit("recording-status-changed", "idle");
-    let text = pipeline_result?;
+    let (text, _timings) = pipeline_result?;
 
     Ok(serde_json::json!({
         "type": "transcription",
@@ -214,7 +217,7 @@ pub async fn configure_dictation(
     options: serde_json::Value,
     state: tauri::State<'_, State>,
 ) -> Result<serde_json::Value, String> {
-    log_info!("configure_dictation: {}", options);
+    tracing::info!(target: "pipeline", "configure_dictation: {}", options);
 
     let model = options.get("model").and_then(|v| v.as_str()).map(String::from);
     let language = options.get("language").and_then(|v| v.as_str()).map(String::from);
@@ -260,7 +263,7 @@ pub async fn configure_dictation(
             } else {
                 Box::new(transcriber::WhisperBackend::new())
             };
-            log_info!("Switched transcription backend to {}", backend.name());
+            tracing::info!(target: "pipeline", "Switched transcription backend to {}", backend.name());
         } else {
             backend.reset();
         }
@@ -282,14 +285,14 @@ pub async fn start_native_recording(
         let mut dictation = state.app_state.dictation.lock_or_recover();
         match dictation.status {
             DictationStatus::Recording => {
-                log_warn!("start_native_recording: already recording");
+                tracing::warn!(target: "pipeline", "start_native_recording: already recording");
                 return Ok(serde_json::json!({
                     "type": "already_recording",
                     "state": "recording"
                 }));
             }
             DictationStatus::Processing => {
-                log_warn!("start_native_recording: currently processing");
+                tracing::warn!(target: "pipeline", "start_native_recording: currently processing");
                 return Ok(serde_json::json!({
                     "type": "already_processing",
                     "state": "processing"
@@ -301,15 +304,15 @@ pub async fn start_native_recording(
         }
     }
 
-    log_info!("start_native_recording: device={}", device_name.as_deref().unwrap_or("system_default"));
+    tracing::info!(target: "pipeline", "start_native_recording: device={}", device_name.as_deref().unwrap_or("system_default"));
     if let Err(e) = audio::start_recording(Some(app_handle.clone()), device_name) {
-        log_error!("start_native_recording: audio failed: {}", e);
+        tracing::error!(target: "audio", "start_native_recording: audio failed: {}", e);
         let mut dictation = state.app_state.dictation.lock_or_recover();
         dictation.status = DictationStatus::Idle;
         return Err(e);
     }
     let _ = app_handle.emit("recording-status-changed", "recording");
-    log_info!("start_native_recording: started");
+    tracing::info!(target: "pipeline", "start_native_recording: started");
 
     Ok(serde_json::json!({
         "type": "recording_started",
@@ -331,7 +334,7 @@ pub async fn stop_native_recording(
                 "state": "processing"
             })),
             DictationStatus::Idle => {
-                log_warn!("stop_native_recording: not recording");
+                tracing::warn!(target: "pipeline", "stop_native_recording: not recording");
                 return Ok(serde_json::json!({
                     "type": "not_recording",
                     "state": "idle"
@@ -343,7 +346,7 @@ pub async fn stop_native_recording(
         }
     }
     keyboard::set_processing(true);
-    log_info!("stop_native_recording: stopping");
+    tracing::info!(target: "pipeline", "stop_native_recording: stopping");
     let _ = app_handle.emit("recording-status-changed", "processing");
 
     // Guard resets status to Idle if stop_recording fails or samples are empty;
@@ -353,14 +356,14 @@ pub async fn stop_native_recording(
     // Phase: Audio teardown + 16kHz resample
     let t_total = std::time::Instant::now();
     let samples = audio::stop_recording().map_err(|e| {
-        log_error!("stop_native_recording: stop_recording failed: {}", e);
+        tracing::error!(target: "audio", "stop_native_recording: stop_recording failed: {}", e);
         let _ = app_handle.emit("recording-status-changed", "idle");
         e
     })?;
-    log_info!("pipeline: audio teardown + resample: {:?}", t_total.elapsed());
+    tracing::info!(target: "pipeline", "audio teardown + resample: {:?}", t_total.elapsed());
 
     if samples.is_empty() {
-        log_info!("stop_native_recording: no audio captured");
+        tracing::info!(target: "pipeline", "stop_native_recording: no audio captured");
         // guard drops on return, resetting status to Idle
         let _ = app_handle.emit("recording-status-changed", "idle");
         return Ok(serde_json::json!({
@@ -375,7 +378,7 @@ pub async fn stop_native_recording(
     const MIN_RECORDING_SAMPLES: usize = 4_800; // 0.3s at 16kHz
 
     if samples.len() < MIN_RECORDING_SAMPLES {
-        log_info!("stop_native_recording: recording too short ({}ms), discarding",
+        tracing::info!(target: "pipeline", "stop_native_recording: recording too short ({}ms), discarding",
             samples.len() / 16); // samples / 16_000 * 1000
         let _ = app_handle.emit("recording-status-changed", "idle");
         return Ok(serde_json::json!({
@@ -391,19 +394,41 @@ pub async fn stop_native_recording(
     let pipeline_result = run_transcription_pipeline(&samples, &app_handle, &state.app_state).await;
     keyboard::set_processing(false);
     let _ = app_handle.emit("recording-status-changed", "idle");
-    let text = pipeline_result.map_err(|e| {
-        log_error!("stop_native_recording: pipeline failed: {}", e);
+    let (text, timings) = pipeline_result.map_err(|e| {
+        tracing::error!(target: "pipeline", "stop_native_recording: pipeline failed: {}", e);
         e
     })?;
 
-    let recording_secs = samples.len() / 16_000;
+    let total_ms = t_total.elapsed().as_millis() as u64;
+    let audio_secs = samples.len() as f64 / 16_000.0;
     let word_count = if text.trim().is_empty() { 0 } else { text.split_whitespace().count() };
-    let approx_tokens = (word_count as f64 * 1.3).round() as usize;
-    log_info!("pipeline: total end-to-end: {:?} (duration={}s words={} tokens={} chars={})",
-        t_total.elapsed(), recording_secs, word_count, approx_tokens, text.len());
+    let char_count = text.len();
+    let model_name = {
+        let d = state.app_state.dictation.lock_or_recover();
+        d.model_name.clone()
+    };
+    let backend_name = {
+        let b = state.app_state.backend.lock_or_recover();
+        b.name().to_string()
+    };
+
+    tracing::info!(
+        target: "pipeline",
+        vad_ms = timings.vad_ms,
+        inference_ms = timings.inference_ms,
+        paste_ms = timings.paste_ms,
+        total_ms = total_ms,
+        audio_secs = audio_secs,
+        word_count = word_count,
+        char_count = char_count,
+        model = model_name.as_str(),
+        backend = backend_name.as_str(),
+        "transcription complete"
+    );
 
     // Broadcast transcription result to all windows (so the main window can update
     // its history even when recording was initiated from the overlay).
+    let recording_secs = samples.len() / 16_000;
     if !text.is_empty() {
         let _ = app_handle.emit("transcription-complete", serde_json::json!({
             "text": text,
@@ -435,7 +460,7 @@ pub async fn cancel_native_recording(
     // Stop audio capture and discard samples
     let _ = audio::stop_recording();
     let _ = app_handle.emit("recording-status-changed", "idle");
-    log_info!("cancel_native_recording: speculative recording discarded");
+    tracing::info!(target: "pipeline", "cancel_native_recording: speculative recording discarded");
     Ok(())
 }
 
@@ -468,7 +493,7 @@ mod tests {
         {
             let mut guard = IdleGuard::new(&app_state);
             guard.disarm();
-            // guard drops here, but disarmed — no reset
+            // guard drops here, but disarmed -- no reset
         }
         let dictation = app_state.dictation.lock().unwrap();
         assert_eq!(dictation.status, DictationStatus::Processing);

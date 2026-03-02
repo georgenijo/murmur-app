@@ -17,7 +17,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 use tauri::Emitter;
-use crate::{log_error, log_info};
 
 /// Max duration a single tap can be held before it's rejected
 const MAX_HOLD_DURATION_MS: u128 = 200;
@@ -475,7 +474,7 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
             // those calls to the main queue via dispatch_sync instead of calling
             // them directly from this background thread.
             set_is_main_thread(false);
-            log_info!("keyboard: rdev listener thread started");
+            tracing::info!(target: "keyboard", "rdev listener thread started");
 
             let callback = move |event: Event| {
                 if !LISTENER_ACTIVE.load(Ordering::SeqCst) {
@@ -573,7 +572,7 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
                                         };
                                         if still_held {
                                             HOLD_PROMOTED.store(true, Ordering::SeqCst);
-                                            log_info!("keyboard: BOTH -> timer promoted to hold-down-start");
+                                            tracing::info!(target: "keyboard", "BOTH -> timer promoted to hold-down-start");
                                             let _ = timer_handle.emit("hold-down-start", ());
                                         }
                                     }
@@ -587,18 +586,18 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
 
                                 if promoted {
                                     // Real hold ended — stop + transcribe
-                                    log_info!("keyboard: BOTH -> emit hold-down-stop (promoted hold)");
+                                    tracing::info!(target: "keyboard", "BOTH -> emit hold-down-stop (promoted hold)");
                                     let _ = handle.emit("hold-down-stop", ());
                                 } else if dtap_fired {
                                     // Double-tap completed
-                                    log_info!("keyboard: BOTH -> emit double-tap-toggle");
+                                    tracing::info!(target: "keyboard", "BOTH -> emit double-tap-toggle");
                                     let _ = handle.emit("double-tap-toggle", ());
                                 }
                                 // else: short single tap, no recording was started, nothing to do
                             }
                             HoldDownEvent::None => {
                                 if dtap_fired {
-                                    log_info!("keyboard: BOTH -> emit double-tap-toggle (hold=None)");
+                                    tracing::info!(target: "keyboard", "BOTH -> emit double-tap-toggle (hold=None)");
                                     let _ = handle.emit("double-tap-toggle", ());
                                 }
                             }
@@ -608,7 +607,7 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
             };
 
             if let Err(e) = listen(callback) {
-                log_error!("keyboard: rdev listener error: {:?}", e);
+                tracing::error!(target: "keyboard", "rdev listener error: {:?}", e);
                 LISTENER_THREAD_SPAWNED.store(false, Ordering::SeqCst);
                 LISTENER_ACTIVE.store(false, Ordering::SeqCst);
                 let _ = error_handle.emit("keyboard-listener-error", format!("{:?}", e));
@@ -620,7 +619,7 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
         std::thread::spawn(|| loop {
             std::thread::sleep(std::time::Duration::from_secs(60));
             if LISTENER_ACTIVE.load(Ordering::SeqCst) {
-                log_info!("keyboard: listener heartbeat — active");
+                tracing::trace!(target: "keyboard", "listener heartbeat — active");
             } else if !LISTENER_THREAD_SPAWNED.load(Ordering::SeqCst) {
                 // Listener thread has exited; stop monitoring.
                 break;

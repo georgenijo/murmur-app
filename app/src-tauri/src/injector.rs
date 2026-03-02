@@ -1,4 +1,3 @@
-use crate::{log_info, log_warn};
 use arboard::Clipboard;
 use std::thread;
 use std::time::Duration;
@@ -7,11 +6,11 @@ use std::time::Duration;
 /// `delay_ms` controls the pause before pasting (window focus settling).
 /// On paste failure, retries once after a 100ms backoff.
 pub fn inject_text(text: &str, auto_paste: bool, delay_ms: u64) -> Result<(), String> {
-    log_info!("inject_text called with auto_paste={}, delay_ms={}, text_len={}", auto_paste, delay_ms, text.len());
+    tracing::info!(target: "pipeline", "inject_text called with auto_paste={}, delay_ms={}, text_len={}", auto_paste, delay_ms, text.len());
 
     // Skip if text is empty
     if text.trim().is_empty() {
-        log_info!("inject_text: text is empty, skipping");
+        tracing::info!(target: "pipeline", "inject_text: text is empty, skipping");
         return Ok(());
     }
 
@@ -21,7 +20,7 @@ pub fn inject_text(text: &str, auto_paste: bool, delay_ms: u64) -> Result<(), St
     // Copy transcription to clipboard
     clipboard.set_text(text)
         .map_err(|e| format!("Failed to copy to clipboard: {}", e))?;
-    log_info!("inject_text: text copied to clipboard");
+    tracing::info!(target: "pipeline", "inject_text: text copied to clipboard");
 
     // If auto-paste is disabled, we're done
     if !auto_paste {
@@ -31,7 +30,7 @@ pub fn inject_text(text: &str, auto_paste: bool, delay_ms: u64) -> Result<(), St
     // Check accessibility permission before attempting paste simulation
     if !is_accessibility_enabled() {
         // Don't error - text is in clipboard, user can paste manually
-        log_warn!("inject_text: accessibility permission not granted — text in clipboard only");
+        tracing::warn!(target: "pipeline", "inject_text: accessibility permission not granted — text in clipboard only");
         return Ok(());
     }
 
@@ -42,7 +41,7 @@ pub fn inject_text(text: &str, auto_paste: bool, delay_ms: u64) -> Result<(), St
     match simulate_paste() {
         Ok(()) => Ok(()),
         Err(first_err) => {
-            log_warn!("inject_text: first paste attempt failed: {}, retrying in 100ms", first_err);
+            tracing::warn!(target: "pipeline", "inject_text: first paste attempt failed: {}, retrying in 100ms", first_err);
             thread::sleep(Duration::from_millis(100));
             simulate_paste().map_err(|retry_err| {
                 format!("Auto-paste failed after retry: {}", retry_err)
@@ -55,7 +54,7 @@ pub fn inject_text(text: &str, auto_paste: bool, delay_ms: u64) -> Result<(), St
 fn simulate_paste() -> Result<(), String> {
     use std::process::Command;
 
-    log_info!("simulate_paste: using osascript to simulate Cmd+V");
+    tracing::info!(target: "pipeline", "simulate_paste: using osascript to simulate Cmd+V");
 
     let output = Command::new("osascript")
         .arg("-e")
@@ -64,7 +63,7 @@ fn simulate_paste() -> Result<(), String> {
         .map_err(|e| format!("Failed to run osascript: {}", e))?;
 
     if output.status.success() {
-        log_info!("simulate_paste: completed successfully");
+        tracing::info!(target: "pipeline", "simulate_paste: completed successfully");
         Ok(())
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
