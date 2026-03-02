@@ -87,15 +87,22 @@ export function OverlayWidget() {
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | null = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
     listen('recording-cancelled', () => {
+      if (timeoutId) clearTimeout(timeoutId);
       setShowCancelled(true);
-      setTimeout(() => {
+      timeoutId = setTimeout(() => {
         if (!cancelled) setShowCancelled(false);
+        timeoutId = null;
       }, 800);
     }).then((fn) => {
       if (cancelled) { fn(); } else { unlisten = fn; }
     });
-    return () => { cancelled = true; unlisten?.(); };
+    return () => {
+      cancelled = true;
+      if (timeoutId) clearTimeout(timeoutId);
+      unlisten?.();
+    };
   }, []);
 
   // Subscribe to notch info changes (display config change: monitor plug/unplug, lid)

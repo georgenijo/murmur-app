@@ -218,11 +218,15 @@ pub async fn process_audio(
     let t_parse = std::time::Instant::now();
     let wav_bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &audio_data)
         .map_err(|e| {
-            let _ = app_handle.emit("recording-status-changed", "idle");
+            if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
+                let _ = app_handle.emit("recording-status-changed", "idle");
+            }
             format!("Failed to decode base64: {}", e)
         })?;
     let samples = transcriber::parse_wav_to_samples(&wav_bytes).map_err(|e| {
-        let _ = app_handle.emit("recording-status-changed", "idle");
+        if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
+            let _ = app_handle.emit("recording-status-changed", "idle");
+        }
         e
     })?;
     tracing::info!(target: "pipeline", "audio parse (base64 + WAV): {:?}", t_parse.elapsed());
@@ -431,7 +435,9 @@ pub async fn stop_native_recording(
     let t_total = std::time::Instant::now();
     let samples = audio::stop_recording().map_err(|e| {
         tracing::error!(target: "audio", "stop_native_recording: stop_recording failed: {}", e);
-        let _ = app_handle.emit("recording-status-changed", "idle");
+        if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
+            let _ = app_handle.emit("recording-status-changed", "idle");
+        }
         e
     })?;
     tracing::info!(target: "pipeline", "audio teardown + resample: {:?}", t_total.elapsed());
@@ -439,7 +445,9 @@ pub async fn stop_native_recording(
     if samples.is_empty() {
         tracing::info!(target: "pipeline", "stop_native_recording: no audio captured");
         // guard drops on return, resetting status to Idle
-        let _ = app_handle.emit("recording-status-changed", "idle");
+        if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
+            let _ = app_handle.emit("recording-status-changed", "idle");
+        }
         return Ok(serde_json::json!({
             "type": "transcription",
             "text": "",
@@ -454,7 +462,9 @@ pub async fn stop_native_recording(
     if samples.len() < MIN_RECORDING_SAMPLES {
         tracing::info!(target: "pipeline", "stop_native_recording: recording too short ({}ms), discarding",
             samples.len() / 16); // samples / 16_000 * 1000
-        let _ = app_handle.emit("recording-status-changed", "idle");
+        if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
+            let _ = app_handle.emit("recording-status-changed", "idle");
+        }
         return Ok(serde_json::json!({
             "type": "transcription",
             "text": "",

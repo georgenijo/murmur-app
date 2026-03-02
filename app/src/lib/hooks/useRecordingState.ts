@@ -187,9 +187,10 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
       // Only update status from the return value if we're still in
       // processing. If cancel already set us to idle (or a new recording
       // started), don't clobber the current state with a stale result.
-      if (statusRef.current === 'processing') {
-        setStatus(isDictationStatus(res.state) ? res.state : 'idle');
-      }
+      // Functional update ensures atomic check-and-set even if statusRef
+      // hasn't synced yet.
+      const newStatus = isDictationStatus(res.state) ? res.state : 'idle';
+      setStatus(prev => prev === 'processing' ? newStatus : prev);
     } catch (err) {
       setError(String(err));
       setStatus('idle');
