@@ -1,0 +1,10 @@
+{
+  "$schema": "https://schemas.tauri.app/config/2/capability",
+  "identifier": "log-viewer",
+  "description": "Capability for the log viewer window",
+  "windows": ["log-viewer"],
+  "permissions": [
+    "core:default",
+    "core:event:default"
+  ]
+}

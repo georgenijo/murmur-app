@@ -19,7 +19,6 @@ import { useAutoUpdater } from './lib/hooks/useAutoUpdater';
 import { UpdateModal } from './components/UpdateModal';
 import type { UpdateStatus } from './lib/updater';
 import { StatsBar } from './components/StatsBar';
-import { LogViewer } from './components/LogViewer';
 const ResourceMonitor = lazy(() => import('./components/ResourceMonitor').then(m => ({ default: m.ResourceMonitor })));
 import { resetStats } from './lib/stats';
 import { ModelDownloader } from './components/ModelDownloader';
@@ -112,7 +111,6 @@ function App() {
   const startDownload = updater.startDownload;
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [isLogViewerOpen, setIsLogViewerOpen] = useState(false);
 
   const error = initError || recordingError;
 
@@ -163,7 +161,7 @@ function App() {
           onUpdateSettings={updateSettings}
           status={status}
           onResetStats={handleResetStats}
-          onViewLogs={() => setIsLogViewerOpen(true)}
+          onViewLogs={() => invoke('open_log_viewer').catch(() => {})}
           accessibilityGranted={accessibilityGranted}
           onCheckForUpdate={checkForUpdate}
           updateStatus={updateStatus}
@@ -173,10 +171,6 @@ function App() {
       <AboutModal
         isOpen={showAbout}
         onClose={() => setShowAbout(false)}
-      />
-      <LogViewer
-        isOpen={isLogViewerOpen}
-        onClose={() => setIsLogViewerOpen(false)}
       />
       <UpdateModal
         status={updateStatus}

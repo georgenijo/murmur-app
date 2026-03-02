@@ -20,12 +20,13 @@ export default defineConfig(async () => ({
       ignored: ["**/src-tauri/**"],
     },
   },
-  // Multi-page: main window + overlay window
+  // Multi-page: main window + overlay window + log-viewer window
   build: {
     rollupOptions: {
       input: {
         main: resolve(__dirname, "index.html"),
         overlay: resolve(__dirname, "overlay.html"),
+        "log-viewer": resolve(__dirname, "log-viewer.html"),
       },
     },
   },
