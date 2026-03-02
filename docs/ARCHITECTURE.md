@@ -115,7 +115,7 @@ All keyboard detection runs through a **single persistent rdev background thread
 #### Hold-Down Detector
 
 Simple 2-state machine:
-```
+```text
 Idle --> [key press] --> Held (emit 'hold-down-start')
 Held --> [key release] --> Idle (emit 'hold-down-stop')
 ```
@@ -126,7 +126,7 @@ In hold-down-only mode, there is no minimum hold duration: a key press immediate
 #### Double-Tap Detector
 
 4-state machine:
-```
+```text
 Idle --> [press] --> WaitingFirstUp
      --> [release <200ms] --> WaitingSecondDown
      --> [press, gap <400ms] --> WaitingSecondUp
@@ -228,7 +228,7 @@ The initial model downloader screen shows a curated subset of 4 models: `moonshi
 
 1. **Clipboard** (always): `arboard` writes text to the system clipboard. Empty/whitespace-only text is silently skipped.
 2. **Auto-paste** (optional): waits a configurable delay (10-500ms, default 50ms), then:
-   ```
+   ```bash
    osascript -e 'tell application "System Events" to keystroke "v" using command down'
    ```
    The delay allows the target window to regain focus.
@@ -275,14 +275,14 @@ The initial model downloader screen shows a curated subset of 4 models: `moonshi
 - `check_specific_model_exists`: verifies a named model exists on disk. Includes path traversal protection (rejects `..`, `/`, `\` in model names)
 - `download_model`: streaming download with progress events. Whisper models download as single `.bin` files from Hugging Face. Moonshine models download as `.tar.bz2` archives from sherpa-onnx GitHub releases, extracted via `bzip2` + `tar` on a blocking thread
 - **VAD model co-download**: when downloading any transcription model, the Silero VAD model (`ggml-silero-v5.1.2.bin`, ~1.8MB) is automatically co-downloaded if not already present. VAD download failure is non-fatal
-- **Lazy VAD download**: `ensure_vad_model` is a fallback for users who upgrade from a pre-VAD version. If the VAD model is missing at transcription time, a background download is kicked off for next time. Emits `recording-status-changed` with value `"downloading-vad"` during explicit download
+- **Lazy VAD download**: `ensure_vad_model` is a fallback for users who upgrade from a pre-VAD version. If the VAD model is missing at transcription time, a silent background download is kicked off for next time (no UI side effects)
 - All downloads use a temp-file-then-rename pattern for atomicity. Partial downloads never appear as valid models
 
 ### `telemetry.rs` -- Structured Event System
 
 Replaces the former `logging.rs`. All application logging goes through `tracing` with two output layers:
 
-```
+```text
 tracing event
     |
     +--> Pretty-printed text file (app.log / app.dev.log) via tracing_appender
@@ -478,7 +478,7 @@ Color constants map each stream and level to Tailwind classes (bg, text, dot) fo
 | Event | Payload | Description |
 |-------|---------|-------------|
 | `audio-level` | f32 (RMS 0.0-1.0) | Real-time audio level during recording, ~60fps |
-| `recording-status-changed` | String | Status transitions: `"idle"`, `"recording"`, `"processing"`, `"downloading-vad"` |
+| `recording-status-changed` | String | Status transitions: `"idle"`, `"recording"`, `"processing"` |
 | `transcription-complete` | `{text, duration}` | Broadcast to all windows after non-empty transcription |
 | `auto-paste-failed` | String (hint) | Paste failed; text is in clipboard |
 | `download-progress` | `{received, total}` | Streaming download progress (bytes) |
@@ -506,7 +506,7 @@ Accessibility is checked via `AXIsProcessTrusted()` FFI. If not granted, a syste
 ## Data Directory
 
 All models, logs, and event data are stored under:
-```
+```text
 ~/Library/Application Support/local-dictation/
 ```
 

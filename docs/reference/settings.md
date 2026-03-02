@@ -66,8 +66,8 @@ interface Settings {
 | Mode | Trigger Key Label | Behavior |
 |------|------------------|----------|
 | `hold_down` | "Hold Key" | Hold to start recording, release to stop and transcribe. |
-| `double_tap` | "Double-Tap Key" | Double-tap to start recording, single tap to stop. |
-| `both` | "Trigger Key" | Hold to record (with 200ms promotion delay), or double-tap to start and single tap to stop. |
+| `double_tap` | "Double-Tap Key" | Double-tap to start recording, single-tap to stop. |
+| `both` | "Trigger Key" | Hold to record (with 200ms promotion delay), or double-tap to start and single-tap to stop. |
 
 ---
 

@@ -30,7 +30,7 @@ The VAD context is configured to use a single thread with GPU acceleration disab
 
 VAD sensitivity is user-configurable on a 0-100 scale (default: 50). The internal threshold is computed as:
 
-```
+```text
 threshold = 1.0 - (sensitivity / 100.0)
 ```
 
@@ -49,14 +49,9 @@ When downloading any transcription model (whisper or moonshine), the VAD model i
 
 ### Fallback Download
 
-For users who upgraded from a pre-VAD version, the `ensure_vad_model` function checks for the VAD model at transcription time. If missing, it:
+For users who upgraded from a pre-VAD version, the `ensure_vad_model` function checks for the VAD model at transcription time. If missing, it spawns a silent background download with no UI side effects -- the current transcription proceeds with unfiltered audio, and the downloaded model is used on the next recording.
 
-1. Emits `recording-status-changed` with value `"downloading-vad"` (a transient status)
-2. Spawns a background download
-3. Emits `recording-status-changed` with `"processing"` once done
-4. Falls back to unfiltered transcription for the current run (the downloaded model is used next time)
-
-If the background download fails, the error is logged but no explicit failure notification is sent to the frontend.
+If the background download fails, the error is logged but no notification is sent to the frontend.
 
 ## Pipeline Integration
 

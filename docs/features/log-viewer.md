@@ -144,7 +144,7 @@ The frontend event buffer is managed by the `useEventStore` hook:
 
 ## Log Files
 
-All files stored in `~/Library/Application Support/local-dictation/`:
+All files stored in `~/Library/Application Support/local-dictation/logs/`:
 
 | File | Format | Purpose |
 |------|--------|---------|

@@ -11,7 +11,7 @@ For commands invoked from the frontend to the backend, see [commands.md](command
 | Event | Payload | Source | When It Fires | Listeners |
 |-------|---------|--------|---------------|-----------|
 | `audio-level` | `f32` (RMS value, 0.0-1.0) | `audio.rs` | Continuously during recording, throttled to ~60fps (16ms minimum gap between emissions). | Overlay window (waveform visualization), main window (`useRecordingState` stores in `audioLevel` state). |
-| `recording-status-changed` | `string` (`"idle"`, `"recording"`, `"processing"`, `"downloading-vad"`) | `commands/recording.rs` | At every dictation state transition: start recording, stop recording, begin processing, finish processing, and during VAD model download. | Main window (`useRecordingState` syncs status), overlay window (drives visual state). |
+| `recording-status-changed` | `string` (`"idle"`, `"recording"`, `"processing"`) | `commands/recording.rs` | At every dictation state transition: start recording, stop recording, begin processing, finish processing. | Main window (`useRecordingState` syncs status), overlay window (drives visual state). |
 | `transcription-complete` | `{text: string, duration: number}` | `commands/recording.rs` | After successful transcription produces non-empty text. Broadcast to all windows. Duration is in whole seconds (integer division). | Main window (`useRecordingState` updates history, stats, and transcription display). |
 | `auto-paste-failed` | `string` (hint message, e.g., "Text is in your clipboard -- press Cmd+V to paste manually.") | `commands/recording.rs` (via `injector.rs`) | When auto-paste fails or times out (2-second timeout). Text is already in the clipboard. | Main window (`useRecordingState` shows error for 5 seconds then auto-clears). |
 
