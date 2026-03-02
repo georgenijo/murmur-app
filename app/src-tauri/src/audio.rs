@@ -216,8 +216,13 @@ fn run_audio_capture(
     let sample_format = config.sample_format();
     let channels = config.channels() as usize;
 
+    let telemetry_device = if cfg!(debug_assertions) {
+        actual_name.clone()
+    } else {
+        "<redacted>".to_string()
+    };
     tracing::info!(target: "audio", "run_audio_capture: device='{}', sample_rate={}, channels={}, format={:?}",
-        actual_name, device_sample_rate, channels, sample_format);
+        telemetry_device, device_sample_rate, channels, sample_format);
 
     let err_fn = |err| tracing::error!(target: "audio", "Audio stream error: {}", err);
 

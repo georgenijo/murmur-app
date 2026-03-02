@@ -27,7 +27,9 @@ function extractMetrics(events: AppEvent[]): TranscriptionMetric[] {
       vad_ms: e.data.vad_ms as number,
       inference_ms: e.data.inference_ms as number,
       paste_ms: e.data.paste_ms as number,
-      total_ms: (e.data.total_ms as number) || ((e.data.vad_ms as number) + (e.data.inference_ms as number) + (e.data.paste_ms as number)),
+      total_ms: typeof e.data.total_ms === 'number'
+        ? e.data.total_ms
+        : (e.data.vad_ms as number) + (e.data.inference_ms as number) + (e.data.paste_ms as number),
       index: i,
     }));
 }

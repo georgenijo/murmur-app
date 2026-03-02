@@ -14,8 +14,10 @@ export function LevelFilter({ active, onToggle }: LevelFilterProps) {
         const isActive = active.has(level);
         return (
           <button
+            type="button"
             key={level}
             onClick={() => onToggle(level)}
+            aria-pressed={isActive}
             className={`px-2 py-0.5 rounded text-xs font-medium transition-colors ${
               isActive
                 ? 'bg-stone-800 dark:bg-stone-200 text-white dark:text-stone-900'

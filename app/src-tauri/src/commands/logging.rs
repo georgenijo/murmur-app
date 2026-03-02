@@ -23,9 +23,10 @@ pub fn log_frontend(level: String, message: String) {
 
 #[tauri::command]
 pub fn open_log_viewer(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window("log-viewer") {
-        window.show().map_err(|e| e.to_string())?;
-        window.set_focus().map_err(|e| e.to_string())?;
-    }
+    let window = app
+        .get_webview_window("log-viewer")
+        .ok_or_else(|| "log-viewer window is not configured".to_string())?;
+    window.show().map_err(|e| e.to_string())?;
+    window.set_focus().map_err(|e| e.to_string())?;
     Ok(())
 }

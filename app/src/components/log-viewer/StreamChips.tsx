@@ -14,8 +14,10 @@ export function StreamChips({ active, onToggle }: StreamChipsProps) {
         const isActive = active.has(stream);
         return (
           <button
+            type="button"
             key={stream}
             onClick={() => onToggle(stream)}
+            aria-pressed={isActive}
             className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-all ${
               isActive
                 ? `${colors.bg} ${colors.text} ring-1 ring-current/20`

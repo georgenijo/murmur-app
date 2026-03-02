@@ -125,7 +125,11 @@ async fn run_transcription_pipeline(
                 let _ = tx.send(injector::inject_text(&text_to_inject, auto_paste, paste_delay_ms));
             })
             .map_err(|e| format!("Failed to dispatch to main thread: {}", e))?;
-        let paste_hint = "Text is in your clipboard -- press Cmd+V to paste manually.";
+        let paste_hint = if cfg!(target_os = "macos") {
+            "Text is in your clipboard -- press Cmd+V to paste manually."
+        } else {
+            "Text is in your clipboard -- press Ctrl+V to paste manually."
+        };
         match tokio::time::timeout(std::time::Duration::from_secs(2), rx).await {
             Ok(Ok(Err(e))) => {
                 tracing::error!(target: "pipeline", "Text injection failed: {}", e);
