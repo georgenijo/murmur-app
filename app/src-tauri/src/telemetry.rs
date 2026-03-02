@@ -296,6 +296,7 @@ pub fn clear_all_logs() -> Result<(), String> {
         Some(d) => d,
         None => return Ok(()),
     };
+    // Remove known log files
     let files = [
         "app.log",
         "app.log.1",
@@ -310,10 +311,22 @@ pub fn clear_all_logs() -> Result<(), String> {
         "transcriptions.dev.jsonl",
         "transcriptions.dev.jsonl.1",
         "events.jsonl",
+        "events.jsonl.1",
         "events.dev.jsonl",
+        "events.dev.jsonl.1",
     ];
     for file in files {
         let _ = std::fs::remove_file(dir.join(file));
+    }
+    // Clean up dated rolling files (e.g. app.dev.log.2026-03-02, events.dev.jsonl.2026-03-02)
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.contains(".log.") || name.contains(".jsonl.") {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
     }
     Ok(())
 }
