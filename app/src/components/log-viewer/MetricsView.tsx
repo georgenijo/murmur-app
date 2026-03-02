@@ -1,3 +1,4 @@
+import { useState, useCallback } from 'react';
 import type { AppEvent } from '../../lib/events';
 
 interface MetricsViewProps {
@@ -73,12 +74,15 @@ function StatCard({ label, value, average, color, unit = 'ms' }: StatCardProps) 
 
 // --- Line Chart ---
 
-const SERIES_CONFIG = {
+const SERIES_CONFIG: Record<string, { color: string; label: string }> = {
   total:     { color: '#57534e', label: 'Total' },      // stone-600
   inference: { color: '#f59e0b', label: 'Inference' },   // amber-500
   vad:       { color: '#a8a29e', label: 'VAD' },         // stone-400
   paste:     { color: '#64748b', label: 'Paste' },       // slate-500
 };
+
+type SeriesKey = 'total' | 'inference' | 'vad' | 'paste';
+const ALL_SERIES: SeriesKey[] = ['total', 'inference', 'vad', 'paste'];
 
 interface Series {
   key: string;
@@ -179,6 +183,17 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 export function MetricsView({ events }: MetricsViewProps) {
   const metrics = extractMetrics(events);
   const latest = metrics[metrics.length - 1];
+  const [visible, setVisible] = useState<Set<SeriesKey>>(() => new Set(ALL_SERIES));
+
+  const toggle = useCallback((key: SeriesKey) => {
+    setVisible(prev => {
+      const next = new Set(prev);
+      // Don't allow hiding everything — keep at least one
+      if (next.has(key) && next.size > 1) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
 
   if (metrics.length === 0) {
     return (
@@ -188,56 +203,84 @@ export function MetricsView({ events }: MetricsViewProps) {
     );
   }
 
-  const totals = metrics.map(m => m.total_ms);
-  const inferences = metrics.map(m => m.inference_ms);
-  const vads = metrics.map(m => m.vad_ms);
-  const pastes = metrics.map(m => m.paste_ms);
+  const seriesData: Record<SeriesKey, number[]> = {
+    total: metrics.map(m => m.total_ms),
+    inference: metrics.map(m => m.inference_ms),
+    vad: metrics.map(m => m.vad_ms),
+    paste: metrics.map(m => m.paste_ms),
+  };
+
+  const seriesValues: Record<SeriesKey, number> = latest ? {
+    total: latest.total_ms,
+    inference: latest.inference_ms,
+    vad: latest.vad_ms,
+    paste: latest.paste_ms,
+  } : { total: 0, inference: 0, vad: 0, paste: 0 };
+
+  // Split visible series into two charts by magnitude
+  const upperKeys = (['total', 'inference'] as SeriesKey[]).filter(k => visible.has(k));
+  const lowerKeys = (['vad', 'paste'] as SeriesKey[]).filter(k => visible.has(k));
+
+  const toSeries = (keys: SeriesKey[]): Series[] =>
+    keys.map(k => ({ key: k, color: SERIES_CONFIG[k].color, values: seriesData[k] }));
 
   return (
     <div className="flex flex-col gap-5 p-4">
-      {/* Stat Cards */}
+      {/* Legend — click to toggle */}
+      <div className="flex gap-2 justify-center">
+        {ALL_SERIES.map(key => {
+          const { color, label } = SERIES_CONFIG[key];
+          const active = visible.has(key);
+          return (
+            <button
+              key={key}
+              onClick={() => toggle(key)}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-all ${
+                active
+                  ? 'ring-1 ring-stone-300 dark:ring-stone-600 text-stone-700 dark:text-stone-300'
+                  : 'text-stone-400 dark:text-stone-600'
+              }`}
+            >
+              <span
+                className="w-3 h-0.5 rounded-full transition-opacity"
+                style={{ background: color, opacity: active ? 1 : 0.3 }}
+              />
+              <span className={active ? '' : 'line-through'}>{label}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Stat Cards — only for visible series */}
       {latest && (
         <div className="flex gap-3">
-          <StatCard label="Total" value={latest.total_ms} average={avg(totals)} color={SERIES_CONFIG.total.color} />
-          <StatCard label="Inference" value={latest.inference_ms} average={avg(inferences)} color={SERIES_CONFIG.inference.color} />
-          <StatCard label="VAD" value={latest.vad_ms} average={avg(vads)} color={SERIES_CONFIG.vad.color} />
-          <StatCard label="Paste" value={latest.paste_ms} average={avg(pastes)} color={SERIES_CONFIG.paste.color} />
+          {ALL_SERIES.filter(k => visible.has(k)).map(key => (
+            <StatCard
+              key={key}
+              label={SERIES_CONFIG[key].label}
+              value={seriesValues[key]}
+              average={avg(seriesData[key])}
+              color={SERIES_CONFIG[key].color}
+            />
+          ))}
         </div>
       )}
 
-      {/* Total + Inference chart */}
-      <div>
-        <SectionLabel>Total &amp; Inference (ms)</SectionLabel>
-        <LineChart
-          height={150}
-          series={[
-            { key: 'total', color: SERIES_CONFIG.total.color, values: totals },
-            { key: 'inference', color: SERIES_CONFIG.inference.color, values: inferences },
-          ]}
-        />
-      </div>
+      {/* Upper chart: Total + Inference */}
+      {upperKeys.length > 0 && (
+        <div>
+          <SectionLabel>{upperKeys.map(k => SERIES_CONFIG[k].label).join(' & ')} (ms)</SectionLabel>
+          <LineChart height={150} series={toSeries(upperKeys)} />
+        </div>
+      )}
 
-      {/* VAD + Paste chart */}
-      <div>
-        <SectionLabel>VAD &amp; Paste (ms)</SectionLabel>
-        <LineChart
-          height={120}
-          series={[
-            { key: 'vad', color: SERIES_CONFIG.vad.color, values: vads },
-            { key: 'paste', color: SERIES_CONFIG.paste.color, values: pastes },
-          ]}
-        />
-      </div>
-
-      {/* Legend */}
-      <div className="flex gap-4 text-xs justify-center">
-        {Object.entries(SERIES_CONFIG).map(([key, { color, label }]) => (
-          <div key={key} className="flex items-center gap-1.5">
-            <span className="w-3 h-0.5 rounded-full" style={{ background: color }} />
-            <span className="text-stone-500 dark:text-stone-400">{label}</span>
-          </div>
-        ))}
-      </div>
+      {/* Lower chart: VAD + Paste */}
+      {lowerKeys.length > 0 && (
+        <div>
+          <SectionLabel>{lowerKeys.map(k => SERIES_CONFIG[k].label).join(' & ')} (ms)</SectionLabel>
+          <LineChart height={120} series={toSeries(lowerKeys)} />
+        </div>
+      )}
     </div>
   );
 }
