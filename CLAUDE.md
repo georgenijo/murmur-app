@@ -19,6 +19,11 @@ Read these before working on a feature:
 - **[docs/features/recording-modes.md](docs/features/recording-modes.md)** — Hold-down and double-tap modes, state machine, rdev threading
 - **[docs/features/transcription.md](docs/features/transcription.md)** — Audio capture, whisper pipeline, status flow
 - **[docs/features/text-injection.md](docs/features/text-injection.md)** — Clipboard, auto-paste, osascript
+- **[docs/features/vad.md](docs/features/vad.md)** — VAD speech filtering
+- **[docs/features/overlay.md](docs/features/overlay.md)** — Dynamic Island overlay
+- **[docs/features/log-viewer.md](docs/features/log-viewer.md)** — Structured event system and log viewer
+- **[docs/features/auto-updater.md](docs/features/auto-updater.md)** — Auto-update system
+- **[docs/features/models.md](docs/features/models.md)** — Model management and download
 
 ## File Map
 
@@ -28,10 +33,10 @@ Read these before working on a feature:
 |------|---------|
 | `lib.rs` | App wiring: mod declarations, `State`, `MutexExt`, `run()` |
 | `commands/mod.rs` | Re-exports command sub-modules |
-| `commands/recording.rs` | `IdleGuard`, transcription pipeline, 7 recording/status commands |
+| `commands/recording.rs` | `IdleGuard`, transcription pipeline with VAD, 7 recording/status commands |
 | `commands/permissions.rs` | 6 permission and audio device commands |
 | `commands/keyboard.rs` | 4 keyboard listener commands |
-| `commands/logging.rs` | 3 logging commands |
+| `commands/logging.rs` | 4 logging commands, delegates to telemetry.rs |
 | `commands/models.rs` | Model download pipeline and existence checks |
 | `commands/tray.rs` | Tray icon rendering (`make_tray_icon_data`, `update_tray_icon`) |
 | `commands/overlay.rs` | Notch detection, overlay positioning, show/hide commands |
@@ -40,7 +45,9 @@ Read these before working on a feature:
 | `transcriber/` | whisper-rs and moonshine model loading and inference |
 | `injector.rs` | Clipboard (arboard) + auto-paste (osascript) |
 | `state.rs` | `DictationState`, `AppState` with mutex-wrapped state |
-| `logging.rs` | File-based logging with rotation |
+| `telemetry.rs` | Structured event system: TauriEmitterLayer, ring buffer, JSONL, privacy stripping |
+| `vad.rs` | Silero VAD speech filtering via whisper-rs |
+| `resource_monitor.rs` | System CPU/memory monitoring via sysinfo |
 
 ### Frontend (`app/src/`)
 
@@ -48,10 +55,25 @@ Read these before working on a feature:
 |------|---------|
 | `App.tsx` | Main orchestrator, wires hooks together |
 | `lib/settings.ts` | Settings types, defaults, localStorage persistence |
+| `lib/events.ts` | Event types, stream/level definitions, color constants |
+| `lib/history.ts` | History entry types and localStorage persistence |
+| `lib/stats.ts` | Usage metrics: words, WPM, recordings, tokens |
+| `lib/dictation.ts` | Tauri command wrappers for dictation pipeline |
+| `lib/updater.ts` | Semver parsing, min-version checking, update utilities |
+| `lib/log.ts` | Frontend logging via Rust tracing (flog utility) |
 | `lib/hooks/useHoldDownToggle.ts` | Hold-down mode (rdev press/release events) |
 | `lib/hooks/useDoubleTapToggle.ts` | Double-tap mode (rdev events) |
+| `lib/hooks/useCombinedToggle.ts` | Both mode (hold-down + double-tap simultaneous) |
 | `lib/hooks/useRecordingState.ts` | Recording status, transcription, toggle logic |
+| `lib/hooks/useAutoUpdater.ts` | OTA updates, min-version enforcement |
+| `lib/hooks/useHistoryManagement.ts` | Transcription history with localStorage persistence |
+| `lib/hooks/useInitialization.ts` | One-time init sequence (initDictation + configure) |
+| `lib/hooks/useShowAboutListener.ts` | Listens for show-about tray event |
+| `lib/hooks/useEventStore.ts` | Structured event log buffer with live streaming |
+| `lib/hooks/useResourceMonitor.ts` | CPU/memory polling with rolling buffer |
 | `components/settings/SettingsPanel.tsx` | Settings UI with mode switching |
+| `components/log-viewer/LogViewerApp.tsx` | Structured event viewer with Events + Metrics tabs |
+| `components/OverlayWidget.tsx` | Dynamic Island notch overlay |
 
 ## Key Patterns
 
