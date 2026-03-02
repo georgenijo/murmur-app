@@ -1,8 +1,9 @@
 use super::TranscriptionBackend;
+use crate::log_info;
 use std::path::{Path, PathBuf};
 use std::sync::Once;
 use whisper_rs::{
-    FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters,
+    FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
     install_logging_hooks,
 };
 
@@ -72,6 +73,7 @@ fn get_model_path(model_name: &str) -> Result<PathBuf, String> {
 
 pub struct WhisperBackend {
     context: Option<WhisperContext>,
+    state: Option<WhisperState>,
     loaded_model_name: Option<String>,
 }
 
@@ -85,6 +87,7 @@ impl Default for WhisperBackend {
     fn default() -> Self {
         Self {
             context: None,
+            state: None,
             loaded_model_name: None,
         }
     }
@@ -114,20 +117,22 @@ impl TranscriptionBackend for WhisperBackend {
         let ctx = WhisperContext::new_with_params(path_str, params)
             .map_err(|e| format!("Failed to load whisper model: {}", e))?;
 
+        let state = ctx
+            .create_state()
+            .map_err(|e| format!("Failed to create whisper state: {}", e))?;
+        log_info!("whisper: model '{}' loaded, state cached for reuse", model_name);
         self.context = Some(ctx);
+        self.state = Some(state);
         self.loaded_model_name = Some(model_name.to_string());
         Ok(())
     }
 
     fn transcribe(&mut self, samples: &[f32], language: &str) -> Result<String, String> {
-        let ctx = self
-            .context
-            .as_ref()
-            .ok_or_else(|| "Whisper model not loaded. Call load_model() first.".to_string())?;
-
-        let mut state = ctx
-            .create_state()
-            .map_err(|e| format!("Failed to create whisper state: {}", e))?;
+        let state = self
+            .state
+            .as_mut()
+            .ok_or_else(|| "Whisper state not initialized. Call load_model() first.".to_string())?;
+        log_info!("whisper: reusing cached state for transcription");
 
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
         params.set_language(Some(language));
@@ -180,7 +185,9 @@ impl TranscriptionBackend for WhisperBackend {
     }
 
     fn reset(&mut self) {
-        self.context = None;
+        log_info!("whisper: releasing cached state and model");
+        drop(self.state.take());
+        drop(self.context.take());
         self.loaded_model_name = None;
     }
 }
