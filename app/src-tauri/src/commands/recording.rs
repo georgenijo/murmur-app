@@ -194,10 +194,37 @@ pub async fn process_audio(
     // Pipeline has its own guard, so disarm this one
     guard.disarm();
 
+    let t_total = std::time::Instant::now();
     let pipeline_result = run_transcription_pipeline(&samples, &app_handle, &state.app_state).await;
     keyboard::set_processing(false);
     let _ = app_handle.emit("recording-status-changed", "idle");
-    let (text, _timings) = pipeline_result?;
+    let (text, timings) = pipeline_result?;
+
+    let total_ms = t_total.elapsed().as_millis() as u64;
+    let audio_secs = samples.len() as f64 / 16_000.0;
+    let word_count = if text.trim().is_empty() { 0 } else { text.split_whitespace().count() };
+    let char_count = text.len();
+    let model_name = {
+        let d = state.app_state.dictation.lock_or_recover();
+        d.model_name.clone()
+    };
+    let backend_name = {
+        let b = state.app_state.backend.lock_or_recover();
+        b.name().to_string()
+    };
+    tracing::info!(
+        target: "pipeline",
+        vad_ms = timings.vad_ms,
+        inference_ms = timings.inference_ms,
+        paste_ms = timings.paste_ms,
+        total_ms = total_ms,
+        audio_secs = audio_secs,
+        word_count = word_count,
+        char_count = char_count,
+        model = model_name.as_str(),
+        backend = backend_name.as_str(),
+        "transcription complete"
+    );
 
     Ok(serde_json::json!({
         "type": "transcription",

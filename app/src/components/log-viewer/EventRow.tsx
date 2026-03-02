@@ -21,6 +21,17 @@ export function EventRow({ event }: EventRowProps) {
       <div
         className={`flex items-baseline gap-2 py-1 px-1 ${hasData ? 'cursor-pointer hover:bg-stone-50 dark:hover:bg-stone-800/50' : ''}`}
         onClick={() => hasData && setExpanded(!expanded)}
+        {...(hasData && {
+          role: 'button',
+          tabIndex: 0,
+          'aria-expanded': expanded,
+          onKeyDown: (e: React.KeyboardEvent) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              setExpanded(s => !s);
+            }
+          },
+        })}
       >
         <span className="text-stone-400 dark:text-stone-500 shrink-0 tabular-nums text-[11px]">
           {timeStr}

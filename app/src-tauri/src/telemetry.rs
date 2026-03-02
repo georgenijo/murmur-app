@@ -122,10 +122,10 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for TauriEmitterLayer 
         let summary = visitor.message.unwrap_or_default();
         let mut data = serde_json::Value::Object(visitor.fields);
 
-        // Privacy: in release builds, strip "text" from pipeline events
+        // Privacy: in release builds, strip all string fields from pipeline events
         if !cfg!(debug_assertions) && stream == "pipeline" {
             if let Some(obj) = data.as_object_mut() {
-                obj.remove("text");
+                obj.retain(|_, v| !v.is_string());
             }
         }
 
@@ -141,7 +141,8 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for TauriEmitterLayer 
         };
 
         // Push to ring buffer
-        if let Ok(mut buf) = self.buffer.lock() {
+        {
+            let mut buf = self.buffer.lock().unwrap_or_else(|p| p.into_inner());
             if buf.len() >= 500 {
                 buf.pop_front();
             }
@@ -238,7 +239,7 @@ pub fn init(app_handle: tauri::AppHandle) {
 
     // Layer 1: Pretty file
     let (pretty_writer, pretty_guard) = tracing_appender::non_blocking(
-        tracing_appender::rolling::daily(&log_dir, log_file_name),
+        tracing_appender::rolling::never(&log_dir, log_file_name),
     );
     let pretty_layer = tracing_subscriber::fmt::layer()
         .with_writer(pretty_writer)

@@ -161,7 +161,7 @@ function App() {
           onUpdateSettings={updateSettings}
           status={status}
           onResetStats={handleResetStats}
-          onViewLogs={() => invoke('open_log_viewer').catch(() => {})}
+          onViewLogs={() => invoke('open_log_viewer').catch((e: unknown) => flog.warn('main', 'Failed to open log viewer', { error: String(e) }))}
           accessibilityGranted={accessibilityGranted}
           onCheckForUpdate={checkForUpdate}
           updateStatus={updateStatus}
