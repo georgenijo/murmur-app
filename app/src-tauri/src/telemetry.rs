@@ -1,6 +1,7 @@
 //! Structured telemetry: tracing subscriber with file + event-emitter layers.
 
 use std::collections::VecDeque;
+use std::io::Write;
 use std::sync::{Arc, Mutex, OnceLock};
 use tauri::Emitter;
 
@@ -94,6 +95,7 @@ impl tracing::field::Visit for JsonVisitor {
 pub struct TauriEmitterLayer {
     app_handle: tauri::AppHandle,
     buffer: Arc<Mutex<VecDeque<AppEvent>>>,
+    jsonl_writer: Mutex<std::io::BufWriter<std::fs::File>>,
 }
 
 impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for TauriEmitterLayer {
@@ -146,6 +148,14 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for TauriEmitterLayer 
             buf.push_back(app_event.clone());
         }
 
+        // Write AppEvent JSON line to JSONL file
+        if let Ok(mut writer) = self.jsonl_writer.lock() {
+            if let Ok(json) = serde_json::to_string(&app_event) {
+                let _ = writeln!(writer, "{}", json);
+                let _ = writer.flush();
+            }
+        }
+
         // Emit to all windows
         let _ = self.app_handle.emit("app-event", &app_event);
     }
@@ -154,6 +164,48 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for TauriEmitterLayer 
 // ---------------------------------------------------------------------------
 // init() — set up the global tracing subscriber
 // ---------------------------------------------------------------------------
+
+fn jsonl_path() -> Option<std::path::PathBuf> {
+    let dir = dirs::data_dir()?.join("local-dictation").join("logs");
+    let name = if cfg!(debug_assertions) { "events.dev.jsonl" } else { "events.jsonl" };
+    Some(dir.join(name))
+}
+
+/// Read the last `n` AppEvent entries from the JSONL file to seed the ring buffer.
+fn seed_buffer_from_jsonl(buffer: &Arc<Mutex<VecDeque<AppEvent>>>, n: usize) {
+    let path = match jsonl_path() {
+        Some(p) if p.exists() => p,
+        _ => return,
+    };
+    let content = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let lines: Vec<&str> = content.lines().collect();
+    let start = lines.len().saturating_sub(n);
+    let mut buf = buffer.lock().unwrap_or_else(|p| p.into_inner());
+    for line in &lines[start..] {
+        if let Ok(event) = serde_json::from_str::<AppEvent>(line) {
+            if buf.len() >= 500 {
+                buf.pop_front();
+            }
+            buf.push_back(event);
+        }
+    }
+}
+
+/// Rotate the JSONL file if it exceeds 5 MB.
+fn rotate_jsonl_if_needed() {
+    let path = match jsonl_path() {
+        Some(p) => p,
+        None => return,
+    };
+    let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    if size >= 5 * 1024 * 1024 {
+        let rotated = path.with_extension("jsonl.1");
+        let _ = std::fs::rename(&path, &rotated);
+    }
+}
 
 pub fn init(app_handle: tauri::AppHandle) {
     use tracing_subscriber::prelude::*;
@@ -168,24 +220,23 @@ pub fn init(app_handle: tauri::AppHandle) {
     } else {
         "app.log"
     };
-    let jsonl_file_name = if cfg!(debug_assertions) {
-        "events.dev.jsonl"
-    } else {
-        "events.jsonl"
-    };
 
-    // Layer 1: JSONL file (structured)
-    let (jsonl_writer, jsonl_guard) = tracing_appender::non_blocking(
-        tracing_appender::rolling::daily(&log_dir, jsonl_file_name),
-    );
-    let jsonl_layer = tracing_subscriber::fmt::layer()
-        .json()
-        .with_writer(jsonl_writer)
-        .with_target(true)
-        .with_level(true)
-        .with_ansi(false);
+    // Seed ring buffer from existing JSONL before subscribing
+    let buffer = get_event_buffer();
+    seed_buffer_from_jsonl(&buffer, 500);
 
-    // Layer 2: Pretty file
+    // Rotate JSONL if too large
+    rotate_jsonl_if_needed();
+
+    // Open JSONL file for appending (AppEvent format)
+    let jsonl_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(jsonl_path().expect("Could not determine JSONL path"))
+        .expect("Could not open JSONL file");
+    let jsonl_writer = std::io::BufWriter::new(jsonl_file);
+
+    // Layer 1: Pretty file
     let (pretty_writer, pretty_guard) = tracing_appender::non_blocking(
         tracing_appender::rolling::daily(&log_dir, log_file_name),
     );
@@ -195,26 +246,24 @@ pub fn init(app_handle: tauri::AppHandle) {
         .with_level(true)
         .with_ansi(false);
 
-    // Layer 3: Tauri event emitter
-    let buffer = get_event_buffer();
+    // Layer 2: Tauri event emitter (also writes JSONL)
     let emitter_layer = TauriEmitterLayer {
         app_handle,
         buffer,
+        jsonl_writer: Mutex::new(jsonl_writer),
     };
 
     let filter = tracing_subscriber::EnvFilter::new("info");
 
     let subscriber = tracing_subscriber::registry()
         .with(filter)
-        .with(jsonl_layer)
         .with(pretty_layer)
         .with(emitter_layer);
 
     tracing::subscriber::set_global_default(subscriber)
         .expect("Failed to set tracing subscriber");
 
-    // Leak guards to keep writers alive for app lifetime
-    Box::leak(Box::new(jsonl_guard));
+    // Leak guard to keep writer alive for app lifetime
     Box::leak(Box::new(pretty_guard));
 }
 
