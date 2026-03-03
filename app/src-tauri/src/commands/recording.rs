@@ -544,27 +544,30 @@ pub async fn cancel_native_recording(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, State>,
 ) -> Result<(), String> {
-    let prev_status = {
+    let (prev_status, rid) = {
         let mut dictation = state.app_state.dictation.lock_or_recover();
         let prev = dictation.status;
+        let rid = state.app_state.recording_id.load(Ordering::SeqCst);
         match prev {
             DictationStatus::Idle => return Ok(()),
             DictationStatus::Recording | DictationStatus::Processing => {
                 dictation.status = DictationStatus::Idle;
             }
         }
-        prev
+        (prev, rid)
     };
 
     match prev_status {
         DictationStatus::Recording => {
             // Stop audio capture and discard samples
-            let _ = audio::stop_recording();
+            if let Err(e) = audio::stop_recording() {
+                tracing::error!(target: "audio", "cancel_native_recording: stop_recording failed: {}", e);
+                return Err(e);
+            }
             tracing::info!(target: "pipeline", "cancel_native_recording: recording discarded");
         }
         DictationStatus::Processing => {
             // Mark current recording as cancelled — pipeline will check at next checkpoint
-            let rid = state.app_state.recording_id.load(std::sync::atomic::Ordering::SeqCst);
             state.app_state.cancel_recording(rid);
             tracing::info!(target: "pipeline", "cancel_native_recording: processing cancelled (recording_id={})", rid);
         }
