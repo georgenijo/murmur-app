@@ -80,7 +80,7 @@ async fn run_transcription_pipeline(
     // Checkpoint 1: cancelled before VAD?
     if app_state.is_cancelled(recording_id) {
         tracing::info!(target: "pipeline", "cancelled before VAD (recording_id={})", recording_id);
-        return Ok((String::new(), PipelineTimings { vad_ms: 0, inference_ms: 0, paste_ms: 0 }));
+        return Ok((String::new(), PipelineTimings { vad_ms: 0, inference_ms: 0, paste_ms: 0, rss_before_mb: 0, rss_after_mb: 0 }));
     }
 
     // Phase: VAD -- filter out silence to prevent Whisper hallucination loops
@@ -133,7 +133,7 @@ async fn run_transcription_pipeline(
     // Checkpoint 2: cancelled before transcription?
     if app_state.is_cancelled(recording_id) {
         tracing::info!(target: "pipeline", "cancelled before transcription (recording_id={})", recording_id);
-        return Ok((String::new(), PipelineTimings { vad_ms, inference_ms: 0, paste_ms: 0 }));
+        return Ok((String::new(), PipelineTimings { vad_ms, inference_ms: 0, paste_ms: 0, rss_before_mb: 0, rss_after_mb: 0 }));
     }
 
     // Phase: Transcription (includes lazy model load on first run)
@@ -153,7 +153,7 @@ async fn run_transcription_pipeline(
     // Checkpoint 3: cancelled before text injection?
     if app_state.is_cancelled(recording_id) {
         tracing::info!(target: "pipeline", "cancelled before injection (recording_id={})", recording_id);
-        return Ok((String::new(), PipelineTimings { vad_ms, inference_ms, paste_ms: 0 }));
+        return Ok((String::new(), PipelineTimings { vad_ms, inference_ms, paste_ms: 0, rss_before_mb, rss_after_mb }));
     }
 
     // Phase: Text injection (clipboard write + optional osascript paste)
