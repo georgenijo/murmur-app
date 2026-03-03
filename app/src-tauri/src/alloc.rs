@@ -7,7 +7,6 @@
 //! suffer from when FFI code frees Rust-allocated memory.
 
 use std::alloc::{GlobalAlloc, Layout};
-use std::ffi::CString;
 use std::os::raw::{c_char, c_uint, c_void};
 use std::sync::Once;
 
@@ -41,12 +40,16 @@ unsafe extern "C" {
 static mut RUST_ZONE: *mut MallocZone = std::ptr::null_mut();
 static INIT: Once = Once::new();
 
+/// Zone name as a static null-terminated byte string.
+/// MUST NOT use CString::new() here — it allocates via GlobalAlloc,
+/// causing infinite recursion since the zone isn't created yet.
+static ZONE_NAME: &[u8] = b"RustHeapZone\0";
+
 fn rust_zone() -> *mut MallocZone {
     unsafe {
         INIT.call_once(|| {
             RUST_ZONE = malloc_create_zone(0, 0);
-            let name = CString::new("RustHeapZone").unwrap();
-            malloc_set_zone_name(RUST_ZONE, name.as_ptr());
+            malloc_set_zone_name(RUST_ZONE, ZONE_NAME.as_ptr() as *const c_char);
         });
         RUST_ZONE
     }
