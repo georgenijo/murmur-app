@@ -15,6 +15,7 @@ import { useHoldDownToggle } from './lib/hooks/useHoldDownToggle';
 import { useDoubleTapToggle } from './lib/hooks/useDoubleTapToggle';
 import { useCombinedToggle } from './lib/hooks/useCombinedToggle';
 import { useShowAboutListener } from './lib/hooks/useShowAboutListener';
+import { useEscapeCancel } from './lib/hooks/useEscapeCancel';
 import { useAutoUpdater } from './lib/hooks/useAutoUpdater';
 import { UpdateModal } from './components/UpdateModal';
 import type { UpdateStatus } from './lib/updater';
@@ -77,6 +78,7 @@ function App() {
   useHoldDownToggle({ enabled: settings.recordingMode === 'hold_down', initialized, accessibilityGranted, holdDownKey: settings.doubleTapKey, onStart: handleStart, onStop: handleStop });
   useDoubleTapToggle({ enabled: settings.recordingMode === 'double_tap', initialized, accessibilityGranted, doubleTapKey: settings.doubleTapKey, status, onToggle: toggleRecording });
   useCombinedToggle({ enabled: settings.recordingMode === 'both', initialized, accessibilityGranted, triggerKey: settings.doubleTapKey, status, onStart: handleStart, onStop: handleStop, onToggle: toggleRecording });
+  useEscapeCancel({ status, enabled: initialized && accessibilityGranted === true });
   const { showAbout, setShowAbout } = useShowAboutListener();
   const updater = useAutoUpdater();
 

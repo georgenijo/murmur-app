@@ -10,6 +10,7 @@ const BAR_COUNT = 7;
 
 export function OverlayWidget() {
   const [status, setStatus] = useState<DictationStatus>('idle');
+  const [showCancelled, setShowCancelled] = useState(false);
   const [lockedMode, setLockedMode] = useState(false);
   const notchHeightRef = useRef(0);
   const [notchWidth, setNotchWidth] = useState(185);
@@ -80,6 +81,28 @@ export function OverlayWidget() {
       if (cancelled) { fn(); } else { unlisten = fn; }
     });
     return () => { cancelled = true; unlisten?.(); };
+  }, []);
+
+  // Subscribe to recording-cancelled for brief red X flash
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    listen('recording-cancelled', () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      setShowCancelled(true);
+      timeoutId = setTimeout(() => {
+        if (!cancelled) setShowCancelled(false);
+        timeoutId = null;
+      }, 800);
+    }).then((fn) => {
+      if (cancelled) { fn(); } else { unlisten = fn; }
+    });
+    return () => {
+      cancelled = true;
+      if (timeoutId) clearTimeout(timeoutId);
+      unlisten?.();
+    };
   }, []);
 
   // Subscribe to notch info changes (display config change: monitor plug/unplug, lid)
@@ -220,7 +243,7 @@ export function OverlayWidget() {
     }, 250);
   }, []);
 
-  const isActive = status === 'recording' || status === 'processing';
+  const isActive = status === 'recording' || status === 'processing' || showCancelled;
 
   // Raw mousedown — fires before click/double-click debouncing
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
@@ -257,9 +280,14 @@ export function OverlayWidget() {
         }}
       >
         <div className="flex items-center h-full" style={{ paddingLeft: 10, paddingRight: 10 }}>
-          {/* Left side — mic icon (idle) or red dot (recording) or spinner (processing), all same position */}
+          {/* Left side — mic icon (idle) or red dot (recording) or spinner (processing) or red X (cancelled), all same position */}
           <div className="shrink-0 w-3 h-3 flex items-center justify-center">
-            {status === 'recording' ? (
+            {showCancelled ? (
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="6" y1="6" x2="18" y2="18" />
+                <line x1="18" y1="6" x2="6" y2="18" />
+              </svg>
+            ) : status === 'recording' ? (
               <div className="w-2.5 h-2.5 rounded-full bg-red-500" style={{ animation: 'pulse 0.8s ease-in-out infinite' }} />
             ) : status === 'processing' ? (
               <span className="w-3 h-3 border-[1.5px] border-white/20 border-t-white/70 rounded-full animate-spin block" />

@@ -1,5 +1,6 @@
 use std::sync::Mutex;
 use std::time::Instant;
+use std::sync::atomic::{AtomicU64, Ordering};
 use serde::{Deserialize, Serialize};
 use crate::transcriber::{TranscriptionBackend, WhisperBackend};
 
@@ -47,6 +48,28 @@ pub struct AppState {
     pub backend: Mutex<Box<dyn TranscriptionBackend>>,
     pub last_transcription_at: Mutex<Option<Instant>>,
     pub idle_timeout_minutes: Mutex<u32>,
+    /// Monotonically increasing ID assigned to each recording session.
+    pub recording_id: AtomicU64,
+    /// Set to the recording_id of a cancelled recording. Pipeline checks
+    /// `cancelled_id >= my_id` at checkpoints to discard cancelled work.
+    pub cancelled_id: AtomicU64,
+}
+
+impl AppState {
+    /// Increment and return the next recording ID.
+    pub fn next_recording_id(&self) -> u64 {
+        self.recording_id.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// Mark a recording as cancelled by storing its ID.
+    pub fn cancel_recording(&self, id: u64) {
+        self.cancelled_id.fetch_max(id, Ordering::SeqCst);
+    }
+
+    /// Check whether a given recording ID has been cancelled.
+    pub fn is_cancelled(&self, id: u64) -> bool {
+        self.cancelled_id.load(Ordering::SeqCst) >= id
+    }
 }
 
 impl Default for AppState {
@@ -56,6 +79,8 @@ impl Default for AppState {
             backend: Mutex::new(Box::new(WhisperBackend::new())),
             last_transcription_at: Mutex::new(None),
             idle_timeout_minutes: Mutex::new(5),
+            recording_id: AtomicU64::new(0),
+            cancelled_id: AtomicU64::new(0),
         }
     }
 }
