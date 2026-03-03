@@ -34,8 +34,12 @@ mod cpu {
     const HOST_CPU_LOAD_INFO: c_int = 3;
     const HOST_CPU_LOAD_INFO_COUNT: u32 = 4; // 4 × u32
 
+    const KERN_SUCCESS: c_int = 0;
+
     unsafe extern "C" {
         fn mach_host_self() -> u32;
+        fn mach_task_self() -> u32;
+        fn mach_port_deallocate(task: u32, name: u32) -> c_int;
         fn host_statistics64(
             host: u32,
             flavor: c_int,
@@ -53,8 +57,13 @@ mod cpu {
     fn snapshot() -> CpuSnapshot {
         let mut info = HostCpuLoadInfo::default();
         let mut count = HOST_CPU_LOAD_INFO_COUNT;
-        unsafe {
-            host_statistics64(mach_host_self(), HOST_CPU_LOAD_INFO, &mut info, &mut count);
+        let host = unsafe { mach_host_self() };
+        let kr = unsafe {
+            host_statistics64(host, HOST_CPU_LOAD_INFO, &mut info, &mut count)
+        };
+        unsafe { mach_port_deallocate(mach_task_self(), host) };
+        if kr != KERN_SUCCESS {
+            return CpuSnapshot { user: 0, system: 0, idle: 0 };
         }
         CpuSnapshot {
             user: info.ticks[0] as u64 + info.ticks[3] as u64, // user + nice

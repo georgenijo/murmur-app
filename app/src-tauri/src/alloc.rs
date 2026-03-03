@@ -75,10 +75,24 @@ unsafe impl GlobalAlloc for RustZoneAllocator {
         unsafe { malloc_zone_free(rust_zone(), ptr as *mut c_void) }
     }
 
-    unsafe fn realloc(&self, ptr: *mut u8, _layout: Layout, new_size: usize) -> *mut u8 {
-        // Use zone-aware realloc for in-place growth when possible,
-        // instead of the default alloc+copy+free.
-        unsafe { malloc_zone_realloc(rust_zone(), ptr as *mut c_void, new_size) as *mut u8 }
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        let zone = rust_zone();
+        if layout.align() <= 16 {
+            // Default macOS malloc alignment — zone realloc preserves this.
+            return unsafe { malloc_zone_realloc(zone, ptr as *mut c_void, new_size) as *mut u8 };
+        }
+        // Over-aligned: malloc_zone_realloc may not preserve stricter alignment
+        // if the block moves, so allocate aligned + copy + free.
+        let new_ptr =
+            unsafe { malloc_zone_memalign(zone, layout.align(), new_size) as *mut u8 };
+        if new_ptr.is_null() {
+            return std::ptr::null_mut();
+        }
+        unsafe {
+            std::ptr::copy_nonoverlapping(ptr, new_ptr, layout.size().min(new_size));
+            malloc_zone_free(zone, ptr as *mut c_void);
+        }
+        new_ptr
     }
 }
 
