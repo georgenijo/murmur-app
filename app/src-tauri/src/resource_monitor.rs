@@ -10,6 +10,7 @@ pub struct ResourceUsage {
     pub memory_mb: u64,
     pub rss_mb: u64,
     pub rust_heap_mb: u64,
+    pub ffi_heap_mb: u64,
 }
 
 /// Get process RSS in megabytes via `memory-stats` (task_info on macOS).
@@ -37,5 +38,6 @@ pub fn get_resource_usage() -> ResourceUsage {
         memory_mb: rss_mb,
         rss_mb,
         rust_heap_mb: crate::rust_heap_mb(),
+        ffi_heap_mb: crate::ffi_heap_mb(),
     }
 }

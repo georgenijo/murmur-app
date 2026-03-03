@@ -443,16 +443,15 @@ export function MetricsView({ events, resourceReadings }: MetricsViewProps) {
         const latestReading = resourceReadings[resourceReadings.length - 1];
         const rssValues = resourceReadings.map(r => r.rss_mb);
         const heapValues = resourceReadings.map(r => r.rust_heap_mb);
-        const externalValues = resourceReadings.map(r => Math.max(0, r.rss_mb - r.rust_heap_mb));
+        const ffiValues = resourceReadings.map(r => r.ffi_heap_mb);
         const cpuValues = resourceReadings.map(r => Math.round(r.cpu_percent));
-        const latestExternal = Math.max(0, latestReading.rss_mb - latestReading.rust_heap_mb);
         return (
           <>
             <SectionLabel>System</SectionLabel>
             <div className="flex gap-3">
               <SimpleStatCard label="RSS" value={latestReading.rss_mb} color={MEMORY_COLOR} />
               <SimpleStatCard label="Rust Heap" value={latestReading.rust_heap_mb} color={HEAP_COLOR} />
-              <SimpleStatCard label="External" value={latestExternal} color={EXTERNAL_COLOR} />
+              <SimpleStatCard label="FFI Heap" value={latestReading.ffi_heap_mb} color={EXTERNAL_COLOR} />
               <SimpleStatCard label="CPU" value={Math.round(latestReading.cpu_percent)} color={CPU_COLOR} unit="%" />
             </div>
             <LiveChart
@@ -461,14 +460,14 @@ export function MetricsView({ events, resourceReadings }: MetricsViewProps) {
               series={[{ key: 'rss', color: MEMORY_COLOR, values: rssValues }]}
             />
             <LiveChart
-              label={"Rust Heap — Allocator Tracked"}
+              label={"Rust Heap — malloc zone tracked"}
               height={160}
               series={[{ key: 'heap', color: HEAP_COLOR, values: heapValues }]}
             />
             <LiveChart
-              label={"External — whisper.cpp / Metal / C libs (RSS \u2212 Rust Heap)"}
+              label={"FFI Heap — whisper.cpp / sherpa-onnx / C libs"}
               height={160}
-              series={[{ key: 'external', color: EXTERNAL_COLOR, values: externalValues }]}
+              series={[{ key: 'ffi', color: EXTERNAL_COLOR, values: ffiValues }]}
             />
             <LiveChart
               label={"CPU — System Usage"}

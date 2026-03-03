@@ -1,3 +1,4 @@
+mod alloc;
 mod audio;
 mod commands;
 mod injector;
@@ -8,15 +9,17 @@ pub mod telemetry;
 pub mod transcriber;
 mod vad;
 
-use std::alloc;
-
-/// Global allocator wrapped with `cap` to track Rust heap usage.
 #[global_allocator]
-static ALLOCATOR: cap::Cap<alloc::System> = cap::Cap::new(alloc::System, usize::MAX);
+static ALLOCATOR: alloc::RustZoneAllocator = alloc::RustZoneAllocator;
 
-/// Current Rust heap usage in megabytes (allocations tracked by `cap`).
+/// Current Rust heap usage in megabytes (from macOS malloc zone stats).
 pub fn rust_heap_mb() -> u64 {
-    (ALLOCATOR.allocated() / 1_048_576) as u64
+    alloc::rust_heap_mb()
+}
+
+/// Current C/C++ FFI heap usage in megabytes (total zones minus Rust zone).
+pub fn ffi_heap_mb() -> u64 {
+    alloc::ffi_heap_mb()
 }
 
 use state::AppState;
@@ -112,7 +115,8 @@ pub fn run() {
             {
                 let rss = resource_monitor::get_process_rss_mb();
                 let heap = rust_heap_mb();
-                tracing::info!(target: "system", rss_mb = rss, rust_heap_mb = heap, "startup_baseline");
+                let ffi = ffi_heap_mb();
+                tracing::info!(target: "system", rss_mb = rss, rust_heap_mb = heap, ffi_heap_mb = ffi, "startup_baseline");
             }
 
             // Spawn heartbeat + idle timeout checker (runs every 60s)
@@ -127,7 +131,8 @@ pub fn run() {
                         // Heartbeat: emit memory stats
                         let rss = resource_monitor::get_process_rss_mb();
                         let heap = rust_heap_mb();
-                        tracing::info!(target: "system", rss_mb = rss, rust_heap_mb = heap, "heartbeat");
+                        let ffi = ffi_heap_mb();
+                        tracing::info!(target: "system", rss_mb = rss, rust_heap_mb = heap, ffi_heap_mb = ffi, "heartbeat");
 
                         // Idle timeout: release whisper model if idle too long
                         let timeout_minutes = *state_handle.app_state.idle_timeout_minutes.lock_or_recover();
@@ -151,7 +156,8 @@ pub fn run() {
                                 *state_handle.app_state.last_transcription_at.lock_or_recover() = None;
                                 let rss = resource_monitor::get_process_rss_mb();
                                 let heap = rust_heap_mb();
-                                tracing::info!(target: "pipeline", rss_mb = rss, rust_heap_mb = heap, "whisper_idle_release");
+                                let ffi = ffi_heap_mb();
+                                tracing::info!(target: "pipeline", rss_mb = rss, rust_heap_mb = heap, ffi_heap_mb = ffi, "whisper_idle_release");
                             }
                         }
                     }
