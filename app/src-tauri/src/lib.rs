@@ -1,3 +1,4 @@
+#[cfg(target_os = "macos")]
 mod alloc;
 mod audio;
 mod commands;
@@ -9,18 +10,27 @@ pub mod telemetry;
 pub mod transcriber;
 mod vad;
 
+#[cfg(target_os = "macos")]
 #[global_allocator]
 static ALLOCATOR: alloc::RustZoneAllocator = alloc::RustZoneAllocator;
 
 /// Current Rust heap usage in megabytes (from macOS malloc zone stats).
+#[cfg(target_os = "macos")]
 pub fn rust_heap_mb() -> u64 {
     alloc::rust_heap_mb()
 }
 
 /// Current C/C++ FFI heap usage in megabytes (total zones minus Rust zone).
+#[cfg(target_os = "macos")]
 pub fn ffi_heap_mb() -> u64 {
     alloc::ffi_heap_mb()
 }
+
+#[cfg(not(target_os = "macos"))]
+pub fn rust_heap_mb() -> u64 { 0 }
+
+#[cfg(not(target_os = "macos"))]
+pub fn ffi_heap_mb() -> u64 { 0 }
 
 use state::AppState;
 use std::sync::{Mutex, MutexGuard};

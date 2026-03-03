@@ -292,7 +292,11 @@ pub async fn configure_dictation(
     }
 
     if let Some(idle_timeout) = options.get("idleTimeoutMinutes").and_then(|v| v.as_u64()) {
-        *state.app_state.idle_timeout_minutes.lock_or_recover() = idle_timeout as u32;
+        let normalized = match idle_timeout {
+            0 | 5 | 15 => idle_timeout as u32,
+            _ => 5, // fall back to default
+        };
+        *state.app_state.idle_timeout_minutes.lock_or_recover() = normalized;
     }
 
     // If model changed, swap backend type if needed, or just reset for reload

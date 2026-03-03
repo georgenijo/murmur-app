@@ -347,7 +347,7 @@ export function MetricsView({ events, resourceReadings }: MetricsViewProps) {
   if (metrics.length === 0 && resourceReadings.length === 0) {
     return (
       <div className="flex items-center justify-center h-48 text-stone-400 dark:text-stone-500 text-sm">
-        No data yet. Complete a recording to see metrics.
+        No data yet. System metrics will appear shortly.
       </div>
     );
   }
