@@ -4,6 +4,8 @@ import { invoke } from '@tauri-apps/api/core';
 export interface ResourceReading {
   cpu_percent: number;
   memory_mb: number;
+  rss_mb: number;
+  rust_heap_mb: number;
 }
 
 const MAX_READINGS = 60;

@@ -8,11 +8,23 @@ pub mod telemetry;
 pub mod transcriber;
 mod vad;
 
+use std::alloc;
+
+/// Global allocator wrapped with `cap` to track Rust heap usage.
+#[global_allocator]
+static ALLOCATOR: cap::Cap<alloc::System> = cap::Cap::new(alloc::System, usize::MAX);
+
+/// Current Rust heap usage in megabytes (allocations tracked by `cap`).
+pub fn rust_heap_mb() -> u64 {
+    (ALLOCATOR.allocated() / 1_048_576) as u64
+}
+
 use state::AppState;
 use std::sync::{Mutex, MutexGuard};
 use tauri::{Manager, RunEvent};
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
 
 /// Helper trait to recover from poisoned mutexes
 pub(crate) trait MutexExt<T> {
@@ -95,6 +107,56 @@ pub fn run() {
             telemetry::init(app.handle().clone());
 
             tracing::info!(target: "system", "app setup — Murmur v{}", env!("CARGO_PKG_VERSION"));
+
+            // Emit startup baseline memory snapshot
+            {
+                let rss = resource_monitor::get_process_rss_mb();
+                let heap = rust_heap_mb();
+                tracing::info!(target: "system", rss_mb = rss, rust_heap_mb = heap, "startup_baseline");
+            }
+
+            // Spawn heartbeat + idle timeout checker (runs every 60s)
+            {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let state_handle = app_handle.state::<State>();
+                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+                    loop {
+                        interval.tick().await;
+
+                        // Heartbeat: emit memory stats
+                        let rss = resource_monitor::get_process_rss_mb();
+                        let heap = rust_heap_mb();
+                        tracing::info!(target: "system", rss_mb = rss, rust_heap_mb = heap, "heartbeat");
+
+                        // Idle timeout: release whisper model if idle too long
+                        let timeout_minutes = *state_handle.app_state.idle_timeout_minutes.lock_or_recover();
+                        if timeout_minutes == 0 {
+                            continue;
+                        }
+                        let threshold = std::time::Duration::from_secs(timeout_minutes as u64 * 60);
+                        let should_release = {
+                            let last = state_handle.app_state.last_transcription_at.lock_or_recover();
+                            last.map_or(false, |t| t.elapsed() >= threshold)
+                        };
+                        if should_release {
+                            let mut backend = state_handle.app_state.backend.lock_or_recover();
+                            // Re-check after acquiring the lock (a transcription may have started)
+                            let still_idle = {
+                                let last = state_handle.app_state.last_transcription_at.lock_or_recover();
+                                last.map_or(false, |t| t.elapsed() >= threshold)
+                            };
+                            if still_idle {
+                                backend.reset();
+                                *state_handle.app_state.last_transcription_at.lock_or_recover() = None;
+                                let rss = resource_monitor::get_process_rss_mb();
+                                let heap = rust_heap_mb();
+                                tracing::info!(target: "pipeline", rss_mb = rss, rust_heap_mb = heap, "whisper_idle_release");
+                            }
+                        }
+                    }
+                });
+            }
 
             // Cache notch dimensions on the main thread (safe for NSScreen APIs).
             let notch = commands::overlay::detect_notch_info();

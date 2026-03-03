@@ -12,6 +12,7 @@ export interface Settings {
   microphone: string;
   launchAtLogin: boolean;
   vadSensitivity: number;
+  idleTimeoutMinutes: number;
 }
 
 export type ModelOption =
@@ -50,6 +51,12 @@ export const RECORDING_MODE_OPTIONS: { value: RecordingMode; label: string }[] =
   { value: 'both', label: 'Both' },
 ];
 
+export const IDLE_TIMEOUT_OPTIONS: { value: number; label: string }[] = [
+  { value: 5, label: '5 minutes' },
+  { value: 15, label: '15 minutes' },
+  { value: 0, label: 'Never' },
+];
+
 export const DEFAULT_SETTINGS: Settings = {
   model: 'moonshine-tiny',
   doubleTapKey: 'shift_l',
@@ -60,6 +67,7 @@ export const DEFAULT_SETTINGS: Settings = {
   microphone: 'system_default',
   launchAtLogin: false,
   vadSensitivity: 50,
+  idleTimeoutMinutes: 5,
 };
 
 export const STORAGE_KEY = 'dictation-settings';

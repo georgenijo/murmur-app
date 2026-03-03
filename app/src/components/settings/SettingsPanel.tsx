@@ -5,6 +5,7 @@ import { getVersion } from '@tauri-apps/api/app';
 import {
   Settings, RecordingMode, DEFAULT_SETTINGS,
   MODEL_OPTIONS, MOONSHINE_MODELS, WHISPER_MODELS, DOUBLE_TAP_KEY_OPTIONS, RECORDING_MODE_OPTIONS,
+  IDLE_TIMEOUT_OPTIONS,
 } from '../../lib/settings';
 import { Select } from '../ui/Select';
 import { SettingsSection } from './SettingsSection';
@@ -327,6 +328,22 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
               <span>Selected device not found — will use System Default</span>
             </div>
           )}
+        </div>
+
+        {/* Idle Timeout */}
+        <div>
+          <label className="block text-sm font-medium text-stone-700 dark:text-stone-300 mb-2">
+            Release Model After Inactivity
+          </label>
+          <Select
+            value={String(settings.idleTimeoutMinutes)}
+            onChange={(value) => onUpdateSettings({ idleTimeoutMinutes: Number(value) })}
+            disabled={isRecording}
+            items={IDLE_TIMEOUT_OPTIONS.map((o) => ({ value: String(o.value), label: o.label }))}
+          />
+          <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
+            Free memory by unloading the model when idle. Set to Never to keep it loaded.
+          </p>
         </div>
         </SettingsSection>
 

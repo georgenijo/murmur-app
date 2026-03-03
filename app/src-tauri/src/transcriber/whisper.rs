@@ -100,6 +100,8 @@ impl TranscriptionBackend for WhisperBackend {
     fn load_model(&mut self, model_name: &str) -> Result<(), String> {
         if let Some(ref loaded) = self.loaded_model_name {
             if loaded == model_name {
+                let rss = crate::resource_monitor::get_process_rss_mb();
+                tracing::info!(target: "pipeline", rss_mb = rss, "whisper_cache_hit");
                 return Ok(());
             }
             self.reset();
@@ -119,10 +121,11 @@ impl TranscriptionBackend for WhisperBackend {
         let state = ctx
             .create_state()
             .map_err(|e| format!("Failed to create whisper state: {}", e))?;
-        tracing::info!(target: "pipeline", "whisper: model '{}' loaded, state cached for reuse", model_name);
         self.context = Some(ctx);
         self.state = Some(state);
         self.loaded_model_name = Some(model_name.to_string());
+        let rss = crate::resource_monitor::get_process_rss_mb();
+        tracing::info!(target: "pipeline", rss_mb = rss, "whisper_cache_miss");
         Ok(())
     }
 

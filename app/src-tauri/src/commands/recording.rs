@@ -35,6 +35,8 @@ pub(crate) struct PipelineTimings {
     pub vad_ms: u64,
     pub inference_ms: u64,
     pub paste_ms: u64,
+    pub rss_before_mb: u64,
+    pub rss_after_mb: u64,
 }
 
 /// Shared transcription pipeline: model init -> transcribe -> inject text -> set idle
@@ -77,7 +79,7 @@ async fn run_transcription_pipeline(
                 Ok(vad::VadResult::NoSpeech) => {
                     tracing::info!(target: "pipeline", "VAD detected no speech ({} samples, {:?}), skipping transcription",
                         samples.len(), t_vad.elapsed());
-                    return Ok((String::new(), PipelineTimings { vad_ms: t_vad.elapsed().as_millis() as u64, inference_ms: 0, paste_ms: 0 }));
+                    return Ok((String::new(), PipelineTimings { vad_ms: t_vad.elapsed().as_millis() as u64, inference_ms: 0, paste_ms: 0, rss_before_mb: 0, rss_after_mb: 0 }));
                 }
                 Ok(vad::VadResult::Speech(trimmed)) => {
                     tracing::info!(target: "pipeline", "VAD trimmed {} -> {} samples ({:.0}% speech, {:?})",
@@ -106,6 +108,7 @@ async fn run_transcription_pipeline(
     let vad_ms = t_vad.elapsed().as_millis() as u64;
 
     // Phase: Transcription (includes lazy model load on first run)
+    let rss_before_mb = crate::resource_monitor::get_process_rss_mb();
     let t_transcribe = std::time::Instant::now();
     let text = {
         let mut backend = app_state.backend.lock_or_recover();
@@ -113,7 +116,11 @@ async fn run_transcription_pipeline(
         backend.transcribe(&samples_for_transcription, &language)?
     };
     let inference_ms = t_transcribe.elapsed().as_millis() as u64;
+    let rss_after_mb = crate::resource_monitor::get_process_rss_mb();
     tracing::info!(target: "pipeline", "transcription ({} samples): {:?}", samples_for_transcription.len(), t_transcribe.elapsed());
+
+    // Update last_transcription_at for idle timeout tracking
+    *app_state.last_transcription_at.lock_or_recover() = Some(std::time::Instant::now());
 
     // Phase: Text injection (clipboard write + optional osascript paste)
     let t_inject = std::time::Instant::now();
@@ -149,7 +156,7 @@ async fn run_transcription_pipeline(
     let paste_ms = t_inject.elapsed().as_millis() as u64;
     tracing::info!(target: "pipeline", "inject (clipboard + paste): {:?}", t_inject.elapsed());
 
-    Ok((text, PipelineTimings { vad_ms, inference_ms, paste_ms }))
+    Ok((text, PipelineTimings { vad_ms, inference_ms, paste_ms, rss_before_mb, rss_after_mb }))
     // _guard drops here, setting status to Idle
 }
 
@@ -221,6 +228,8 @@ pub async fn process_audio(
         audio_secs = audio_secs,
         word_count = word_count,
         char_count = char_count,
+        rss_before_mb = timings.rss_before_mb,
+        rss_after_mb = timings.rss_after_mb,
         model = model_name.as_str(),
         backend = backend_name.as_str(),
         "transcription complete"
@@ -280,6 +289,10 @@ pub async fn configure_dictation(
 
     if let Some(sensitivity) = options.get("vadSensitivity").and_then(|v| v.as_u64()) {
         dictation.vad_sensitivity = (sensitivity as u32).clamp(0, 100);
+    }
+
+    if let Some(idle_timeout) = options.get("idleTimeoutMinutes").and_then(|v| v.as_u64()) {
+        *state.app_state.idle_timeout_minutes.lock_or_recover() = idle_timeout as u32;
     }
 
     // If model changed, swap backend type if needed, or just reset for reload
@@ -452,6 +465,8 @@ pub async fn stop_native_recording(
         audio_secs = audio_secs,
         word_count = word_count,
         char_count = char_count,
+        rss_before_mb = timings.rss_before_mb,
+        rss_after_mb = timings.rss_after_mb,
         model = model_name.as_str(),
         backend = backend_name.as_str(),
         "transcription complete"

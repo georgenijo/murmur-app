@@ -1,4 +1,5 @@
 use std::sync::Mutex;
+use std::time::Instant;
 use serde::{Deserialize, Serialize};
 use crate::transcriber::{TranscriptionBackend, WhisperBackend};
 
@@ -44,6 +45,8 @@ impl Default for DictationState {
 pub struct AppState {
     pub dictation: Mutex<DictationState>,
     pub backend: Mutex<Box<dyn TranscriptionBackend>>,
+    pub last_transcription_at: Mutex<Option<Instant>>,
+    pub idle_timeout_minutes: Mutex<u32>,
 }
 
 impl Default for AppState {
@@ -51,6 +54,8 @@ impl Default for AppState {
         Self {
             dictation: Mutex::new(DictationState::default()),
             backend: Mutex::new(Box::new(WhisperBackend::new())),
+            last_transcription_at: Mutex::new(None),
+            idle_timeout_minutes: Mutex::new(5),
         }
     }
 }
