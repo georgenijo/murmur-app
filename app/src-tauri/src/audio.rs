@@ -1,6 +1,7 @@
 use crate::state::WHISPER_SAMPLE_RATE;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Sample, SampleFormat};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -30,13 +31,20 @@ const AUDIO_LEVEL_THROTTLE_MS: u64 = 16;
 /// computes RMS for each buffer chunk and emits an "audio-level" event if an AppHandle
 /// is provided, throttled to ~60 fps to avoid IPC spam.
 macro_rules! build_mono_input_stream {
-    ($device:expr, $config:expr, $shared:expr, $channels:expr, $err_fn:expr, $sample_type:ty, $app_handle:expr) => {{
+    ($device:expr, $config:expr, $shared:expr, $channels:expr, $err_fn:expr, $sample_type:ty, $app_handle:expr, $active:expr) => {{
         let samples_ref = Arc::clone(&$shared);
+        let active_ref = Arc::clone(&$active);
         let app_handle_opt: Option<tauri::AppHandle> = $app_handle;
         let last_emit_ms = std::sync::atomic::AtomicU64::new(0);
         $device.build_input_stream(
             &$config.into(),
             move |data: &[$sample_type], _: &_| {
+                // Stop accumulating once recording is over — prevents unbounded
+                // buffer growth if the cpal stream outlives the recording session.
+                if !active_ref.load(Ordering::Relaxed) {
+                    return;
+                }
+
                 let mono: Vec<f32> = data.chunks($channels)
                     .map(|chunk| {
                         let sum: f32 = chunk.iter().map(|&s| s.to_float_sample()).sum();
@@ -50,9 +58,9 @@ macro_rules! build_mono_input_stream {
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_millis() as u64;
-                    let last = last_emit_ms.load(std::sync::atomic::Ordering::Relaxed);
+                    let last = last_emit_ms.load(Ordering::Relaxed);
                     if now.saturating_sub(last) >= AUDIO_LEVEL_THROTTLE_MS {
-                        last_emit_ms.store(now, std::sync::atomic::Ordering::Relaxed);
+                        last_emit_ms.store(now, Ordering::Relaxed);
                         let rms = compute_rms(&mono);
                         let _ = handle.emit("audio-level", rms);
                     }
@@ -84,6 +92,10 @@ struct RecordingState {
     /// The cpal callback holds an Arc clone — when the stream drops and the
     /// thread joins, that clone drops too. Next recording gets a fresh Vec.
     shared: Option<Arc<Mutex<Vec<f32>>>>,
+    /// Atomic flag shared with the cpal callback. Set to `false` on stop so
+    /// the callback stops accumulating samples even if the stream hasn't been
+    /// fully torn down yet (prevents unbounded buffer growth).
+    active: Arc<AtomicBool>,
     /// Device sample rate for the current/last recording.
     sample_rate: u32,
     /// Wall-clock instant when recording started.
@@ -98,6 +110,7 @@ fn get_state() -> &'static Mutex<RecordingState> {
             command_sender: None,
             thread_handle: None,
             shared: None,
+            active: Arc::new(AtomicBool::new(false)),
             sample_rate: WHISPER_SAMPLE_RATE,
             started_at: None,
             device_name: None,
@@ -136,6 +149,8 @@ pub fn start_recording(app_handle: Option<tauri::AppHandle>, device_name: Option
     // Create a brand-new buffer for this recording — no stale data possible
     let new_buffer = Arc::new(Mutex::new(Vec::<f32>::new()));
     state_guard.shared = Some(Arc::clone(&new_buffer));
+    let active = Arc::new(AtomicBool::new(true));
+    state_guard.active = Arc::clone(&active);
     tracing::info!(target: "audio", "start_recording: created fresh sample buffer");
 
     let (cmd_tx, cmd_rx) = channel::<AudioCommand>();
@@ -143,7 +158,7 @@ pub fn start_recording(app_handle: Option<tauri::AppHandle>, device_name: Option
 
     // Spawn audio thread
     let handle = thread::spawn(move || {
-        if let Err(e) = run_audio_capture(cmd_rx, new_buffer, ready_tx.clone(), app_handle, device_name) {
+        if let Err(e) = run_audio_capture(cmd_rx, new_buffer, active, ready_tx.clone(), app_handle, device_name) {
             tracing::error!(target: "audio", "Audio capture error: {}", e);
             let _ = ready_tx.send(Err(e));
         }
@@ -178,6 +193,7 @@ pub fn start_recording(app_handle: Option<tauri::AppHandle>, device_name: Option
 fn run_audio_capture(
     cmd_rx: Receiver<AudioCommand>,
     shared: Arc<Mutex<Vec<f32>>>,
+    active: Arc<AtomicBool>,
     ready_tx: Sender<Result<(u32, String), String>>,
     app_handle: Option<tauri::AppHandle>,
     device_name: Option<String>,
@@ -227,8 +243,8 @@ fn run_audio_capture(
     let err_fn = |err| tracing::error!(target: "audio", "Audio stream error: {}", err);
 
     let stream = match sample_format {
-        SampleFormat::F32 => build_mono_input_stream!(device, config, shared, channels, err_fn, f32, app_handle.clone()),
-        SampleFormat::I16 => build_mono_input_stream!(device, config, shared, channels, err_fn, i16, app_handle),
+        SampleFormat::F32 => build_mono_input_stream!(device, config, shared, channels, err_fn, f32, app_handle.clone(), active),
+        SampleFormat::I16 => build_mono_input_stream!(device, config, shared, channels, err_fn, i16, app_handle, active),
         _ => return Err(format!("Unsupported sample format: {:?}", sample_format)),
     };
 
@@ -246,6 +262,9 @@ fn run_audio_capture(
         }
     }
 
+    // Explicitly pause before dropping to ensure CoreAudio stops calling us
+    let _ = stream.pause();
+
     Ok(())
 }
 
@@ -255,6 +274,10 @@ pub fn stop_recording() -> Result<Vec<f32>, String> {
         tracing::warn!(target: "audio", "stop_recording: recording state mutex was poisoned, recovering");
         poisoned.into_inner()
     });
+
+    // Signal the callback to stop accumulating BEFORE sending Stop.
+    // This prevents buffer growth even if the cpal stream lingers.
+    state_guard.active.store(false, Ordering::SeqCst);
 
     // Send stop command
     if let Some(sender) = state_guard.command_sender.take() {
@@ -273,7 +296,7 @@ pub fn stop_recording() -> Result<Vec<f32>, String> {
     let sample_rate = state_guard.sample_rate;
 
     let samples = if let Some(buf) = buffer {
-        let guard = buf.lock().unwrap_or_else(|poisoned| {
+        let mut guard = buf.lock().unwrap_or_else(|poisoned| {
             tracing::warn!(target: "audio", "stop_recording: samples mutex was poisoned, recovering");
             poisoned.into_inner()
         });
@@ -286,7 +309,7 @@ pub fn stop_recording() -> Result<Vec<f32>, String> {
             tracing::info!(target: "audio", "stop_recording: raw_samples={}, sample_rate={}, duration_secs={:.1} (no timestamp)",
                 raw_count, sample_rate, raw_duration);
         }
-        guard.clone()
+        std::mem::take(&mut *guard)
         // guard drops, buf drops — buffer is gone, zero stale data
     } else {
         tracing::info!(target: "audio", "stop_recording: no buffer (was not recording)");

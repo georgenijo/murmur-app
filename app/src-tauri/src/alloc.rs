@@ -31,6 +31,7 @@ unsafe extern "C" {
     fn malloc_set_zone_name(zone: *mut MallocZone, name: *const c_char);
     fn malloc_zone_malloc(zone: *mut MallocZone, size: usize) -> *mut c_void;
     fn malloc_zone_memalign(zone: *mut MallocZone, align: usize, size: usize) -> *mut c_void;
+    fn malloc_zone_realloc(zone: *mut MallocZone, ptr: *mut c_void, size: usize) -> *mut c_void;
     fn malloc_zone_free(zone: *mut MallocZone, ptr: *mut c_void);
     fn malloc_zone_statistics(zone: *mut MallocZone, stats: *mut MallocStatistics);
 }
@@ -72,6 +73,12 @@ unsafe impl GlobalAlloc for RustZoneAllocator {
 
     unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
         unsafe { malloc_zone_free(rust_zone(), ptr as *mut c_void) }
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, _layout: Layout, new_size: usize) -> *mut u8 {
+        // Use zone-aware realloc for in-place growth when possible,
+        // instead of the default alloc+copy+free.
+        unsafe { malloc_zone_realloc(rust_zone(), ptr as *mut c_void, new_size) as *mut u8 }
     }
 }
 
