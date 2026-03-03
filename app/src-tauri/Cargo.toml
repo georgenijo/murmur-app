@@ -29,7 +29,6 @@ hound = "3.5"
 dirs = "5"
 cpal = "0.15"
 rdev = { git = "https://github.com/Narsil/rdev", branch = "main" }
-sysinfo = "0.32"
 memory-stats = "1"
 reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls"] }
 futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
