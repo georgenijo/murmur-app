@@ -236,11 +236,15 @@ pub async fn process_audio(
 
     let t_total = std::time::Instant::now();
     let pipeline_result = run_transcription_pipeline(&samples, &app_handle, &state.app_state, rid).await;
-    // Only emit idle if this recording wasn't cancelled/superseded
-    let current_rid = state.app_state.recording_id.load(Ordering::SeqCst);
-    if current_rid == rid {
-        keyboard::set_processing(false);
-        let _ = app_handle.emit("recording-status-changed", "idle");
+    // Only emit idle if this recording wasn't cancelled/superseded.
+    // Hold the dictation lock across the check+emit to prevent a concurrent
+    // start from interleaving a "recording" status between our check and emit.
+    {
+        let _dictation = state.app_state.dictation.lock_or_recover();
+        if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
+            keyboard::set_processing(false);
+            let _ = app_handle.emit("recording-status-changed", "idle");
+        }
     }
     let (text, timings) = pipeline_result?;
 
@@ -402,8 +406,8 @@ pub async fn stop_native_recording(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, State>,
 ) -> Result<serde_json::Value, String> {
-    // Atomic check-and-set in a single lock to avoid TOCTOU gap
-    {
+    // Atomic check-and-set + rid capture in a single lock to avoid TOCTOU gap
+    let rid = {
         let mut dictation = state.app_state.dictation.lock_or_recover();
         match dictation.status {
             DictationStatus::Processing => return Ok(serde_json::json!({
@@ -419,18 +423,13 @@ pub async fn stop_native_recording(
             }
             DictationStatus::Recording => {
                 dictation.status = DictationStatus::Processing;
+                state.app_state.recording_id.load(Ordering::SeqCst)
             }
         }
-    }
+    };
     keyboard::set_processing(true);
     tracing::info!(target: "pipeline", "stop_native_recording: stopping");
     let _ = app_handle.emit("recording-status-changed", "processing");
-
-    // Capture rid under the same conceptual critical section as the status
-    // transition above (Recording → Processing happened in the lock block).
-    // We read it here immediately after — no concurrent start can interleave
-    // because start requires Idle status, which we're not in.
-    let rid = state.app_state.recording_id.load(Ordering::SeqCst);
 
     // Guard resets status to Idle if stop_recording fails or samples are empty;
     // disarmed before handing off to run_transcription_pipeline (which has its own guard)
@@ -482,11 +481,14 @@ pub async fn stop_native_recording(
 
     let pipeline_result = run_transcription_pipeline(&samples, &app_handle, &state.app_state, rid).await;
     // Only emit idle if this recording wasn't cancelled/superseded by a new one.
-    // Cancel already handled status reset and set_processing(false).
-    let current_rid = state.app_state.recording_id.load(Ordering::SeqCst);
-    if current_rid == rid {
-        keyboard::set_processing(false);
-        let _ = app_handle.emit("recording-status-changed", "idle");
+    // Hold the dictation lock across the check+emit to prevent a concurrent
+    // start from interleaving a "recording" status between our check and emit.
+    {
+        let _dictation = state.app_state.dictation.lock_or_recover();
+        if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
+            keyboard::set_processing(false);
+            let _ = app_handle.emit("recording-status-changed", "idle");
+        }
     }
     let (text, timings) = pipeline_result.map_err(|e| {
         tracing::error!(target: "pipeline", "stop_native_recording: pipeline failed: {}", e);
