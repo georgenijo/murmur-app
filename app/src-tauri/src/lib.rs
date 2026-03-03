@@ -1,3 +1,5 @@
+#[cfg(target_os = "macos")]
+mod alloc;
 mod audio;
 mod commands;
 mod injector;
@@ -8,11 +10,34 @@ pub mod telemetry;
 pub mod transcriber;
 mod vad;
 
+#[cfg(target_os = "macos")]
+#[global_allocator]
+static ALLOCATOR: alloc::RustZoneAllocator = alloc::RustZoneAllocator;
+
+/// Current Rust heap usage in megabytes (from macOS malloc zone stats).
+#[cfg(target_os = "macos")]
+pub fn rust_heap_mb() -> u64 {
+    alloc::rust_heap_mb()
+}
+
+/// Current C/C++ FFI heap usage in megabytes (total zones minus Rust zone).
+#[cfg(target_os = "macos")]
+pub fn ffi_heap_mb() -> u64 {
+    alloc::ffi_heap_mb()
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn rust_heap_mb() -> u64 { 0 }
+
+#[cfg(not(target_os = "macos"))]
+pub fn ffi_heap_mb() -> u64 { 0 }
+
 use state::AppState;
 use std::sync::{Mutex, MutexGuard};
 use tauri::{Manager, RunEvent};
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
 
 /// Helper trait to recover from poisoned mutexes
 pub(crate) trait MutexExt<T> {
@@ -95,6 +120,59 @@ pub fn run() {
             telemetry::init(app.handle().clone());
 
             tracing::info!(target: "system", "app setup — Murmur v{}", env!("CARGO_PKG_VERSION"));
+
+            // Emit startup baseline memory snapshot
+            {
+                let rss = resource_monitor::get_process_rss_mb();
+                let heap = rust_heap_mb();
+                let ffi = ffi_heap_mb();
+                tracing::info!(target: "system", rss_mb = rss, rust_heap_mb = heap, ffi_heap_mb = ffi, "startup_baseline");
+            }
+
+            // Spawn heartbeat + idle timeout checker (runs every 60s)
+            {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let state_handle = app_handle.state::<State>();
+                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+                    loop {
+                        interval.tick().await;
+
+                        // Heartbeat: emit memory stats
+                        let rss = resource_monitor::get_process_rss_mb();
+                        let heap = rust_heap_mb();
+                        let ffi = ffi_heap_mb();
+                        tracing::info!(target: "system", rss_mb = rss, rust_heap_mb = heap, ffi_heap_mb = ffi, "heartbeat");
+
+                        // Idle timeout: release whisper model if idle too long
+                        let timeout_minutes = *state_handle.app_state.idle_timeout_minutes.lock_or_recover();
+                        if timeout_minutes == 0 {
+                            continue;
+                        }
+                        let threshold = std::time::Duration::from_secs(timeout_minutes as u64 * 60);
+                        let should_release = {
+                            let last = state_handle.app_state.last_transcription_at.lock_or_recover();
+                            last.map_or(false, |t| t.elapsed() >= threshold)
+                        };
+                        if should_release {
+                            let mut backend = state_handle.app_state.backend.lock_or_recover();
+                            // Re-check after acquiring the lock (a transcription may have started)
+                            let still_idle = {
+                                let last = state_handle.app_state.last_transcription_at.lock_or_recover();
+                                last.map_or(false, |t| t.elapsed() >= threshold)
+                            };
+                            if still_idle {
+                                backend.reset();
+                                *state_handle.app_state.last_transcription_at.lock_or_recover() = None;
+                                let rss = resource_monitor::get_process_rss_mb();
+                                let heap = rust_heap_mb();
+                                let ffi = ffi_heap_mb();
+                                tracing::info!(target: "pipeline", rss_mb = rss, rust_heap_mb = heap, ffi_heap_mb = ffi, "whisper_idle_release");
+                            }
+                        }
+                    }
+                });
+            }
 
             // Cache notch dimensions on the main thread (safe for NSScreen APIs).
             let notch = commands::overlay::detect_notch_info();

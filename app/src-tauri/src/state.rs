@@ -1,4 +1,5 @@
 use std::sync::Mutex;
+use std::time::Instant;
 use std::sync::atomic::{AtomicU64, Ordering};
 use serde::{Deserialize, Serialize};
 use crate::transcriber::{TranscriptionBackend, WhisperBackend};
@@ -45,6 +46,8 @@ impl Default for DictationState {
 pub struct AppState {
     pub dictation: Mutex<DictationState>,
     pub backend: Mutex<Box<dyn TranscriptionBackend>>,
+    pub last_transcription_at: Mutex<Option<Instant>>,
+    pub idle_timeout_minutes: Mutex<u32>,
     /// Monotonically increasing ID assigned to each recording session.
     pub recording_id: AtomicU64,
     /// Set to the recording_id of a cancelled recording. Pipeline checks
@@ -74,6 +77,8 @@ impl Default for AppState {
         Self {
             dictation: Mutex::new(DictationState::default()),
             backend: Mutex::new(Box::new(WhisperBackend::new())),
+            last_transcription_at: Mutex::new(None),
+            idle_timeout_minutes: Mutex::new(5),
             recording_id: AtomicU64::new(0),
             cancelled_id: AtomicU64::new(0),
         }

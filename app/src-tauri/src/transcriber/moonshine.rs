@@ -76,6 +76,8 @@ impl TranscriptionBackend for MoonshineBackend {
     fn load_model(&mut self, model_name: &str) -> Result<(), String> {
         if let Some(ref loaded) = self.loaded_model_name {
             if loaded == model_name {
+                let rss = crate::resource_monitor::get_process_rss_mb();
+                tracing::info!(target: "pipeline", rss_mb = rss, "moonshine_cache_hit");
                 return Ok(());
             }
             self.reset();
@@ -115,6 +117,8 @@ impl TranscriptionBackend for MoonshineBackend {
 
         self.recognizer = Some(recognizer);
         self.loaded_model_name = Some(model_name.to_string());
+        let rss = crate::resource_monitor::get_process_rss_mb();
+        tracing::info!(target: "pipeline", rss_mb = rss, "moonshine_cache_miss");
         Ok(())
     }
 

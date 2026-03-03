@@ -62,6 +62,7 @@ export interface ConfigureOptions {
   autoPaste?: boolean;
   autoPasteDelayMs?: number;
   vadSensitivity?: number;
+  idleTimeoutMinutes?: number;
 }
 
 export async function configure(options: ConfigureOptions): Promise<DictationResponse> {

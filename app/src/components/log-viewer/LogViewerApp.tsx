@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useEventStore } from '../../lib/hooks/useEventStore';
+import { useResourceMonitor } from '../../lib/hooks/useResourceMonitor';
 import { StreamChips } from './StreamChips';
 import { LevelFilter } from './LevelFilter';
 import { EventRow } from './EventRow';
@@ -11,6 +12,7 @@ type Tab = 'events' | 'metrics';
 export function LogViewerApp() {
   const { events, clear } = useEventStore();
   const [tab, setTab] = useState<Tab>('events');
+  const resourceReadings = useResourceMonitor(tab === 'metrics');
   const [activeStreams, setActiveStreams] = useState<Set<StreamName>>(
     () => new Set(['pipeline', 'audio', 'system'])
   );
@@ -127,7 +129,7 @@ export function LogViewerApp() {
         </div>
       ) : (
         <div className="flex-1 overflow-y-auto">
-          <MetricsView events={events} />
+          <MetricsView events={events} resourceReadings={resourceReadings} />
         </div>
       )}
     </div>
