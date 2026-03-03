@@ -481,6 +481,36 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
                     return;
                 }
 
+                // Escape key: cancel recording/transcription regardless of mode.
+                // Must be checked before mode-specific logic so it works even
+                // during IS_PROCESSING (which gates the Both-mode block).
+                if let EventType::KeyPress(Key::Escape) = event.event_type {
+                    // Reset both detectors with cooldown timestamps so that the
+                    // subsequent trigger-key release (if user was holding it) is
+                    // treated as a no-op instead of firing hold-down-stop.
+                    {
+                        let mut det = HOLD_DOWN_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
+                        if let Some(d) = det.as_mut() {
+                            d.reset();
+                            d.last_stopped_at = Some(Instant::now());
+                        }
+                    }
+                    {
+                        let mut det = DOUBLE_TAP_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
+                        if let Some(d) = det.as_mut() {
+                            d.reset();
+                            d.last_fired_at = Some(Instant::now());
+                        }
+                    }
+                    // Invalidate pending hold-promotion timers
+                    HOLD_PROMOTED.store(false, Ordering::SeqCst);
+                    HOLD_PRESS_COUNTER.fetch_add(1, Ordering::SeqCst);
+
+                    tracing::info!(target: "keyboard", "Escape pressed — emitting escape-cancel");
+                    let _ = handle.emit("escape-cancel", ());
+                    return;
+                }
+
                 let mode = {
                     let m = ACTIVE_MODE.lock().unwrap_or_else(|p| p.into_inner());
                     *m
