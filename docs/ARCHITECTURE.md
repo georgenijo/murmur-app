@@ -94,7 +94,7 @@ struct AppState {
 }
 ```
 
-Both the Rust-side `DictationState::default()` and the frontend default use `"base.en"`.
+`DictationState::default()` and the frontend's `DEFAULT_SETTINGS.model` both use `"base.en"` as the runtime default. The first-launch model downloader pre-selects `"large-v3-turbo"` as the recommended download choice (see `ModelDownloader.tsx`).
 
 ### `audio.rs` -- Audio Capture
 

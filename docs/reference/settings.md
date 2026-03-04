@@ -102,7 +102,8 @@ Both the Rust-side `DictationState::default()` and the frontend default use `bas
 2. If found, parses as JSON and merges with `DEFAULT_SETTINGS` (stored values override defaults).
 3. Applies migration: if `recordingMode` is missing or invalid (including the legacy `'hotkey'` value), resets to `'hold_down'`.
 4. Strips the legacy `hotkey` field if present.
-5. If not found or on parse error, returns `DEFAULT_SETTINGS`.
+5. Validates `model` against the current allow-list. Any invalid or removed model (e.g. `moonshine-tiny`, `moonshine-base`) is reset to `'base.en'`.
+6. If not found or on parse error, returns `DEFAULT_SETTINGS`.
 
 ### Backend Synchronization
 

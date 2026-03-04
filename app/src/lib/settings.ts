@@ -82,8 +82,9 @@ export function loadSettings(): Settings {
       // Remove legacy hotkey field if present
       delete parsed.hotkey;
 
-      // Migrate: moonshine models no longer exist → default to 'base.en'
-      if (typeof parsed.model === 'string' && parsed.model.startsWith('moonshine')) {
+      // Validate model against current allow-list (includes Moonshine migration)
+      const validModels = new Set<string>(MODEL_OPTIONS.map((m) => m.value));
+      if (typeof parsed.model !== 'string' || !validModels.has(parsed.model)) {
         parsed.model = DEFAULT_SETTINGS.model;
       }
 

@@ -78,6 +78,15 @@ describe('loadSettings', () => {
     expect(settings.model).toBe('base.en');
   });
 
+  it('resets unknown model to default', () => {
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      model: 'nonexistent-model',
+    }));
+    const settings = loadSettings();
+    expect(settings.model).toBe('base.en');
+  });
+
   it('preserves valid recordingMode values', () => {
     for (const mode of ['hold_down', 'double_tap'] as const) {
       localStorage.setItem('dictation-settings', JSON.stringify({
