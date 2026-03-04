@@ -13,6 +13,7 @@ export interface Settings {
   launchAtLogin: boolean;
   vadSensitivity: number;
   idleTimeoutMinutes: number;
+  customVocabulary: string;
 }
 
 export type ModelOption =
@@ -68,6 +69,7 @@ export const DEFAULT_SETTINGS: Settings = {
   launchAtLogin: false,
   vadSensitivity: 50,
   idleTimeoutMinutes: 5,
+  customVocabulary: '',
 };
 
 export const STORAGE_KEY = 'dictation-settings';

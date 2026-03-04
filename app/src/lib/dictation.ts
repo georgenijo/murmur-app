@@ -63,8 +63,13 @@ export interface ConfigureOptions {
   autoPasteDelayMs?: number;
   vadSensitivity?: number;
   idleTimeoutMinutes?: number;
+  customVocabulary?: string;
 }
 
 export async function configure(options: ConfigureOptions): Promise<DictationResponse> {
   return await invoke('configure_dictation', { options });
+}
+
+export async function countVocabTokens(text: string): Promise<number | null> {
+  return await invoke('count_vocab_tokens', { text });
 }

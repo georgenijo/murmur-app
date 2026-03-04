@@ -11,7 +11,7 @@ export function useInitialization(settings: Settings) {
     initDictation()
       .then(() => {
         if (cancelled) return;
-        return configure({ model: settings.model, language: settings.language, autoPaste: settings.autoPaste });
+        return configure({ model: settings.model, language: settings.language, autoPaste: settings.autoPaste, customVocabulary: settings.customVocabulary });
       })
       .then(() => { if (!cancelled) setInitialized(true); })
       .catch((err) => { if (!cancelled) setError(String(err)); });
