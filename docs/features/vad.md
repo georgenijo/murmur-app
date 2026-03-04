@@ -45,7 +45,7 @@ The VAD model file is `ggml-silero-v5.1.2.bin` (~1.8MB), stored alongside transc
 
 ### Co-download
 
-When downloading any transcription model (whisper or moonshine), the VAD model is automatically co-downloaded if not already present. VAD download failure during co-download is non-fatal — the transcription model download still succeeds.
+When downloading any transcription model, the VAD model is automatically co-downloaded if not already present. VAD download failure during co-download is non-fatal — the transcription model download still succeeds.
 
 ### Fallback Download
 

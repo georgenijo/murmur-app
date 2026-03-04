@@ -13,7 +13,7 @@ For event-based communication (Rust to frontend), see [events.md](events.md). Fo
 | `init_dictation` | _(none)_ | `Result<JSON, String>` | Returns a static `{"type":"initialized","state":"idle"}` response. No-op initialization marker. |
 | `process_audio` | `audio_data: String` | `Result<JSON, String>` | Accepts base64-encoded WAV audio, decodes it, runs the full VAD + transcription + text injection pipeline, and returns `{"type":"transcription","text":"..."}`. |
 | `get_status` | _(none)_ | `Result<JSON, String>` | Returns current dictation status, model name, and language as `{"type":"status","state":"...","model":"...","language":"..."}`. |
-| `configure_dictation` | `options: JSON` | `Result<JSON, String>` | Updates dictation settings. Accepts optional fields: `model` (string), `language` (string), `autoPaste` (bool), `autoPasteDelayMs` (u64, clamped 10-500), `vadSensitivity` (u64, clamped 0-100). Swaps transcription backend if model type changes between Whisper and Moonshine. |
+| `configure_dictation` | `options: JSON` | `Result<JSON, String>` | Updates dictation settings. Accepts optional fields: `model` (string), `language` (string), `autoPaste` (bool), `autoPasteDelayMs` (u64, clamped 10-500), `vadSensitivity` (u64, clamped 0-100). Resets the transcription backend if model changes. |
 | `start_native_recording` | `device_name: Option<String>` | `Result<JSON, String>` | Begins native audio capture via cpal with an optional device name. Transitions status from Idle to Recording. Returns early if already recording or processing. |
 | `stop_native_recording` | _(none)_ | `Result<JSON, String>` | Stops audio capture, runs the full pipeline (VAD, transcription, text injection), and returns the transcription result. Recordings shorter than 0.3s are silently discarded. |
 | `cancel_native_recording` | _(none)_ | `Result<(), String>` | Cancels an in-progress recording without transcribing. Audio is discarded. Used by "both" mode for speculative recordings from short taps. |
@@ -50,9 +50,9 @@ For event-based communication (Rust to frontend), see [events.md](events.md). Fo
 
 | Command | Parameters | Return Type | Description |
 |---------|-----------|-------------|-------------|
-| `check_model_exists` | _(none)_ | `bool` | Returns `true` if any transcription model exists for either backend (Whisper or Moonshine). Used to determine whether the model download screen should be shown on first launch. |
+| `check_model_exists` | _(none)_ | `bool` | Returns `true` if any transcription model exists. Used to determine whether the model download screen should be shown on first launch. |
 | `check_specific_model_exists` | `model_name: String` | `bool` | Returns `true` if the specified model file or directory exists on disk. Includes path traversal protection (rejects `..`, `/`, `\` in model names). |
-| `download_model` | `model_name: String` | `Result<(), String>` | Downloads a transcription model with streaming progress events. Allowed models: `large-v3-turbo`, `small.en`, `base.en`, `tiny.en`, `medium.en`, `moonshine-tiny`, `moonshine-base`. Also co-downloads the Silero VAD model if missing. Whisper models are downloaded as single `.bin` files; Moonshine models as `.tar.bz2` archives that are extracted on a blocking thread. |
+| `download_model` | `model_name: String` | `Result<(), String>` | Downloads a transcription model with streaming progress events. Allowed models: `large-v3-turbo`, `small.en`, `base.en`, `tiny.en`, `medium.en`. Also co-downloads the Silero VAD model if missing. Whisper models are downloaded as single `.bin` files from Hugging Face. |
 
 ## Tray (`commands/tray.rs`)
 

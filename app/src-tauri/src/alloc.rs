@@ -2,7 +2,7 @@
 //!
 //! By routing all Rust allocations through a dedicated malloc zone ("RustHeapZone"),
 //! we get kernel-level per-zone accounting via `malloc_zone_statistics()`.
-//! C/C++ FFI code (whisper.cpp, sherpa-onnx) continues using the default system zone.
+//! C/C++ FFI code (whisper.cpp) continues using the default system zone.
 //! This avoids the counter-drift problem that `cap` and other `GlobalAlloc` wrappers
 //! suffer from when FFI code frees Rust-allocated memory.
 

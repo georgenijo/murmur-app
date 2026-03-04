@@ -42,7 +42,7 @@ Read these before working on a feature:
 | `commands/overlay.rs` | Notch detection, overlay positioning, show/hide commands |
 | `keyboard.rs` | Hold-down and double-tap detectors, shared rdev listener thread |
 | `audio.rs` | cpal capture, mono conversion, 16kHz resampling |
-| `transcriber/` | whisper-rs and moonshine model loading and inference |
+| `transcriber/` | whisper-rs model loading and inference |
 | `injector.rs` | Clipboard (arboard) + auto-paste (osascript) |
 | `state.rs` | `DictationState`, `AppState` with mutex-wrapped state |
 | `telemetry.rs` | Structured event system: TauriEmitterLayer, ring buffer, JSONL, privacy stripping |

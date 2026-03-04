@@ -32,9 +32,6 @@ rdev = { git = "https://github.com/Narsil/rdev", branch = "main" }
 memory-stats = "1"
 reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls"] }
 futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
-sherpa-rs = { version = "0.6", default-features = false, features = ["download-binaries", "static"] }
-tar = "0.4"
-bzip2 = "0.5"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter", "fmt"] }
 tracing-appender = "0.2"

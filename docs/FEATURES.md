@@ -2,15 +2,12 @@
 
 ### Core: Voice-to-Text
 - Record voice, transcribe locally, output text to clipboard
-- Two transcription backends: Whisper (Metal GPU via whisper-rs) and Moonshine (CPU via sherpa-onnx/sherpa-rs)
-- 7 models across both backends:
-  - Moonshine: moonshine-tiny (~124 MB), moonshine-base (~286 MB)
-  - Whisper: tiny.en (~75 MB), base.en (~150 MB), small.en (~500 MB), medium.en (~1.5 GB), large-v3-turbo (~3 GB)
-- Default model: moonshine-tiny (fastest, sub-20ms for typical dictation)
-- Greedy inference, single-segment, blank suppression (Whisper)
+- Whisper transcription backend (Metal GPU via whisper-rs)
+- 5 models: tiny.en (~75 MB), base.en (~150 MB), small.en (~500 MB), medium.en (~1.5 GB), large-v3-turbo (~3 GB)
+- Default model: base.en
+- Greedy inference, single-segment, blank suppression
 - Lazy model loading: model context created on first transcription, cached across subsequent runs
 - WhisperState caching: GPU/Metal buffers allocated once and reused (v0.7.8 optimization)
-- Moonshine models use ONNX int8 quantized inference on CPU
 - Zero cloud dependencies — fully offline
 
 ### Voice Activity Detection (VAD)
@@ -57,7 +54,7 @@
 - Organized into collapsible sections with animated expand/collapse
 
 #### Section: Transcription
-- Model selector dropdown with two groups: "Moonshine (Fast, CPU)" and "Whisper (Metal GPU)"
+- Model selector dropdown with all Whisper models
 - Each option shows label and file size
 - Inline model download: warning when model not downloaded, progress bar, retry on error
 - Microphone selector: lists all audio input devices via system query, "System Default" option, warning if saved device not found
@@ -82,13 +79,12 @@
 
 ### Model Downloader (first-launch onboarding)
 - Full-screen view shown when no model is installed
-- 4 curated model cards: moonshine-tiny, moonshine-base, large-v3-turbo, base.en
+- 2 curated model cards: large-v3-turbo, base.en
 - Each card shows label, size, description
-- Default selection: moonshine-tiny
+- Default selection: large-v3-turbo
 - Download button with progress bar (percentage + byte counter)
 - Error display with retry
 - Selection disabled during download
-- Checks both backends: download screen skipped if any model exists (Whisper or Moonshine)
 
 ### System Tray
 - Static white waveform icon: 66x66 RGBA (3x for 22pt Retina menu bar), 5 vertical capsule bars
@@ -199,6 +195,6 @@
 - Frontend tests: vitest with jsdom
 
 ### Dependencies
-- **Rust**: Tauri 2, whisper-rs (Metal), sherpa-rs (ONNX/Moonshine), cpal, arboard, rdev (git main), reqwest (rustls-tls), sysinfo, tracing/tracing-subscriber/tracing-appender, objc2/objc2-app-kit (macOS), tar/bzip2
+- **Rust**: Tauri 2, whisper-rs (Metal), cpal, arboard, rdev (git main), reqwest (rustls-tls), sysinfo, tracing/tracing-subscriber/tracing-appender, objc2/objc2-app-kit (macOS)
 - **Frontend**: React 18, Tailwind CSS 4, Vite 6, TypeScript ~5.6, react-markdown, rehype-sanitize, @tauri-apps/api and plugins (autostart, updater, notification, process, opener)
 - **5 Tauri plugins**: opener, autostart (LaunchAgent), updater, notification, process

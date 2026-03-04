@@ -42,7 +42,7 @@ cd app && npm test
 cd app && npx tsc --noEmit
 ```
 
-Rust unit tests (52) cover keyboard detection, audio RMS, tray icon rendering, and WAV parsing. Frontend tests (7) cover settings migration from legacy formats. Integration tests validate the Whisper and Moonshine transcription pipelines end-to-end — they auto-skip when models aren't installed.
+Rust unit tests cover keyboard detection, audio RMS, tray icon rendering, and WAV parsing. Frontend tests cover settings migration from legacy formats. Integration tests validate the Whisper transcription pipeline end-to-end — they auto-skip when models aren't installed.
 
 CI runs `cargo check`, `cargo test --lib`, `npx tsc --noEmit`, and `npm test` on every push to main and on PRs.
 

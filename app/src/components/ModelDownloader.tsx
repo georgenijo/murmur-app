@@ -4,14 +4,12 @@ import { listen } from '@tauri-apps/api/event';
 import { MODEL_OPTIONS, type ModelOption } from '../lib/settings';
 
 const MODEL_DESCRIPTIONS: Record<string, string> = {
-  'moonshine-tiny': 'Fastest — sub-20ms for typical dictation',
-  'moonshine-base': 'Better accuracy, still very fast',
   'large-v3-turbo': 'Highest accuracy, slower (1-2 seconds)',
   'base.en': 'Good balance of speed and accuracy',
 };
 
 /** Subset of models shown on the initial download screen. */
-const DOWNLOAD_MODEL_KEYS: ModelOption[] = ['moonshine-tiny', 'moonshine-base', 'large-v3-turbo', 'base.en'];
+const DOWNLOAD_MODEL_KEYS: ModelOption[] = ['large-v3-turbo', 'base.en'];
 const MODELS = DOWNLOAD_MODEL_KEYS.map((key) => {
   const opt = MODEL_OPTIONS.find((m) => m.value === key)!;
   return { name: opt.value, label: opt.label, size: opt.size, description: MODEL_DESCRIPTIONS[key] ?? '' };
