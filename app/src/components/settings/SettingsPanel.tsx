@@ -9,6 +9,7 @@ import {
 } from '../../lib/settings';
 import { Select } from '../ui/Select';
 import { SettingsSection } from './SettingsSection';
+import { countVocabTokens } from '../../lib/dictation';
 import type { DictationStatus } from '../../lib/types';
 import type { UpdateStatus } from '../../lib/updater';
 
@@ -39,6 +40,60 @@ function PasteDelaySlider({ value, onCommit }: { value: number; onCommit: (v: nu
       <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
         Delay before paste. Increase if paste lands in the wrong window.
       </p>
+    </div>
+  );
+}
+
+function CustomVocabularyTextarea({ value, onCommit, showMoonshineWarning }: { value: string; onCommit: (v: string) => void; showMoonshineWarning: boolean }) {
+  const [draft, setDraft] = useState(value);
+  const [tokenCount, setTokenCount] = useState<number | null>(null);
+  useEffect(() => { setDraft(value); }, [value]);
+
+  useEffect(() => {
+    if (!draft.trim()) { setTokenCount(null); return; }
+    let stale = false;
+    countVocabTokens(draft)
+      .then((count) => { if (!stale) setTokenCount(count); })
+      .catch(() => { if (!stale) setTokenCount(null); });
+    return () => { stale = true; };
+  }, [draft]);
+
+  return (
+    <div>
+      <label className="block text-sm font-medium text-stone-700 dark:text-stone-300 mb-2">
+        Custom Vocabulary
+      </label>
+      <textarea
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => { if (draft !== value) onCommit(draft); }}
+        placeholder="e.g. Tauri, Claude, whisper-rs, macOS"
+        rows={3}
+        autoComplete="off"
+        autoCorrect="off"
+        autoCapitalize="off"
+        spellCheck={false}
+        className="w-full px-3 py-2 text-xs rounded-lg border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 placeholder-stone-400 dark:placeholder-stone-500 focus:outline-none focus:ring-2 focus:ring-stone-500 resize-y"
+      />
+      <div className="mt-1.5 flex items-start justify-between gap-2">
+        <p className="text-xs text-stone-500 dark:text-stone-400">
+          Comma-separated. Whisper models only.
+        </p>
+        {draft.trim().length > 0 && (() => {
+          const displayCount = tokenCount ?? Math.ceil(draft.trim().length / 4);
+          const isEstimate = tokenCount === null;
+          return (
+            <span className={`text-xs tabular-nums whitespace-nowrap ${displayCount > 200 ? 'text-amber-600 dark:text-amber-400' : 'text-stone-400 dark:text-stone-500'}`}>
+              {isEstimate ? `~${displayCount}` : displayCount} tokens
+            </span>
+          );
+        })()}
+      </div>
+      {showMoonshineWarning && (
+        <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+          Custom vocabulary is only supported by Whisper models.
+        </p>
+      )}
     </div>
   );
 }
@@ -345,6 +400,13 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
             Free memory by unloading the model when idle. Set to Never to keep it loaded.
           </p>
         </div>
+
+        {/* Custom Vocabulary */}
+        <CustomVocabularyTextarea
+          value={settings.customVocabulary}
+          onCommit={(value) => onUpdateSettings({ customVocabulary: value })}
+          showMoonshineWarning={selectedModel?.backend === 'moonshine' && settings.customVocabulary.trim() !== ''}
+        />
         </SettingsSection>
 
         <SettingsSection title="Recording" subtitle="Trigger mode, shortcut key">

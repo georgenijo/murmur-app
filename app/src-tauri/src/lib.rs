@@ -82,6 +82,7 @@ pub fn run() {
             commands::recording::start_native_recording,
             commands::recording::stop_native_recording,
             commands::recording::cancel_native_recording,
+            commands::recording::count_vocab_tokens,
             commands::permissions::open_system_preferences,
             commands::permissions::check_accessibility_permission,
             commands::permissions::request_accessibility_permission,

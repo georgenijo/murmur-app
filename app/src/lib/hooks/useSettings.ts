@@ -47,9 +47,9 @@ export function useSettings() {
       });
     }
 
-    if ('model' in updates || 'language' in updates || 'autoPaste' in updates || 'autoPasteDelayMs' in updates || 'vadSensitivity' in updates || 'idleTimeoutMinutes' in updates) {
+    if ('model' in updates || 'language' in updates || 'autoPaste' in updates || 'autoPasteDelayMs' in updates || 'vadSensitivity' in updates || 'idleTimeoutMinutes' in updates || 'customVocabulary' in updates) {
       const version = ++configureVersionRef.current;
-      configure({ model: newSettings.model, language: newSettings.language, autoPaste: newSettings.autoPaste, autoPasteDelayMs: newSettings.autoPasteDelayMs, vadSensitivity: newSettings.vadSensitivity, idleTimeoutMinutes: newSettings.idleTimeoutMinutes })
+      configure({ model: newSettings.model, language: newSettings.language, autoPaste: newSettings.autoPaste, autoPasteDelayMs: newSettings.autoPasteDelayMs, vadSensitivity: newSettings.vadSensitivity, idleTimeoutMinutes: newSettings.idleTimeoutMinutes, customVocabulary: newSettings.customVocabulary })
         .catch((err) => {
           console.error('Failed to configure:', err);
           if (configureVersionRef.current === version) {
@@ -61,6 +61,7 @@ export function useSettings() {
               autoPasteDelayMs: previousSettings.autoPasteDelayMs,
               vadSensitivity: previousSettings.vadSensitivity,
               idleTimeoutMinutes: previousSettings.idleTimeoutMinutes,
+              customVocabulary: previousSettings.customVocabulary,
             };
             settingsRef.current = reverted;
             setSettings(reverted);

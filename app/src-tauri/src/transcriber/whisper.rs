@@ -129,7 +129,7 @@ impl TranscriptionBackend for WhisperBackend {
         Ok(())
     }
 
-    fn transcribe(&mut self, samples: &[f32], language: &str) -> Result<String, String> {
+    fn transcribe(&mut self, samples: &[f32], language: &str, initial_prompt: Option<&str>) -> Result<String, String> {
         let state = self
             .state
             .as_mut()
@@ -144,6 +144,9 @@ impl TranscriptionBackend for WhisperBackend {
         params.set_print_timestamps(false);
         params.set_suppress_blank(true);
         params.set_single_segment(true);
+        if let Some(prompt) = initial_prompt {
+            params.set_initial_prompt(prompt);
+        }
         params.set_debug_mode(false);
 
         state
@@ -164,6 +167,11 @@ impl TranscriptionBackend for WhisperBackend {
         }
 
         Ok(text.trim().to_string())
+    }
+
+    fn token_count(&self, text: &str) -> Option<usize> {
+        let ctx = self.context.as_ref()?;
+        ctx.tokenize(text, 1024).ok().map(|tokens| tokens.len())
     }
 
     fn model_exists(&self) -> bool {

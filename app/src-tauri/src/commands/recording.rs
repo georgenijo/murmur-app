@@ -66,9 +66,9 @@ async fn run_transcription_pipeline(
     let _guard = IdleGuard::new(app_state, recording_id);
 
     // Read all needed state in one lock
-    let (model_name, language, auto_paste, paste_delay_ms, vad_sensitivity) = {
+    let (model_name, language, auto_paste, paste_delay_ms, vad_sensitivity, custom_vocabulary) = {
         let dictation = app_state.dictation.lock_or_recover();
-        (dictation.model_name.clone(), dictation.language.clone(), dictation.auto_paste, dictation.auto_paste_delay_ms, dictation.vad_sensitivity)
+        (dictation.model_name.clone(), dictation.language.clone(), dictation.auto_paste, dictation.auto_paste_delay_ms, dictation.vad_sensitivity, dictation.custom_vocabulary.clone())
     };
 
     // Pre-VAD signal level logging for mic diagnosis
@@ -140,9 +140,15 @@ async fn run_transcription_pipeline(
     let rss_before_mb = crate::resource_monitor::get_process_rss_mb();
     let t_transcribe = std::time::Instant::now();
     let text = {
+        let sanitized = custom_vocabulary.replace('\0', "");
+        let prompt = if sanitized.trim().is_empty() {
+            None
+        } else {
+            Some(sanitized)
+        };
         let mut backend = app_state.backend.lock_or_recover();
         backend.load_model(&model_name)?;
-        backend.transcribe(&samples_for_transcription, &language)?
+        backend.transcribe(&samples_for_transcription, &language, prompt.as_deref())?
     };
     let inference_ms = t_transcribe.elapsed().as_millis() as u64;
     let rss_after_mb = crate::resource_monitor::get_process_rss_mb();
@@ -336,6 +342,10 @@ pub async fn configure_dictation(
 
     if let Some(sensitivity) = options.get("vadSensitivity").and_then(|v| v.as_u64()) {
         dictation.vad_sensitivity = (sensitivity as u32).clamp(0, 100);
+    }
+
+    if let Some(vocab) = options.get("customVocabulary").and_then(|v| v.as_str()) {
+        dictation.custom_vocabulary = vocab.to_string();
     }
 
     if let Some(idle_timeout) = options.get("idleTimeoutMinutes").and_then(|v| v.as_u64()) {
@@ -611,6 +621,15 @@ pub async fn cancel_native_recording(
         Some(e) => Err(e),
         None => Ok(()),
     }
+}
+
+#[tauri::command]
+pub async fn count_vocab_tokens(
+    text: String,
+    state: tauri::State<'_, State>,
+) -> Result<Option<usize>, String> {
+    let backend = state.app_state.backend.lock_or_recover();
+    Ok(backend.token_count(&text))
 }
 
 #[cfg(test)]

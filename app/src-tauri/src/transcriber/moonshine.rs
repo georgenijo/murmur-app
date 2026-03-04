@@ -122,7 +122,7 @@ impl TranscriptionBackend for MoonshineBackend {
         Ok(())
     }
 
-    fn transcribe(&mut self, samples: &[f32], _language: &str) -> Result<String, String> {
+    fn transcribe(&mut self, samples: &[f32], _language: &str, _initial_prompt: Option<&str>) -> Result<String, String> {
         let recognizer = self
             .recognizer
             .as_mut()
@@ -130,6 +130,10 @@ impl TranscriptionBackend for MoonshineBackend {
 
         let result = recognizer.transcribe(16000, samples);
         Ok(result.text.trim().to_string())
+    }
+
+    fn token_count(&self, _text: &str) -> Option<usize> {
+        None
     }
 
     fn model_exists(&self) -> bool {
