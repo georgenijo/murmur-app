@@ -34,22 +34,20 @@ interface Settings {
 
 | Setting | Type | Default | Valid Options/Range | Description |
 |---------|------|---------|-------------------|-------------|
-| `model` | `ModelOption` | `'moonshine-tiny'` | `'moonshine-tiny'`, `'moonshine-base'`, `'tiny.en'`, `'base.en'`, `'small.en'`, `'medium.en'`, `'large-v3-turbo'` | The transcription model to use. Determines which backend (Moonshine CPU or Whisper Metal GPU) is active. See the model options table below. |
-| `language` | `string` | `'en'` | Any language code string | Transcription language. Passed to the Whisper backend. Moonshine models are English-only and ignore this value. No validation on the frontend. |
+| `model` | `ModelOption` | `'base.en'` | `'tiny.en'`, `'base.en'`, `'small.en'`, `'medium.en'`, `'large-v3-turbo'` | The transcription model to use. All models use the Whisper backend with Metal GPU acceleration. See the model options table below. |
+| `language` | `string` | `'en'` | Any language code string | Transcription language. Passed to the Whisper backend. No validation on the frontend. |
 
 ### Model Options
 
 | Value | Label | Size | Backend |
 |-------|-------|------|---------|
-| `moonshine-tiny` | Moonshine Tiny (Fastest) | ~124 MB | Moonshine (CPU, ONNX) |
-| `moonshine-base` | Moonshine Base | ~286 MB | Moonshine (CPU, ONNX) |
 | `tiny.en` | Whisper Tiny (English) | ~75 MB | Whisper (Metal GPU) |
 | `base.en` | Whisper Base (English) | ~150 MB | Whisper (Metal GPU) |
 | `small.en` | Whisper Small (English) | ~500 MB | Whisper (Metal GPU) |
 | `medium.en` | Whisper Medium (English) | ~1.5 GB | Whisper (Metal GPU) |
 | `large-v3-turbo` | Whisper Large Turbo | ~3 GB | Whisper (Metal GPU) |
 
-**Note:** The Rust-side `DictationState::default()` uses `base.en` as its default model, but this is overwritten by the frontend's `moonshine-tiny` default during initialization (before any recording can occur). A brand-new user always starts with `moonshine-tiny`.
+Both the Rust-side `DictationState::default()` and the frontend default use `base.en`.
 
 ---
 
@@ -104,7 +102,8 @@ interface Settings {
 2. If found, parses as JSON and merges with `DEFAULT_SETTINGS` (stored values override defaults).
 3. Applies migration: if `recordingMode` is missing or invalid (including the legacy `'hotkey'` value), resets to `'hold_down'`.
 4. Strips the legacy `hotkey` field if present.
-5. If not found or on parse error, returns `DEFAULT_SETTINGS`.
+5. Validates `model` against the current allow-list. Any invalid or removed model (e.g. `moonshine-tiny`, `moonshine-base`) is reset to `'base.en'`.
+6. If not found or on parse error, returns `DEFAULT_SETTINGS`.
 
 ### Backend Synchronization
 

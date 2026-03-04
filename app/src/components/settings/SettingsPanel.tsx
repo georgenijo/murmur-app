@@ -4,7 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { getVersion } from '@tauri-apps/api/app';
 import {
   Settings, RecordingMode, DEFAULT_SETTINGS,
-  MODEL_OPTIONS, MOONSHINE_MODELS, WHISPER_MODELS, DOUBLE_TAP_KEY_OPTIONS, RECORDING_MODE_OPTIONS,
+  MODEL_OPTIONS, DOUBLE_TAP_KEY_OPTIONS, RECORDING_MODE_OPTIONS,
   IDLE_TIMEOUT_OPTIONS,
 } from '../../lib/settings';
 import { Select } from '../ui/Select';
@@ -44,7 +44,7 @@ function PasteDelaySlider({ value, onCommit }: { value: number; onCommit: (v: nu
   );
 }
 
-function CustomVocabularyTextarea({ value, onCommit, showMoonshineWarning }: { value: string; onCommit: (v: string) => void; showMoonshineWarning: boolean }) {
+function CustomVocabularyTextarea({ value, onCommit }: { value: string; onCommit: (v: string) => void }) {
   const [draft, setDraft] = useState(value);
   const [tokenCount, setTokenCount] = useState<number | null>(null);
   useEffect(() => { setDraft(value); }, [value]);
@@ -89,11 +89,6 @@ function CustomVocabularyTextarea({ value, onCommit, showMoonshineWarning }: { v
           );
         })()}
       </div>
-      {showMoonshineWarning && (
-        <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
-          Custom vocabulary is only supported by Whisper models.
-        </p>
-      )}
     </div>
   );
 }
@@ -290,19 +285,10 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
             value={settings.model}
             onChange={(value) => onUpdateSettings({ model: value })}
             disabled={isRecording}
-            items={[
-              {
-                label: 'Moonshine (Fast, CPU)',
-                options: MOONSHINE_MODELS.map((m) => ({ value: m.value, label: `${m.label} (${m.size})` })),
-              },
-              {
-                label: 'Whisper (Metal GPU)',
-                options: WHISPER_MODELS.map((m) => ({ value: m.value, label: `${m.label} (${m.size})` })),
-              },
-            ]}
+            items={MODEL_OPTIONS.map((m) => ({ value: m.value, label: `${m.label} (${m.size})` }))}
           />
           <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
-            Moonshine runs on CPU; Whisper uses Metal GPU. Larger models are more accurate but slower.
+            Larger models are more accurate but slower.
           </p>
           {isRecording && (
             <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
@@ -405,7 +391,6 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
         <CustomVocabularyTextarea
           value={settings.customVocabulary}
           onCommit={(value) => onUpdateSettings({ customVocabulary: value })}
-          showMoonshineWarning={selectedModel?.backend === 'moonshine' && settings.customVocabulary.trim() !== ''}
         />
         </SettingsSection>
 
@@ -577,10 +562,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
         <div>
           <div className="text-sm text-stone-600 dark:text-stone-400">
             <p><strong>Model:</strong> {selectedModel?.label}</p>
-            <p><strong>Backend:</strong> {selectedModel
-              ? (selectedModel.backend === 'moonshine' ? 'Moonshine (CPU)' : 'Whisper (Metal GPU)')
-              : 'Unknown'}
-            </p>
+            <p><strong>Backend:</strong> Whisper (Metal GPU)</p>
             <p><strong>Size:</strong> {selectedModel?.size}</p>
           </div>
         </div>

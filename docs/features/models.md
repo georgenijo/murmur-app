@@ -2,23 +2,21 @@
 
 ## Overview
 
-The app supports 7 transcription models across two backends. Models are downloaded on demand, loaded lazily on first transcription, and cached for reuse. Backend switching happens automatically when the user selects a model from a different engine.
+The app supports 5 transcription models using the Whisper backend. Models are downloaded on demand, loaded lazily on first transcription, and cached for reuse.
 
 ## Available Models
 
 | Model | Setting Value | Backend | Size | Speed | Language |
 |-------|--------------|---------|------|-------|----------|
-| Moonshine Tiny | `moonshine-tiny` | Moonshine (CPU) | ~124 MB | Fastest (~16ms for 3s audio) | English only |
-| Moonshine Base | `moonshine-base` | Moonshine (CPU) | ~286 MB | Very fast (~37ms for 3s audio) | English only |
 | Tiny | `tiny.en` | Whisper (Metal GPU) | ~75 MB | Fast | English only |
 | Base | `base.en` | Whisper (Metal GPU) | ~150 MB | Fast | English only |
 | Small | `small.en` | Whisper (Metal GPU) | ~500 MB | Medium | English only |
 | Medium | `medium.en` | Whisper (Metal GPU) | ~1.5 GB | Slow | English only |
 | Large Turbo | `large-v3-turbo` | Whisper (Metal GPU) | ~3 GB | Slow | Multilingual |
 
-**Default model:** `moonshine-tiny` (set in `settings.ts`). The Rust-side `DictationState::default()` uses `base.en`, but this is overwritten by the frontend's `configure_dictation` call during initialization before any recording can occur.
+**Default model:** `base.en` (set in `settings.ts` and `DictationState::default()`).
 
-## Backends
+## Backend
 
 ### Whisper (`transcriber/whisper.rs`)
 
@@ -35,20 +33,6 @@ Uses `whisper-rs` with Apple Metal GPU acceleration. Model files are single `.bi
 6. `~/.whisper/models`
 
 **Download URL:** `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-{name}.bin`
-
-### Moonshine (`transcriber/moonshine.rs`)
-
-Uses `sherpa-rs` with ONNX runtime, int8 quantized, CPU inference only. Model files are directories containing multiple ONNX files:
-
-- `preprocess.onnx`
-- `encode.int8.onnx`
-- `uncached_decode.int8.onnx`
-- `cached_decode.int8.onnx`
-- `tokens.txt`
-
-English-only — the `language` parameter is ignored.
-
-**Download URL:** `https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-moonshine-{variant}-en-int8.tar.bz2`
 
 ## Storage
 
@@ -71,16 +55,14 @@ This is the same pattern described in the [transcription pipeline docs](transcri
 
 ## First-Launch Downloader
 
-On first launch (no model downloaded), a full-screen download view presents 4 curated models:
+On first launch (no model downloaded), a full-screen download view presents 2 curated models:
 
 | Model | Description |
 |-------|-------------|
-| `moonshine-tiny` | "Fastest -- sub-20ms for typical dictation" |
-| `moonshine-base` | "Better accuracy, still very fast" |
 | `large-v3-turbo` | "Highest accuracy, slower (1-2 seconds)" |
 | `base.en` | "Good balance of speed and accuracy" |
 
-Default selection: `moonshine-tiny`. The user selects a model and clicks "Download." A progress bar shows percentage and byte counts. Selection is disabled during download. On error, a "Retry Download" button appears.
+Default selection: `large-v3-turbo`. The user selects a model and clicks "Download." A progress bar shows percentage and byte counts. Selection is disabled during download. On error, a "Retry Download" button appears.
 
 The main app controls are gated on `initialized` (which requires a model to exist), so the download screen blocks all other interaction.
 
@@ -100,10 +82,6 @@ The main app controls are gated on `initialized` (which requires a model to exis
 
 Single `.bin` file downloaded directly from HuggingFace. Atomic rename on completion.
 
-### Moonshine Downloads
-
-`.tar.bz2` archive downloaded from GitHub, then extracted on a `spawn_blocking` thread using the `bzip2` and `tar` crates. On extraction failure, the partially extracted directory is cleaned up.
-
 ### VAD Co-Download
 
 Every transcription model download also triggers a co-download of the Silero VAD model (`ggml-silero-v5.1.2.bin`, ~1.8MB) if it is not already present. VAD download failure is non-fatal. See [vad.md](vad.md) for details on the VAD fallback download mechanism.
@@ -113,19 +91,14 @@ Every transcription model download also triggers a co-download of the Silero VAD
 The `download_model` command accepts only models from a hardcoded allow-list:
 
 ```
-large-v3-turbo, small.en, base.en, tiny.en, medium.en, moonshine-tiny, moonshine-base
+large-v3-turbo, small.en, base.en, tiny.en, medium.en
 ```
 
 Any other model name is rejected. The `check_specific_model_exists` command also includes path traversal protection, rejecting names containing `..`, `/`, or `\`.
 
-## Backend Switching
+## Model Switching
 
-When the user changes models in settings, `configure_dictation` determines whether a backend swap is needed:
-
-- Model names starting with `moonshine-` use `MoonshineBackend`
-- All other names use `WhisperBackend`
-
-If the model change crosses the whisper/moonshine boundary, the entire `Box<dyn TranscriptionBackend>` is replaced. If the model changes within the same backend type, `reset()` is called to force a reload on the next transcription.
+When the user changes models in settings, `configure_dictation` calls `reset()` on the backend to force a reload on the next transcription.
 
 The active backend is stored as `Mutex<Box<dyn TranscriptionBackend>>` in `AppState`.
 
@@ -145,4 +118,4 @@ Model selection is disabled while recording is active.
 
 - `model: ModelOption` — Selected model name. Persisted to localStorage. Sent to Rust via `configure_dictation`.
 
-Model options are defined in `settings.ts` with `MODEL_OPTIONS`, `MOONSHINE_MODELS`, and `WHISPER_MODELS` arrays. Each option includes the setting value, display label, size string, and backend type.
+Model options are defined in `settings.ts` with the `MODEL_OPTIONS` array. Each option includes the setting value, display label, size string, and backend type.

@@ -356,22 +356,11 @@ pub async fn configure_dictation(
         *state.app_state.idle_timeout_minutes.lock_or_recover() = normalized;
     }
 
-    // If model changed, swap backend type if needed, or just reset for reload
+    // If model changed, reset backend so next transcription reloads the new model
     if model_changed {
-        let new_model = dictation.model_name.clone();
         drop(dictation); // Release dictation lock first
         let mut backend = state.app_state.backend.lock_or_recover();
-        let needs_swap = transcriber::is_moonshine_model(&new_model) != (backend.name() == "moonshine");
-        if needs_swap {
-            *backend = if transcriber::is_moonshine_model(&new_model) {
-                Box::new(transcriber::MoonshineBackend::new())
-            } else {
-                Box::new(transcriber::WhisperBackend::new())
-            };
-            tracing::info!(target: "pipeline", "Switched transcription backend to {}", backend.name());
-        } else {
-            backend.reset();
-        }
+        backend.reset();
     }
 
     Ok(serde_json::json!({

@@ -2,12 +2,12 @@
 
 Privacy-first voice-to-text for macOS. Hold a key, speak, release — your words land in any app. No cloud, no subscriptions, no data leaves your machine.
 
-Built with [Tauri 2](https://tauri.app/) (Rust + React), powered by [whisper.cpp](https://github.com/ggerganov/whisper.cpp) and [Moonshine](https://github.com/usefulsensors/moonshine) running locally with Metal GPU acceleration.
+Built with [Tauri 2](https://tauri.app/) (Rust + React), powered by [whisper.cpp](https://github.com/ggerganov/whisper.cpp) running locally with Metal GPU acceleration.
 
 ## Features
 
 - **100% local** — all transcription runs on-device via Metal GPU. Zero network calls, works offline
-- **Dual transcription backends** — swap between Whisper (GPU-accelerated) and Moonshine (lightweight ONNX) mid-session from a dropdown. 7 models from ~75 MB to ~3 GB
+- **5 Whisper models** — choose from tiny to large, all GPU-accelerated via Metal. Models from ~75 MB to ~3 GB
 - **Two recording modes** — Hold Down (hold to record, release to stop) or Double-Tap (tap twice to start, tap once to stop)
 - **Clipboard-first output** — text always copied to clipboard. Optional auto-paste into your focused app
 - **Floating overlay** — always-on-top widget with animated waveform, click to toggle recording
@@ -37,13 +37,6 @@ Grant these in **System Settings > Privacy & Security** when prompted:
 
 Choose a model based on your speed/accuracy tradeoff. Models download automatically on first launch, or you can switch models in Settings at any time.
 
-### Moonshine (ONNX)
-
-| Model | Size | Speed | Notes |
-|-------|------|-------|-------|
-| Moonshine Tiny | ~124 MB | Fastest | Good for quick dictation |
-| Moonshine Base | ~286 MB | Fast | Better accuracy |
-
 ### Whisper (Metal GPU)
 
 | Model | Size | Speed | Notes |
@@ -71,7 +64,7 @@ Transcribed text is always copied to your clipboard. Enable **Auto-Paste** in Se
 | App framework | Tauri 2 |
 | Backend | Rust |
 | Frontend | React 18, TypeScript, Tailwind CSS 4 |
-| Transcription | whisper-rs (whisper.cpp + Metal), sherpa-rs (Moonshine + ONNX) |
+| Transcription | whisper-rs (whisper.cpp + Metal) |
 | Audio capture | cpal |
 | Keyboard listener | rdev |
 | Clipboard | arboard |
@@ -100,12 +93,12 @@ cd app && npx tsc --noEmit                            # TypeScript type check
 ## Architecture
 
 ```
-Hotkey (rdev) → Audio Capture (cpal) → Transcription (whisper-rs / sherpa-rs) → Clipboard (arboard) → Auto-Paste (osascript)
+Hotkey (rdev) → Audio Capture (cpal) → Transcription (whisper-rs) → Clipboard (arboard) → Auto-Paste (osascript)
        ↕                    ↕                        ↕                                    ↕
    Frontend (React) ←——— Tauri IPC ———→ Rust Backend ———→ System Tray + Overlay
 ```
 
-The backend uses a `TranscriptionBackend` trait that both Whisper and Moonshine implement — a shared interface that lets you hot-swap engines at runtime. Adding a new backend is just implementing the same trait.
+The backend uses a `TranscriptionBackend` trait — a clean interface that makes it easy to add new transcription engines in the future.
 
 ## License
 

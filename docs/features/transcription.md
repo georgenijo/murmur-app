@@ -6,22 +6,19 @@
 cpal audio capture → f32 samples in memory → resample to 16kHz mono → backend inference → text
 ```
 
-All processing is local during transcription (network only required to download models beforehand). Two transcription backends are available:
-
-- **Whisper** (`whisper-rs`) — Metal GPU acceleration, higher accuracy, slower on short clips
-- **Moonshine** (`sherpa-rs`) — CPU inference with int8 quantization, extremely fast on short clips
+All processing is local during transcription (network only required to download models beforehand). Transcription uses the **Whisper** backend (`whisper-rs`) with Metal GPU acceleration.
 
 ## Audio Capture (`audio.rs`)
 
 - Uses `cpal` to record from the default input device on a background thread
 - Channel-based synchronization: recording thread signals readiness via `mpsc::channel` before `start_recording()` returns, preventing race conditions
 - Multi-channel to mono conversion (averages channels)
-- Resamples to 16kHz (expected sample rate for both backends)
+- Resamples to 16kHz (expected sample rate for the backend)
 - Samples stored as `Vec<f32>` in memory — no temp files
 
-## Transcription Backends (`transcriber/`)
+## Transcription Backend (`transcriber/`)
 
-Both backends implement the `TranscriptionBackend` trait (`transcriber/mod.rs`):
+The backend implements the `TranscriptionBackend` trait (`transcriber/mod.rs`):
 
 ```rust
 pub trait TranscriptionBackend: Send + Sync {
@@ -34,7 +31,7 @@ pub trait TranscriptionBackend: Send + Sync {
 }
 ```
 
-The active backend is stored as `Mutex<Box<dyn TranscriptionBackend>>` in `AppState`. When the user switches between whisper and moonshine models, `configure_dictation` swaps the backend instance.
+The active backend is stored as `Mutex<Box<dyn TranscriptionBackend>>` in `AppState`. The trait is kept for future extensibility.
 
 ### Whisper Backend (`transcriber/whisper.rs`)
 
@@ -44,20 +41,10 @@ The active backend is stored as `Mutex<Box<dyn TranscriptionBackend>>` in `AppSt
 - Model files are single `.bin` files (e.g., `ggml-base.en.bin`)
 - Model search paths are documented in `docs/onboarding.md`
 
-### Moonshine Backend (`transcriber/moonshine.rs`)
-
-- Uses `sherpa-rs` with CPU inference (ONNX runtime, int8 quantized)
-- Same lazy loading pattern as Whisper
-- Model files are directories containing multiple ONNX files (e.g., `sherpa-onnx-moonshine-tiny-en-int8/`)
-- English-only — the `language` parameter is ignored
-- Download URLs: `https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-moonshine-{variant}-en-int8.tar.bz2`
-
 ## Model Options
 
 | Model | Setting Value | Backend | English-only | Speed |
 |-------|--------------|---------|-------------|-------|
-| Moonshine Tiny | `moonshine-tiny` | Moonshine | Yes | Fastest (~16ms for 3s audio) |
-| Moonshine Base | `moonshine-base` | Moonshine | Yes | Very fast (~37ms for 3s audio) |
 | Tiny | `tiny.en` | Whisper | Yes | Fast |
 | Base | `base.en` | Whisper | Yes | Fast |
 | Small | `small.en` | Whisper | Yes | Medium |
@@ -76,14 +63,9 @@ The active backend is stored as `Mutex<Box<dyn TranscriptionBackend>>` in `AppSt
 
 Uses `IdleGuard` (RAII) to reset status on any early return or error — prevents the app from getting stuck in "processing" state.
 
-## Model Downloads (`lib.rs`)
+## Model Downloads (`commands/models.rs`)
 
-The `download_model` command handles both model types:
-
-- **Whisper**: Downloads a single `.bin` file from Hugging Face
-- **Moonshine**: Downloads a `.tar.bz2` archive from GitHub, extracts it using the `tar` and `bzip2` crates
-
-Both paths stream the download with progress events (`download-progress`).
+The `download_model` command downloads Whisper models as single `.bin` files from Hugging Face, streaming the download with progress events (`download-progress`).
 
 ## Status Flow
 

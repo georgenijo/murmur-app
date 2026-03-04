@@ -2,7 +2,7 @@
 
 ## Overview
 
-Murmur is a privacy-first, local-only voice dictation app for macOS. You speak, it transcribes -- no cloud, no API keys, no internet. All inference runs on-device using Apple Silicon's GPU (Whisper) or CPU (Moonshine).
+Murmur is a privacy-first, local-only voice dictation app for macOS. You speak, it transcribes -- no cloud, no API keys, no internet. All inference runs on-device using Apple Silicon's GPU (Whisper).
 
 Built with **Tauri 2** (Rust backend + React frontend). ~25MB installed, no Python, no sidecar.
 
@@ -16,8 +16,7 @@ Built with **Tauri 2** (Rust backend + React frontend). ~25MB installed, no Pyth
 | UI | React 18 + TypeScript + Tailwind CSS 4 | Vite 6 build |
 | Audio capture | cpal | Native multi-channel input, mono mix, 16kHz resample |
 | VAD | Silero v5.1.2 via whisper-rs | Filters silence before transcription; prevents Whisper hallucination loops |
-| Transcription (primary) | whisper-rs -> whisper.cpp | Metal GPU-accelerated on Apple Silicon |
-| Transcription (alt) | Moonshine via sherpa-rs / ONNX | CPU-only, int8-quantized, ~16ms for 3s audio |
+| Transcription | whisper-rs -> whisper.cpp | Metal GPU-accelerated on Apple Silicon |
 | Text injection | arboard + osascript | Clipboard-first; osascript for auto-paste |
 | Keyboard listening | rdev (git main branch) | Global key events; single background thread |
 | Telemetry | tracing + tracing-subscriber | Structured events: ring buffer, JSONL file, real-time frontend emission |
@@ -39,7 +38,7 @@ invoke('stop_native_recording') --> audio thread joins, samples resampled to 16k
     |
 Silero VAD filters silence (configurable sensitivity 0-100)
     |
-TranscriptionBackend::transcribe() --> whisper.cpp (Metal GPU) or Moonshine (ONNX CPU)
+TranscriptionBackend::transcribe() --> whisper.cpp (Metal GPU)
     |
 injector::inject_text() --> arboard writes to clipboard
     |
@@ -82,7 +81,7 @@ enum DictationStatus { Idle, Recording, Processing }
 
 struct DictationState {
     status: DictationStatus,
-    model_name: String,        // e.g. "base.en", "moonshine-tiny"
+    model_name: String,        // e.g. "base.en"
     language: String,
     auto_paste: bool,
     auto_paste_delay_ms: u64,  // 10-500, default 50
@@ -91,11 +90,11 @@ struct DictationState {
 
 struct AppState {
     dictation: Mutex<DictationState>,
-    backend: Mutex<Box<dyn TranscriptionBackend>>,  // whisper or moonshine
+    backend: Mutex<Box<dyn TranscriptionBackend>>,
 }
 ```
 
-Note: `DictationState::default()` sets `model_name` to `"base.en"`, but the frontend default is `"moonshine-tiny"`. The frontend always calls `configure_dictation` before `initialized` becomes true, so the Rust default is effectively overwritten before any recording can occur. New users start with `moonshine-tiny`.
+`DictationState::default()` and the frontend's `DEFAULT_SETTINGS.model` both use `"base.en"` as the runtime default. The first-launch model downloader pre-selects `"large-v3-turbo"` as the recommended download choice (see `ModelDownloader.tsx`).
 
 ### `audio.rs` -- Audio Capture
 
@@ -103,7 +102,7 @@ Note: `DictationState::default()` sets `model_name` to `"base.en"`, but the fron
 - RMS computed per chunk -> `audio-level` events emitted at ~60fps (throttled via `AtomicU64` to 16ms minimum gap) -> waveform animation in UI
 - Each recording gets a fresh `Arc<Mutex<Vec<f32>>>` buffer -- prevents stale data from previous recordings
 - Stop command sent via channel; thread joins before samples are consumed
-- Linear interpolation resamples captured audio to 16kHz (what Whisper and Moonshine expect)
+- Linear interpolation resamples captured audio to 16kHz (what Whisper expects)
 - Recording state stored in a global `OnceLock<Mutex<RecordingState>>` with command sender, thread handle, shared buffer, sample rate, start timestamp, and device name
 - Initialization handshake: `start_recording` waits up to 5 seconds for the audio thread to signal ready
 - Device name redacted in release build logs
@@ -178,9 +177,9 @@ A heartbeat monitor thread logs trace-level messages every 60 seconds while the 
 - `filter_speech` is `!Send` (WhisperVadContext constraint), must run via `spawn_blocking`
 - VAD context is created and destroyed per transcription (not cached like WhisperState)
 
-### `transcriber/` -- Inference Backends
+### `transcriber/` -- Inference Backend
 
-Both backends implement a shared trait:
+The backend implements a shared trait (kept for future extensibility):
 
 ```rust
 trait TranscriptionBackend: Send + Sync {
@@ -193,7 +192,7 @@ trait TranscriptionBackend: Send + Sync {
 }
 ```
 
-Backend selection is determined by model name prefix: names starting with `"moonshine-"` use MoonshineBackend, everything else uses WhisperBackend. When the model changes across the whisper/moonshine boundary, the entire `Box<dyn TranscriptionBackend>` is replaced. When the model changes within the same backend type, `reset()` is called to force a reload.
+When the model changes, `reset()` is called to force a reload on the next transcription.
 
 **Whisper (`whisper.rs`)**
 - Wraps whisper.cpp via `whisper-rs` with the Metal GPU backend enabled by default
@@ -203,26 +202,17 @@ Backend selection is determined by model name prefix: names starting with `"moon
 - Scans 6 standard paths to find existing model files
 - Suppresses whisper.cpp's verbose stdout via log trampoline (`install_logging_hooks()` called once via `std::sync::Once`)
 
-**Moonshine (`moonshine.rs`)**
-- Wraps sherpa-rs (ONNX runtime), CPU-only, int8-quantized
-- Requires a directory of 5 ONNX files: `preprocess.onnx`, `encode.int8.onnx`, `uncached_decode.int8.onnx`, `cached_decode.int8.onnx`, `tokens.txt`
-- Downloaded as `.tar.bz2` from sherpa-onnx GitHub releases, extracted in-process using pure Rust (`bzip2` + `tar` crates). Partial extractions are cleaned up on failure
-- English-only; ignores the `language` parameter
-- ~16ms latency for 3 seconds of audio on Apple Silicon
-
-**Available Models (7 total)**
+**Available Models (5 total)**
 
 | Model | Backend | Size |
 |-------|---------|------|
-| `moonshine-tiny` | Moonshine (CPU) | ~124 MB |
-| `moonshine-base` | Moonshine (CPU) | ~286 MB |
 | `tiny.en` | Whisper (Metal GPU) | ~75 MB |
 | `base.en` | Whisper (Metal GPU) | ~150 MB |
 | `small.en` | Whisper (Metal GPU) | ~500 MB |
 | `medium.en` | Whisper (Metal GPU) | ~1.5 GB |
 | `large-v3-turbo` | Whisper (Metal GPU) | ~3 GB |
 
-The initial model downloader screen shows a curated subset of 4 models: `moonshine-tiny`, `moonshine-base`, `large-v3-turbo`, `base.en`. Default selection: `moonshine-tiny`.
+The initial model downloader screen shows a curated subset of 2 models: `large-v3-turbo` and `base.en`. Default selection: `large-v3-turbo`.
 
 ### `injector.rs` -- Text Injection
 
@@ -271,9 +261,9 @@ The initial model downloader screen shows a curated subset of 4 models: `moonshi
 
 ### `commands/models.rs` -- Model Downloads
 
-- `check_model_exists`: checks both the currently configured backend AND the other backend type, so the download screen does not appear if any model is installed
+- `check_model_exists`: checks whether a model exists for the configured backend
 - `check_specific_model_exists`: verifies a named model exists on disk. Includes path traversal protection (rejects `..`, `/`, `\` in model names)
-- `download_model`: streaming download with progress events. Whisper models download as single `.bin` files from Hugging Face. Moonshine models download as `.tar.bz2` archives from sherpa-onnx GitHub releases, extracted via `bzip2` + `tar` on a blocking thread
+- `download_model`: streaming download with progress events. Whisper models download as single `.bin` files from Hugging Face
 - **VAD model co-download**: when downloading any transcription model, the Silero VAD model (`ggml-silero-v5.1.2.bin`, ~1.8MB) is automatically co-downloaded if not already present. VAD download failure is non-fatal
 - **Lazy VAD download**: `ensure_vad_model` is a fallback for users who upgrade from a pre-VAD version. If the VAD model is missing at transcription time, a silent background download is kicked off for next time (no UI side effects)
 - All downloads use a temp-file-then-rename pattern for atomicity. Partial downloads never appear as valid models
@@ -365,7 +355,7 @@ useCombinedToggle({ enabled: settings.recordingMode === 'both', ... });
 
 ```typescript
 interface Settings {
-    model: ModelOption;         // default: 'moonshine-tiny'
+    model: ModelOption;         // default: 'base.en'
     doubleTapKey: DoubleTapKey; // default: 'shift_l'
     language: string;           // default: 'en'
     autoPaste: boolean;         // default: false
@@ -511,7 +501,7 @@ All models, logs, and event data are stored under:
 ```
 
 This is a legacy name from before the app was renamed to Murmur. Contents:
-- `models/` -- Whisper GGML `.bin` files, Moonshine ONNX directories, Silero VAD model
+- `models/` -- Whisper GGML `.bin` files, Silero VAD model
 - `logs/` -- `app.log` / `app.dev.log` (pretty-printed), `events.jsonl` / `events.dev.jsonl` (structured)
 
 ---
@@ -572,7 +562,7 @@ Plus Tokio async tasks for VAD (`spawn_blocking`), downloads, and text injection
 | Decision | Rationale |
 |----------|-----------|
 | Pure Rust backend | No Python subprocess; faster startup, smaller bundle, no dependency hell |
-| Pluggable `TranscriptionBackend` trait | Whisper and Moonshine swap cleanly; same pipeline code |
+| Pluggable `TranscriptionBackend` trait | Clean abstraction for future backends; same pipeline code |
 | Lazy model loading + WhisperState caching | Fast app startup; GPU buffers allocated once, reused across transcriptions |
 | VAD pre-filtering | Prevents Whisper hallucination loops on silence; skips unnecessary inference |
 | Clipboard-first injection | Reliable across all apps; auto-paste layered on top |

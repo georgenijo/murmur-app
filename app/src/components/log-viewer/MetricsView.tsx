@@ -465,7 +465,7 @@ export function MetricsView({ events, resourceReadings }: MetricsViewProps) {
               series={[{ key: 'heap', color: HEAP_COLOR, values: heapValues }]}
             />
             <LiveChart
-              label={"FFI Heap — whisper.cpp / sherpa-onnx / C libs"}
+              label={"FFI Heap — whisper.cpp / C libs"}
               height={160}
               series={[{ key: 'ffi', color: EXTERNAL_COLOR, values: ffiValues }]}
             />

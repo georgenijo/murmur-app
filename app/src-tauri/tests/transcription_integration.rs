@@ -7,7 +7,7 @@
 //! Run: cd app/src-tauri && cargo test --test transcription_integration -- --test-threads=1
 
 use ui_lib::transcriber::{
-    parse_wav_to_samples, MoonshineBackend, TranscriptionBackend, WhisperBackend,
+    parse_wav_to_samples, TranscriptionBackend, WhisperBackend,
 };
 
 /// Generate a 2-second 16kHz mono 16-bit PCM WAV containing a 440Hz sine tone.
@@ -76,26 +76,6 @@ fn whisper_backend_roundtrip() {
     backend
         .load_model(&model)
         .expect("failed to load whisper model");
-
-    let wav_bytes = make_sine_wav_bytes();
-    let samples = parse_wav_to_samples(&wav_bytes).expect("failed to parse WAV");
-
-    let result = backend.transcribe(&samples, "en");
-    assert!(result.is_ok(), "transcription failed: {:?}", result.err());
-}
-
-#[test]
-fn moonshine_backend_roundtrip() {
-    let mut backend = MoonshineBackend::new();
-
-    if !backend.model_exists() {
-        eprintln!("SKIPPED: no moonshine model found on disk");
-        return;
-    }
-
-    backend
-        .load_model("moonshine-tiny")
-        .expect("failed to load moonshine model");
 
     let wav_bytes = make_sine_wav_bytes();
     let samples = parse_wav_to_samples(&wav_bytes).expect("failed to parse WAV");

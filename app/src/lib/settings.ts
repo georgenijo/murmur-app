@@ -17,28 +17,21 @@ export interface Settings {
 }
 
 export type ModelOption =
-  | 'moonshine-tiny'
-  | 'moonshine-base'
   | 'tiny.en'
   | 'base.en'
   | 'small.en'
   | 'medium.en'
   | 'large-v3-turbo';
 
-export type TranscriptionBackend = 'whisper' | 'moonshine';
+export type TranscriptionBackend = 'whisper';
 
 export const MODEL_OPTIONS: { value: ModelOption; label: string; size: string; backend: TranscriptionBackend }[] = [
-  { value: 'moonshine-tiny', label: 'Moonshine Tiny (Fastest)', size: '~124 MB', backend: 'moonshine' },
-  { value: 'moonshine-base', label: 'Moonshine Base', size: '~286 MB', backend: 'moonshine' },
   { value: 'tiny.en', label: 'Whisper Tiny (English)', size: '~75 MB', backend: 'whisper' },
   { value: 'base.en', label: 'Whisper Base (English)', size: '~150 MB', backend: 'whisper' },
   { value: 'small.en', label: 'Whisper Small (English)', size: '~500 MB', backend: 'whisper' },
   { value: 'medium.en', label: 'Whisper Medium (English)', size: '~1.5 GB', backend: 'whisper' },
   { value: 'large-v3-turbo', label: 'Whisper Large Turbo', size: '~3 GB', backend: 'whisper' },
 ];
-
-export const MOONSHINE_MODELS = MODEL_OPTIONS.filter(m => m.backend === 'moonshine');
-export const WHISPER_MODELS = MODEL_OPTIONS.filter(m => m.backend === 'whisper');
 
 export const DOUBLE_TAP_KEY_OPTIONS: { value: DoubleTapKey; label: string }[] = [
   { value: 'shift_l', label: 'Shift' },
@@ -59,7 +52,7 @@ export const IDLE_TIMEOUT_OPTIONS: { value: number; label: string }[] = [
 ];
 
 export const DEFAULT_SETTINGS: Settings = {
-  model: 'moonshine-tiny',
+  model: 'base.en',
   doubleTapKey: 'shift_l',
   language: 'en',
   autoPaste: false,
@@ -88,6 +81,12 @@ export function loadSettings(): Settings {
 
       // Remove legacy hotkey field if present
       delete parsed.hotkey;
+
+      // Validate model against current allow-list (includes Moonshine migration)
+      const validModels = new Set<string>(MODEL_OPTIONS.map((m) => m.value));
+      if (typeof parsed.model !== 'string' || !validModels.has(parsed.model)) {
+        parsed.model = DEFAULT_SETTINGS.model;
+      }
 
       return { ...DEFAULT_SETTINGS, ...parsed } as Settings;
     }

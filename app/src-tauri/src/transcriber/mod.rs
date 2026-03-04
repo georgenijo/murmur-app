@@ -1,7 +1,5 @@
 pub mod whisper;
-pub mod moonshine;
 
-pub use moonshine::MoonshineBackend;
 pub use whisper::WhisperBackend;
 
 use hound::{SampleFormat, WavReader};
@@ -11,9 +9,9 @@ use std::path::PathBuf;
 /// Sample rate required by transcription models (16kHz).
 pub const WHISPER_SAMPLE_RATE: u32 = 16000;
 
-/// Abstraction over transcription engines (whisper, moonshine, etc.)
+/// Abstraction over transcription engines (whisper, etc.)
 pub trait TranscriptionBackend: Send + Sync {
-    /// Human-readable backend name (e.g., "whisper", "moonshine")
+    /// Human-readable backend name (e.g., "whisper")
     #[allow(dead_code)]
     fn name(&self) -> &str;
 
@@ -34,11 +32,6 @@ pub trait TranscriptionBackend: Send + Sync {
 
     /// Reset loaded model so next transcription triggers a reload.
     fn reset(&mut self);
-}
-
-/// Returns true if the model name refers to a Moonshine backend.
-pub fn is_moonshine_model(model_name: &str) -> bool {
-    model_name.starts_with("moonshine-")
 }
 
 /// Parse WAV audio bytes and convert to f32 samples for transcription.
@@ -152,11 +145,4 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[test]
-    fn is_moonshine_model_classification() {
-        assert!(is_moonshine_model("moonshine-tiny"));
-        assert!(is_moonshine_model("moonshine-base"));
-        assert!(!is_moonshine_model("base.en"));
-        assert!(!is_moonshine_model("large-v3-turbo"));
-    }
 }
