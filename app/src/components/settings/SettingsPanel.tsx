@@ -52,7 +52,9 @@ function CustomVocabularyTextarea({ value, onCommit, showMoonshineWarning }: { v
   useEffect(() => {
     if (!draft.trim()) { setTokenCount(null); return; }
     let stale = false;
-    countVocabTokens(draft).then((count) => { if (!stale) setTokenCount(count); });
+    countVocabTokens(draft)
+      .then((count) => { if (!stale) setTokenCount(count); })
+      .catch(() => { if (!stale) setTokenCount(null); });
     return () => { stale = true; };
   }, [draft]);
 
@@ -77,8 +79,8 @@ function CustomVocabularyTextarea({ value, onCommit, showMoonshineWarning }: { v
         <p className="text-xs text-stone-500 dark:text-stone-400">
           Comma-separated. Whisper models only.
         </p>
-        {draft.length > 0 && (() => {
-          const displayCount = tokenCount ?? Math.ceil(draft.length / 4);
+        {draft.trim().length > 0 && (() => {
+          const displayCount = tokenCount ?? Math.ceil(draft.trim().length / 4);
           const isEstimate = tokenCount === null;
           return (
             <span className={`text-xs tabular-nums whitespace-nowrap ${displayCount > 200 ? 'text-amber-600 dark:text-amber-400' : 'text-stone-400 dark:text-stone-500'}`}>

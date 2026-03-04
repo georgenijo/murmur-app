@@ -140,10 +140,11 @@ async fn run_transcription_pipeline(
     let rss_before_mb = crate::resource_monitor::get_process_rss_mb();
     let t_transcribe = std::time::Instant::now();
     let text = {
-        let prompt = if custom_vocabulary.is_empty() {
+        let sanitized = custom_vocabulary.replace('\0', "");
+        let prompt = if sanitized.trim().is_empty() {
             None
         } else {
-            Some(custom_vocabulary.replace('\0', ""))
+            Some(sanitized)
         };
         let mut backend = app_state.backend.lock_or_recover();
         backend.load_model(&model_name)?;
