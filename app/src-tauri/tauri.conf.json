@@ -65,7 +65,8 @@
     "macOS": {
       "entitlements": "./entitlements.plist",
       "exceptionDomain": "",
-      "infoPlist": "./macos/Info.plist"
+      "infoPlist": "./macos/Info.plist",
+      "minimumSystemVersion": "13.0"
     },
     "createUpdaterArtifacts": true
   },
