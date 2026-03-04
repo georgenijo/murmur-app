@@ -52,6 +52,18 @@ jobs:
       - name: Install frontend dependencies
         run: cd app && npm ci
 
+      - name: Locate clang runtime for ggml-metal symbol resolution
+        run: |
+          CLANG_RT=$(find /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang \
+            -name "libclang_rt.osx.a" 2>/dev/null | sort -V | tail -1)
+          if [ -z "$CLANG_RT" ]; then
+            echo "ERROR: libclang_rt.osx.a not found"
+            find /Applications/Xcode.app/Contents/Developer/Toolchains -name "libclang_rt*.a" 2>/dev/null | head -10
+            exit 1
+          fi
+          echo "Found: $CLANG_RT"
+          echo "RUSTFLAGS=-C link-arg=$CLANG_RT" >> $GITHUB_ENV
+
       - name: Build, sign, and notarize
         id: tauri-build
         uses: tauri-apps/tauri-action@v0
