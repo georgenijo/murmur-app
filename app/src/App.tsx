@@ -139,7 +139,7 @@ function App() {
       <StatsBar statsVersion={combinedStatsVersion} />
 
       <div className="flex-1 flex overflow-hidden">
-        <main className="flex-1 flex flex-col overflow-hidden p-4 gap-4">
+        <main className="flex-1 flex flex-col overflow-hidden p-5 gap-4">
           <TranscriptionView
             historyEntries={historyEntries}
             onClearHistory={clearHistory}
