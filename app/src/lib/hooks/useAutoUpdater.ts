@@ -39,6 +39,7 @@ export function useAutoUpdater(): UseAutoUpdaterReturn {
     isCheckingRef.current = true;
 
     if (!opts.isBackground) {
+      clearSkippedVersion();
       setUpdateStatus({ phase: 'checking' });
     }
 
@@ -126,7 +127,6 @@ export function useAutoUpdater(): UseAutoUpdaterReturn {
   }, [performCheck]);
 
   const checkForUpdate = useCallback(async () => {
-    clearSkippedVersion();
     await performCheck({ isBackground: false });
   }, [performCheck]);
 
