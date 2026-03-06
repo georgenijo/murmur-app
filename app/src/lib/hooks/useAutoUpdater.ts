@@ -39,6 +39,7 @@ export function useAutoUpdater(): UseAutoUpdaterReturn {
     isCheckingRef.current = true;
 
     if (!opts.isBackground) {
+      clearSkippedVersion();
       setUpdateStatus({ phase: 'checking' });
     }
 
@@ -67,6 +68,9 @@ export function useAutoUpdater(): UseAutoUpdaterReturn {
       // If not forced and user previously skipped this version, suppress
       if (!isForced && getSkippedVersion() === update.version) {
         flog.info('updater', 'user skipped this version', { version: update.version });
+        if (!opts.isBackground) {
+          setUpdateStatus({ phase: 'idle' });
+        }
         isCheckingRef.current = false;
         return;
       }
