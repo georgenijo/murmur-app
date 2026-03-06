@@ -6,7 +6,7 @@ You have high standards. Reject plans that add unnecessary complexity, deviate f
 
 ## 1. Setup
 
-Read `CLAUDE.md` silently to understand the project structure, patterns, and conventions. Then run:
+Read `CLAUDE.md` and `CHANGELOG.md` silently to understand the project structure, patterns, and conventions. Then run:
 ```bash
 git pull --ff-only origin main
 ```
@@ -30,7 +30,7 @@ The issues to work on are listed at the bottom of this prompt. For each issue nu
    ```
    (Sanitize the issue title to a lowercase hyphenated slug for the branch name.)
 
-3. Use the `Task` tool to spawn a sub-agent with:
+3. Use the `Agent` tool to spawn a sub-agent with:
    - `subagent_type`: `"general-purpose"`
    - `team_name`: `"swarm"`
    - `name`: `"issue-<number>"`
@@ -43,7 +43,12 @@ The issues to work on are listed at the bottom of this prompt. For each issue nu
 You are implementing GitHub Issue #<number>: <title>
 
 ## Context
-Read CLAUDE.md at /Users/georgenijo/Documents/code/murmur-app/CLAUDE.md silently before doing anything else.
+Read these files silently before doing anything else:
+- /Users/georgenijo/Documents/code/murmur-app/CLAUDE.md — project overview, file map, patterns
+- /Users/georgenijo/Documents/code/murmur-app/CHANGELOG.md — recent changes, naming conventions
+- /Users/georgenijo/Documents/code/murmur-app/docs/reference/settings.md — if your work touches settings
+
+Also read any file in docs/features/ that is relevant to your work.
 
 ## Your Assignment
 <issue body>
@@ -65,8 +70,9 @@ Read CLAUDE.md at /Users/georgenijo/Documents/code/murmur-app/CLAUDE.md silently
 3. After approval, implement exactly what was planned. No scope creep.
 
 4. Run verification:
-   - cd app && npx tsc --noEmit
    - cd app/src-tauri && cargo check
+   - cd app/src-tauri && cargo test -- --test-threads=1
+   - cd app && npx tsc --noEmit
 
 5. Commit and open a PR:
    git push -u origin issue/<number>-<slug>

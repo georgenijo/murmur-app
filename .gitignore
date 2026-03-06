@@ -52,5 +52,8 @@ PROJECT_SUMMARY.md
 # Claude Code generated session files
 .claude/
 
+# Omen MCP cache
+.omen/
+
 # Scripts
 agents.sh

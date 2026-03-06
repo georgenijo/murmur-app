@@ -1,11 +1,12 @@
 # Agent Startup — Bug Fix Mode
 
-You are starting a new session on the Local Dictation project in bug-fix mode. Follow these steps exactly and in order.
+You are starting a new session on the Murmur project in bug-fix mode. Follow these steps exactly and in order.
 
 ## 1. Load Context
 
 Read these files silently:
 - `CLAUDE.md` — project overview, file map, key patterns (may already be loaded)
+- `CHANGELOG.md` — version history, recent changes
 - `docs/onboarding.md` — setup, permissions, models, logs
 
 ## 2. Health Check (silent)
@@ -28,9 +29,16 @@ From the results, pick the open issue with the highest priority label (p1 > p2 >
 gh issue view <number> --json title,body --repo georgenijo/murmur-app
 ```
 
-Use the issue body as the full bug spec.
+Use the issue body as the full bug spec. If any file in `docs/features/` is relevant to the bug, read that too.
 
-## 4. Present Your Plan
+## 4. Create Branch
+
+Create a branch for the fix:
+```bash
+git checkout -b fix/<number>-<short-slug>
+```
+
+## 5. Present Your Plan
 
 Tell me:
 - Which bug you're fixing (issue number + name, one-line description)
@@ -39,3 +47,26 @@ Tell me:
 Then ask: **"Confirm to proceed?"**
 
 Do not write any code until I confirm.
+
+## 6. Implement
+
+After confirmation, implement the fix. Stay focused — fix the bug, nothing else.
+
+## 7. Verify
+
+Run all of these before committing:
+- `cd app/src-tauri && cargo check` — no compile errors or warnings
+- `cd app/src-tauri && cargo test -- --test-threads=1` — all unit tests pass
+- `cd app && npx tsc --noEmit` — no TypeScript errors
+
+If any check fails, fix the issue before proceeding.
+
+## 8. Commit and PR
+
+1. Stage and commit with a conventional commit message (`fix: <description>`)
+2. Push the branch: `git push -u origin fix/<number>-<short-slug>`
+3. Open a PR:
+   ```bash
+   gh pr create --title "fix: <concise description>" --body "Closes #<issue-number>" --repo georgenijo/murmur-app
+   ```
+4. Report the PR URL.

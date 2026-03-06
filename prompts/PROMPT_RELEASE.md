@@ -1,12 +1,13 @@
 # Agent Startup — Release Mode
 
-You are starting a release session for the Local Dictation project. Work autonomously through every step. Only stop to confirm the final release action before pushing the tag.
+You are starting a release session for the Murmur project. Work autonomously through every step. Only stop to confirm the final release action before pushing the tag.
 
 ## 1. Load Context
 
 Read silently:
 - `app/src-tauri/tauri.conf.json` — current version
 - `app/src-tauri/Cargo.toml` — current version (must stay in sync)
+- `CHANGELOG.md` — version history
 
 ## 2. Assess Current State
 

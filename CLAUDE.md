@@ -83,6 +83,10 @@ Read these before working on a feature:
 - **Mutex poison recovery**: `MutexExt` trait recovers from panics
 - **rdev thread safety**: `set_is_main_thread(false)` before `listen()` — prevents macOS TIS/TSM segfault
 
+## MCP Tools
+
+- **Playwright** (`@playwright/mcp`): Browser automation for UI work. When making frontend/UI changes, use `browser_navigate` to `http://localhost:1420` and `browser_take_screenshot` to visually verify your changes. Requires `npm run tauri dev` to be running. Screenshots return inline as images — evaluate them and iterate until the UI looks right.
+
 ## Dependencies
 
 - **Rust**: tauri 2, whisper-rs (Metal), cpal, arboard, hound, rdev (git main branch)
