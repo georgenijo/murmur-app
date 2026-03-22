@@ -95,7 +95,59 @@ mod cpu {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
+mod cpu {
+    struct CpuSnapshot {
+        user: u64,
+        nice: u64,
+        system: u64,
+        idle: u64,
+        iowait: u64,
+    }
+
+    fn snapshot() -> Option<CpuSnapshot> {
+        let contents = std::fs::read_to_string("/proc/stat").ok()?;
+        let line = contents.lines().next()?;
+        let mut parts = line.split_whitespace();
+        if parts.next()? != "cpu" {
+            return None;
+        }
+        Some(CpuSnapshot {
+            user: parts.next()?.parse().ok()?,
+            nice: parts.next()?.parse().ok()?,
+            system: parts.next()?.parse().ok()?,
+            idle: parts.next()?.parse().ok()?,
+            iowait: parts.next()?.parse().unwrap_or(0),
+        })
+    }
+
+    static PREV: std::sync::Mutex<Option<CpuSnapshot>> = std::sync::Mutex::new(None);
+
+    pub fn cpu_percent() -> f32 {
+        let cur = match snapshot() {
+            Some(s) => s,
+            None => return 0.0,
+        };
+        let mut prev = PREV.lock().unwrap_or_else(|p| p.into_inner());
+        let pct = if let Some(ref p) = *prev {
+            let d_user = cur.user.wrapping_sub(p.user) + cur.nice.wrapping_sub(p.nice);
+            let d_sys = cur.system.wrapping_sub(p.system);
+            let d_idle = cur.idle.wrapping_sub(p.idle) + cur.iowait.wrapping_sub(p.iowait);
+            let total = d_user + d_sys + d_idle;
+            if total > 0 {
+                ((d_user + d_sys) as f64 / total as f64 * 100.0) as f32
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        };
+        *prev = Some(cur);
+        pct
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 mod cpu {
     pub fn cpu_percent() -> f32 { 0.0 }
 }
