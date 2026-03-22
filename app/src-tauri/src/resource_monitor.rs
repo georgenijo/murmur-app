@@ -103,6 +103,9 @@ mod cpu {
         system: u64,
         idle: u64,
         iowait: u64,
+        irq: u64,
+        softirq: u64,
+        steal: u64,
     }
 
     fn snapshot() -> Option<CpuSnapshot> {
@@ -118,6 +121,9 @@ mod cpu {
             system: parts.next()?.parse().ok()?,
             idle: parts.next()?.parse().ok()?,
             iowait: parts.next()?.parse().unwrap_or(0),
+            irq: parts.next()?.parse().unwrap_or(0),
+            softirq: parts.next()?.parse().unwrap_or(0),
+            steal: parts.next()?.parse().unwrap_or(0),
         })
     }
 
@@ -131,7 +137,10 @@ mod cpu {
         let mut prev = PREV.lock().unwrap_or_else(|p| p.into_inner());
         let pct = if let Some(ref p) = *prev {
             let d_user = cur.user.wrapping_sub(p.user) + cur.nice.wrapping_sub(p.nice);
-            let d_sys = cur.system.wrapping_sub(p.system);
+            let d_sys = cur.system.wrapping_sub(p.system)
+                + cur.irq.wrapping_sub(p.irq)
+                + cur.softirq.wrapping_sub(p.softirq)
+                + cur.steal.wrapping_sub(p.steal);
             let d_idle = cur.idle.wrapping_sub(p.idle) + cur.iowait.wrapping_sub(p.iowait);
             let total = d_user + d_sys + d_idle;
             if total > 0 {
