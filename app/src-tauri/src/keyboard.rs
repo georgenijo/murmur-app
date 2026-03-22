@@ -12,7 +12,9 @@
 //!
 //! Both modes reject modifier+letter combos (e.g. Shift+A).
 
-use rdev::{listen, set_is_main_thread, Event, EventType, Key};
+use rdev::{listen, Event, EventType, Key};
+#[cfg(target_os = "macos")]
+use rdev::set_is_main_thread;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
@@ -473,6 +475,7 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
             // run on the main thread on macOS. This flag tells rdev to dispatch
             // those calls to the main queue via dispatch_sync instead of calling
             // them directly from this background thread.
+            #[cfg(target_os = "macos")]
             set_is_main_thread(false);
             tracing::info!(target: "keyboard", "rdev listener thread started");
 

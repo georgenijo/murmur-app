@@ -27,30 +27,41 @@ pub fn inject_text(text: &str, auto_paste: bool, delay_ms: u64) -> Result<(), St
         return Ok(());
     }
 
-    // Check accessibility permission before attempting paste simulation
-    if !is_accessibility_enabled() {
-        // Don't error - text is in clipboard, user can paste manually
-        tracing::warn!(target: "pipeline", "inject_text: accessibility permission not granted — text in clipboard only");
+    // Auto-paste is macOS-only for now (uses osascript). Follow-up: xdotool on Linux.
+    #[cfg(not(target_os = "macos"))]
+    {
+        tracing::info!(target: "pipeline", "inject_text: auto-paste not yet supported on this platform — text in clipboard only");
         return Ok(());
     }
 
-    // Wait for window focus to settle (clipboard write via NSPasteboard is synchronous)
-    thread::sleep(Duration::from_millis(delay_ms));
+    #[cfg(target_os = "macos")]
+    {
+        // Check accessibility permission before attempting paste simulation
+        if !is_accessibility_enabled() {
+            // Don't error - text is in clipboard, user can paste manually
+            tracing::warn!(target: "pipeline", "inject_text: accessibility permission not granted — text in clipboard only");
+            return Ok(());
+        }
 
-    // Simulate Cmd+V paste, retry once on failure
-    match simulate_paste() {
-        Ok(()) => Ok(()),
-        Err(first_err) => {
-            tracing::warn!(target: "pipeline", "inject_text: first paste attempt failed: {}, retrying in 100ms", first_err);
-            thread::sleep(Duration::from_millis(100));
-            simulate_paste().map_err(|retry_err| {
-                format!("Auto-paste failed after retry: {}", retry_err)
-            })
+        // Wait for window focus to settle (clipboard write via NSPasteboard is synchronous)
+        thread::sleep(Duration::from_millis(delay_ms));
+
+        // Simulate Cmd+V paste, retry once on failure
+        match simulate_paste() {
+            Ok(()) => Ok(()),
+            Err(first_err) => {
+                tracing::warn!(target: "pipeline", "inject_text: first paste attempt failed: {}, retrying in 100ms", first_err);
+                thread::sleep(Duration::from_millis(100));
+                simulate_paste().map_err(|retry_err| {
+                    format!("Auto-paste failed after retry: {}", retry_err)
+                })
+            }
         }
     }
 }
 
 /// Simulate Cmd+V keystroke using osascript (most reliable on macOS Sonoma/Sequoia)
+#[cfg(target_os = "macos")]
 fn simulate_paste() -> Result<(), String> {
     use std::process::Command;
 
