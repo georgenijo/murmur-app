@@ -120,10 +120,10 @@ mod cpu {
             nice: parts.next()?.parse().ok()?,
             system: parts.next()?.parse().ok()?,
             idle: parts.next()?.parse().ok()?,
-            iowait: parts.next()?.parse().unwrap_or(0),
-            irq: parts.next()?.parse().unwrap_or(0),
-            softirq: parts.next()?.parse().unwrap_or(0),
-            steal: parts.next()?.parse().unwrap_or(0),
+            iowait: parts.next().and_then(|s| s.parse().ok()).unwrap_or(0),
+            irq: parts.next().and_then(|s| s.parse().ok()).unwrap_or(0),
+            softirq: parts.next().and_then(|s| s.parse().ok()).unwrap_or(0),
+            steal: parts.next().and_then(|s| s.parse().ok()).unwrap_or(0),
         })
     }
 
