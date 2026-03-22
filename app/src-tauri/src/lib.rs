@@ -145,6 +145,8 @@ pub fn run() {
             // Re-enable mouse events on the overlay window.
             // focusable:false sets ignoresMouseEvents=true on macOS;
             // we override that while keeping the window non-activating.
+            // On Linux, skip the overlay — it's designed for the macOS notch.
+            #[cfg(target_os = "macos")]
             if let Some(overlay_win) = app.get_webview_window("overlay") {
                 tracing::info!(target: "system", "setup: overlay window found, enabling cursor events");
                 commands::overlay::position_overlay_default(&overlay_win, notch);

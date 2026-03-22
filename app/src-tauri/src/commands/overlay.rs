@@ -3,7 +3,9 @@ use crate::{MutexExt, State};
 use tauri::Emitter;
 use tauri::Manager;
 
+#[cfg(target_os = "macos")]
 const NOTCH_EXPAND: f64 = 120.0; // 60px expansion room on each side
+#[cfg(target_os = "macos")]
 const FALLBACK_OVERLAY_W: f64 = 200.0;
 
 #[derive(serde::Serialize, Clone)]
@@ -108,12 +110,10 @@ fn raise_window_above_menubar(overlay: &tauri::WebviewWindow) {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
-fn raise_window_above_menubar(_overlay: &tauri::WebviewWindow) {}
-
 /// Position and size the overlay to match the notch, anchored at the top of the screen.
 /// The window is notch-height tall and wide enough for horizontal expansion.
 /// Takes cached notch_info to avoid calling NSScreen APIs off the main thread.
+#[cfg(target_os = "macos")]
 pub(crate) fn position_overlay_default(overlay: &tauri::WebviewWindow, notch_info: Option<(f64, f64)>) {
     let overlay_w = notch_info.map(|(w, _)| w + NOTCH_EXPAND).unwrap_or(FALLBACK_OVERLAY_W);
     let overlay_h = notch_info.map(|(_, h)| h).unwrap_or(37.0);
@@ -147,21 +147,29 @@ pub fn get_notch_info(state: tauri::State<'_, State>) -> Option<NotchInfo> {
     state.notch_info.lock_or_recover().map(|(w, h)| NotchInfo { notch_width: w, notch_height: h })
 }
 
-/// Show the always-on-top overlay window.
+/// Show the always-on-top overlay window (macOS notch overlay; no-op on Linux).
 #[tauri::command]
 pub fn show_overlay(app: tauri::AppHandle, state: tauri::State<'_, State>) -> Result<(), String> {
-    let notch = *state.notch_info.lock_or_recover();
-    match app.get_webview_window("overlay") {
-        Some(overlay) => {
-            position_overlay_default(&overlay, notch);
-            overlay.show().map_err(|e| e.to_string())?;
-            // Re-enable mouse events (focusable:false disables them on macOS)
-            let _ = overlay.set_ignore_cursor_events(false);
-            Ok(())
-        }
-        None => {
-            tracing::warn!(target: "system", "show_overlay: overlay window not found — skipping");
-            Ok(())
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (&app, &state);
+        return Ok(());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let notch = *state.notch_info.lock_or_recover();
+        match app.get_webview_window("overlay") {
+            Some(overlay) => {
+                position_overlay_default(&overlay, notch);
+                overlay.show().map_err(|e| e.to_string())?;
+                let _ = overlay.set_ignore_cursor_events(false);
+                Ok(())
+            }
+            None => {
+                tracing::warn!(target: "system", "show_overlay: overlay window not found — skipping");
+                Ok(())
+            }
         }
     }
 }
