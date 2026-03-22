@@ -1,6 +1,4 @@
 use arboard::Clipboard;
-use std::thread;
-use std::time::Duration;
 
 /// Copy text to clipboard and optionally simulate Cmd+V paste.
 /// `delay_ms` controls the pause before pasting (window focus settling).
@@ -27,30 +25,35 @@ pub fn inject_text(text: &str, auto_paste: bool, delay_ms: u64) -> Result<(), St
         return Ok(());
     }
 
-    // Check accessibility permission before attempting paste simulation
-    if !is_accessibility_enabled() {
-        // Don't error - text is in clipboard, user can paste manually
-        tracing::warn!(target: "pipeline", "inject_text: accessibility permission not granted — text in clipboard only");
-        return Ok(());
-    }
+    {
+        use std::thread;
+        use std::time::Duration;
 
-    // Wait for window focus to settle (clipboard write via NSPasteboard is synchronous)
-    thread::sleep(Duration::from_millis(delay_ms));
+        // Check accessibility permission before attempting paste simulation (macOS only)
+        if !is_accessibility_enabled() {
+            tracing::warn!(target: "pipeline", "inject_text: accessibility permission not granted — text in clipboard only");
+            return Ok(());
+        }
 
-    // Simulate Cmd+V paste, retry once on failure
-    match simulate_paste() {
-        Ok(()) => Ok(()),
-        Err(first_err) => {
-            tracing::warn!(target: "pipeline", "inject_text: first paste attempt failed: {}, retrying in 100ms", first_err);
-            thread::sleep(Duration::from_millis(100));
-            simulate_paste().map_err(|retry_err| {
-                format!("Auto-paste failed after retry: {}", retry_err)
-            })
+        // Wait for window focus to settle
+        thread::sleep(Duration::from_millis(delay_ms));
+
+        // Simulate paste keystroke, retry once on failure
+        match simulate_paste() {
+            Ok(()) => Ok(()),
+            Err(first_err) => {
+                tracing::warn!(target: "pipeline", "inject_text: first paste attempt failed: {}, retrying in 100ms", first_err);
+                thread::sleep(Duration::from_millis(100));
+                simulate_paste().map_err(|retry_err| {
+                    format!("Auto-paste failed after retry: {}", retry_err)
+                })
+            }
         }
     }
 }
 
 /// Simulate Cmd+V keystroke using osascript (most reliable on macOS Sonoma/Sequoia)
+#[cfg(target_os = "macos")]
 fn simulate_paste() -> Result<(), String> {
     use std::process::Command;
 
@@ -68,6 +71,27 @@ fn simulate_paste() -> Result<(), String> {
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
         Err(format!("osascript failed: {}", stderr))
+    }
+}
+
+/// Simulate Ctrl+V keystroke using xdotool (X11)
+#[cfg(target_os = "linux")]
+fn simulate_paste() -> Result<(), String> {
+    use std::process::Command;
+
+    tracing::info!(target: "pipeline", "simulate_paste: using xdotool to simulate Ctrl+V");
+
+    let output = Command::new("xdotool")
+        .args(["key", "ctrl+shift+v"])
+        .output()
+        .map_err(|e| format!("Failed to run xdotool: {}", e))?;
+
+    if output.status.success() {
+        tracing::info!(target: "pipeline", "simulate_paste: completed successfully");
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("xdotool failed: {}", stderr))
     }
 }
 

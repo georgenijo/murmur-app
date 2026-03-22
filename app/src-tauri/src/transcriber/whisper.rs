@@ -115,6 +115,16 @@ impl TranscriptionBackend for WhisperBackend {
             .ok_or_else(|| "Model path contains invalid UTF-8 characters".to_string())?;
 
         let params = WhisperContextParameters::default();
+
+        let gpu_backend = if cfg!(target_os = "macos") {
+            "metal"
+        } else if cfg!(target_os = "linux") && std::path::Path::new("/dev/nvidia0").exists() {
+            "cuda"
+        } else {
+            "cpu"
+        };
+        tracing::info!(target: "pipeline", model = model_name, gpu = gpu_backend, "whisper_model_loading");
+
         let ctx = WhisperContext::new_with_params(path_str, params)
             .map_err(|e| format!("Failed to load whisper model: {}", e))?;
 
@@ -125,7 +135,7 @@ impl TranscriptionBackend for WhisperBackend {
         self.state = Some(state);
         self.loaded_model_name = Some(model_name.to_string());
         let rss = crate::resource_monitor::get_process_rss_mb();
-        tracing::info!(target: "pipeline", rss_mb = rss, "whisper_cache_miss");
+        tracing::info!(target: "pipeline", rss_mb = rss, gpu = gpu_backend, "whisper_cache_miss");
         Ok(())
     }
 

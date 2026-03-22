@@ -26,7 +26,7 @@ jobs:
       - name: Unit tests
         run: cd app && npm test
 
-  rust:
+  rust-macos:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -51,4 +51,40 @@ jobs:
           MACOSX_DEPLOYMENT_TARGET: "11.0"
           CMAKE_C_FLAGS: "-march=armv8.5-a"
           CMAKE_CXX_FLAGS: "-march=armv8.5-a"
+        run: cd app/src-tauri && cargo test --lib -- --test-threads=1
+
+  rust-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libxdo-dev \
+            libasound2-dev
+
+      - name: Install CUDA toolkit
+        uses: Jimver/cuda-toolkit@v0.2.21
+        with:
+          cuda: '12.8.0'
+          method: 'network'
+
+      - name: Cache Rust dependencies
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+
+      - name: Compile check
+        run: cd app/src-tauri && cargo check
+
+      - name: Run tests
         run: cd app/src-tauri && cargo test --lib -- --test-threads=1

@@ -26,7 +26,7 @@ jobs:
       - name: Unit tests
         run: cd app && npm test
 
-  release:
+  release-macos:
     needs: [typecheck]
     runs-on: macos-latest
     permissions:
@@ -117,6 +117,147 @@ jobs:
           kill "$PID" 2>/dev/null || true
           wait "$PID" 2>/dev/null || true
 
+      - name: Collect updater artifact info
+        run: |
+          ARTIFACTS='${{ steps.tauri-build.outputs.artifactPaths }}'
+          TAR_GZ_FILE=$(echo "$ARTIFACTS" | jq -r '.[]' | grep '\.app\.tar\.gz$' | head -1)
+          TAR_GZ_BASENAME=$(basename "$TAR_GZ_FILE")
+          RUNNER_ARCH=$(uname -m)
+          [ "$RUNNER_ARCH" = "arm64" ] && RUNNER_ARCH="aarch64"
+
+          SIG_FILE="${TAR_GZ_FILE}.sig"
+          SIGNATURE=""
+          if [ -f "$SIG_FILE" ]; then
+            SIGNATURE=$(cat "$SIG_FILE")
+          fi
+
+          mkdir -p updater-info
+          cat > updater-info/macos.json <<ENDJSON
+          {
+            "platform": "darwin-${RUNNER_ARCH}",
+            "url_basename": "${TAR_GZ_BASENAME}",
+            "signature": "${SIGNATURE}"
+          }
+          ENDJSON
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-artifacts
+          path: |
+            app/src-tauri/target/release/bundle/dmg/*.dmg
+            app/src-tauri/target/release/bundle/macos/*.app.tar.gz
+            app/src-tauri/target/release/bundle/macos/*.app.tar.gz.sig
+
+      - name: Upload updater info
+        uses: actions/upload-artifact@v4
+        with:
+          name: updater-macos
+          path: updater-info/macos.json
+
+  release-linux:
+    needs: [typecheck]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libxdo-dev \
+            libasound2-dev
+
+      - name: Install CUDA toolkit
+        uses: Jimver/cuda-toolkit@v0.2.21
+        with:
+          cuda: '12.8.0'
+          method: 'network'
+
+      - name: Cache Rust dependencies
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+
+      - name: Install frontend dependencies
+        run: cd app && npm ci
+
+      - name: Build
+        id: tauri-build
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: app
+
+      - name: Collect updater artifact info
+        run: |
+          ARTIFACTS='${{ steps.tauri-build.outputs.artifactPaths }}'
+          APPIMAGE_FILE=$(echo "$ARTIFACTS" | jq -r '.[]' | grep '\.AppImage\.tar\.gz$' | head -1)
+          APPIMAGE_BASENAME=$(basename "$APPIMAGE_FILE")
+          RUNNER_ARCH=$(uname -m)
+
+          SIG_FILE="${APPIMAGE_FILE}.sig"
+          SIGNATURE=""
+          if [ -f "$SIG_FILE" ]; then
+            SIGNATURE=$(cat "$SIG_FILE")
+          fi
+
+          mkdir -p updater-info
+          cat > updater-info/linux.json <<ENDJSON
+          {
+            "platform": "linux-${RUNNER_ARCH}",
+            "url_basename": "${APPIMAGE_BASENAME}",
+            "signature": "${SIGNATURE}"
+          }
+          ENDJSON
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-artifacts
+          path: |
+            app/src-tauri/target/release/bundle/deb/*.deb
+            app/src-tauri/target/release/bundle/appimage/*.AppImage
+            app/src-tauri/target/release/bundle/appimage/*.AppImage.tar.gz
+            app/src-tauri/target/release/bundle/appimage/*.AppImage.tar.gz.sig
+
+      - name: Upload updater info
+        uses: actions/upload-artifact@v4
+        with:
+          name: updater-linux
+          path: updater-info/linux.json
+
+  publish:
+    needs: [release-macos, release-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
       - name: Create draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -131,15 +272,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          ARTIFACTS='${{ steps.tauri-build.outputs.artifactPaths }}'
-          echo "Artifacts: $ARTIFACTS"
-          echo "$ARTIFACTS" | jq -r '.[]' | while read -r artifact; do
-            if [ ! -f "$artifact" ]; then
-              echo "Skipping (not a file): $artifact"
-              continue
-            fi
-            echo "Uploading: $artifact"
-            gh release upload "${{ github.ref_name }}" "$artifact" \
+          find artifacts/macos-artifacts artifacts/linux-artifacts -type f | while read -r file; do
+            echo "Uploading: $file"
+            gh release upload "${{ github.ref_name }}" "$file" \
               --repo "${{ github.repository }}"
           done
 
@@ -149,46 +284,42 @@ jobs:
         run: |
           TAG="${{ github.ref_name }}"
           VERSION="${TAG#v}"
+          REPO="${{ github.repository }}"
+          BASE_URL="https://github.com/${REPO}/releases/download/${TAG}"
 
-          # Discover the .app.tar.gz artifact and its .sig sibling from build outputs
-          ARTIFACTS='${{ steps.tauri-build.outputs.artifactPaths }}'
-          TAR_GZ_FILE=$(echo "$ARTIFACTS" | jq -r '.[]' | grep '\.app\.tar\.gz$' | head -1)
-          if [ -z "$TAR_GZ_FILE" ] || [ ! -f "$TAR_GZ_FILE" ]; then
-            echo "ERROR: No .app.tar.gz artifact found in build outputs"
-            echo "Artifacts: $ARTIFACTS"
-            exit 1
-          fi
-          TAR_GZ_BASENAME=$(basename "$TAR_GZ_FILE")
-          # Derive platform from runner arch — uname -m returns arm64 on Apple Silicon,
-          # map to aarch64 to match Tauri's platform key convention.
-          RUNNER_ARCH=$(uname -m)
-          [ "$RUNNER_ARCH" = "arm64" ] && RUNNER_ARCH="aarch64"
-          PLATFORM="darwin-${RUNNER_ARCH}"
+          # Read platform info from both builds
+          MACOS=$(cat artifacts/updater-macos/macos.json)
+          LINUX=$(cat artifacts/updater-linux/linux.json)
 
-          SIG_FILE="${TAR_GZ_FILE}.sig"
-          SIGNATURE=""
-          if [ -f "$SIG_FILE" ]; then
-            SIGNATURE=$(cat "$SIG_FILE")
-          else
-            echo "WARNING: No .sig file found at ${SIG_FILE}"
-          fi
+          MACOS_PLATFORM=$(echo "$MACOS" | jq -r '.platform')
+          MACOS_URL="${BASE_URL}/$(echo "$MACOS" | jq -r '.url_basename')"
+          MACOS_SIG=$(echo "$MACOS" | jq -r '.signature')
 
-          TAR_GZ_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/${TAR_GZ_BASENAME}"
+          LINUX_PLATFORM=$(echo "$LINUX" | jq -r '.platform')
+          LINUX_URL="${BASE_URL}/$(echo "$LINUX" | jq -r '.url_basename')"
+          LINUX_SIG=$(echo "$LINUX" | jq -r '.signature')
 
-          cat > latest.json <<ENDJSON
-          {
-            "version": "${VERSION}",
-            "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-            "platforms": {
-              "${PLATFORM}": {
-                "url": "${TAR_GZ_URL}",
-                "signature": "${SIGNATURE}"
-              }
-            },
-            "notes": "See release notes at https://github.com/${{ github.repository }}/releases/tag/${TAG}"
-          }
-          ENDJSON
+          jq -n \
+            --arg version "$VERSION" \
+            --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg macos_platform "$MACOS_PLATFORM" \
+            --arg macos_url "$MACOS_URL" \
+            --arg macos_sig "$MACOS_SIG" \
+            --arg linux_platform "$LINUX_PLATFORM" \
+            --arg linux_url "$LINUX_URL" \
+            --arg linux_sig "$LINUX_SIG" \
+            --arg notes "See release notes at https://github.com/${REPO}/releases/tag/${TAG}" \
+            '{
+              version: $version,
+              pub_date: $pub_date,
+              platforms: {
+                ($macos_platform): { url: $macos_url, signature: $macos_sig },
+                ($linux_platform): { url: $linux_url, signature: $linux_sig }
+              },
+              notes: $notes
+            }' > latest.json
 
+          cat latest.json
           gh release upload "${TAG}" latest.json \
             --repo "${{ github.repository }}" \
             --clobber

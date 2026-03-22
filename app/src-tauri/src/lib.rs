@@ -34,7 +34,9 @@ pub fn ffi_heap_mb() -> u64 { 0 }
 
 use state::AppState;
 use std::sync::{Mutex, MutexGuard};
-use tauri::{Manager, RunEvent};
+use tauri::Manager;
+#[cfg(target_os = "macos")]
+use tauri::RunEvent;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
@@ -143,6 +145,8 @@ pub fn run() {
             // Re-enable mouse events on the overlay window.
             // focusable:false sets ignoresMouseEvents=true on macOS;
             // we override that while keeping the window non-activating.
+            // On Linux, skip the overlay — it's designed for the macOS notch.
+            #[cfg(target_os = "macos")]
             if let Some(overlay_win) = app.get_webview_window("overlay") {
                 tracing::info!(target: "system", "setup: overlay window found, enabling cursor events");
                 commands::overlay::position_overlay_default(&overlay_win, notch);
@@ -207,15 +211,16 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
-    app.run(|app_handle, event| {
+    app.run(|_app_handle, _event| {
         // Suppress Tauri's default RunEvent::Reopen behaviour which shows
         // the main window whenever the macOS app is activated — including
         // when the overlay is clicked.  We only re-show the main window
         // when there are truly no visible windows (e.g. dock-icon click
         // after the user closed everything).
-        if let RunEvent::Reopen { has_visible_windows, .. } = &event {
+        #[cfg(target_os = "macos")]
+        if let RunEvent::Reopen { has_visible_windows, .. } = &_event {
             if !has_visible_windows {
-                if let Some(win) = app_handle.get_webview_window("main") {
+                if let Some(win) = _app_handle.get_webview_window("main") {
                     let _ = win.show();
                     let _ = win.set_focus();
                 }
