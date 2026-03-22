@@ -1,5 +1,7 @@
 use crate::{MutexExt, State};
-use tauri::{Emitter, Manager};
+#[cfg(target_os = "macos")]
+use tauri::Emitter;
+use tauri::Manager;
 
 const NOTCH_EXPAND: f64 = 120.0; // 60px expansion room on each side
 const FALLBACK_OVERLAY_W: f64 = 200.0;

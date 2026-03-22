@@ -1,6 +1,4 @@
 use arboard::Clipboard;
-use std::thread;
-use std::time::Duration;
 
 /// Copy text to clipboard and optionally simulate Cmd+V paste.
 /// `delay_ms` controls the pause before pasting (window focus settling).
@@ -36,6 +34,9 @@ pub fn inject_text(text: &str, auto_paste: bool, delay_ms: u64) -> Result<(), St
 
     #[cfg(target_os = "macos")]
     {
+        use std::thread;
+        use std::time::Duration;
+
         // Check accessibility permission before attempting paste simulation
         if !is_accessibility_enabled() {
             // Don't error - text is in clipboard, user can paste manually
