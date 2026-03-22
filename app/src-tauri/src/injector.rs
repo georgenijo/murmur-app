@@ -25,29 +25,20 @@ pub fn inject_text(text: &str, auto_paste: bool, delay_ms: u64) -> Result<(), St
         return Ok(());
     }
 
-    // Auto-paste is macOS-only for now (uses osascript). Follow-up: xdotool on Linux.
-    #[cfg(not(target_os = "macos"))]
-    {
-        tracing::info!(target: "pipeline", "inject_text: auto-paste not yet supported on this platform — text in clipboard only");
-        return Ok(());
-    }
-
-    #[cfg(target_os = "macos")]
     {
         use std::thread;
         use std::time::Duration;
 
-        // Check accessibility permission before attempting paste simulation
+        // Check accessibility permission before attempting paste simulation (macOS only)
         if !is_accessibility_enabled() {
-            // Don't error - text is in clipboard, user can paste manually
             tracing::warn!(target: "pipeline", "inject_text: accessibility permission not granted — text in clipboard only");
             return Ok(());
         }
 
-        // Wait for window focus to settle (clipboard write via NSPasteboard is synchronous)
+        // Wait for window focus to settle
         thread::sleep(Duration::from_millis(delay_ms));
 
-        // Simulate Cmd+V paste, retry once on failure
+        // Simulate paste keystroke, retry once on failure
         match simulate_paste() {
             Ok(()) => Ok(()),
             Err(first_err) => {
@@ -80,6 +71,27 @@ fn simulate_paste() -> Result<(), String> {
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
         Err(format!("osascript failed: {}", stderr))
+    }
+}
+
+/// Simulate Ctrl+V keystroke using xdotool (X11)
+#[cfg(target_os = "linux")]
+fn simulate_paste() -> Result<(), String> {
+    use std::process::Command;
+
+    tracing::info!(target: "pipeline", "simulate_paste: using xdotool to simulate Ctrl+V");
+
+    let output = Command::new("xdotool")
+        .args(["key", "ctrl+v"])
+        .output()
+        .map_err(|e| format!("Failed to run xdotool: {}", e))?;
+
+    if output.status.success() {
+        tracing::info!(target: "pipeline", "simulate_paste: completed successfully");
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("xdotool failed: {}", stderr))
     }
 }
 
