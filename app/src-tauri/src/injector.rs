@@ -82,7 +82,7 @@ fn simulate_paste() -> Result<(), String> {
     tracing::info!(target: "pipeline", "simulate_paste: using xdotool to simulate Ctrl+V");
 
     let output = Command::new("xdotool")
-        .args(["key", "ctrl+v"])
+        .args(["key", "ctrl+shift+v"])
         .output()
         .map_err(|e| format!("Failed to run xdotool: {}", e))?;
 
