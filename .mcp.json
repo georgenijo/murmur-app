@@ -12,6 +12,11 @@
         "--headless",
         "--viewport-size=1280x720"
       ]
+    },
+    "murmur-diag": {
+      "type": "stdio",
+      "command": "python3",
+      "args": ["tools/murmur-diag/server.py"]
     }
   }
 }
