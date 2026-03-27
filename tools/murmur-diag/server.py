@@ -38,7 +38,10 @@ def parse_time(s: str | None) -> datetime | None:
         return parse_relative_time(s)
     # ISO 8601 — handle trailing Z
     s = s.replace("Z", "+00:00")
-    return datetime.fromisoformat(s)
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 def parse_event_ts(ts_str: str) -> datetime:
@@ -64,6 +67,67 @@ def read_jsonl_files(*names: str) -> list[dict[str, Any]]:
                     continue
     events.sort(key=lambda e: e.get("timestamp", ""))
     return events
+
+
+def pair_keyboard_to_recordings(
+    kb_starts: list[dict],
+    rec_starts: list[dict],
+    all_events: list[dict],
+    max_gap_ms: int = 500,
+) -> tuple[int, list[dict]]:
+    """Match keyboard emit events to recording starts within a time gap.
+
+    Returns (correlated_count, missed_list) where missed_list contains keyboard
+    events that had no corresponding recording start within max_gap_ms.
+    """
+    max_gap = timedelta(milliseconds=max_gap_ms)
+    correlated = 0
+    missed = []
+    rec_idx = 0
+
+    for kb in kb_starts:
+        try:
+            kb_ts = parse_event_ts(kb["timestamp"])
+        except (ValueError, KeyError):
+            continue
+
+        found = False
+        while rec_idx < len(rec_starts):
+            try:
+                rec_ts = parse_event_ts(rec_starts[rec_idx]["timestamp"])
+            except (ValueError, KeyError):
+                rec_idx += 1
+                continue
+            if rec_ts < kb_ts:
+                rec_idx += 1
+                continue
+            gap = rec_ts - kb_ts
+            if gap <= max_gap:
+                correlated += 1
+                found = True
+                rec_idx += 1
+            break
+
+        if not found:
+            next_ev = None
+            gap_ms_val = None
+            for e in all_events:
+                try:
+                    e_ts = parse_event_ts(e["timestamp"])
+                except (ValueError, KeyError):
+                    continue
+                if e_ts > kb_ts:
+                    next_ev = e.get("summary", "")
+                    gap_ms_val = int((e_ts - kb_ts).total_seconds() * 1000)
+                    break
+            missed.append({
+                "timestamp": kb.get("timestamp"),
+                "summary": kb.get("summary"),
+                "next_event": next_ev,
+                "gap_ms": gap_ms_val,
+            })
+
+    return correlated, missed
 
 
 def filter_events(
@@ -160,61 +224,16 @@ def correlate_keyboard(
     kb_starts = [e for e in filtered if e.get("stream") == "keyboard"
                  and "emit" in e.get("summary", "").lower()]
 
-    # Recording start events from pipeline
+    # Recording start events from pipeline (exclude "already recording" overlaps)
     rec_starts = [e for e in filtered if e.get("stream") == "pipeline"
-                  and "start_native_recording" in e.get("summary", "")]
+                  and "start_native_recording" in e.get("summary", "")
+                  and "already recording" not in e.get("summary", "").lower()]
 
     # Overlap events: keyboard tried to start but recording was already active
     overlaps = [e for e in filtered if "already recording" in e.get("summary", "").lower()]
 
-    max_gap = timedelta(milliseconds=max_gap_ms)
-    correlated = 0
-    missed = []
-    rec_idx = 0
-
-    for kb in kb_starts:
-        try:
-            kb_ts = parse_event_ts(kb["timestamp"])
-        except (ValueError, KeyError):
-            continue
-
-        # Find the next recording start after this keyboard event
-        found = False
-        while rec_idx < len(rec_starts):
-            try:
-                rec_ts = parse_event_ts(rec_starts[rec_idx]["timestamp"])
-            except (ValueError, KeyError):
-                rec_idx += 1
-                continue
-            if rec_ts < kb_ts:
-                rec_idx += 1
-                continue
-            gap = rec_ts - kb_ts
-            if gap <= max_gap:
-                correlated += 1
-                found = True
-                rec_idx += 1
-            break
-
-        if not found:
-            # Find the next event of any kind after this keyboard event for context
-            next_ev = None
-            gap_ms = None
-            for e in filtered:
-                try:
-                    e_ts = parse_event_ts(e["timestamp"])
-                except (ValueError, KeyError):
-                    continue
-                if e_ts > kb_ts:
-                    next_ev = e.get("summary", "")
-                    gap_ms = int((e_ts - kb_ts).total_seconds() * 1000)
-                    break
-            missed.append({
-                "timestamp": kb.get("timestamp"),
-                "summary": kb.get("summary"),
-                "next_event": next_ev,
-                "gap_ms": gap_ms,
-            })
+    correlated, missed = pair_keyboard_to_recordings(
+        kb_starts, rec_starts, filtered, max_gap_ms=max_gap_ms)
 
     overlap_entries = [{"timestamp": e.get("timestamp"), "summary": e.get("summary")} for e in overlaps]
 
@@ -264,17 +283,20 @@ def session_summary(
         version = version_match.group(0) if version_match else "unknown"
 
         recordings = sum(1 for e in session_events
-                         if "start_native_recording" in e.get("summary", ""))
+                         if "start_native_recording" in e.get("summary", "")
+                         and "already recording" not in e.get("summary", "").lower())
         kb_events = sum(1 for e in session_events if e.get("stream") == "keyboard")
         errors = sum(1 for e in session_events if e.get("level") == "error")
         warnings = sum(1 for e in session_events if e.get("level") == "warn")
 
-        # Missed hotkeys (inline correlate logic)
+        # Missed hotkeys using the same pairing logic as correlate_keyboard
         kb_starts = [e for e in session_events if e.get("stream") == "keyboard"
                      and "emit" in e.get("summary", "").lower()]
         rec_starts = [e for e in session_events if e.get("stream") == "pipeline"
-                      and "start_native_recording" in e.get("summary", "")]
-        missed_hotkeys = max(0, len(kb_starts) - len(rec_starts))
+                      and "start_native_recording" in e.get("summary", "")
+                      and "already recording" not in e.get("summary", "").lower()]
+        _, missed_list = pair_keyboard_to_recordings(kb_starts, rec_starts, session_events)
+        missed_hotkeys = len(missed_list)
 
         # Peak RSS from heartbeat/baseline data
         peak_rss: float | None = None
@@ -331,7 +353,8 @@ def check_health() -> dict:
         return {"timestamp": ts_str, "summary": ev.get("summary"), "age_seconds": round(age)}
 
     last_kb = find_last(lambda e: e.get("stream") == "keyboard")
-    last_rec = find_last(lambda e: "start_native_recording" in e.get("summary", ""))
+    last_rec = find_last(lambda e: "start_native_recording" in e.get("summary", "")
+                         and "already recording" not in e.get("summary", "").lower())
     last_err = find_last(lambda e: e.get("level") in ("error", "warn"))
 
     # Listener active: last "Keyboard listener started" without a subsequent stop
@@ -451,24 +474,25 @@ def search_logs(
 
     # Search
     matches = []
+    total_matched = 0
     for i, entry in enumerate(all_lines):
         if pat.search(entry["raw"]):
-            ctx_before = [all_lines[j]["raw"] for j in range(max(0, i - context), i)] if context else []
-            ctx_after = [all_lines[j]["raw"]
-                         for j in range(i + 1, min(len(all_lines), i + 1 + context))] if context else []
-            matches.append({
-                "line_number": entry["line_number"],
-                "file": entry["file"],
-                "timestamp": entry["timestamp"],
-                "level": entry["level"],
-                "message": entry["message"],
-                "context_before": ctx_before,
-                "context_after": ctx_after,
-            })
-            if len(matches) >= limit:
-                break
+            total_matched += 1
+            if len(matches) < limit:
+                ctx_before = [all_lines[j]["raw"] for j in range(max(0, i - context), i)] if context else []
+                ctx_after = [all_lines[j]["raw"]
+                             for j in range(i + 1, min(len(all_lines), i + 1 + context))] if context else []
+                matches.append({
+                    "line_number": entry["line_number"],
+                    "file": entry["file"],
+                    "timestamp": entry["timestamp"],
+                    "level": entry["level"],
+                    "message": entry["message"],
+                    "context_before": ctx_before,
+                    "context_after": ctx_after,
+                })
 
-    return {"matches": matches, "total_matched": len(matches)}
+    return {"matches": matches, "total_matched": total_matched}
 
 
 if __name__ == "__main__":
