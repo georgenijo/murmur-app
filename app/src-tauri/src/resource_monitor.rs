@@ -8,6 +8,8 @@ pub struct ResourceUsage {
     pub rss_mb: u64,
     pub rust_heap_mb: u64,
     pub ffi_heap_mb: u64,
+    pub gpu_usage_percent: f32,
+    pub gpu_memory_mb: u64,
 }
 
 /// Get process RSS in megabytes via `memory-stats` (task_info on macOS).
@@ -156,9 +158,97 @@ mod cpu {
     }
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(target_os = "windows")]
+mod cpu {
+    use windows::Win32::System::Threading::GetSystemTimes;
+    use windows::Win32::Foundation::FILETIME;
+
+    struct CpuSnapshot {
+        idle: u64,
+        kernel: u64,
+        user: u64,
+    }
+
+    fn filetime_to_u64(ft: FILETIME) -> u64 {
+        (ft.dwHighDateTime as u64) << 32 | ft.dwLowDateTime as u64
+    }
+
+    fn snapshot() -> Option<CpuSnapshot> {
+        let mut idle = FILETIME::default();
+        let mut kernel = FILETIME::default();
+        let mut user = FILETIME::default();
+        unsafe { GetSystemTimes(Some(&mut idle), Some(&mut kernel), Some(&mut user)) }.ok()?;
+        Some(CpuSnapshot {
+            idle: filetime_to_u64(idle),
+            kernel: filetime_to_u64(kernel),
+            user: filetime_to_u64(user),
+        })
+    }
+
+    static PREV: std::sync::Mutex<Option<CpuSnapshot>> = std::sync::Mutex::new(None);
+
+    pub fn cpu_percent() -> f32 {
+        let cur = match snapshot() {
+            Some(s) => s,
+            None => return 0.0,
+        };
+        let mut prev = PREV.lock().unwrap_or_else(|p| p.into_inner());
+        let pct = if let Some(ref p) = *prev {
+            let d_idle = cur.idle.wrapping_sub(p.idle);
+            let d_kernel = cur.kernel.wrapping_sub(p.kernel);
+            let d_user = cur.user.wrapping_sub(p.user);
+            // kernel time includes idle time on Windows
+            let total = d_kernel + d_user;
+            let busy = total - d_idle;
+            if total > 0 {
+                (busy as f64 / total as f64 * 100.0) as f32
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        };
+        *prev = Some(cur);
+        pct
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 mod cpu {
     pub fn cpu_percent() -> f32 { 0.0 }
+}
+
+// ---------------------------------------------------------------------------
+// GPU monitoring via nvidia-smi
+// ---------------------------------------------------------------------------
+
+mod gpu {
+    pub struct GpuUsage {
+        pub usage_percent: f32,
+        pub memory_mb: u64,
+    }
+
+    pub fn query() -> GpuUsage {
+        query_nvidia_smi().unwrap_or(GpuUsage { usage_percent: 0.0, memory_mb: 0 })
+    }
+
+    fn query_nvidia_smi() -> Option<GpuUsage> {
+        let output = std::process::Command::new("nvidia-smi")
+            .args(["--query-gpu=utilization.gpu,memory.used", "--format=csv,noheader,nounits"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&output.stdout);
+        let line = text.lines().next()?;
+        let mut parts = line.split(',');
+        let usage: f32 = parts.next()?.trim().parse().ok()?;
+        let mem: u64 = parts.next()?.trim().parse().ok()?;
+        Some(GpuUsage { usage_percent: usage, memory_mb: mem })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -256,11 +346,14 @@ pub fn start_heartbeat(app_handle: tauri::AppHandle) {
 #[tauri::command]
 pub fn get_resource_usage() -> ResourceUsage {
     let rss_mb = get_process_rss_mb();
+    let gpu = gpu::query();
     ResourceUsage {
         cpu_percent: cpu::cpu_percent(),
         memory_mb: rss_mb,
         rss_mb,
         rust_heap_mb: crate::rust_heap_mb(),
         ffi_heap_mb: crate::ffi_heap_mb(),
+        gpu_usage_percent: gpu.usage_percent,
+        gpu_memory_mb: gpu.memory_mb,
     }
 }

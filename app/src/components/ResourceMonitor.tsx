@@ -38,11 +38,17 @@ export function ResourceMonitor() {
   const latest = readings[readings.length - 1];
   const cpuNow = latest ? latest.cpu_percent.toFixed(1) : '—';
   const memNow = latest ? latest.memory_mb.toLocaleString() : '—';
+  const gpuNow = latest ? latest.gpu_usage_percent.toFixed(1) : '—';
+  const vramNow = latest ? latest.gpu_memory_mb.toLocaleString() : '—';
+  const hasGpu = readings.some(r => r.gpu_usage_percent > 0 || r.gpu_memory_mb > 0);
 
   const maxMem = Math.max(...readings.map(r => r.memory_mb), 1024);
+  const maxVram = Math.max(...readings.map(r => r.gpu_memory_mb), 1024);
 
   const cpuPoints = toPolylinePoints(readings, r => r.cpu_percent, 100);
   const memPoints = toPolylinePoints(readings, r => r.memory_mb, maxMem);
+  const gpuPoints = toPolylinePoints(readings, r => r.gpu_usage_percent, 100);
+  const vramPoints = toPolylinePoints(readings, r => r.gpu_memory_mb, maxVram);
 
   const toggle = () => {
     const next = !isCollapsed;
@@ -53,7 +59,7 @@ export function ResourceMonitor() {
   return (
     // CSS vars for chart line colors — theme-aware so SVG strokes match dark mode.
     <div
-      className="shrink-0 rounded-lg border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800/50 overflow-hidden [--cpu-stroke:#57534e] dark:[--cpu-stroke:#a8a29e] [--mem-stroke:#f59e0b] dark:[--mem-stroke:#fbbf24]"
+      className="shrink-0 rounded-lg border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800/50 overflow-hidden [--cpu-stroke:#57534e] dark:[--cpu-stroke:#a8a29e] [--mem-stroke:#f59e0b] dark:[--mem-stroke:#fbbf24] [--gpu-stroke:#10b981] dark:[--gpu-stroke:#34d399] [--vram-stroke:#8b5cf6] dark:[--vram-stroke:#a78bfa]"
     >
       {/* Header row */}
       <button
@@ -72,6 +78,18 @@ export function ResourceMonitor() {
             <span className="text-amber-600 dark:text-amber-400 font-medium">MEM</span>
             {' '}{memNow} MB
           </span>
+          {hasGpu && (
+            <>
+              <span className="text-xs text-stone-500 dark:text-stone-400">
+                <span className="text-emerald-600 dark:text-emerald-400 font-medium">GPU</span>
+                {' '}{gpuNow}%
+              </span>
+              <span className="text-xs text-stone-500 dark:text-stone-400">
+                <span className="text-violet-600 dark:text-violet-400 font-medium">VRAM</span>
+                {' '}{vramNow} MB
+              </span>
+            </>
+          )}
           <svg
             className={`w-3.5 h-3.5 text-stone-400 transition-transform duration-200 ${isCollapsed ? 'rotate-180' : ''}`}
             fill="none"
@@ -125,6 +143,26 @@ export function ResourceMonitor() {
                 strokeLinecap="round"
               />
             )}
+            {hasGpu && gpuPoints && (
+              <polyline
+                points={gpuPoints}
+                fill="none"
+                stroke="var(--gpu-stroke)"
+                strokeWidth="1.2"
+                strokeLinejoin="round"
+                strokeLinecap="round"
+              />
+            )}
+            {hasGpu && vramPoints && (
+              <polyline
+                points={vramPoints}
+                fill="none"
+                stroke="var(--vram-stroke)"
+                strokeWidth="1.2"
+                strokeLinejoin="round"
+                strokeLinecap="round"
+              />
+            )}
           </svg>
           {/* Legend — swatches use the same CSS vars as the polylines */}
           <div className="flex gap-3 mt-1">
@@ -136,6 +174,18 @@ export function ResourceMonitor() {
               <span className="inline-block w-2.5 h-0.5 rounded" style={{ background: 'var(--mem-stroke)' }} />
               Memory MB
             </span>
+            {hasGpu && (
+              <>
+                <span className="flex items-center gap-1 text-xs text-stone-500 dark:text-stone-400">
+                  <span className="inline-block w-2.5 h-0.5 rounded" style={{ background: 'var(--gpu-stroke)' }} />
+                  GPU %
+                </span>
+                <span className="flex items-center gap-1 text-xs text-stone-500 dark:text-stone-400">
+                  <span className="inline-block w-2.5 h-0.5 rounded" style={{ background: 'var(--vram-stroke)' }} />
+                  VRAM MB
+                </span>
+              </>
+            )}
           </div>
         </div>
       )}

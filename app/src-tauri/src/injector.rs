@@ -95,6 +95,41 @@ fn simulate_paste() -> Result<(), String> {
     }
 }
 
+/// Simulate Ctrl+V keystroke using Windows SendInput API
+#[cfg(target_os = "windows")]
+fn simulate_paste() -> Result<(), String> {
+    use windows::Win32::UI::Input::KeyboardAndMouse::*;
+
+    tracing::info!(target: "pipeline", "simulate_paste: using SendInput to simulate Ctrl+V");
+
+    let mut inputs = [
+        INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: VK_CONTROL, dwFlags: KEYBD_EVENT_FLAGS(0), ..Default::default() } },
+        },
+        INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: VK_V, dwFlags: KEYBD_EVENT_FLAGS(0), ..Default::default() } },
+        },
+        INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: VK_V, dwFlags: KEYEVENTF_KEYUP, ..Default::default() } },
+        },
+        INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: VK_CONTROL, dwFlags: KEYEVENTF_KEYUP, ..Default::default() } },
+        },
+    ];
+
+    let sent = unsafe { SendInput(&mut inputs, std::mem::size_of::<INPUT>() as i32) };
+    if sent == 4 {
+        tracing::info!(target: "pipeline", "simulate_paste: completed successfully");
+        Ok(())
+    } else {
+        Err(format!("SendInput returned {} instead of 4", sent))
+    }
+}
+
 /// Check if accessibility permission is granted (macOS)
 pub fn is_accessibility_enabled() -> bool {
     #[cfg(target_os = "macos")]
