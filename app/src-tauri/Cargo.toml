@@ -23,7 +23,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["process", "io-util", "sync", "rt", "fs"] }
 base64 = "0.22"
-whisper-rs = { version = "0.15", features = ["log_backend"] }
+whisper-rs = { version = "0.16", features = ["log_backend"] }
 arboard = "3"
 hound = "3.5"
 dirs = "5"
@@ -38,7 +38,7 @@ tracing-appender = "0.2"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-whisper-rs = { version = "0.15", features = ["metal"] }
+whisper-rs = { version = "0.16", features = ["metal"] }
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSScreen", "NSApplication", "NSRunningApplication"] }
 objc2-foundation = "0.3"
@@ -46,7 +46,16 @@ block2 = "0.6"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 rdev = { git = "https://github.com/Narsil/rdev", branch = "main", features = ["x11"] }
-whisper-rs = { version = "0.15", features = ["cuda"] }
+whisper-rs = { version = "0.16", features = ["cuda"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+whisper-rs = { version = "0.16", features = ["cuda"] }
+windows = { version = "0.61", features = [
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Threading",
+    "Win32_Foundation",
+] }
 
 [profile.release]
 panic = "abort"

@@ -246,8 +246,87 @@ jobs:
           name: updater-linux
           path: updater-info/linux.json
 
+  release-windows:
+    needs: [typecheck]
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install CUDA toolkit
+        uses: Jimver/cuda-toolkit@v0.2.21
+        with:
+          cuda: '12.8.0'
+          method: 'network'
+
+      - name: Cache Rust dependencies
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+
+      - name: Install frontend dependencies
+        run: cd app && npm ci
+
+      - name: Build
+        id: tauri-build
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: app
+
+      - name: Collect updater artifact info
+        shell: bash
+        run: |
+          ARTIFACTS='${{ steps.tauri-build.outputs.artifactPaths }}'
+          NSIS_FILE=$(echo "$ARTIFACTS" | jq -r '.[]' | grep '\.nsis\.zip$' | head -1)
+          NSIS_BASENAME=$(basename "$NSIS_FILE")
+
+          SIG_FILE="${NSIS_FILE}.sig"
+          SIGNATURE=""
+          if [ -f "$SIG_FILE" ]; then
+            SIGNATURE=$(cat "$SIG_FILE")
+          fi
+
+          mkdir -p updater-info
+          cat > updater-info/windows.json <<ENDJSON
+          {
+            "platform": "windows-x86_64",
+            "url_basename": "${NSIS_BASENAME}",
+            "signature": "${SIGNATURE}"
+          }
+          ENDJSON
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-artifacts
+          path: |
+            app/src-tauri/target/release/bundle/nsis/*.exe
+            app/src-tauri/target/release/bundle/nsis/*.nsis.zip
+            app/src-tauri/target/release/bundle/nsis/*.nsis.zip.sig
+
+      - name: Upload updater info
+        uses: actions/upload-artifact@v4
+        with:
+          name: updater-windows
+          path: updater-info/windows.json
+
   publish:
-    needs: [release-macos, release-linux]
+    needs: [release-macos, release-linux, release-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -272,7 +351,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          find artifacts/macos-artifacts artifacts/linux-artifacts -type f | while read -r file; do
+          find artifacts/macos-artifacts artifacts/linux-artifacts artifacts/windows-artifacts -type f | while read -r file; do
             echo "Uploading: $file"
             gh release upload "${{ github.ref_name }}" "$file" \
               --repo "${{ github.repository }}"
@@ -287,9 +366,10 @@ jobs:
           REPO="${{ github.repository }}"
           BASE_URL="https://github.com/${REPO}/releases/download/${TAG}"
 
-          # Read platform info from both builds
+          # Read platform info from all builds
           MACOS=$(cat artifacts/updater-macos/macos.json)
           LINUX=$(cat artifacts/updater-linux/linux.json)
+          WINDOWS=$(cat artifacts/updater-windows/windows.json)
 
           MACOS_PLATFORM=$(echo "$MACOS" | jq -r '.platform')
           MACOS_URL="${BASE_URL}/$(echo "$MACOS" | jq -r '.url_basename')"
@@ -298,6 +378,10 @@ jobs:
           LINUX_PLATFORM=$(echo "$LINUX" | jq -r '.platform')
           LINUX_URL="${BASE_URL}/$(echo "$LINUX" | jq -r '.url_basename')"
           LINUX_SIG=$(echo "$LINUX" | jq -r '.signature')
+
+          WINDOWS_PLATFORM=$(echo "$WINDOWS" | jq -r '.platform')
+          WINDOWS_URL="${BASE_URL}/$(echo "$WINDOWS" | jq -r '.url_basename')"
+          WINDOWS_SIG=$(echo "$WINDOWS" | jq -r '.signature')
 
           jq -n \
             --arg version "$VERSION" \
@@ -308,13 +392,17 @@ jobs:
             --arg linux_platform "$LINUX_PLATFORM" \
             --arg linux_url "$LINUX_URL" \
             --arg linux_sig "$LINUX_SIG" \
+            --arg windows_platform "$WINDOWS_PLATFORM" \
+            --arg windows_url "$WINDOWS_URL" \
+            --arg windows_sig "$WINDOWS_SIG" \
             --arg notes "See release notes at https://github.com/${REPO}/releases/tag/${TAG}" \
             '{
               version: $version,
               pub_date: $pub_date,
               platforms: {
                 ($macos_platform): { url: $macos_url, signature: $macos_sig },
-                ($linux_platform): { url: $linux_url, signature: $linux_sig }
+                ($linux_platform): { url: $linux_url, signature: $linux_sig },
+                ($windows_platform): { url: $windows_url, signature: $windows_sig }
               },
               notes: $notes
             }' > latest.json

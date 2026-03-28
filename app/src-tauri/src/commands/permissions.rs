@@ -16,7 +16,15 @@ fn open_system_preference_pane(pane: &str) -> Result<(), String> {
 pub fn open_system_preferences() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     { return open_system_preference_pane("Privacy_Microphone"); }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "ms-settings:privacy-microphone"])
+            .spawn()
+            .map_err(|e| format!("Failed to open Windows Settings: {}", e))?;
+        return Ok(());
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     { Err("System preferences shortcut not supported on this platform".to_string()) }
 }
 
@@ -46,7 +54,15 @@ pub fn request_accessibility_permission() -> Result<(), String> {
 pub fn request_microphone_permission() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     { return open_system_preference_pane("Privacy_Microphone"); }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "ms-settings:privacy-microphone"])
+            .spawn()
+            .map_err(|e| format!("Failed to open Windows Settings: {}", e))?;
+        return Ok(());
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     { Ok(()) }
 }
 
