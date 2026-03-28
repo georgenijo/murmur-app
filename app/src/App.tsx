@@ -38,20 +38,25 @@ function App() {
     // Prevent modifier-only keypresses from causing BLUR/FOCUS thrashing
     // on Windows. Without this, pressing Shift while Murmur is focused
     // causes a brief window defocus that disrupts the rdev double-tap detector.
+    const isWindows = navigator.userAgent.toLowerCase().includes('windows');
     const suppressModifierDefault = (e: KeyboardEvent) => {
       if (e.key === 'Shift' || e.key === 'Control' || e.key === 'Alt' || e.key === 'Meta') {
         e.preventDefault();
       }
     };
-    window.addEventListener('keydown', suppressModifierDefault);
-    window.addEventListener('keyup', suppressModifierDefault);
+    if (isWindows) {
+      window.addEventListener('keydown', suppressModifierDefault);
+      window.addEventListener('keyup', suppressModifierDefault);
+    }
 
     return () => {
       window.removeEventListener('focus', onFocus);
       window.removeEventListener('blur', onBlur);
       document.removeEventListener('visibilitychange', onVisibility);
-      window.removeEventListener('keydown', suppressModifierDefault);
-      window.removeEventListener('keyup', suppressModifierDefault);
+      if (isWindows) {
+        window.removeEventListener('keydown', suppressModifierDefault);
+        window.removeEventListener('keyup', suppressModifierDefault);
+      }
     };
   }, []);
 

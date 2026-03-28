@@ -121,12 +121,16 @@ fn simulate_paste() -> Result<(), String> {
         },
     ];
 
+    let expected = inputs.len() as u32;
     let sent = unsafe { SendInput(&mut inputs, std::mem::size_of::<INPUT>() as i32) };
-    if sent == 4 {
+    if sent == expected {
         tracing::info!(target: "pipeline", "simulate_paste: completed successfully");
         Ok(())
+    } else if sent == 0 {
+        let err = unsafe { windows::Win32::Foundation::GetLastError() };
+        Err(format!("SendInput failed: {:?} (input blocked or UIPI)", err))
     } else {
-        Err(format!("SendInput returned {} instead of 4", sent))
+        Err(format!("SendInput inserted only {} of {} events", sent, expected))
     }
 }
 
