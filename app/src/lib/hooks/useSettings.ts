@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import { listen } from '@tauri-apps/api/event';
 import { Settings, loadSettings, saveSettings } from '../settings';
 import { configure } from '../dictation';
 import { enable, disable, isEnabled } from '@tauri-apps/plugin-autostart';
@@ -24,6 +25,33 @@ export function useSettings() {
     }).catch((err) => {
       console.error('Failed to check autostart status:', err);
     });
+  }, []);
+
+  // Listen for settings changes from other windows (e.g. overlay quick-settings panel)
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    listen<Partial<Settings>>('settings-changed', () => {
+      // Re-read from localStorage to get the latest state
+      const fresh = loadSettings();
+      const prev = settingsRef.current;
+      settingsRef.current = fresh;
+      setSettings(fresh);
+      // Re-configure backend if configure-relevant fields changed
+      if (fresh.autoPaste !== prev.autoPaste || fresh.autoPasteDelayMs !== prev.autoPasteDelayMs ||
+          fresh.model !== prev.model || fresh.language !== prev.language ||
+          fresh.vadSensitivity !== prev.vadSensitivity || fresh.idleTimeoutMinutes !== prev.idleTimeoutMinutes ||
+          fresh.customVocabulary !== prev.customVocabulary) {
+        configure({
+          model: fresh.model, language: fresh.language, autoPaste: fresh.autoPaste,
+          autoPasteDelayMs: fresh.autoPasteDelayMs, vadSensitivity: fresh.vadSensitivity,
+          idleTimeoutMinutes: fresh.idleTimeoutMinutes, customVocabulary: fresh.customVocabulary,
+        }).catch((err) => console.error('Failed to reconfigure after settings-changed:', err));
+      }
+    }).then((fn) => {
+      if (cancelled) { fn(); } else { unlisten = fn; }
+    });
+    return () => { cancelled = true; unlisten?.(); };
   }, []);
 
   const updateSettings = (updates: Partial<Settings>) => {
