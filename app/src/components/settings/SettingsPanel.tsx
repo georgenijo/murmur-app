@@ -256,12 +256,12 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
 
   return (
     <aside
-      className={`shrink-0 border-l border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 transition-all duration-200 ${
+      className={`shrink-0 bg-surface-container-low transition-all duration-200 ${
         isOpen ? 'w-[280px] overflow-y-auto' : 'w-0 overflow-hidden'
       }`}
     >
       {/* Header */}
-      <div className="flex items-center justify-between p-4 border-b border-stone-200 dark:border-stone-700">
+      <div className="flex items-center justify-between p-4">
         <h2 className="text-sm font-semibold text-stone-900 dark:text-stone-100">Settings</h2>
         <button
           onClick={onClose}
