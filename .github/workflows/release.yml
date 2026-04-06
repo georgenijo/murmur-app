@@ -286,6 +286,7 @@ jobs:
           name: linux-artifacts
           path: |
             app/src-tauri/target/release/bundle/deb/*.deb
+            app/src-tauri/target/release/bundle/rpm/*.rpm
             app/src-tauri/target/release/bundle/appimage/*.AppImage
             app/src-tauri/target/release/bundle/appimage/*.AppImage.tar.gz
             app/src-tauri/target/release/bundle/appimage/*.AppImage.tar.gz.sig

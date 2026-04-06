@@ -53,4 +53,7 @@ panic = "abort"
 codegen-units = 1
 lto = true
 opt-level = "s"
-strip = true
+# strip is intentionally disabled: Tauri's bundler patches a __TAURI_BUNDLE_TYPE
+# marker into the binary post-build so the updater plugin can detect the
+# artifact format (deb / rpm / AppImage / app). Stripping erases the marker
+# and breaks updater detection on Linux. Larger binary is the trade-off.

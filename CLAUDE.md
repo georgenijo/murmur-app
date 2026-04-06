@@ -16,6 +16,7 @@ cd app && npx tsc --noEmit         # TypeScript check
 Read these before working on a feature:
 
 - **[docs/onboarding.md](docs/onboarding.md)** — Setup, permissions, model installation, logs
+- **[docs/install-linux.md](docs/install-linux.md)** — Linux end-user install (deb / rpm / AppImage), runtime deps, Wayland notes
 - **[docs/features/recording-modes.md](docs/features/recording-modes.md)** — Hold-down and double-tap modes, state machine, rdev threading
 - **[docs/features/transcription.md](docs/features/transcription.md)** — Audio capture, whisper pipeline, status flow
 - **[docs/features/text-injection.md](docs/features/text-injection.md)** — Clipboard, auto-paste, osascript
