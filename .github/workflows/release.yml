@@ -208,6 +208,56 @@ jobs:
         with:
           projectPath: app
 
+      - name: Install smoke test dependencies
+        run: sudo apt-get install -y xvfb dbus-x11 at-spi2-core
+
+      - name: Smoke test — verify binary launches and frontend mounts
+        run: |
+          BINARY="app/src-tauri/target/release/ui"
+          LOG="$HOME/.local/share/local-dictation/logs/app.log"
+
+          echo "=== Verifying binary exists ==="
+          ls -la "$BINARY"
+
+          echo "=== Clearing any prior log ==="
+          rm -f "$LOG"
+
+          echo "=== Launching under xvfb + dbus ==="
+          xvfb-run -a --server-args="-screen 0 1280x800x24" \
+            dbus-run-session -- "$BINARY" > /tmp/murmur-smoke.log 2>&1 &
+          PID=$!
+          echo "Started with PID $PID"
+
+          echo "=== Waiting up to 20s for [main] App mounted ==="
+          MOUNTED=0
+          for i in $(seq 1 20); do
+            sleep 1
+            if ! kill -0 "$PID" 2>/dev/null; then
+              echo "FAIL: Process died after ${i}s"
+              echo "--- stderr ---"; tail -50 /tmp/murmur-smoke.log || true
+              echo "--- app.log ---"; tail -50 "$LOG" 2>/dev/null || echo "(no log)"
+              exit 1
+            fi
+            if grep -q "\[main\] App mounted" "$LOG" 2>/dev/null; then
+              echo "  Mounted at ${i}s"
+              MOUNTED=1
+              break
+            fi
+            echo "  Alive at ${i}s (not mounted yet)"
+          done
+
+          if [ "$MOUNTED" != "1" ]; then
+            echo "FAIL: Frontend never mounted within 20s"
+            echo "--- stderr ---"; tail -50 /tmp/murmur-smoke.log || true
+            echo "--- app.log ---"; tail -80 "$LOG" 2>/dev/null || echo "(no log)"
+            kill "$PID" 2>/dev/null || true
+            exit 1
+          fi
+
+          echo "=== Smoke test passed — killing process ==="
+          kill "$PID" 2>/dev/null || true
+          wait "$PID" 2>/dev/null || true
+
       - name: Collect updater artifact info
         run: |
           ARTIFACTS='${{ steps.tauri-build.outputs.artifactPaths }}'
