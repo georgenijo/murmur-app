@@ -342,6 +342,9 @@ mod tests {
             |k, _v| writes.borrow_mut().push(k.to_string()),
         );
 
-        assert!(!writes.borrow().contains(&"WEBKIT_DISABLE_DMABUF_RENDERER".to_string()));
+        assert_eq!(
+            *writes.borrow(),
+            vec!["WEBKIT_DISABLE_COMPOSITING_MODE".to_string()],
+        );
     }
 }
