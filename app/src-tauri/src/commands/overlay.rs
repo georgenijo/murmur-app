@@ -7,6 +7,7 @@ use tauri::Manager;
 const NOTCH_EXPAND: f64 = 120.0; // 60px expansion room on each side
 #[cfg(target_os = "macos")]
 const FALLBACK_OVERLAY_W: f64 = 200.0;
+const DROPDOWN_HEIGHT: f64 = 52.0; // extra height for hover-expand settings row
 
 #[derive(serde::Serialize, Clone)]
 pub(crate) struct NotchInfo {
@@ -116,7 +117,7 @@ fn raise_window_above_menubar(overlay: &tauri::WebviewWindow) {
 #[cfg(target_os = "macos")]
 pub(crate) fn position_overlay_default(overlay: &tauri::WebviewWindow, notch_info: Option<(f64, f64)>) {
     let overlay_w = notch_info.map(|(w, _)| w + NOTCH_EXPAND).unwrap_or(FALLBACK_OVERLAY_W);
-    let overlay_h = notch_info.map(|(_, h)| h).unwrap_or(37.0);
+    let overlay_h = notch_info.map(|(_, h)| h + DROPDOWN_HEIGHT).unwrap_or(37.0 + DROPDOWN_HEIGHT);
     tracing::info!(target: "system", "position_overlay_default: notch_info={:?}, overlay_w={}, overlay_h={}", notch_info, overlay_w, overlay_h);
 
     // Resize window to match notch area
@@ -184,4 +185,15 @@ pub fn hide_overlay(app: tauri::AppHandle) -> Result<(), String> {
             Ok(())
         }
     }
+}
+
+/// Show and focus the main settings window (called from overlay quick-settings gear icon).
+#[tauri::command]
+pub fn show_main_window(app: tauri::AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "main window not found".to_string())?;
+    window.show().map_err(|e| e.to_string())?;
+    window.set_focus().map_err(|e| e.to_string())?;
+    Ok(())
 }
