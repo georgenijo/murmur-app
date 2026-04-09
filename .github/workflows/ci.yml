@@ -88,3 +88,28 @@ jobs:
 
       - name: Run tests
         run: cd app/src-tauri && cargo test --lib -- --test-threads=1
+
+  rust-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install CUDA toolkit
+        uses: Jimver/cuda-toolkit@v0.2.21
+        with:
+          cuda: '12.8.0'
+          method: 'network'
+
+      - name: Cache Rust dependencies
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+
+      - name: Compile check
+        run: cd app/src-tauri && cargo check
+
+      - name: Run tests
+        run: cd app/src-tauri && cargo test --lib -- --test-threads=1

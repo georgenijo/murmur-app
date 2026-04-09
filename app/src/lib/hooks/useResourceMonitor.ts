@@ -7,6 +7,8 @@ export interface ResourceReading {
   rss_mb: number;
   rust_heap_mb: number;
   ffi_heap_mb: number;
+  gpu_usage_percent: number;
+  gpu_memory_mb: number;
 }
 
 const MAX_READINGS = 60;

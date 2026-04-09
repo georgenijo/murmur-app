@@ -70,6 +70,24 @@ fn get_model_path(model_name: &str) -> Result<PathBuf, String> {
     ))
 }
 
+/// Check if an NVIDIA GPU is available on Windows by looking for nvcuda.dll.
+#[cfg(target_os = "windows")]
+fn has_nvidia_gpu_windows() -> bool {
+    if let Ok(sys_root) = std::env::var("SystemRoot") {
+        let nvcuda = std::path::Path::new(&sys_root).join("System32").join("nvcuda.dll");
+        if nvcuda.exists() {
+            return true;
+        }
+    }
+    // Fallback: check if nvidia-smi is available
+    std::process::Command::new("nvidia-smi")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 pub struct WhisperBackend {
     context: Option<WhisperContext>,
     state: Option<WhisperState>,
@@ -119,6 +137,8 @@ impl TranscriptionBackend for WhisperBackend {
         let gpu_backend = if cfg!(target_os = "macos") {
             "metal"
         } else if cfg!(target_os = "linux") && std::path::Path::new("/dev/nvidia0").exists() {
+            "cuda"
+        } else if cfg!(target_os = "windows") && has_nvidia_gpu_windows() {
             "cuda"
         } else {
             "cpu"
