@@ -256,8 +256,8 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
 
   return (
     <aside
-      className={`shrink-0 border-l border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 transition-all duration-200 ${
-        isOpen ? 'w-[280px] overflow-y-auto' : 'w-0 overflow-hidden'
+      className={`shrink-0 border-l border-stone-200 dark:border-stone-700 bg-stone-50/80 dark:bg-stone-800/80 backdrop-blur-sm transition-all duration-200 ${
+        isOpen ? 'w-[260px] overflow-y-auto' : 'w-0 overflow-hidden'
       }`}
     >
       {/* Header */}
