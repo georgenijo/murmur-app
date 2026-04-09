@@ -25,7 +25,7 @@ export function SettingsSection({ title, subtitle, defaultExpanded = true, child
   }, [expanded]);
 
   return (
-    <div className="border-b border-stone-200 dark:border-stone-700">
+    <div>
       <button
         type="button"
         id={headerId}

@@ -65,9 +65,9 @@ export function LogViewerApp() {
   }, [filteredEvents]);
 
   return (
-    <div className="h-screen flex flex-col bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100">
+    <div className="h-screen flex flex-col bg-surface text-stone-900 dark:text-stone-100">
       {/* Header */}
-      <div className="shrink-0 border-b border-stone-200 dark:border-stone-700 px-4 py-3">
+      <div className="shrink-0 px-4 py-3">
         <div className="flex items-center justify-between mb-3">
           {/* Tabs */}
           <div className="flex gap-1">
