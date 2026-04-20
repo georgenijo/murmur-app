@@ -11,6 +11,7 @@ const BAR_COUNT = 7;
 export function OverlayWidget() {
   const [status, setStatus] = useState<DictationStatus>('idle');
   const [showCancelled, setShowCancelled] = useState(false);
+  const [showTapRejected, setShowTapRejected] = useState(false);
   const [lockedMode, setLockedMode] = useState(false);
   const notchHeightRef = useRef(0);
   const [notchWidth, setNotchWidth] = useState(185);
@@ -19,6 +20,7 @@ export function OverlayWidget() {
   const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const audioLevelRef = useRef(0);
   const barRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const feedbackEnabledRef = useRef<boolean>(DEFAULT_SETTINGS.showTimingMissFeedback);
 
   useEffect(() => { statusRef.current = status; }, [status]);
   useEffect(() => { lockedRef.current = lockedMode; }, [lockedMode]);
@@ -98,6 +100,50 @@ export function OverlayWidget() {
     }).then((fn) => {
       if (cancelled) { fn(); } else { unlisten = fn; }
     });
+    return () => {
+      cancelled = true;
+      if (timeoutId) clearTimeout(timeoutId);
+      unlisten?.();
+    };
+  }, []);
+
+  // Read showTimingMissFeedback from localStorage on mount and whenever the
+  // 'storage' event fires (fires when localStorage is changed from ANOTHER window).
+  useEffect(() => {
+    const readSetting = () => {
+      try {
+        const stored = localStorage.getItem(STORAGE_KEY);
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          feedbackEnabledRef.current =
+            parsed.showTimingMissFeedback ?? DEFAULT_SETTINGS.showTimingMissFeedback;
+        } else {
+          feedbackEnabledRef.current = DEFAULT_SETTINGS.showTimingMissFeedback;
+        }
+      } catch {
+        feedbackEnabledRef.current = DEFAULT_SETTINGS.showTimingMissFeedback;
+      }
+    };
+    readSetting();
+    window.addEventListener('storage', readSetting);
+    return () => window.removeEventListener('storage', readSetting);
+  }, []);
+
+  // Subscribe to tap-rejected for brief amber pulse
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    listen<string>('tap-rejected', (event) => {
+      if (!feedbackEnabledRef.current) return;
+      flog.info('overlay', 'tap rejected', { reason: event.payload });
+      if (timeoutId) clearTimeout(timeoutId);
+      setShowTapRejected(true);
+      timeoutId = setTimeout(() => {
+        if (!cancelled) setShowTapRejected(false);
+        timeoutId = null;
+      }, 250);
+    }).then((fn) => { if (cancelled) { fn(); } else { unlisten = fn; } });
     return () => {
       cancelled = true;
       if (timeoutId) clearTimeout(timeoutId);
@@ -268,7 +314,7 @@ export function OverlayWidget() {
           Idle = small icon on the left showing app is alive.
           Active = expands with red dot on left, waveform on right. */}
       <div
-        className="cursor-pointer select-none overflow-hidden transition-all duration-[500ms] ease-[cubic-bezier(0.34,1.56,0.64,1)]"
+        className="cursor-pointer select-none overflow-hidden"
         style={{
           borderRadius: '0 0 12px 12px',
           width: isActive ? notchWidth + 68 : notchWidth + 28,
@@ -277,6 +323,10 @@ export function OverlayWidget() {
           background: 'rgba(20, 20, 20, 0.92)',
           backdropFilter: 'blur(40px)',
           WebkitBackdropFilter: 'blur(40px)',
+          boxShadow: showTapRejected
+            ? '0 0 0 1.5px rgba(245, 158, 11, 0.85), 0 0 12px 2px rgba(245, 158, 11, 0.45)'
+            : 'none',
+          transition: 'width 500ms cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 120ms ease-out',
         }}
       >
         <div className="flex items-center h-full" style={{ paddingLeft: 10, paddingRight: 10 }}>
