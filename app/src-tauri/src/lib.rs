@@ -129,6 +129,7 @@ pub fn run() {
             commands::keyboard::stop_keyboard_listener,
             commands::keyboard::update_keyboard_key,
             commands::keyboard::set_keyboard_recording,
+            commands::keyboard::reset_keyboard_listener,
             commands::logging::get_log_contents,
             commands::logging::clear_logs,
             commands::logging::log_frontend,
@@ -169,6 +170,11 @@ pub fn run() {
 
             // Periodic heartbeat: memory telemetry + idle timeout
             resource_monitor::start_heartbeat(app.handle().clone());
+
+            // Register NSWorkspaceDidWakeNotification observer to recover the
+            // CGEventTap after system sleep/wake cycles.
+            #[cfg(target_os = "macos")]
+            keyboard::register_wake_observer(app.handle().clone());
 
             // Cache notch dimensions on the main thread (safe for NSScreen APIs).
             let notch = commands::overlay::detect_notch_info();

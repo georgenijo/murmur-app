@@ -28,7 +28,13 @@ arboard = "3"
 hound = "3.5"
 dirs = "5"
 cpal = "0.15"
-rdev = { git = "https://github.com/Narsil/rdev", branch = "main" }
+# Forked for issue #153 — see app/src-tauri/src/keyboard.rs header comment.
+# Patches: (1) re-enable CGEventTap on kCGEventTapDisabledByTimeout/ByUserInput
+# and expose tap/runloop/stopped handles (macos_reenable_tap, macos_is_tap_enabled,
+# macos_listener_stopped, stop); (2) absolute-flag-state modifier resolution with
+# equal-flags resync heuristic to survive missed FlagsChanged transitions.
+# Apple docs: CGEventTapEnable, CGEventTapIsEnabled, CFRunLoopStop.
+rdev = { path = "../../../../rdev" }
 memory-stats = "1"
 reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls"] }
 futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
@@ -45,7 +51,7 @@ objc2-foundation = "0.3"
 block2 = "0.6"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-rdev = { git = "https://github.com/Narsil/rdev", branch = "main", features = ["x11"] }
+rdev = { path = "../../../../rdev", features = ["x11"] }
 whisper-rs = { version = "0.15", features = ["cuda"] }
 
 [profile.release]
