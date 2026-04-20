@@ -8,6 +8,10 @@ pub fn start_keyboard_listener(app_handle: tauri::AppHandle, hotkey: String, mod
         tracing::error!(target: "keyboard", "Invalid keyboard listener mode: {}", mode);
         return Err(format!("Invalid mode '{}'. Expected one of: {}", mode, VALID_MODES.join(", ")));
     }
+    if keyboard::is_restart_in_progress() {
+        tracing::info!(target: "keyboard", "start_keyboard_listener skipped — restart in progress");
+        return Ok(());
+    }
     if !injector::is_accessibility_enabled() {
         return Err("Accessibility permission is required. Please grant it in System Settings.".to_string());
     }
@@ -36,4 +40,14 @@ pub fn update_keyboard_key(app_handle: tauri::AppHandle, hotkey: String) {
 #[tauri::command]
 pub fn set_keyboard_recording(recording: bool) {
     keyboard::set_recording_state(recording);
+}
+
+#[tauri::command]
+pub fn reset_keyboard_listener(app_handle: tauri::AppHandle) -> Result<(), String> {
+    tracing::info!(target: "keyboard", "manual keyboard listener reset requested");
+    if keyboard::restart_listener(app_handle, "manual_reset") {
+        Ok(())
+    } else {
+        Err("Restart skipped (either already in progress or no active hotkey)".to_string())
+    }
 }
