@@ -1,0 +1,103 @@
+name: Setup Linux build environment
+description: Installs apt deps, CUDA toolkit (cached), and sets up Rust cache for whisper-rs-sys.
+
+inputs:
+  cuda-version:
+    description: Full CUDA version string for Jimver/cuda-toolkit (e.g. 12.8.0)
+    required: true
+    default: '12.8.0'
+  # Default is linux-cuda-debug so a caller that forgets to set this gets the CI-safe
+  # profile rather than accidentally polluting the release cache.
+  rust-cache-shared-key:
+    description: swatinem/rust-cache shared-key; use linux-cuda-release for release workflows to avoid debug/release profile thrash
+    required: true
+    default: 'linux-cuda-debug'
+  rust-cache-save-if:
+    description: Expression controlling whether the Rust cache is saved; defaults to main-branch pushes only
+    default: "${{ github.ref == 'refs/heads/main' }}"
+
+runs:
+  using: composite
+  steps:
+    # Write CUDA_MM (major.minor) to $GITHUB_ENV so subsequent steps can use ${{ env.CUDA_MM }}
+    # in `path:` and `key:` expression fields (shell $CUDA_MM does not work there).
+    - name: Derive CUDA major.minor
+      shell: bash
+      run: echo "CUDA_MM=$(echo '${{ inputs.cuda-version }}' | cut -d. -f1,2)" >> "$GITHUB_ENV"
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install Linux system dependencies
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          libwebkit2gtk-4.1-dev \
+          libappindicator3-dev \
+          librsvg2-dev \
+          patchelf \
+          libxdo-dev \
+          libasound2-dev
+
+    - name: Restore CUDA toolkit cache
+      id: cuda-cache
+      uses: actions/cache/restore@v4
+      with:
+        path: |
+          /usr/local/cuda-${{ env.CUDA_MM }}
+          /usr/local/cuda
+          /usr/lib/x86_64-linux-gnu/libcuda*
+          /usr/lib/x86_64-linux-gnu/libnvidia-*
+          /etc/ld.so.conf.d/cuda-*.conf
+          /etc/ld.so.conf.d/nvidia-*.conf
+        key: cuda-toolkit-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cuda-version }}-jimver-v0.2.21
+
+    - name: Install CUDA toolkit
+      if: steps.cuda-cache.outputs.cache-hit != 'true'
+      uses: Jimver/cuda-toolkit@v0.2.21
+      with:
+        cuda: ${{ inputs.cuda-version }}
+        method: network
+
+    # On cache hit Jimver does not run, so we must restore the env vars it normally sets.
+    # These mirror what Jimver exports; any missing var surfaces as a hard linker error in
+    # the next cargo step (not a silent wrong binary).
+    - name: Restore CUDA env vars on cache hit
+      if: steps.cuda-cache.outputs.cache-hit == 'true'
+      shell: bash
+      run: |
+        echo "/usr/local/cuda/bin" >> "$GITHUB_PATH"
+        echo "CUDA_PATH=/usr/local/cuda" >> "$GITHUB_ENV"
+        echo "CUDA_PATH_V${CUDA_MM//./_}=/usr/local/cuda" >> "$GITHUB_ENV"
+        echo "LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+        sudo ldconfig
+
+    # Runs on both hit and miss paths; fails immediately if the install or cache restore
+    # produced a broken layout rather than waiting for cmake to die midway through.
+    - name: Verify CUDA install
+      shell: bash
+      run: nvcc --version || { echo "CUDA toolkit not available after install/restore"; exit 1; }
+
+    - name: Save CUDA toolkit cache
+      if: steps.cuda-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: |
+          /usr/local/cuda-${{ env.CUDA_MM }}
+          /usr/local/cuda
+          /usr/lib/x86_64-linux-gnu/libcuda*
+          /usr/lib/x86_64-linux-gnu/libnvidia-*
+          /etc/ld.so.conf.d/cuda-*.conf
+          /etc/ld.so.conf.d/nvidia-*.conf
+        key: cuda-toolkit-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cuda-version }}-jimver-v0.2.21
+
+    # cuda-${{ inputs.cuda-version }} is appended to the key so a CUDA upgrade invalidates
+    # stale whisper-rs-sys kernels compiled against older headers.
+    - name: Cache Rust dependencies
+      uses: swatinem/rust-cache@v2
+      with:
+        workspaces: app/src-tauri
+        shared-key: ${{ inputs.rust-cache-shared-key }}
+        key: cuda-${{ inputs.cuda-version }}
+        save-if: ${{ inputs.rust-cache-save-if }}
