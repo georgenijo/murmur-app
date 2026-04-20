@@ -14,6 +14,7 @@ export interface Settings {
   vadSensitivity: number;
   idleTimeoutMinutes: number;
   customVocabulary: string;
+  smartPunctuation: boolean;
 }
 
 export type ModelOption =
@@ -51,6 +52,19 @@ export const IDLE_TIMEOUT_OPTIONS: { value: number; label: string }[] = [
   { value: 0, label: 'Never' },
 ];
 
+export const LANGUAGE_OPTIONS: { value: string; label: string }[] = [
+  { value: 'auto', label: 'Auto Detect' },
+  { value: 'en', label: 'English' },
+  { value: 'es', label: 'Spanish' },
+  { value: 'fr', label: 'French' },
+  { value: 'de', label: 'German' },
+  { value: 'it', label: 'Italian' },
+  { value: 'pt', label: 'Portuguese' },
+  { value: 'ja', label: 'Japanese' },
+  { value: 'zh', label: 'Chinese' },
+  { value: 'ko', label: 'Korean' },
+];
+
 export const DEFAULT_SETTINGS: Settings = {
   model: 'base.en',
   doubleTapKey: 'shift_l',
@@ -63,6 +77,7 @@ export const DEFAULT_SETTINGS: Settings = {
   vadSensitivity: 50,
   idleTimeoutMinutes: 5,
   customVocabulary: '',
+  smartPunctuation: true,
 };
 
 export const STORAGE_KEY = 'dictation-settings';
@@ -86,6 +101,12 @@ export function loadSettings(): Settings {
       const validModels = new Set<string>(MODEL_OPTIONS.map((m) => m.value));
       if (typeof parsed.model !== 'string' || !validModels.has(parsed.model)) {
         parsed.model = DEFAULT_SETTINGS.model;
+      }
+
+      // Validate language against current allow-list
+      const validLanguages = new Set<string>(LANGUAGE_OPTIONS.map((o) => o.value));
+      if (typeof parsed.language !== 'string' || !validLanguages.has(parsed.language)) {
+        parsed.language = DEFAULT_SETTINGS.language;
       }
 
       return { ...DEFAULT_SETTINGS, ...parsed } as Settings;

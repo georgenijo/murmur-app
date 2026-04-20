@@ -18,8 +18,8 @@ pub trait TranscriptionBackend: Send + Sync {
     /// Load model by name. Called lazily on first transcription.
     fn load_model(&mut self, model_name: &str) -> Result<(), String>;
 
-    /// Run inference on 16kHz mono f32 samples.
-    fn transcribe(&mut self, samples: &[f32], language: &str, initial_prompt: Option<&str>) -> Result<String, String>;
+    /// Run inference on 16kHz mono f32 samples. If `smart_punctuation` is false, punctuation is stripped from the returned text.
+    fn transcribe(&mut self, samples: &[f32], language: &str, initial_prompt: Option<&str>, smart_punctuation: bool) -> Result<String, String>;
 
     /// Count tokens in text using the model's tokenizer. Returns None if model not loaded.
     fn token_count(&self, text: &str) -> Option<usize>;
