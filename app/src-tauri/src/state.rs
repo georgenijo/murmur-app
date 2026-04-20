@@ -29,6 +29,7 @@ pub struct DictationState {
     pub auto_paste_delay_ms: u64,
     pub vad_sensitivity: u32,
     pub custom_vocabulary: String,
+    pub smart_punctuation: bool,
 }
 
 impl Default for DictationState {
@@ -41,6 +42,7 @@ impl Default for DictationState {
             auto_paste_delay_ms: 50,
             vad_sensitivity: 50,
             custom_vocabulary: String::new(),
+            smart_punctuation: true,
         }
     }
 }

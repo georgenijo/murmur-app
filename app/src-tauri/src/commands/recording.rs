@@ -66,9 +66,9 @@ async fn run_transcription_pipeline(
     let _guard = IdleGuard::new(app_state, recording_id);
 
     // Read all needed state in one lock
-    let (model_name, language, auto_paste, paste_delay_ms, vad_sensitivity, custom_vocabulary) = {
+    let (model_name, language, auto_paste, paste_delay_ms, vad_sensitivity, custom_vocabulary, smart_punctuation) = {
         let dictation = app_state.dictation.lock_or_recover();
-        (dictation.model_name.clone(), dictation.language.clone(), dictation.auto_paste, dictation.auto_paste_delay_ms, dictation.vad_sensitivity, dictation.custom_vocabulary.clone())
+        (dictation.model_name.clone(), dictation.language.clone(), dictation.auto_paste, dictation.auto_paste_delay_ms, dictation.vad_sensitivity, dictation.custom_vocabulary.clone(), dictation.smart_punctuation)
     };
 
     // Pre-VAD signal level logging for mic diagnosis
@@ -148,7 +148,7 @@ async fn run_transcription_pipeline(
         };
         let mut backend = app_state.backend.lock_or_recover();
         backend.load_model(&model_name)?;
-        backend.transcribe(&samples_for_transcription, &language, prompt.as_deref())?
+        backend.transcribe(&samples_for_transcription, &language, prompt.as_deref(), smart_punctuation)?
     };
     let inference_ms = t_transcribe.elapsed().as_millis() as u64;
     let rss_after_mb = crate::resource_monitor::get_process_rss_mb();
@@ -346,6 +346,10 @@ pub async fn configure_dictation(
 
     if let Some(vocab) = options.get("customVocabulary").and_then(|v| v.as_str()) {
         dictation.custom_vocabulary = vocab.to_string();
+    }
+
+    if let Some(sp) = options.get("smartPunctuation").and_then(|v| v.as_bool()) {
+        dictation.smart_punctuation = sp;
     }
 
     if let Some(idle_timeout) = options.get("idleTimeoutMinutes").and_then(|v| v.as_u64()) {
