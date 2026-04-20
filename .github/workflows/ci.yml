@@ -53,10 +53,19 @@ jobs:
           CMAKE_CXX_FLAGS: "-march=armv8.5-a"
         run: cd app/src-tauri && cargo test --lib -- --test-threads=1
 
-  rust-linux:
-    runs-on: ubuntu-latest
+  linux:
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install frontend dependencies
+        run: cd app && npm ci
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -65,12 +74,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
             libappindicator3-dev \
+            libasound2-dev \
+            libgtk-3-dev \
             librsvg2-dev \
-            patchelf \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
             libxdo-dev \
-            libasound2-dev
+            patchelf
 
       - name: Install CUDA toolkit
         uses: Jimver/cuda-toolkit@v0.2.21
@@ -82,9 +93,13 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: app/src-tauri
+          prefix-key: linux
 
       - name: Compile check
         run: cd app/src-tauri && cargo check
 
       - name: Run tests
         run: cd app/src-tauri && cargo test --lib -- --test-threads=1
+
+      - name: TypeScript check
+        run: cd app && npx tsc --noEmit
