@@ -12,18 +12,21 @@ export function OverlayWidget() {
   const [status, setStatus] = useState<DictationStatus>('idle');
   const [showCancelled, setShowCancelled] = useState(false);
   const [lockedMode, setLockedMode] = useState(false);
+  const [disabled, setDisabled] = useState(false);
   const notchHeightRef = useRef(0);
   const [notchWidth, setNotchWidth] = useState(185);
   const statusRef = useRef(status);
   const lockedRef = useRef(lockedMode);
+  const disabledRef = useRef(disabled);
   const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const audioLevelRef = useRef(0);
   const barRefs = useRef<(HTMLDivElement | null)[]>([]);
 
   useEffect(() => { statusRef.current = status; }, [status]);
   useEffect(() => { lockedRef.current = lockedMode; }, [lockedMode]);
+  useEffect(() => { disabledRef.current = disabled; }, [disabled]);
 
-  // Log mount + fetch notch dimensions
+  // Log mount + fetch notch dimensions + read initial disabled state
   useEffect(() => {
     flog.info('overlay', 'mounted');
     invoke<{ notch_width: number; notch_height: number } | null>('get_notch_info')
@@ -37,6 +40,13 @@ export function OverlayWidget() {
         }
       })
       .catch((e) => flog.warn('overlay', 'get_notch_info failed', { error: String(e) }));
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (typeof parsed.disabled === 'boolean') setDisabled(parsed.disabled);
+      }
+    } catch { /* ignore */ }
     return () => {
       flog.info('overlay', 'unmounted');
       if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
@@ -137,6 +147,19 @@ export function OverlayWidget() {
     return () => { cancelled = true; unlisten?.(); };
   }, []);
 
+  // Subscribe to app-disabled-changed events from Rust
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    listen<boolean>('app-disabled-changed', (event) => {
+      flog.info('overlay', 'app-disabled-changed', { disabled: event.payload });
+      setDisabled(event.payload);
+    }).then((fn) => {
+      if (cancelled) { fn(); } else { unlisten = fn; }
+    });
+    return () => { cancelled = true; unlisten?.(); };
+  }, []);
+
   // Animate waveform bars via rAF (direct DOM updates, no React reconciliation)
   useEffect(() => {
     if (status !== 'recording') {
@@ -174,6 +197,7 @@ export function OverlayWidget() {
     });
     const currentStatus = statusRef.current;
     if (currentStatus === 'processing') return;
+    if (disabledRef.current && currentStatus === 'idle') return;
     if (clickTimerRef.current) {
       clearTimeout(clickTimerRef.current);
       clickTimerRef.current = null;
@@ -292,7 +316,7 @@ export function OverlayWidget() {
             ) : status === 'processing' ? (
               <span className="w-3 h-3 border-[1.5px] border-white/20 border-t-white/70 rounded-full animate-spin block" />
             ) : (
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.4)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.4)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: disabled ? 0.15 : 1 }}>
                 <rect x="9" y="1" width="6" height="12" rx="3" />
                 <path d="M5 10a7 7 0 0 0 14 0" />
                 <line x1="12" y1="17" x2="12" y2="21" />

@@ -14,6 +14,7 @@ export interface Settings {
   vadSensitivity: number;
   idleTimeoutMinutes: number;
   customVocabulary: string;
+  disabled: boolean;
 }
 
 export type ModelOption =
@@ -63,6 +64,7 @@ export const DEFAULT_SETTINGS: Settings = {
   vadSensitivity: 50,
   idleTimeoutMinutes: 5,
   customVocabulary: '',
+  disabled: false,
 };
 
 export const STORAGE_KEY = 'dictation-settings';

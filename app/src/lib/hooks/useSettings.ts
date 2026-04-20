@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { Settings, loadSettings, saveSettings } from '../settings';
 import { configure } from '../dictation';
 import { enable, disable, isEnabled } from '@tauri-apps/plugin-autostart';
@@ -44,6 +45,12 @@ export function useSettings() {
           setSettings(reverted);
           saveSettings(reverted);
         }
+      });
+    }
+
+    if ('disabled' in updates) {
+      invoke('set_app_disabled', { disabled: newSettings.disabled }).catch((err) => {
+        console.error('Failed to sync disabled state:', err);
       });
     }
 

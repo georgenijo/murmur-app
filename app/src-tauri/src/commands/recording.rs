@@ -374,6 +374,10 @@ pub async fn start_native_recording(
     state: tauri::State<'_, State>,
     device_name: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    if keyboard::is_app_disabled() {
+        tracing::info!(target: "pipeline", "start_native_recording: app disabled — ignoring");
+        return Ok(serde_json::json!({ "type": "app_disabled", "state": "idle" }));
+    }
     // Check and update status in one lock; assign recording ID in the same
     // critical section so no concurrent cancel/start can slip between them.
     let rid = {
