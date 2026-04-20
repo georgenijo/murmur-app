@@ -37,3 +37,15 @@ pub fn update_keyboard_key(app_handle: tauri::AppHandle, hotkey: String) {
 pub fn set_keyboard_recording(recording: bool) {
     keyboard::set_recording_state(recording);
 }
+
+#[tauri::command]
+pub fn set_app_disabled(app_handle: tauri::AppHandle, disabled: bool) -> Result<(), String> {
+    keyboard::set_app_disabled(disabled);
+    tracing::info!(target: "keyboard", "set_app_disabled: {}", disabled);
+    app_handle.emit("app-disabled-changed", disabled).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_app_disabled() -> bool {
+    keyboard::is_app_disabled()
+}
