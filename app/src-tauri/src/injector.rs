@@ -74,25 +74,71 @@ fn simulate_paste() -> Result<(), String> {
     }
 }
 
-/// Simulate Ctrl+V keystroke using xdotool (X11)
+/// Simulate Ctrl+V keystroke on Linux, supporting both X11 (xdotool) and Wayland (wtype).
+/// Detects Wayland via WAYLAND_DISPLAY; falls back gracefully when tools are not installed.
 #[cfg(target_os = "linux")]
 fn simulate_paste() -> Result<(), String> {
-    use std::process::Command;
+    simulate_paste_linux(
+        |key| std::env::var_os(key),
+        |program, args| std::process::Command::new(program).args(args).output(),
+    )
+}
 
-    tracing::info!(target: "pipeline", "simulate_paste: using xdotool to simulate Ctrl+V");
+#[cfg(target_os = "linux")]
+fn simulate_paste_linux<F, G>(env_get: F, mut runner: G) -> Result<(), String>
+where
+    F: Fn(&str) -> Option<std::ffi::OsString>,
+    G: FnMut(&str, &[&str]) -> std::io::Result<std::process::Output>,
+{
+    let is_wayland = env_get("WAYLAND_DISPLAY")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
 
-    let output = Command::new("xdotool")
-        .args(["key", "ctrl+shift+v"])
-        .output()
-        .map_err(|e| format!("Failed to run xdotool: {}", e))?;
-
-    if output.status.success() {
-        tracing::info!(target: "pipeline", "simulate_paste: completed successfully");
-        Ok(())
+    let wayland_candidates: [(&str, &[&str]); 2] = [
+        ("wtype", &["-M", "ctrl", "-k", "v"]),
+        ("xdotool", &["key", "ctrl+v"]),
+    ];
+    let x11_candidates: [(&str, &[&str]); 1] = [("xdotool", &["key", "ctrl+v"])];
+    let candidates: &[(&str, &[&str])] = if is_wayland {
+        &wayland_candidates
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(format!("xdotool failed: {}", stderr))
+        &x11_candidates
+    };
+
+    for (program, args) in candidates {
+        tracing::info!(
+            target: "pipeline",
+            "simulate_paste: trying {} ({})",
+            program,
+            if is_wayland { "Wayland" } else { "X11" }
+        );
+        match runner(program, args) {
+            Ok(output) if output.status.success() => {
+                tracing::info!(target: "pipeline", "simulate_paste: {} completed successfully", program);
+                return Ok(());
+            }
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(format!("{} failed: {}", program, stderr));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                tracing::warn!(
+                    target: "pipeline",
+                    "simulate_paste: {} not installed, trying next fallback",
+                    program
+                );
+            }
+            Err(e) => {
+                return Err(format!("Failed to run {}: {}", program, e));
+            }
+        }
     }
+
+    tracing::warn!(
+        target: "pipeline",
+        "simulate_paste: no paste tool available (install xdotool or wtype) — text remains in clipboard"
+    );
+    Ok(())
 }
 
 /// Check if accessibility permission is granted (macOS)
@@ -107,6 +153,177 @@ pub fn is_accessibility_enabled() -> bool {
     #[cfg(not(target_os = "macos"))]
     {
         true
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::ffi::OsString;
+    use std::io;
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::{ExitStatus, Output};
+
+    fn ok_output() -> io::Result<Output> {
+        Ok(Output {
+            status: ExitStatus::from_raw(0),
+            stdout: vec![],
+            stderr: vec![],
+        })
+    }
+
+    fn fail_output(stderr: &str) -> io::Result<Output> {
+        Ok(Output {
+            status: ExitStatus::from_raw(1 << 8),
+            stdout: vec![],
+            stderr: stderr.as_bytes().to_vec(),
+        })
+    }
+
+    fn not_found_err() -> io::Result<Output> {
+        Err(io::Error::new(io::ErrorKind::NotFound, "not found"))
+    }
+
+    fn other_err() -> io::Result<Output> {
+        Err(io::Error::new(io::ErrorKind::PermissionDenied, "denied"))
+    }
+
+    fn env_with(key: &str, val: &str) -> impl Fn(&str) -> Option<OsString> {
+        let mut map: HashMap<String, OsString> = HashMap::new();
+        map.insert(key.to_string(), OsString::from(val));
+        move |k| map.get(k).cloned()
+    }
+
+    fn empty_env() -> impl Fn(&str) -> Option<OsString> {
+        |_| None
+    }
+
+    #[test]
+    fn x11_uses_xdotool_ctrl_v() {
+        let calls: RefCell<Vec<(String, Vec<String>)>> = RefCell::new(Vec::new());
+        let result = simulate_paste_linux(empty_env(), |program, args| {
+            calls
+                .borrow_mut()
+                .push((program.to_string(), args.iter().map(|s| s.to_string()).collect()));
+            ok_output()
+        });
+        assert!(result.is_ok());
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "xdotool");
+        assert_eq!(calls[0].1, vec!["key", "ctrl+v"]);
+    }
+
+    #[test]
+    fn x11_xdotool_not_installed_falls_back_silently() {
+        let calls: RefCell<Vec<String>> = RefCell::new(Vec::new());
+        let result = simulate_paste_linux(empty_env(), |program, _args| {
+            calls.borrow_mut().push(program.to_string());
+            not_found_err()
+        });
+        assert!(result.is_ok());
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0], "xdotool");
+    }
+
+    #[test]
+    fn x11_xdotool_exit_failure_returns_err() {
+        let result = simulate_paste_linux(empty_env(), |_program, _args| {
+            fail_output("some error")
+        });
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        assert!(msg.contains("xdotool failed"), "expected 'xdotool failed' in: {}", msg);
+    }
+
+    #[test]
+    fn wayland_prefers_wtype() {
+        let calls: RefCell<Vec<(String, Vec<String>)>> = RefCell::new(Vec::new());
+        let result = simulate_paste_linux(env_with("WAYLAND_DISPLAY", "wayland-0"), |program, args| {
+            calls
+                .borrow_mut()
+                .push((program.to_string(), args.iter().map(|s| s.to_string()).collect()));
+            ok_output()
+        });
+        assert!(result.is_ok());
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "wtype");
+        assert_eq!(calls[0].1, vec!["-M", "ctrl", "-k", "v"]);
+    }
+
+    #[test]
+    fn wayland_falls_back_to_xdotool_when_wtype_missing() {
+        let calls: RefCell<Vec<(String, Vec<String>)>> = RefCell::new(Vec::new());
+        let result = simulate_paste_linux(env_with("WAYLAND_DISPLAY", "wayland-0"), |program, args| {
+            calls
+                .borrow_mut()
+                .push((program.to_string(), args.iter().map(|s| s.to_string()).collect()));
+            if program == "wtype" {
+                not_found_err()
+            } else {
+                ok_output()
+            }
+        });
+        assert!(result.is_ok());
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].0, "wtype");
+        assert_eq!(calls[1].0, "xdotool");
+        assert_eq!(calls[1].1, vec!["key", "ctrl+v"]);
+    }
+
+    #[test]
+    fn wayland_both_missing_is_graceful_ok() {
+        let calls: RefCell<Vec<String>> = RefCell::new(Vec::new());
+        let result = simulate_paste_linux(env_with("WAYLAND_DISPLAY", "wayland-0"), |program, _args| {
+            calls.borrow_mut().push(program.to_string());
+            not_found_err()
+        });
+        assert!(result.is_ok());
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0], "wtype");
+        assert_eq!(calls[1], "xdotool");
+    }
+
+    #[test]
+    fn wayland_wtype_exit_failure_does_not_fall_back() {
+        let calls: RefCell<Vec<String>> = RefCell::new(Vec::new());
+        let result = simulate_paste_linux(env_with("WAYLAND_DISPLAY", "wayland-0"), |program, _args| {
+            calls.borrow_mut().push(program.to_string());
+            fail_output("boom")
+        });
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        assert!(msg.contains("wtype failed"), "expected 'wtype failed' in: {}", msg);
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0], "wtype");
+    }
+
+    #[test]
+    fn wayland_display_empty_treated_as_x11() {
+        let calls: RefCell<Vec<String>> = RefCell::new(Vec::new());
+        let result = simulate_paste_linux(env_with("WAYLAND_DISPLAY", ""), |program, _args| {
+            calls.borrow_mut().push(program.to_string());
+            ok_output()
+        });
+        assert!(result.is_ok());
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0], "xdotool");
+    }
+
+    #[test]
+    fn non_notfound_io_error_surfaces() {
+        let result = simulate_paste_linux(empty_env(), |_program, _args| other_err());
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        assert!(msg.contains("Failed to run xdotool"), "expected 'Failed to run xdotool' in: {}", msg);
     }
 }
 
