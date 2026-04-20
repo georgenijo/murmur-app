@@ -16,7 +16,7 @@ use rdev::{listen, Event, EventType, Key};
 #[cfg(target_os = "macos")]
 use rdev::set_is_main_thread;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 use tauri::Emitter;
 
@@ -31,6 +31,10 @@ const COOLDOWN_MS: u128 = 50;
 
 /// Cooldown after hold-down stop to prevent accidental re-trigger
 const HOLD_DOWN_COOLDOWN_MS: u128 = 50;
+
+/// If no raw rdev callback has fired for this long while the listener is
+/// active, emit a warn-level log. Tune down temporarily when verifying.
+const SILENCE_WARN_MS: u64 = 5 * 60 * 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum DetectorState {
@@ -67,6 +71,27 @@ impl DoubleTapDetector {
     fn reset(&mut self) {
         self.state = DetectorState::Idle;
         self.state_entered_at = Instant::now();
+    }
+
+    fn reset_with_reason(&mut self, reason: &'static str) {
+        // Capture diagnostic values BEFORE reset() overwrites state_entered_at.
+        let prev_state = self.state;
+        let elapsed_ms = self.elapsed_ms();
+        self.reset();
+        tracing::debug!(
+            target: "keyboard",
+            reason,
+            prev_state = ?prev_state,
+            elapsed_ms = elapsed_ms as u64,
+            target_key = ?self.target_key,
+            recording = self.recording,
+            "double-tap detector rejected"
+        );
+    }
+
+    #[cfg(test)]
+    fn capture_before_reset(&self) -> (DetectorState, u128) {
+        (self.state, self.elapsed_ms())
     }
 
     fn transition(&mut self, new_state: DetectorState) {
@@ -118,24 +143,24 @@ impl DoubleTapDetector {
                             self.transition(DetectorState::WaitingSecondDown);
                         } else {
                             // Held too long — not a tap
-                            self.reset();
+                            self.reset_with_reason("held_too_long");
                         }
                     }
                     EventType::KeyPress(key) if !is_modifier(*key) => {
                         // User is typing a combo like Shift+A
-                        self.reset();
+                        self.reset_with_reason("combo_cancelled");
                     }
                     EventType::KeyPress(key) if is_same_modifier(*key, target) => {
                         // Key repeat event — ignore, stay in same state
                         // But check if we've been held too long
                         if self.elapsed_ms() > MAX_HOLD_DURATION_MS {
-                            self.reset();
+                            self.reset_with_reason("held_too_long");
                         }
                     }
                     _ => {
                         // Check timeout
                         if self.elapsed_ms() > MAX_HOLD_DURATION_MS {
-                            self.reset();
+                            self.reset_with_reason("held_too_long");
                         }
                     }
                 }
@@ -144,7 +169,7 @@ impl DoubleTapDetector {
 
             DetectorState::WaitingSecondDown => {
                 if self.elapsed_ms() > DOUBLE_TAP_WINDOW_MS {
-                    self.reset();
+                    self.reset_with_reason("second_tap_expired");
                     return false;
                 }
                 match event_type {
@@ -153,7 +178,7 @@ impl DoubleTapDetector {
                     }
                     EventType::KeyPress(_) => {
                         // Any other key press — abort
-                        self.reset();
+                        self.reset_with_reason("combo_cancelled");
                     }
                     _ => {}
                 }
@@ -169,22 +194,22 @@ impl DoubleTapDetector {
                             self.reset();
                             return true;
                         } else {
-                            self.reset();
+                            self.reset_with_reason("held_too_long");
                         }
                     }
                     EventType::KeyPress(key) if !is_modifier(*key) => {
                         // Combo like Shift+A on second press
-                        self.reset();
+                        self.reset_with_reason("combo_cancelled");
                     }
                     EventType::KeyPress(key) if is_same_modifier(*key, target) => {
                         // Key repeat — check timeout
                         if self.elapsed_ms() > MAX_HOLD_DURATION_MS {
-                            self.reset();
+                            self.reset_with_reason("held_too_long");
                         }
                     }
                     _ => {
                         if self.elapsed_ms() > MAX_HOLD_DURATION_MS {
-                            self.reset();
+                            self.reset_with_reason("held_too_long");
                         }
                     }
                 }
@@ -341,8 +366,22 @@ static IS_PROCESSING: AtomicBool = AtomicBool::new(false);
 /// Called by lib.rs to tell the keyboard module whether the app is processing.
 /// When transitioning out of processing, reset both detectors and apply a
 /// cooldown so rapid post-processing taps don't immediately toggle.
+///
+/// `#[track_caller]` captures the direct call site automatically; if a wrapper
+/// without `#[track_caller]` calls this, the location points to the wrapper.
+#[track_caller]
 pub fn set_processing(processing: bool) {
+    let caller = std::panic::Location::caller();
     let was_processing = IS_PROCESSING.swap(processing, Ordering::SeqCst);
+    tracing::debug!(
+        target: "keyboard",
+        new = processing,
+        previous = was_processing,
+        transition = was_processing != processing,
+        caller_file = caller.file(),
+        caller_line = caller.line(),
+        "set_processing called"
+    );
     if !was_processing && processing {
         // Entering processing: invalidate any pending hold-promotion timer
         // so it can't fire hold-down-start during active processing.
@@ -388,6 +427,16 @@ static LISTENER_THREAD_SPAWNED: AtomicBool = AtomicBool::new(false);
 static ACTIVE_MODE: Mutex<DetectorMode> = Mutex::new(DetectorMode::DoubleTap);
 static DOUBLE_TAP_DETECTOR: Mutex<Option<DoubleTapDetector>> = Mutex::new(None);
 static HOLD_DOWN_DETECTOR: Mutex<Option<HoldDownDetector>> = Mutex::new(None);
+
+/// Baseline monotonic clock for LAST_CALLBACK_MS. Initialized on first callback.
+static CALLBACK_BASELINE: OnceLock<Instant> = OnceLock::new();
+/// Milliseconds since CALLBACK_BASELINE at the most recent raw rdev callback.
+/// Updated pre-gate, so it captures events even while LISTENER_ACTIVE is false.
+static LAST_CALLBACK_MS: AtomicU64 = AtomicU64::new(0);
+/// Cached current target key for fast read-access in the callback's
+/// `processing_skipped` noise gate. Updated from start_listener / set_target_key /
+/// stop_listener. Must mirror the detector target_key at all times.
+static CURRENT_TARGET_KEY: Mutex<Option<Key>> = Mutex::new(None);
 
 /// Start the keyboard listener. Spawns the rdev listener thread if not already running.
 /// If already running, just updates the target key, mode, and re-enables.
@@ -459,6 +508,12 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
         }
     }
 
+    // Keep CURRENT_TARGET_KEY in sync for the processing_skipped noise gate.
+    {
+        let mut t = CURRENT_TARGET_KEY.lock().unwrap_or_else(|p| p.into_inner());
+        *t = target;
+    }
+
     LISTENER_ACTIVE.store(true, Ordering::SeqCst);
 
     // Only spawn the thread once
@@ -480,6 +535,40 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
             tracing::info!(target: "keyboard", "rdev listener thread started");
 
             let callback = move |event: Event| {
+                // Update silence-tracking timestamp pre-gate so we capture all rdev events,
+                // even those that arrive while the listener is temporarily inactive.
+                let baseline = *CALLBACK_BASELINE.get_or_init(Instant::now);
+                let now_ms = baseline.elapsed().as_millis() as u64;
+                LAST_CALLBACK_MS.store(now_ms, Ordering::SeqCst);
+
+                let event_kind: &'static str = match &event.event_type {
+                    EventType::KeyPress(_) => "KeyPress",
+                    EventType::KeyRelease(_) => "KeyRelease",
+                    EventType::FlagsChanged(_) => "FlagsChanged",
+                    EventType::MouseMove { .. } => "MouseMove",
+                    EventType::ButtonPress(_) => "ButtonPress",
+                    EventType::ButtonRelease(_) => "ButtonRelease",
+                    EventType::Wheel { .. } => "Wheel",
+                };
+
+                let dtap_state = DOUBLE_TAP_DETECTOR.lock().ok()
+                    .and_then(|g| g.as_ref().map(|d| format!("{:?}", d.state)))
+                    .unwrap_or_else(|| "None".to_string());
+                let hold_state = HOLD_DOWN_DETECTOR.lock().ok()
+                    .and_then(|g| g.as_ref().map(|d| format!("{:?}", d.state)))
+                    .unwrap_or_else(|| "None".to_string());
+
+                tracing::trace!(
+                    target: "keyboard",
+                    event_kind,
+                    event_type = ?event.event_type,
+                    dtap_state = %dtap_state,
+                    hold_state = %hold_state,
+                    listener_active = LISTENER_ACTIVE.load(Ordering::SeqCst),
+                    is_processing = IS_PROCESSING.load(Ordering::SeqCst),
+                    "raw rdev callback"
+                );
+
                 if !LISTENER_ACTIVE.load(Ordering::SeqCst) {
                     return;
                 }
@@ -551,6 +640,28 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
                     DetectorMode::Both => {
                         // Skip all events while the app is processing a transcription.
                         if IS_PROCESSING.load(Ordering::SeqCst) {
+                            // Noise gate: only log if this event involves the target key or a
+                            // modifier. Arbitrary typing during processing would flood the log.
+                            let target = *CURRENT_TARGET_KEY.lock().unwrap_or_else(|p| p.into_inner());
+                            let relevant = match &event.event_type {
+                                EventType::KeyPress(k) | EventType::KeyRelease(k) => {
+                                    is_modifier(*k) || target.map(|t| *k == t).unwrap_or(false)
+                                }
+                                EventType::FlagsChanged(k) => {
+                                    is_modifier(*k) || target.map(|t| *k == t).unwrap_or(false)
+                                }
+                                _ => false,
+                            };
+                            if relevant {
+                                tracing::debug!(
+                                    target: "keyboard",
+                                    reason = "processing_skipped",
+                                    event_kind,
+                                    event_type = ?event.event_type,
+                                    target_key = ?target,
+                                    "event dropped while IS_PROCESSING"
+                                );
+                            }
                             return;
                         }
 
@@ -625,8 +736,14 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
                                     // Double-tap completed
                                     tracing::info!(target: "keyboard", "BOTH -> emit double-tap-toggle");
                                     let _ = handle.emit("double-tap-toggle", ());
+                                } else {
+                                    tracing::debug!(
+                                        target: "keyboard",
+                                        reason = "single_short_tap_noop",
+                                        event_kind,
+                                        "BOTH -> hold-stop with no promotion and no dtap fire"
+                                    );
                                 }
-                                // else: short single tap, no recording was started, nothing to do
                             }
                             HoldDownEvent::None => {
                                 if dtap_fired {
@@ -653,6 +770,27 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
             std::thread::sleep(std::time::Duration::from_secs(60));
             if LISTENER_ACTIVE.load(Ordering::SeqCst) {
                 tracing::trace!(target: "keyboard", "listener heartbeat — active");
+
+                // Tap-silence check: warn if no raw rdev callbacks have arrived
+                // for SILENCE_WARN_MS while the listener is supposed to be active.
+                // Skip if CALLBACK_BASELINE is unset (no event has ever fired yet).
+                if let Some(baseline) = CALLBACK_BASELINE.get() {
+                    let now_ms = baseline.elapsed().as_millis() as u64;
+                    let last = LAST_CALLBACK_MS.load(Ordering::SeqCst);
+                    let silence_ms = now_ms.saturating_sub(last);
+                    if silence_ms > SILENCE_WARN_MS {
+                        tracing::warn!(
+                            target: "keyboard",
+                            silence_ms = silence_ms,
+                            last_callback_ms = last,
+                            now_ms = now_ms,
+                            threshold_ms = SILENCE_WARN_MS,
+                            "no raw rdev callbacks seen — listener may be dead"
+                        );
+                    }
+                }
+                // If CALLBACK_BASELINE is None, no event has ever arrived — don't
+                // warn until we see at least one event (avoids spurious startup warn).
             } else if !LISTENER_THREAD_SPAWNED.load(Ordering::SeqCst) {
                 // Listener thread has exited; stop monitoring.
                 break;
@@ -680,12 +818,26 @@ pub fn stop_listener() {
     }
     HOLD_PROMOTED.store(false, Ordering::SeqCst);
     HOLD_PRESS_COUNTER.fetch_add(1, Ordering::SeqCst); // invalidate pending timers
+
+    // Clear cached target so the processing_skipped noise gate doesn't fire
+    // spuriously after the listener stops.
+    {
+        let mut t = CURRENT_TARGET_KEY.lock().unwrap_or_else(|p| p.into_inner());
+        *t = None;
+    }
 }
 
 /// Update the target key without stopping/restarting the listener.
 /// Returns `true` if a hold-down stop event should be emitted (key changed while held).
 pub fn set_target_key(hotkey: &str) -> bool {
     let target = hotkey_to_rdev_key(hotkey);
+
+    // Keep CURRENT_TARGET_KEY in sync for the processing_skipped noise gate.
+    {
+        let mut t = CURRENT_TARGET_KEY.lock().unwrap_or_else(|p| p.into_inner());
+        *t = target;
+    }
+
     let mode = {
         let m = ACTIVE_MODE.lock().unwrap_or_else(|p| p.into_inner());
         *m
@@ -1363,5 +1515,23 @@ mod tests {
         // Next press — fresh sequence, timer would start (no sync emission)
         let e = both_handle_event(&mut hold, &mut dtap, &press(Key::ShiftLeft), false);
         assert_eq!(e, vec![]);
+    }
+
+    #[test]
+    fn reset_with_reason_captures_pre_reset_values() {
+        let mut d = make_detector(Key::ShiftLeft);
+        d.handle_event(&press(Key::ShiftLeft));
+        assert_eq!(d.state, DetectorState::WaitingFirstUp);
+        sleep(Duration::from_millis(250));
+        // At this point elapsed_ms should be > MAX_HOLD_DURATION_MS (200).
+        // Verify the capture helper sees the pre-reset state and a non-zero elapsed.
+        let (prev_state, elapsed_ms) = d.capture_before_reset();
+        assert_eq!(prev_state, DetectorState::WaitingFirstUp);
+        assert!(
+            elapsed_ms > MAX_HOLD_DURATION_MS,
+            "elapsed_ms={} should exceed MAX_HOLD_DURATION_MS={}",
+            elapsed_ms,
+            MAX_HOLD_DURATION_MS
+        );
     }
 }
