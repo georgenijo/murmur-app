@@ -254,7 +254,12 @@ pub fn init(app_handle: tauri::AppHandle) {
         jsonl_writer: Mutex::new(jsonl_writer),
     };
 
-    let filter = tracing_subscriber::EnvFilter::new("info");
+    // RUST_LOG overrides completely when set (e.g. RUST_LOG=info,keyboard=trace for
+    // raw-callback tracing of every keystroke). The default widens only the `keyboard`
+    // target to `debug` so diagnostic rejection reasons are visible in production
+    // builds without flooding other modules. All other modules stay at `info`.
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,keyboard=debug"));
 
     let subscriber = tracing_subscriber::registry()
         .with(filter)
