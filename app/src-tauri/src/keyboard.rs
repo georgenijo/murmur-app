@@ -514,6 +514,10 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
         *t = target;
     }
 
+    // Initialize the silence-tracking baseline at listener start so the heartbeat
+    // can warn even if rdev never invokes the callback (e.g. accessibility denied).
+    let baseline = CALLBACK_BASELINE.get_or_init(Instant::now);
+    LAST_CALLBACK_MS.store(baseline.elapsed().as_millis() as u64, Ordering::SeqCst);
     LISTENER_ACTIVE.store(true, Ordering::SeqCst);
 
     // Only spawn the thread once
@@ -544,19 +548,25 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
                 let event_kind: &'static str = match &event.event_type {
                     EventType::KeyPress(_) => "KeyPress",
                     EventType::KeyRelease(_) => "KeyRelease",
-                    EventType::FlagsChanged(_) => "FlagsChanged",
                     EventType::MouseMove { .. } => "MouseMove",
                     EventType::ButtonPress(_) => "ButtonPress",
                     EventType::ButtonRelease(_) => "ButtonRelease",
                     EventType::Wheel { .. } => "Wheel",
                 };
 
-                let dtap_state = DOUBLE_TAP_DETECTOR.lock().ok()
-                    .and_then(|g| g.as_ref().map(|d| format!("{:?}", d.state)))
-                    .unwrap_or_else(|| "None".to_string());
-                let hold_state = HOLD_DOWN_DETECTOR.lock().ok()
-                    .and_then(|g| g.as_ref().map(|d| format!("{:?}", d.state)))
-                    .unwrap_or_else(|| "None".to_string());
+                // Only compute detector state strings when trace is enabled — avoids
+                // mutex locks and format! allocations on every keystroke in the hot path.
+                let (dtap_state, hold_state) = if tracing::enabled!(target: "keyboard", tracing::Level::TRACE) {
+                    let dtap = DOUBLE_TAP_DETECTOR.lock().ok()
+                        .and_then(|g| g.as_ref().map(|d| format!("{:?}", d.state)))
+                        .unwrap_or_else(|| "None".to_string());
+                    let hold = HOLD_DOWN_DETECTOR.lock().ok()
+                        .and_then(|g| g.as_ref().map(|d| format!("{:?}", d.state)))
+                        .unwrap_or_else(|| "None".to_string());
+                    (dtap, hold)
+                } else {
+                    (String::new(), String::new())
+                };
 
                 tracing::trace!(
                     target: "keyboard",
@@ -645,9 +655,6 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
                             let target = *CURRENT_TARGET_KEY.lock().unwrap_or_else(|p| p.into_inner());
                             let relevant = match &event.event_type {
                                 EventType::KeyPress(k) | EventType::KeyRelease(k) => {
-                                    is_modifier(*k) || target.map(|t| *k == t).unwrap_or(false)
-                                }
-                                EventType::FlagsChanged(k) => {
                                     is_modifier(*k) || target.map(|t| *k == t).unwrap_or(false)
                                 }
                                 _ => false,
@@ -773,24 +780,22 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
 
                 // Tap-silence check: warn if no raw rdev callbacks have arrived
                 // for SILENCE_WARN_MS while the listener is supposed to be active.
-                // Skip if CALLBACK_BASELINE is unset (no event has ever fired yet).
-                if let Some(baseline) = CALLBACK_BASELINE.get() {
-                    let now_ms = baseline.elapsed().as_millis() as u64;
-                    let last = LAST_CALLBACK_MS.load(Ordering::SeqCst);
-                    let silence_ms = now_ms.saturating_sub(last);
-                    if silence_ms > SILENCE_WARN_MS {
-                        tracing::warn!(
-                            target: "keyboard",
-                            silence_ms = silence_ms,
-                            last_callback_ms = last,
-                            now_ms = now_ms,
-                            threshold_ms = SILENCE_WARN_MS,
-                            "no raw rdev callbacks seen — listener may be dead"
-                        );
-                    }
+                // CALLBACK_BASELINE is initialized when the listener starts, so this
+                // also fires if rdev never delivers any events (e.g. accessibility denied).
+                let baseline = CALLBACK_BASELINE.get_or_init(Instant::now);
+                let now_ms = baseline.elapsed().as_millis() as u64;
+                let last = LAST_CALLBACK_MS.load(Ordering::SeqCst);
+                let silence_ms = now_ms.saturating_sub(last);
+                if silence_ms > SILENCE_WARN_MS {
+                    tracing::warn!(
+                        target: "keyboard",
+                        silence_ms = silence_ms,
+                        last_callback_ms = last,
+                        now_ms = now_ms,
+                        threshold_ms = SILENCE_WARN_MS,
+                        "no raw rdev callbacks seen — listener may be dead"
+                    );
                 }
-                // If CALLBACK_BASELINE is None, no event has ever arrived — don't
-                // warn until we see at least one event (avoids spurious startup warn).
             } else if !LISTENER_THREAD_SPAWNED.load(Ordering::SeqCst) {
                 // Listener thread has exited; stop monitoring.
                 break;
@@ -1533,5 +1538,9 @@ mod tests {
             elapsed_ms,
             MAX_HOLD_DURATION_MS
         );
+
+        // Also exercise reset_with_reason itself to guard the capture-before-reset invariant.
+        d.reset_with_reason("held_too_long");
+        assert_eq!(d.state, DetectorState::Idle);
     }
 }
