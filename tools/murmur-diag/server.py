@@ -130,6 +130,46 @@ def pair_keyboard_to_recordings(
     return correlated, missed
 
 
+def extract_kb_starts(events: list[dict]) -> list[dict]:
+    """Return only keyboard events that start a recording.
+
+    Walks events in timestamp order and maintains a synthetic `is_recording`
+    state that mirrors DoubleTapDetector.recording in keyboard.rs, so
+    double-tap-toggle events are classified as start vs stop based on context.
+    Hold-down-stop events are excluded.
+
+    Matched summaries (see app/src-tauri/src/keyboard.rs lines 608/623/627/635):
+      - "hold-down-start"    → "BOTH -> timer promoted to hold-down-start"
+      - "hold-down-stop"     → "BOTH -> emit hold-down-stop (promoted hold)"
+      - "double-tap-toggle"  → "BOTH -> emit double-tap-toggle"
+                               "BOTH -> emit double-tap-toggle (hold=None)"
+
+    TODO: when issue #152 (correlation tokens) lands and adds data.direction,
+    this stateful classifier can be replaced by a simple data.direction == "start" filter.
+    """
+    sorted_events = sorted(events, key=lambda e: e.get("timestamp", ""))
+    is_recording = False
+    starts = []
+
+    for e in sorted_events:
+        if e.get("stream") != "keyboard":
+            continue
+        summary = e.get("summary", "")
+        if "hold-down-start" in summary:
+            is_recording = True
+            starts.append(e)
+        elif "hold-down-stop" in summary:
+            is_recording = False
+        elif "double-tap-toggle" in summary:
+            if not is_recording:
+                starts.append(e)
+                is_recording = True
+            else:
+                is_recording = False
+
+    return starts
+
+
 def filter_events(
     events: list[dict],
     stream: list[str] | None = None,
@@ -220,9 +260,8 @@ def correlate_keyboard(
     all_events = read_jsonl_files("events.jsonl.1", "events.jsonl")
     filtered = filter_events(all_events, since=since_dt, until=until_dt)
 
-    # Keyboard start events: summary contains "emit" (toggle/start triggers)
-    kb_starts = [e for e in filtered if e.get("stream") == "keyboard"
-                 and "emit" in e.get("summary", "").lower()]
+    # Keyboard start events — directional classification (handles toggle stops)
+    kb_starts = extract_kb_starts(filtered)
 
     # Recording start events from pipeline (exclude "already recording" overlaps)
     rec_starts = [e for e in filtered if e.get("stream") == "pipeline"
@@ -290,8 +329,7 @@ def session_summary(
         warnings = sum(1 for e in session_events if e.get("level") == "warn")
 
         # Missed hotkeys using the same pairing logic as correlate_keyboard
-        kb_starts = [e for e in session_events if e.get("stream") == "keyboard"
-                     and "emit" in e.get("summary", "").lower()]
+        kb_starts = extract_kb_starts(session_events)
         rec_starts = [e for e in session_events if e.get("stream") == "pipeline"
                       and "start_native_recording" in e.get("summary", "")
                       and "already recording" not in e.get("summary", "").lower()]
