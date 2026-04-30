@@ -27,7 +27,7 @@ jobs:
         run: cd app && npm test
 
   rust-macos:
-    runs-on: macos-latest
+    runs-on: blacksmith-6vcpu-macos-15
     steps:
       - uses: actions/checkout@v4
 
