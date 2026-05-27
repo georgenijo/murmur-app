@@ -93,7 +93,7 @@ Launch the app:
 open -n app/src-tauri/target/debug/bundle/macos/Local\ Dictation\ Dev.app
 ```
 
-Use Computer Use against `Local Dictation Dev` to verify visible behavior. Do not substitute browser testing for native-app testing when the user asks for the real app.
+Use native-app automation to verify visible behavior. Do not substitute browser testing for native-app testing when the user asks for the real app.
 
 ## Merge Preparation
 
