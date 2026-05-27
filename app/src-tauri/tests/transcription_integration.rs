@@ -80,6 +80,6 @@ fn whisper_backend_roundtrip() {
     let wav_bytes = make_sine_wav_bytes();
     let samples = parse_wav_to_samples(&wav_bytes).expect("failed to parse WAV");
 
-    let result = backend.transcribe(&samples, "en");
+    let result = backend.transcribe(&samples, "en", None, true);
     assert!(result.is_ok(), "transcription failed: {:?}", result.err());
 }

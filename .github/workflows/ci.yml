@@ -67,33 +67,12 @@ jobs:
       - name: Install frontend dependencies
         run: cd app && npm ci
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install Linux system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libappindicator3-dev \
-            libasound2-dev \
-            libgtk-3-dev \
-            librsvg2-dev \
-            libssl-dev \
-            libwebkit2gtk-4.1-dev \
-            libxdo-dev \
-            patchelf
-
-      - name: Install CUDA toolkit
-        uses: Jimver/cuda-toolkit@v0.2.21
+      # actions/checkout above must run first so the local composite action is on disk.
+      - name: Setup Linux build environment
+        uses: ./.github/actions/setup-linux-build
         with:
-          cuda: '12.8.0'
-          method: 'network'
-
-      - name: Cache Rust dependencies
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: app/src-tauri
-          prefix-key: linux
+          cuda-version: '12.8.0'
+          rust-cache-shared-key: linux-cuda-debug
 
       - name: Compile check
         run: cd app/src-tauri && cargo check
