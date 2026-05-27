@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { initDictation, configure } from '../dictation';
 import { Settings } from '../settings';
 
@@ -21,6 +22,10 @@ export function useInitialization(settings: Settings) {
           customVocabulary: settings.customVocabulary,
           smartPunctuation: settings.smartPunctuation,
         });
+      })
+      .then(() => {
+        if (cancelled) return;
+        return invoke('set_app_disabled', { disabled: settings.disabled }).catch(() => {});
       })
       .then(() => { if (!cancelled) setInitialized(true); })
       .catch((err) => { if (!cancelled) setError(String(err)); });

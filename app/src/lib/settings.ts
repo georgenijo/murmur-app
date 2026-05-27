@@ -14,6 +14,7 @@ export interface Settings {
   vadSensitivity: number;
   idleTimeoutMinutes: number;
   customVocabulary: string;
+  disabled: boolean;
   smartPunctuation: boolean;
 }
 
@@ -77,6 +78,7 @@ export const DEFAULT_SETTINGS: Settings = {
   vadSensitivity: 50,
   idleTimeoutMinutes: 5,
   customVocabulary: '',
+  disabled: false,
   smartPunctuation: true,
 };
 
