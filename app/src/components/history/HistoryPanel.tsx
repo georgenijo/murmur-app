@@ -63,12 +63,12 @@ export function HistoryPanel({ entries, onClearHistory }: HistoryPanelProps) {
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       {/* Scrollable list */}
-      <div className="flex-1 overflow-y-auto space-y-2">
+      <div className="flex-1 overflow-y-auto space-y-3">
         {sortedEntries.map((entry) => (
           <button
             key={entry.id}
             onClick={() => handleCopy(entry)}
-            className={`w-full text-left p-3 rounded-lg border transition-all ${
+            className={`w-full text-left p-3.5 rounded-lg border transition-all ${
               copiedId === entry.id
                 ? 'bg-emerald-50 dark:bg-emerald-900/20 border-emerald-300 dark:border-emerald-700'
                 : 'bg-stone-50 dark:bg-stone-700/50 border-stone-200 dark:border-stone-600 hover:bg-stone-100 dark:hover:bg-stone-700'
@@ -105,7 +105,7 @@ export function HistoryPanel({ entries, onClearHistory }: HistoryPanelProps) {
               </div>
             </div>
             {/* Text content */}
-            <p className="text-sm text-stone-900 dark:text-stone-100 overflow-y-auto max-h-32">
+            <p className="text-xs text-stone-900 dark:text-stone-100 overflow-y-auto max-h-32">
               {entry.text}
             </p>
           </button>
