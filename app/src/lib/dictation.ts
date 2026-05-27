@@ -64,6 +64,7 @@ export interface ConfigureOptions {
   vadSensitivity?: number;
   idleTimeoutMinutes?: number;
   customVocabulary?: string;
+  smartPunctuation?: boolean;
 }
 
 export async function configure(options: ConfigureOptions): Promise<DictationResponse> {

@@ -355,6 +355,11 @@ static HOLD_PROMOTED_AT_MS: AtomicU64 = AtomicU64::new(0);
 /// Set by lib.rs when the transcription pipeline is running.
 static IS_PROCESSING: AtomicBool = AtomicBool::new(false);
 
+/// When true, the rdev callback ignores all keyboard events except Escape
+/// (which still cancels in-progress recordings). Set by the `set_app_disabled`
+/// Tauri command. Thread-safe, lock-free.
+static APP_DISABLED: AtomicBool = AtomicBool::new(false);
+
 /// Called by lib.rs to tell the keyboard module whether the app is processing.
 /// When transitioning out of processing, reset both detectors and apply a
 /// cooldown so rapid post-processing taps don't immediately toggle.
@@ -397,6 +402,33 @@ pub fn set_processing(processing: bool) {
 #[cfg(test)]
 pub fn is_processing() -> bool {
     IS_PROCESSING.load(Ordering::SeqCst)
+}
+
+/// Set or clear the global disabled flag. When transitioning to disabled,
+/// resets both detectors and invalidates any pending hold-promotion timer so
+/// re-enabling doesn't produce phantom events.
+pub fn set_app_disabled(disabled: bool) {
+    let was_disabled = APP_DISABLED.swap(disabled, Ordering::SeqCst);
+    if !was_disabled && disabled {
+        // Transitioning false → true: clean up any partial detector state
+        HOLD_PROMOTED.store(false, Ordering::SeqCst);
+        HOLD_PROMOTED_AT_MS.store(0, Ordering::SeqCst);
+        HOLD_PRESS_COUNTER.fetch_add(1, Ordering::SeqCst);
+        if let Ok(mut det) = HOLD_DOWN_DETECTOR.lock() {
+            if let Some(d) = det.as_mut() { d.reset(); }
+        }
+        if let Ok(mut det) = DOUBLE_TAP_DETECTOR.lock() {
+            if let Some(d) = det.as_mut() { d.reset(); }
+        }
+        tracing::info!(target: "keyboard", "app disabled: hotkey events gated");
+    } else if was_disabled && !disabled {
+        tracing::info!(target: "keyboard", "app enabled: hotkey events resumed");
+    }
+}
+
+/// Returns whether the app is currently disabled.
+pub fn is_app_disabled() -> bool {
+    APP_DISABLED.load(Ordering::SeqCst)
 }
 
 // -- Global listener state --
@@ -531,6 +563,10 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
 
                     tracing::info!(target: "keyboard", "Escape pressed — emitting escape-cancel");
                     let _ = handle.emit("escape-cancel", ());
+                    return;
+                }
+
+                if APP_DISABLED.load(Ordering::SeqCst) {
                     return;
                 }
 
@@ -1431,5 +1467,42 @@ mod tests {
         // Release 400ms after promotion — past the 300ms grace window → stop
         let e = both_handle_event(&mut hold, &mut dtap, &release(Key::ShiftLeft), true, 400);
         assert_eq!(e, vec![BothEmit::HoldStop]);
+    }
+
+    #[test]
+    fn app_disabled_setter_getter_roundtrip() {
+        // Ensure clean initial state
+        set_app_disabled(false);
+        assert!(!is_app_disabled());
+
+        set_app_disabled(true);
+        assert!(is_app_disabled());
+
+        set_app_disabled(false);
+        assert!(!is_app_disabled());
+    }
+
+    #[test]
+    fn app_disabled_resets_detectors() {
+        // Prime the double-tap detector into a non-idle state
+        {
+            let mut det = DOUBLE_TAP_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
+            let d = det.get_or_insert_with(DoubleTapDetector::new);
+            d.set_target(Some(Key::ShiftLeft));
+            d.handle_event(&EventType::KeyPress(Key::ShiftLeft));
+            assert_eq!(d.state, DetectorState::WaitingFirstUp);
+        }
+
+        set_app_disabled(true);
+
+        {
+            let det = DOUBLE_TAP_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(d) = det.as_ref() {
+                assert_eq!(d.state, DetectorState::Idle);
+            }
+        }
+
+        // Restore
+        set_app_disabled(false);
     }
 }

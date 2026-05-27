@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { Settings, loadSettings, saveSettings } from '../settings';
 import { configure } from '../dictation';
 import { enable, disable, isEnabled } from '@tauri-apps/plugin-autostart';
@@ -47,9 +48,15 @@ export function useSettings() {
       });
     }
 
-    if ('model' in updates || 'language' in updates || 'autoPaste' in updates || 'autoPasteDelayMs' in updates || 'vadSensitivity' in updates || 'idleTimeoutMinutes' in updates || 'customVocabulary' in updates) {
+    if ('disabled' in updates) {
+      invoke('set_app_disabled', { disabled: newSettings.disabled }).catch((err) => {
+        console.error('Failed to sync disabled state:', err);
+      });
+    }
+
+    if ('model' in updates || 'language' in updates || 'autoPaste' in updates || 'autoPasteDelayMs' in updates || 'vadSensitivity' in updates || 'idleTimeoutMinutes' in updates || 'customVocabulary' in updates || 'smartPunctuation' in updates) {
       const version = ++configureVersionRef.current;
-      configure({ model: newSettings.model, language: newSettings.language, autoPaste: newSettings.autoPaste, autoPasteDelayMs: newSettings.autoPasteDelayMs, vadSensitivity: newSettings.vadSensitivity, idleTimeoutMinutes: newSettings.idleTimeoutMinutes, customVocabulary: newSettings.customVocabulary })
+      configure({ model: newSettings.model, language: newSettings.language, autoPaste: newSettings.autoPaste, autoPasteDelayMs: newSettings.autoPasteDelayMs, vadSensitivity: newSettings.vadSensitivity, idleTimeoutMinutes: newSettings.idleTimeoutMinutes, customVocabulary: newSettings.customVocabulary, smartPunctuation: newSettings.smartPunctuation })
         .catch((err) => {
           console.error('Failed to configure:', err);
           if (configureVersionRef.current === version) {
@@ -62,6 +69,7 @@ export function useSettings() {
               vadSensitivity: previousSettings.vadSensitivity,
               idleTimeoutMinutes: previousSettings.idleTimeoutMinutes,
               customVocabulary: previousSettings.customVocabulary,
+              smartPunctuation: previousSettings.smartPunctuation,
             };
             settingsRef.current = reverted;
             setSettings(reverted);
