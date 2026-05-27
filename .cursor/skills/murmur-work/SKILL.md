@@ -1,13 +1,16 @@
 ---
-description: Prepare Murmur GitHub issue worktrees using the `work issue-number` workflow adapted for Cursor.
-globs:
-  - "**/*"
-alwaysApply: false
+name: murmur-work
+description: >-
+  Prepares Murmur GitHub issue worktrees and loads prompts/PROMPT.md for
+  plan-first implementation. Use when running or mimicking the work command,
+  starting an issue by number, creating an issue worktree, or loading issue
+  context before coding.
+disable-model-invocation: true
 ---
 
 # Murmur Work
 
-Use this rule when the user asks Cursor to run, mimic, port, or follow the `work` command; start work on a GitHub issue by number; create an issue worktree; or load the Murmur feature prompt plus issue context before implementation.
+Use this skill when the user asks Cursor to run, mimic, port, or follow the `work` command; start work on a GitHub issue by number; create an issue worktree; or load the Murmur feature prompt plus issue context before implementation.
 
 ## Goal
 
@@ -108,4 +111,3 @@ Follow the combined prompt. If it says to plan first or wait for approval, do th
 - Do not mutate the dirty main checkout; use the issue worktree.
 - Before editing, check `git status --short` in the issue worktree and surface unexpected changes.
 - Run the verification commands required by the loaded Murmur prompt before committing or opening a PR.
-

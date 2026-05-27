@@ -1,0 +1,16 @@
+approval_policy = "never"
+[mcp_servers.murmur-diag]
+command = "bash"
+args = ["tools/murmur-diag/run.sh"]
+
+[mcp_servers.omen]
+command = "omen"
+args = ["mcp"]
+
+[mcp_servers.playwright]
+command = "npx"
+args = [
+    "@playwright/mcp@latest",
+    "--headless",
+    "--viewport-size=1280x720",
+]
