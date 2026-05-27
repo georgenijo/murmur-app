@@ -409,7 +409,9 @@ mod tests {
     }
 }
 
-fn resample(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
+/// Linear-interpolation resample from `from_rate` to `to_rate`.
+/// Used by both live capture (`stop_recording`) and file decoding (`audio_decode`).
+pub fn resample(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
     if from_rate == to_rate {
         return samples.to_vec();
     }

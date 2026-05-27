@@ -1,7 +1,7 @@
 use crate::{MutexExt, State};
 use crate::state::{AppState, DictationStatus};
 use crate::transcriber;
-use crate::{audio, injector, keyboard, vad};
+use crate::{audio, audio_decode, injector, keyboard, vad};
 use std::sync::atomic::Ordering;
 use tauri::Emitter;
 
@@ -627,6 +627,108 @@ pub async fn count_vocab_tokens(
 ) -> Result<Option<usize>, String> {
     let backend = state.app_state.backend.lock_or_recover();
     Ok(backend.token_count(&text))
+}
+
+/// Transcribe an existing audio file (WAV/MP3/M4A) through the same Whisper
+/// backend and settings as live dictation.
+///
+/// Unlike live recording, this path deliberately does **not** inject/paste the
+/// result or drive the Idle/Recording/Processing status machine — a file
+/// transcription is a one-shot "give me the text" action whose result is shown
+/// in the UI. It decodes, downmixes to mono, resamples to 16kHz, applies VAD,
+/// transcribes, and returns the text plus the decoded audio duration (seconds).
+#[tauri::command]
+pub async fn transcribe_file(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, State>,
+    file_path: String,
+) -> Result<serde_json::Value, String> {
+    tracing::info!(target: "pipeline", "transcribe_file: {}", file_path);
+
+    // Phase: decode + downmix + resample to 16kHz mono (off the async runtime).
+    let t_decode = std::time::Instant::now();
+    let path_for_decode = file_path.clone();
+    let samples = tokio::task::spawn_blocking(move || audio_decode::decode_to_mono_16k(&path_for_decode))
+        .await
+        .map_err(|e| format!("Decode task panicked: {}", e))??;
+    if samples.is_empty() {
+        return Err("No audio samples decoded from file".to_string());
+    }
+    let duration_secs = samples.len() / 16_000;
+    tracing::info!(target: "pipeline", "transcribe_file: decoded {} samples (~{}s) in {:?}",
+        samples.len(), duration_secs, t_decode.elapsed());
+
+    // Read the settings shared with live dictation in one lock.
+    let (model_name, language, vad_sensitivity, custom_vocabulary, smart_punctuation) = {
+        let dictation = state.app_state.dictation.lock_or_recover();
+        (dictation.model_name.clone(), dictation.language.clone(), dictation.vad_sensitivity,
+         dictation.custom_vocabulary.clone(), dictation.smart_punctuation)
+    };
+
+    // Phase: VAD — skip silence, best-effort with fallback to full audio (mirrors live).
+    let vad_threshold = 1.0 - (vad_sensitivity as f32 / 100.0);
+    let samples_for_transcription = match vad::vad_model_path() {
+        Some(vad_path) if vad_path.exists() => {
+            let vad_path_str = vad_path.to_string_lossy().to_string();
+            let samples_owned = samples.clone();
+            let vad_result = tokio::task::spawn_blocking(move || {
+                vad::filter_speech(&vad_path_str, &samples_owned, vad_threshold)
+            })
+            .await
+            .unwrap_or_else(|e| Err(format!("VAD task panicked: {}", e)));
+
+            match vad_result {
+                Ok(vad::VadResult::NoSpeech) => {
+                    tracing::info!(target: "pipeline", "transcribe_file: VAD detected no speech");
+                    return Ok(serde_json::json!({
+                        "type": "file_transcription", "text": "", "duration": duration_secs
+                    }));
+                }
+                Ok(vad::VadResult::Speech(trimmed)) => trimmed,
+                Err(e) => {
+                    tracing::warn!(target: "pipeline", "transcribe_file: VAD failed ({}), proceeding without filtering", e);
+                    samples
+                }
+            }
+        }
+        _ => {
+            // VAD model missing — kick off a background download for next time.
+            let handle = app_handle.clone();
+            tokio::spawn(async move {
+                if let Err(e) = super::models::ensure_vad_model(&handle).await {
+                    tracing::warn!(target: "pipeline", "transcribe_file: VAD model download failed ({})", e);
+                }
+            });
+            samples
+        }
+    };
+
+    // Phase: transcription (lazy model load), mirroring run_transcription_pipeline.
+    let t_transcribe = std::time::Instant::now();
+    let text = {
+        let sanitized = custom_vocabulary.replace('\0', "");
+        let prompt = if sanitized.trim().is_empty() { None } else { Some(sanitized) };
+        let mut backend = state.app_state.backend.lock_or_recover();
+        backend.load_model(&model_name)?;
+        backend.transcribe(&samples_for_transcription, &language, prompt.as_deref(), smart_punctuation)?
+    };
+    *state.app_state.last_transcription_at.lock_or_recover() = Some(std::time::Instant::now());
+
+    let word_count = if text.trim().is_empty() { 0 } else { text.split_whitespace().count() };
+    tracing::info!(
+        target: "pipeline",
+        inference_ms = t_transcribe.elapsed().as_millis() as u64,
+        audio_secs = duration_secs as f64,
+        word_count = word_count,
+        model = model_name.as_str(),
+        "file transcription complete"
+    );
+
+    Ok(serde_json::json!({
+        "type": "file_transcription",
+        "text": text,
+        "duration": duration_secs
+    }))
 }
 
 #[cfg(test)]

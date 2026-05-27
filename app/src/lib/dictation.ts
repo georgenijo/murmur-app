@@ -7,6 +7,8 @@ export interface DictationResponse {
   text?: string;
   model?: string;
   error?: string;
+  /** Decoded audio length in seconds (file transcription only). */
+  duration?: number;
 }
 
 export async function initDictation(): Promise<DictationResponse> {
@@ -73,4 +75,19 @@ export async function configure(options: ConfigureOptions): Promise<DictationRes
 
 export async function countVocabTokens(text: string): Promise<number | null> {
   return await invoke('count_vocab_tokens', { text });
+}
+
+/**
+ * Transcribe an existing audio file (WAV/MP3/M4A) via the Rust `transcribe_file`
+ * command. Unlike live recording this returns the text directly (no auto-paste).
+ */
+export async function transcribeFile(filePath: string): Promise<DictationResponse> {
+  try {
+    return await invoke('transcribe_file', { filePath });
+  } catch (err) {
+    return {
+      type: 'error',
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
 }

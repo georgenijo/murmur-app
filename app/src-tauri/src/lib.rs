@@ -1,6 +1,7 @@
 #[cfg(target_os = "macos")]
 mod alloc;
 mod audio;
+mod audio_decode;
 mod commands;
 mod injector;
 mod keyboard;
@@ -107,6 +108,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(State {
             app_state: AppState::default(),
             notch_info: Mutex::new(None),
@@ -120,6 +122,7 @@ pub fn run() {
             commands::recording::stop_native_recording,
             commands::recording::cancel_native_recording,
             commands::recording::count_vocab_tokens,
+            commands::recording::transcribe_file,
             commands::permissions::open_system_preferences,
             commands::permissions::check_accessibility_permission,
             commands::permissions::request_accessibility_permission,
