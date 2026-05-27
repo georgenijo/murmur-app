@@ -1,6 +1,6 @@
 use std::sync::Mutex;
 use std::time::Instant;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use serde::{Deserialize, Serialize};
 use crate::transcriber::{TranscriptionBackend, WhisperBackend};
 
@@ -57,6 +57,10 @@ pub struct AppState {
     /// Set to the recording_id of a cancelled recording. Pipeline checks
     /// `cancelled_id >= my_id` at checkpoints to discard cancelled work.
     pub cancelled_id: AtomicU64,
+    /// True while a file transcription is running. Live recording and file
+    /// transcription share one Whisper backend, so they must be mutually
+    /// exclusive — this flag lets each path refuse to start over the other.
+    pub file_transcribing: AtomicBool,
 }
 
 impl AppState {
@@ -85,6 +89,7 @@ impl Default for AppState {
             idle_timeout_minutes: Mutex::new(5),
             recording_id: AtomicU64::new(0),
             cancelled_id: AtomicU64::new(0),
+            file_transcribing: AtomicBool::new(false),
         }
     }
 }

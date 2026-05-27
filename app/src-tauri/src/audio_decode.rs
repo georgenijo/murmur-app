@@ -110,7 +110,6 @@ pub fn decode_to_mono_16k(path: &str) -> Result<Vec<f32>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     /// Write a minimal 16-bit PCM WAV to a temp path and return the path.
     fn write_wav(samples_per_channel: &[i16], channels: u16, sample_rate: u32) -> std::path::PathBuf {

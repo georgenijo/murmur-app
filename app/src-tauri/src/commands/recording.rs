@@ -44,6 +44,19 @@ impl Drop for IdleGuard<'_> {
     }
 }
 
+/// RAII guard that clears `file_transcribing` on drop, so a file transcription
+/// releases its mutual-exclusion claim on every return path (early errors, `?`,
+/// or success).
+struct FileTranscribeGuard<'a> {
+    app_state: &'a AppState,
+}
+
+impl Drop for FileTranscribeGuard<'_> {
+    fn drop(&mut self) {
+        self.app_state.file_transcribing.store(false, Ordering::SeqCst);
+    }
+}
+
 pub(crate) struct PipelineTimings {
     pub vad_ms: u64,
     pub inference_ms: u64,
@@ -386,6 +399,16 @@ pub async fn start_native_recording(
     // critical section so no concurrent cancel/start can slip between them.
     let rid = {
         let mut dictation = state.app_state.dictation.lock_or_recover();
+        // Refuse if a file transcription holds the shared Whisper backend.
+        // Checked under the dictation lock (which `transcribe_file` takes only
+        // after claiming the flag) so the two paths can't both start.
+        if state.app_state.file_transcribing.load(Ordering::SeqCst) {
+            tracing::warn!(target: "pipeline", "start_native_recording: blocked — file transcription in progress");
+            return Ok(serde_json::json!({
+                "type": "busy_transcribing_file",
+                "state": "idle"
+            }));
+        }
         match dictation.status {
             DictationStatus::Recording => {
                 tracing::warn!(target: "pipeline", "start_native_recording: already recording");
@@ -643,7 +666,33 @@ pub async fn transcribe_file(
     state: tauri::State<'_, State>,
     file_path: String,
 ) -> Result<serde_json::Value, String> {
-    tracing::info!(target: "pipeline", "transcribe_file: {}", file_path);
+    // Mutual exclusion with live dictation: both share one Whisper backend.
+    // Claim the slot first (so a racing `start_native_recording` is blocked),
+    // then refuse if a live recording/processing is already underway. The guard
+    // releases the claim on every return path below.
+    if state.app_state.file_transcribing.swap(true, Ordering::SeqCst) {
+        return Err("Already transcribing a file.".to_string());
+    }
+    let _file_guard = FileTranscribeGuard { app_state: &state.app_state };
+    {
+        let dictation = state.app_state.dictation.lock_or_recover();
+        if dictation.status != DictationStatus::Idle {
+            return Err(
+                "Can't transcribe a file while recording or processing live audio. \
+                 Stop the current recording first."
+                    .to_string(),
+            );
+        }
+    }
+
+    // Log only the extension as a structured field — never the raw path, which
+    // would carry the user's home dir/username into telemetry (release builds
+    // strip string fields from pipeline events, but not the message text).
+    let ext = std::path::Path::new(&file_path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    tracing::info!(target: "pipeline", ext = ext, "transcribe_file: start");
 
     // Phase: decode + downmix + resample to 16kHz mono (off the async runtime).
     let t_decode = std::time::Instant::now();
@@ -654,8 +703,9 @@ pub async fn transcribe_file(
     if samples.is_empty() {
         return Err("No audio samples decoded from file".to_string());
     }
-    let duration_secs = samples.len() / 16_000;
-    tracing::info!(target: "pipeline", "transcribe_file: decoded {} samples (~{}s) in {:?}",
+    // Precise seconds (f64): integer division floors sub-second clips to 0.
+    let duration_secs = samples.len() as f64 / 16_000.0;
+    tracing::info!(target: "pipeline", "transcribe_file: decoded {} samples (~{:.1}s) in {:?}",
         samples.len(), duration_secs, t_decode.elapsed());
 
     // Read the settings shared with live dictation in one lock.
@@ -718,7 +768,7 @@ pub async fn transcribe_file(
     tracing::info!(
         target: "pipeline",
         inference_ms = t_transcribe.elapsed().as_millis() as u64,
-        audio_secs = duration_secs as f64,
+        audio_secs = duration_secs,
         word_count = word_count,
         model = model_name.as_str(),
         "file transcription complete"
@@ -777,6 +827,18 @@ mod tests {
             let _guard = IdleGuard::new(&app_state, rid);
         }
         assert!(!keyboard::is_processing());
+    }
+
+    #[test]
+    fn file_transcribe_guard_clears_flag_on_drop() {
+        use std::sync::atomic::Ordering;
+        let app_state = AppState::default();
+        app_state.file_transcribing.store(true, Ordering::SeqCst);
+        {
+            let _guard = FileTranscribeGuard { app_state: &app_state };
+            // guard drops here
+        }
+        assert!(!app_state.file_transcribing.load(Ordering::SeqCst));
     }
 
     #[test]
