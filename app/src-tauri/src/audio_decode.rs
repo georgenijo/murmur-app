@@ -76,7 +76,7 @@ pub fn decode_to_mono_16k(path: &str) -> Result<Vec<f32>, String> {
             }
             // A single bad packet is non-fatal; skip it.
             Err(SymphoniaError::DecodeError(e)) => {
-                tracing::warn!(target: "pipeline", "audio_decode: skipping bad packet: {}", e);
+                tracing::warn!(target: "pipeline", error = %e, "audio_decode: skipping bad packet");
                 continue;
             }
             Err(e) => return Err(format!("Audio decode failed: {}", e)),

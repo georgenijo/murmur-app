@@ -230,6 +230,13 @@ pub async fn process_audio(
 ) -> Result<serde_json::Value, String> {
     let rid = {
         let mut dictation = state.app_state.dictation.lock_or_recover();
+        // Same mutual exclusion as start_native_recording: this legacy base64
+        // path also runs the shared Whisper backend, so refuse while a file
+        // transcription holds the slot. Checked under the dictation lock.
+        if state.app_state.file_transcribing.load(Ordering::SeqCst) {
+            tracing::warn!(target: "pipeline", "process_audio: blocked — file transcription in progress");
+            return Err("Cannot process audio while a file transcription is in progress.".to_string());
+        }
         dictation.status = DictationStatus::Processing;
         state.app_state.recording_id.load(Ordering::SeqCst)
     };
