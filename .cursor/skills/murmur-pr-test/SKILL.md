@@ -1,13 +1,16 @@
 ---
-description: Repeatable Murmur pull request testing, native app smoke testing, and safe merge workflow.
-globs:
-  - "**/*"
-alwaysApply: false
+name: murmur-pr-test
+description: >-
+  Tests and validates Murmur pull requests in isolated worktrees with cargo,
+  TypeScript checks, and native Tauri smoke tests. Use when testing a PR,
+  merging a verified PR, picking the next PR from the queue, or continuing
+  PR validation for georgenijo/murmur-app.
+disable-model-invocation: true
 ---
 
 # Murmur PR Test
 
-Use this rule when testing, validating, or merging Murmur pull requests, especially when the user asks to pick the next PR, test a PR in the real native app, merge it if it looks good, or continue through the PR queue.
+Use this skill when testing, validating, or merging Murmur pull requests, especially when the user asks to pick the next PR, test a PR in the real native app, merge it if it looks good, or continue through the PR queue.
 
 ## Goal
 
