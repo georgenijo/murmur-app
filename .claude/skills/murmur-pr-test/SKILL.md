@@ -1,0 +1,140 @@
+# Murmur PR Test
+
+Use this skill when testing, validating, or merging Murmur pull requests, especially when the user asks to pick the next PR, test a PR in the real native app, merge it if it looks good, or continue through the PR queue.
+
+## Goal
+
+Make PR validation repeatable, isolated, and merge-safe:
+
+- Test each PR in its own worktree.
+- Prefer the real native Tauri app for user-facing Murmur behavior.
+- Run the required compile and test checks before merge.
+- Merge only after the PR is verified and the user has asked to merge.
+- Skip and report PRs with clear blockers.
+
+## Before Testing
+
+1. Inspect open PRs with `gh pr list --repo georgenijo/murmur-app`.
+2. Pick the requested PR, or choose a small, testable PR if the user asks for the next one.
+3. Read the PR body with `gh pr view <number> --repo georgenijo/murmur-app`.
+4. Do not refetch the issue unless the user asks. Use the PR title/body and changed files.
+5. If the PR body lists known blockers, do not test deeply; report the blocker and pick another PR if requested.
+
+## Worktree Isolation
+
+Never test PRs in the dirty main checkout. Use a separate worktree:
+
+```bash
+git fetch origin pull/<number>/head:codex/test-pr-<number>
+git worktree add ../murmur-app-pr-<number> codex/test-pr-<number>
+```
+
+If the worktree already exists, inspect it before reusing it:
+
+```bash
+git -C ../murmur-app-pr-<number> status --short
+git -C ../murmur-app-pr-<number> branch --show-current
+```
+
+## Choose The Test Path
+
+Inspect changed files:
+
+```bash
+git diff --stat origin/main...HEAD
+git diff --name-only origin/main...HEAD
+```
+
+Use the narrowest useful smoke test first, but always run the required checks before merge.
+
+- Rust/backend changes: run Rust checks and tests.
+- Frontend/settings changes: run TypeScript and native app smoke tests.
+- Overlay or app UI behavior: test the real native app with Computer Use.
+- Docs-only changes: no native app required unless behavior is unclear.
+- Workflow/CI changes: inspect YAML and run local checks that approximate the workflow.
+
+## Required Checks Before Merge
+
+Run all of these from the PR worktree:
+
+```bash
+cd app/src-tauri && cargo check
+cd app/src-tauri && cargo test -- --test-threads=1
+cd app && npx tsc --noEmit
+```
+
+All checks must pass before merging. Fix only issues required to make the PR mergeable and verified.
+
+## Native App Testing
+
+When the PR affects Murmur behavior or UI, test the real app, not the Vite web page.
+
+Build the dev app:
+
+```bash
+cd app
+npx tauri build --debug --config src-tauri/tauri.dev.conf.json
+```
+
+If the command exits nonzero only because `TAURI_SIGNING_PRIVATE_KEY` is missing, check whether the `.app` was still produced. That signing failure is not itself a native smoke-test blocker.
+
+Launch the app:
+
+```bash
+open -n app/src-tauri/target/debug/bundle/macos/Local\ Dictation\ Dev.app
+```
+
+Use Computer Use against `Local Dictation Dev` to verify visible behavior. Do not substitute browser testing for native-app testing when the user asks for the real app.
+
+## Merge Preparation
+
+If GitHub says the PR is dirty or not mergeable:
+
+1. Fetch current main.
+2. Merge `origin/main` into the PR worktree.
+3. Resolve only necessary conflicts.
+4. Preserve both the PR behavior and already-merged main behavior.
+5. Rerun all required checks.
+6. Commit the conflict resolution with a focused message:
+
+```bash
+git commit -m "chore: merge main into <short-pr-name> PR"
+```
+
+Push to the PR head branch:
+
+```bash
+git push origin HEAD:<headRefName>
+```
+
+## Merge
+
+Only merge when:
+
+- The user asked to merge passing PRs.
+- Native smoke testing passed when applicable.
+- `cargo check` passed.
+- `cargo test -- --test-threads=1` passed.
+- `npx tsc --noEmit` passed.
+- There are no known blockers.
+
+Merge with:
+
+```bash
+gh pr merge <number> --repo georgenijo/murmur-app --merge
+```
+
+Use `--admin` only when the user has authorized merging despite branch protection and the local verification is clean.
+
+## Reporting
+
+Report:
+
+- PR number and title.
+- Worktree path.
+- What was tested in the native app.
+- Exact checks run and whether they passed.
+- Any blockers, with the command error or file conflict.
+- Merge commit or PR URL if merged.
+
+Keep the report concise. If a PR is blocked, say why and move to the next PR only if the user asked to continue the queue.
