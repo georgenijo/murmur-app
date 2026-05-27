@@ -5,7 +5,7 @@ import { getVersion } from '@tauri-apps/api/app';
 import {
   Settings, RecordingMode, DEFAULT_SETTINGS,
   MODEL_OPTIONS, DOUBLE_TAP_KEY_OPTIONS, RECORDING_MODE_OPTIONS,
-  IDLE_TIMEOUT_OPTIONS,
+  IDLE_TIMEOUT_OPTIONS, LANGUAGE_OPTIONS,
 } from '../../lib/settings';
 import { Select } from '../ui/Select';
 import { SettingsSection } from './SettingsSection';
@@ -248,6 +248,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
       ? 'Double-tap to start recording, single tap to stop'
       : 'Hold to start recording, release to stop';
   const isRecording = status !== 'idle';
+  const isEnglishOnlyModel = settings.model.endsWith('.en');
   const selectedModel = MODEL_OPTIONS.find(m => m.value === settings.model);
   const downloadProgressPercent =
     modelDownload.phase === 'downloading' && modelDownload.total > 0
@@ -275,7 +276,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
 
       {/* Content */}
       <div className="px-4 pt-1">
-        <SettingsSection title="Transcription" subtitle="Model, microphone">
+        <SettingsSection title="Transcription" subtitle="Model, language, microphone">
         {/* Model Selector */}
         <div>
           <label className="block text-sm font-medium text-stone-700 dark:text-stone-300 mb-2">
@@ -347,6 +348,60 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
               </button>
             </div>
           )}
+        </div>
+
+        {/* Language Selector */}
+        <div>
+          <label className="block text-sm font-medium text-stone-700 dark:text-stone-300 mb-2">
+            Language
+          </label>
+          <Select
+            value={settings.language}
+            onChange={(value) => onUpdateSettings({ language: value })}
+            disabled={isRecording || isEnglishOnlyModel}
+            items={LANGUAGE_OPTIONS}
+          />
+          {isEnglishOnlyModel ? (
+            <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
+              English only model — switch to Whisper Large Turbo for other languages.
+            </p>
+          ) : isRecording ? (
+            <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+              Stop recording before changing language
+            </p>
+          ) : (
+            <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
+              Auto Detect lets Whisper identify the language each recording.
+            </p>
+          )}
+        </div>
+
+        {/* Smart Punctuation Toggle */}
+        <div className="flex items-center justify-between">
+          <div>
+            <label className="block text-sm font-medium text-stone-700 dark:text-stone-300">
+              Smart Punctuation
+            </label>
+            <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
+              Add periods, commas, and capitalization to transcriptions.
+            </p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={settings.smartPunctuation}
+            aria-label="Smart punctuation"
+            onClick={() => onUpdateSettings({ smartPunctuation: !settings.smartPunctuation })}
+            className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-stone-500 focus:ring-offset-2 ${
+              settings.smartPunctuation ? 'bg-stone-800 dark:bg-stone-300' : 'bg-stone-300 dark:bg-stone-500'
+            }`}
+          >
+            <span
+              className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                settings.smartPunctuation ? 'translate-x-6' : 'translate-x-1'
+              }`}
+            />
+          </button>
         </div>
 
         {/* Microphone Selector */}

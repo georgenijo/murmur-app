@@ -20,6 +20,7 @@ export function useInitialization(settings: Settings) {
           vadSensitivity: settings.vadSensitivity,
           idleTimeoutMinutes: settings.idleTimeoutMinutes,
           customVocabulary: settings.customVocabulary,
+          smartPunctuation: settings.smartPunctuation,
         });
       })
       .then(() => {

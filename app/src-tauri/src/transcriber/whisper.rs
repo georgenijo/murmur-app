@@ -139,7 +139,7 @@ impl TranscriptionBackend for WhisperBackend {
         Ok(())
     }
 
-    fn transcribe(&mut self, samples: &[f32], language: &str, initial_prompt: Option<&str>) -> Result<String, String> {
+    fn transcribe(&mut self, samples: &[f32], language: &str, initial_prompt: Option<&str>, smart_punctuation: bool) -> Result<String, String> {
         let state = self
             .state
             .as_mut()
@@ -147,7 +147,8 @@ impl TranscriptionBackend for WhisperBackend {
         tracing::info!(target: "pipeline", "whisper: reusing cached state for transcription");
 
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-        params.set_language(Some(language));
+        let lang_opt: Option<&str> = if language == "auto" { None } else { Some(language) };
+        params.set_language(lang_opt);
         params.set_print_special(false);
         params.set_print_progress(false);
         params.set_print_realtime(false);
@@ -176,7 +177,12 @@ impl TranscriptionBackend for WhisperBackend {
             text.push_str(segment_text);
         }
 
-        Ok(text.trim().to_string())
+        let trimmed = text.trim().to_string();
+        if smart_punctuation {
+            Ok(trimmed)
+        } else {
+            Ok(strip_punctuation(&trimmed))
+        }
     }
 
     fn token_count(&self, text: &str) -> Option<usize> {
@@ -209,5 +215,80 @@ impl TranscriptionBackend for WhisperBackend {
         drop(self.state.take());
         drop(self.context.take());
         self.loaded_model_name = None;
+    }
+}
+
+fn strip_punctuation(input: &str) -> String {
+    let chars: Vec<char> = input.chars().collect();
+    let mut result = String::with_capacity(input.len());
+
+    for (i, &c) in chars.iter().enumerate() {
+        match c {
+            // Apostrophe: keep if between two alphanumeric chars (contractions)
+            '\'' | '\u{2019}' => {
+                let prev_alnum = i > 0 && chars[i - 1].is_alphanumeric();
+                let next_alnum = i + 1 < chars.len() && chars[i + 1].is_alphanumeric();
+                if prev_alnum && next_alnum {
+                    result.push(c);
+                }
+            }
+            // Hyphen: keep if between two alphanumeric chars (compound words)
+            '-' => {
+                let prev_alnum = i > 0 && chars[i - 1].is_alphanumeric();
+                let next_alnum = i + 1 < chars.len() && chars[i + 1].is_alphanumeric();
+                if prev_alnum && next_alnum {
+                    result.push(c);
+                }
+            }
+            // Strip sentence and quotation punctuation
+            '.' | ',' | '!' | '?' | ';' | ':' | '"' | '\u{201C}' | '\u{201D}'
+            | '\u{2018}' | '\u{2014}' | '\u{2013}' | '\u{2026}'
+            | '\u{AB}' | '\u{BB}' | '\u{BF}' | '\u{A1}'
+            | '\u{3002}' | '\u{3001}' | '\u{FF01}' | '\u{FF1F}'
+            | '\u{30FB}' | '\u{300C}' | '\u{300D}' | '\u{300E}' | '\u{300F}' => {}
+            _ => result.push(c),
+        }
+    }
+
+    result.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_punctuation;
+
+    #[test]
+    fn strip_basic_sentence_punctuation() {
+        assert_eq!(strip_punctuation("Hello, world!"), "Hello world");
+    }
+
+    #[test]
+    fn strip_preserves_apostrophe_in_contraction() {
+        assert_eq!(strip_punctuation("Don't do that."), "Don't do that");
+    }
+
+    #[test]
+    fn strip_preserves_hyphen_in_compound() {
+        assert_eq!(strip_punctuation("It's state-of-the-art!"), "It's state-of-the-art");
+    }
+
+    #[test]
+    fn strip_unicode_dashes_and_ellipsis() {
+        assert_eq!(strip_punctuation("Hello\u{2026} world\u{2014}really?"), "Hello world really");
+    }
+
+    #[test]
+    fn strip_empty_string() {
+        assert_eq!(strip_punctuation(""), "");
+    }
+
+    #[test]
+    fn strip_whitespace_only_with_punctuation() {
+        assert_eq!(strip_punctuation("   .   "), "");
+    }
+
+    #[test]
+    fn strip_preserves_french_contraction() {
+        assert_eq!(strip_punctuation("c'est la vie!"), "c'est la vie");
     }
 }
