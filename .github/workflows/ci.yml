@@ -58,30 +58,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install Linux system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            libxdo-dev \
-            libasound2-dev
-
-      - name: Install CUDA toolkit
-        uses: Jimver/cuda-toolkit@v0.2.21
+      # actions/checkout above must run first so the local composite action is on disk.
+      - name: Setup Linux build environment
+        uses: ./.github/actions/setup-linux-build
         with:
-          cuda: '12.8.0'
-          method: 'network'
-
-      - name: Cache Rust dependencies
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: app/src-tauri
+          cuda-version: '12.8.0'
+          rust-cache-shared-key: linux-cuda-debug
 
       - name: Compile check
         run: cd app/src-tauri && cargo check
