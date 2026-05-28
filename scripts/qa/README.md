@@ -29,9 +29,5 @@ Exit 0 = PASS (no duck), 1 = FAIL (duck detected), 2 = setup error.
 
 ### Reading raw output
 `rms-meter` alone prints a level timeline you can eyeball:
-```
-swiftc -O rms-meter.swift -o rms-meter -framework CoreAudio -framework AVFoundation -framework Foundation
-./rms-meter            # Ctrl-C to stop
-```
 A duck shows as the dB dropping (e.g. -35 → -90) when the app comes to the front
 and recovering when it loses focus.
