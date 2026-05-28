@@ -7,6 +7,7 @@ import { AboutModal } from './components/AboutModal';
 import { StatusHeader } from './components/StatusHeader';
 import { RecordingControls } from './components/RecordingControls';
 import { TranscriptionView } from './components/TranscriptionView';
+import { FileTranscriptionPanel } from './components/FileTranscriptionPanel';
 import { useInitialization } from './lib/hooks/useInitialization';
 import { useSettings } from './lib/hooks/useSettings';
 import { useHistoryManagement } from './lib/hooks/useHistoryManagement';
@@ -113,6 +114,7 @@ function App() {
   const startDownload = updater.startDownload;
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [mainTab, setMainTab] = useState<'record' | 'file'>('record');
 
   const error = initError || recordingError;
 
@@ -140,20 +142,42 @@ function App() {
 
       <div className="flex-1 flex overflow-hidden">
         <main className="flex-1 flex flex-col overflow-hidden p-4 gap-4">
-          <TranscriptionView
-            historyEntries={historyEntries}
-            onClearHistory={clearHistory}
-          />
+          <div className="shrink-0 flex gap-1 p-1 self-start bg-stone-100 dark:bg-stone-800 rounded-lg">
+            {(['record', 'file'] as const).map((tab) => (
+              <button
+                key={tab}
+                onClick={() => setMainTab(tab)}
+                className={`px-3 py-1 text-sm font-medium rounded-md transition-colors ${
+                  mainTab === tab
+                    ? 'bg-white text-stone-900 shadow-sm dark:bg-stone-700 dark:text-stone-100'
+                    : 'text-stone-500 hover:text-stone-700 dark:text-stone-400 dark:hover:text-stone-200'
+                }`}
+              >
+                {tab === 'record' ? 'Record' : 'Transcribe File'}
+              </button>
+            ))}
+          </div>
 
-          {error && (
-            <div className="shrink-0 px-4 py-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
-              <p className="text-red-600 dark:text-red-400 text-sm">{error}</p>
-            </div>
+          {mainTab === 'record' ? (
+            <>
+              <TranscriptionView
+                historyEntries={historyEntries}
+                onClearHistory={clearHistory}
+              />
+
+              {error && (
+                <div className="shrink-0 px-4 py-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
+                  <p className="text-red-600 dark:text-red-400 text-sm">{error}</p>
+                </div>
+              )}
+
+              <RecordingControls status={status} initialized={initialized} onStart={handleStart} onStop={handleStop} />
+
+              {import.meta.env.DEV && <Suspense fallback={null}><ResourceMonitor /></Suspense>}
+            </>
+          ) : (
+            <FileTranscriptionPanel addEntry={addEntry} />
           )}
-
-          <RecordingControls status={status} initialized={initialized} onStart={handleStart} onStop={handleStop} />
-
-          {import.meta.env.DEV && <Suspense fallback={null}><ResourceMonitor /></Suspense>}
         </main>
 
         <SettingsPanel

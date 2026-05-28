@@ -1,7 +1,7 @@
 use crate::{MutexExt, State};
 use crate::state::{AppState, DictationStatus};
 use crate::transcriber;
-use crate::{audio, injector, keyboard, vad};
+use crate::{audio, audio_decode, injector, keyboard, vad};
 use std::sync::atomic::Ordering;
 use tauri::Emitter;
 
@@ -41,6 +41,19 @@ impl Drop for IdleGuard<'_> {
             dictation.status = DictationStatus::Idle;
             keyboard::set_processing(false);
         }
+    }
+}
+
+/// RAII guard that clears `file_transcribing` on drop, so a file transcription
+/// releases its mutual-exclusion claim on every return path (early errors, `?`,
+/// or success).
+struct FileTranscribeGuard<'a> {
+    app_state: &'a AppState,
+}
+
+impl Drop for FileTranscribeGuard<'_> {
+    fn drop(&mut self) {
+        self.app_state.file_transcribing.store(false, Ordering::SeqCst);
     }
 }
 
@@ -217,6 +230,13 @@ pub async fn process_audio(
 ) -> Result<serde_json::Value, String> {
     let rid = {
         let mut dictation = state.app_state.dictation.lock_or_recover();
+        // Same mutual exclusion as start_native_recording: this legacy base64
+        // path also runs the shared Whisper backend, so refuse while a file
+        // transcription holds the slot. Checked under the dictation lock.
+        if state.app_state.file_transcribing.load(Ordering::SeqCst) {
+            tracing::warn!(target: "pipeline", "process_audio: blocked — file transcription in progress");
+            return Err("Cannot process audio while a file transcription is in progress.".to_string());
+        }
         dictation.status = DictationStatus::Processing;
         state.app_state.recording_id.load(Ordering::SeqCst)
     };
@@ -386,6 +406,16 @@ pub async fn start_native_recording(
     // critical section so no concurrent cancel/start can slip between them.
     let rid = {
         let mut dictation = state.app_state.dictation.lock_or_recover();
+        // Refuse if a file transcription holds the shared Whisper backend.
+        // Checked under the dictation lock (which `transcribe_file` takes only
+        // after claiming the flag) so the two paths can't both start.
+        if state.app_state.file_transcribing.load(Ordering::SeqCst) {
+            tracing::warn!(target: "pipeline", "start_native_recording: blocked — file transcription in progress");
+            return Ok(serde_json::json!({
+                "type": "busy_transcribing_file",
+                "state": "idle"
+            }));
+        }
         match dictation.status {
             DictationStatus::Recording => {
                 tracing::warn!(target: "pipeline", "start_native_recording: already recording");
@@ -629,6 +659,135 @@ pub async fn count_vocab_tokens(
     Ok(backend.token_count(&text))
 }
 
+/// Transcribe an existing audio file (WAV/MP3/M4A) through the same Whisper
+/// backend and settings as live dictation.
+///
+/// Unlike live recording, this path deliberately does **not** inject/paste the
+/// result or drive the Idle/Recording/Processing status machine — a file
+/// transcription is a one-shot "give me the text" action whose result is shown
+/// in the UI. It decodes, downmixes to mono, resamples to 16kHz, applies VAD,
+/// transcribes, and returns the text plus the decoded audio duration (seconds).
+#[tauri::command]
+pub async fn transcribe_file(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, State>,
+    file_path: String,
+) -> Result<serde_json::Value, String> {
+    // Mutual exclusion with live dictation: both share one Whisper backend.
+    // Claim the slot first (so a racing `start_native_recording` is blocked),
+    // then refuse if a live recording/processing is already underway. The guard
+    // releases the claim on every return path below.
+    if state.app_state.file_transcribing.swap(true, Ordering::SeqCst) {
+        return Err("Already transcribing a file.".to_string());
+    }
+    let _file_guard = FileTranscribeGuard { app_state: &state.app_state };
+    {
+        let dictation = state.app_state.dictation.lock_or_recover();
+        if dictation.status != DictationStatus::Idle {
+            return Err(
+                "Can't transcribe a file while recording or processing live audio. \
+                 Stop the current recording first."
+                    .to_string(),
+            );
+        }
+    }
+
+    // Log only the extension as a structured field — never the raw path, which
+    // would carry the user's home dir/username into telemetry (release builds
+    // strip string fields from pipeline events, but not the message text).
+    let ext = std::path::Path::new(&file_path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    tracing::info!(target: "pipeline", ext = ext, "transcribe_file: start");
+
+    // Phase: decode + downmix + resample to 16kHz mono (off the async runtime).
+    let t_decode = std::time::Instant::now();
+    let path_for_decode = file_path.clone();
+    let samples = tokio::task::spawn_blocking(move || audio_decode::decode_to_mono_16k(&path_for_decode))
+        .await
+        .map_err(|e| format!("Decode task panicked: {}", e))??;
+    if samples.is_empty() {
+        return Err("No audio samples decoded from file".to_string());
+    }
+    // Precise seconds (f64): integer division floors sub-second clips to 0.
+    let duration_secs = samples.len() as f64 / 16_000.0;
+    tracing::info!(target: "pipeline", "transcribe_file: decoded {} samples (~{:.1}s) in {:?}",
+        samples.len(), duration_secs, t_decode.elapsed());
+
+    // Read the settings shared with live dictation in one lock.
+    let (model_name, language, vad_sensitivity, custom_vocabulary, smart_punctuation) = {
+        let dictation = state.app_state.dictation.lock_or_recover();
+        (dictation.model_name.clone(), dictation.language.clone(), dictation.vad_sensitivity,
+         dictation.custom_vocabulary.clone(), dictation.smart_punctuation)
+    };
+
+    // Phase: VAD — skip silence, best-effort with fallback to full audio (mirrors live).
+    let vad_threshold = 1.0 - (vad_sensitivity as f32 / 100.0);
+    let samples_for_transcription = match vad::vad_model_path() {
+        Some(vad_path) if vad_path.exists() => {
+            let vad_path_str = vad_path.to_string_lossy().to_string();
+            let samples_owned = samples.clone();
+            let vad_result = tokio::task::spawn_blocking(move || {
+                vad::filter_speech(&vad_path_str, &samples_owned, vad_threshold)
+            })
+            .await
+            .unwrap_or_else(|e| Err(format!("VAD task panicked: {}", e)));
+
+            match vad_result {
+                Ok(vad::VadResult::NoSpeech) => {
+                    tracing::info!(target: "pipeline", "transcribe_file: VAD detected no speech");
+                    return Ok(serde_json::json!({
+                        "type": "file_transcription", "text": "", "duration": duration_secs
+                    }));
+                }
+                Ok(vad::VadResult::Speech(trimmed)) => trimmed,
+                Err(e) => {
+                    tracing::warn!(target: "pipeline", "transcribe_file: VAD failed ({}), proceeding without filtering", e);
+                    samples
+                }
+            }
+        }
+        _ => {
+            // VAD model missing — kick off a background download for next time.
+            let handle = app_handle.clone();
+            tokio::spawn(async move {
+                if let Err(e) = super::models::ensure_vad_model(&handle).await {
+                    tracing::warn!(target: "pipeline", "transcribe_file: VAD model download failed ({})", e);
+                }
+            });
+            samples
+        }
+    };
+
+    // Phase: transcription (lazy model load), mirroring run_transcription_pipeline.
+    let t_transcribe = std::time::Instant::now();
+    let text = {
+        let sanitized = custom_vocabulary.replace('\0', "");
+        let prompt = if sanitized.trim().is_empty() { None } else { Some(sanitized) };
+        let mut backend = state.app_state.backend.lock_or_recover();
+        backend.load_model(&model_name)?;
+        backend.transcribe(&samples_for_transcription, &language, prompt.as_deref(), smart_punctuation)?
+    };
+    *state.app_state.last_transcription_at.lock_or_recover() = Some(std::time::Instant::now());
+
+    let word_count = if text.trim().is_empty() { 0 } else { text.split_whitespace().count() };
+    tracing::info!(
+        target: "pipeline",
+        inference_ms = t_transcribe.elapsed().as_millis() as u64,
+        audio_secs = duration_secs,
+        word_count = word_count,
+        model = model_name.as_str(),
+        "file transcription complete"
+    );
+
+    Ok(serde_json::json!({
+        "type": "file_transcription",
+        "text": text,
+        "duration": duration_secs
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -675,6 +834,18 @@ mod tests {
             let _guard = IdleGuard::new(&app_state, rid);
         }
         assert!(!keyboard::is_processing());
+    }
+
+    #[test]
+    fn file_transcribe_guard_clears_flag_on_drop() {
+        use std::sync::atomic::Ordering;
+        let app_state = AppState::default();
+        app_state.file_transcribing.store(true, Ordering::SeqCst);
+        {
+            let _guard = FileTranscribeGuard { app_state: &app_state };
+            // guard drops here
+        }
+        assert!(!app_state.file_transcribing.load(Ordering::SeqCst));
     }
 
     #[test]
