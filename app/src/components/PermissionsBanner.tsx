@@ -20,16 +20,12 @@ export function PermissionsBanner() {
       // Check accessibility permission via Tauri command
       const hasAccessibility = await invoke<boolean>('check_accessibility_permission');
 
-      // Check microphone by attempting to get user media
+      // Check microphone via native TCC status query (issue #177).
+      // Must NOT use getUserMedia here: opening the mic spins up voice-processing
+      // I/O, which ducks all other system audio on every window focus.
       let hasMicrophone = false;
       try {
-        if (navigator.mediaDevices?.getUserMedia) {
-          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-          stream.getTracks().forEach(track => {
-            track.stop();
-          });
-          hasMicrophone = true;
-        }
+        hasMicrophone = await invoke<boolean>('check_microphone_permission');
       } catch {
         hasMicrophone = false;
       }
