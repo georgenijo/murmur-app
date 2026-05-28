@@ -3,6 +3,7 @@ mod alloc;
 mod audio;
 mod audio_decode;
 mod commands;
+mod diagnostics;
 mod injector;
 mod keyboard;
 mod resource_monitor;
@@ -36,7 +37,6 @@ pub fn ffi_heap_mb() -> u64 { 0 }
 use state::AppState;
 use std::sync::{Mutex, MutexGuard};
 use tauri::Manager;
-#[cfg(target_os = "macos")]
 use tauri::RunEvent;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -140,6 +140,7 @@ pub fn run() {
             commands::logging::clear_logs,
             commands::logging::log_frontend,
             commands::logging::open_log_viewer,
+            commands::logging::log_window_state_snapshot,
             commands::models::check_model_exists,
             commands::models::check_specific_model_exists,
             commands::models::download_model,
@@ -152,12 +153,14 @@ pub fn run() {
             resource_monitor::get_resource_usage
         ])
         .on_window_event(|window, event| {
+            diagnostics::log_window_event(window, event);
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // Hide instead of destroy for persistent windows
                 if window.label() == "main" || window.label() == "log-viewer" {
                     api.prevent_close();
                     let _ = window.hide();
                     tracing::info!(target: "system", "{} window hidden on close request", window.label());
+                    diagnostics::log_native_window_state(window, "after_close_request_hide");
                 }
             }
         })
@@ -165,6 +168,8 @@ pub fn run() {
             telemetry::init(app.handle().clone());
 
             tracing::info!(target: "system", "app setup — Murmur v{}", env!("CARGO_PKG_VERSION"));
+            diagnostics::log_window_state_snapshot(app.handle(), "setup_start");
+            let _ = audio::log_audio_route_snapshot("setup_start");
 
             // Emit startup baseline memory snapshot
             {
@@ -191,11 +196,13 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             if let Some(overlay_win) = app.get_webview_window("overlay") {
                 tracing::info!(target: "system", "setup: overlay window found, enabling cursor events");
+                diagnostics::log_webview_window_state(&overlay_win, "before_setup_overlay_show");
                 commands::overlay::position_overlay_default(&overlay_win, notch);
                 let _ = overlay_win.show();
                 if let Err(e) = overlay_win.set_ignore_cursor_events(false) {
                     tracing::warn!(target: "system", "Failed to set overlay cursor events: {}", e);
                 }
+                diagnostics::log_webview_window_state(&overlay_win, "after_setup_overlay_show");
             } else {
                 tracing::warn!(target: "system", "setup: overlay window NOT found");
             }
@@ -223,12 +230,17 @@ pub fn run() {
                 .on_menu_event(move |app_handle, event| {
                     match event.id().as_ref() {
                         "show" => {
+                            tracing::info!(target: "system", source = "tray_menu", action = "show_main", "window action requested");
+                            diagnostics::log_window_state_snapshot(app_handle, "before_tray_menu_show_main");
                             if let Some(win) = app_handle.get_webview_window("main") {
                                 let _ = win.show();
                                 let _ = win.set_focus();
                             }
+                            diagnostics::log_window_state_snapshot(app_handle, "after_tray_menu_show_main");
+                            let _ = audio::log_audio_route_snapshot("after_tray_menu_show_main");
                         }
                         "quit" => {
+                            tracing::info!(target: "system", source = "tray_menu", action = "quit", "window action requested");
                             app_handle.exit(0);
                         }
                         _ => {}
@@ -240,10 +252,14 @@ pub fn run() {
                         button_state: MouseButtonState::Up,
                         ..
                     }) {
+                        tracing::info!(target: "system", source = "tray_icon", event = ?event, action = "show_main", "tray icon clicked");
+                        diagnostics::log_window_state_snapshot(&handle, "before_tray_icon_show_main");
                         if let Some(win) = handle.get_webview_window("main") {
                             let _ = win.show();
                             let _ = win.set_focus();
                         }
+                        diagnostics::log_window_state_snapshot(&handle, "after_tray_icon_show_main");
+                        let _ = audio::log_audio_route_snapshot("after_tray_icon_show_main");
                     }
                 })
                 .build(app)?;
@@ -254,6 +270,33 @@ pub fn run() {
         .expect("error while building tauri application");
 
     app.run(|_app_handle, _event| {
+        match &_event {
+            RunEvent::Ready => {
+                tracing::info!(target: "system", "tauri run event ready");
+                diagnostics::log_window_state_snapshot(_app_handle, "run_event_ready");
+                let _ = audio::log_audio_route_snapshot("run_event_ready");
+            }
+            RunEvent::Resumed => {
+                tracing::info!(target: "system", "tauri run event resumed");
+                diagnostics::log_window_state_snapshot(_app_handle, "run_event_resumed");
+                let _ = audio::log_audio_route_snapshot("run_event_resumed");
+            }
+            RunEvent::ExitRequested { code, .. } => {
+                tracing::info!(target: "system", code = ?code, "tauri run event exit requested");
+                diagnostics::log_window_state_snapshot(_app_handle, "run_event_exit_requested");
+            }
+            RunEvent::Exit => {
+                tracing::info!(target: "system", "tauri run event exit");
+            }
+            #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
+            RunEvent::Opened { urls } => {
+                tracing::info!(target: "system", count = urls.len(), urls = ?urls, "tauri run event opened");
+                diagnostics::log_window_state_snapshot(_app_handle, "run_event_opened");
+                let _ = audio::log_audio_route_snapshot("run_event_opened");
+            }
+            _ => {}
+        }
+
         // Suppress Tauri's default RunEvent::Reopen behaviour which shows
         // the main window whenever the macOS app is activated — including
         // when the overlay is clicked.  We only re-show the main window
@@ -261,10 +304,20 @@ pub fn run() {
         // after the user closed everything).
         #[cfg(target_os = "macos")]
         if let RunEvent::Reopen { has_visible_windows, .. } = &_event {
+            tracing::info!(
+                target: "system",
+                has_visible_windows = *has_visible_windows,
+                "tauri run event reopen"
+            );
+            diagnostics::log_window_state_snapshot(_app_handle, "run_event_reopen");
+            let _ = audio::log_audio_route_snapshot("run_event_reopen");
             if !has_visible_windows {
                 if let Some(win) = _app_handle.get_webview_window("main") {
+                    diagnostics::log_window_state_snapshot(_app_handle, "before_reopen_show_main");
                     let _ = win.show();
                     let _ = win.set_focus();
+                    diagnostics::log_window_state_snapshot(_app_handle, "after_reopen_show_main");
+                    let _ = audio::log_audio_route_snapshot("after_reopen_show_main");
                 }
             }
         }

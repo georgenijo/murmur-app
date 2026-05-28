@@ -131,6 +131,8 @@ Shows route diagnostics for macOS audio ducking investigations:
 
 The main window emits route snapshots on mount, focus, blur, and visibility changes. The native recording path also snapshots before/after capture starts, after capture stops, and before/after the transcription pipeline. This makes it possible to correlate Chrome/system audio quieting with focus changes, active capture, processing, or a Bluetooth call-style input route.
 
+The `system` stream also records native Tauri window diagnostics for ducking investigations: focused/unfocused events, close/hide/show paths, tray and reopen activation paths, and per-window state snapshots for `main`, `log-viewer`, and `overlay` (visible, focused, minimized, position, size, and scale factor). These events are useful when audio changes happen while no capture stream is open.
+
 ### Event Store (`useEventStore`)
 
 The frontend event buffer is managed by the `useEventStore` hook:
@@ -150,6 +152,7 @@ The frontend event buffer is managed by the `useEventStore` hook:
 | `clear_logs` | Removes all log files and clears the in-memory event ring buffer |
 | `log_frontend` | Routes a frontend message through Rust tracing (INFO/WARN/ERROR) |
 | `log_audio_route_snapshot` | Logs current default input/output route diagnostics |
+| `log_window_state_snapshot` | Logs current native state for Murmur's main, log-viewer, and overlay windows |
 | `get_event_history` | Returns all events from the in-memory ring buffer (up to 500) |
 | `clear_event_history` | Clears the in-memory event ring buffer |
 

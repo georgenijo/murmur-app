@@ -28,30 +28,71 @@ import { ModelDownloader } from './components/ModelDownloader';
 function App() {
   // --- Diagnostic: track when main window becomes visible/focused ---
   useEffect(() => {
-    const logAudioRoute = (reason: string) => {
+    const logDiagnostics = (reason: string, data: Record<string, unknown> = {}) => {
+      flog.info('main', `DIAGNOSTIC ${reason}`, {
+        ...data,
+        documentHidden: document.hidden,
+        hasFocus: document.hasFocus(),
+        visibilityState: document.visibilityState,
+      });
       invoke('log_audio_route_snapshot', { reason }).catch(() => {});
+      invoke('log_window_state_snapshot', { reason }).catch(() => {});
     };
     const onFocus = () => {
       flog.info('main', 'FOCUS');
-      logAudioRoute('main_focus');
+      logDiagnostics('main_focus');
     };
     const onBlur = () => {
       flog.info('main', 'BLUR');
-      logAudioRoute('main_blur');
+      logDiagnostics('main_blur');
     };
     const onVisibility = () => {
       const reason = document.hidden ? 'main_hidden' : 'main_visible';
       flog.info('main', 'VISIBILITY', { hidden: document.hidden });
-      logAudioRoute(reason);
+      logDiagnostics(reason);
+    };
+    const onPageShow = (event: PageTransitionEvent) => {
+      logDiagnostics('main_pageshow', { persisted: event.persisted });
+    };
+    const onPageHide = (event: PageTransitionEvent) => {
+      logDiagnostics('main_pagehide', { persisted: event.persisted });
+    };
+    const onFocusIn = (event: FocusEvent) => {
+      const target = event.target instanceof HTMLElement ? event.target.tagName : 'unknown';
+      logDiagnostics('main_focusin', { target });
+    };
+    const onFocusOut = (event: FocusEvent) => {
+      const target = event.target instanceof HTMLElement ? event.target.tagName : 'unknown';
+      logDiagnostics('main_focusout', { target });
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target instanceof HTMLElement ? event.target.tagName : 'unknown';
+      logDiagnostics('main_pointer_down', {
+        button: event.button,
+        pointerType: event.pointerType,
+        target,
+        x: Math.round(event.clientX),
+        y: Math.round(event.clientY),
+      });
     };
     window.addEventListener('focus', onFocus);
     window.addEventListener('blur', onBlur);
+    window.addEventListener('pageshow', onPageShow);
+    window.addEventListener('pagehide', onPageHide);
+    window.addEventListener('focusin', onFocusIn);
+    window.addEventListener('focusout', onFocusOut);
+    window.addEventListener('pointerdown', onPointerDown, { capture: true });
     document.addEventListener('visibilitychange', onVisibility);
     flog.info('main', 'App mounted');
-    logAudioRoute('main_mount');
+    logDiagnostics('main_mount');
     return () => {
       window.removeEventListener('focus', onFocus);
       window.removeEventListener('blur', onBlur);
+      window.removeEventListener('pageshow', onPageShow);
+      window.removeEventListener('pagehide', onPageHide);
+      window.removeEventListener('focusin', onFocusIn);
+      window.removeEventListener('focusout', onFocusOut);
+      window.removeEventListener('pointerdown', onPointerDown, { capture: true });
       document.removeEventListener('visibilitychange', onVisibility);
     };
   }, []);

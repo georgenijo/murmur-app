@@ -161,9 +161,13 @@ pub fn show_overlay(app: tauri::AppHandle, state: tauri::State<'_, State>) -> Re
         let notch = *state.notch_info.lock_or_recover();
         match app.get_webview_window("overlay") {
             Some(overlay) => {
+                tracing::info!(target: "system", action = "show_overlay", "window action requested");
+                crate::diagnostics::log_webview_window_state(&overlay, "before_show_overlay");
                 position_overlay_default(&overlay, notch);
                 overlay.show().map_err(|e| e.to_string())?;
                 let _ = overlay.set_ignore_cursor_events(false);
+                crate::diagnostics::log_webview_window_state(&overlay, "after_show_overlay");
+                let _ = crate::audio::log_audio_route_snapshot("after_show_overlay");
                 Ok(())
             }
             None => {
@@ -178,7 +182,14 @@ pub fn show_overlay(app: tauri::AppHandle, state: tauri::State<'_, State>) -> Re
 #[tauri::command]
 pub fn hide_overlay(app: tauri::AppHandle) -> Result<(), String> {
     match app.get_webview_window("overlay") {
-        Some(overlay) => overlay.hide().map_err(|e| e.to_string()),
+        Some(overlay) => {
+            tracing::info!(target: "system", action = "hide_overlay", "window action requested");
+            crate::diagnostics::log_webview_window_state(&overlay, "before_hide_overlay");
+            overlay.hide().map_err(|e| e.to_string())?;
+            crate::diagnostics::log_webview_window_state(&overlay, "after_hide_overlay");
+            let _ = crate::audio::log_audio_route_snapshot("after_hide_overlay");
+            Ok(())
+        }
         None => {
             tracing::warn!(target: "system", "hide_overlay: overlay window not found — skipping");
             Ok(())

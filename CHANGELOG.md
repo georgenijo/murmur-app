@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ### Fixed
 - Strip recording-status-changed emissions from `ensure_vad_model` to reduce event noise
 - Add Bluetooth headset microphone warnings, audio route diagnostics, and a log-viewer Audio tab for macOS ducking reports
+- Add native window/app activation diagnostics and a macOS audio log capture helper for focus-related ducking investigations
 
 ## [0.8.0] - 2026-03-02
 

@@ -47,6 +47,7 @@ For event-based communication (Rust to frontend), see [events.md](events.md). Fo
 | `clear_logs` | _(none)_ | `Result<(), String>` | Removes all log files (including rotated variants, JSONL event files, frontend logs) and clears the in-memory event ring buffer. |
 | `log_frontend` | `level: String`, `message: String` | `()` | Routes a frontend log message through the Rust tracing system. Accepts levels: `"INFO"`, `"WARN"`, `"ERROR"`. Messages appear in the structured event stream with `source="frontend"`. |
 | `open_log_viewer` | _(none)_ | `Result<(), String>` | Shows and focuses the `log-viewer` window. |
+| `log_window_state_snapshot` | `reason: String` | `Result<(), String>` | Logs native state for the main, log-viewer, and overlay windows: existence, visibility, focus, minimized state, position, size, and scale factor. |
 
 ## Models (`commands/models.rs`)
 

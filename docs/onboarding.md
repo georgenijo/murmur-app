@@ -84,3 +84,13 @@ The app searches these locations in order:
 ## Logs
 
 App logs are at `~/Library/Application Support/local-dictation/logs/app.log` with automatic rotation at 5 MB.
+
+Structured event logs are written to `~/Library/Application Support/local-dictation/logs/events.jsonl` in release builds and `events.dev.jsonl` in dev builds. The log viewer reads these events and includes audio route snapshots plus native window focus/visibility diagnostics.
+
+For macOS audio ducking investigations, capture system audio logs while reproducing:
+
+```bash
+scripts/tail-macos-audio-ducking.sh
+```
+
+The script writes a timestamped `macos-audio-*.log` file in the same logs directory and streams filtered CoreAudio/HAL/audio-route messages to the terminal.
