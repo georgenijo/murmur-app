@@ -4,7 +4,8 @@ description: >-
   Tests and validates Murmur pull requests in isolated worktrees with cargo,
   TypeScript checks, and native Tauri smoke tests. Use when testing a PR,
   merging a verified PR, picking the next PR from the queue, or continuing
-  PR validation for georgenijo/murmur-app.
+  PR validation for georgenijo/murmur-app. For issue-to-merge delivery, use
+  murmur-feature (/feature) instead.
 ---
 
 # Murmur PR Test
@@ -147,3 +148,7 @@ Report:
 - Merge commit or PR URL if merged.
 
 Keep the report concise. If a PR is blocked, say why and move to the next PR only if the user asked to continue the queue.
+
+## Related
+
+- **murmur-feature** (`.codex/skills/murmur-feature`) — full `/feature <issue>` pipeline: worktree, plan, implement, review, native smoke, PR, merge.

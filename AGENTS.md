@@ -92,7 +92,7 @@ Read these before working on a feature:
 Use these modes when the user invokes them by name in a Codex session.
 
 - **Murmur chat mode**: Read `prompts/PROMPT_CHAT.md` and follow it for the conversation. Act as a concise product and engineering advisor. Discuss ideas, tradeoffs, bugs, and feature shape. Do not edit files or write code unless the user explicitly asks.
-- **Murmur feature mode**: Read `prompts/PROMPT.md` and follow it. Load the requested context, check repo health, identify the assigned ticket from the user's prompt, and present a plan before writing code. Do not implement until the user approves the plan.
+- **Murmur feature mode**: Read `prompts/PROMPT.md` and follow it. Load the requested context, check repo health, identify the assigned ticket from the user's prompt, and present a plan before writing code. Do not implement until the user approves the plan. In Codex, **`/feature <issue-number>`** uses `.codex/skills/murmur-feature` for the full pipeline (worktree → plan → implement → review → native smoke → PR → merge when green).
 - **Murmur bug mode**: Read `prompts/PROMPT_BUG.md` and follow it. Keep the work scoped to the selected bug, investigate before editing, and verify with the required checks before wrapping up.
 - **Murmur release mode**: Read `prompts/PROMPT_RELEASE.md` and follow it. Treat release operations as high-risk: inspect state first, explain the intended release action, and only proceed when the user explicitly confirms.
 - **Murmur swarm mode**: Read `prompts/PROMPT_SWARM.md` and follow it. Use only when the user explicitly asks to coordinate multiple issues in parallel.
