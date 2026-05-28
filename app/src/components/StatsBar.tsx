@@ -24,7 +24,7 @@ export function StatsBar({ statsVersion }: StatsBarProps) {
 
 function Chip({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex-1 flex flex-col items-center px-3 py-2 rounded-lg bg-stone-100 dark:bg-stone-800 border border-stone-200 dark:border-stone-700">
+    <div className="flex-1 flex flex-col items-center px-3 py-2 rounded-lg bg-surface-container-low">
       <span className="text-xs font-semibold text-stone-800 dark:text-stone-100 tabular-nums">{value}</span>
       <span className="text-[10px] text-stone-500 dark:text-stone-400 mt-0.5 leading-none">{label}</span>
     </div>

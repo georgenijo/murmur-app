@@ -17,7 +17,7 @@ export function EventRow({ event }: EventRowProps) {
   const timeStr = event.timestamp.replace(/.*T/, '').replace('Z', '');
 
   return (
-    <div className="border-b border-stone-100 dark:border-stone-800 last:border-0">
+    <div className="border-b border-outline-variant/10 last:border-0">
       <div
         className={`flex items-baseline gap-2 py-1 px-1 ${hasData ? 'cursor-pointer hover:bg-stone-50 dark:hover:bg-stone-800/50' : ''}`}
         onClick={() => hasData && setExpanded(!expanded)}

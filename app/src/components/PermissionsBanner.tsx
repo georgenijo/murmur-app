@@ -68,7 +68,7 @@ export function PermissionsBanner() {
   }
 
   return (
-    <div className="bg-amber-50 dark:bg-amber-900/30 border-b border-amber-200 dark:border-amber-800 px-4 py-3">
+    <div className="bg-amber-50 dark:bg-amber-900/30 px-4 py-3">
       <div className="flex items-start justify-between gap-3">
         <div className="flex-1">
           <h3 className="text-sm font-medium text-amber-800 dark:text-amber-200">
