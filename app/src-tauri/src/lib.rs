@@ -127,6 +127,7 @@ pub fn run() {
             commands::permissions::check_accessibility_permission,
             commands::permissions::request_accessibility_permission,
             commands::permissions::request_microphone_permission,
+            commands::permissions::check_microphone_permission,
             commands::permissions::list_audio_devices,
             commands::keyboard::start_keyboard_listener,
             commands::keyboard::stop_keyboard_listener,
