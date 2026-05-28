@@ -1,7 +1,4 @@
 import { describe, it, expect } from 'vitest';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join, dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 // Issue #177 regression guard.
 //
@@ -16,28 +13,28 @@ import { fileURLToPath } from 'node:url';
 // (AVCaptureDevice authorization status — never opens the device). The WebView must
 // never call getUserMedia. This test fails the build if it is reintroduced anywhere.
 
-const here = dirname(fileURLToPath(import.meta.url));
-const SRC_DIR = resolve(here, '..'); // app/src
+// Load every frontend source file as raw text via Vite's glob (no node:fs — this is
+// a browser/Vite project without node types).
+const sources = import.meta.glob('../**/*.{ts,tsx}', {
+  query: '?raw',
+  import: 'default',
+  eager: true,
+}) as Record<string, string>;
+
 const CALL_RE = /getUserMedia\s*\(/;
 
-function sourceFiles(dir: string): string[] {
-  const out: string[] = [];
-  for (const entry of readdirSync(dir)) {
-    const p = join(dir, entry);
-    if (statSync(p).isDirectory()) {
-      out.push(...sourceFiles(p));
-    } else if (/\.(ts|tsx)$/.test(p) && !/\.test\.(ts|tsx)$/.test(p)) {
-      out.push(p);
-    }
-  }
-  return out;
-}
-
 describe('webview must never open the microphone (issue #177)', () => {
+  it('actually scans the source tree (guard against a vacuous pass)', () => {
+    // If the glob ever resolves to nothing, the getUserMedia check below would
+    // pass for the wrong reason. Fail loudly instead.
+    expect(Object.keys(sources).length).toBeGreaterThan(10);
+  });
+
   it('no source file calls getUserMedia', () => {
-    const offenders = sourceFiles(SRC_DIR).filter((f) =>
-      CALL_RE.test(readFileSync(f, 'utf8'))
-    );
+    const offenders = Object.entries(sources)
+      .filter(([path]) => !/\.test\.(ts|tsx)$/.test(path))
+      .filter(([, src]) => CALL_RE.test(src))
+      .map(([path]) => path);
     expect(
       offenders,
       `getUserMedia() must not be called from the WebView (issue #177 — it ducks ` +
