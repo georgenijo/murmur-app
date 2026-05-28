@@ -439,6 +439,7 @@ pub async fn start_native_recording(
         }
     };
     tracing::info!(target: "pipeline", "start_native_recording: device={} recording_id={}", device_name.as_deref().unwrap_or("system_default"), rid);
+    let _ = audio::log_audio_route_snapshot("before_start_recording");
     if let Err(e) = audio::start_recording(Some(app_handle.clone()), device_name) {
         tracing::error!(target: "audio", "start_native_recording: audio failed: {}", e);
         let mut dictation = state.app_state.dictation.lock_or_recover();
@@ -447,6 +448,7 @@ pub async fn start_native_recording(
     }
     let _ = app_handle.emit("recording-status-changed", "recording");
     tracing::info!(target: "pipeline", "start_native_recording: started");
+    let _ = audio::log_audio_route_snapshot("after_start_recording");
 
     Ok(serde_json::json!({
         "type": "recording_started",
@@ -483,6 +485,7 @@ pub async fn stop_native_recording(
     keyboard::set_processing(true);
     tracing::info!(target: "pipeline", "stop_native_recording: stopping");
     let _ = app_handle.emit("recording-status-changed", "processing");
+    let _ = audio::log_audio_route_snapshot("processing_before_audio_stop");
 
     // Guard resets status to Idle if stop_recording fails or samples are empty;
     // disarmed before handing off to run_transcription_pipeline (which has its own guard)
@@ -498,6 +501,7 @@ pub async fn stop_native_recording(
         e
     })?;
     tracing::info!(target: "pipeline", "audio teardown + resample: {:?}", t_total.elapsed());
+    let _ = audio::log_audio_route_snapshot("processing_after_audio_stop");
 
     if samples.is_empty() {
         tracing::info!(target: "pipeline", "stop_native_recording: no audio captured");
@@ -532,7 +536,9 @@ pub async fn stop_native_recording(
     // Hand off status management to the pipeline's own guard
     guard.disarm();
 
+    let _ = audio::log_audio_route_snapshot("before_transcription_pipeline");
     let pipeline_result = run_transcription_pipeline(&samples, &app_handle, &state.app_state, rid).await;
+    let _ = audio::log_audio_route_snapshot("after_transcription_pipeline");
     // Only emit idle if this recording wasn't cancelled/superseded by a new one.
     // Hold the dictation lock across the check+emit to prevent a concurrent
     // start from interleaving a "recording" status between our check and emit.

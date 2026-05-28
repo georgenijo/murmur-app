@@ -121,6 +121,16 @@ Y-axis auto-scales with "nice" round numbers and three tick marks. X-axis shows 
 
 The metrics view shows the last 20 transcriptions. The series legend is toggleable — click a series label to show/hide it (at least one must remain visible).
 
+### Audio Tab
+
+Shows route diagnostics for macOS audio ducking investigations:
+
+- Latest default input and output device names, sample rates, and Bluetooth/headset risk state
+- A compact timeline of route snapshots, capture start/stop events, and Bluetooth warnings
+- A newest-first route event list showing the trigger reason, input route, and output route
+
+The main window emits route snapshots on mount, focus, blur, and visibility changes. The native recording path also snapshots before/after capture starts, after capture stops, and before/after the transcription pipeline. This makes it possible to correlate Chrome/system audio quieting with focus changes, active capture, processing, or a Bluetooth call-style input route.
+
 ### Event Store (`useEventStore`)
 
 The frontend event buffer is managed by the `useEventStore` hook:
@@ -139,6 +149,7 @@ The frontend event buffer is managed by the `useEventStore` hook:
 | `get_log_contents` | Returns the last N lines from the pretty-printed log file |
 | `clear_logs` | Removes all log files and clears the in-memory event ring buffer |
 | `log_frontend` | Routes a frontend message through Rust tracing (INFO/WARN/ERROR) |
+| `log_audio_route_snapshot` | Logs current default input/output route diagnostics |
 | `get_event_history` | Returns all events from the in-memory ring buffer (up to 500) |
 | `clear_event_history` | Clears the in-memory event ring buffer |
 

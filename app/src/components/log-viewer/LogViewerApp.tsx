@@ -5,9 +5,10 @@ import { StreamChips } from './StreamChips';
 import { LevelFilter } from './LevelFilter';
 import { EventRow } from './EventRow';
 import { MetricsView } from './MetricsView';
+import { AudioRouteView } from './AudioRouteView';
 import type { StreamName, LevelName } from '../../lib/events';
 
-type Tab = 'events' | 'metrics';
+type Tab = 'events' | 'metrics' | 'audio';
 
 export function LogViewerApp() {
   const { events, clear } = useEventStore();
@@ -71,7 +72,7 @@ export function LogViewerApp() {
         <div className="flex items-center justify-between mb-3">
           {/* Tabs */}
           <div className="flex gap-1">
-            {(['events', 'metrics'] as Tab[]).map((t) => (
+            {(['events', 'metrics', 'audio'] as Tab[]).map((t) => (
               <button
                 key={t}
                 onClick={() => setTab(t)}
@@ -127,9 +128,13 @@ export function LogViewerApp() {
             ))
           )}
         </div>
-      ) : (
+      ) : tab === 'metrics' ? (
         <div className="flex-1 overflow-y-auto">
           <MetricsView events={events} resourceReadings={resourceReadings} />
+        </div>
+      ) : (
+        <div className="flex-1 overflow-y-auto">
+          <AudioRouteView events={events} />
         </div>
       )}
     </div>

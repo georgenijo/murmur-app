@@ -6,6 +6,7 @@ import {
   Settings, RecordingMode, DEFAULT_SETTINGS,
   MODEL_OPTIONS, DOUBLE_TAP_KEY_OPTIONS, RECORDING_MODE_OPTIONS,
   IDLE_TIMEOUT_OPTIONS, LANGUAGE_OPTIONS,
+  isLikelyBluetoothMicrophone,
 } from '../../lib/settings';
 import { Select } from '../ui/Select';
 import { SettingsSection } from './SettingsSection';
@@ -227,17 +228,25 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
 
   // Audio device enumeration
   const [audioDevices, setAudioDevices] = useState<string[]>([]);
+  const [defaultAudioInput, setDefaultAudioInput] = useState<string | null>(null);
   useEffect(() => {
     if (!isOpen) return;
     invoke<string[]>('list_audio_devices')
       .then(setAudioDevices)
       .catch(() => setAudioDevices([]));
+    invoke<string | null>('get_default_audio_input_device')
+      .then(setDefaultAudioInput)
+      .catch(() => setDefaultAudioInput(null));
   }, [isOpen]);
 
   const savedDeviceMissing =
     settings.microphone !== DEFAULT_SETTINGS.microphone &&
     audioDevices.length > 0 &&
     !audioDevices.includes(settings.microphone);
+  const selectedBluetoothMic =
+    settings.microphone === DEFAULT_SETTINGS.microphone
+      ? defaultAudioInput !== null && isLikelyBluetoothMicrophone(defaultAudioInput)
+      : isLikelyBluetoothMicrophone(settings.microphone);
 
   const isDoubleTap = settings.recordingMode === 'double_tap';
   const isBoth = settings.recordingMode === 'both';
@@ -422,6 +431,14 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
             <div className="mt-2 flex items-center gap-2 px-3 py-2 text-xs bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg text-amber-700 dark:text-amber-400">
               <span className="w-2 h-2 rounded-full bg-amber-500 flex-shrink-0" />
               <span>Selected device not found — will use System Default</span>
+            </div>
+          )}
+          {selectedBluetoothMic && (
+            <div className="mt-2 flex items-start gap-2 px-3 py-2 text-xs bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg text-amber-700 dark:text-amber-400">
+              <span className="mt-1 w-2 h-2 rounded-full bg-amber-500 flex-shrink-0" />
+              <span>
+                Bluetooth headset microphones can make macOS switch audio into a call-style route while recording. Select the Mac or USB mic to keep other audio stable.
+              </span>
             </div>
           )}
         </div>

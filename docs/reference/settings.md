@@ -85,6 +85,8 @@ Both the Rust-side `DictationState::default()` and the frontend default use `bas
 | `microphone` | `string` | `'system_default'` | `'system_default'` or any device name from `list_audio_devices` | Audio input device for recording. When set to `'system_default'`, the frontend sends `null` to the backend, which uses the system default input device. Available devices are fetched via the `list_audio_devices` command when the settings panel opens. |
 | `launchAtLogin` | `boolean` | `false` | `true` / `false` | Whether the app starts automatically on macOS login. Uses `@tauri-apps/plugin-autostart` with `MacosLauncher::LaunchAgent`. On mount, the hook checks the actual OS autostart state and reconciles with the stored setting (handles the case where the user removed the login item from System Settings). |
 
+When the selected microphone, or the resolved system default input, looks like a Bluetooth headset-style input, the settings panel shows a warning. These devices can make macOS switch playback into a call-style route while Murmur records, which may make other audio sound quieter or lower quality. The recommended workaround is to select the Mac built-in microphone or a USB microphone for input while keeping Bluetooth headphones for output.
+
 ---
 
 ## Persistence and Migration

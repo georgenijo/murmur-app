@@ -1,4 +1,91 @@
 {
   "identifier": "com.localdictation.dev",
-  "productName": "Local Dictation Dev"
+  "productName": "Local Dictation Dev",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Murmur",
+        "url": "http://localhost:1420",
+        "width": 720,
+        "height": 560,
+        "minWidth": 520,
+        "minHeight": 400,
+        "center": true
+      },
+      {
+        "label": "overlay",
+        "title": "",
+        "url": "http://localhost:1420/overlay.html",
+        "width": 260,
+        "height": 100,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "transparent": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "resizable": false,
+        "focusable": false,
+        "visibleOnAllWorkspaces": true
+      },
+      {
+        "label": "log-viewer",
+        "title": "Murmur - Log Viewer",
+        "url": "http://localhost:1420/log-viewer.html",
+        "width": 800,
+        "height": 600,
+        "minWidth": 600,
+        "minHeight": 400,
+        "center": true,
+        "visible": false
+      }
+    ],
+    "security": {
+      "capabilities": [
+        {
+          "identifier": "dev-main",
+          "description": "Development capability for the main window served by Vite",
+          "windows": ["main"],
+          "remote": {
+            "urls": ["http://localhost:1420/*"]
+          },
+          "permissions": [
+            "core:default",
+            "opener:default",
+            "autostart:allow-enable",
+            "autostart:allow-disable",
+            "autostart:allow-is-enabled",
+            "updater:default",
+            "notification:default",
+            "process:allow-restart",
+            "process:allow-exit",
+            "dialog:allow-open"
+          ]
+        },
+        {
+          "identifier": "dev-log-viewer",
+          "description": "Development capability for the log viewer window served by Vite",
+          "windows": ["log-viewer"],
+          "remote": {
+            "urls": ["http://localhost:1420/*"]
+          },
+          "permissions": ["core:default", "core:event:default"]
+        },
+        {
+          "identifier": "dev-overlay",
+          "description": "Development capability for the overlay window served by Vite",
+          "windows": ["overlay"],
+          "remote": {
+            "urls": ["http://localhost:1420/*"]
+          },
+          "permissions": [
+            "core:event:default",
+            "core:window:allow-start-dragging",
+            "core:window:allow-set-position",
+            "core:default"
+          ]
+        }
+      ]
+    }
+  }
 }

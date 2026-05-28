@@ -128,6 +128,8 @@ pub fn run() {
             commands::permissions::request_accessibility_permission,
             commands::permissions::request_microphone_permission,
             commands::permissions::list_audio_devices,
+            commands::permissions::get_default_audio_input_device,
+            commands::permissions::log_audio_route_snapshot,
             commands::keyboard::start_keyboard_listener,
             commands::keyboard::stop_keyboard_listener,
             commands::keyboard::update_keyboard_key,

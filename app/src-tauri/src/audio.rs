@@ -21,6 +21,35 @@ pub fn compute_peak(samples: &[f32]) -> f32 {
     samples.iter().map(|s| s.abs()).fold(0.0_f32, f32::max)
 }
 
+fn telemetry_device_name(name: &str) -> String {
+    if cfg!(debug_assertions) {
+        name.to_string()
+    } else {
+        "<redacted>".to_string()
+    }
+}
+
+/// Best-effort classifier for headset-style Bluetooth inputs. These devices
+/// commonly make macOS switch playback into a call route while the mic is open.
+pub fn is_likely_bluetooth_input_name(device_name: &str) -> bool {
+    let normalized = device_name.to_lowercase();
+    [
+        "airpods",
+        "beats",
+        "bluetooth",
+        "bose",
+        "galaxy buds",
+        "hands-free",
+        "handsfree",
+        "headset",
+        "hfp",
+        "jabra",
+        "sony",
+    ]
+    .iter()
+    .any(|keyword| normalized.contains(keyword))
+}
+
 /// Build an input stream that converts interleaved multi-channel samples to mono f32,
 /// computes RMS for each buffer chunk and emits an "audio-level" event if an AppHandle
 /// is provided.
@@ -129,6 +158,74 @@ pub fn list_input_devices() -> Result<Vec<String>, String> {
     Ok(names)
 }
 
+pub fn default_input_device_name() -> Result<Option<String>, String> {
+    let host = cpal::default_host();
+    Ok(host.default_input_device().and_then(|d| d.name().ok()))
+}
+
+fn input_config_summary(device: &cpal::Device) -> (u32, u16, String) {
+    match device.default_input_config() {
+        Ok(config) => (
+            config.sample_rate().0,
+            config.channels(),
+            format!("{:?}", config.sample_format()),
+        ),
+        Err(_) => (0, 0, "unknown".to_string()),
+    }
+}
+
+fn output_config_summary(device: &cpal::Device) -> (u32, u16, String) {
+    match device.default_output_config() {
+        Ok(config) => (
+            config.sample_rate().0,
+            config.channels(),
+            format!("{:?}", config.sample_format()),
+        ),
+        Err(_) => (0, 0, "unknown".to_string()),
+    }
+}
+
+pub fn log_audio_route_snapshot(reason: &str) -> Result<(), String> {
+    let host = cpal::default_host();
+    let input = host.default_input_device();
+    let output = host.default_output_device();
+
+    let input_name = input
+        .as_ref()
+        .and_then(|d| d.name().ok())
+        .unwrap_or_else(|| "unknown".to_string());
+    let output_name = output
+        .as_ref()
+        .and_then(|d| d.name().ok())
+        .unwrap_or_else(|| "unknown".to_string());
+    let (input_sample_rate, input_channels, input_format) = input
+        .as_ref()
+        .map(input_config_summary)
+        .unwrap_or_else(|| (0, 0, "unknown".to_string()));
+    let (output_sample_rate, output_channels, output_format) = output
+        .as_ref()
+        .map(output_config_summary)
+        .unwrap_or_else(|| (0, 0, "unknown".to_string()));
+
+    tracing::info!(
+        target: "audio",
+        reason = reason,
+        input_device = telemetry_device_name(&input_name).as_str(),
+        output_device = telemetry_device_name(&output_name).as_str(),
+        input_bluetooth_like = is_likely_bluetooth_input_name(&input_name),
+        output_bluetooth_like = is_likely_bluetooth_input_name(&output_name),
+        input_sample_rate = input_sample_rate,
+        output_sample_rate = output_sample_rate,
+        input_channels = input_channels,
+        output_channels = output_channels,
+        input_format = input_format.as_str(),
+        output_format = output_format.as_str(),
+        "audio route snapshot"
+    );
+
+    Ok(())
+}
+
 pub fn start_recording(app_handle: Option<tauri::AppHandle>, device_name: Option<String>) -> Result<(), String> {
     let state = get_state();
     let mut state_guard = state.lock().unwrap_or_else(|poisoned| {
@@ -224,6 +321,10 @@ fn run_audio_capture(
     };
 
     let actual_name = device.name().unwrap_or_else(|_| "unknown".to_string());
+    let output_name = host.default_output_device()
+        .and_then(|d| d.name().ok())
+        .unwrap_or_else(|| "unknown".to_string());
+    let input_is_bluetooth_like = is_likely_bluetooth_input_name(&actual_name);
 
     let config = device.default_input_config()
         .map_err(|e| format!("Failed to get input config: {}", e))?;
@@ -232,13 +333,24 @@ fn run_audio_capture(
     let sample_format = config.sample_format();
     let channels = config.channels() as usize;
 
-    let telemetry_device = if cfg!(debug_assertions) {
-        actual_name.clone()
-    } else {
-        "<redacted>".to_string()
-    };
-    tracing::info!(target: "audio", "run_audio_capture: device='{}', sample_rate={}, channels={}, format={:?}",
-        telemetry_device, device_sample_rate, channels, sample_format);
+    let telemetry_device = telemetry_device_name(&actual_name);
+    let telemetry_output = telemetry_device_name(&output_name);
+    tracing::info!(
+        target: "audio",
+        input_device = telemetry_device.as_str(),
+        output_device = telemetry_output.as_str(),
+        input_bluetooth_like = input_is_bluetooth_like,
+        sample_rate = device_sample_rate,
+        channels = channels,
+        format = ?sample_format,
+        "audio capture route selected"
+    );
+    if input_is_bluetooth_like {
+        tracing::warn!(
+            target: "audio",
+            "Bluetooth-like input selected; macOS may lower or reroute other audio while the capture stream is open"
+        );
+    }
 
     let err_fn = |err| tracing::error!(target: "audio", "Audio stream error: {}", err);
 
@@ -249,6 +361,7 @@ fn run_audio_capture(
     };
 
     stream.play().map_err(|e| format!("Failed to start stream: {}", e))?;
+    tracing::info!(target: "audio", "audio capture stream started");
 
     // Signal ready with the device sample rate and name
     let _ = ready_tx.send(Ok((device_sample_rate, actual_name.clone())));
@@ -264,6 +377,7 @@ fn run_audio_capture(
 
     // Explicitly pause before dropping to ensure CoreAudio stops calling us
     let _ = stream.pause();
+    tracing::info!(target: "audio", "audio capture stream stopped");
 
     Ok(())
 }
@@ -406,6 +520,19 @@ mod tests {
     fn peak_negative() {
         let samples = vec![0.1f32, -0.8, 0.3, 0.2];
         assert!((compute_peak(&samples) - 0.8).abs() < 1e-6);
+    }
+
+    #[test]
+    fn bluetooth_input_classifier_flags_headsets() {
+        assert!(is_likely_bluetooth_input_name("George's AirPods Pro"));
+        assert!(is_likely_bluetooth_input_name("Jabra Hands-Free Audio"));
+        assert!(is_likely_bluetooth_input_name("Bose QC Headset"));
+    }
+
+    #[test]
+    fn bluetooth_input_classifier_ignores_builtin_and_usb_mics() {
+        assert!(!is_likely_bluetooth_input_name("MacBook Pro Microphone"));
+        assert!(!is_likely_bluetooth_input_name("USB Audio Device"));
     }
 }
 

@@ -28,13 +28,27 @@ import { ModelDownloader } from './components/ModelDownloader';
 function App() {
   // --- Diagnostic: track when main window becomes visible/focused ---
   useEffect(() => {
-    const onFocus = () => flog.info('main', 'FOCUS');
-    const onBlur = () => flog.info('main', 'BLUR');
-    const onVisibility = () => flog.info('main', 'VISIBILITY', { hidden: document.hidden });
+    const logAudioRoute = (reason: string) => {
+      invoke('log_audio_route_snapshot', { reason }).catch(() => {});
+    };
+    const onFocus = () => {
+      flog.info('main', 'FOCUS');
+      logAudioRoute('main_focus');
+    };
+    const onBlur = () => {
+      flog.info('main', 'BLUR');
+      logAudioRoute('main_blur');
+    };
+    const onVisibility = () => {
+      const reason = document.hidden ? 'main_hidden' : 'main_visible';
+      flog.info('main', 'VISIBILITY', { hidden: document.hidden });
+      logAudioRoute(reason);
+    };
     window.addEventListener('focus', onFocus);
     window.addEventListener('blur', onBlur);
     document.addEventListener('visibilitychange', onVisibility);
     flog.info('main', 'App mounted');
+    logAudioRoute('main_mount');
     return () => {
       window.removeEventListener('focus', onFocus);
       window.removeEventListener('blur', onBlur);

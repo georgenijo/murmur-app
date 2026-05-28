@@ -84,6 +84,25 @@ export const DEFAULT_SETTINGS: Settings = {
 
 export const STORAGE_KEY = 'dictation-settings';
 
+const BLUETOOTH_MIC_KEYWORDS = [
+  'airpods',
+  'beats',
+  'bluetooth',
+  'bose',
+  'galaxy buds',
+  'hands-free',
+  'handsfree',
+  'headset',
+  'hfp',
+  'jabra',
+  'sony',
+];
+
+export function isLikelyBluetoothMicrophone(deviceName: string): boolean {
+  const normalized = deviceName.toLowerCase();
+  return BLUETOOTH_MIC_KEYWORDS.some((keyword) => normalized.includes(keyword));
+}
+
 export function loadSettings(): Settings {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);

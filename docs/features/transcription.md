@@ -15,6 +15,18 @@ All processing is local during transcription (network only required to download 
 - Multi-channel to mono conversion (averages channels)
 - Resamples to 16kHz (expected sample rate for the backend)
 - Samples stored as `Vec<f32>` in memory — no temp files
+- Logs the selected input route, current output route, sample rate, channel count, sample format, and capture stream start/stop events to the `audio` stream
+
+### macOS Audio Ducking / Bluetooth Routes
+
+Murmur does not intentionally lower, mix, or control other apps' output volume. On macOS, the capture path opens a CoreAudio input stream through `cpal`; the app does not open an output stream or call any volume APIs.
+
+If the selected microphone is a Bluetooth headset-style input (for example AirPods, Beats, Bose, Jabra, Sony, or a "Hands-Free" device), macOS may switch the device into a call-style route while the input stream is open. That route can make other app/system audio sound quieter, lower quality, or otherwise different until recording stops. This can look like a focus-change bug because background keyboard triggers and overlay interactions start recording while another app is playing audio, but the relevant trigger is the input capture lifecycle.
+
+Workarounds:
+- Use the Mac built-in microphone or a USB microphone for Murmur.
+- Keep Bluetooth headphones as the output device, but avoid selecting their microphone as Murmur's input.
+- Use the log viewer's `audio` stream to compare `audio capture stream started` / `audio capture stream stopped` events against the moment other audio changes.
 
 ## Transcription Backend (`transcriber/`)
 

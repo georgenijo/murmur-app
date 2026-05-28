@@ -27,6 +27,8 @@ For event-based communication (Rust to frontend), see [events.md](events.md). Fo
 | `request_accessibility_permission` | _(none)_ | `Result<(), String>` | Triggers the macOS Accessibility permission prompt and opens System Settings to the Accessibility pane. |
 | `request_microphone_permission` | _(none)_ | `Result<(), String>` | Opens macOS System Settings to the Microphone privacy pane. |
 | `list_audio_devices` | _(none)_ | `Result<Vec<String>, String>` | Returns a list of available audio input device names via cpal. |
+| `get_default_audio_input_device` | _(none)_ | `Result<Option<String>, String>` | Returns the current system default audio input device name when available. Used to warn about Bluetooth headset mics even when Microphone is set to System Default. |
+| `log_audio_route_snapshot` | `reason: String` | `Result<(), String>` | Logs the current default input/output device names, sample rates, channel counts, formats, and Bluetooth/headset risk flags to the `audio` event stream. |
 
 ## Keyboard (`commands/keyboard.rs`)
 

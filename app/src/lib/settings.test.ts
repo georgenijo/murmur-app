@@ -1,8 +1,20 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { loadSettings, DEFAULT_SETTINGS } from './settings';
+import { loadSettings, DEFAULT_SETTINGS, isLikelyBluetoothMicrophone } from './settings';
 
 beforeEach(() => {
-  localStorage.clear();
+  const store = new Map<string, string>();
+  const localStorageMock = {
+    get length() {
+      return store.size;
+    },
+    clear: () => store.clear(),
+    getItem: (key: string) => store.get(key) ?? null,
+    key: (index: number) => Array.from(store.keys())[index] ?? null,
+    removeItem: (key: string) => { store.delete(key); },
+    setItem: (key: string, value: string) => { store.set(key, value); },
+  } satisfies Storage;
+  Object.defineProperty(globalThis, 'localStorage', { value: localStorageMock, configurable: true });
+  Object.defineProperty(window, 'localStorage', { value: localStorageMock, configurable: true });
 });
 
 describe('loadSettings', () => {
@@ -96,5 +108,18 @@ describe('loadSettings', () => {
       const settings = loadSettings();
       expect(settings.recordingMode).toBe(mode);
     }
+  });
+});
+
+describe('isLikelyBluetoothMicrophone', () => {
+  it('flags common Bluetooth headset microphones', () => {
+    expect(isLikelyBluetoothMicrophone("George's AirPods Pro")).toBe(true);
+    expect(isLikelyBluetoothMicrophone('Bose QC Headset')).toBe(true);
+    expect(isLikelyBluetoothMicrophone('Jabra Hands-Free Audio')).toBe(true);
+  });
+
+  it('does not flag built-in or USB-style microphones', () => {
+    expect(isLikelyBluetoothMicrophone('MacBook Pro Microphone')).toBe(false);
+    expect(isLikelyBluetoothMicrophone('USB Audio Device')).toBe(false);
   });
 });

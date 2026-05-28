@@ -54,3 +54,13 @@ pub fn request_microphone_permission() -> Result<(), String> {
 pub fn list_audio_devices() -> Result<Vec<String>, String> {
     audio::list_input_devices()
 }
+
+#[tauri::command]
+pub fn get_default_audio_input_device() -> Result<Option<String>, String> {
+    audio::default_input_device_name()
+}
+
+#[tauri::command]
+pub fn log_audio_route_snapshot(reason: String) -> Result<(), String> {
+    audio::log_audio_route_snapshot(&reason)
+}
