@@ -79,10 +79,15 @@ async fn run_transcription_pipeline(
     let _guard = IdleGuard::new(app_state, recording_id);
 
     // Read all needed state in one lock
-    let (model_name, language, auto_paste, paste_delay_ms, vad_sensitivity, custom_vocabulary, smart_punctuation) = {
+    let (model_name, language, auto_paste, paste_delay_ms, vad_sensitivity, custom_vocabulary, smart_punctuation, save_transcript, save_audio, output_dir) = {
         let dictation = app_state.dictation.lock_or_recover();
-        (dictation.model_name.clone(), dictation.language.clone(), dictation.auto_paste, dictation.auto_paste_delay_ms, dictation.vad_sensitivity, dictation.custom_vocabulary.clone(), dictation.smart_punctuation)
+        (dictation.model_name.clone(), dictation.language.clone(), dictation.auto_paste, dictation.auto_paste_delay_ms, dictation.vad_sensitivity, dictation.custom_vocabulary.clone(), dictation.smart_punctuation, dictation.save_transcript, dictation.save_audio, dictation.output_dir.clone())
     };
+
+    // When saving to a file, suppress auto-paste into the focused app. The
+    // clipboard write inside `inject_text` is unconditional, so text remains
+    // copyable regardless of these toggles.
+    let effective_auto_paste = auto_paste && !(save_transcript || save_audio);
 
     // Pre-VAD signal level logging for mic diagnosis
     let rms = audio::compute_rms(samples);
@@ -175,6 +180,21 @@ async fn run_transcription_pipeline(
         return Ok((String::new(), PipelineTimings { vad_ms, inference_ms, paste_ms: 0, rss_before_mb, rss_after_mb }));
     }
 
+    // Phase: File output (optional) -- persist audio/transcript before injection.
+    // Non-fatal: a write failure is logged and surfaced to the UI, but the text
+    // is already on its way to the clipboard. Uses the original (pre-VAD) samples.
+    if save_audio || save_transcript {
+        if let Err(e) = crate::file_output::write_dictation_outputs(
+            samples, &text, save_audio, save_transcript, &output_dir,
+        ) {
+            tracing::warn!(target: "pipeline", "file output failed: {}", e);
+            let _ = app_handle.emit(
+                "file-output-failed",
+                "Couldn't save dictation to file. Text is still in your clipboard.",
+            );
+        }
+    }
+
     // Phase: Text injection (clipboard write + optional osascript paste)
     let t_inject = std::time::Instant::now();
     if !text.is_empty() {
@@ -182,7 +202,7 @@ async fn run_transcription_pipeline(
         let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
         app_handle
             .run_on_main_thread(move || {
-                let _ = tx.send(injector::inject_text(&text_to_inject, auto_paste, paste_delay_ms));
+                let _ = tx.send(injector::inject_text(&text_to_inject, effective_auto_paste, paste_delay_ms));
             })
             .map_err(|e| format!("Failed to dispatch to main thread: {}", e))?;
         let paste_hint = if cfg!(target_os = "macos") {
@@ -370,6 +390,18 @@ pub async fn configure_dictation(
 
     if let Some(sp) = options.get("smartPunctuation").and_then(|v| v.as_bool()) {
         dictation.smart_punctuation = sp;
+    }
+
+    if let Some(save_transcript) = options.get("saveTranscript").and_then(|v| v.as_bool()) {
+        dictation.save_transcript = save_transcript;
+    }
+
+    if let Some(save_audio) = options.get("saveAudio").and_then(|v| v.as_bool()) {
+        dictation.save_audio = save_audio;
+    }
+
+    if let Some(output_dir) = options.get("outputDir").and_then(|v| v.as_str()) {
+        dictation.output_dir = output_dir.to_string();
     }
 
     if let Some(idle_timeout) = options.get("idleTimeoutMinutes").and_then(|v| v.as_u64()) {

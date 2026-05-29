@@ -16,6 +16,9 @@ export interface Settings {
   customVocabulary: string;
   disabled: boolean;
   smartPunctuation: boolean;
+  saveTranscript: boolean;
+  saveAudio: boolean;
+  outputDir: string;
 }
 
 export type ModelOption =
@@ -80,6 +83,9 @@ export const DEFAULT_SETTINGS: Settings = {
   customVocabulary: '',
   disabled: false,
   smartPunctuation: true,
+  saveTranscript: false,
+  saveAudio: false,
+  outputDir: '',
 };
 
 export const STORAGE_KEY = 'dictation-settings';
@@ -109,6 +115,12 @@ export function loadSettings(): Settings {
       const validLanguages = new Set<string>(LANGUAGE_OPTIONS.map((o) => o.value));
       if (typeof parsed.language !== 'string' || !validLanguages.has(parsed.language)) {
         parsed.language = DEFAULT_SETTINGS.language;
+      }
+
+      // outputDir feeds a filesystem path on the Rust side — coerce anything
+      // non-string back to the default (empty = app-chosen Documents/Murmur).
+      if (typeof parsed.outputDir !== 'string') {
+        parsed.outputDir = DEFAULT_SETTINGS.outputDir;
       }
 
       return { ...DEFAULT_SETTINGS, ...parsed } as Settings;

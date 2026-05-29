@@ -67,6 +67,9 @@ export interface ConfigureOptions {
   idleTimeoutMinutes?: number;
   customVocabulary?: string;
   smartPunctuation?: boolean;
+  saveTranscript?: boolean;
+  saveAudio?: boolean;
+  outputDir?: string;
 }
 
 export async function configure(options: ConfigureOptions): Promise<DictationResponse> {

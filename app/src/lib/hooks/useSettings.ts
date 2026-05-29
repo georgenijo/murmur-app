@@ -54,9 +54,9 @@ export function useSettings() {
       });
     }
 
-    if ('model' in updates || 'language' in updates || 'autoPaste' in updates || 'autoPasteDelayMs' in updates || 'vadSensitivity' in updates || 'idleTimeoutMinutes' in updates || 'customVocabulary' in updates || 'smartPunctuation' in updates) {
+    if ('model' in updates || 'language' in updates || 'autoPaste' in updates || 'autoPasteDelayMs' in updates || 'vadSensitivity' in updates || 'idleTimeoutMinutes' in updates || 'customVocabulary' in updates || 'smartPunctuation' in updates || 'saveTranscript' in updates || 'saveAudio' in updates || 'outputDir' in updates) {
       const version = ++configureVersionRef.current;
-      configure({ model: newSettings.model, language: newSettings.language, autoPaste: newSettings.autoPaste, autoPasteDelayMs: newSettings.autoPasteDelayMs, vadSensitivity: newSettings.vadSensitivity, idleTimeoutMinutes: newSettings.idleTimeoutMinutes, customVocabulary: newSettings.customVocabulary, smartPunctuation: newSettings.smartPunctuation })
+      configure({ model: newSettings.model, language: newSettings.language, autoPaste: newSettings.autoPaste, autoPasteDelayMs: newSettings.autoPasteDelayMs, vadSensitivity: newSettings.vadSensitivity, idleTimeoutMinutes: newSettings.idleTimeoutMinutes, customVocabulary: newSettings.customVocabulary, smartPunctuation: newSettings.smartPunctuation, saveTranscript: newSettings.saveTranscript, saveAudio: newSettings.saveAudio, outputDir: newSettings.outputDir })
         .catch((err) => {
           console.error('Failed to configure:', err);
           if (configureVersionRef.current === version) {
@@ -70,6 +70,9 @@ export function useSettings() {
               idleTimeoutMinutes: previousSettings.idleTimeoutMinutes,
               customVocabulary: previousSettings.customVocabulary,
               smartPunctuation: previousSettings.smartPunctuation,
+              saveTranscript: previousSettings.saveTranscript,
+              saveAudio: previousSettings.saveAudio,
+              outputDir: previousSettings.outputDir,
             };
             settingsRef.current = reverted;
             setSettings(reverted);

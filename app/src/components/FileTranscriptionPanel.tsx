@@ -5,7 +5,7 @@ import { flog } from '../lib/log';
 
 interface FileTranscriptionPanelProps {
   /** Persist completed transcriptions to shared history. */
-  addEntry: (text: string, duration: number) => void;
+  addEntry: (text: string, duration: number, source?: 'recording' | 'file', sourceName?: string) => void;
 }
 
 export function FileTranscriptionPanel({ addEntry }: FileTranscriptionPanelProps) {
