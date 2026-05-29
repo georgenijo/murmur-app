@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { initDictation, configure } from '../dictation';
+import { initDictation, configure, buildConfigureOptions } from '../dictation';
 import { Settings } from '../settings';
 
 export function useInitialization(settings: Settings) {
@@ -12,16 +12,7 @@ export function useInitialization(settings: Settings) {
     initDictation()
       .then(() => {
         if (cancelled) return;
-        return configure({
-          model: settings.model,
-          language: settings.language,
-          autoPaste: settings.autoPaste,
-          autoPasteDelayMs: settings.autoPasteDelayMs,
-          vadSensitivity: settings.vadSensitivity,
-          idleTimeoutMinutes: settings.idleTimeoutMinutes,
-          customVocabulary: settings.customVocabulary,
-          smartPunctuation: settings.smartPunctuation,
-        });
+        return configure(buildConfigureOptions(settings));
       })
       .then(() => {
         if (cancelled) return;

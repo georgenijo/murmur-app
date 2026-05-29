@@ -1,7 +1,8 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { emit } from '@tauri-apps/api/event';
 import { Settings, loadSettings, saveSettings } from '../settings';
-import { configure } from '../dictation';
+import { configure, buildConfigureOptions } from '../dictation';
 import { enable, disable, isEnabled } from '@tauri-apps/plugin-autostart';
 
 let lastAutostartOp: Promise<void> = Promise.resolve();
@@ -54,9 +55,16 @@ export function useSettings() {
       });
     }
 
+    if ('autoPaste' in updates || 'disabled' in updates) {
+      // Notify the overlay window (separate React context) so its quick-settings
+      // controls reflect changes made here. The diff-guard in applyExternalSettings
+      // prevents this window from re-applying its own change.
+      emit('settings-changed').catch((err) => console.error('Failed to emit settings-changed:', err));
+    }
+
     if ('model' in updates || 'language' in updates || 'autoPaste' in updates || 'autoPasteDelayMs' in updates || 'vadSensitivity' in updates || 'idleTimeoutMinutes' in updates || 'customVocabulary' in updates || 'smartPunctuation' in updates) {
       const version = ++configureVersionRef.current;
-      configure({ model: newSettings.model, language: newSettings.language, autoPaste: newSettings.autoPaste, autoPasteDelayMs: newSettings.autoPasteDelayMs, vadSensitivity: newSettings.vadSensitivity, idleTimeoutMinutes: newSettings.idleTimeoutMinutes, customVocabulary: newSettings.customVocabulary, smartPunctuation: newSettings.smartPunctuation })
+      configure(buildConfigureOptions(newSettings))
         .catch((err) => {
           console.error('Failed to configure:', err);
           if (configureVersionRef.current === version) {
@@ -79,5 +87,31 @@ export function useSettings() {
     }
   };
 
-  return { settings, updateSettings };
+  // Ingest a settings change made by another window (the overlay's quick controls).
+  // Diffs against the current value so a window applying its own emitted change is a
+  // no-op — this is what breaks the settings-changed echo loop.
+  const applyExternalSettings = useCallback((fresh: Settings) => {
+    const prev = settingsRef.current;
+    const disabledChanged = fresh.disabled !== prev.disabled;
+    const autoPasteChanged = fresh.autoPaste !== prev.autoPaste;
+    if (!disabledChanged && !autoPasteChanged) return;
+
+    settingsRef.current = fresh;
+    setSettings(fresh);
+    saveSettings(fresh);
+
+    if (disabledChanged) {
+      // Idempotent: the overlay also calls this directly for a snappy gate.
+      invoke('set_app_disabled', { disabled: fresh.disabled }).catch((err) => {
+        console.error('Failed to sync disabled state:', err);
+      });
+    }
+    if (autoPasteChanged) {
+      configure(buildConfigureOptions(fresh)).catch((err) => {
+        console.error('Failed to configure:', err);
+      });
+    }
+  }, []);
+
+  return { settings, updateSettings, applyExternalSettings };
 }

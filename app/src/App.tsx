@@ -16,6 +16,8 @@ import { useHoldDownToggle } from './lib/hooks/useHoldDownToggle';
 import { useDoubleTapToggle } from './lib/hooks/useDoubleTapToggle';
 import { useCombinedToggle } from './lib/hooks/useCombinedToggle';
 import { useShowAboutListener } from './lib/hooks/useShowAboutListener';
+import { useOverlaySettingsSync } from './lib/hooks/useOverlaySettingsSync';
+import { useOpenSettingsListener } from './lib/hooks/useOpenSettingsListener';
 import { useEscapeCancel } from './lib/hooks/useEscapeCancel';
 import { useAutoUpdater } from './lib/hooks/useAutoUpdater';
 import { UpdateModal } from './components/UpdateModal';
@@ -51,8 +53,11 @@ function App() {
       .catch(() => setModelReady(true)); // fail open so main UI still loads
   }, []);
 
-  const { settings, updateSettings } = useSettings();
+  const { settings, updateSettings, applyExternalSettings } = useSettings();
   const { initialized, error: initError } = useInitialization(settings);
+
+  // Keep settings in sync when the overlay's quick controls change them.
+  useOverlaySettingsSync(applyExternalSettings);
 
   // Track accessibility permission — when it transitions false→true the
   // double-tap listener restarts automatically (rdev silently does nothing
@@ -115,6 +120,10 @@ function App() {
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [mainTab, setMainTab] = useState<'record' | 'file'>('record');
+
+  // Overlay gear button asks the main window to open the Settings panel.
+  const openSettings = useCallback(() => setIsSettingsOpen(true), []);
+  useOpenSettingsListener(openSettings);
 
   const error = initError || recordingError;
 

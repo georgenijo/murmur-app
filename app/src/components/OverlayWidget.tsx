@@ -1,24 +1,37 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import { listen, emit } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
+import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { isDictationStatus } from '../lib/types';
 import type { DictationStatus } from '../lib/types';
 import { flog } from '../lib/log';
-import { STORAGE_KEY, DEFAULT_SETTINGS } from '../lib/settings';
+import { STORAGE_KEY, DEFAULT_SETTINGS, loadSettings, saveSettings } from '../lib/settings';
 
 const BAR_COUNT = 7;
+
+function formatElapsed(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
 
 export function OverlayWidget() {
   const [status, setStatus] = useState<DictationStatus>('idle');
   const [showCancelled, setShowCancelled] = useState(false);
   const [lockedMode, setLockedMode] = useState(false);
   const [disabled, setDisabled] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const [autoPaste, setAutoPaste] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
   const notchHeightRef = useRef(0);
+  const [notchHeight, setNotchHeight] = useState(0);
   const [notchWidth, setNotchWidth] = useState(185);
   const statusRef = useRef(status);
   const lockedRef = useRef(lockedMode);
   const disabledRef = useRef(disabled);
   const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const collapseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const shrinkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const audioLevelRef = useRef(0);
   const barRefs = useRef<(HTMLDivElement | null)[]>([]);
 
@@ -34,6 +47,7 @@ export function OverlayWidget() {
         if (info) {
           flog.info('overlay', 'notch info', { notch_width: info.notch_width, notch_height: info.notch_height });
           notchHeightRef.current = info.notch_height;
+          setNotchHeight(info.notch_height);
           setNotchWidth(info.notch_width);
         } else {
           flog.info('overlay', 'no notch detected');
@@ -45,11 +59,14 @@ export function OverlayWidget() {
       if (stored) {
         const parsed = JSON.parse(stored);
         if (typeof parsed.disabled === 'boolean') setDisabled(parsed.disabled);
+        if (typeof parsed.autoPaste === 'boolean') setAutoPaste(parsed.autoPaste);
       }
     } catch { /* ignore */ }
     return () => {
       flog.info('overlay', 'unmounted');
       if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
+      if (collapseTimerRef.current) clearTimeout(collapseTimerRef.current);
+      if (shrinkTimerRef.current) clearTimeout(shrinkTimerRef.current);
     };
   }, []);
 
@@ -120,13 +137,18 @@ export function OverlayWidget() {
     let cancelled = false;
     let unlisten: (() => void) | null = null;
     listen<{ notch_width: number; notch_height: number } | null>('notch-info-changed', (event) => {
+      // Rust resizes the window back to collapsed dimensions on display change,
+      // so reset the expanded UI state to stay in sync.
+      setExpanded(false);
       if (event.payload) {
         flog.info('overlay', 'notch info changed', { notch_width: event.payload.notch_width, notch_height: event.payload.notch_height });
         notchHeightRef.current = event.payload.notch_height;
+        setNotchHeight(event.payload.notch_height);
         setNotchWidth(event.payload.notch_width);
       } else {
         flog.info('overlay', 'notch removed (no notch on new display)');
         notchHeightRef.current = 0;
+        setNotchHeight(0);
         setNotchWidth(140);
       }
     }).then((fn) => {
@@ -159,6 +181,32 @@ export function OverlayWidget() {
     });
     return () => { cancelled = true; unlisten?.(); };
   }, []);
+
+  // Subscribe to settings-changed (emitted by the main window) so the quick
+  // controls reflect changes made there, even while already expanded.
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    listen('settings-changed', () => {
+      try {
+        const s = loadSettings();
+        setAutoPaste(s.autoPaste);
+        setDisabled(s.disabled);
+      } catch { /* ignore */ }
+    }).then((fn) => {
+      if (cancelled) { fn(); } else { unlisten = fn; }
+    });
+    return () => { cancelled = true; unlisten?.(); };
+  }, []);
+
+  // Track recording elapsed time for the inline timer (recording + hover only).
+  useEffect(() => {
+    if (status !== 'recording') { setElapsed(0); return; }
+    const start = Date.now();
+    setElapsed(0);
+    const id = setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 250);
+    return () => clearInterval(id);
+  }, [status]);
 
   // Animate waveform bars via rAF (direct DOM updates, no React reconciliation)
   useEffect(() => {
@@ -279,31 +327,109 @@ export function OverlayWidget() {
     });
   }, []);
 
+  // Hover-expand: grow the window first, then animate the card open.
+  const handleMouseEnter = useCallback(() => {
+    if (collapseTimerRef.current) { clearTimeout(collapseTimerRef.current); collapseTimerRef.current = null; }
+    if (shrinkTimerRef.current) { clearTimeout(shrinkTimerRef.current); shrinkTimerRef.current = null; }
+    // Refresh quick-control values from localStorage (overlay has no shared settings context).
+    try {
+      const s = loadSettings();
+      setAutoPaste(s.autoPaste);
+      setDisabled(s.disabled);
+    } catch { /* ignore */ }
+    invoke('set_overlay_expanded', { expanded: true })
+      .catch((e) => flog.warn('overlay', 'set_overlay_expanded(true) failed', { error: String(e) }));
+    setExpanded(true);
+  }, []);
+
+  // Collapse after a 300ms hover-intent delay; shrink the window only after the
+  // close animation finishes so the dropdown isn't clipped mid-transition.
+  const handleMouseLeave = useCallback(() => {
+    if (collapseTimerRef.current) clearTimeout(collapseTimerRef.current);
+    collapseTimerRef.current = setTimeout(() => {
+      collapseTimerRef.current = null;
+      setExpanded(false);
+      if (shrinkTimerRef.current) clearTimeout(shrinkTimerRef.current);
+      shrinkTimerRef.current = setTimeout(() => {
+        shrinkTimerRef.current = null;
+        invoke('set_overlay_expanded', { expanded: false })
+          .catch((e) => flog.warn('overlay', 'set_overlay_expanded(false) failed', { error: String(e) }));
+      }, 380);
+    }, 300);
+  }, []);
+
+  // Quick control: auto-paste. Write localStorage + notify the main window.
+  const handleToggleAutoPaste = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      const s = loadSettings();
+      const next = !s.autoPaste;
+      saveSettings({ ...s, autoPaste: next });
+      setAutoPaste(next);
+      emit('settings-changed').catch((err) => flog.warn('overlay', 'emit settings-changed failed', { error: String(err) }));
+    } catch (err) {
+      flog.error('overlay', 'toggle autoPaste failed', { error: String(err) });
+    }
+  }, []);
+
+  // Quick control: global disable. Gate the backend immediately, then notify.
+  const handleToggleDisabled = useCallback(async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      const s = loadSettings();
+      const next = !s.disabled;
+      await invoke('set_app_disabled', { disabled: next });
+      saveSettings({ ...s, disabled: next });
+      setDisabled(next);
+      emit('settings-changed').catch((err) => flog.warn('overlay', 'emit settings-changed failed', { error: String(err) }));
+    } catch (err) {
+      flog.error('overlay', 'toggle disabled failed', { error: String(err) });
+    }
+  }, []);
+
+  // Quick control: open the main window's Settings panel.
+  const handleOpenSettings = useCallback(async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      emit('open-settings').catch(() => {});
+      const main = await WebviewWindow.getByLabel('main');
+      await main?.show();
+      await main?.setFocus();
+    } catch (err) {
+      flog.error('overlay', 'open settings failed', { error: String(err) });
+    }
+  }, []);
+
+  const topH = notchHeight || 37;
+
   return (
     <div
-      data-tauri-drag-region
       className="w-full h-full flex"
       style={{ background: 'transparent' }}
       onMouseDown={handleMouseDown}
       onDoubleClick={handleDoubleClick}
       onClick={handleClick}
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
     >
-      {/* Dynamic Island: same height as notch, expands horizontally.
-          Idle = small icon on the left showing app is alive.
-          Active = expands with red dot on left, waveform on right. */}
+      {/* Dynamic Island: top bar matches notch height; hover expands it downward
+          to reveal the quick-settings dropdown. Idle/recording only changes the
+          top bar — the dropdown row is identical. */}
       <div
-        className="cursor-pointer select-none overflow-hidden transition-all duration-[500ms] ease-[cubic-bezier(0.34,1.56,0.64,1)]"
+        className="cursor-pointer select-none overflow-hidden"
         style={{
           borderRadius: '0 0 12px 12px',
-          width: isActive ? notchWidth + 68 : notchWidth + 28,
+          width: (expanded || isActive) ? notchWidth + 68 : notchWidth + 28,
+          height: expanded ? topH + 56 : topH,
           marginLeft: 32,
-          height: '100%',
           background: 'rgba(20, 20, 20, 0.92)',
           backdropFilter: 'blur(40px)',
           WebkitBackdropFilter: 'blur(40px)',
+          transition: 'width 400ms cubic-bezier(0.34,1.56,0.64,1), height 360ms cubic-bezier(0.34,1.56,0.64,1)',
         }}
       >
-        <div className="flex items-center h-full" style={{ paddingLeft: 10, paddingRight: 10 }}>
+        {/* Top bar — the only draggable surface (keeps the dropdown buttons clickable) */}
+        <div data-tauri-drag-region className="flex items-center" style={{ height: topH, paddingLeft: 10, paddingRight: 10 }}>
           {/* Left side — mic icon (idle) or red dot (recording) or spinner (processing) or red X (cancelled), all same position */}
           <div className="shrink-0 w-3 h-3 flex items-center justify-center">
             {showCancelled ? (
@@ -323,6 +449,13 @@ export function OverlayWidget() {
               </svg>
             )}
           </div>
+
+          {/* Inline timer — recording + hover only */}
+          {status === 'recording' && expanded && (
+            <span className="shrink-0 text-white/60 tabular-nums" style={{ marginLeft: 7, fontSize: 11 }}>
+              {formatElapsed(elapsed)}
+            </span>
+          )}
 
           {/* Spacer */}
           <div className="flex-1" />
@@ -346,6 +479,64 @@ export function OverlayWidget() {
               />
             ))}
           </div>
+        </div>
+
+        {/* Quick-settings dropdown — revealed on hover (identical in idle/recording) */}
+        <div
+          className="flex items-center justify-center gap-4"
+          style={{
+            height: 56,
+            padding: '0 12px 8px',
+            opacity: expanded ? 1 : 0,
+            pointerEvents: expanded ? 'auto' : 'none',
+            transition: 'opacity 200ms ease',
+            transitionDelay: expanded ? '100ms' : '0ms',
+          }}
+        >
+          {/* Global disable (speaker-slash) */}
+          <button
+            type="button"
+            aria-label="Disable Murmur"
+            onClick={handleToggleDisabled}
+            className="shrink-0 flex items-center justify-center cursor-pointer rounded-[9px] transition-colors"
+            style={{ width: 30, height: 30, background: disabled ? 'rgba(239,68,68,0.12)' : 'rgba(255,255,255,0.06)' }}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={disabled ? '#ef4444' : 'rgba(255,255,255,0.85)'} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+              <line x1="23" y1="9" x2="17" y2="15" />
+              <line x1="17" y1="9" x2="23" y2="15" />
+            </svg>
+          </button>
+
+          {/* Auto-paste toggle */}
+          <button
+            type="button"
+            role="switch"
+            aria-checked={autoPaste}
+            aria-label="Auto paste"
+            onClick={handleToggleAutoPaste}
+            className="relative shrink-0 cursor-pointer rounded-full transition-colors"
+            style={{ width: 34, height: 18, opacity: disabled ? 0.35 : 1, background: autoPaste ? 'rgba(255,255,255,0.92)' : 'rgba(255,255,255,0.18)' }}
+          >
+            <span
+              className="absolute rounded-full transition-transform"
+              style={{ top: 2, left: 2, width: 14, height: 14, background: autoPaste ? '#14141a' : '#fff', transform: autoPaste ? 'translateX(16px)' : 'translateX(0)' }}
+            />
+          </button>
+
+          {/* Open settings (gear) */}
+          <button
+            type="button"
+            aria-label="Open settings"
+            onClick={handleOpenSettings}
+            className="shrink-0 flex items-center justify-center cursor-pointer rounded-[9px] transition-colors"
+            style={{ width: 30, height: 30, background: 'rgba(255,255,255,0.06)' }}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.85)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+            </svg>
+          </button>
         </div>
       </div>
     </div>

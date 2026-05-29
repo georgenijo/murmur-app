@@ -145,6 +145,7 @@ pub fn run() {
             commands::tray::update_tray_icon,
             commands::overlay::show_overlay,
             commands::overlay::hide_overlay,
+            commands::overlay::set_overlay_expanded,
             commands::overlay::get_notch_info,
             telemetry::get_event_history,
             telemetry::clear_event_history,
