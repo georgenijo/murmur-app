@@ -6,7 +6,17 @@ import { flog } from '../log';
 const AUDIO_EXTENSIONS = ['wav', 'mp3', 'm4a'];
 const UNSUPPORTED_MESSAGE = 'Unsupported file type. Use WAV, MP3, or M4A.';
 
-export type FileTranscriptionStatus = 'idle' | 'processing' | 'complete' | 'error';
+export type QueueItemStatus = 'pending' | 'processing' | 'complete' | 'error';
+
+export interface FileQueueItem {
+  id: string;
+  path: string;
+  name: string;
+  status: QueueItemStatus;
+  result?: string;
+  error?: string;
+  duration?: number;
+}
 
 function hasAudioExtension(path: string): boolean {
   const ext = path.split('.').pop()?.toLowerCase();
@@ -17,95 +27,188 @@ function baseName(path: string): string {
   return path.split(/[\\/]/).pop() || path;
 }
 
+function partitionPaths(paths: string[]): { supported: string[]; unsupportedCount: number } {
+  const supported: string[] = [];
+  let unsupportedCount = 0;
+  for (const path of paths) {
+    if (hasAudioExtension(path)) {
+      supported.push(path);
+    } else {
+      unsupportedCount += 1;
+    }
+  }
+  return { supported, unsupportedCount };
+}
+
+function unsupportedWarning(count: number): string {
+  if (count === 1) {
+    return `Skipped 1 unsupported file. ${UNSUPPORTED_MESSAGE}`;
+  }
+  return `Skipped ${count} unsupported file(s). ${UNSUPPORTED_MESSAGE}`;
+}
+
 interface UseFileTranscriptionProps {
   /** Persist completed transcriptions to shared history (no WPM stats). */
   addEntry: (text: string, duration: number) => void;
 }
 
 /**
- * Manages the file-transcription flow: invokes the Rust `transcribe_file`
- * command, tracks status/result/error, and wires window drag-and-drop (which
- * yields real filesystem paths via the Tauri webview event).
+ * Manages batch file transcription: queues paths, drains sequentially via Rust
+ * `transcribe_file`, and wires window drag-and-drop (Tauri webview paths).
  */
 export function useFileTranscription({ addEntry }: UseFileTranscriptionProps) {
-  const [status, setStatus] = useState<FileTranscriptionStatus>('idle');
-  const [result, setResult] = useState('');
-  const [error, setError] = useState('');
-  const [fileName, setFileName] = useState('');
+  const [items, setItems] = useState<FileQueueItem[]>([]);
+  const [batchWarning, setBatchWarning] = useState('');
   const [isDragging, setIsDragging] = useState(false);
+  const [isDraining, setIsDraining] = useState(false);
 
-  // Ref mirror so the drag-drop listener (registered once) sees current status.
-  const statusRef = useRef(status);
-  statusRef.current = status;
+  const itemsRef = useRef<FileQueueItem[]>([]);
 
-  const transcribe = useCallback(async (path: string) => {
-    if (statusRef.current === 'processing') return;
-    if (!hasAudioExtension(path)) {
-      setError(UNSUPPORTED_MESSAGE);
-      setStatus('error');
-      return;
-    }
-    setFileName(baseName(path));
-    setResult('');
-    setError('');
-    setStatus('processing');
-    flog.info('file-transcribe', 'start', { name: baseName(path) });
-
-    const res = await transcribeFile(path);
-    if (res.type === 'error') {
-      setError(res.error || 'Transcription failed');
-      setStatus('error');
-      flog.warn('file-transcribe', 'error', { error: res.error });
-      return;
-    }
-
-    const text = res.text || '';
-    setResult(text);
-    setStatus('complete');
-    if (text.trim()) {
-      addEntry(text, res.duration ?? 0);
-    }
-    flog.info('file-transcribe', 'complete', { textLen: text.length });
-  }, [addEntry]);
-
-  const reset = useCallback(() => {
-    setStatus('idle');
-    setResult('');
-    setError('');
-    setFileName('');
+  const setItemsSynced = useCallback((updater: (prev: FileQueueItem[]) => FileQueueItem[]) => {
+    setItems((prev) => {
+      const next = updater(prev);
+      itemsRef.current = next;
+      return next;
+    });
   }, []);
 
-  // Drag-and-drop via the Tauri webview — provides absolute file paths
-  // (the plain HTML5 drop event does not, for security reasons). Drag-drop is
-  // an optional convenience; if the listener can't be registered the picker
-  // button still works, so failures degrade gracefully rather than break the UI.
+  const batchGenerationRef = useRef(0);
+  const drainingRef = useRef(false);
+
+  const isProcessing = isDraining || items.some((i) => i.status === 'processing');
+
+  const updateItem = useCallback(
+    (id: string, patch: Partial<FileQueueItem>) => {
+      setItemsSynced((prev) =>
+        prev.map((item) => (item.id === id ? { ...item, ...patch } : item)),
+      );
+    },
+    [setItemsSynced],
+  );
+
+  const drainQueue = useCallback(
+    async (generation: number) => {
+      if (drainingRef.current) return;
+      drainingRef.current = true;
+      setIsDraining(true);
+
+      try {
+        while (batchGenerationRef.current === generation) {
+          const next = itemsRef.current.find((i) => i.status === 'pending');
+          if (!next) break;
+
+          updateItem(next.id, { status: 'processing', error: undefined, result: undefined });
+          flog.info('file-transcribe', 'start', { name: next.name });
+
+          const res = await transcribeFile(next.path);
+
+          if (batchGenerationRef.current !== generation) {
+            flog.info('file-transcribe', 'stale result ignored', { name: next.name });
+            return;
+          }
+
+          if (res.type === 'error') {
+            const err = res.error || 'Transcription failed';
+            updateItem(next.id, { status: 'error', error: err });
+            flog.warn('file-transcribe', 'error', { error: err });
+            continue;
+          }
+
+          const text = res.text || '';
+          updateItem(next.id, {
+            status: 'complete',
+            result: text,
+            duration: res.duration ?? 0,
+          });
+          if (text.trim()) {
+            addEntry(text, res.duration ?? 0);
+          }
+          flog.info('file-transcribe', 'complete', { textLen: text.length });
+        }
+      } finally {
+        drainingRef.current = false;
+        setIsDraining(false);
+        // Another enqueue may have added pending items while we were finishing.
+        if (
+          batchGenerationRef.current === generation &&
+          itemsRef.current.some((i) => i.status === 'pending')
+        ) {
+          void drainQueue(generation);
+        }
+      }
+    },
+    [addEntry, updateItem],
+  );
+
+  const enqueuePaths = useCallback(
+    (paths: string[]) => {
+      if (paths.length === 0) return;
+
+      const { supported, unsupportedCount } = partitionPaths(paths);
+      if (unsupportedCount > 0) {
+        setBatchWarning(unsupportedWarning(unsupportedCount));
+      }
+
+      if (supported.length === 0) return;
+
+      const activePaths = new Set(
+        itemsRef.current
+          .filter((i) => i.status === 'pending' || i.status === 'processing')
+          .map((i) => i.path),
+      );
+      const toAdd = supported.filter((path) => !activePaths.has(path));
+      if (toAdd.length === 0) return;
+
+      const newItems: FileQueueItem[] = toAdd.map((path) => ({
+        id: crypto.randomUUID(),
+        path,
+        name: baseName(path),
+        status: 'pending',
+      }));
+
+      setItemsSynced((prev) => [...prev, ...newItems]);
+
+      const generation = batchGenerationRef.current;
+      void drainQueue(generation);
+    },
+    [drainQueue, setItemsSynced],
+  );
+
+  const reset = useCallback(() => {
+    batchGenerationRef.current += 1;
+    drainingRef.current = false;
+    setIsDraining(false);
+    itemsRef.current = [];
+    setItems([]);
+    setBatchWarning('');
+  }, []);
+
   useEffect(() => {
     let unlisten: (() => void) | null = null;
     let cancelled = false;
 
     try {
-      getCurrentWebview().onDragDropEvent((event) => {
-        const payload = event.payload;
-        if (payload.type === 'enter' || payload.type === 'over') {
-          setIsDragging(true);
-        } else if (payload.type === 'leave') {
-          setIsDragging(false);
-        } else if (payload.type === 'drop') {
-          setIsDragging(false);
-          const audioPath = payload.paths.find(hasAudioExtension);
-          if (audioPath) {
-            void transcribe(audioPath);
-          } else if (payload.paths.length > 0) {
-            setError(UNSUPPORTED_MESSAGE);
-            setStatus('error');
+      getCurrentWebview()
+        .onDragDropEvent((event) => {
+          const payload = event.payload;
+          if (payload.type === 'enter' || payload.type === 'over') {
+            setIsDragging(true);
+          } else if (payload.type === 'leave') {
+            setIsDragging(false);
+          } else if (payload.type === 'drop') {
+            setIsDragging(false);
+            if (payload.paths.length > 0) {
+              enqueuePaths(payload.paths);
+            }
           }
-        }
-      }).then((fn) => {
-        if (cancelled) fn();
-        else unlisten = fn;
-      }).catch((e) => {
-        flog.warn('file-transcribe', 'drag-drop listener failed', { error: String(e) });
-      });
+        })
+        .then((fn) => {
+          if (cancelled) fn();
+          else unlisten = fn;
+        })
+        .catch((e) => {
+          flog.warn('file-transcribe', 'drag-drop listener failed', { error: String(e) });
+        });
     } catch (e) {
       flog.warn('file-transcribe', 'drag-drop unavailable', { error: String(e) });
     }
@@ -114,7 +217,14 @@ export function useFileTranscription({ addEntry }: UseFileTranscriptionProps) {
       cancelled = true;
       unlisten?.();
     };
-  }, [transcribe]);
+  }, [enqueuePaths]);
 
-  return { status, result, error, fileName, isDragging, transcribe, reset };
+  return {
+    items,
+    batchWarning,
+    isDragging,
+    isProcessing,
+    enqueuePaths,
+    reset,
+  };
 }
