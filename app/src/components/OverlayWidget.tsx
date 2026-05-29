@@ -1,17 +1,58 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { listen, emit } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
+import { cursorPosition, getCurrentWindow } from '@tauri-apps/api/window';
 import { isDictationStatus } from '../lib/types';
 import type { DictationStatus } from '../lib/types';
 import { flog } from '../lib/log';
 import { STORAGE_KEY, DEFAULT_SETTINGS, loadSettings, saveSettings } from '../lib/settings';
+import type { Settings } from '../lib/settings';
+import { buildConfigureOptions } from '../lib/dictation';
 
 const BAR_COUNT = 7;
+const COLLAPSE_DELAY_MS = 300;
+const SHRINK_DELAY_MS = 380;
+const HOVER_WATCHDOG_MS = 250;
+const HOVER_BOUNDS_PADDING = 8;
 
 function formatElapsed(seconds: number): string {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
   return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function PowerIcon({ stroke }: { stroke: string }) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={stroke} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 2v10" />
+      <path d="M18.4 6.6a9 9 0 1 1-12.8 0" />
+    </svg>
+  );
+}
+
+function ClipboardPasteIcon({ stroke }: { stroke: string }) {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={stroke} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="8" y="2" width="8" height="4" rx="1" />
+      <path d="M16 4h2a2 2 0 0 1 2 2v4" />
+      <path d="M8 4H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h5" />
+      <path d="M16 14v6" />
+      <path d="M13 17h6" />
+    </svg>
+  );
+}
+
+function SlidersIcon({ stroke }: { stroke: string }) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={stroke} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 7h4" />
+      <path d="M12 7h8" />
+      <circle cx="10" cy="7" r="2" />
+      <path d="M4 17h10" />
+      <path d="M18 17h2" />
+      <circle cx="16" cy="17" r="2" />
+    </svg>
+  );
 }
 
 export function OverlayWidget() {
@@ -21,13 +62,16 @@ export function OverlayWidget() {
   const [disabled, setDisabled] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [autoPaste, setAutoPaste] = useState(false);
+  const [fileOutputEnabled, setFileOutputEnabled] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const notchHeightRef = useRef(0);
   const [notchHeight, setNotchHeight] = useState(0);
   const [notchWidth, setNotchWidth] = useState(185);
+  const islandRef = useRef<HTMLDivElement | null>(null);
   const statusRef = useRef(status);
   const lockedRef = useRef(lockedMode);
   const disabledRef = useRef(disabled);
+  const expandedRef = useRef(expanded);
   const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const collapseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const shrinkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -37,6 +81,13 @@ export function OverlayWidget() {
   useEffect(() => { statusRef.current = status; }, [status]);
   useEffect(() => { lockedRef.current = lockedMode; }, [lockedMode]);
   useEffect(() => { disabledRef.current = disabled; }, [disabled]);
+  useEffect(() => { expandedRef.current = expanded; }, [expanded]);
+
+  const applySettingsSnapshot = useCallback((settings: Settings) => {
+    setDisabled(settings.disabled);
+    setAutoPaste(settings.autoPaste);
+    setFileOutputEnabled(settings.saveTranscript || settings.saveAudio);
+  }, []);
 
   // Log mount + fetch notch dimensions + read initial disabled state
   useEffect(() => {
@@ -54,12 +105,7 @@ export function OverlayWidget() {
       })
       .catch((e) => flog.warn('overlay', 'get_notch_info failed', { error: String(e) }));
     try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        if (typeof parsed.disabled === 'boolean') setDisabled(parsed.disabled);
-        if (typeof parsed.autoPaste === 'boolean') setAutoPaste(parsed.autoPaste);
-      }
+      applySettingsSnapshot(loadSettings());
     } catch { /* ignore */ }
     return () => {
       flog.info('overlay', 'unmounted');
@@ -67,7 +113,7 @@ export function OverlayWidget() {
       if (collapseTimerRef.current) clearTimeout(collapseTimerRef.current);
       if (shrinkTimerRef.current) clearTimeout(shrinkTimerRef.current);
     };
-  }, []);
+  }, [applySettingsSnapshot]);
 
   // Restore saved position (Rust handles default positioning)
   // TODO: re-enable after notch positioning is stable
@@ -189,14 +235,13 @@ export function OverlayWidget() {
     listen('settings-changed', () => {
       try {
         const s = loadSettings();
-        setAutoPaste(s.autoPaste);
-        setDisabled(s.disabled);
+        applySettingsSnapshot(s);
       } catch { /* ignore */ }
     }).then((fn) => {
       if (cancelled) { fn(); } else { unlisten = fn; }
     });
     return () => { cancelled = true; unlisten?.(); };
-  }, []);
+  }, [applySettingsSnapshot]);
 
   // Track recording elapsed time for the inline timer (recording + hover only).
   useEffect(() => {
@@ -248,6 +293,10 @@ export function OverlayWidget() {
     if (clickTimerRef.current) {
       clearTimeout(clickTimerRef.current);
       clickTimerRef.current = null;
+    }
+    if (expandedRef.current) {
+      flog.info('overlay', 'double-click ignored while expanded', { status: currentStatus });
+      return;
     }
     const currentLocked = lockedRef.current;
     if (!currentLocked) {
@@ -326,50 +375,136 @@ export function OverlayWidget() {
     });
   }, []);
 
-  // Hover-expand: grow the window first, then animate the card open.
-  const handleMouseEnter = useCallback(() => {
-    if (collapseTimerRef.current) { clearTimeout(collapseTimerRef.current); collapseTimerRef.current = null; }
-    if (shrinkTimerRef.current) { clearTimeout(shrinkTimerRef.current); shrinkTimerRef.current = null; }
-    // Refresh quick-control values from localStorage (overlay has no shared settings context).
-    try {
-      const s = loadSettings();
-      setAutoPaste(s.autoPaste);
-      setDisabled(s.disabled);
-    } catch { /* ignore */ }
-    invoke('set_overlay_expanded', { expanded: true })
-      .catch((e) => flog.warn('overlay', 'set_overlay_expanded(true) failed', { error: String(e) }));
-    setExpanded(true);
+  const shrinkOverlayWindow = useCallback(() => {
+    if (shrinkTimerRef.current) clearTimeout(shrinkTimerRef.current);
+    shrinkTimerRef.current = setTimeout(() => {
+      shrinkTimerRef.current = null;
+      invoke('set_overlay_expanded', { expanded: false })
+        .catch((e) => flog.warn('overlay', 'set_overlay_expanded(false) failed', { error: String(e) }));
+    }, SHRINK_DELAY_MS);
   }, []);
 
-  // Collapse after a 300ms hover-intent delay; shrink the window only after the
-  // close animation finishes so the dropdown isn't clipped mid-transition.
-  const handleMouseLeave = useCallback(() => {
+  const collapseOverlay = useCallback((delayMs = COLLAPSE_DELAY_MS) => {
     if (collapseTimerRef.current) clearTimeout(collapseTimerRef.current);
     collapseTimerRef.current = setTimeout(() => {
       collapseTimerRef.current = null;
       setExpanded(false);
-      if (shrinkTimerRef.current) clearTimeout(shrinkTimerRef.current);
-      shrinkTimerRef.current = setTimeout(() => {
-        shrinkTimerRef.current = null;
-        invoke('set_overlay_expanded', { expanded: false })
-          .catch((e) => flog.warn('overlay', 'set_overlay_expanded(false) failed', { error: String(e) }));
-      }, 380);
-    }, 300);
-  }, []);
+      shrinkOverlayWindow();
+    }, delayMs);
+  }, [shrinkOverlayWindow]);
+
+  // Hover-expand: grow the window first, then animate the card open.
+  const handleMouseEnter = useCallback(() => {
+    if (collapseTimerRef.current) { clearTimeout(collapseTimerRef.current); collapseTimerRef.current = null; }
+    if (shrinkTimerRef.current) { clearTimeout(shrinkTimerRef.current); shrinkTimerRef.current = null; }
+    if (expandedRef.current) return;
+    // Refresh quick-control values from localStorage (overlay has no shared settings context).
+    try {
+      const s = loadSettings();
+      applySettingsSnapshot(s);
+    } catch { /* ignore */ }
+    invoke('set_overlay_expanded', { expanded: true })
+      .catch((e) => flog.warn('overlay', 'set_overlay_expanded(true) failed', { error: String(e) }));
+    setExpanded(true);
+  }, [applySettingsSnapshot]);
+
+  // Collapse after a 300ms hover-intent delay; shrink the window only after the
+  // close animation finishes so the dropdown isn't clipped mid-transition.
+  const handleMouseLeave = useCallback(() => {
+    collapseOverlay();
+  }, [collapseOverlay]);
+
+  // Safety net for macOS/Tauri hover edge cases: if the native window is already
+  // expanded but a leave event is missed, collapse once the cursor is outside the
+  // actual visible island card (not merely outside the transparent window frame).
+  useEffect(() => {
+    if (!expanded) return;
+    const currentWindow = getCurrentWindow();
+    const intervalId = setInterval(async () => {
+      const island = islandRef.current;
+      if (!island || !expandedRef.current) return;
+      try {
+        const [windowPosition, cursor] = await Promise.all([
+          currentWindow.outerPosition(),
+          cursorPosition(),
+        ]);
+        const scale = window.devicePixelRatio || 1;
+        const rect = island.getBoundingClientRect();
+        const padding = HOVER_BOUNDS_PADDING * scale;
+        const left = windowPosition.x + rect.left * scale - padding;
+        const right = windowPosition.x + rect.right * scale + padding;
+        const top = windowPosition.y + rect.top * scale - padding;
+        const bottom = windowPosition.y + rect.bottom * scale + padding;
+
+        if (cursor.x < left || cursor.x > right || cursor.y < top || cursor.y > bottom) {
+          collapseOverlay(0);
+        }
+      } catch (err) {
+        flog.warn('overlay', 'hover watchdog failed', { error: String(err) });
+      }
+    }, HOVER_WATCHDOG_MS);
+    return () => clearInterval(intervalId);
+  }, [expanded, collapseOverlay]);
+
+  // The overlay is non-activating and sits above the menu bar, so macOS can miss
+  // normal DOM hover entry events. Polling the cursor against the visible island
+  // bounds keeps hover-expand reliable without widening the clickable window.
+  useEffect(() => {
+    const currentWindow = getCurrentWindow();
+    let inFlight = false;
+    const intervalId = setInterval(async () => {
+      const island = islandRef.current;
+      if (!island || expandedRef.current || inFlight) return;
+      inFlight = true;
+      try {
+        const [windowPosition, cursor] = await Promise.all([
+          currentWindow.outerPosition(),
+          cursorPosition(),
+        ]);
+        const scale = window.devicePixelRatio || 1;
+        const rect = island.getBoundingClientRect();
+        const padding = HOVER_BOUNDS_PADDING * scale;
+        const left = windowPosition.x + rect.left * scale - padding;
+        const right = windowPosition.x + rect.right * scale + padding;
+        const top = windowPosition.y + rect.top * scale - padding;
+        const bottom = windowPosition.y + rect.bottom * scale + padding;
+
+        if (cursor.x >= left && cursor.x <= right && cursor.y >= top && cursor.y <= bottom) {
+          handleMouseEnter();
+        }
+      } catch (err) {
+        flog.warn('overlay', 'hover detector failed', { error: String(err) });
+      } finally {
+        inFlight = false;
+      }
+    }, HOVER_WATCHDOG_MS);
+    return () => clearInterval(intervalId);
+  }, [handleMouseEnter]);
 
   // Quick control: auto-paste. Write localStorage + notify the main window.
-  const handleToggleAutoPaste = useCallback((e: React.MouseEvent) => {
+  const handleToggleAutoPaste = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation();
     try {
       const s = loadSettings();
       const next = !s.autoPaste;
-      saveSettings({ ...s, autoPaste: next });
-      setAutoPaste(next);
+      const nextSettings = { ...s, autoPaste: next };
+      saveSettings(nextSettings);
+      applySettingsSnapshot(nextSettings);
+      try {
+        await invoke('configure_dictation', { options: buildConfigureOptions(nextSettings) });
+      } catch (err) {
+        saveSettings(s);
+        applySettingsSnapshot(s);
+        throw err;
+      }
       emit('settings-changed').catch((err) => flog.warn('overlay', 'emit settings-changed failed', { error: String(err) }));
     } catch (err) {
       flog.error('overlay', 'toggle autoPaste failed', { error: String(err) });
+      try {
+        applySettingsSnapshot(loadSettings());
+      } catch { /* ignore */ }
     }
-  }, []);
+  }, [applySettingsSnapshot]);
 
   // Quick control: global disable. Gate the backend immediately, then notify.
   const handleToggleDisabled = useCallback(async (e: React.MouseEvent) => {
@@ -398,6 +533,23 @@ export function OverlayWidget() {
   }, []);
 
   const topH = notchHeight || 37;
+  const effectiveAutoPaste = autoPaste && !fileOutputEnabled;
+  const autoPastePaused = autoPaste && fileOutputEnabled;
+  const autoPasteLabel = autoPastePaused
+    ? 'Auto-paste paused while saving files'
+    : effectiveAutoPaste
+      ? 'Disable auto-paste'
+      : 'Enable auto-paste';
+  const autoPasteColor = effectiveAutoPaste
+    ? '#10b981'
+    : autoPastePaused
+      ? '#f59e0b'
+      : 'rgba(255,255,255,0.85)';
+  const autoPasteBackground = effectiveAutoPaste
+    ? 'rgba(16,185,129,0.16)'
+    : autoPastePaused
+      ? 'rgba(245,158,11,0.14)'
+      : 'rgba(255,255,255,0.06)';
 
   return (
     <div
@@ -407,13 +559,19 @@ export function OverlayWidget() {
       onDoubleClick={handleDoubleClick}
       onClick={handleClick}
       onMouseEnter={handleMouseEnter}
-      onMouseLeave={handleMouseLeave}
+      onMouseMove={handleMouseEnter}
+      onMouseOver={handleMouseEnter}
     >
       {/* Dynamic Island: top bar matches notch height; hover expands it downward
           to reveal the quick-settings dropdown. Idle/recording only changes the
           top bar — the dropdown row is identical. */}
       <div
+        ref={islandRef}
         className="cursor-pointer select-none overflow-hidden"
+        onMouseEnter={handleMouseEnter}
+        onMouseMove={handleMouseEnter}
+        onMouseOver={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
         style={{
           borderRadius: '0 0 12px 12px',
           width: (expanded || isActive) ? notchWidth + 68 : notchWidth + 28,
@@ -490,38 +648,32 @@ export function OverlayWidget() {
             transitionDelay: expanded ? '100ms' : '0ms',
           }}
         >
-          {/* Global disable (speaker-slash) */}
+          {/* Global disable */}
           <button
             type="button"
-            aria-label="Disable Murmur"
+            aria-label={disabled ? 'Enable Murmur' : 'Disable Murmur'}
             onClick={handleToggleDisabled}
             className="shrink-0 flex items-center justify-center cursor-pointer rounded-[9px] transition-colors"
             style={{ width: 30, height: 30, background: disabled ? 'rgba(239,68,68,0.12)' : 'rgba(255,255,255,0.06)' }}
           >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={disabled ? '#ef4444' : 'rgba(255,255,255,0.85)'} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-              <line x1="23" y1="9" x2="17" y2="15" />
-              <line x1="17" y1="9" x2="23" y2="15" />
-            </svg>
+            <PowerIcon stroke={disabled ? '#ef4444' : 'rgba(255,255,255,0.85)'} />
           </button>
 
-          {/* Auto-paste toggle */}
+          {/* Auto-paste */}
           <button
             type="button"
             role="switch"
-            aria-checked={autoPaste}
-            aria-label="Auto paste"
+            aria-checked={effectiveAutoPaste}
+            aria-label={autoPasteLabel}
+            title={autoPasteLabel}
             onClick={handleToggleAutoPaste}
-            className="relative shrink-0 cursor-pointer rounded-full transition-colors"
-            style={{ width: 34, height: 18, opacity: disabled ? 0.35 : 1, background: autoPaste ? 'rgba(255,255,255,0.92)' : 'rgba(255,255,255,0.18)' }}
+            className="shrink-0 flex items-center justify-center cursor-pointer rounded-[9px] transition-colors"
+            style={{ width: 30, height: 30, opacity: disabled ? 0.35 : 1, background: autoPasteBackground }}
           >
-            <span
-              className="absolute rounded-full transition-transform"
-              style={{ top: 2, left: 2, width: 14, height: 14, background: autoPaste ? '#14141a' : '#fff', transform: autoPaste ? 'translateX(16px)' : 'translateX(0)' }}
-            />
+            <ClipboardPasteIcon stroke={autoPasteColor} />
           </button>
 
-          {/* Open settings (gear) */}
+          {/* Open settings */}
           <button
             type="button"
             aria-label="Open settings"
@@ -529,10 +681,7 @@ export function OverlayWidget() {
             className="shrink-0 flex items-center justify-center cursor-pointer rounded-[9px] transition-colors"
             style={{ width: 30, height: 30, background: 'rgba(255,255,255,0.06)' }}
           >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.85)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="3" />
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-            </svg>
+            <SlidersIcon stroke="rgba(255,255,255,0.85)" />
           </button>
         </div>
       </div>
