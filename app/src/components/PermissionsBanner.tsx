@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { resetAccessibilityPermission } from '../lib/dictation';
 
 interface PermissionStatus {
   microphone: 'unknown' | 'granted' | 'denied';
@@ -61,7 +62,7 @@ export function PermissionsBanner() {
   const handleResetAccessibility = async () => {
     setResetError(null);
     try {
-      await invoke('reset_accessibility_permission');
+      await resetAccessibilityPermission();
     } catch (error) {
       console.error('Failed to reset accessibility permission:', error);
       setResetError(
