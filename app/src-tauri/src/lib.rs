@@ -3,6 +3,7 @@ mod alloc;
 mod audio;
 mod audio_decode;
 mod commands;
+mod file_output;
 mod injector;
 mod keyboard;
 mod resource_monitor;
@@ -126,6 +127,7 @@ pub fn run() {
             commands::permissions::open_system_preferences,
             commands::permissions::check_accessibility_permission,
             commands::permissions::request_accessibility_permission,
+            commands::permissions::reset_accessibility_permission,
             commands::permissions::request_microphone_permission,
             commands::permissions::check_microphone_permission,
             commands::permissions::list_audio_devices,

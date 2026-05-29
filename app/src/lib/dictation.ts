@@ -67,6 +67,9 @@ export interface ConfigureOptions {
   idleTimeoutMinutes?: number;
   customVocabulary?: string;
   smartPunctuation?: boolean;
+  saveTranscript?: boolean;
+  saveAudio?: boolean;
+  outputDir?: string;
 }
 
 export async function configure(options: ConfigureOptions): Promise<DictationResponse> {
@@ -88,6 +91,9 @@ export function buildConfigureOptions(s: Settings): ConfigureOptions {
     idleTimeoutMinutes: s.idleTimeoutMinutes,
     customVocabulary: s.customVocabulary,
     smartPunctuation: s.smartPunctuation,
+    saveTranscript: s.saveTranscript,
+    saveAudio: s.saveAudio,
+    outputDir: s.outputDir,
   };
 }
 
@@ -108,4 +114,13 @@ export async function transcribeFile(filePath: string): Promise<DictationRespons
       error: err instanceof Error ? err.message : String(err),
     };
   }
+}
+
+/**
+ * Reset this app's stale macOS Accessibility TCC entry, then reopen the
+ * Accessibility settings pane. Rejects if the reset fails (see Rust
+ * `reset_accessibility_permission`).
+ */
+export async function resetAccessibilityPermission(): Promise<void> {
+  return await invoke('reset_accessibility_permission');
 }

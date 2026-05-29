@@ -5,8 +5,48 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      frontend: ${{ steps.filter.outputs.frontend }}
+      rust: ${{ steps.filter.outputs.rust }}
+      github: ${{ steps.filter.outputs.github }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            frontend:
+              - 'app/src/**'
+              - 'app/public/**'
+              - 'app/index.html'
+              - 'app/log-viewer.html'
+              - 'app/overlay.html'
+              - 'app/package.json'
+              - 'app/package-lock.json'
+              - 'app/tsconfig*.json'
+              - 'app/vite.config.ts'
+              - 'app/vitest.config.ts'
+              - 'app/vitest.setup.ts'
+            rust:
+              - 'app/src-tauri/**'
+              - 'app/src-tauri/Cargo.toml'
+              - 'app/src-tauri/Cargo.lock'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+            github:
+              - '.github/**'
+
   typecheck:
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true' || needs.changes.outputs.github == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,6 +67,8 @@ jobs:
         run: cd app && npm test
 
   rust-macos:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.github == 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -54,18 +96,11 @@ jobs:
         run: cd app/src-tauri && cargo test --lib -- --test-threads=1
 
   linux:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.github == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: app/package-lock.json
-
-      - name: Install frontend dependencies
-        run: cd app && npm ci
 
       # actions/checkout above must run first so the local composite action is on disk.
       - name: Setup Linux build environment
@@ -80,5 +115,26 @@ jobs:
       - name: Run tests
         run: cd app/src-tauri && cargo test --lib -- --test-threads=1
 
-      - name: TypeScript check
-        run: cd app && npx tsc --noEmit
+  ci-pass:
+    needs: [changes, typecheck, rust-macos, linux]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check CI result
+        run: |
+          if [ "${{ needs.changes.result }}" != "success" ]; then
+            echo "changes job failed: ${{ needs.changes.result }}"
+            exit 1
+          fi
+
+          for result in \
+            "${{ needs.typecheck.result }}" \
+            "${{ needs.rust-macos.result }}" \
+            "${{ needs.linux.result }}"; do
+            if [ "$result" != "success" ] && [ "$result" != "skipped" ]; then
+              echo "required CI job failed or was cancelled: $result"
+              exit 1
+            fi
+          done
+
+          echo "CI passed"

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { resetAccessibilityPermission } from '../lib/dictation';
 
 interface PermissionStatus {
   microphone: 'unknown' | 'granted' | 'denied';
@@ -13,6 +14,7 @@ export function PermissionsBanner() {
   });
   const [dismissed, setDismissed] = useState(false);
   const [checking, setChecking] = useState(true);
+  const [resetError, setResetError] = useState<string | null>(null);
 
   const checkPermissions = useCallback(async () => {
     setChecking(true);
@@ -55,6 +57,22 @@ export function PermissionsBanner() {
 
   const handleOpenMicrophone = async () => {
     await invoke('request_microphone_permission');
+  };
+
+  const handleResetAccessibility = async () => {
+    setResetError(null);
+    try {
+      await resetAccessibilityPermission();
+    } catch (error) {
+      console.error('Failed to reset accessibility permission:', error);
+      setResetError(
+        typeof error === 'string'
+          ? error
+          : "Couldn't reset the Accessibility entry. Check the logs for details.",
+      );
+    } finally {
+      checkPermissions();
+    }
   };
 
   const allGranted = permissions.microphone === 'granted' && permissions.accessibility === 'granted';
@@ -110,6 +128,27 @@ export function PermissionsBanner() {
                 </button>
               )}
             </div>
+
+            {/* Accessibility troubleshooting: reset a stale TCC entry */}
+            {permissions.accessibility !== 'granted' && (
+              <div className="ml-4 space-y-1">
+                <button
+                  onClick={handleResetAccessibility}
+                  className="text-xs text-amber-600/80 dark:text-amber-400/80 underline hover:no-underline"
+                >
+                  Still not working? Reset &amp; Open Settings
+                </button>
+                <p className="text-xs text-amber-600/70 dark:text-amber-400/70">
+                  Clears Murmur's stale Accessibility entry, then opens System Settings.
+                  You'll still need to turn Murmur back on manually.
+                </p>
+                {resetError && (
+                  <p className="text-xs text-red-600 dark:text-red-400">
+                    {resetError}
+                  </p>
+                )}
+              </div>
+            )}
           </div>
 
           <button
