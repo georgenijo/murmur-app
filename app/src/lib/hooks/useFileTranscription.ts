@@ -49,7 +49,7 @@ function unsupportedWarning(count: number): string {
 
 interface UseFileTranscriptionProps {
   /** Persist completed transcriptions to shared history (no WPM stats). */
-  addEntry: (text: string, duration: number) => void;
+  addEntry: (text: string, duration: number, source?: 'recording' | 'file', sourceName?: string) => void;
 }
 
 /**
@@ -121,7 +121,7 @@ export function useFileTranscription({ addEntry }: UseFileTranscriptionProps) {
             duration: res.duration ?? 0,
           });
           if (text.trim()) {
-            addEntry(text, res.duration ?? 0);
+            addEntry(text, res.duration ?? 0, 'file', next.name);
           }
           flog.info('file-transcribe', 'complete', { textLen: text.length });
         }

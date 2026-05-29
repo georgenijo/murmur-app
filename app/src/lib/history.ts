@@ -1,8 +1,16 @@
+/** Where a history entry's text came from. */
+export type HistorySource = 'recording' | 'file';
+
 export interface HistoryEntry {
   id: string;
   text: string;
   timestamp: number;
   duration: number; // recording duration in seconds
+  /** Origin of the entry. Absent on entries saved before this field existed
+   *  (treated as 'recording' when displayed). */
+  source?: HistorySource;
+  /** For file transcriptions, the source file's base name (for display). */
+  sourceName?: string;
 }
 
 const STORAGE_KEY = 'dictation-history';
@@ -30,12 +38,20 @@ export function saveHistory(entries: HistoryEntry[]): void {
   }
 }
 
-export function addHistoryEntry(entries: HistoryEntry[], text: string, duration: number): HistoryEntry[] {
+export function addHistoryEntry(
+  entries: HistoryEntry[],
+  text: string,
+  duration: number,
+  source: HistorySource = 'recording',
+  sourceName?: string,
+): HistoryEntry[] {
   const newEntry: HistoryEntry = {
     id: Date.now().toString(),
     text,
     timestamp: Date.now(),
     duration,
+    source,
+    ...(sourceName ? { sourceName } : {}),
   };
   return [...entries, newEntry].slice(-MAX_ENTRIES);
 }
