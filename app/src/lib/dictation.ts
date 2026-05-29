@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { DEFAULT_SETTINGS } from './settings';
+import { DEFAULT_SETTINGS, Settings } from './settings';
 
 export interface DictationResponse {
   type: string;
@@ -74,6 +74,27 @@ export interface ConfigureOptions {
 
 export async function configure(options: ConfigureOptions): Promise<DictationResponse> {
   return await invoke('configure_dictation', { options });
+}
+
+/**
+ * Extract only the backend-configurable fields from a Settings object. Keeps
+ * UI-only fields (disabled, launchAtLogin, recordingMode, microphone, etc.) out
+ * of the `configure_dictation` payload so callers can't accidentally send them.
+ */
+export function buildConfigureOptions(s: Settings): ConfigureOptions {
+  return {
+    model: s.model,
+    language: s.language,
+    autoPaste: s.autoPaste,
+    autoPasteDelayMs: s.autoPasteDelayMs,
+    vadSensitivity: s.vadSensitivity,
+    idleTimeoutMinutes: s.idleTimeoutMinutes,
+    customVocabulary: s.customVocabulary,
+    smartPunctuation: s.smartPunctuation,
+    saveTranscript: s.saveTranscript,
+    saveAudio: s.saveAudio,
+    outputDir: s.outputDir,
+  };
 }
 
 export async function countVocabTokens(text: string): Promise<number | null> {

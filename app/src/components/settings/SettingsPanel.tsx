@@ -587,6 +587,12 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
               )}
             </div>
           )}
+          {settings.autoPaste && saveToFile && (
+            <div className="mt-2 flex items-center gap-2 px-3 py-2 text-xs bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg text-amber-700 dark:text-amber-400">
+              <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0" />
+              <span>Paused while saving audio or transcripts to file</span>
+            </div>
+          )}
           {settings.autoPaste && (
             <PasteDelaySlider
               value={settings.autoPasteDelayMs}
