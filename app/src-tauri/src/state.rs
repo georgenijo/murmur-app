@@ -30,6 +30,9 @@ pub struct DictationState {
     pub vad_sensitivity: u32,
     pub custom_vocabulary: String,
     pub smart_punctuation: bool,
+    pub save_transcript: bool,
+    pub save_audio: bool,
+    pub output_dir: String,
 }
 
 impl Default for DictationState {
@@ -43,6 +46,9 @@ impl Default for DictationState {
             vad_sensitivity: 50,
             custom_vocabulary: String::new(),
             smart_punctuation: true,
+            save_transcript: false,
+            save_audio: false,
+            output_dir: String::new(),
         }
     }
 }

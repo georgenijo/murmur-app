@@ -96,3 +96,17 @@ The settings panel shows accessibility permission status when auto-paste is enab
 - `autoPasteDelayMs: number` — delay in ms before simulating Cmd+V (default 50, range 10–500). Persisted to localStorage.
 
 Both are sent to the Rust backend via `configure_dictation` command.
+
+## Save to File
+
+Live hotkey dictation can optionally persist its output to disk via two independent toggles in the Output settings section:
+
+- `saveTranscript: boolean` — write each transcription to a timestamped `.txt`.
+- `saveAudio: boolean` — write each recording to a matching `.wav` (16kHz mono, 16-bit PCM).
+- `outputDir: string` — destination folder; empty means the default `Documents/Murmur` (created on first write).
+
+Writing happens in `file_output.rs`, called from `run_transcription_pipeline` after the cancellation checkpoints and before injection. The WAV is written from the original (pre-VAD) 16kHz samples; the `.txt` is only written when the transcript is non-empty. A timestamped base name (`murmur-YYYY-MM-DD_HH-MM-SS`) is shared by the pair, with a numeric suffix appended on collision.
+
+**Interaction with auto-paste:** when either toggle is on, the recording is treated as a "capture to file" action — the clipboard write still happens (clipboard-first is unconditional), but auto-paste is suppressed (`effective_auto_paste = auto_paste && !(save_transcript || save_audio)`). With both toggles off, behavior is unchanged. Write failures are non-fatal: they are logged and surfaced to the UI via the `file-output-failed` event (text remains in the clipboard).
+
+**Known limitation:** recordings the VAD classifies as no-speech return early before the write step, so they save neither file.

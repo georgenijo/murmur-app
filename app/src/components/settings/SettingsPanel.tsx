@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { open } from '@tauri-apps/plugin-dialog';
 import { getVersion } from '@tauri-apps/api/app';
 import {
   Settings, RecordingMode, DEFAULT_SETTINGS,
@@ -160,6 +161,19 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
   };
 
   const handleRequestPermission = () => invoke('request_accessibility_permission');
+
+  const handleChooseFolder = async () => {
+    try {
+      const selected = await open({ directory: true, multiple: false });
+      if (typeof selected === 'string') {
+        onUpdateSettings({ outputDir: selected });
+      }
+    } catch {
+      // Dialog cancelled or unavailable — keep the current folder.
+    }
+  };
+
+  const saveToFile = settings.saveTranscript || settings.saveAudio;
 
   // Model availability check and inline download
   const [modelAvailable, setModelAvailable] = useState<boolean | null>(null);
@@ -578,6 +592,94 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
               value={settings.autoPasteDelayMs}
               onCommit={(value) => onUpdateSettings({ autoPasteDelayMs: value })}
             />
+          )}
+        </div>
+
+        {/* Save Transcript to File Toggle */}
+        <div className="flex items-center justify-between">
+          <div>
+            <label className="block text-sm font-medium text-stone-700 dark:text-stone-300">
+              Save Transcript to File
+            </label>
+            <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
+              Write each transcription to a .txt file
+            </p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={settings.saveTranscript}
+            aria-label="Save transcript to file"
+            onClick={() => onUpdateSettings({ saveTranscript: !settings.saveTranscript })}
+            className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-stone-500 focus:ring-offset-2 ${
+              settings.saveTranscript ? 'bg-stone-800 dark:bg-stone-300' : 'bg-stone-300 dark:bg-stone-500'
+            }`}
+          >
+            <span
+              className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                settings.saveTranscript ? 'translate-x-6' : 'translate-x-1'
+              }`}
+            />
+          </button>
+        </div>
+
+        {/* Save Audio to File Toggle */}
+        <div>
+          <div className="flex items-center justify-between">
+            <div>
+              <label className="block text-sm font-medium text-stone-700 dark:text-stone-300">
+                Save Audio to File
+              </label>
+              <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
+                Write each recording to a .wav file
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={settings.saveAudio}
+              aria-label="Save audio to file"
+              onClick={() => onUpdateSettings({ saveAudio: !settings.saveAudio })}
+              className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-stone-500 focus:ring-offset-2 ${
+                settings.saveAudio ? 'bg-stone-800 dark:bg-stone-300' : 'bg-stone-300 dark:bg-stone-500'
+              }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                  settings.saveAudio ? 'translate-x-6' : 'translate-x-1'
+                }`}
+              />
+            </button>
+          </div>
+
+          {saveToFile && (
+            <div className="mt-3">
+              <label className="block text-xs text-stone-600 dark:text-stone-400 mb-1">
+                Output Folder
+              </label>
+              <div className="px-3 py-2 text-xs rounded-lg border border-stone-300 dark:border-stone-600 bg-stone-50 dark:bg-stone-700/50 text-stone-700 dark:text-stone-300 break-all">
+                {settings.outputDir || 'Documents/Murmur (default)'}
+              </div>
+              <div className="mt-2 flex items-center gap-3">
+                <button
+                  onClick={handleChooseFolder}
+                  className="text-xs font-medium text-stone-600 hover:text-stone-900 dark:text-stone-400 dark:hover:text-stone-200 underline hover:no-underline transition-colors"
+                >
+                  Choose Folder
+                </button>
+                {settings.outputDir && (
+                  <button
+                    onClick={() => onUpdateSettings({ outputDir: '' })}
+                    className="text-xs font-medium text-stone-500 hover:text-stone-800 dark:text-stone-500 dark:hover:text-stone-300 underline hover:no-underline transition-colors"
+                  >
+                    Reset to default
+                  </button>
+                )}
+              </div>
+              <p className="mt-2 text-xs text-stone-500 dark:text-stone-400">
+                Text is still copied to the clipboard, but auto-paste is paused while saving to file.
+              </p>
+            </div>
           )}
         </div>
 

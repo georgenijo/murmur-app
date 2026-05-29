@@ -110,6 +110,21 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
     };
   }, []);
 
+  // Listen for file-output (save transcript/audio) failures and surface a hint.
+  // Reuses the same auto-clearing error banner as auto-paste failures.
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    listen<string>('file-output-failed', (event) => {
+      setError(event.payload);
+      if (pasteErrorTimerRef.current) clearTimeout(pasteErrorTimerRef.current);
+      pasteErrorTimerRef.current = setTimeout(() => setError(''), 5000);
+    }).then((fn) => {
+      if (cancelled) { fn(); } else { unlisten = fn; }
+    });
+    return () => { cancelled = true; unlisten?.(); };
+  }, []);
+
   // Sync transcription results from Rust — picks up text when recording was
   // initiated from the overlay (where handleStop doesn't run in this window).
   // Skip if isStoppingRef is true — handleStop is active and will handle it.
