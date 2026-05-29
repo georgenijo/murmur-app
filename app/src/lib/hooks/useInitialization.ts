@@ -21,6 +21,9 @@ export function useInitialization(settings: Settings) {
           idleTimeoutMinutes: settings.idleTimeoutMinutes,
           customVocabulary: settings.customVocabulary,
           smartPunctuation: settings.smartPunctuation,
+          saveTranscript: settings.saveTranscript,
+          saveAudio: settings.saveAudio,
+          outputDir: settings.outputDir,
         });
       })
       .then(() => {
