@@ -57,6 +57,16 @@ export function PermissionsBanner() {
     await invoke('request_microphone_permission');
   };
 
+  const handleResetAccessibility = async () => {
+    try {
+      await invoke('reset_accessibility_permission');
+    } catch (error) {
+      console.error('Failed to reset accessibility permission:', error);
+    } finally {
+      checkPermissions();
+    }
+  };
+
   const allGranted = permissions.microphone === 'granted' && permissions.accessibility === 'granted';
 
   if (dismissed || allGranted || checking) {
@@ -110,6 +120,22 @@ export function PermissionsBanner() {
                 </button>
               )}
             </div>
+
+            {/* Accessibility troubleshooting: reset a stale TCC entry */}
+            {permissions.accessibility !== 'granted' && (
+              <div className="ml-4 space-y-1">
+                <button
+                  onClick={handleResetAccessibility}
+                  className="text-xs text-amber-600/80 dark:text-amber-400/80 underline hover:no-underline"
+                >
+                  Still not working? Reset &amp; Open Settings
+                </button>
+                <p className="text-xs text-amber-600/70 dark:text-amber-400/70">
+                  Clears Murmur's stale Accessibility entry, then opens System Settings.
+                  You'll still need to turn Murmur back on manually.
+                </p>
+              </div>
+            )}
           </div>
 
           <button

@@ -41,6 +41,80 @@ pub fn request_accessibility_permission() -> Result<(), String> {
     { Ok(()) }
 }
 
+/// Read the running process's bundle identifier (macOS).
+///
+/// Returns the *runtime* bundle id (e.g. the dev bundle `Local Dictation Dev`),
+/// which is what TCC actually keys Accessibility entries on — not the static
+/// identifier from `tauri.conf.json`, which can be stale for rebuilt/dev bundles.
+#[cfg(target_os = "macos")]
+fn current_bundle_identifier() -> Option<String> {
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, AnyObject};
+    use objc2_foundation::NSString;
+
+    unsafe {
+        let cls = AnyClass::get(c"NSBundle")?;
+        let bundle: *mut AnyObject = msg_send![cls, mainBundle];
+        if bundle.is_null() {
+            return None;
+        }
+        let ident: *const NSString = msg_send![bundle, bundleIdentifier];
+        if ident.is_null() {
+            return None;
+        }
+        let s = (*ident).to_string();
+        if s.is_empty() {
+            None
+        } else {
+            Some(s)
+        }
+    }
+}
+
+/// Reset this app's stale macOS Accessibility TCC entry, then reopen the pane.
+///
+/// Troubleshooting action for the case where System Settings lists the app under
+/// Accessibility but the running build still reports access missing (common after
+/// rebuilding a dev bundle). Resets ONLY the current bundle identifier via
+/// `tccutil reset Accessibility <bundle-id>` — never all apps. macOS still requires
+/// the user to re-enable the app manually afterward; this only clears the stale entry.
+#[tauri::command]
+pub fn reset_accessibility_permission() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let bundle_id = current_bundle_identifier()
+            .ok_or_else(|| "Could not determine the app's bundle identifier".to_string())?;
+
+        tracing::info!(
+            target: "system",
+            "resetting Accessibility TCC entry for bundle id {}",
+            bundle_id
+        );
+
+        let output = std::process::Command::new("tccutil")
+            .args(["reset", "Accessibility", &bundle_id])
+            .output()
+            .map_err(|e| format!("Failed to run tccutil: {}", e))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            tracing::warn!(
+                target: "system",
+                "tccutil reset failed for {}: {}",
+                bundle_id,
+                stderr.trim()
+            );
+            return Err(format!("tccutil reset failed: {}", stderr.trim()));
+        }
+
+        return open_system_preference_pane("Privacy_Accessibility");
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("Accessibility reset is only supported on macOS".to_string())
+    }
+}
+
 /// Request microphone permission (opens System Settings on macOS)
 #[tauri::command]
 pub fn request_microphone_permission() -> Result<(), String> {
