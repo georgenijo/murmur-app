@@ -19,7 +19,7 @@ function baseName(path: string): string {
 
 interface UseFileTranscriptionProps {
   /** Persist completed transcriptions to shared history (no WPM stats). */
-  addEntry: (text: string, duration: number) => void;
+  addEntry: (text: string, duration: number, source?: 'recording' | 'file', sourceName?: string) => void;
 }
 
 /**
@@ -45,7 +45,8 @@ export function useFileTranscription({ addEntry }: UseFileTranscriptionProps) {
       setStatus('error');
       return;
     }
-    setFileName(baseName(path));
+    const name = baseName(path);
+    setFileName(name);
     setResult('');
     setError('');
     setStatus('processing');
@@ -63,7 +64,7 @@ export function useFileTranscription({ addEntry }: UseFileTranscriptionProps) {
     setResult(text);
     setStatus('complete');
     if (text.trim()) {
-      addEntry(text, res.duration ?? 0);
+      addEntry(text, res.duration ?? 0, 'file', name);
     }
     flog.info('file-transcribe', 'complete', { textLen: text.length });
   }, [addEntry]);

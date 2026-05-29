@@ -7,7 +7,7 @@ import { updateStats } from '../stats';
 import { flog } from '../log';
 
 interface UseRecordingStateProps {
-  addEntry: (text: string, duration: number) => void;
+  addEntry: (text: string, duration: number, source?: 'recording' | 'file', sourceName?: string) => void;
   microphone: string;
 }
 

@@ -75,11 +75,31 @@ export function HistoryPanel({ entries, onClearHistory }: HistoryPanelProps) {
             }`}
           >
             {/* Header row with timestamp and duration */}
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-xs text-stone-500 dark:text-stone-400">
-                {formatTimestamp(entry.timestamp)}
-              </span>
-              <div className="flex items-center gap-2">
+            <div className="flex items-center justify-between mb-1 gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="text-xs text-stone-500 dark:text-stone-400 shrink-0">
+                  {formatTimestamp(entry.timestamp)}
+                </span>
+                {(entry.source ?? 'recording') === 'file' ? (
+                  <span
+                    title={entry.sourceName}
+                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 min-w-0 max-w-[150px]"
+                  >
+                    <svg className="w-2.5 h-2.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                    </svg>
+                    <span className="truncate">{entry.sourceName || 'File'}</span>
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-stone-200 text-stone-600 dark:bg-stone-600 dark:text-stone-300 shrink-0">
+                    <svg className="w-2.5 h-2.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-14 0m7 7v3m-4 0h8m-4-6a3 3 0 01-3-3V5a3 3 0 016 0v4a3 3 0 01-3 3z" />
+                    </svg>
+                    Mic
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
                 <span className="text-xs text-stone-400 dark:text-stone-500">
                   {formatDuration(entry.duration)}
                 </span>
