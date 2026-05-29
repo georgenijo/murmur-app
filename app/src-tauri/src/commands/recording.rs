@@ -184,9 +184,8 @@ async fn run_transcription_pipeline(
     // Non-fatal: a write failure is logged and surfaced to the UI, but the text
     // is already on its way to the clipboard. Uses the original (pre-VAD) samples.
     if save_audio || save_transcript {
-        let timestamp = chrono::Local::now().format("%y%m%d-%H%M%S").to_string();
         if let Err(e) = crate::file_output::write_dictation_outputs(
-            samples, &text, save_audio, save_transcript, &output_dir, &timestamp,
+            samples, &text, save_audio, save_transcript, &output_dir,
         ) {
             tracing::warn!(target: "pipeline", "file output failed: {}", e);
             let _ = app_handle.emit(

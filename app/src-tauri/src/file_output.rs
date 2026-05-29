@@ -3,8 +3,8 @@
 //! When the user enables "save transcript" and/or "save audio", a completed
 //! live dictation is written to a file in addition to the usual clipboard copy.
 //! Audio is written as 16-bit PCM WAV at the pipeline's 16kHz mono sample rate;
-//! the transcript is written as UTF-8 `.txt`. Both share a short timestamped
-//! base name so a paired recording lines up (`murmur-260528-143001.wav` + `.txt`).
+//! the transcript is written as UTF-8 `.txt`. Both share a short sequential
+//! base name so a paired recording lines up (`murmur-0001.wav` + `.txt`).
 //!
 //! Privacy: this module never logs the resolved directory or file path (which
 //! would carry the user's home dir/username), only counts and booleans.
@@ -28,18 +28,36 @@ fn resolve_output_dir(output_dir: &str) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// Build a base name like `murmur-260528-143001`, appending `-1`, `-2`, …
-/// if a `.wav` or `.txt` with that base already exists in `dir`.
-fn unique_base_name(dir: &Path, timestamp: &str) -> String {
-    let base = format!("murmur-{}", timestamp);
+/// Parse the sequence number from a `murmur-NNNN` file stem. Returns `None`
+/// for anything that isn't exactly `murmur-<digits>` (e.g. older timestamped
+/// names, which carry extra `-` separators).
+fn sequence_of(stem: &str) -> Option<u32> {
+    let digits = stem.strip_prefix("murmur-")?;
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+/// Build the next sequential base name (`murmur-0001`, `murmur-0002`, …) by
+/// scanning `dir` for the highest existing `murmur-NNNN` and adding one. The
+/// returned base is guaranteed free for both `.wav` and `.txt`.
+fn next_base_name(dir: &Path) -> String {
+    let mut highest = 0u32;
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            if let Some(stem) = Path::new(&entry.file_name()).file_stem().and_then(|s| s.to_str()) {
+                if let Some(n) = sequence_of(stem) {
+                    highest = highest.max(n);
+                }
+            }
+        }
+    }
     let taken = |name: &str| dir.join(format!("{}.wav", name)).exists()
         || dir.join(format!("{}.txt", name)).exists();
-    if !taken(&base) {
-        return base;
-    }
-    let mut n = 1;
+    let mut n = highest + 1;
     loop {
-        let candidate = format!("{}-{}", base, n);
+        let candidate = format!("murmur-{:04}", n);
         if !taken(&candidate) {
             return candidate;
         }
@@ -79,14 +97,13 @@ pub fn write_dictation_outputs(
     save_audio: bool,
     save_transcript: bool,
     output_dir: &str,
-    timestamp: &str,
 ) -> Result<usize, String> {
     if !save_audio && !save_transcript {
         return Ok(0);
     }
 
     let dir = resolve_output_dir(output_dir)?;
-    let base = unique_base_name(&dir, timestamp);
+    let base = next_base_name(&dir);
     let mut written = 0;
 
     if save_audio {
@@ -137,13 +154,12 @@ mod tests {
             true,
             true,
             dir.to_str().unwrap(),
-            "2026-05-28_14-30-01",
         )
         .unwrap();
         assert_eq!(written, 2);
 
-        let wav = dir.join("murmur-2026-05-28_14-30-01.wav");
-        let txt = dir.join("murmur-2026-05-28_14-30-01.txt");
+        let wav = dir.join("murmur-0001.wav");
+        let txt = dir.join("murmur-0001.txt");
         assert!(wav.exists());
         assert!(txt.exists());
         assert_eq!(std::fs::read_to_string(&txt).unwrap(), "hello world");
@@ -163,12 +179,11 @@ mod tests {
             true,
             true,
             dir.to_str().unwrap(),
-            "2026-05-28_14-30-02",
         )
         .unwrap();
         assert_eq!(written, 1);
-        assert!(dir.join("murmur-2026-05-28_14-30-02.wav").exists());
-        assert!(!dir.join("murmur-2026-05-28_14-30-02.txt").exists());
+        assert!(dir.join("murmur-0001.wav").exists());
+        assert!(!dir.join("murmur-0001.txt").exists());
     }
 
     #[test]
@@ -180,12 +195,11 @@ mod tests {
             false,
             true,
             dir.to_str().unwrap(),
-            "2026-05-28_14-30-03",
         )
         .unwrap();
         assert_eq!(written, 1);
-        assert!(!dir.join("murmur-2026-05-28_14-30-03.wav").exists());
-        assert!(dir.join("murmur-2026-05-28_14-30-03.txt").exists());
+        assert!(!dir.join("murmur-0001.wav").exists());
+        assert!(dir.join("murmur-0001.txt").exists());
     }
 
     #[test]
@@ -197,25 +211,42 @@ mod tests {
             false,
             false,
             dir.to_str().unwrap(),
-            "2026-05-28_14-30-04",
         )
         .unwrap();
         assert_eq!(written, 0);
     }
 
     #[test]
-    fn collision_appends_suffix() {
-        let dir = temp_dir("collision");
-        let ts = "2026-05-28_14-30-05";
+    fn sequence_increments_per_recording() {
+        let dir = temp_dir("sequence");
         let samples = vec![0.0f32];
-        write_dictation_outputs(&samples, "first", true, true, dir.to_str().unwrap(), ts).unwrap();
-        write_dictation_outputs(&samples, "second", true, true, dir.to_str().unwrap(), ts).unwrap();
+        write_dictation_outputs(&samples, "first", true, true, dir.to_str().unwrap()).unwrap();
+        write_dictation_outputs(&samples, "second", true, true, dir.to_str().unwrap()).unwrap();
 
-        assert!(dir.join(format!("murmur-{}.txt", ts)).exists());
-        assert!(dir.join(format!("murmur-{}-1.txt", ts)).exists());
+        assert!(dir.join("murmur-0001.txt").exists());
+        assert!(dir.join("murmur-0002.txt").exists());
         assert_eq!(
-            std::fs::read_to_string(dir.join(format!("murmur-{}-1.txt", ts))).unwrap(),
+            std::fs::read_to_string(dir.join("murmur-0002.txt")).unwrap(),
             "second"
         );
+    }
+
+    #[test]
+    fn ignores_non_sequential_names_when_numbering() {
+        let dir = temp_dir("mixed_names");
+        // An older timestamped name should not inflate the next sequence number.
+        std::fs::write(dir.join("murmur-260528-210426.wav"), b"x").unwrap();
+        write_dictation_outputs(&[0.0f32], "fresh", true, true, dir.to_str().unwrap()).unwrap();
+        assert!(dir.join("murmur-0001.wav").exists());
+        assert!(dir.join("murmur-0001.txt").exists());
+    }
+
+    #[test]
+    fn sequence_of_parses_only_pure_digits() {
+        assert_eq!(sequence_of("murmur-0007"), Some(7));
+        assert_eq!(sequence_of("murmur-42"), Some(42));
+        assert_eq!(sequence_of("murmur-260528-210426"), None);
+        assert_eq!(sequence_of("murmur-"), None);
+        assert_eq!(sequence_of("other-0001"), None);
     }
 }

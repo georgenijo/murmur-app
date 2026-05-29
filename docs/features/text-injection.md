@@ -105,7 +105,7 @@ Live hotkey dictation can optionally persist its output to disk via two independ
 - `saveAudio: boolean` — write each recording to a matching `.wav` (16kHz mono, 16-bit PCM).
 - `outputDir: string` — destination folder; empty means the default `Documents/Murmur` (created on first write).
 
-Writing happens in `file_output.rs`, called from `run_transcription_pipeline` after the cancellation checkpoints and before injection. The WAV is written from the original (pre-VAD) 16kHz samples; the `.txt` is only written when the transcript is non-empty. A short timestamped base name (`murmur-YYMMDD-HHMMSS`, e.g. `murmur-260528-143001`) is shared by the pair, with a numeric suffix appended on collision.
+Writing happens in `file_output.rs`, called from `run_transcription_pipeline` after the cancellation checkpoints and before injection. The WAV is written from the original (pre-VAD) 16kHz samples; the `.txt` is only written when the transcript is non-empty. A short sequential base name (`murmur-0001`, `murmur-0002`, …) is shared by the pair. The next number is the highest existing `murmur-NNNN` in the folder plus one (older timestamped names are ignored when numbering).
 
 **Interaction with auto-paste:** when either toggle is on, the recording is treated as a "capture to file" action — the clipboard write still happens (clipboard-first is unconditional), but auto-paste is suppressed (`effective_auto_paste = auto_paste && !(save_transcript || save_audio)`). With both toggles off, behavior is unchanged. Write failures are non-fatal: they are logged and surfaced to the UI via the `file-output-failed` event (text remains in the clipboard).
 
