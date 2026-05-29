@@ -3,8 +3,8 @@
 //! When the user enables "save transcript" and/or "save audio", a completed
 //! live dictation is written to a file in addition to the usual clipboard copy.
 //! Audio is written as 16-bit PCM WAV at the pipeline's 16kHz mono sample rate;
-//! the transcript is written as UTF-8 `.txt`. Both share a timestamped base name
-//! so a paired recording lines up (`murmur-2026-05-28_14-30-01.wav` + `.txt`).
+//! the transcript is written as UTF-8 `.txt`. Both share a short timestamped
+//! base name so a paired recording lines up (`murmur-260528-143001.wav` + `.txt`).
 //!
 //! Privacy: this module never logs the resolved directory or file path (which
 //! would carry the user's home dir/username), only counts and booleans.
@@ -28,7 +28,7 @@ fn resolve_output_dir(output_dir: &str) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// Build a base name like `murmur-2026-05-28_14-30-01`, appending `-1`, `-2`, …
+/// Build a base name like `murmur-260528-143001`, appending `-1`, `-2`, …
 /// if a `.wav` or `.txt` with that base already exists in `dir`.
 fn unique_base_name(dir: &Path, timestamp: &str) -> String {
     let base = format!("murmur-{}", timestamp);
