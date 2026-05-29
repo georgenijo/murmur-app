@@ -91,3 +91,12 @@ export async function transcribeFile(filePath: string): Promise<DictationRespons
     };
   }
 }
+
+/**
+ * Reset this app's stale macOS Accessibility TCC entry, then reopen the
+ * Accessibility settings pane. Rejects if the reset fails (see Rust
+ * `reset_accessibility_permission`).
+ */
+export async function resetAccessibilityPermission(): Promise<void> {
+  return await invoke('reset_accessibility_permission');
+}
