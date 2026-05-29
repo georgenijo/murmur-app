@@ -75,7 +75,7 @@ Both the Rust-side `DictationState::default()` and the frontend default use `bas
 |---------|------|---------|-------------------|-------------|
 | `autoPaste` | `boolean` | `false` | `true` / `false` | Whether to automatically paste transcribed text after copying it to the clipboard. Requires macOS Accessibility permission. Text is always copied to the clipboard regardless of this setting. |
 | `autoPasteDelayMs` | `number` | `50` | 10-500 ms, step 10 in UI | Delay in milliseconds before auto-paste fires, to allow window focus to settle. The backend clamps this value to the 10-500 range. The UI slider only appears when `autoPaste` is enabled. |
-| `saveTranscript` | `boolean` | `false` | `true` / `false` | When enabled, each live dictation's transcript is written to a timestamped `.txt` in the output folder. When `saveTranscript` or `saveAudio` is on, auto-paste is suppressed (clipboard copy still happens). |
+| `saveTranscript` | `boolean` | `false` | `true` / `false` | When enabled, each live dictation's transcript is written to a sequentially numbered `.txt` (`murmur-0001`, `murmur-0002`, …) in the output folder. When `saveTranscript` or `saveAudio` is on, auto-paste is suppressed (clipboard copy still happens). |
 | `saveAudio` | `boolean` | `false` | `true` / `false` | When enabled, each live dictation's audio is written to a matching `.wav` (16kHz mono, 16-bit PCM) in the output folder. |
 | `outputDir` | `string` | `''` | Any absolute folder path, or `''` for default | Destination for saved transcript/audio files. Empty means the app default (`Documents/Murmur`, created on first write). Set via a folder picker (`dialog:allow-open`). |
 

@@ -101,7 +101,7 @@ Both are sent to the Rust backend via `configure_dictation` command.
 
 Live hotkey dictation can optionally persist its output to disk via two independent toggles in the Output settings section:
 
-- `saveTranscript: boolean` — write each transcription to a timestamped `.txt`.
+- `saveTranscript: boolean` — write each transcription to a sequentially numbered `.txt`.
 - `saveAudio: boolean` — write each recording to a matching `.wav` (16kHz mono, 16-bit PCM).
 - `outputDir: string` — destination folder; empty means the default `Documents/Murmur` (created on first write).
 
