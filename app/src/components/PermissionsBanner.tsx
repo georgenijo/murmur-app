@@ -13,6 +13,7 @@ export function PermissionsBanner() {
   });
   const [dismissed, setDismissed] = useState(false);
   const [checking, setChecking] = useState(true);
+  const [resetError, setResetError] = useState<string | null>(null);
 
   const checkPermissions = useCallback(async () => {
     setChecking(true);
@@ -58,10 +59,16 @@ export function PermissionsBanner() {
   };
 
   const handleResetAccessibility = async () => {
+    setResetError(null);
     try {
       await invoke('reset_accessibility_permission');
     } catch (error) {
       console.error('Failed to reset accessibility permission:', error);
+      setResetError(
+        typeof error === 'string'
+          ? error
+          : "Couldn't reset the Accessibility entry. Check the logs for details.",
+      );
     } finally {
       checkPermissions();
     }
@@ -134,6 +141,11 @@ export function PermissionsBanner() {
                   Clears Murmur's stale Accessibility entry, then opens System Settings.
                   You'll still need to turn Murmur back on manually.
                 </p>
+                {resetError && (
+                  <p className="text-xs text-red-600 dark:text-red-400">
+                    {resetError}
+                  </p>
+                )}
               </div>
             )}
           </div>
