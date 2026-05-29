@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { listen, emit } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
-import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { isDictationStatus } from '../lib/types';
 import type { DictationStatus } from '../lib/types';
 import { flog } from '../lib/log';
@@ -391,10 +390,8 @@ export function OverlayWidget() {
   const handleOpenSettings = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      emit('open-settings').catch(() => {});
-      const main = await WebviewWindow.getByLabel('main');
-      await main?.show();
-      await main?.setFocus();
+      await invoke('show_main_window');
+      await emit('open-settings');
     } catch (err) {
       flog.error('overlay', 'open settings failed', { error: String(err) });
     }

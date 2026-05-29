@@ -215,6 +215,24 @@ pub fn set_overlay_expanded(app: tauri::AppHandle, state: tauri::State<'_, State
     }
 }
 
+/// Show and focus the main app window.
+///
+/// The overlay uses this instead of frontend window APIs so it does not need
+/// broad `core:window:allow-show` / `allow-set-focus` permissions.
+#[tauri::command]
+pub fn show_main_window(app: tauri::AppHandle) -> Result<(), String> {
+    match app.get_webview_window("main") {
+        Some(window) => {
+            window.show().map_err(|e| e.to_string())?;
+            window.set_focus().map_err(|e| e.to_string())
+        }
+        None => {
+            tracing::warn!(target: "system", "show_main_window: main window not found");
+            Ok(())
+        }
+    }
+}
+
 /// Hide the always-on-top overlay window.
 #[tauri::command]
 pub fn hide_overlay(app: tauri::AppHandle) -> Result<(), String> {

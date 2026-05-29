@@ -148,6 +148,7 @@ pub fn run() {
             commands::overlay::show_overlay,
             commands::overlay::hide_overlay,
             commands::overlay::set_overlay_expanded,
+            commands::overlay::show_main_window,
             commands::overlay::get_notch_info,
             telemetry::get_event_history,
             telemetry::clear_event_history,
