@@ -62,7 +62,7 @@ export function useSettings() {
       emit('settings-changed').catch((err) => console.error('Failed to emit settings-changed:', err));
     }
 
-    if ('model' in updates || 'language' in updates || 'autoPaste' in updates || 'autoPasteDelayMs' in updates || 'vadSensitivity' in updates || 'idleTimeoutMinutes' in updates || 'customVocabulary' in updates || 'smartPunctuation' in updates || 'saveTranscript' in updates || 'saveAudio' in updates || 'outputDir' in updates) {
+    if ('model' in updates || 'language' in updates || 'autoPaste' in updates || 'autoPasteDelayMs' in updates || 'vadSensitivity' in updates || 'idleTimeoutMinutes' in updates || 'customVocabulary' in updates || 'smartPunctuation' in updates || 'saveTranscript' in updates || 'saveAudio' in updates || 'outputDir' in updates || 'appProfiles' in updates) {
       const version = ++configureVersionRef.current;
       configure(buildConfigureOptions(newSettings))
         .catch((err) => {
@@ -81,6 +81,7 @@ export function useSettings() {
               saveTranscript: previousSettings.saveTranscript,
               saveAudio: previousSettings.saveAudio,
               outputDir: previousSettings.outputDir,
+              appProfiles: previousSettings.appProfiles,
             };
             settingsRef.current = reverted;
             setSettings(reverted);

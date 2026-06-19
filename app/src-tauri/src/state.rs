@@ -20,6 +20,16 @@ impl Default for DictationStatus {
     }
 }
 
+/// Per-app dictation profile. When the frontmost macOS app's bundle id matches
+/// `bundle_id`, `auto_paste_override` (when `Some`) replaces the global
+/// auto-paste setting at inject time. `None` means "no override — use global".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppProfile {
+    pub bundle_id: String,
+    pub label: String,
+    pub auto_paste_override: Option<bool>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DictationState {
     pub status: DictationStatus,
@@ -33,6 +43,8 @@ pub struct DictationState {
     pub save_transcript: bool,
     pub save_audio: bool,
     pub output_dir: String,
+    /// Per-app profiles that override auto-paste based on the frontmost app.
+    pub app_profiles: Vec<AppProfile>,
 }
 
 impl Default for DictationState {
@@ -49,6 +61,7 @@ impl Default for DictationState {
             save_transcript: false,
             save_audio: false,
             output_dir: String::new(),
+            app_profiles: Vec::new(),
         }
     }
 }
