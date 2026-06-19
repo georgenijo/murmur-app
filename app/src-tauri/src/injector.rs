@@ -87,9 +87,17 @@ fn simulate_paste() -> Result<(), String> {
 
 /// Result of inspecting whatever UI element currently owns keyboard focus.
 ///
-/// `Unknown` covers every uncertain case (AX query failed, permission denied,
-/// empty/unrecognised role). The paste guard treats `Unknown` exactly like
-/// `Editable` — it only skips the paste on a positive `NonEditable` reading.
+/// The paste guard only skips the paste on a positive `NonEditable` reading,
+/// which is reserved for a small DENYLIST of confirmed desktop-style /
+/// no-text-field roles (see `is_non_editable_desktop_role`). Every other case —
+/// a recognised editable role, an unrecognised role, an empty/`missing value`
+/// result, or any AX query failure — maps to `Editable`/`Unknown`, both of which
+/// the guard treats as ALLOW PASTE. The bias is intentional: skipping a real
+/// paste (which strands the user's transcription) is worse than the stray
+/// `.textClipping` the denylist guards against, and web/Electron contenteditable
+/// chat boxes (Slack, Discord, Notion, Gmail, Teams, WhatsApp Web) surface as
+/// `AXGroup` / `AXWebArea` / `AXUnknown…` depending on the Chromium/WebKit
+/// version, so they must never be denied.
 ///
 /// On non-macOS builds the `Editable`/`NonEditable` variants are only
 /// constructed by `classify_focused_role`, which there is test-only.
@@ -126,14 +134,50 @@ fn is_editable_text_role(role: &str) -> bool {
     )
 }
 
+/// Classify an Accessibility role string as a confirmed non-editable,
+/// desktop-style focus where a synthetic Cmd+V drops a stray `.textClipping`
+/// instead of inserting text (bug #195: Finder desktop / file lists / toolbar
+/// buttons with no text field focused).
+///
+/// This is a deliberately small DENYLIST, not an allowlist. We only suppress the
+/// paste for roles we positively know cannot accept text in the reproducing
+/// contexts. Crucially it EXCLUDES `AXGroup`, `AXWebArea`, and any unrecognised
+/// role, because web/Electron contenteditable chat boxes (Slack, Discord,
+/// Notion, Gmail, Teams, WhatsApp Web) report those depending on the
+/// Chromium/WebKit version — denying them would silently swallow the app's
+/// primary use case. Kept pure (no I/O) so it can be unit-tested without
+/// invoking osascript. Matching is exact against the canonical AX role casing
+/// reported by System Events.
+///
+/// Reached only via `classify_focused_role` (macOS) or unit tests; suppress the
+/// dead-code lint on non-macOS non-test builds.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn is_non_editable_desktop_role(role: &str) -> bool {
+    matches!(
+        role.trim(),
+        // Finder desktop / icon view, file lists and outlines, scrollable
+        // containers, toolbar buttons, plain labels, and the browser column
+        // view — the focus roles a no-text-field desktop context reports.
+        "AXImage"
+            | "AXScrollArea"
+            | "AXList"
+            | "AXButton"
+            | "AXStaticText"
+            | "AXTable"
+            | "AXOutline"
+            | "AXBrowser"
+    )
+}
+
 /// Determine whether the frontmost app currently has an editable text element
 /// focused, returning a tri-state so callers can apply a false-negative bias.
 ///
 /// Asks System Events for the AX role of `AXFocusedUIElement` of the frontmost
 /// process. Any failure (osascript missing, permission denied, no focused
-/// element, unrecognised role) yields `Unknown` so the caller can default to
+/// element) or any unrecognised role yields `Unknown` so the caller defaults to
 /// allowing the paste — we only ever return `NonEditable` when the role is read
-/// successfully AND is positively not an editable text control.
+/// successfully AND matches the confirmed non-editable desktop denylist
+/// (`is_non_editable_desktop_role`).
 #[cfg(target_os = "macos")]
 fn focused_field_state() -> FocusedFieldState {
     use std::process::Command;
@@ -177,9 +221,17 @@ fn focused_field_state() -> FocusedFieldState {
 /// Map an AX role string (as emitted by `focused_field_state`'s osascript) to a
 /// `FocusedFieldState`. Pure, so it is exercised directly by unit tests.
 ///
-/// An empty/`missing value` result means "no focused element / query failed" →
-/// `Unknown`. A recognised editable role → `Editable`. Any other non-empty role
-/// → `NonEditable`.
+/// Policy is a DENYLIST, not an allowlist:
+/// - Empty / `missing value` result ("no focused element / query failed") →
+///   `Unknown` (allow paste).
+/// - A recognised editable role → `Editable` (allow paste).
+/// - A role on the confirmed non-editable desktop denylist
+///   (`is_non_editable_desktop_role`) → `NonEditable` (skip paste). This is the
+///   ONLY state that suppresses the paste.
+/// - Any other non-empty role — including `AXGroup`, `AXWebArea`, and any
+///   unrecognised / future role — → `Unknown` (allow paste). This keeps
+///   web/Electron contenteditable chat boxes working, since they surface as
+///   those roles across Chromium/WebKit versions.
 ///
 /// Only invoked from the macOS `focused_field_state`; on other platforms it is
 /// reached solely via unit tests, so suppress the dead-code lint there.
@@ -191,8 +243,12 @@ fn classify_focused_role(role: &str) -> FocusedFieldState {
     }
     if is_editable_text_role(role) {
         FocusedFieldState::Editable
-    } else {
+    } else if is_non_editable_desktop_role(role) {
         FocusedFieldState::NonEditable
+    } else {
+        // Unrecognised role (incl. AXGroup / AXWebArea / future roles): bias
+        // toward allowing the paste so we never break a focused field.
+        FocusedFieldState::Unknown
     }
 }
 
@@ -525,12 +581,86 @@ mod focus_tests {
     }
 
     #[test]
-    fn classify_non_editable_role_is_non_editable() {
-        assert_eq!(classify_focused_role("AXButton"), FocusedFieldState::NonEditable);
-        assert_eq!(classify_focused_role("AXImage"), FocusedFieldState::NonEditable);
-        // An unrecognised but non-empty role is treated as non-editable. This is
-        // the only state that suppresses the paste, so it must be a positive read.
-        assert_eq!(classify_focused_role("AXUnknownFutureRole"), FocusedFieldState::NonEditable);
+    fn denylist_roles_are_non_editable() {
+        // The confirmed desktop / no-text-field roles (bug #195) are the ONLY
+        // roles that suppress the paste.
+        for role in [
+            "AXImage",
+            "AXScrollArea",
+            "AXList",
+            "AXButton",
+            "AXStaticText",
+            "AXTable",
+            "AXOutline",
+            "AXBrowser",
+        ] {
+            assert!(
+                is_non_editable_desktop_role(role),
+                "{} should be on the non-editable denylist",
+                role
+            );
+            assert_eq!(
+                classify_focused_role(role),
+                FocusedFieldState::NonEditable,
+                "{} should classify as NonEditable",
+                role
+            );
+        }
+    }
+
+    #[test]
+    fn denylist_matching_ignores_whitespace_and_is_case_sensitive() {
+        assert!(is_non_editable_desktop_role("  AXButton  "));
+        assert!(is_non_editable_desktop_role("AXImage\n"));
+        // System Events reports canonical AX casing; anything else is not denied.
+        assert!(!is_non_editable_desktop_role("axbutton"));
+        assert!(!is_non_editable_desktop_role("AXBUTTON"));
+    }
+
+    #[test]
+    fn unrecognised_role_is_unknown_and_allows_paste() {
+        // Policy is a DENYLIST: any non-empty role that is neither a recognised
+        // editable role nor on the desktop denylist must map to Unknown (allow
+        // paste). A previously-unseen/future role must never suppress the paste.
+        assert_eq!(
+            classify_focused_role("AXUnknownFutureRole"),
+            FocusedFieldState::Unknown
+        );
+    }
+
+    #[test]
+    fn contenteditable_web_roles_allow_paste() {
+        // Web/Electron contenteditable chat boxes (Slack, Discord, Notion,
+        // Gmail, Teams, WhatsApp Web) surface as these roles across
+        // Chromium/WebKit versions. They are NOT on the denylist, so they must
+        // classify as Unknown (allow paste) — never NonEditable.
+        for role in ["AXGroup", "AXWebArea", "AXUnknown"] {
+            assert!(
+                !is_non_editable_desktop_role(role),
+                "{} must not be on the denylist",
+                role
+            );
+            assert_eq!(
+                classify_focused_role(role),
+                FocusedFieldState::Unknown,
+                "{} should allow paste (Unknown)",
+                role
+            );
+        }
+    }
+
+    #[test]
+    fn editable_roles_classify_as_editable_and_allow_paste() {
+        // Representative editable controls take priority over the denylist and
+        // permit the paste.
+        for role in ["AXTextField", "AXTextArea", "AXComboBox", "AXSecureTextField"] {
+            assert_eq!(
+                classify_focused_role(role),
+                FocusedFieldState::Editable,
+                "{} should classify as Editable",
+                role
+            );
+        }
     }
 }
 
