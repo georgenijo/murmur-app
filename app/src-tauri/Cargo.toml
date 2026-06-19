@@ -25,6 +25,10 @@ serde_json = "1"
 tokio = { version = "1", features = ["process", "io-util", "sync", "rt", "fs"] }
 base64 = "0.22"
 whisper-rs = { version = "0.15", features = ["log_backend"] }
+sherpa-onnx = "1.13"
+# Parakeet model bundles ship as .tar.bz2 (sherpa-onnx releases); used to extract them.
+tar = "0.4"
+bzip2 = "0.5"
 arboard = "3"
 hound = "3.5"
 symphonia = { version = "0.5", default-features = false, features = ["wav", "pcm", "mp3", "isomp4", "aac", "alac"] }

@@ -412,11 +412,26 @@ pub async fn configure_dictation(
         *state.app_state.idle_timeout_minutes.lock_or_recover() = normalized;
     }
 
-    // If model changed, reset backend so next transcription reloads the new model
+    // If model changed, swap/reset the backend so the next transcription loads
+    // the right engine for the selected model.
     if model_changed {
+        let new_model = dictation.model_name.clone();
         drop(dictation); // Release dictation lock first
         let mut backend = state.app_state.backend.lock_or_recover();
-        backend.reset();
+        // --- Parakeet backend dispatch (removable): this is the only call site
+        // that constructs ParakeetBackend. To remove the backend, revert this
+        // block to a plain `backend.reset();`. ---
+        let want_parakeet = transcriber::parakeet::is_parakeet_model(&new_model);
+        if want_parakeet != (backend.name() == "parakeet") {
+            *backend = if want_parakeet {
+                Box::new(transcriber::ParakeetBackend::new())
+            } else {
+                Box::new(transcriber::WhisperBackend::new())
+            };
+            tracing::info!(target: "pipeline", "Switched transcription backend to {}", backend.name());
+        } else {
+            backend.reset();
+        }
     }
 
     Ok(serde_json::json!({
