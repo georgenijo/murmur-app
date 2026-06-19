@@ -112,8 +112,11 @@ fn spawn_live_preview(
                     out
                 }
                 Err(e) => {
-                    tracing::warn!(target: "preview", "live preview: pass panicked ({})", e);
-                    continue;
+                    // The blocking closure panicked, so `engine` was consumed and
+                    // cannot be moved back out — it's gone for this session. End
+                    // the preview loop cleanly rather than reuse a lost engine.
+                    tracing::warn!(target: "preview", "live preview: pass panicked ({}), ending preview", e);
+                    break;
                 }
             };
 
