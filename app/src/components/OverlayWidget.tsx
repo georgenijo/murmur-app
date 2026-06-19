@@ -64,6 +64,9 @@ export function OverlayWidget() {
   const [autoPaste, setAutoPaste] = useState(false);
   const [fileOutputEnabled, setFileOutputEnabled] = useState(false);
   const [elapsed, setElapsed] = useState(0);
+  // Live streaming preview text (#129). Preview-only — this is never the
+  // authoritative pasted text; it just mirrors what Rust emits while recording.
+  const [previewText, setPreviewText] = useState('');
   const notchHeightRef = useRef(0);
   const [notchHeight, setNotchHeight] = useState(0);
   const [notchWidth, setNotchWidth] = useState(185);
@@ -213,6 +216,25 @@ export function OverlayWidget() {
     });
     return () => { cancelled = true; unlisten?.(); };
   }, []);
+
+  // Subscribe to live preview text events from Rust (#129). An empty payload
+  // clears the preview (sent on stop/cancel). Preview-only display.
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    listen<string>('partial-transcript', (event) => {
+      setPreviewText(typeof event.payload === 'string' ? event.payload : '');
+    }).then((fn) => {
+      if (cancelled) { fn(); } else { unlisten = fn; }
+    });
+    return () => { cancelled = true; unlisten?.(); };
+  }, []);
+
+  // Clear preview text whenever we leave the recording state — defensive so a
+  // stale partial never lingers on the overlay if the clear event is missed.
+  useEffect(() => {
+    if (status !== 'recording') setPreviewText('');
+  }, [status]);
 
   // Subscribe to app-disabled-changed events from Rust
   useEffect(() => {
@@ -612,8 +634,20 @@ export function OverlayWidget() {
             </span>
           )}
 
-          {/* Spacer */}
-          <div className="flex-1" />
+          {/* Live preview text (#129) — partial words while recording. Preview
+              only; truncated to a single line so it never resizes the pill. */}
+          {status === 'recording' && previewText ? (
+            <span
+              className="flex-1 min-w-0 truncate text-white/70 text-right"
+              style={{ marginLeft: 8, marginRight: 8, fontSize: 11 }}
+              title={previewText}
+            >
+              {previewText}
+            </span>
+          ) : (
+            /* Spacer */
+            <div className="flex-1" />
+          )}
 
           {/* Right side — waveform (only when active) */}
           <div

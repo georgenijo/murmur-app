@@ -75,6 +75,7 @@ export interface ConfigureOptions {
   cleanupEnabled?: boolean;
   codeVocabEnabled?: boolean;
   codeVocabFolder?: string;
+  livePreviewEnabled?: boolean;
 }
 
 export async function configure(options: ConfigureOptions): Promise<DictationResponse> {
@@ -104,6 +105,7 @@ export function buildConfigureOptions(s: Settings): ConfigureOptions {
     cleanupEnabled: s.cleanupEnabled,
     codeVocabEnabled: s.codeVocabEnabled,
     codeVocabFolder: s.codeVocabFolder,
+    livePreviewEnabled: s.livePreviewEnabled,
   };
 }
 

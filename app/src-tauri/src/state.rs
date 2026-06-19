@@ -59,6 +59,11 @@ pub struct DictationState {
     /// when the folder/enabled flag changes so we don't rescan every utterance.
     /// `None` means "not yet scanned" (build lazily on first use).
     pub code_vocab_prompt: Option<String>,
+    /// Live streaming transcription preview (issue #129). When enabled, a
+    /// throttled background pass shows partial words in the overlay *while
+    /// recording*. Preview-only — never affects the authoritative injected text.
+    /// CPU-heavy, Whisper-only, OFF by default.
+    pub live_preview_enabled: bool,
 }
 
 impl Default for DictationState {
@@ -84,6 +89,7 @@ impl Default for DictationState {
             code_vocab_enabled: false,
             code_vocab_folder: String::new(),
             code_vocab_prompt: None,
+            live_preview_enabled: false,
         }
     }
 }
@@ -102,6 +108,11 @@ pub struct AppState {
     /// transcription share one Whisper backend, so they must be mutually
     /// exclusive — this flag lets each path refuse to start over the other.
     pub file_transcribing: AtomicBool,
+    /// Cancellation flag for the optional live-preview background task (#129).
+    /// Set to `false` on recording stop/cancel so the preview loop exits
+    /// promptly. Wrapped in an `Arc` so the spawned task can hold a clone
+    /// without borrowing `AppState`.
+    pub live_preview_active: std::sync::Arc<AtomicBool>,
 }
 
 impl AppState {
@@ -131,6 +142,7 @@ impl Default for AppState {
             recording_id: AtomicU64::new(0),
             cancelled_id: AtomicU64::new(0),
             file_transcribing: AtomicBool::new(false),
+            live_preview_active: std::sync::Arc::new(AtomicBool::new(false)),
         }
     }
 }

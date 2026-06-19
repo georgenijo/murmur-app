@@ -1,9 +1,141 @@
 use crate::{MutexExt, State};
 use crate::state::{AppState, DictationStatus};
 use crate::transcriber;
+use crate::transcriber::preview;
 use crate::{audio, audio_decode, injector, keyboard, vad};
-use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Emitter;
+
+/// How often the live-preview background task runs a partial transcription.
+/// A ~1.4s cadence balances responsiveness against the CPU cost of repeated
+/// whisper passes; the task additionally *skips* a tick if the previous pass is
+/// still running, so a slow transcribe can never pile up.
+const LIVE_PREVIEW_INTERVAL_MS: u64 = 1_400;
+
+/// Spawn the optional live-preview background task for a recording session.
+///
+/// PREVIEW-ONLY: this never produces the authoritative injected text and never
+/// touches `app_state.backend`. It owns a dedicated `PreviewTranscriber`
+/// (separate whisper context/state) so it cannot race or corrupt the final
+/// one-shot pass. No-op (returns immediately) when the feature is off or the
+/// active backend isn't Whisper. The loop exits when `cancel` flips to false
+/// (set on stop/cancel) or the model can't be loaded.
+fn spawn_live_preview(
+    app_handle: tauri::AppHandle,
+    model_name: String,
+    language: String,
+    cancel: Arc<AtomicBool>,
+    recording_id: u64,
+) {
+    use tauri::Manager;
+    // True only while `cancel` is set AND this is still the active recording.
+    // Guards against a stale task from a superseded session emitting after a
+    // new recording has begun (rapid start-stop). The two tasks each own their
+    // own whisper state, so this is purely about avoiding stale UI text. The
+    // recording_id is read back through the managed `State` (the task is
+    // 'static and can't borrow `AppState`).
+    let still_current_handle = app_handle.clone();
+    let still_current = move || {
+        if !cancel.load(Ordering::Relaxed) {
+            return false;
+        }
+        still_current_handle
+            .try_state::<State>()
+            .map(|s| s.app_state.recording_id.load(Ordering::SeqCst) == recording_id)
+            .unwrap_or(false)
+    };
+    tokio::spawn(async move {
+        // Resolve the model path off the chance the model isn't present yet.
+        let model_path = match preview::preview_model_path(&model_name) {
+            Some(p) => p.to_string_lossy().to_string(),
+            None => {
+                tracing::info!(target: "preview", "live preview: model '{}' not found, skipping", model_name);
+                return;
+            }
+        };
+        let lang_param = match language.as_str() {
+            "auto" | "" => None,
+            other => Some(other.to_string()),
+        };
+
+        // Build the dedicated preview engine on a blocking thread (model load +
+        // GPU init). If it fails, silently skip preview for this session.
+        let build = tokio::task::spawn_blocking(move || preview::PreviewTranscriber::new(&model_path)).await;
+        let mut engine = match build {
+            Ok(Ok(engine)) => engine,
+            Ok(Err(e)) => {
+                tracing::info!(target: "preview", "live preview: engine init failed ({}), skipping", e);
+                return;
+            }
+            Err(e) => {
+                tracing::info!(target: "preview", "live preview: engine init task panicked ({}), skipping", e);
+                return;
+            }
+        };
+        tracing::info!(target: "preview", "live preview: engine ready");
+
+        let mut last_emitted: Option<String> = None;
+        while still_current() {
+            tokio::time::sleep(std::time::Duration::from_millis(LIVE_PREVIEW_INTERVAL_MS)).await;
+            if !still_current() {
+                break;
+            }
+
+            // Non-destructive snapshot of audio-so-far (16kHz mono).
+            let snapshot = match audio::snapshot_samples() {
+                Some(s) => s,
+                None => continue, // recording ended between checks
+            };
+            let window = match preview::select_preview_window(
+                &snapshot,
+                crate::state::WHISPER_SAMPLE_RATE,
+                preview::PREVIEW_WINDOW_SECS,
+                preview::PREVIEW_MIN_SAMPLES,
+            ) {
+                Some(w) => w.to_vec(),
+                None => continue, // not enough audio yet
+            };
+
+            // Run the (blocking) whisper pass on a dedicated thread so the async
+            // runtime isn't stalled. The engine moves in and back out so it stays
+            // owned by this loop (skip-if-running is implicit: we await here).
+            let lang = lang_param.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                let out = engine.transcribe_partial(&window, lang.as_deref());
+                (engine, out)
+            })
+            .await;
+            let out = match result {
+                Ok((returned_engine, out)) => {
+                    engine = returned_engine;
+                    out
+                }
+                Err(e) => {
+                    tracing::warn!(target: "preview", "live preview: pass panicked ({})", e);
+                    continue;
+                }
+            };
+
+            if !still_current() {
+                break;
+            }
+            match out {
+                Ok(Some(text)) => {
+                    if last_emitted.as_deref() != Some(text.as_str()) {
+                        last_emitted = Some(text.clone());
+                        let _ = app_handle.emit("partial-transcript", text);
+                    }
+                }
+                Ok(None) => { /* nothing worth showing this tick */ }
+                Err(e) => {
+                    tracing::warn!(target: "preview", "live preview: pass failed ({})", e);
+                }
+            }
+        }
+        tracing::info!(target: "preview", "live preview: loop exited");
+    });
+}
 
 /// Max number of code identifiers to feed Whisper as an initial prompt. Whisper
 /// truncates the prompt to its context window anyway; this keeps the bias list
@@ -537,6 +669,12 @@ pub async fn configure_dictation(
         dictation.cleanup_enabled = cleanup_enabled;
     }
 
+    // Live streaming preview (#129): preview-only overlay text while recording.
+    // Default-off; only honored for the Whisper backend at recording time.
+    if let Some(live_preview) = options.get("livePreviewEnabled").and_then(|v| v.as_bool()) {
+        dictation.live_preview_enabled = live_preview;
+    }
+
     // Code-aware vocabulary: a toggle plus a folder to scan for identifiers.
     // Changing either invalidates the cached prompt so the next transcription
     // (or the explicit prebuild below) rescans. Disabling clears the cache so we
@@ -659,10 +797,50 @@ pub async fn start_native_recording(
     let _ = app_handle.emit("recording-status-changed", "recording");
     tracing::info!(target: "pipeline", "start_native_recording: started");
 
+    // Live streaming preview (#129): start the optional throttled preview task.
+    // Default-off and Whisper-only; entirely separate from the final pipeline.
+    maybe_start_live_preview(&app_handle, &state.app_state);
+
     Ok(serde_json::json!({
         "type": "recording_started",
         "state": "recording"
     }))
+}
+
+/// Start the live-preview task iff the setting is on AND the active backend is
+/// Whisper. Reads the gate under the existing locks and arms the shared cancel
+/// flag before spawning. No-op otherwise — so default-off users and Parakeet
+/// users see byte-for-byte the current behavior.
+fn maybe_start_live_preview(app_handle: &tauri::AppHandle, app_state: &AppState) {
+    let (enabled, model_name, language) = {
+        let d = app_state.dictation.lock_or_recover();
+        (d.live_preview_enabled, d.model_name.clone(), d.language.clone())
+    };
+    let backend_name = {
+        let b = app_state.backend.lock_or_recover();
+        b.name().to_string()
+    };
+    if !preview::should_run_preview(enabled, &backend_name) {
+        return;
+    }
+    // Arm the cancel flag for this session, then spawn.
+    app_state.live_preview_active.store(true, Ordering::SeqCst);
+    let cancel = Arc::clone(&app_state.live_preview_active);
+    let recording_id = app_state.recording_id.load(Ordering::SeqCst);
+    tracing::info!(target: "preview", "live preview: starting (model={}, recording_id={})", model_name, recording_id);
+    spawn_live_preview(app_handle.clone(), model_name, language, cancel, recording_id);
+}
+
+/// Stop any running live-preview task and clear the overlay's preview text.
+/// Idempotent and safe to call when no preview was running.
+fn stop_live_preview(app_handle: &tauri::AppHandle, app_state: &AppState) {
+    // Only act if a preview was actually armed, so we don't emit a spurious
+    // clear event for default-off users.
+    if app_state.live_preview_active.swap(false, Ordering::SeqCst) {
+        tracing::info!(target: "preview", "live preview: stopping");
+        // Tell the overlay to drop any partial text it's showing.
+        let _ = app_handle.emit("partial-transcript", "");
+    }
 }
 
 #[tauri::command]
@@ -693,6 +871,9 @@ pub async fn stop_native_recording(
     };
     keyboard::set_processing(true);
     tracing::info!(target: "pipeline", "stop_native_recording: stopping");
+    // Stop the live-preview task first so it can't snapshot mid-teardown or race
+    // the authoritative final pass. No-op when preview wasn't running.
+    stop_live_preview(&app_handle, &state.app_state);
     let _ = app_handle.emit("recording-status-changed", "processing");
 
     // Guard resets status to Idle if stop_recording fails or samples are empty;
@@ -829,6 +1010,9 @@ pub async fn cancel_native_recording(
         }
         (prev, rid)
     };
+
+    // Stop any live-preview task regardless of which phase we're cancelling from.
+    stop_live_preview(&app_handle, &state.app_state);
 
     let stop_err = match prev_status {
         DictationStatus::Recording => {

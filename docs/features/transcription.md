@@ -80,3 +80,22 @@ Status is managed in `DictationState` behind a `Mutex` with poison recovery (`Mu
 - `lib/dictation.ts` has `startRecording()` and `stopRecording()` wrappers around Tauri `invoke()`
 - `useRecordingState` hook manages status, transcription text, recording duration timer, and error state
 - `toggleRecording()` checks current status via ref and calls start or stop accordingly
+
+## Live Streaming Preview (optional, #129)
+
+A default-off setting (`livePreviewEnabled`) shows partial words in the Dynamic Island overlay *while the user is still speaking*. It is strictly **preview-only**:
+
+- The authoritative injected/clipboard text is always the existing full-audio one-shot transcription produced on stop. The preview pass never changes it.
+- **Whisper backend only.** Parakeet (and any future non-whisper backend) gets a graceful no-op via `preview::should_run_preview`.
+- **Isolated whisper context.** The preview pass owns its *own* `WhisperContext` + `WhisperState` (`transcriber/preview.rs` → `PreviewTranscriber`), separate from the cached backend state in `AppState::backend`. This is the same isolation pattern VAD uses and is the key to concurrency safety: the preview pass and the final pass can never share or corrupt each other's `WhisperState`.
+
+### Flow
+
+1. `start_native_recording` calls `maybe_start_live_preview`, which checks the gate (setting on AND backend is whisper) and spawns a throttled background task. `live_preview_active` (an `Arc<AtomicBool>` in `AppState`) is the cancel token.
+2. Every ~1.4s the task takes a non-destructive `audio::snapshot_samples()` (clones the in-progress buffer, resampled to 16kHz — never touches the final capture), selects a trailing window (`select_preview_window`, default 12s), runs a partial whisper pass on a blocking thread, and emits the cleaned text as a `partial-transcript` Tauri event.
+3. Because the loop `await`s each blocking pass before sleeping again, a slow transcribe can never pile up (skip-if-running is implicit).
+4. `stop_native_recording` and `cancel_native_recording` flip the cancel flag (`stop_live_preview`) and emit an empty `partial-transcript` to clear the overlay, *before* the authoritative final pass runs.
+
+The pure decision logic (window selection, preview-text cleaning, the on/off gate) is unit-tested in `transcriber/preview.rs`.
+
+> **Runtime note:** whether partial words actually appear while speaking cannot be verified in CI or a headless worktree (no live audio/overlay). It requires a built `.app`. See the PR's "Runtime verification REQUIRED" section.

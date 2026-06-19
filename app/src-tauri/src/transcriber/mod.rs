@@ -1,4 +1,5 @@
 pub mod parakeet;
+pub mod preview;
 pub mod whisper;
 
 pub use parakeet::ParakeetBackend;
