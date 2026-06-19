@@ -45,6 +45,7 @@ pub struct DictationState {
     pub output_dir: String,
     /// Per-app profiles that override auto-paste based on the frontmost app.
     pub app_profiles: Vec<AppProfile>,
+    pub voice_commands_enabled: bool,
 }
 
 impl Default for DictationState {
@@ -62,6 +63,7 @@ impl Default for DictationState {
             save_audio: false,
             output_dir: String::new(),
             app_profiles: Vec::new(),
+            voice_commands_enabled: false,
         }
     }
 }

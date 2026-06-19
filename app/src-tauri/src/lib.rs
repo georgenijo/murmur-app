@@ -12,6 +12,7 @@ mod state;
 pub mod telemetry;
 pub mod transcriber;
 mod vad;
+mod voice_commands;
 
 #[cfg(target_os = "macos")]
 #[global_allocator]
