@@ -164,4 +164,45 @@ describe('loadSettings', () => {
     const settings = loadSettings();
     expect(settings.language).toBe('nl');
   });
+
+  it('defaults codeVocabEnabled and codeVocabFolder when absent', () => {
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      model: 'base.en',
+      doubleTapKey: 'shift_l',
+      language: 'en',
+      recordingMode: 'hold_down',
+    }));
+    const settings = loadSettings();
+    expect(settings.codeVocabEnabled).toBe(DEFAULT_SETTINGS.codeVocabEnabled);
+    expect(settings.codeVocabFolder).toBe(DEFAULT_SETTINGS.codeVocabFolder);
+  });
+
+  it('coerces non-boolean codeVocabEnabled to default', () => {
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      codeVocabEnabled: 'yes',
+    }));
+    const settings = loadSettings();
+    expect(settings.codeVocabEnabled).toBe(DEFAULT_SETTINGS.codeVocabEnabled);
+  });
+
+  it('coerces non-string codeVocabFolder to default', () => {
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      codeVocabFolder: 123,
+    }));
+    const settings = loadSettings();
+    expect(settings.codeVocabFolder).toBe(DEFAULT_SETTINGS.codeVocabFolder);
+  });
+
+  it('preserves explicit codeVocab settings', () => {
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      codeVocabEnabled: true,
+      codeVocabFolder: '/Users/me/project',
+    }));
+    const settings = loadSettings();
+    expect(settings.codeVocabEnabled).toBe(true);
+    expect(settings.codeVocabFolder).toBe('/Users/me/project');
+  });
 });

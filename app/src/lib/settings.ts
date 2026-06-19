@@ -33,6 +33,10 @@ export interface Settings {
   appProfiles: AppProfile[];
   voiceCommandsEnabled: boolean;
   cleanupEnabled: boolean;
+  /** Bias transcription toward code identifiers scanned from a project folder. */
+  codeVocabEnabled: boolean;
+  /** Absolute path to the project folder scanned for code identifiers. */
+  codeVocabFolder: string;
 }
 
 export type ModelOption =
@@ -116,6 +120,8 @@ export const DEFAULT_SETTINGS: Settings = {
   appProfiles: [],
   voiceCommandsEnabled: false,
   cleanupEnabled: false,
+  codeVocabEnabled: false,
+  codeVocabFolder: '',
 };
 
 export const STORAGE_KEY = 'dictation-settings';
@@ -180,6 +186,18 @@ export function loadSettings(): Settings {
       // (including absent on older settings blobs) back to the default.
       if (typeof parsed.cleanupEnabled !== 'boolean') {
         parsed.cleanupEnabled = DEFAULT_SETTINGS.cleanupEnabled;
+      }
+
+      // codeVocabEnabled gates the Rust scan — coerce non-booleans (or a missing
+      // field on pre-feature stored settings) back to the default.
+      if (typeof parsed.codeVocabEnabled !== 'boolean') {
+        parsed.codeVocabEnabled = DEFAULT_SETTINGS.codeVocabEnabled;
+      }
+
+      // codeVocabFolder feeds a filesystem path on the Rust side — coerce
+      // anything non-string back to the empty default.
+      if (typeof parsed.codeVocabFolder !== 'string') {
+        parsed.codeVocabFolder = DEFAULT_SETTINGS.codeVocabFolder;
       }
 
       return { ...DEFAULT_SETTINGS, ...parsed } as Settings;

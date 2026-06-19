@@ -13,6 +13,7 @@ mod state;
 pub mod telemetry;
 pub mod transcriber;
 mod vad;
+mod vocab;
 mod voice_commands;
 
 #[cfg(target_os = "macos")]

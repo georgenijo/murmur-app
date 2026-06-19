@@ -309,6 +309,17 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
     }
   };
 
+  const handleChooseCodeVocabFolder = async () => {
+    try {
+      const selected = await open({ directory: true, multiple: false });
+      if (typeof selected === 'string') {
+        onUpdateSettings({ codeVocabFolder: selected });
+      }
+    } catch {
+      // Dialog cancelled or unavailable — keep the current folder.
+    }
+  };
+
   const saveToFile = settings.saveTranscript || settings.saveAudio;
 
   // Model availability check and inline download
@@ -918,6 +929,68 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
             profiles={settings.appProfiles}
             onChange={(next) => onUpdateSettings({ appProfiles: next })}
           />
+        </SettingsSection>
+
+        <SettingsSection title="Code-Aware Vocabulary" subtitle="Bias toward your code identifiers" defaultExpanded={false}>
+        {/* Code-Aware Vocabulary Toggle */}
+        <div>
+          <div className="flex items-center justify-between">
+            <div>
+              <label className="block text-sm font-medium text-stone-700 dark:text-stone-300">
+                Code-Aware Vocabulary
+              </label>
+              <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
+                Scan a project folder for code identifiers (useEffect, tauri, stderr) and bias transcription toward them. Whisper models only.
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={settings.codeVocabEnabled}
+              aria-label="Code-aware vocabulary"
+              onClick={() => onUpdateSettings({ codeVocabEnabled: !settings.codeVocabEnabled })}
+              className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-stone-500 focus:ring-offset-2 ${
+                settings.codeVocabEnabled ? 'bg-stone-800 dark:bg-stone-300' : 'bg-stone-300 dark:bg-stone-500'
+              }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                  settings.codeVocabEnabled ? 'translate-x-6' : 'translate-x-1'
+                }`}
+              />
+            </button>
+          </div>
+
+          {settings.codeVocabEnabled && (
+            <div className="mt-3">
+              <label className="block text-xs text-stone-600 dark:text-stone-400 mb-1">
+                Project Folder
+              </label>
+              <div className="px-3 py-2 text-xs rounded-lg border border-stone-300 dark:border-stone-600 bg-stone-50 dark:bg-stone-700/50 text-stone-700 dark:text-stone-300 break-all">
+                {settings.codeVocabFolder || 'No folder selected'}
+              </div>
+              <div className="mt-2 flex items-center gap-3">
+                <button
+                  onClick={handleChooseCodeVocabFolder}
+                  className="text-xs font-medium text-stone-600 hover:text-stone-900 dark:text-stone-400 dark:hover:text-stone-200 underline hover:no-underline transition-colors"
+                >
+                  Choose Folder
+                </button>
+                {settings.codeVocabFolder && (
+                  <button
+                    onClick={() => onUpdateSettings({ codeVocabFolder: '' })}
+                    className="text-xs font-medium text-stone-500 hover:text-stone-800 dark:text-stone-500 dark:hover:text-stone-300 underline hover:no-underline transition-colors"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+              <p className="mt-2 text-xs text-stone-500 dark:text-stone-400">
+                The folder is scanned once when set (dependency and build directories are skipped). Re-select to rescan after big code changes.
+              </p>
+            </div>
+          )}
+        </div>
         </SettingsSection>
 
         <SettingsSection title="About" subtitle="Stats, logs, updates" defaultExpanded={false}>
