@@ -31,6 +31,7 @@ export interface Settings {
   saveAudio: boolean;
   outputDir: string;
   appProfiles: AppProfile[];
+  voiceCommandsEnabled: boolean;
 }
 
 export type ModelOption =
@@ -104,6 +105,7 @@ export const DEFAULT_SETTINGS: Settings = {
   saveAudio: false,
   outputDir: '',
   appProfiles: [],
+  voiceCommandsEnabled: false,
 };
 
 export const STORAGE_KEY = 'dictation-settings';
@@ -156,6 +158,12 @@ export function loadSettings(): Settings {
             autoPasteOverride:
               typeof p.autoPasteOverride === 'boolean' ? p.autoPasteOverride : null,
           }));
+      }
+
+      // Voice commands gate the Rust transform — coerce non-booleans (or a
+      // missing field on pre-feature stored settings) back to the default.
+      if (typeof parsed.voiceCommandsEnabled !== 'boolean') {
+        parsed.voiceCommandsEnabled = DEFAULT_SETTINGS.voiceCommandsEnabled;
       }
 
       return { ...DEFAULT_SETTINGS, ...parsed } as Settings;

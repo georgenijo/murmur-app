@@ -855,6 +855,34 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
             </button>
           </div>
         </div>
+
+        {/* Voice Commands Toggle */}
+        <div className="flex items-center justify-between">
+          <div>
+            <label className="block text-sm font-medium text-stone-700 dark:text-stone-300">
+              Voice Commands
+            </label>
+            <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
+              Spoken tokens like "new line", "period", or "scratch that" transform the text before pasting.
+            </p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={settings.voiceCommandsEnabled}
+            aria-label="Voice commands"
+            onClick={() => onUpdateSettings({ voiceCommandsEnabled: !settings.voiceCommandsEnabled })}
+            className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-stone-500 focus:ring-offset-2 ${
+              settings.voiceCommandsEnabled ? 'bg-stone-800 dark:bg-stone-300' : 'bg-stone-300 dark:bg-stone-500'
+            }`}
+          >
+            <span
+              className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                settings.voiceCommandsEnabled ? 'translate-x-6' : 'translate-x-1'
+              }`}
+            />
+          </button>
+        </div>
         </SettingsSection>
 
         <SettingsSection title="Per-App Profiles" subtitle="Auto-paste per frontmost app" defaultExpanded={false}>

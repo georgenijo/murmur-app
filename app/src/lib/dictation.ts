@@ -71,6 +71,7 @@ export interface ConfigureOptions {
   saveAudio?: boolean;
   outputDir?: string;
   appProfiles?: AppProfile[];
+  voiceCommandsEnabled?: boolean;
 }
 
 export async function configure(options: ConfigureOptions): Promise<DictationResponse> {
@@ -96,6 +97,7 @@ export function buildConfigureOptions(s: Settings): ConfigureOptions {
     saveAudio: s.saveAudio,
     outputDir: s.outputDir,
     appProfiles: s.appProfiles,
+    voiceCommandsEnabled: s.voiceCommandsEnabled,
   };
 }
 

@@ -79,9 +79,9 @@ async fn run_transcription_pipeline(
     let _guard = IdleGuard::new(app_state, recording_id);
 
     // Read all needed state in one lock
-    let (model_name, language, auto_paste, paste_delay_ms, vad_sensitivity, custom_vocabulary, smart_punctuation, save_transcript, save_audio, output_dir, app_profiles) = {
+    let (model_name, language, auto_paste, paste_delay_ms, vad_sensitivity, custom_vocabulary, smart_punctuation, save_transcript, save_audio, output_dir, app_profiles, voice_commands_enabled) = {
         let dictation = app_state.dictation.lock_or_recover();
-        (dictation.model_name.clone(), dictation.language.clone(), dictation.auto_paste, dictation.auto_paste_delay_ms, dictation.vad_sensitivity, dictation.custom_vocabulary.clone(), dictation.smart_punctuation, dictation.save_transcript, dictation.save_audio, dictation.output_dir.clone(), dictation.app_profiles.clone())
+        (dictation.model_name.clone(), dictation.language.clone(), dictation.auto_paste, dictation.auto_paste_delay_ms, dictation.vad_sensitivity, dictation.custom_vocabulary.clone(), dictation.smart_punctuation, dictation.save_transcript, dictation.save_audio, dictation.output_dir.clone(), dictation.app_profiles.clone(), dictation.voice_commands_enabled)
     };
 
     // Per-app profiles: if the frontmost app has a matching profile that sets an
@@ -185,6 +185,10 @@ async fn run_transcription_pipeline(
     let inference_ms = t_transcribe.elapsed().as_millis() as u64;
     let rss_after_mb = crate::resource_monitor::get_process_rss_mb();
     tracing::info!(target: "pipeline", "transcription ({} samples): {:?}", samples_for_transcription.len(), t_transcribe.elapsed());
+
+    // Phase: Voice commands -- rewrite spoken command tokens (e.g. "new line",
+    // "scratch that") before the text reaches file output / clipboard / paste.
+    let text = crate::voice_commands::apply_voice_commands(&text, voice_commands_enabled);
 
     // Update last_transcription_at for idle timeout tracking
     *app_state.last_transcription_at.lock_or_recover() = Some(std::time::Instant::now());
@@ -404,6 +408,10 @@ pub async fn configure_dictation(
 
     if let Some(sp) = options.get("smartPunctuation").and_then(|v| v.as_bool()) {
         dictation.smart_punctuation = sp;
+    }
+
+    if let Some(vc) = options.get("voiceCommandsEnabled").and_then(|v| v.as_bool()) {
+        dictation.voice_commands_enabled = vc;
     }
 
     if let Some(save_transcript) = options.get("saveTranscript").and_then(|v| v.as_bool()) {
