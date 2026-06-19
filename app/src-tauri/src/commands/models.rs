@@ -15,6 +15,10 @@ pub fn check_specific_model_exists(model_name: String) -> bool {
     if model_name.contains("..") || model_name.contains('/') || model_name.contains('\\') {
         return false;
     }
+    // --- Parakeet backend (removable): delete this branch to remove. ---
+    if transcriber::parakeet::is_parakeet_model(&model_name) {
+        return transcriber::parakeet::specific_model_exists(&model_name);
+    }
     let backend = transcriber::WhisperBackend::new();
     let models_dir = match backend.models_dir() {
         Ok(d) => d,
@@ -28,7 +32,13 @@ pub async fn download_model(app_handle: tauri::AppHandle, model_name: String, st
     const ALLOWED_MODELS: &[&str] = &[
         "large-v3-turbo", "small.en", "base.en", "tiny.en", "medium.en",
     ];
-    if !ALLOWED_MODELS.contains(&model_name.as_str()) {
+    // --- Parakeet backend (removable): delete this branch + download_parakeet_model to remove. ---
+    let is_parakeet = transcriber::parakeet::is_parakeet_model(&model_name);
+    if is_parakeet {
+        if transcriber::parakeet::download_spec(&model_name).is_none() {
+            return Err(format!("Unknown Parakeet model '{}'", model_name));
+        }
+    } else if !ALLOWED_MODELS.contains(&model_name.as_str()) {
         return Err(format!("Unknown model '{}'. Allowed: {}", model_name, ALLOWED_MODELS.join(", ")));
     }
 
@@ -37,7 +47,11 @@ pub async fn download_model(app_handle: tauri::AppHandle, model_name: String, st
         .await
         .map_err(|e| format!("Failed to create models directory: {}", e))?;
 
-    download_whisper_model(&app_handle, &model_name, &models_dir).await?;
+    if is_parakeet {
+        download_parakeet_model(&app_handle, &model_name, &models_dir).await?;
+    } else {
+        download_whisper_model(&app_handle, &model_name, &models_dir).await?;
+    }
 
     // Co-download VAD model alongside the transcription model (~1.8MB)
     if !vad::vad_model_exists() {
@@ -85,6 +99,47 @@ async fn download_whisper_model(
         })?;
 
     tracing::info!(target: "system", "Model downloaded: {} ({} bytes)", filename, received);
+    Ok(())
+}
+
+/// --- Parakeet backend (removable): delete this fn to remove. ---
+/// Download a Parakeet model bundle (.tar.bz2) and extract it into the models dir.
+async fn download_parakeet_model(
+    app_handle: &tauri::AppHandle,
+    model_name: &str,
+    models_dir: &std::path::Path,
+) -> Result<(), String> {
+    let (url, dir_name) = transcriber::parakeet::download_spec(model_name)
+        .ok_or_else(|| format!("Unknown Parakeet model '{}'", model_name))?;
+    let temp_path = models_dir.join(format!("{}.tar.bz2.tmp", dir_name));
+
+    let received = stream_download(app_handle, &url, &temp_path).await?;
+
+    // Decompress + untar on a blocking thread; archive unpacks to `<dir_name>/`.
+    let temp_clone = temp_path.clone();
+    let models_dir_owned = models_dir.to_path_buf();
+    let extracted_dir = models_dir.join(&dir_name);
+    let extraction_result = tokio::task::spawn_blocking(move || {
+        // Remove any stale/partial bundle before extracting.
+        let _ = std::fs::remove_dir_all(&extracted_dir);
+        let file = std::fs::File::open(&temp_clone)
+            .map_err(|e| format!("Failed to open archive: {}", e))?;
+        let decompressor = bzip2::read::BzDecoder::new(file);
+        let mut archive = tar::Archive::new(decompressor);
+        archive.unpack(&models_dir_owned).map_err(|e| {
+            let _ = std::fs::remove_dir_all(&extracted_dir);
+            format!("Failed to extract archive: {}", e)
+        })?;
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| format!("Extraction task failed: {}", e))?;
+
+    // Remove the temp archive regardless of extraction outcome.
+    let _ = tokio::fs::remove_file(&temp_path).await;
+    extraction_result?;
+
+    tracing::info!(target: "system", "Parakeet model downloaded and extracted: {} ({} bytes)", dir_name, received);
     Ok(())
 }
 

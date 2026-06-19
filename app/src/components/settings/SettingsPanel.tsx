@@ -262,8 +262,9 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
       ? 'Double-tap to start recording, single tap to stop'
       : 'Hold to start recording, release to stop';
   const isRecording = status !== 'idle';
-  const isEnglishOnlyModel = settings.model.endsWith('.en');
   const selectedModel = MODEL_OPTIONS.find(m => m.value === settings.model);
+  // Parakeet is English-only (like the .en Whisper models); lock the language picker.
+  const isEnglishOnlyModel = settings.model.endsWith('.en') || selectedModel?.backend === 'parakeet';
   const downloadProgressPercent =
     modelDownload.phase === 'downloading' && modelDownload.total > 0
       ? Math.round((modelDownload.received / modelDownload.total) * 100)

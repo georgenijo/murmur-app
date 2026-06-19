@@ -47,14 +47,18 @@ function App() {
   const [modelReady, setModelReady] = useState<boolean | null>(null);
   const markModelReady = useCallback(() => setModelReady(true), []);
 
-  useEffect(() => {
-    invoke<boolean>('check_model_exists')
-      .then(setModelReady)
-      .catch(() => setModelReady(true)); // fail open so main UI still loads
-  }, []);
-
   const { settings, updateSettings, applyExternalSettings } = useSettings();
   const { initialized, error: initError } = useInitialization(settings);
+
+  // First-launch gate: is the currently-selected model present? Checked once on
+  // mount (not reactively) so changing models in Settings uses the inline
+  // download flow there rather than re-showing this full-screen downloader.
+  useEffect(() => {
+    invoke<boolean>('check_specific_model_exists', { modelName: settings.model })
+      .then(setModelReady)
+      .catch(() => setModelReady(true)); // fail open so main UI still loads
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Keep settings in sync when the overlay's quick controls change them.
   useOverlaySettingsSync(applyExternalSettings);

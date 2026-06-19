@@ -1,5 +1,7 @@
+pub mod parakeet;
 pub mod whisper;
 
+pub use parakeet::ParakeetBackend;
 pub use whisper::WhisperBackend;
 
 use hound::{SampleFormat, WavReader};

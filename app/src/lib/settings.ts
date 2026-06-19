@@ -26,9 +26,11 @@ export type ModelOption =
   | 'base.en'
   | 'small.en'
   | 'medium.en'
-  | 'large-v3-turbo';
+  | 'large-v3-turbo'
+  // --- Parakeet backend (removable): delete this member to remove. ---
+  | 'parakeet-tdt-0.6b-v2-fp16';
 
-export type TranscriptionBackend = 'whisper';
+export type TranscriptionBackend = 'whisper' | 'parakeet';
 
 export const MODEL_OPTIONS: { value: ModelOption; label: string; size: string; backend: TranscriptionBackend }[] = [
   { value: 'tiny.en', label: 'Whisper Tiny (English)', size: '~75 MB', backend: 'whisper' },
@@ -36,6 +38,8 @@ export const MODEL_OPTIONS: { value: ModelOption; label: string; size: string; b
   { value: 'small.en', label: 'Whisper Small (English)', size: '~500 MB', backend: 'whisper' },
   { value: 'medium.en', label: 'Whisper Medium (English)', size: '~1.5 GB', backend: 'whisper' },
   { value: 'large-v3-turbo', label: 'Whisper Large Turbo', size: '~3 GB', backend: 'whisper' },
+  // --- Parakeet backend (removable): delete this entry to remove. ---
+  { value: 'parakeet-tdt-0.6b-v2-fp16', label: 'Parakeet TDT 0.6B (English, fast)', size: '~1.2 GB', backend: 'parakeet' },
 ];
 
 export const DOUBLE_TAP_KEY_OPTIONS: { value: DoubleTapKey; label: string }[] = [
@@ -70,7 +74,8 @@ export const LANGUAGE_OPTIONS: { value: string; label: string }[] = [
 ];
 
 export const DEFAULT_SETTINGS: Settings = {
-  model: 'base.en',
+  // Parakeet fp16 is the default transcription model (faster; English-only).
+  model: 'parakeet-tdt-0.6b-v2-fp16',
   doubleTapKey: 'shift_l',
   language: 'en',
   autoPaste: false,
