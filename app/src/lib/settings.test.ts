@@ -205,4 +205,34 @@ describe('loadSettings', () => {
     expect(settings.codeVocabEnabled).toBe(true);
     expect(settings.codeVocabFolder).toBe('/Users/me/project');
   });
+
+  it('defaults livePreviewEnabled to false (off) when absent', () => {
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      model: 'base.en',
+      doubleTapKey: 'shift_l',
+      language: 'en',
+      recordingMode: 'hold_down',
+    }));
+    const settings = loadSettings();
+    expect(settings.livePreviewEnabled).toBe(DEFAULT_SETTINGS.livePreviewEnabled);
+    expect(settings.livePreviewEnabled).toBe(false);
+  });
+
+  it('coerces non-boolean livePreviewEnabled to default', () => {
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      livePreviewEnabled: 'yes',
+    }));
+    const settings = loadSettings();
+    expect(settings.livePreviewEnabled).toBe(DEFAULT_SETTINGS.livePreviewEnabled);
+  });
+
+  it('preserves an explicit livePreviewEnabled value', () => {
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      livePreviewEnabled: true,
+    }));
+    const settings = loadSettings();
+    expect(settings.livePreviewEnabled).toBe(true);
+  });
 });

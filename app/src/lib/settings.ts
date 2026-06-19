@@ -37,6 +37,12 @@ export interface Settings {
   codeVocabEnabled: boolean;
   /** Absolute path to the project folder scanned for code identifiers. */
   codeVocabFolder: string;
+  /**
+   * Show partial words in the overlay *while speaking* (live streaming preview,
+   * issue #129). Preview-only — never changes the injected/clipboard text.
+   * CPU-heavy, Whisper-only, OFF by default.
+   */
+  livePreviewEnabled: boolean;
 }
 
 export type ModelOption =
@@ -122,6 +128,7 @@ export const DEFAULT_SETTINGS: Settings = {
   cleanupEnabled: false,
   codeVocabEnabled: false,
   codeVocabFolder: '',
+  livePreviewEnabled: false,
 };
 
 export const STORAGE_KEY = 'dictation-settings';
@@ -198,6 +205,12 @@ export function loadSettings(): Settings {
       // anything non-string back to the empty default.
       if (typeof parsed.codeVocabFolder !== 'string') {
         parsed.codeVocabFolder = DEFAULT_SETTINGS.codeVocabFolder;
+      }
+
+      // livePreviewEnabled gates the CPU-heavy preview pass — coerce non-booleans
+      // (or a missing field on pre-feature stored settings) back to the default.
+      if (typeof parsed.livePreviewEnabled !== 'boolean') {
+        parsed.livePreviewEnabled = DEFAULT_SETTINGS.livePreviewEnabled;
       }
 
       return { ...DEFAULT_SETTINGS, ...parsed } as Settings;

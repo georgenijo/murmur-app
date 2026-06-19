@@ -324,6 +324,48 @@ pub fn stop_recording() -> Result<Vec<f32>, String> {
     }
 }
 
+/// Non-destructively snapshot the audio captured **so far** in the current
+/// recording, resampled to Whisper's 16kHz mono format.
+///
+/// Used only by the optional live-preview pass (issue #129). Unlike
+/// `stop_recording`, this does NOT take or clear the buffer, does NOT touch the
+/// `active` flag or join the capture thread, and does NOT affect the
+/// authoritative final transcription in any way — it clones the current samples
+/// under the buffer lock and returns a resampled copy. Returns `None` when no
+/// recording is in progress (no buffer present).
+pub fn snapshot_samples() -> Option<Vec<f32>> {
+    let state = RECORDING_STATE.get()?;
+    let guard = state.lock().unwrap_or_else(|poisoned| {
+        tracing::warn!(target: "audio", "snapshot_samples: recording state mutex was poisoned, recovering");
+        poisoned.into_inner()
+    });
+
+    // Only snapshot while actively recording — never after stop has begun.
+    if !guard.active.load(Ordering::Relaxed) {
+        return None;
+    }
+    let buffer = guard.shared.as_ref()?;
+    let sample_rate = guard.sample_rate;
+    let raw: Vec<f32> = {
+        let samples = buffer.lock().unwrap_or_else(|poisoned| {
+            tracing::warn!(target: "audio", "snapshot_samples: samples mutex was poisoned, recovering");
+            poisoned.into_inner()
+        });
+        samples.clone()
+    };
+    // Release the recording-state lock before the (potentially larger) resample.
+    drop(guard);
+
+    if raw.is_empty() {
+        return Some(raw);
+    }
+    if sample_rate != WHISPER_SAMPLE_RATE {
+        Some(resample(&raw, sample_rate, WHISPER_SAMPLE_RATE))
+    } else {
+        Some(raw)
+    }
+}
+
 #[allow(dead_code)]
 pub fn is_recording() -> bool {
     if let Some(state) = RECORDING_STATE.get() {

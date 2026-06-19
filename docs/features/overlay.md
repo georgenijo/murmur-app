@@ -155,5 +155,6 @@ The observer is intentionally leaked (`std::mem::forget`) for app-lifetime obser
 | `app-disabled-changed` | Boolean | Global-disable state changed (updates the top-bar mic + speaker-slash) |
 | `settings-changed` | (none) | Auto-paste/disable changed in another window; listeners re-read localStorage |
 | `open-settings` | (none) | Overlay gear asks the main window to open the Settings panel |
+| `partial-transcript` | String | Live preview text while recording (#129). Empty string clears the preview. Only emitted when Live Preview is enabled (default off) and the Whisper backend is active. |
 
 The entire overlay surface is a Tauri drag region (`data-tauri-drag-region`), allowing the user to reposition it. Overlay position save/restore is currently disabled (TODO: re-enable after notch positioning is stable).
