@@ -134,3 +134,24 @@ export async function transcribeFile(filePath: string): Promise<DictationRespons
 export async function resetAccessibilityPermission(): Promise<void> {
   return await invoke('reset_accessibility_permission');
 }
+
+/** Live microphone authorization state, mirroring the Rust banner-state mapping. */
+export type MicPermissionStatus = 'granted' | 'denied' | 'notDetermined' | 'unknown';
+
+/**
+ * Query the *current* microphone authorization status (never cached). Unlike the
+ * boolean `check_microphone_permission`, this preserves the distinction between a
+ * genuine "denied" and a transient "notDetermined"/"unknown" state, so the banner
+ * doesn't false-negative after a dev rebuild or app move (issue #190).
+ */
+export async function checkMicrophonePermissionStatus(): Promise<MicPermissionStatus> {
+  return await invoke('check_microphone_permission_status');
+}
+
+/**
+ * Reset this app's stale macOS Microphone TCC entry, then reopen the Microphone
+ * settings pane. Rejects if the reset fails (see Rust `reset_microphone_permission`).
+ */
+export async function resetMicrophonePermission(): Promise<void> {
+  return await invoke('reset_microphone_permission');
+}

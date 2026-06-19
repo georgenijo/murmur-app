@@ -1,10 +1,25 @@
 import { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { resetAccessibilityPermission } from '../lib/dictation';
+import {
+  checkMicrophonePermissionStatus,
+  resetAccessibilityPermission,
+  resetMicrophonePermission,
+  type MicPermissionStatus,
+} from '../lib/dictation';
 
 interface PermissionStatus {
-  microphone: 'unknown' | 'granted' | 'denied';
+  microphone: MicPermissionStatus;
   accessibility: 'unknown' | 'granted' | 'denied';
+}
+
+/**
+ * Whether a microphone status should render as a hard "denied" banner. Only a
+ * genuine TCC denial (or restriction) blocks recording; "notDetermined" (no TCC
+ * entry yet, common after a rebuild/move) and "unknown" (a transient probe
+ * glitch) must NOT false-negative as denied (issue #190).
+ */
+function isMicHardDenied(status: MicPermissionStatus): boolean {
+  return status === 'denied';
 }
 
 export function PermissionsBanner() {
@@ -15,6 +30,7 @@ export function PermissionsBanner() {
   const [dismissed, setDismissed] = useState(false);
   const [checking, setChecking] = useState(true);
   const [resetError, setResetError] = useState<string | null>(null);
+  const [micResetError, setMicResetError] = useState<string | null>(null);
 
   const checkPermissions = useCallback(async () => {
     setChecking(true);
@@ -25,15 +41,19 @@ export function PermissionsBanner() {
       // Check microphone via native TCC status query (issue #177).
       // Must NOT use getUserMedia here: opening the mic spins up voice-processing
       // I/O, which ducks all other system audio on every window focus.
-      let hasMicrophone = false;
+      //
+      // Use the 4-state status (not the bool probe) so a transient
+      // "notDetermined"/"unknown" never collapses to a hard "denied" banner
+      // after a dev rebuild or app move (issue #190).
+      let micStatus: MicPermissionStatus = 'unknown';
       try {
-        hasMicrophone = await invoke<boolean>('check_microphone_permission');
+        micStatus = await checkMicrophonePermissionStatus();
       } catch {
-        hasMicrophone = false;
+        micStatus = 'unknown';
       }
 
       setPermissions({
-        microphone: hasMicrophone ? 'granted' : 'denied',
+        microphone: micStatus,
         accessibility: hasAccessibility ? 'granted' : 'denied',
       });
     } catch (error) {
@@ -75,7 +95,27 @@ export function PermissionsBanner() {
     }
   };
 
-  const allGranted = permissions.microphone === 'granted' && permissions.accessibility === 'granted';
+  const handleResetMicrophone = async () => {
+    setMicResetError(null);
+    try {
+      await resetMicrophonePermission();
+    } catch (error) {
+      console.error('Failed to reset microphone permission:', error);
+      setMicResetError(
+        typeof error === 'string'
+          ? error
+          : "Couldn't reset the Microphone entry. Check the logs for details.",
+      );
+    } finally {
+      checkPermissions();
+    }
+  };
+
+  const micDenied = isMicHardDenied(permissions.microphone);
+  // Only a genuine denial blocks recording; treat notDetermined/unknown as "fine
+  // for now" so the banner doesn't surface a false-negative (issue #190).
+  const micOk = !micDenied;
+  const allGranted = micOk && permissions.accessibility === 'granted';
 
   if (dismissed || allGranted || checking) {
     return null;
@@ -92,14 +132,12 @@ export function PermissionsBanner() {
             {/* Microphone Permission */}
             <div className="flex items-center gap-2">
               <span className={`w-2 h-2 rounded-full ${
-                permissions.microphone === 'granted'
-                  ? 'bg-emerald-500'
-                  : 'bg-red-500'
+                micOk ? 'bg-emerald-500' : 'bg-red-500'
               }`} />
               <span className="text-sm text-amber-700 dark:text-amber-300">
-                Microphone: {permissions.microphone === 'granted' ? 'Granted' : 'Required for recording'}
+                Microphone: {micOk ? 'Granted' : 'Required for recording'}
               </span>
-              {permissions.microphone !== 'granted' && (
+              {micDenied && (
                 <button
                   onClick={handleOpenMicrophone}
                   className="text-xs text-amber-600 dark:text-amber-400 underline hover:no-underline"
@@ -108,6 +146,27 @@ export function PermissionsBanner() {
                 </button>
               )}
             </div>
+
+            {/* Microphone troubleshooting: reset a stale TCC entry */}
+            {micDenied && (
+              <div className="ml-4 space-y-1">
+                <button
+                  onClick={handleResetMicrophone}
+                  className="text-xs text-amber-600/80 dark:text-amber-400/80 underline hover:no-underline"
+                >
+                  Still not working? Reset &amp; Open Settings
+                </button>
+                <p className="text-xs text-amber-600/70 dark:text-amber-400/70">
+                  Clears Murmur's stale Microphone entry, then opens System Settings.
+                  macOS will re-prompt the next time you record.
+                </p>
+                {micResetError && (
+                  <p className="text-xs text-red-600 dark:text-red-400">
+                    {micResetError}
+                  </p>
+                )}
+              </div>
+            )}
 
             {/* Accessibility Permission */}
             <div className="flex items-center gap-2">
