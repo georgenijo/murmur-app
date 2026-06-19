@@ -24,6 +24,7 @@ import { UpdateModal } from './components/UpdateModal';
 import type { UpdateStatus } from './lib/updater';
 import { StatsBar } from './components/StatsBar';
 const ResourceMonitor = lazy(() => import('./components/ResourceMonitor').then(m => ({ default: m.ResourceMonitor })));
+const UsageDashboard = lazy(() => import('./components/UsageDashboard').then(m => ({ default: m.UsageDashboard })));
 import { resetStats } from './lib/stats';
 import { ModelDownloader } from './components/ModelDownloader';
 
@@ -185,6 +186,8 @@ function App() {
               )}
 
               <RecordingControls status={status} initialized={initialized} onStart={handleStart} onStop={handleStop} />
+
+              <Suspense fallback={null}><UsageDashboard statsVersion={combinedStatsVersion} /></Suspense>
 
               {import.meta.env.DEV && <Suspense fallback={null}><ResourceMonitor /></Suspense>}
             </>
