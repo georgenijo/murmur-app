@@ -73,6 +73,8 @@ export interface ConfigureOptions {
   appProfiles?: AppProfile[];
   voiceCommandsEnabled?: boolean;
   cleanupEnabled?: boolean;
+  codeVocabEnabled?: boolean;
+  codeVocabFolder?: string;
 }
 
 export async function configure(options: ConfigureOptions): Promise<DictationResponse> {
@@ -100,6 +102,8 @@ export function buildConfigureOptions(s: Settings): ConfigureOptions {
     appProfiles: s.appProfiles,
     voiceCommandsEnabled: s.voiceCommandsEnabled,
     cleanupEnabled: s.cleanupEnabled,
+    codeVocabEnabled: s.codeVocabEnabled,
+    codeVocabFolder: s.codeVocabFolder,
   };
 }
 

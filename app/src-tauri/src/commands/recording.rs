@@ -5,6 +5,75 @@ use crate::{audio, audio_decode, injector, keyboard, vad};
 use std::sync::atomic::Ordering;
 use tauri::Emitter;
 
+/// Max number of code identifiers to feed Whisper as an initial prompt. Whisper
+/// truncates the prompt to its context window anyway; this keeps the bias list
+/// focused on the most frequent (most useful) terms.
+const MAX_CODE_VOCAB_TERMS: usize = 96;
+
+/// Scan `folder` for code identifiers and build a Whisper initial-prompt string.
+/// Empty/blank folder returns an empty string. Delegates to the guarded,
+/// pure-logic `vocab` module (file count / size caps live there).
+fn build_code_vocab_prompt(folder: &str) -> String {
+    let folder = folder.trim();
+    if folder.is_empty() {
+        return String::new();
+    }
+    let prompt = crate::vocab::build_vocab_prompt_from_dir(
+        std::path::Path::new(folder),
+        MAX_CODE_VOCAB_TERMS,
+    );
+    tracing::info!(
+        target: "pipeline",
+        "code vocab: scanned {} -> {} chars",
+        folder,
+        prompt.len()
+    );
+    prompt
+}
+
+/// Return the code-aware vocabulary prompt for the current settings, or an empty
+/// string when the feature is disabled. Uses the cached prompt when present;
+/// otherwise scans the folder once and caches the result so subsequent
+/// utterances don't rescan.
+fn resolve_code_vocab_prompt(app_state: &AppState) -> String {
+    // Fast path under the lock: feature off => nothing to do.
+    let (enabled, folder, cached) = {
+        let dictation = app_state.dictation.lock_or_recover();
+        (
+            dictation.code_vocab_enabled,
+            dictation.code_vocab_folder.clone(),
+            dictation.code_vocab_prompt.clone(),
+        )
+    };
+    if !enabled || folder.trim().is_empty() {
+        return String::new();
+    }
+    if let Some(prompt) = cached {
+        return prompt;
+    }
+    // Not yet scanned: build now and cache (only if settings still match).
+    let prompt = build_code_vocab_prompt(&folder);
+    let mut dictation = app_state.dictation.lock_or_recover();
+    if dictation.code_vocab_enabled && dictation.code_vocab_folder == folder {
+        dictation.code_vocab_prompt = Some(prompt.clone());
+    }
+    prompt
+}
+
+/// Merge the manual custom-vocabulary string and the code-aware vocabulary into a
+/// single Whisper initial prompt. Returns `None` when both are blank so the
+/// backend skips setting a prompt entirely.
+fn combine_prompts(custom: &str, code: &str) -> Option<String> {
+    let custom = custom.trim();
+    let code = code.trim();
+    match (custom.is_empty(), code.is_empty()) {
+        (true, true) => None,
+        (false, true) => Some(custom.to_string()),
+        (true, false) => Some(code.to_string()),
+        (false, false) => Some(format!("{} {}", custom, code)),
+    }
+}
+
 /// RAII guard that resets dictation status to Idle on drop,
 /// ensuring status is restored on any early return or error path.
 ///
@@ -172,12 +241,12 @@ async fn run_transcription_pipeline(
     let rss_before_mb = crate::resource_monitor::get_process_rss_mb();
     let t_transcribe = std::time::Instant::now();
     let text = {
+        // Combine the manual custom vocabulary with the code-aware vocabulary
+        // (when enabled). Both feed Whisper's initial prompt; the manual list
+        // comes first so user-typed terms take precedence within the context window.
         let sanitized = custom_vocabulary.replace('\0', "");
-        let prompt = if sanitized.trim().is_empty() {
-            None
-        } else {
-            Some(sanitized)
-        };
+        let code_vocab = resolve_code_vocab_prompt(app_state);
+        let prompt = combine_prompts(&sanitized, &code_vocab);
         let mut backend = app_state.backend.lock_or_recover();
         backend.load_model(&model_name)?;
         backend.transcribe(&samples_for_transcription, &language, prompt.as_deref(), smart_punctuation)?
@@ -466,6 +535,37 @@ pub async fn configure_dictation(
 
     if let Some(cleanup_enabled) = options.get("cleanupEnabled").and_then(|v| v.as_bool()) {
         dictation.cleanup_enabled = cleanup_enabled;
+    }
+
+    // Code-aware vocabulary: a toggle plus a folder to scan for identifiers.
+    // Changing either invalidates the cached prompt so the next transcription
+    // (or the explicit prebuild below) rescans. Disabling clears the cache so we
+    // don't hold a stale prompt in memory.
+    let mut code_vocab_dirty = false;
+    if let Some(enabled) = options.get("codeVocabEnabled").and_then(|v| v.as_bool()) {
+        if enabled != dictation.code_vocab_enabled {
+            dictation.code_vocab_enabled = enabled;
+            code_vocab_dirty = true;
+        }
+    }
+    if let Some(folder) = options.get("codeVocabFolder").and_then(|v| v.as_str()) {
+        if folder != dictation.code_vocab_folder {
+            dictation.code_vocab_folder = folder.to_string();
+            code_vocab_dirty = true;
+        }
+    }
+    if code_vocab_dirty {
+        if dictation.code_vocab_enabled && !dictation.code_vocab_folder.trim().is_empty() {
+            // Prebuild the prompt now (on the configure call) so the first
+            // utterance isn't slowed by a directory walk. configure is rare and
+            // the scan is guarded (file count / size caps), so doing it under the
+            // lock here is acceptable.
+            let prompt = build_code_vocab_prompt(&dictation.code_vocab_folder);
+            dictation.code_vocab_prompt = Some(prompt);
+        } else {
+            // Disabled or no folder: clear any stale cached prompt.
+            dictation.code_vocab_prompt = None;
+        }
     }
 
     if let Some(idle_timeout) = options.get("idleTimeoutMinutes").and_then(|v| v.as_u64()) {
@@ -875,7 +975,8 @@ pub async fn transcribe_file(
     let t_transcribe = std::time::Instant::now();
     let text = {
         let sanitized = custom_vocabulary.replace('\0', "");
-        let prompt = if sanitized.trim().is_empty() { None } else { Some(sanitized) };
+        let code_vocab = resolve_code_vocab_prompt(&state.app_state);
+        let prompt = combine_prompts(&sanitized, &code_vocab);
         let mut backend = state.app_state.backend.lock_or_recover();
         backend.load_model(&model_name)?;
         backend.transcribe(&samples_for_transcription, &language, prompt.as_deref(), smart_punctuation)?

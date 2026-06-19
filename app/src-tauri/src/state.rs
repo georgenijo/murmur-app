@@ -49,6 +49,16 @@ pub struct DictationState {
     /// Rule-based transcript cleanup (filler removal, spacing/capitalization)
     /// applied before injection. Off by default.
     pub cleanup_enabled: bool,
+    /// Code-aware vocabulary: when enabled, identifiers scanned from
+    /// `code_vocab_folder` are fed to Whisper as an initial prompt to bias
+    /// transcription toward the user's code terms. Whisper backend only.
+    pub code_vocab_enabled: bool,
+    /// Absolute path to the project folder scanned for code identifiers.
+    pub code_vocab_folder: String,
+    /// Cached prompt built from the last scan of `code_vocab_folder`. Rebuilt
+    /// when the folder/enabled flag changes so we don't rescan every utterance.
+    /// `None` means "not yet scanned" (build lazily on first use).
+    pub code_vocab_prompt: Option<String>,
 }
 
 impl Default for DictationState {
@@ -71,6 +81,9 @@ impl Default for DictationState {
             app_profiles: Vec::new(),
             voice_commands_enabled: false,
             cleanup_enabled: false,
+            code_vocab_enabled: false,
+            code_vocab_folder: String::new(),
+            code_vocab_prompt: None,
         }
     }
 }
