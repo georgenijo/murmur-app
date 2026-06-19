@@ -52,6 +52,16 @@ pub fn apply_voice_commands(text: &str, enabled: bool) -> String {
             if matches_at(&lower_chars, i, &phrase_chars) {
                 command.apply(&mut out);
                 i += phrase_chars.len();
+                // Command kinds that splice tightly against the following word
+                // (Replace, OpenBracket) must swallow the single inline space
+                // that separated the command phrase from the next word, e.g.
+                // "hello new line world" -> "hello\nworld" and
+                // "open paren x" -> "(x". Punctuation/CloseBracket attach to the
+                // prior word and must leave that space so the next word doesn't
+                // collide ("one comma two" stays "one, two").
+                if command.splices_tightly() && i < chars.len() && chars[i] == ' ' {
+                    i += 1;
+                }
                 matched = true;
                 break;
             }
@@ -80,6 +90,15 @@ enum Command {
 }
 
 impl Command {
+    /// True when the command attaches directly to the *following* word, so the
+    /// single inline space that separated the command phrase from that word
+    /// should be consumed. `Replace` (newline) and `OpenBracket` both lead into
+    /// the next word with no space; `Punctuation` and `CloseBracket` attach to
+    /// the prior word and keep the space before the next one.
+    fn splices_tightly(&self) -> bool {
+        matches!(self, Command::Replace(_) | Command::OpenBracket(_))
+    }
+
     fn apply(&self, out: &mut String) {
         match self {
             Command::Replace(s) => {
