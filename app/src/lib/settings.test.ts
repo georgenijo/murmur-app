@@ -60,22 +60,22 @@ describe('loadSettings', () => {
     expect(settings.recordingMode).toBe(DEFAULT_SETTINGS.recordingMode);
   });
 
-  it('migrates moonshine model to base.en', () => {
+  it('migrates moonshine model to default', () => {
     localStorage.setItem('dictation-settings', JSON.stringify({
       ...DEFAULT_SETTINGS,
       model: 'moonshine-tiny',
     }));
     const settings = loadSettings();
-    expect(settings.model).toBe('base.en');
+    expect(settings.model).toBe(DEFAULT_SETTINGS.model);
   });
 
-  it('migrates moonshine-base model to base.en', () => {
+  it('migrates moonshine-base model to default', () => {
     localStorage.setItem('dictation-settings', JSON.stringify({
       ...DEFAULT_SETTINGS,
       model: 'moonshine-base',
     }));
     const settings = loadSettings();
-    expect(settings.model).toBe('base.en');
+    expect(settings.model).toBe(DEFAULT_SETTINGS.model);
   });
 
   it('resets unknown model to default', () => {
@@ -84,7 +84,7 @@ describe('loadSettings', () => {
       model: 'nonexistent-model',
     }));
     const settings = loadSettings();
-    expect(settings.model).toBe('base.en');
+    expect(settings.model).toBe(DEFAULT_SETTINGS.model);
   });
 
   it('preserves valid recordingMode values', () => {
