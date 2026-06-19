@@ -79,15 +79,29 @@ async fn run_transcription_pipeline(
     let _guard = IdleGuard::new(app_state, recording_id);
 
     // Read all needed state in one lock
-    let (model_name, language, auto_paste, paste_delay_ms, vad_sensitivity, custom_vocabulary, smart_punctuation, save_transcript, save_audio, output_dir) = {
+    let (model_name, language, auto_paste, paste_delay_ms, vad_sensitivity, custom_vocabulary, smart_punctuation, save_transcript, save_audio, output_dir, app_profiles) = {
         let dictation = app_state.dictation.lock_or_recover();
-        (dictation.model_name.clone(), dictation.language.clone(), dictation.auto_paste, dictation.auto_paste_delay_ms, dictation.vad_sensitivity, dictation.custom_vocabulary.clone(), dictation.smart_punctuation, dictation.save_transcript, dictation.save_audio, dictation.output_dir.clone())
+        (dictation.model_name.clone(), dictation.language.clone(), dictation.auto_paste, dictation.auto_paste_delay_ms, dictation.vad_sensitivity, dictation.custom_vocabulary.clone(), dictation.smart_punctuation, dictation.save_transcript, dictation.save_audio, dictation.output_dir.clone(), dictation.app_profiles.clone())
+    };
+
+    // Per-app profiles: if the frontmost app has a matching profile that sets an
+    // auto-paste override, honor it instead of the global setting. No match (or
+    // no detected app) leaves the global value untouched.
+    let profile_auto_paste = if app_profiles.is_empty() {
+        auto_paste
+    } else {
+        let bundle_id = crate::frontmost::frontmost_bundle_id();
+        let resolved = crate::frontmost::resolve_auto_paste(auto_paste, bundle_id.as_deref(), &app_profiles);
+        if resolved != auto_paste {
+            tracing::info!(target: "pipeline", "app profile override: auto_paste {} -> {} (frontmost={})", auto_paste, resolved, bundle_id.as_deref().unwrap_or("unknown"));
+        }
+        resolved
     };
 
     // When saving to a file, suppress auto-paste into the focused app. The
     // clipboard write inside `inject_text` is unconditional, so text remains
     // copyable regardless of these toggles.
-    let effective_auto_paste = auto_paste && !(save_transcript || save_audio);
+    let effective_auto_paste = profile_auto_paste && !(save_transcript || save_audio);
 
     // Pre-VAD signal level logging for mic diagnosis
     let rms = audio::compute_rms(samples);
@@ -402,6 +416,29 @@ pub async fn configure_dictation(
 
     if let Some(output_dir) = options.get("outputDir").and_then(|v| v.as_str()) {
         dictation.output_dir = output_dir.to_string();
+    }
+
+    // Per-app profiles: array of { bundleId, label, autoPasteOverride }. A
+    // missing/null autoPasteOverride means "no override". Entries without a
+    // bundleId are skipped. Replaces the whole list when the key is present.
+    if let Some(profiles) = options.get("appProfiles").and_then(|v| v.as_array()) {
+        dictation.app_profiles = profiles
+            .iter()
+            .filter_map(|p| {
+                let bundle_id = p.get("bundleId").and_then(|v| v.as_str())?.trim().to_string();
+                if bundle_id.is_empty() {
+                    return None;
+                }
+                let label = p
+                    .get("label")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                // null/absent -> None (use global); otherwise the boolean override.
+                let auto_paste_override = p.get("autoPasteOverride").and_then(|v| v.as_bool());
+                Some(crate::state::AppProfile { bundle_id, label, auto_paste_override })
+            })
+            .collect();
     }
 
     if let Some(idle_timeout) = options.get("idleTimeoutMinutes").and_then(|v| v.as_u64()) {

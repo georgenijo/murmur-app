@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { DEFAULT_SETTINGS, Settings } from './settings';
+import { DEFAULT_SETTINGS, Settings, AppProfile } from './settings';
 
 export interface DictationResponse {
   type: string;
@@ -70,6 +70,7 @@ export interface ConfigureOptions {
   saveTranscript?: boolean;
   saveAudio?: boolean;
   outputDir?: string;
+  appProfiles?: AppProfile[];
 }
 
 export async function configure(options: ConfigureOptions): Promise<DictationResponse> {
@@ -94,6 +95,7 @@ export function buildConfigureOptions(s: Settings): ConfigureOptions {
     saveTranscript: s.saveTranscript,
     saveAudio: s.saveAudio,
     outputDir: s.outputDir,
+    appProfiles: s.appProfiles,
   };
 }
 

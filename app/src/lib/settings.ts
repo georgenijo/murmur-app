@@ -2,6 +2,17 @@ export type RecordingMode = 'hold_down' | 'double_tap' | 'both';
 
 export type DoubleTapKey = 'shift_l' | 'alt_l' | 'ctrl_r';
 
+/**
+ * Per-app dictation profile. When the frontmost macOS app's bundle id matches
+ * `bundleId`, `autoPasteOverride` (when non-null) replaces the global auto-paste
+ * setting. `null` means "no override — use the global setting".
+ */
+export interface AppProfile {
+  bundleId: string;
+  label: string;
+  autoPasteOverride: boolean | null;
+}
+
 export interface Settings {
   model: ModelOption;
   doubleTapKey: DoubleTapKey;
@@ -19,6 +30,7 @@ export interface Settings {
   saveTranscript: boolean;
   saveAudio: boolean;
   outputDir: string;
+  appProfiles: AppProfile[];
 }
 
 export type ModelOption =
@@ -91,6 +103,7 @@ export const DEFAULT_SETTINGS: Settings = {
   saveTranscript: false,
   saveAudio: false,
   outputDir: '',
+  appProfiles: [],
 };
 
 export const STORAGE_KEY = 'dictation-settings';
@@ -126,6 +139,23 @@ export function loadSettings(): Settings {
       // non-string back to the default (empty = app-chosen Documents/Murmur).
       if (typeof parsed.outputDir !== 'string') {
         parsed.outputDir = DEFAULT_SETTINGS.outputDir;
+      }
+
+      // appProfiles drives per-app auto-paste overrides. Drop malformed entries
+      // and coerce a non-array back to the empty default so the Rust side and UI
+      // never see a bad shape.
+      if (!Array.isArray(parsed.appProfiles)) {
+        parsed.appProfiles = DEFAULT_SETTINGS.appProfiles;
+      } else {
+        parsed.appProfiles = parsed.appProfiles
+          .filter((p): p is AppProfile =>
+            !!p && typeof (p as AppProfile).bundleId === 'string' && (p as AppProfile).bundleId.trim() !== '')
+          .map((p) => ({
+            bundleId: p.bundleId.trim(),
+            label: typeof p.label === 'string' ? p.label : '',
+            autoPasteOverride:
+              typeof p.autoPasteOverride === 'boolean' ? p.autoPasteOverride : null,
+          }));
       }
 
       return { ...DEFAULT_SETTINGS, ...parsed } as Settings;

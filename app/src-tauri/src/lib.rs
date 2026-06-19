@@ -4,6 +4,7 @@ mod audio;
 mod audio_decode;
 mod commands;
 mod file_output;
+mod frontmost;
 mod injector;
 mod keyboard;
 mod resource_monitor;

@@ -6,7 +6,7 @@ import { getVersion } from '@tauri-apps/api/app';
 import {
   Settings, RecordingMode, DEFAULT_SETTINGS,
   MODEL_OPTIONS, DOUBLE_TAP_KEY_OPTIONS, RECORDING_MODE_OPTIONS,
-  IDLE_TIMEOUT_OPTIONS, LANGUAGE_OPTIONS,
+  IDLE_TIMEOUT_OPTIONS, LANGUAGE_OPTIONS, AppProfile,
 } from '../../lib/settings';
 import { Select } from '../ui/Select';
 import { SettingsSection } from './SettingsSection';
@@ -121,6 +121,142 @@ function VadSensitivitySlider({ value, onCommit }: { value: number; onCommit: (v
       <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
         Higher = keeps more audio. Lower = trims silence more aggressively.
       </p>
+    </div>
+  );
+}
+
+// Per-app profiles: simple add/remove list mapping a macOS bundle id to an
+// auto-paste override. The override cycles Default -> On -> Off so the whole
+// control fits in one tap-through button.
+function AppProfilesEditor({ profiles, onChange }: {
+  profiles: AppProfile[];
+  onChange: (next: AppProfile[]) => void;
+}) {
+  const [bundleId, setBundleId] = useState('');
+  const [label, setLabel] = useState('');
+
+  const handleAdd = () => {
+    const trimmedId = bundleId.trim();
+    if (!trimmedId) return;
+    if (profiles.some((p) => p.bundleId === trimmedId)) {
+      // Already have a profile for this app — clear the inputs and bail.
+      setBundleId('');
+      setLabel('');
+      return;
+    }
+    onChange([
+      ...profiles,
+      { bundleId: trimmedId, label: label.trim(), autoPasteOverride: false },
+    ]);
+    setBundleId('');
+    setLabel('');
+  };
+
+  const handleRemove = (id: string) => {
+    onChange(profiles.filter((p) => p.bundleId !== id));
+  };
+
+  // Cycle the override: Default (null) -> On (true) -> Off (false) -> Default.
+  const cycleOverride = (id: string) => {
+    onChange(profiles.map((p) => {
+      if (p.bundleId !== id) return p;
+      const next = p.autoPasteOverride === null ? true : p.autoPasteOverride === true ? false : null;
+      return { ...p, autoPasteOverride: next };
+    }));
+  };
+
+  const overrideLabel = (value: boolean | null) =>
+    value === null ? 'Default' : value ? 'Paste On' : 'Paste Off';
+
+  return (
+    <div>
+      <p className="mb-2 text-xs text-stone-500 dark:text-stone-400">
+        Override auto-paste for specific apps by bundle id (e.g.
+        <span className="font-mono"> com.apple.Terminal</span>). The frontmost app
+        when you finish dictating decides the behavior.
+      </p>
+
+      {profiles.length > 0 && (
+        <ul className="mb-3 space-y-1.5">
+          {profiles.map((p) => (
+            <li
+              key={p.bundleId}
+              className="flex items-center gap-2 px-2.5 py-2 rounded-lg border border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700/40"
+            >
+              <div className="min-w-0 flex-1">
+                {p.label && (
+                  <div className="text-xs font-medium text-stone-700 dark:text-stone-300 truncate">
+                    {p.label}
+                  </div>
+                )}
+                <div className="text-xs font-mono text-stone-500 dark:text-stone-400 truncate">
+                  {p.bundleId}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => cycleOverride(p.bundleId)}
+                aria-label={`Auto-paste for ${p.label || p.bundleId}: ${overrideLabel(p.autoPasteOverride)}`}
+                className={`shrink-0 px-2 py-1 rounded-md text-xs font-medium border transition-colors ${
+                  p.autoPasteOverride === null
+                    ? 'border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-600 dark:text-stone-300'
+                    : p.autoPasteOverride
+                      ? 'border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400'
+                      : 'border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400'
+                }`}
+              >
+                {overrideLabel(p.autoPasteOverride)}
+              </button>
+              <button
+                type="button"
+                onClick={() => handleRemove(p.bundleId)}
+                aria-label={`Remove profile for ${p.label || p.bundleId}`}
+                className="shrink-0 p-1 rounded-md text-stone-400 hover:text-red-600 hover:bg-stone-100 dark:hover:bg-stone-600 transition-colors"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <div className="space-y-2">
+        <input
+          type="text"
+          value={label}
+          onChange={(e) => setLabel(e.target.value)}
+          placeholder="Label (optional, e.g. Terminal)"
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="off"
+          spellCheck={false}
+          className="w-full px-3 py-2 text-xs rounded-lg border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 placeholder-stone-400 dark:placeholder-stone-500 focus:outline-none focus:ring-2 focus:ring-stone-500"
+        />
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={bundleId}
+            onChange={(e) => setBundleId(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') handleAdd(); }}
+            placeholder="com.apple.Terminal"
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck={false}
+            className="flex-1 min-w-0 px-3 py-2 text-xs font-mono rounded-lg border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 placeholder-stone-400 dark:placeholder-stone-500 focus:outline-none focus:ring-2 focus:ring-stone-500"
+          />
+          <button
+            type="button"
+            onClick={handleAdd}
+            disabled={!bundleId.trim()}
+            className="shrink-0 px-3 py-2 rounded-lg text-xs font-medium border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            Add
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -719,6 +855,13 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
             </button>
           </div>
         </div>
+        </SettingsSection>
+
+        <SettingsSection title="Per-App Profiles" subtitle="Auto-paste per frontmost app" defaultExpanded={false}>
+          <AppProfilesEditor
+            profiles={settings.appProfiles}
+            onChange={(next) => onUpdateSettings({ appProfiles: next })}
+          />
         </SettingsSection>
 
         <SettingsSection title="About" subtitle="Stats, logs, updates" defaultExpanded={false}>
