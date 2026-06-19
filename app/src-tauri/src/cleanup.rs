@@ -72,11 +72,27 @@ fn split_trailing_punct(token: &str) -> (&str, &str) {
 }
 
 /// Compare two tokens for the duplicate-collapse rule: case-insensitive on the
-/// word, ignoring trailing punctuation. "The the." collapses; "had had" too.
+/// word, ignoring trailing punctuation. "The the." collapses to a single key.
 fn word_key(token: &str) -> String {
     let (word, _) = split_trailing_punct(token);
     word.to_lowercase()
 }
+
+/// Closed-class function words whose immediate repetition is overwhelmingly a
+/// recognition/stutter artifact rather than real speech. Only immediate
+/// duplicates of these words collapse.
+///
+/// This preserves the "never drop a real word" guarantee for legitimate
+/// consecutive repeats that English genuinely produces — e.g. "had had no
+/// effect", "the things that that man said", "all that I had had" — because
+/// those content/relative words are *not* on this list. The list is kept
+/// deliberately small and excludes any word that can validly double:
+///   - "that" is excluded ("that that" is valid),
+///   - "had"/"is"/"do"/"has" are excluded (valid as repeated auxiliaries).
+const COLLAPSIBLE_STUTTER_WORDS: &[&str] = &[
+    "i", "the", "a", "an", "and", "to", "of", "it", "in", "on",
+    "we", "you", "so", "but", "for", "with", "my", "he", "she", "they",
+];
 
 /// Remove filler tokens that stand alone as whole words. A token is filler only
 /// when, stripped of trailing punctuation, it case-insensitively matches a known
@@ -93,16 +109,23 @@ fn remove_filler(text: &str) -> String {
     kept.join(" ")
 }
 
-/// Collapse immediate duplicate words ("the the" -> "the", "is is" -> "is").
-/// Comparison is case-insensitive and punctuation-insensitive; the *first*
-/// occurrence is kept so any trailing punctuation on it survives.
+/// Collapse immediate duplicate *stutter* words ("the the" -> "the",
+/// "I I" -> "I"). Comparison is case-insensitive and punctuation-insensitive;
+/// the *first* occurrence is kept so any trailing punctuation on it survives.
+///
+/// Collapsing is intentionally conservative: only a repeat whose word is in
+/// [`COLLAPSIBLE_STUTTER_WORDS`] is dropped. A legitimate doubled content word
+/// such as "had had" or "that that" is left untouched, honoring the module's
+/// "never drop a real word" guarantee.
 fn collapse_duplicates(text: &str) -> String {
     let mut out: Vec<&str> = Vec::new();
     let mut prev_key: Option<String> = None;
     for token in text.split_whitespace() {
         let key = word_key(token);
-        // Don't collapse empty keys (a lone punctuation token).
-        if !key.is_empty() && prev_key.as_deref() == Some(key.as_str()) {
+        let is_repeat = !key.is_empty() && prev_key.as_deref() == Some(key.as_str());
+        // Only collapse an immediate repeat when the word is a known stutter
+        // artifact; real repeated words (e.g. "had had") are preserved.
+        if is_repeat && COLLAPSIBLE_STUTTER_WORDS.contains(&key.as_str()) {
             continue;
         }
         out.push(token);
