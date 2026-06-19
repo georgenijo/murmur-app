@@ -16,6 +16,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **Microphone permission banner no longer false-negatives** after a dev rebuild or app move (stale TCC, #190). The banner now reads the live 4-state `AVCaptureDevice` authorization status and treats `notDetermined`/`unknown` as transient (not a hard "denied"), so a stale TCC entry can't mislabel a working mic. Added a microphone **reset** troubleshooting button (`tccutil reset Microphone <bundle-id>`) mirroring the Accessibility reset.
 - Strip recording-status-changed emissions from `ensure_vad_model` to reduce event noise
 
+## [0.11.0] - 2026-06-19
+
+### Added
+- **Insights dashboard** — usage analytics view surfacing words, WPM, recordings, and token metrics (#196)
+- **Per-app profiles** — frontmost-app detection drives per-application dictation settings and behavior (#199)
+- **Voice commands** — spoken command recognition during dictation (#197)
+- **AI cleanup** — post-transcription text cleanup pass (#198)
+- **Multi-language support** — configurable default language and additional language selection (#200)
+- **Multi-file drag-and-drop** — queue and transcribe multiple audio files via drag-and-drop (#201)
+- **Code-aware vocabulary** — vocabulary biasing for code and technical terms (#202)
+
+### Fixed
+- **Microphone permission stale-TCC fix** — banner no longer false-negatives from a stale TCC entry (#204)
+- **Auto-paste `.textClipping` fix** — corrects clipboard/auto-paste handling to prevent `.textClipping` artifacts (#203)
+
 ## [0.8.0] - 2026-03-02
 
 ### Added
