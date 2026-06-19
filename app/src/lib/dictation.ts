@@ -72,6 +72,7 @@ export interface ConfigureOptions {
   outputDir?: string;
   appProfiles?: AppProfile[];
   voiceCommandsEnabled?: boolean;
+  cleanupEnabled?: boolean;
 }
 
 export async function configure(options: ConfigureOptions): Promise<DictationResponse> {
@@ -98,6 +99,7 @@ export function buildConfigureOptions(s: Settings): ConfigureOptions {
     outputDir: s.outputDir,
     appProfiles: s.appProfiles,
     voiceCommandsEnabled: s.voiceCommandsEnabled,
+    cleanupEnabled: s.cleanupEnabled,
   };
 }
 

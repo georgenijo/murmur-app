@@ -79,9 +79,9 @@ async fn run_transcription_pipeline(
     let _guard = IdleGuard::new(app_state, recording_id);
 
     // Read all needed state in one lock
-    let (model_name, language, auto_paste, paste_delay_ms, vad_sensitivity, custom_vocabulary, smart_punctuation, save_transcript, save_audio, output_dir, app_profiles, voice_commands_enabled) = {
+    let (model_name, language, auto_paste, paste_delay_ms, vad_sensitivity, custom_vocabulary, smart_punctuation, save_transcript, save_audio, output_dir, app_profiles, voice_commands_enabled, cleanup_enabled) = {
         let dictation = app_state.dictation.lock_or_recover();
-        (dictation.model_name.clone(), dictation.language.clone(), dictation.auto_paste, dictation.auto_paste_delay_ms, dictation.vad_sensitivity, dictation.custom_vocabulary.clone(), dictation.smart_punctuation, dictation.save_transcript, dictation.save_audio, dictation.output_dir.clone(), dictation.app_profiles.clone(), dictation.voice_commands_enabled)
+        (dictation.model_name.clone(), dictation.language.clone(), dictation.auto_paste, dictation.auto_paste_delay_ms, dictation.vad_sensitivity, dictation.custom_vocabulary.clone(), dictation.smart_punctuation, dictation.save_transcript, dictation.save_audio, dictation.output_dir.clone(), dictation.app_profiles.clone(), dictation.voice_commands_enabled, dictation.cleanup_enabled)
     };
 
     // Per-app profiles: if the frontmost app has a matching profile that sets an
@@ -185,6 +185,21 @@ async fn run_transcription_pipeline(
     let inference_ms = t_transcribe.elapsed().as_millis() as u64;
     let rss_after_mb = crate::resource_monitor::get_process_rss_mb();
     tracing::info!(target: "pipeline", "transcription ({} samples): {:?}", samples_for_transcription.len(), t_transcribe.elapsed());
+
+    // Phase: rule-based cleanup (filler removal + punctuation/spacing tidy).
+    // Runs on the transcript before injection and file output so what the user
+    // pastes matches what's saved. Conservative and independent of any other
+    // post-processing (e.g. voice commands), operating only on its own setting.
+    // Runs BEFORE voice commands so filler/punctuation tidy never mangles the
+    // structural tokens (e.g. inserted "\n" from "new line") that voice commands
+    // emit downstream.
+    let text = if cleanup_enabled && !text.trim().is_empty() {
+        let cleaned = crate::cleanup::clean_transcript(&text, crate::cleanup::CleanupOptions::default());
+        tracing::info!(target: "pipeline", "cleanup applied ({} -> {} chars)", text.len(), cleaned.len());
+        cleaned
+    } else {
+        text
+    };
 
     // Phase: Voice commands -- rewrite spoken command tokens (e.g. "new line",
     // "scratch that") before the text reaches file output / clipboard / paste.
@@ -447,6 +462,10 @@ pub async fn configure_dictation(
                 Some(crate::state::AppProfile { bundle_id, label, auto_paste_override })
             })
             .collect();
+    }
+
+    if let Some(cleanup_enabled) = options.get("cleanupEnabled").and_then(|v| v.as_bool()) {
+        dictation.cleanup_enabled = cleanup_enabled;
     }
 
     if let Some(idle_timeout) = options.get("idleTimeoutMinutes").and_then(|v| v.as_u64()) {

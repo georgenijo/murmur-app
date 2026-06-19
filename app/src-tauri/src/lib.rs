@@ -2,6 +2,7 @@
 mod alloc;
 mod audio;
 mod audio_decode;
+mod cleanup;
 mod commands;
 mod file_output;
 mod frontmost;
