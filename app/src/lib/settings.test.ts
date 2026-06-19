@@ -126,4 +126,42 @@ describe('loadSettings', () => {
     const settings = loadSettings();
     expect(settings.cleanupEnabled).toBe(true);
   });
+
+  it('defaults language to auto when absent from stored settings', () => {
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      model: 'base.en',
+      doubleTapKey: 'shift_l',
+      recordingMode: 'hold_down',
+    }));
+    const settings = loadSettings();
+    expect(settings.language).toBe(DEFAULT_SETTINGS.language);
+    expect(settings.language).toBe('auto');
+  });
+
+  it('coerces an unknown language code to default', () => {
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      language: 'klingon',
+    }));
+    const settings = loadSettings();
+    expect(settings.language).toBe(DEFAULT_SETTINGS.language);
+  });
+
+  it('coerces a non-string language to default', () => {
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      language: 42,
+    }));
+    const settings = loadSettings();
+    expect(settings.language).toBe(DEFAULT_SETTINGS.language);
+  });
+
+  it('preserves a valid non-default language code', () => {
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      language: 'nl',
+    }));
+    const settings = loadSettings();
+    expect(settings.language).toBe('nl');
+  });
 });

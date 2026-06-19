@@ -147,8 +147,7 @@ impl TranscriptionBackend for WhisperBackend {
         tracing::info!(target: "pipeline", "whisper: reusing cached state for transcription");
 
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-        let lang_opt: Option<&str> = if language == "auto" { None } else { Some(language) };
-        params.set_language(lang_opt);
+        params.set_language(whisper_language_param(language));
         params.set_print_special(false);
         params.set_print_progress(false);
         params.set_print_realtime(false);
@@ -218,6 +217,18 @@ impl TranscriptionBackend for WhisperBackend {
     }
 }
 
+/// Map a frontend language setting to whisper's `set_language` argument.
+/// `"auto"` (and an empty string, as a defensive fallback) => `None`, which
+/// makes whisper auto-detect the spoken language. Any other value is passed
+/// through as an ISO code for whisper to honor. Whisper-only: other backends
+/// ignore the language entirely.
+fn whisper_language_param(language: &str) -> Option<&str> {
+    match language {
+        "auto" | "" => None,
+        other => Some(other),
+    }
+}
+
 fn strip_punctuation(input: &str) -> String {
     let chars: Vec<char> = input.chars().collect();
     let mut result = String::with_capacity(input.len());
@@ -255,7 +266,26 @@ fn strip_punctuation(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::strip_punctuation;
+    use super::{strip_punctuation, whisper_language_param};
+
+    #[test]
+    fn language_auto_maps_to_none() {
+        assert_eq!(whisper_language_param("auto"), None);
+    }
+
+    #[test]
+    fn language_empty_maps_to_none() {
+        // Defensive: an empty/unset value should fall back to auto-detect, not
+        // be passed to whisper as a bogus empty language code.
+        assert_eq!(whisper_language_param(""), None);
+    }
+
+    #[test]
+    fn language_iso_code_passes_through() {
+        assert_eq!(whisper_language_param("en"), Some("en"));
+        assert_eq!(whisper_language_param("es"), Some("es"));
+        assert_eq!(whisper_language_param("ja"), Some("ja"));
+    }
 
     #[test]
     fn strip_basic_sentence_punctuation() {

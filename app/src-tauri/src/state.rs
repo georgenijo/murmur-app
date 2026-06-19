@@ -56,7 +56,10 @@ impl Default for DictationState {
         Self {
             status: DictationStatus::Idle,
             model_name: "base.en".to_string(),
-            language: "en".to_string(),
+            // "auto" => whisper auto-detect (None lang param). Non-Whisper
+            // backends ignore this. The frontend persists/overrides it via
+            // configure_dictation; this is only the pre-configure fallback.
+            language: "auto".to_string(),
             auto_paste: false,
             auto_paste_delay_ms: 50,
             vad_sensitivity: 50,

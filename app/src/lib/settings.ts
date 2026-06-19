@@ -82,16 +82,24 @@ export const LANGUAGE_OPTIONS: { value: string; label: string }[] = [
   { value: 'de', label: 'German' },
   { value: 'it', label: 'Italian' },
   { value: 'pt', label: 'Portuguese' },
+  { value: 'nl', label: 'Dutch' },
   { value: 'ja', label: 'Japanese' },
-  { value: 'zh', label: 'Chinese' },
   { value: 'ko', label: 'Korean' },
+  { value: 'zh', label: 'Chinese' },
+  { value: 'ru', label: 'Russian' },
+  { value: 'pl', label: 'Polish' },
+  { value: 'tr', label: 'Turkish' },
+  { value: 'hi', label: 'Hindi' },
+  { value: 'ar', label: 'Arabic' },
 ];
 
 export const DEFAULT_SETTINGS: Settings = {
   // Parakeet fp16 is the default transcription model (faster; English-only).
   model: 'parakeet-tdt-0.6b-v2-fp16',
   doubleTapKey: 'shift_l',
-  language: 'en',
+  // 'auto' lets Whisper auto-detect the spoken language ("just works"); the
+  // default Parakeet model is English-only and ignores this value.
+  language: 'auto',
   autoPaste: false,
   autoPasteDelayMs: 50,
   recordingMode: 'hold_down',
