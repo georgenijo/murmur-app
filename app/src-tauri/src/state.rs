@@ -46,6 +46,9 @@ pub struct DictationState {
     /// Per-app profiles that override auto-paste based on the frontmost app.
     pub app_profiles: Vec<AppProfile>,
     pub voice_commands_enabled: bool,
+    /// Rule-based transcript cleanup (filler removal, spacing/capitalization)
+    /// applied before injection. Off by default.
+    pub cleanup_enabled: bool,
 }
 
 impl Default for DictationState {
@@ -64,6 +67,7 @@ impl Default for DictationState {
             output_dir: String::new(),
             app_profiles: Vec::new(),
             voice_commands_enabled: false,
+            cleanup_enabled: false,
         }
     }
 }

@@ -32,6 +32,7 @@ export interface Settings {
   outputDir: string;
   appProfiles: AppProfile[];
   voiceCommandsEnabled: boolean;
+  cleanupEnabled: boolean;
 }
 
 export type ModelOption =
@@ -106,6 +107,7 @@ export const DEFAULT_SETTINGS: Settings = {
   outputDir: '',
   appProfiles: [],
   voiceCommandsEnabled: false,
+  cleanupEnabled: false,
 };
 
 export const STORAGE_KEY = 'dictation-settings';
@@ -164,6 +166,12 @@ export function loadSettings(): Settings {
       // missing field on pre-feature stored settings) back to the default.
       if (typeof parsed.voiceCommandsEnabled !== 'boolean') {
         parsed.voiceCommandsEnabled = DEFAULT_SETTINGS.voiceCommandsEnabled;
+      }
+
+      // cleanupEnabled is a boolean toggle — coerce anything non-boolean
+      // (including absent on older settings blobs) back to the default.
+      if (typeof parsed.cleanupEnabled !== 'boolean') {
+        parsed.cleanupEnabled = DEFAULT_SETTINGS.cleanupEnabled;
       }
 
       return { ...DEFAULT_SETTINGS, ...parsed } as Settings;

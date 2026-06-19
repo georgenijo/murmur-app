@@ -97,4 +97,33 @@ describe('loadSettings', () => {
       expect(settings.recordingMode).toBe(mode);
     }
   });
+
+  it('defaults cleanupEnabled when absent from stored settings', () => {
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      model: 'base.en',
+      doubleTapKey: 'shift_l',
+      language: 'en',
+      recordingMode: 'hold_down',
+    }));
+    const settings = loadSettings();
+    expect(settings.cleanupEnabled).toBe(DEFAULT_SETTINGS.cleanupEnabled);
+  });
+
+  it('coerces non-boolean cleanupEnabled to default', () => {
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      cleanupEnabled: 'yes',
+    }));
+    const settings = loadSettings();
+    expect(settings.cleanupEnabled).toBe(DEFAULT_SETTINGS.cleanupEnabled);
+  });
+
+  it('preserves an explicit cleanupEnabled value', () => {
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      cleanupEnabled: true,
+    }));
+    const settings = loadSettings();
+    expect(settings.cleanupEnabled).toBe(true);
+  });
 });
