@@ -80,8 +80,6 @@ export interface ConfigureOptions {
   codeVocabFolder?: string;
   correctionEnabled?: boolean;
   correctionFuzzy?: boolean;
-  correctionModelEnabled?: boolean;
-  correctionModelFast?: boolean;
 }
 
 export async function configure(options: ConfigureOptions): Promise<DictationResponse> {
@@ -116,8 +114,6 @@ export function buildConfigureOptions(s: Settings): ConfigureOptions {
     codeVocabFolder: s.codeVocabFolder,
     correctionEnabled: s.correctionEnabled,
     correctionFuzzy: s.correctionFuzzy,
-    correctionModelEnabled: s.correctionModelEnabled,
-    correctionModelFast: s.correctionModelFast,
   };
 }
 

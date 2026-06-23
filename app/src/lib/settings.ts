@@ -66,10 +66,6 @@ export interface Settings {
   correctionEnabled: boolean;
   /** Tier 2 phonetic "sounds-like" matching. Gated under correctionEnabled. */
   correctionFuzzy: boolean;
-  /** Tier 3 local-LLM cleanup pass for context mishears. Opt-in, default off. */
-  correctionModelEnabled: boolean;
-  /** Tier 3 "fast mode": the smaller, faster local model variant. */
-  correctionModelFast: boolean;
 }
 
 export type ModelOption =
@@ -162,8 +158,6 @@ export const DEFAULT_SETTINGS: Settings = {
   // default Parakeet engine. A no-op when there's no vocabulary configured.
   correctionEnabled: true,
   correctionFuzzy: true,
-  correctionModelEnabled: false,
-  correctionModelFast: false,
 };
 
 export const STORAGE_KEY = 'dictation-settings';
@@ -274,12 +268,6 @@ export function loadSettings(): Settings {
       }
       if (typeof parsed.correctionFuzzy !== 'boolean') {
         parsed.correctionFuzzy = DEFAULT_SETTINGS.correctionFuzzy;
-      }
-      if (typeof parsed.correctionModelEnabled !== 'boolean') {
-        parsed.correctionModelEnabled = DEFAULT_SETTINGS.correctionModelEnabled;
-      }
-      if (typeof parsed.correctionModelFast !== 'boolean') {
-        parsed.correctionModelFast = DEFAULT_SETTINGS.correctionModelFast;
       }
 
       return { ...DEFAULT_SETTINGS, ...parsed } as Settings;

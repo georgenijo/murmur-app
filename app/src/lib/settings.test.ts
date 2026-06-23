@@ -217,8 +217,6 @@ describe('loadSettings', () => {
     const settings = loadSettings();
     expect(settings.correctionEnabled).toBe(true);
     expect(settings.correctionFuzzy).toBe(true);
-    expect(settings.correctionModelEnabled).toBe(false);
-    expect(settings.correctionModelFast).toBe(false);
   });
 
   it('coerces non-boolean correction toggles to defaults', () => {
@@ -226,14 +224,10 @@ describe('loadSettings', () => {
       ...DEFAULT_SETTINGS,
       correctionEnabled: 'yes',
       correctionFuzzy: 1,
-      correctionModelEnabled: 'true',
-      correctionModelFast: null,
     }));
     const settings = loadSettings();
     expect(settings.correctionEnabled).toBe(DEFAULT_SETTINGS.correctionEnabled);
     expect(settings.correctionFuzzy).toBe(DEFAULT_SETTINGS.correctionFuzzy);
-    expect(settings.correctionModelEnabled).toBe(DEFAULT_SETTINGS.correctionModelEnabled);
-    expect(settings.correctionModelFast).toBe(DEFAULT_SETTINGS.correctionModelFast);
   });
 
   it('preserves explicit correction settings', () => {
@@ -241,13 +235,9 @@ describe('loadSettings', () => {
       ...DEFAULT_SETTINGS,
       correctionEnabled: false,
       correctionFuzzy: false,
-      correctionModelEnabled: true,
-      correctionModelFast: true,
     }));
     const settings = loadSettings();
     expect(settings.correctionEnabled).toBe(false);
     expect(settings.correctionFuzzy).toBe(false);
-    expect(settings.correctionModelEnabled).toBe(true);
-    expect(settings.correctionModelFast).toBe(true);
   });
 });

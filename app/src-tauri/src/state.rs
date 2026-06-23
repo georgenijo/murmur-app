@@ -88,10 +88,6 @@ pub struct DictationState {
     /// Tier 2 phonetic / edit-distance "sounds-like" matching. Gated under
     /// `correction_enabled`.
     pub correction_fuzzy: bool,
-    /// Tier 3 local-LLM cleanup pass. Opt-in, default off.
-    pub correction_model_enabled: bool,
-    /// Tier 3 "fast mode": use the smaller, faster local model variant.
-    pub correction_model_fast: bool,
 }
 
 impl Default for DictationState {
@@ -124,8 +120,6 @@ impl Default for DictationState {
             // actually work on the default Parakeet engine. No-op without vocab.
             correction_enabled: true,
             correction_fuzzy: true,
-            correction_model_enabled: false,
-            correction_model_fast: false,
         }
     }
 }

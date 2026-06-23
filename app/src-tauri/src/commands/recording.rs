@@ -702,12 +702,6 @@ pub async fn configure_dictation(
     if let Some(v) = options.get("correctionFuzzy").and_then(|v| v.as_bool()) {
         dictation.correction_fuzzy = v;
     }
-    if let Some(v) = options.get("correctionModelEnabled").and_then(|v| v.as_bool()) {
-        dictation.correction_model_enabled = v;
-    }
-    if let Some(v) = options.get("correctionModelFast").and_then(|v| v.as_bool()) {
-        dictation.correction_model_fast = v;
-    }
 
     // Rebuild the correction matcher from the (now-updated) unified vocab +
     // correction settings. Built here on settings-change, never per-utterance.
