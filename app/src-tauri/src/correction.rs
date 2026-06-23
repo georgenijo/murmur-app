@@ -42,6 +42,13 @@ pub const BUILTIN_ABBREVS: &[(&str, &str)] = &[
 /// phonetic keys match. Kept tight to avoid "correcting" real English.
 const FUZZY_MAX_DIST: usize = 2;
 
+/// Minimum length for Tier-2 fuzzy matching (applies to both the candidate phrase
+/// and the vocab term's spoken form). Short words collide far too easily — e.g.
+/// "get" and "git" share a phonetic key and are 1 edit apart, so without this floor
+/// a "git" vocab entry would rewrite every spoken "get". Short terms still match
+/// exactly via Tier 1; Tier 2 only kicks in for longer, lower-collision words.
+const MIN_FUZZY_LEN: usize = 5;
+
 /// A single vocab entry: the written form the user wants, and the lowercase
 /// spoken form we expect the ASR to emit for it.
 #[derive(Debug, Clone)]
@@ -255,11 +262,19 @@ impl CorrectionMatcher {
         if self.written_lower.contains(&lower) {
             return None;
         }
+        // Short phrases collide too easily — skip them (Tier 1 still does exact).
+        if lower.len() < MIN_FUZZY_LEN {
+            return None;
+        }
         let phrase_key = phonetic_key_phrase(&lower);
         let mut best: Option<(usize, &Term)> = None; // (distance, term)
         for term in &self.terms {
             // Exact spoken match is Tier 1's job; skip here.
             if term.spoken == lower {
+                continue;
+            }
+            // Don't fuzzy-match against short vocab terms (same collision risk).
+            if term.spoken.len() < MIN_FUZZY_LEN {
                 continue;
             }
             // Cutoff scales with the term length so short words need a near-exact
@@ -501,6 +516,14 @@ mod tests {
         let m = matcher(&["rePivot"]);
         // ASR misheard "re pivot" as "red pivot"; phonetic + edit-distance recovers it.
         assert_eq!(m.apply("then red pivot the layout"), "then rePivot the layout");
+    }
+
+    #[test]
+    fn tier2_short_words_not_over_corrected() {
+        // "git" in vocab must NOT rewrite the common word "get" (both 3 chars,
+        // 1 edit apart, same phonetic key) — the length floor protects this.
+        let m = matcher(&["git"]);
+        assert_eq!(m.apply("please get the file"), "please get the file");
     }
 
     #[test]
