@@ -205,4 +205,49 @@ describe('loadSettings', () => {
     expect(settings.codeVocabEnabled).toBe(true);
     expect(settings.codeVocabFolder).toBe('/Users/me/project');
   });
+
+  it('opts pre-feature settings into correction (correctionEnabled defaults on)', () => {
+    // An older blob predating the correction feature should migrate to ON.
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      model: 'base.en',
+      doubleTapKey: 'shift_l',
+      language: 'en',
+      recordingMode: 'hold_down',
+    }));
+    const settings = loadSettings();
+    expect(settings.correctionEnabled).toBe(true);
+    expect(settings.correctionFuzzy).toBe(true);
+    expect(settings.correctionModelEnabled).toBe(false);
+    expect(settings.correctionModelFast).toBe(false);
+  });
+
+  it('coerces non-boolean correction toggles to defaults', () => {
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      correctionEnabled: 'yes',
+      correctionFuzzy: 1,
+      correctionModelEnabled: 'true',
+      correctionModelFast: null,
+    }));
+    const settings = loadSettings();
+    expect(settings.correctionEnabled).toBe(DEFAULT_SETTINGS.correctionEnabled);
+    expect(settings.correctionFuzzy).toBe(DEFAULT_SETTINGS.correctionFuzzy);
+    expect(settings.correctionModelEnabled).toBe(DEFAULT_SETTINGS.correctionModelEnabled);
+    expect(settings.correctionModelFast).toBe(DEFAULT_SETTINGS.correctionModelFast);
+  });
+
+  it('preserves explicit correction settings', () => {
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      correctionEnabled: false,
+      correctionFuzzy: false,
+      correctionModelEnabled: true,
+      correctionModelFast: true,
+    }));
+    const settings = loadSettings();
+    expect(settings.correctionEnabled).toBe(false);
+    expect(settings.correctionFuzzy).toBe(false);
+    expect(settings.correctionModelEnabled).toBe(true);
+    expect(settings.correctionModelFast).toBe(true);
+  });
 });

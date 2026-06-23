@@ -1142,7 +1142,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
                 Code-Aware Vocabulary
               </label>
               <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
-                Bias transcription toward common dev terms (useEffect, kubectl, stderr) — works out of the box, no folder needed. Optionally add a project folder for your own identifiers. Whisper models only.
+                Bias transcription toward common dev terms (useEffect, kubectl, stderr) — works out of the box, no folder needed. Optionally add a project folder for your own identifiers. With Smart Correction on (below), these terms are also fixed in the transcript on every model, including Parakeet.
               </p>
             </div>
             <button
@@ -1190,6 +1190,65 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
               <p className="mt-2 text-xs text-stone-500 dark:text-stone-400">
                 Optional. When set, the folder is scanned once for your identifiers (dependency and build directories are skipped) and layered on top of the built-in terms. Re-select to rescan after big code changes.
               </p>
+            </div>
+          )}
+        </div>
+
+        {/* Smart Correction — post-model, applies vocab on every backend (Tiers 1-2). */}
+        <div>
+          <div className="flex items-center justify-between">
+            <div>
+              <label className="block text-sm font-medium text-stone-700 dark:text-stone-300">
+                Smart Correction
+              </label>
+              <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
+                Fix vocabulary in the transcript after recognition, on every model (including the default Parakeet). Turns "use effect" into useEffect and, with Code-Aware on, "standard error" into stderr.
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={settings.correctionEnabled}
+              aria-label="Smart correction"
+              onClick={() => onUpdateSettings({ correctionEnabled: !settings.correctionEnabled })}
+              className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-stone-500 focus:ring-offset-2 ${
+                settings.correctionEnabled ? 'bg-stone-800 dark:bg-stone-300' : 'bg-stone-300 dark:bg-stone-500'
+              }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                  settings.correctionEnabled ? 'translate-x-6' : 'translate-x-1'
+                }`}
+              />
+            </button>
+          </div>
+
+          {settings.correctionEnabled && (
+            <div className="mt-3 flex items-center justify-between gap-4">
+              <div>
+                <label className="block text-xs font-medium text-stone-700 dark:text-stone-300">
+                  Sounds-like matching
+                </label>
+                <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
+                  Also recover close mishearings near your vocabulary (e.g. "red pivot" → "rePivot"). Turn off if you see unwanted swaps.
+                </p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={settings.correctionFuzzy}
+                aria-label="Sounds-like matching"
+                onClick={() => onUpdateSettings({ correctionFuzzy: !settings.correctionFuzzy })}
+                className={`relative inline-flex shrink-0 h-5 w-9 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-stone-500 focus:ring-offset-2 ${
+                  settings.correctionFuzzy ? 'bg-stone-800 dark:bg-stone-300' : 'bg-stone-300 dark:bg-stone-500'
+                }`}
+              >
+                <span
+                  className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${
+                    settings.correctionFuzzy ? 'translate-x-4' : 'translate-x-1'
+                  }`}
+                />
+              </button>
             </div>
           )}
         </div>
