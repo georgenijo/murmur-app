@@ -4,13 +4,24 @@ export type DoubleTapKey = 'shift_l' | 'alt_l' | 'ctrl_r';
 
 /**
  * Per-app dictation profile. When the frontmost macOS app's bundle id matches
- * `bundleId`, `autoPasteOverride` (when non-null) replaces the global auto-paste
+ * `bundleId`, each `*Override` (when non-null) replaces the corresponding global
  * setting. `null` means "no override — use the global setting".
  */
 export interface AppProfile {
   bundleId: string;
   label: string;
   autoPasteOverride: boolean | null;
+  cleanupOverride: boolean | null;
+}
+
+/**
+ * A user-defined voice command. When `phrase` is spoken it is replaced by
+ * `replacement` (case-insensitive, word-boundary). Applied after the built-in
+ * commands, so users extend rather than override the defaults.
+ */
+export interface VoiceCommand {
+  phrase: string;
+  replacement: string;
 }
 
 export interface Settings {
@@ -32,10 +43,20 @@ export interface Settings {
   outputDir: string;
   appProfiles: AppProfile[];
   voiceCommandsEnabled: boolean;
+  /** User-defined voice commands applied after the built-in set. */
+  voiceCommands: VoiceCommand[];
   cleanupEnabled: boolean;
-  /** Bias transcription toward code identifiers scanned from a project folder. */
+  /** When cleanup is on, remove filler tokens ("um", "uh"). */
+  cleanupRemoveFiller: boolean;
+  /** When cleanup is on, capitalize sentence starts. */
+  cleanupCapitalize: boolean;
+  /**
+   * Bias transcription toward code identifiers. When enabled, a built-in
+   * dev-term dictionary is always used; a project folder (optional) layers the
+   * user's own identifiers on top.
+   */
   codeVocabEnabled: boolean;
-  /** Absolute path to the project folder scanned for code identifiers. */
+  /** Optional absolute path to a project folder scanned for code identifiers. */
   codeVocabFolder: string;
 }
 
@@ -119,7 +140,10 @@ export const DEFAULT_SETTINGS: Settings = {
   outputDir: '',
   appProfiles: [],
   voiceCommandsEnabled: false,
+  voiceCommands: [],
   cleanupEnabled: false,
+  cleanupRemoveFiller: true,
+  cleanupCapitalize: true,
   codeVocabEnabled: false,
   codeVocabFolder: '',
 };
@@ -173,7 +197,31 @@ export function loadSettings(): Settings {
             label: typeof p.label === 'string' ? p.label : '',
             autoPasteOverride:
               typeof p.autoPasteOverride === 'boolean' ? p.autoPasteOverride : null,
+            cleanupOverride:
+              typeof p.cleanupOverride === 'boolean' ? p.cleanupOverride : null,
           }));
+      }
+
+      // voiceCommands: array of { phrase, replacement }. Drop malformed entries
+      // and coerce a non-array (or absent on older blobs) back to the default.
+      if (!Array.isArray(parsed.voiceCommands)) {
+        parsed.voiceCommands = DEFAULT_SETTINGS.voiceCommands;
+      } else {
+        parsed.voiceCommands = parsed.voiceCommands
+          .filter((c): c is VoiceCommand =>
+            !!c && typeof (c as VoiceCommand).phrase === 'string' && (c as VoiceCommand).phrase.trim() !== '')
+          .map((c) => ({
+            phrase: c.phrase.trim(),
+            replacement: typeof c.replacement === 'string' ? c.replacement : '',
+          }));
+      }
+
+      // cleanup sub-toggles default to on; coerce non-booleans back to the default.
+      if (typeof parsed.cleanupRemoveFiller !== 'boolean') {
+        parsed.cleanupRemoveFiller = DEFAULT_SETTINGS.cleanupRemoveFiller;
+      }
+      if (typeof parsed.cleanupCapitalize !== 'boolean') {
+        parsed.cleanupCapitalize = DEFAULT_SETTINGS.cleanupCapitalize;
       }
 
       // Voice commands gate the Rust transform — coerce non-booleans (or a

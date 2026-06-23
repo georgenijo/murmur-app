@@ -62,6 +62,28 @@ pub fn resolve_auto_paste(
     auto_paste
 }
 
+/// Resolve the effective transcript-cleanup setting for the frontmost app.
+///
+/// Mirrors [`resolve_auto_paste`]: returns the override from the first matching
+/// profile that sets one, otherwise the global `cleanup` value. Pure for testing.
+pub fn resolve_cleanup(
+    cleanup: bool,
+    bundle_id: Option<&str>,
+    profiles: &[crate::state::AppProfile],
+) -> bool {
+    let Some(bundle_id) = bundle_id else {
+        return cleanup;
+    };
+    for profile in profiles {
+        if profile.bundle_id == bundle_id {
+            if let Some(override_value) = profile.cleanup_override {
+                return override_value;
+            }
+        }
+    }
+    cleanup
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -72,6 +94,16 @@ mod tests {
             bundle_id: bundle_id.to_string(),
             label: bundle_id.to_string(),
             auto_paste_override,
+            cleanup_override: None,
+        }
+    }
+
+    fn cleanup_profile(bundle_id: &str, cleanup_override: Option<bool>) -> AppProfile {
+        AppProfile {
+            bundle_id: bundle_id.to_string(),
+            label: bundle_id.to_string(),
+            auto_paste_override: None,
+            cleanup_override,
         }
     }
 
@@ -115,5 +147,45 @@ mod tests {
         ];
         // First profile has no override, so we fall through to the second.
         assert!(!resolve_auto_paste(true, Some("com.apple.Terminal"), &profiles));
+    }
+
+    #[test]
+    fn cleanup_no_frontmost_uses_global() {
+        let profiles = vec![cleanup_profile("com.apple.Terminal", Some(false))];
+        assert!(resolve_cleanup(true, None, &profiles));
+        assert!(!resolve_cleanup(false, None, &profiles));
+    }
+
+    #[test]
+    fn cleanup_matching_profile_override_wins() {
+        // Force cleanup OFF in a code editor even though it's globally on.
+        let profiles = vec![cleanup_profile("com.microsoft.VSCode", Some(false))];
+        assert!(!resolve_cleanup(true, Some("com.microsoft.VSCode"), &profiles));
+    }
+
+    #[test]
+    fn cleanup_matching_profile_can_force_on() {
+        let profiles = vec![cleanup_profile("com.apple.mail", Some(true))];
+        assert!(resolve_cleanup(false, Some("com.apple.mail"), &profiles));
+    }
+
+    #[test]
+    fn cleanup_null_override_falls_through_to_global() {
+        let profiles = vec![cleanup_profile("com.apple.Terminal", None)];
+        assert!(resolve_cleanup(true, Some("com.apple.Terminal"), &profiles));
+        assert!(!resolve_cleanup(false, Some("com.apple.Terminal"), &profiles));
+    }
+
+    #[test]
+    fn cleanup_and_auto_paste_overrides_are_independent() {
+        // A profile can override one without touching the other.
+        let profiles = vec![AppProfile {
+            bundle_id: "com.apple.Terminal".to_string(),
+            label: "Terminal".to_string(),
+            auto_paste_override: Some(true),
+            cleanup_override: Some(false),
+        }];
+        assert!(resolve_auto_paste(false, Some("com.apple.Terminal"), &profiles));
+        assert!(!resolve_cleanup(true, Some("com.apple.Terminal"), &profiles));
     }
 }

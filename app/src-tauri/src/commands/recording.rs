@@ -32,9 +32,13 @@ fn build_code_vocab_prompt(folder: &str) -> String {
 }
 
 /// Return the code-aware vocabulary prompt for the current settings, or an empty
-/// string when the feature is disabled. Uses the cached prompt when present;
-/// otherwise scans the folder once and caches the result so subsequent
-/// utterances don't rescan.
+/// string when the feature is disabled.
+///
+/// When enabled, the built-in dev-term dictionary always contributes so the
+/// feature works with no folder selected ("just works"). A configured project
+/// folder is scanned (and cached) and its identifiers are placed *first* — they're
+/// more specific than the generic built-ins, so they survive Whisper's prompt
+/// truncation. Folder scanning still happens at most once per folder/enable change.
 fn resolve_code_vocab_prompt(app_state: &AppState) -> String {
     // Fast path under the lock: feature off => nothing to do.
     let (enabled, folder, cached) = {
@@ -45,19 +49,33 @@ fn resolve_code_vocab_prompt(app_state: &AppState) -> String {
             dictation.code_vocab_prompt.clone(),
         )
     };
-    if !enabled || folder.trim().is_empty() {
+    if !enabled {
         return String::new();
     }
-    if let Some(prompt) = cached {
-        return prompt;
+
+    let builtin = crate::vocab::builtin_terms_prompt();
+
+    // Optional project scan layered on top of the built-ins.
+    let folder_prompt = if folder.trim().is_empty() {
+        String::new()
+    } else if let Some(prompt) = cached {
+        prompt
+    } else {
+        // Not yet scanned: build now and cache (only if settings still match).
+        let prompt = build_code_vocab_prompt(&folder);
+        let mut dictation = app_state.dictation.lock_or_recover();
+        if dictation.code_vocab_enabled && dictation.code_vocab_folder == folder {
+            dictation.code_vocab_prompt = Some(prompt.clone());
+        }
+        prompt
+    };
+
+    // Project identifiers first (most specific), built-in dictionary after.
+    if folder_prompt.trim().is_empty() {
+        builtin
+    } else {
+        format!("{} {}", folder_prompt.trim(), builtin)
     }
-    // Not yet scanned: build now and cache (only if settings still match).
-    let prompt = build_code_vocab_prompt(&folder);
-    let mut dictation = app_state.dictation.lock_or_recover();
-    if dictation.code_vocab_enabled && dictation.code_vocab_folder == folder {
-        dictation.code_vocab_prompt = Some(prompt.clone());
-    }
-    prompt
 }
 
 /// Merge the manual custom-vocabulary string and the code-aware vocabulary into a
@@ -148,23 +166,26 @@ async fn run_transcription_pipeline(
     let _guard = IdleGuard::new(app_state, recording_id);
 
     // Read all needed state in one lock
-    let (model_name, language, auto_paste, paste_delay_ms, vad_sensitivity, custom_vocabulary, smart_punctuation, save_transcript, save_audio, output_dir, app_profiles, voice_commands_enabled, cleanup_enabled) = {
+    let (model_name, language, auto_paste, paste_delay_ms, vad_sensitivity, custom_vocabulary, smart_punctuation, save_transcript, save_audio, output_dir, app_profiles, voice_commands_enabled, voice_command_pairs, cleanup_enabled, cleanup_remove_filler, cleanup_capitalize) = {
         let dictation = app_state.dictation.lock_or_recover();
-        (dictation.model_name.clone(), dictation.language.clone(), dictation.auto_paste, dictation.auto_paste_delay_ms, dictation.vad_sensitivity, dictation.custom_vocabulary.clone(), dictation.smart_punctuation, dictation.save_transcript, dictation.save_audio, dictation.output_dir.clone(), dictation.app_profiles.clone(), dictation.voice_commands_enabled, dictation.cleanup_enabled)
+        (dictation.model_name.clone(), dictation.language.clone(), dictation.auto_paste, dictation.auto_paste_delay_ms, dictation.vad_sensitivity, dictation.custom_vocabulary.clone(), dictation.smart_punctuation, dictation.save_transcript, dictation.save_audio, dictation.output_dir.clone(), dictation.app_profiles.clone(), dictation.voice_commands_enabled, dictation.voice_command_pairs.clone(), dictation.cleanup_enabled, dictation.cleanup_remove_filler, dictation.cleanup_capitalize)
     };
 
-    // Per-app profiles: if the frontmost app has a matching profile that sets an
-    // auto-paste override, honor it instead of the global setting. No match (or
-    // no detected app) leaves the global value untouched.
-    let profile_auto_paste = if app_profiles.is_empty() {
-        auto_paste
+    // Per-app profiles: if the frontmost app has a matching profile, its overrides
+    // replace the global auto-paste / cleanup settings. The frontmost app is
+    // detected once (a single osascript call) and reused for both resolutions. No
+    // profiles (or no detected app) leaves the global values untouched.
+    let (profile_auto_paste, profile_cleanup) = if app_profiles.is_empty() {
+        (auto_paste, cleanup_enabled)
     } else {
         let bundle_id = crate::frontmost::frontmost_bundle_id();
-        let resolved = crate::frontmost::resolve_auto_paste(auto_paste, bundle_id.as_deref(), &app_profiles);
-        if resolved != auto_paste {
-            tracing::info!(target: "pipeline", "app profile override: auto_paste {} -> {} (frontmost={})", auto_paste, resolved, bundle_id.as_deref().unwrap_or("unknown"));
+        let resolved_paste = crate::frontmost::resolve_auto_paste(auto_paste, bundle_id.as_deref(), &app_profiles);
+        let resolved_cleanup = crate::frontmost::resolve_cleanup(cleanup_enabled, bundle_id.as_deref(), &app_profiles);
+        if resolved_paste != auto_paste || resolved_cleanup != cleanup_enabled {
+            tracing::info!(target: "pipeline", "app profile override (frontmost={}): auto_paste {}->{}, cleanup {}->{}",
+                bundle_id.as_deref().unwrap_or("unknown"), auto_paste, resolved_paste, cleanup_enabled, resolved_cleanup);
         }
-        resolved
+        (resolved_paste, resolved_cleanup)
     };
 
     // When saving to a file, suppress auto-paste into the focused app. The
@@ -262,17 +283,27 @@ async fn run_transcription_pipeline(
     // Runs BEFORE voice commands so filler/punctuation tidy never mangles the
     // structural tokens (e.g. inserted "\n" from "new line") that voice commands
     // emit downstream.
-    let text = if cleanup_enabled && !text.trim().is_empty() {
-        let cleaned = crate::cleanup::clean_transcript(&text, crate::cleanup::CleanupOptions::default());
+    // `profile_cleanup` already folds in any per-app override of the global toggle.
+    let text = if profile_cleanup && !text.trim().is_empty() {
+        let opts = crate::cleanup::CleanupOptions {
+            remove_filler: cleanup_remove_filler,
+            capitalize: cleanup_capitalize,
+        };
+        let cleaned = crate::cleanup::clean_transcript(&text, opts);
         tracing::info!(target: "pipeline", "cleanup applied ({} -> {} chars)", text.len(), cleaned.len());
         cleaned
     } else {
         text
     };
 
-    // Phase: Voice commands -- rewrite spoken command tokens (e.g. "new line",
-    // "scratch that") before the text reaches file output / clipboard / paste.
-    let text = crate::voice_commands::apply_voice_commands(&text, voice_commands_enabled);
+    // Phase: Voice commands -- rewrite the built-in spoken tokens (e.g. "new line",
+    // "scratch that") plus any user-defined commands before the text reaches file
+    // output / clipboard / paste.
+    let custom_commands: Vec<(String, String)> = voice_command_pairs
+        .into_iter()
+        .map(|vc| (vc.phrase, vc.replacement))
+        .collect();
+    let text = crate::voice_commands::apply_voice_commands_with_custom(&text, voice_commands_enabled, &custom_commands);
 
     // Update last_transcription_at for idle timeout tracking
     *app_state.last_transcription_at.lock_or_recover() = Some(std::time::Instant::now());
@@ -498,6 +529,26 @@ pub async fn configure_dictation(
         dictation.voice_commands_enabled = vc;
     }
 
+    // User-defined voice commands: array of { phrase, replacement }. Entries with
+    // a blank phrase are skipped. Replaces the whole list when the key is present.
+    if let Some(pairs) = options.get("voiceCommands").and_then(|v| v.as_array()) {
+        dictation.voice_command_pairs = pairs
+            .iter()
+            .filter_map(|p| {
+                let phrase = p.get("phrase").and_then(|v| v.as_str())?.trim().to_string();
+                if phrase.is_empty() {
+                    return None;
+                }
+                let replacement = p
+                    .get("replacement")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                Some(crate::state::VoiceCommand { phrase, replacement })
+            })
+            .collect();
+    }
+
     if let Some(save_transcript) = options.get("saveTranscript").and_then(|v| v.as_bool()) {
         dictation.save_transcript = save_transcript;
     }
@@ -528,13 +579,22 @@ pub async fn configure_dictation(
                     .to_string();
                 // null/absent -> None (use global); otherwise the boolean override.
                 let auto_paste_override = p.get("autoPasteOverride").and_then(|v| v.as_bool());
-                Some(crate::state::AppProfile { bundle_id, label, auto_paste_override })
+                let cleanup_override = p.get("cleanupOverride").and_then(|v| v.as_bool());
+                Some(crate::state::AppProfile { bundle_id, label, auto_paste_override, cleanup_override })
             })
             .collect();
     }
 
     if let Some(cleanup_enabled) = options.get("cleanupEnabled").and_then(|v| v.as_bool()) {
         dictation.cleanup_enabled = cleanup_enabled;
+    }
+
+    if let Some(v) = options.get("cleanupRemoveFiller").and_then(|v| v.as_bool()) {
+        dictation.cleanup_remove_filler = v;
+    }
+
+    if let Some(v) = options.get("cleanupCapitalize").and_then(|v| v.as_bool()) {
+        dictation.cleanup_capitalize = v;
     }
 
     // Code-aware vocabulary: a toggle plus a folder to scan for identifiers.

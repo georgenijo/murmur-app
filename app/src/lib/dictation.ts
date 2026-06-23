@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { DEFAULT_SETTINGS, Settings, AppProfile } from './settings';
+import { DEFAULT_SETTINGS, Settings, AppProfile, VoiceCommand } from './settings';
 
 export interface DictationResponse {
   type: string;
@@ -72,7 +72,10 @@ export interface ConfigureOptions {
   outputDir?: string;
   appProfiles?: AppProfile[];
   voiceCommandsEnabled?: boolean;
+  voiceCommands?: VoiceCommand[];
   cleanupEnabled?: boolean;
+  cleanupRemoveFiller?: boolean;
+  cleanupCapitalize?: boolean;
   codeVocabEnabled?: boolean;
   codeVocabFolder?: string;
 }
@@ -101,7 +104,10 @@ export function buildConfigureOptions(s: Settings): ConfigureOptions {
     outputDir: s.outputDir,
     appProfiles: s.appProfiles,
     voiceCommandsEnabled: s.voiceCommandsEnabled,
+    voiceCommands: s.voiceCommands,
     cleanupEnabled: s.cleanupEnabled,
+    cleanupRemoveFiller: s.cleanupRemoveFiller,
+    cleanupCapitalize: s.cleanupCapitalize,
     codeVocabEnabled: s.codeVocabEnabled,
     codeVocabFolder: s.codeVocabFolder,
   };

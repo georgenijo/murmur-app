@@ -10,6 +10,40 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+/// Built-in dictionary of common programming / tooling terms fed to Whisper as an
+/// initial-prompt bias whenever code-aware vocabulary is enabled — even with no
+/// project folder selected, so the feature "just works" out of the box. Chosen for
+/// terms Whisper tends to mangle (camelCase APIs, CLI names, abbreviations) rather
+/// than words it already knows. A project scan, when configured, layers on top of
+/// (and ranks ahead of) this list.
+pub const BUILTIN_DEV_TERMS: &[&str] = &[
+    // JS/TS framework + hooks
+    "useEffect", "useState", "useRef", "useCallback", "useMemo", "useContext",
+    "TypeScript", "JavaScript", "JSX", "TSX", "npm", "npx", "pnpm", "yarn",
+    "Node.js", "Deno", "Vite", "Webpack", "ESLint", "Prettier", "Tailwind",
+    "React", "Vue", "Svelte", "Next.js", "async", "await", "Promise", "nullable",
+    // Rust
+    "Rust", "cargo", "rustc", "clippy", "tokio", "serde", "async", "trait",
+    "enum", "struct", "impl", "Mutex", "Arc", "borrow", "lifetime", "macro",
+    "stdout", "stderr", "stdin", "dylib", "rustup", "Tauri", "whisper-rs",
+    // Python
+    "Python", "pip", "venv", "pytest", "numpy", "pandas", "asyncio", "dataclass",
+    "Django", "Flask", "FastAPI", "PyTorch", "TensorFlow",
+    // Go / other langs
+    "Golang", "goroutine", "Kotlin", "Swift", "SwiftUI", "Xcode",
+    // Web / protocols / data
+    "API", "REST", "GraphQL", "JSON", "YAML", "TOML", "HTTP", "HTTPS", "WebSocket",
+    "OAuth", "JWT", "CORS", "UUID", "regex", "stdin", "CRUD", "SQL",
+    // Databases / infra / devops
+    "Postgres", "PostgreSQL", "SQLite", "Redis", "MongoDB", "Docker", "Kubernetes",
+    "kubectl", "nginx", "Terraform", "Ansible", "GitHub", "GitLab", "CI/CD",
+    "DevOps", "Kafka", "RabbitMQ", "gRPC",
+    // General CS / build
+    "localhost", "config", "env", "boolean", "int", "struct", "endpoint",
+    "middleware", "namespace", "runtime", "stack trace", "codebase", "repo",
+    "commit", "rebase", "changelog", "metadata", "macOS", "Linux",
+];
+
 /// Skip individual files larger than this (bytes). A single huge minified bundle
 /// or vendored blob shouldn't dominate the scan or hang it.
 pub const MAX_FILE_BYTES: u64 = 512 * 1024;
@@ -29,6 +63,19 @@ pub const SOURCE_EXTENSIONS: &[&str] = &[
     "swift", "c", "h", "cc", "cpp", "hpp", "cs", "rb", "php", "scala", "sh",
     "lua", "dart", "vue", "svelte",
 ];
+
+/// Render [`BUILTIN_DEV_TERMS`] as a space-joined initial-prompt string, deduped
+/// case-insensitively (the list carries intentional cross-language repeats like
+/// "async"/"struct") while preserving the first surface form and order.
+pub fn builtin_terms_prompt() -> String {
+    let mut seen = std::collections::HashSet::new();
+    BUILTIN_DEV_TERMS
+        .iter()
+        .filter(|t| seen.insert(t.to_ascii_lowercase()))
+        .copied()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
 
 /// Return true if `path` has one of the source extensions we scan (case-insensitive).
 pub fn is_source_file(path: &Path) -> bool {
@@ -479,6 +526,19 @@ mod tests {
         assert!(is_skipped_dir(".git"));
         assert!(!is_skipped_dir("src"));
         assert!(!is_skipped_dir("components"));
+    }
+
+    #[test]
+    fn builtin_prompt_is_nonempty_and_deduped() {
+        let p = builtin_terms_prompt();
+        assert!(p.contains("useEffect"));
+        assert!(p.contains("kubectl"));
+        // "async"/"struct" appear multiple times in the source list but must be
+        // deduped (case-insensitively) in the rendered prompt.
+        let count_async = p.split(' ').filter(|t| t.eq_ignore_ascii_case("async")).count();
+        assert_eq!(count_async, 1, "async should appear once, prompt={:?}", p);
+        let count_struct = p.split(' ').filter(|t| t.eq_ignore_ascii_case("struct")).count();
+        assert_eq!(count_struct, 1, "struct should appear once");
     }
 
     #[test]

@@ -75,6 +75,63 @@ pub fn apply_voice_commands(text: &str, enabled: bool) -> String {
     out
 }
 
+/// Apply the built-in command map, then any user-defined `custom` commands.
+///
+/// Custom commands are literal `phrase -> replacement` substitutions, matched
+/// case-insensitively on word boundaries (same matcher as the built-ins). They run
+/// *after* the built-ins, so a user can extend the vocabulary without breaking the
+/// defaults. Blank phrases are ignored. When `enabled` is false the text is
+/// returned unchanged.
+pub fn apply_voice_commands_with_custom(
+    text: &str,
+    enabled: bool,
+    custom: &[(String, String)],
+) -> String {
+    if !enabled {
+        return text.to_string();
+    }
+    let built = apply_voice_commands(text, true);
+    if custom.is_empty() {
+        return built;
+    }
+    let mut out = built;
+    for (phrase, replacement) in custom {
+        let phrase = phrase.trim();
+        if phrase.is_empty() {
+            continue;
+        }
+        out = replace_phrase(&out, phrase, replacement);
+    }
+    out
+}
+
+/// Replace every word-boundary, case-insensitive occurrence of `phrase` in `text`
+/// with `replacement`. Mirrors the built-in matcher's lowercase-parallel scan.
+fn replace_phrase(text: &str, phrase: &str, replacement: &str) -> String {
+    let lower = text.to_lowercase();
+    let chars: Vec<char> = text.chars().collect();
+    let lower_chars: Vec<char> = lower.chars().collect();
+    let phrase_chars: Vec<char> = phrase.to_lowercase().chars().collect();
+    // Lowercasing can (rarely, for some Unicode) change length; bail to the
+    // original in that case rather than risk an index mismatch.
+    if phrase_chars.is_empty() || lower_chars.len() != chars.len() {
+        return text.to_string();
+    }
+
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if matches_at(&lower_chars, i, &phrase_chars) {
+            out.push_str(replacement);
+            i += phrase_chars.len();
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
 /// How a matched command rewrites the output buffer.
 enum Command {
     /// Insert literal text (e.g. newline) verbatim.
@@ -293,5 +350,64 @@ mod tests {
     fn command_at_start_of_input() {
         // "period" at the very start has no prior word; it just emits the mark.
         assert_eq!(apply_voice_commands("period", true), ".");
+    }
+
+    fn pairs(p: &[(&str, &str)]) -> Vec<(String, String)> {
+        p.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect()
+    }
+
+    #[test]
+    fn custom_disabled_returns_unchanged() {
+        let custom = pairs(&[("my email", "me@example.com")]);
+        assert_eq!(
+            apply_voice_commands_with_custom("my email", false, &custom),
+            "my email"
+        );
+    }
+
+    #[test]
+    fn custom_literal_replacement() {
+        let custom = pairs(&[("my email", "me@example.com")]);
+        assert_eq!(
+            apply_voice_commands_with_custom("send to my email please", true, &custom),
+            "send to me@example.com please"
+        );
+    }
+
+    #[test]
+    fn custom_is_case_insensitive_and_word_bounded() {
+        let custom = pairs(&[("sig", "Best, Alex")]);
+        // "sig" matches as a word, but not inside "signal".
+        assert_eq!(
+            apply_voice_commands_with_custom("SIG and signal", true, &custom),
+            "Best, Alex and signal"
+        );
+    }
+
+    #[test]
+    fn custom_runs_after_builtins() {
+        // Built-in "new line" fires first, then the custom replacement.
+        let custom = pairs(&[("ticket", "JIRA-123")]);
+        assert_eq!(
+            apply_voice_commands_with_custom("ticket new line done", true, &custom),
+            "JIRA-123\ndone"
+        );
+    }
+
+    #[test]
+    fn custom_blank_phrase_ignored() {
+        let custom = pairs(&[("   ", "x")]);
+        assert_eq!(
+            apply_voice_commands_with_custom("hello world", true, &custom),
+            "hello world"
+        );
+    }
+
+    #[test]
+    fn custom_empty_list_matches_builtin_only() {
+        assert_eq!(
+            apply_voice_commands_with_custom("done period", true, &[]),
+            "done."
+        );
     }
 }

@@ -21,13 +21,28 @@ impl Default for DictationStatus {
 }
 
 /// Per-app dictation profile. When the frontmost macOS app's bundle id matches
-/// `bundle_id`, `auto_paste_override` (when `Some`) replaces the global
-/// auto-paste setting at inject time. `None` means "no override — use global".
+/// `bundle_id`, each `*_override` (when `Some`) replaces the corresponding global
+/// setting at transcription time. `None` means "no override — use global".
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppProfile {
     pub bundle_id: String,
     pub label: String,
+    /// Override the global auto-paste setting for this app.
     pub auto_paste_override: Option<bool>,
+    /// Override the global transcript-cleanup setting for this app (e.g. force
+    /// verbatim output in a code editor, or force cleanup in an email client).
+    #[serde(default)]
+    pub cleanup_override: Option<bool>,
+}
+
+/// A user-defined voice command: when `phrase` is spoken (matched
+/// case-insensitively on word boundaries), it is replaced by `replacement`.
+/// Applied after the built-in command set, so users can extend — not override —
+/// the defaults.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VoiceCommand {
+    pub phrase: String,
+    pub replacement: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,9 +61,16 @@ pub struct DictationState {
     /// Per-app profiles that override auto-paste based on the frontmost app.
     pub app_profiles: Vec<AppProfile>,
     pub voice_commands_enabled: bool,
+    /// User-defined voice commands applied after the built-in set.
+    #[serde(default)]
+    pub voice_command_pairs: Vec<VoiceCommand>,
     /// Rule-based transcript cleanup (filler removal, spacing/capitalization)
     /// applied before injection. Off by default.
     pub cleanup_enabled: bool,
+    /// When cleanup is enabled, remove standalone filler tokens ("um", "uh").
+    pub cleanup_remove_filler: bool,
+    /// When cleanup is enabled, capitalize sentence starts.
+    pub cleanup_capitalize: bool,
     /// Code-aware vocabulary: when enabled, identifiers scanned from
     /// `code_vocab_folder` are fed to Whisper as an initial prompt to bias
     /// transcription toward the user's code terms. Whisper backend only.
@@ -80,7 +102,10 @@ impl Default for DictationState {
             output_dir: String::new(),
             app_profiles: Vec::new(),
             voice_commands_enabled: false,
+            voice_command_pairs: Vec::new(),
             cleanup_enabled: false,
+            cleanup_remove_filler: true,
+            cleanup_capitalize: true,
             code_vocab_enabled: false,
             code_vocab_folder: String::new(),
             code_vocab_prompt: None,
