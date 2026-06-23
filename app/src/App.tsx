@@ -155,7 +155,7 @@ function App() {
       <StatsBar statsVersion={combinedStatsVersion} />
 
       <div className="flex-1 flex overflow-hidden">
-        <main className="flex-1 flex flex-col overflow-hidden p-4 gap-4">
+        <main className={`flex-1 flex-col overflow-hidden p-4 gap-4 ${isSettingsOpen ? 'hidden' : 'flex'}`}>
           <div className="shrink-0 flex gap-1 p-1 self-start bg-stone-100 dark:bg-stone-800 rounded-lg">
             {(['record', 'file'] as const).map((tab) => (
               <button
@@ -196,6 +196,7 @@ function App() {
           )}
         </main>
 
+        {isSettingsOpen && (
         <SettingsPanel
           isOpen={isSettingsOpen}
           onClose={() => setIsSettingsOpen(false)}
@@ -208,6 +209,7 @@ function App() {
           onCheckForUpdate={checkForUpdate}
           updateStatus={updateStatus}
         />
+        )}
       </div>
 
       <AboutModal

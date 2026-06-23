@@ -6,7 +6,7 @@ import { getVersion } from '@tauri-apps/api/app';
 import {
   Settings, RecordingMode, DEFAULT_SETTINGS,
   MODEL_OPTIONS, DOUBLE_TAP_KEY_OPTIONS, RECORDING_MODE_OPTIONS,
-  IDLE_TIMEOUT_OPTIONS, LANGUAGE_OPTIONS, AppProfile,
+  IDLE_TIMEOUT_OPTIONS, LANGUAGE_OPTIONS, AppProfile, VoiceCommand,
 } from '../../lib/settings';
 import { Select } from '../ui/Select';
 import { SettingsSection } from './SettingsSection';
@@ -146,7 +146,7 @@ function AppProfilesEditor({ profiles, onChange }: {
     }
     onChange([
       ...profiles,
-      { bundleId: trimmedId, label: label.trim(), autoPasteOverride: false },
+      { bundleId: trimmedId, label: label.trim(), autoPasteOverride: null, cleanupOverride: null },
     ]);
     setBundleId('');
     setLabel('');
@@ -156,24 +156,37 @@ function AppProfilesEditor({ profiles, onChange }: {
     onChange(profiles.filter((p) => p.bundleId !== id));
   };
 
-  // Cycle the override: Default (null) -> On (true) -> Off (false) -> Default.
-  const cycleOverride = (id: string) => {
-    onChange(profiles.map((p) => {
-      if (p.bundleId !== id) return p;
-      const next = p.autoPasteOverride === null ? true : p.autoPasteOverride === true ? false : null;
-      return { ...p, autoPasteOverride: next };
-    }));
+  // Cycle a tri-state override: Default (null) -> On (true) -> Off (false) -> Default.
+  const cycle = (value: boolean | null): boolean | null =>
+    value === null ? true : value === true ? false : null;
+
+  const cyclePaste = (id: string) => {
+    onChange(profiles.map((p) =>
+      p.bundleId === id ? { ...p, autoPasteOverride: cycle(p.autoPasteOverride) } : p));
   };
 
-  const overrideLabel = (value: boolean | null) =>
-    value === null ? 'Default' : value ? 'Paste On' : 'Paste Off';
+  const cycleCleanup = (id: string) => {
+    onChange(profiles.map((p) =>
+      p.bundleId === id ? { ...p, cleanupOverride: cycle(p.cleanupOverride) } : p));
+  };
+
+  const chipLabel = (kind: string, value: boolean | null) =>
+    value === null ? `${kind}: Default` : value ? `${kind}: On` : `${kind}: Off`;
+
+  const chipClass = (value: boolean | null) =>
+    value === null
+      ? 'border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-600 dark:text-stone-300'
+      : value
+        ? 'border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400'
+        : 'border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400';
 
   return (
     <div>
       <p className="mb-2 text-xs text-stone-500 dark:text-stone-400">
-        Override auto-paste for specific apps by bundle id (e.g.
-        <span className="font-mono"> com.apple.Terminal</span>). The frontmost app
-        when you finish dictating decides the behavior.
+        Override auto-paste and transcript cleanup for specific apps by bundle id
+        (e.g. <span className="font-mono">com.apple.Terminal</span>). The frontmost
+        app when you finish dictating decides the behavior. Each toggle cycles
+        Default → On → Off.
       </p>
 
       {profiles.length > 0 && (
@@ -181,42 +194,48 @@ function AppProfilesEditor({ profiles, onChange }: {
           {profiles.map((p) => (
             <li
               key={p.bundleId}
-              className="flex items-center gap-2 px-2.5 py-2 rounded-lg border border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700/40"
+              className="flex flex-col gap-2 px-2.5 py-2 rounded-lg border border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700/40"
             >
-              <div className="min-w-0 flex-1">
-                {p.label && (
-                  <div className="text-xs font-medium text-stone-700 dark:text-stone-300 truncate">
-                    {p.label}
+              <div className="flex items-center gap-2">
+                <div className="min-w-0 flex-1">
+                  {p.label && (
+                    <div className="text-xs font-medium text-stone-700 dark:text-stone-300 truncate">
+                      {p.label}
+                    </div>
+                  )}
+                  <div className="text-xs font-mono text-stone-500 dark:text-stone-400 truncate">
+                    {p.bundleId}
                   </div>
-                )}
-                <div className="text-xs font-mono text-stone-500 dark:text-stone-400 truncate">
-                  {p.bundleId}
                 </div>
+                <button
+                  type="button"
+                  onClick={() => handleRemove(p.bundleId)}
+                  aria-label={`Remove profile for ${p.label || p.bundleId}`}
+                  className="shrink-0 p-1 rounded-md text-stone-400 hover:text-red-600 hover:bg-stone-100 dark:hover:bg-stone-600 transition-colors"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={() => cycleOverride(p.bundleId)}
-                aria-label={`Auto-paste for ${p.label || p.bundleId}: ${overrideLabel(p.autoPasteOverride)}`}
-                className={`shrink-0 px-2 py-1 rounded-md text-xs font-medium border transition-colors ${
-                  p.autoPasteOverride === null
-                    ? 'border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-600 dark:text-stone-300'
-                    : p.autoPasteOverride
-                      ? 'border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400'
-                      : 'border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400'
-                }`}
-              >
-                {overrideLabel(p.autoPasteOverride)}
-              </button>
-              <button
-                type="button"
-                onClick={() => handleRemove(p.bundleId)}
-                aria-label={`Remove profile for ${p.label || p.bundleId}`}
-                className="shrink-0 p-1 rounded-md text-stone-400 hover:text-red-600 hover:bg-stone-100 dark:hover:bg-stone-600 transition-colors"
-              >
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
+              <div className="flex gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => cyclePaste(p.bundleId)}
+                  aria-label={`Auto-paste for ${p.label || p.bundleId}: ${chipLabel('Paste', p.autoPasteOverride)}`}
+                  className={`flex-1 px-2 py-1 rounded-md text-xs font-medium border transition-colors ${chipClass(p.autoPasteOverride)}`}
+                >
+                  {chipLabel('Paste', p.autoPasteOverride)}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => cycleCleanup(p.bundleId)}
+                  aria-label={`Cleanup for ${p.label || p.bundleId}: ${chipLabel('Clean', p.cleanupOverride)}`}
+                  className={`flex-1 px-2 py-1 rounded-md text-xs font-medium border transition-colors ${chipClass(p.cleanupOverride)}`}
+                >
+                  {chipLabel('Clean', p.cleanupOverride)}
+                </button>
+              </div>
             </li>
           ))}
         </ul>
@@ -261,6 +280,108 @@ function AppProfilesEditor({ profiles, onChange }: {
   );
 }
 
+// Custom voice commands: user-defined phrase -> replacement pairs applied after
+// the built-in command set. Simple add/remove list.
+function VoiceCommandsEditor({ commands, onChange }: {
+  commands: VoiceCommand[];
+  onChange: (next: VoiceCommand[]) => void;
+}) {
+  const [phrase, setPhrase] = useState('');
+  const [replacement, setReplacement] = useState('');
+
+  const handleAdd = () => {
+    const trimmedPhrase = phrase.trim();
+    if (!trimmedPhrase) return;
+    if (commands.some((c) => c.phrase.toLowerCase() === trimmedPhrase.toLowerCase())) {
+      setPhrase('');
+      setReplacement('');
+      return;
+    }
+    onChange([...commands, { phrase: trimmedPhrase, replacement }]);
+    setPhrase('');
+    setReplacement('');
+  };
+
+  const handleRemove = (p: string) => {
+    onChange(commands.filter((c) => c.phrase !== p));
+  };
+
+  return (
+    <div className="mt-3">
+      <p className="mb-2 text-xs text-stone-500 dark:text-stone-400">
+        Add your own spoken phrases. When you say the phrase it's replaced by the
+        text (case-insensitive). Runs after the built-in commands.
+      </p>
+
+      {commands.length > 0 && (
+        <ul className="mb-3 space-y-1.5">
+          {commands.map((c) => (
+            <li
+              key={c.phrase}
+              className="flex items-center gap-2 px-2.5 py-2 rounded-lg border border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700/40"
+            >
+              <div className="min-w-0 flex-1">
+                <div className="text-xs font-medium text-stone-700 dark:text-stone-300 truncate">
+                  “{c.phrase}”
+                </div>
+                <div className="text-xs font-mono text-stone-500 dark:text-stone-400 truncate">
+                  → {c.replacement || '(empty)'}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => handleRemove(c.phrase)}
+                aria-label={`Remove voice command ${c.phrase}`}
+                className="shrink-0 p-1 rounded-md text-stone-400 hover:text-red-600 hover:bg-stone-100 dark:hover:bg-stone-600 transition-colors"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <div className="space-y-2">
+        <input
+          type="text"
+          value={phrase}
+          onChange={(e) => setPhrase(e.target.value)}
+          placeholder="Spoken phrase (e.g. my email)"
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="off"
+          spellCheck={false}
+          className="w-full px-3 py-2 text-xs rounded-lg border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 placeholder-stone-400 dark:placeholder-stone-500 focus:outline-none focus:ring-2 focus:ring-stone-500"
+        />
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={replacement}
+            onChange={(e) => setReplacement(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') handleAdd(); }}
+            placeholder="Replacement (e.g. me@example.com)"
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck={false}
+            className="flex-1 min-w-0 px-3 py-2 text-xs rounded-lg border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 placeholder-stone-400 dark:placeholder-stone-500 focus:outline-none focus:ring-2 focus:ring-stone-500"
+          />
+          <button
+            type="button"
+            onClick={handleAdd}
+            disabled={!phrase.trim()}
+            className="shrink-0 px-3 py-2 rounded-lg text-xs font-medium border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            Add
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 interface SettingsPanelProps {
   isOpen: boolean;
   onClose: () => void;
@@ -274,8 +395,18 @@ interface SettingsPanelProps {
   updateStatus: UpdateStatus;
 }
 
+const SETTINGS_CATEGORIES = [
+  { id: 'transcription', label: 'Transcription' },
+  { id: 'recording', label: 'Recording' },
+  { id: 'output', label: 'Output & Paste' },
+  { id: 'profiles', label: 'Per-App Profiles' },
+  { id: 'vocab', label: 'Vocabulary' },
+  { id: 'about', label: 'About' },
+] as const;
+
 export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, status, onResetStats, onViewLogs, accessibilityGranted, onCheckForUpdate, updateStatus }: SettingsPanelProps) {
   const [confirmReset, setConfirmReset] = useState(false);
+  const [activeCat, setActiveCat] = useState<string>('transcription');
   const [version, setVersion] = useState('');
 
   useEffect(() => { getVersion().then(setVersion); }, []);
@@ -418,27 +549,43 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
       : null;
 
   return (
-    <aside
-      className={`shrink-0 border-l border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 transition-all duration-200 ${
-        isOpen ? 'w-[280px] overflow-y-auto' : 'w-0 overflow-hidden'
-      }`}
-    >
-      {/* Header */}
-      <div className="flex items-center justify-between p-4 border-b border-stone-200 dark:border-stone-700">
-        <h2 className="text-sm font-semibold text-stone-900 dark:text-stone-100">Settings</h2>
-        <button
-          onClick={onClose}
-          className="p-1 rounded-md hover:bg-stone-100 dark:hover:bg-stone-700 transition-colors"
-        >
-          <svg className="w-4 h-4 text-stone-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-          </svg>
-        </button>
-      </div>
+    <div className="flex-1 flex overflow-hidden bg-white dark:bg-stone-900">
+      {/* Left: category nav rail */}
+      <nav className="w-48 shrink-0 flex flex-col border-r border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800/40 overflow-y-auto">
+        <div className="flex items-center justify-between h-12 shrink-0 px-3">
+          <h2 className="text-sm font-semibold text-stone-900 dark:text-stone-100">Settings</h2>
+          <button
+            onClick={onClose}
+            aria-label="Close settings"
+            className="p-1 rounded-md text-stone-500 hover:bg-stone-200 dark:hover:bg-stone-700 transition-colors"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+        <div className="px-2 pb-3 space-y-0.5">
+          {SETTINGS_CATEGORIES.map((c) => (
+            <button
+              key={c.id}
+              type="button"
+              onClick={() => setActiveCat(c.id)}
+              className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${
+                activeCat === c.id
+                  ? 'bg-stone-200 dark:bg-stone-700 text-stone-900 dark:text-stone-100 font-medium'
+                  : 'text-stone-600 dark:text-stone-400 hover:bg-stone-100 dark:hover:bg-stone-700/50'
+              }`}
+            >
+              {c.label}
+            </button>
+          ))}
+        </div>
+      </nav>
 
-      {/* Content */}
-      <div className="px-4 pt-1">
-        <SettingsSection title="Transcription" subtitle="Model, language, microphone">
+      {/* Right: active category content */}
+      <div className="flex-1 overflow-y-auto">
+        <div className="max-w-2xl px-6 py-5">
+        <SettingsSection pageId="transcription" activePage={activeCat} title="Transcription" subtitle="Model, language, microphone">
         {/* Model Selector */}
         <div>
           <label className="block text-sm font-medium text-stone-700 dark:text-stone-300 mb-2">
@@ -604,12 +751,6 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
           </p>
         </div>
 
-        {/* Custom Vocabulary */}
-        <CustomVocabularyTextarea
-          value={settings.customVocabulary}
-          onCommit={(value) => onUpdateSettings({ customVocabulary: value })}
-        />
-
         {/* Transcript Cleanup Toggle */}
         <div className="flex items-center justify-between">
           <div>
@@ -637,9 +778,57 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
             />
           </button>
         </div>
+
+        {/* Cleanup sub-options — only meaningful while cleanup is enabled. */}
+        {settings.cleanupEnabled && (
+          <div className="ml-3 pl-3 border-l border-stone-200 dark:border-stone-700 space-y-3">
+            <div className="flex items-center justify-between">
+              <label className="text-xs text-stone-600 dark:text-stone-400">
+                Remove filler words (um, uh)
+              </label>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={settings.cleanupRemoveFiller}
+                aria-label="Remove filler words"
+                onClick={() => onUpdateSettings({ cleanupRemoveFiller: !settings.cleanupRemoveFiller })}
+                className={`relative inline-flex shrink-0 h-5 w-9 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-stone-500 focus:ring-offset-2 ${
+                  settings.cleanupRemoveFiller ? 'bg-stone-800 dark:bg-stone-300' : 'bg-stone-300 dark:bg-stone-500'
+                }`}
+              >
+                <span
+                  className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${
+                    settings.cleanupRemoveFiller ? 'translate-x-4' : 'translate-x-1'
+                  }`}
+                />
+              </button>
+            </div>
+            <div className="flex items-center justify-between">
+              <label className="text-xs text-stone-600 dark:text-stone-400">
+                Capitalize sentences
+              </label>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={settings.cleanupCapitalize}
+                aria-label="Capitalize sentences"
+                onClick={() => onUpdateSettings({ cleanupCapitalize: !settings.cleanupCapitalize })}
+                className={`relative inline-flex shrink-0 h-5 w-9 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-stone-500 focus:ring-offset-2 ${
+                  settings.cleanupCapitalize ? 'bg-stone-800 dark:bg-stone-300' : 'bg-stone-300 dark:bg-stone-500'
+                }`}
+              >
+                <span
+                  className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${
+                    settings.cleanupCapitalize ? 'translate-x-4' : 'translate-x-1'
+                  }`}
+                />
+              </button>
+            </div>
+          </div>
+        )}
         </SettingsSection>
 
-        <SettingsSection title="Recording" subtitle="Trigger mode, shortcut key">
+        <SettingsSection pageId="recording" activePage={activeCat} title="Recording" subtitle="Trigger mode, shortcut key">
         {/* Voice Detection */}
         <div>
           <label className="block text-sm font-medium text-stone-700 dark:text-stone-300 mb-2">
@@ -710,7 +899,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
         </div>
         </SettingsSection>
 
-        <SettingsSection title="Output" subtitle="Auto-paste, launch at login">
+        <SettingsSection pageId="output" activePage={activeCat} title="Output" subtitle="Auto-paste, launch at login">
         {/* Auto-Paste Toggle */}
         <div>
           <div className="flex items-center justify-between">
@@ -922,16 +1111,29 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
             />
           </button>
         </div>
+
+        {settings.voiceCommandsEnabled && (
+          <VoiceCommandsEditor
+            commands={settings.voiceCommands}
+            onChange={(next) => onUpdateSettings({ voiceCommands: next })}
+          />
+        )}
         </SettingsSection>
 
-        <SettingsSection title="Per-App Profiles" subtitle="Auto-paste per frontmost app" defaultExpanded={false}>
+        <SettingsSection pageId="profiles" activePage={activeCat} title="Per-App Profiles" subtitle="Auto-paste + cleanup per frontmost app">
           <AppProfilesEditor
             profiles={settings.appProfiles}
             onChange={(next) => onUpdateSettings({ appProfiles: next })}
           />
         </SettingsSection>
 
-        <SettingsSection title="Code-Aware Vocabulary" subtitle="Bias toward your code identifiers" defaultExpanded={false}>
+        <SettingsSection pageId="vocab" activePage={activeCat} title="Vocabulary" subtitle="Bias transcription toward your terms">
+        {/* Manual custom vocabulary — feeds the same initial prompt as code-aware. */}
+        <CustomVocabularyTextarea
+          value={settings.customVocabulary}
+          onCommit={(value) => onUpdateSettings({ customVocabulary: value })}
+        />
+
         {/* Code-Aware Vocabulary Toggle */}
         <div>
           <div className="flex items-center justify-between">
@@ -940,7 +1142,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
                 Code-Aware Vocabulary
               </label>
               <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
-                Scan a project folder for code identifiers (useEffect, tauri, stderr) and bias transcription toward them. Whisper models only.
+                Bias transcription toward common dev terms (useEffect, kubectl, stderr) — works out of the box, no folder needed. Optionally add a project folder for your own identifiers. Whisper models only.
               </p>
             </div>
             <button
@@ -964,10 +1166,10 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
           {settings.codeVocabEnabled && (
             <div className="mt-3">
               <label className="block text-xs text-stone-600 dark:text-stone-400 mb-1">
-                Project Folder
+                Project Folder (optional)
               </label>
               <div className="px-3 py-2 text-xs rounded-lg border border-stone-300 dark:border-stone-600 bg-stone-50 dark:bg-stone-700/50 text-stone-700 dark:text-stone-300 break-all">
-                {settings.codeVocabFolder || 'No folder selected'}
+                {settings.codeVocabFolder || 'No folder — built-in dev terms only'}
               </div>
               <div className="mt-2 flex items-center gap-3">
                 <button
@@ -986,14 +1188,14 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
                 )}
               </div>
               <p className="mt-2 text-xs text-stone-500 dark:text-stone-400">
-                The folder is scanned once when set (dependency and build directories are skipped). Re-select to rescan after big code changes.
+                Optional. When set, the folder is scanned once for your identifiers (dependency and build directories are skipped) and layered on top of the built-in terms. Re-select to rescan after big code changes.
               </p>
             </div>
           )}
         </div>
         </SettingsSection>
 
-        <SettingsSection title="About" subtitle="Stats, logs, updates" defaultExpanded={false}>
+        <SettingsSection pageId="about" activePage={activeCat} title="About" subtitle="Stats, logs, updates">
         {/* Model Info */}
         <div>
           <div className="text-sm text-stone-600 dark:text-stone-400">
@@ -1061,7 +1263,8 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
           </div>
         )}
         </SettingsSection>
+        </div>
       </div>
-    </aside>
+    </div>
   );
 }
