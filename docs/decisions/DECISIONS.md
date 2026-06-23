@@ -6,7 +6,21 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 ---
 
+## 2026-06-23: In-process Tier 3 abandoned (ggml ABI clash); deferred to a sidecar
+
+**Decision:** Tiers 1–2 (no-LLM post-model correction) ship as planned. Tier 3 (local-LLM cleanup) is NOT shipped in-process — the `llama-cpp-2` integration and dormant settings/module were removed from the app crate. Tier 3 is deferred to a future sidecar-process design. This supersedes the Tier-3 portion of the entry below (Tiers 1–2 portion still stands).
+
+**Rationale:** `whisper-rs` and `llama-cpp-2` each statically vendor their own `ggml`. They link (matching symbol names) but **SIGSEGV at runtime** — an ABI mismatch between two ggml versions in one process — reproduced in both CPU (`MURMUR_T3_GPU_LAYERS=0`) and Metal modes during model load. Proven by isolation: a standalone binary linking only `llama-cpp-2` loads the GGUF and generates text fine (`MODEL LOADED OK`); the same code inside the app (which also links whisper) crashes. The only viable local-LLM path is a separate sidecar process (proven to run in isolation), which is a substantial new subsystem (persistent helper binary, IPC, lifecycle, Tauri `externalBin` bundling + codesign, model-download UX) with a CI signing/bundling path that can't be validated locally before pushing — too much risk for this release. A secondary finding: the 0.5B model wrapped its output in a ```` ```php ```` code fence (weak instruction-following), so Tier 3 would also need the 1.5B variant + output sanitization + prompt tuning. Working inference code is parked for the sidecar effort.
+
+**Status:** active
+
+**References:** branch `feat/post-model-correction`; commit removing in-process Tier 3; scratchpad `t3probe` (standalone proof) + `correction_model.rs.sidecar-ref` (parked impl).
+
+---
+
 ## 2026-06-23: Post-model correction layer — 3 tiers, local-only Tier 3, no routing
+
+**Status (Tier 3 portion):** superseded by 2026-06-23 (in-process Tier 3 abandoned). Tiers 1–2 portion active.
 
 **Decision:** Add a post-model TEXT correction layer that runs on every ASR backend, beside the existing cleanup + voice-command passes. Tier 1 = exact spoken→written term map (Aho-Corasick, single pass). Tier 2 = sounds-like match (Metaphone phonetic key + edit-distance, confidence cutoff, fires only near vocab). Both no-LLM, built on settings-change, target <1ms, logged as a `correction_ms` telemetry phase; one unified vocab config feeds both. Tier 3 = optional model cleanup using a **100% local** model only: Qwen2.5-1.5B-Instruct (Q4_K_M GGUF) via `llama-cpp-2` + Metal (Apache-2.0), with Qwen2.5-0.5B-Instruct as an optional "fast mode." The Tier 3 backend is a trait so a future BYO-OpenAI-compatible cloud option can plug in if approved. Smart per-input routing is dropped in favor of a single configurable backend.
 
