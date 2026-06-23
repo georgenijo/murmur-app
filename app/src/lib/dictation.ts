@@ -78,6 +78,10 @@ export interface ConfigureOptions {
   cleanupCapitalize?: boolean;
   codeVocabEnabled?: boolean;
   codeVocabFolder?: string;
+  correctionEnabled?: boolean;
+  correctionFuzzy?: boolean;
+  correctionModelEnabled?: boolean;
+  correctionModelFast?: boolean;
 }
 
 export async function configure(options: ConfigureOptions): Promise<DictationResponse> {
@@ -110,6 +114,10 @@ export function buildConfigureOptions(s: Settings): ConfigureOptions {
     cleanupCapitalize: s.cleanupCapitalize,
     codeVocabEnabled: s.codeVocabEnabled,
     codeVocabFolder: s.codeVocabFolder,
+    correctionEnabled: s.correctionEnabled,
+    correctionFuzzy: s.correctionFuzzy,
+    correctionModelEnabled: s.correctionModelEnabled,
+    correctionModelFast: s.correctionModelFast,
   };
 }
 

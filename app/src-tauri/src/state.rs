@@ -81,6 +81,17 @@ pub struct DictationState {
     /// when the folder/enabled flag changes so we don't rescan every utterance.
     /// `None` means "not yet scanned" (build lazily on first use).
     pub code_vocab_prompt: Option<String>,
+    /// Post-model correction (Tier 1 exact map + Tier 2 sounds-like). Applies the
+    /// vocabulary to the text *output* of every backend (not just Whisper's
+    /// prompt), so the default Parakeet engine benefits too.
+    pub correction_enabled: bool,
+    /// Tier 2 phonetic / edit-distance "sounds-like" matching. Gated under
+    /// `correction_enabled`.
+    pub correction_fuzzy: bool,
+    /// Tier 3 local-LLM cleanup pass. Opt-in, default off.
+    pub correction_model_enabled: bool,
+    /// Tier 3 "fast mode": use the smaller, faster local model variant.
+    pub correction_model_fast: bool,
 }
 
 impl Default for DictationState {
@@ -109,6 +120,12 @@ impl Default for DictationState {
             code_vocab_enabled: false,
             code_vocab_folder: String::new(),
             code_vocab_prompt: None,
+            // Post-model correction on by default: it's the fix that makes vocab
+            // actually work on the default Parakeet engine. No-op without vocab.
+            correction_enabled: true,
+            correction_fuzzy: true,
+            correction_model_enabled: false,
+            correction_model_fast: false,
         }
     }
 }
@@ -127,6 +144,10 @@ pub struct AppState {
     /// transcription share one Whisper backend, so they must be mutually
     /// exclusive — this flag lets each path refuse to start over the other.
     pub file_transcribing: AtomicBool,
+    /// Compiled post-model correction matcher, rebuilt on settings-change in
+    /// `configure_dictation`. Lives outside `DictationState` because the compiled
+    /// Aho-Corasick automaton isn't serializable.
+    pub correction_matcher: Mutex<Option<std::sync::Arc<crate::correction::CorrectionMatcher>>>,
 }
 
 impl AppState {
@@ -156,6 +177,7 @@ impl Default for AppState {
             recording_id: AtomicU64::new(0),
             cancelled_id: AtomicU64::new(0),
             file_transcribing: AtomicBool::new(false),
+            correction_matcher: Mutex::new(None),
         }
     }
 }

@@ -92,6 +92,49 @@ fn combine_prompts(custom: &str, code: &str) -> Option<String> {
     }
 }
 
+/// Split the free-text custom-vocabulary field into individual written terms.
+/// Entries are separated by commas or newlines (not spaces) so multi-word terms
+/// like "API Gateway" survive as one entry. Blank entries are dropped.
+fn parse_vocab_terms(s: &str) -> Vec<String> {
+    s.split(|c| c == ',' || c == '\n' || c == '\r')
+        .map(|t| t.trim())
+        .filter(|t| !t.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+/// Rebuild the post-model correction matcher from the current dictation settings
+/// and store it in `app_state.correction_matcher`. Called on settings-change (in
+/// `configure_dictation`) — never per-utterance. `dictation` is the already-held
+/// lock guard; the matcher is stored under a separate leaf mutex.
+fn rebuild_correction_matcher(
+    app_state: &AppState,
+    dictation: &crate::state::DictationState,
+) {
+    let code_enabled = dictation.code_vocab_enabled;
+    let mut terms = parse_vocab_terms(&dictation.custom_vocabulary);
+    if code_enabled {
+        // Built-in dev dictionary + any cached project scan become correction
+        // terms (their spoken forms are auto-derived: "useEffect" -> "use effect").
+        for t in crate::vocab::builtin_terms_prompt().split_whitespace() {
+            terms.push(t.to_string());
+        }
+        if let Some(folder_prompt) = &dictation.code_vocab_prompt {
+            for t in folder_prompt.split_whitespace() {
+                terms.push(t.to_string());
+            }
+        }
+    }
+    let matcher = crate::correction::CorrectionMatcher::build(
+        &terms,
+        &[],
+        dictation.correction_fuzzy,
+        // Gate the std* abbrev builtins on the dev-context (code-vocab) signal.
+        code_enabled,
+    );
+    *app_state.correction_matcher.lock_or_recover() = Some(std::sync::Arc::new(matcher));
+}
+
 /// RAII guard that resets dictation status to Idle on drop,
 /// ensuring status is restored on any early return or error path.
 ///
@@ -147,6 +190,7 @@ impl Drop for FileTranscribeGuard<'_> {
 pub(crate) struct PipelineTimings {
     pub vad_ms: u64,
     pub inference_ms: u64,
+    pub correction_ms: u64,
     pub paste_ms: u64,
     pub rss_before_mb: u64,
     pub rss_after_mb: u64,
@@ -166,9 +210,9 @@ async fn run_transcription_pipeline(
     let _guard = IdleGuard::new(app_state, recording_id);
 
     // Read all needed state in one lock
-    let (model_name, language, auto_paste, paste_delay_ms, vad_sensitivity, custom_vocabulary, smart_punctuation, save_transcript, save_audio, output_dir, app_profiles, voice_commands_enabled, voice_command_pairs, cleanup_enabled, cleanup_remove_filler, cleanup_capitalize) = {
+    let (model_name, language, auto_paste, paste_delay_ms, vad_sensitivity, custom_vocabulary, smart_punctuation, save_transcript, save_audio, output_dir, app_profiles, voice_commands_enabled, voice_command_pairs, cleanup_enabled, cleanup_remove_filler, cleanup_capitalize, correction_enabled) = {
         let dictation = app_state.dictation.lock_or_recover();
-        (dictation.model_name.clone(), dictation.language.clone(), dictation.auto_paste, dictation.auto_paste_delay_ms, dictation.vad_sensitivity, dictation.custom_vocabulary.clone(), dictation.smart_punctuation, dictation.save_transcript, dictation.save_audio, dictation.output_dir.clone(), dictation.app_profiles.clone(), dictation.voice_commands_enabled, dictation.voice_command_pairs.clone(), dictation.cleanup_enabled, dictation.cleanup_remove_filler, dictation.cleanup_capitalize)
+        (dictation.model_name.clone(), dictation.language.clone(), dictation.auto_paste, dictation.auto_paste_delay_ms, dictation.vad_sensitivity, dictation.custom_vocabulary.clone(), dictation.smart_punctuation, dictation.save_transcript, dictation.save_audio, dictation.output_dir.clone(), dictation.app_profiles.clone(), dictation.voice_commands_enabled, dictation.voice_command_pairs.clone(), dictation.cleanup_enabled, dictation.cleanup_remove_filler, dictation.cleanup_capitalize, dictation.correction_enabled)
     };
 
     // Per-app profiles: if the frontmost app has a matching profile, its overrides
@@ -202,7 +246,7 @@ async fn run_transcription_pipeline(
     // Checkpoint 1: cancelled before VAD?
     if app_state.is_cancelled(recording_id) {
         tracing::info!(target: "pipeline", "cancelled before VAD (recording_id={})", recording_id);
-        return Ok((String::new(), PipelineTimings { vad_ms: 0, inference_ms: 0, paste_ms: 0, rss_before_mb: 0, rss_after_mb: 0 }));
+        return Ok((String::new(), PipelineTimings { vad_ms: 0, inference_ms: 0, correction_ms: 0, paste_ms: 0, rss_before_mb: 0, rss_after_mb: 0 }));
     }
 
     // Phase: VAD -- filter out silence to prevent Whisper hallucination loops
@@ -224,7 +268,7 @@ async fn run_transcription_pipeline(
                 Ok(vad::VadResult::NoSpeech) => {
                     tracing::info!(target: "pipeline", "VAD detected no speech ({} samples, {:?}), skipping transcription",
                         samples.len(), t_vad.elapsed());
-                    return Ok((String::new(), PipelineTimings { vad_ms: t_vad.elapsed().as_millis() as u64, inference_ms: 0, paste_ms: 0, rss_before_mb: 0, rss_after_mb: 0 }));
+                    return Ok((String::new(), PipelineTimings { vad_ms: t_vad.elapsed().as_millis() as u64, inference_ms: 0, correction_ms: 0, paste_ms: 0, rss_before_mb: 0, rss_after_mb: 0 }));
                 }
                 Ok(vad::VadResult::Speech(trimmed)) => {
                     tracing::info!(target: "pipeline", "VAD trimmed {} -> {} samples ({:.0}% speech, {:?})",
@@ -255,7 +299,7 @@ async fn run_transcription_pipeline(
     // Checkpoint 2: cancelled before transcription?
     if app_state.is_cancelled(recording_id) {
         tracing::info!(target: "pipeline", "cancelled before transcription (recording_id={})", recording_id);
-        return Ok((String::new(), PipelineTimings { vad_ms, inference_ms: 0, paste_ms: 0, rss_before_mb: 0, rss_after_mb: 0 }));
+        return Ok((String::new(), PipelineTimings { vad_ms, inference_ms: 0, correction_ms: 0, paste_ms: 0, rss_before_mb: 0, rss_after_mb: 0 }));
     }
 
     // Phase: Transcription (includes lazy model load on first run)
@@ -305,12 +349,34 @@ async fn run_transcription_pipeline(
         .collect();
     let text = crate::voice_commands::apply_voice_commands_with_custom(&text, voice_commands_enabled, &custom_commands);
 
+    // Phase: post-model correction (Tier 1 exact map + Tier 2 sounds-like). Applies
+    // the unified vocabulary to the transcript on EVERY backend — this is what makes
+    // vocab work on the default Parakeet engine (which ignores Whisper's prompt).
+    // The matcher is prebuilt on settings-change; this is a couple of linear passes.
+    let t_correction = std::time::Instant::now();
+    let text = if correction_enabled && !text.trim().is_empty() {
+        let matcher = app_state.correction_matcher.lock_or_recover().clone();
+        match matcher {
+            Some(m) if !m.is_empty() => {
+                let corrected = m.apply(&text);
+                if corrected != text {
+                    tracing::info!(target: "pipeline", "correction applied ({} -> {} chars)", text.len(), corrected.len());
+                }
+                corrected
+            }
+            _ => text,
+        }
+    } else {
+        text
+    };
+    let correction_ms = t_correction.elapsed().as_millis() as u64;
+
     // Update last_transcription_at for idle timeout tracking
     *app_state.last_transcription_at.lock_or_recover() = Some(std::time::Instant::now());
     // Checkpoint 3: cancelled before text injection?
     if app_state.is_cancelled(recording_id) {
         tracing::info!(target: "pipeline", "cancelled before injection (recording_id={})", recording_id);
-        return Ok((String::new(), PipelineTimings { vad_ms, inference_ms, paste_ms: 0, rss_before_mb, rss_after_mb }));
+        return Ok((String::new(), PipelineTimings { vad_ms, inference_ms, correction_ms, paste_ms: 0, rss_before_mb, rss_after_mb }));
     }
 
     // Phase: File output (optional) -- persist audio/transcript before injection.
@@ -362,7 +428,7 @@ async fn run_transcription_pipeline(
     let paste_ms = t_inject.elapsed().as_millis() as u64;
     tracing::info!(target: "pipeline", "inject (clipboard + paste): {:?}", t_inject.elapsed());
 
-    Ok((text, PipelineTimings { vad_ms, inference_ms, paste_ms, rss_before_mb, rss_after_mb }))
+    Ok((text, PipelineTimings { vad_ms, inference_ms, correction_ms, paste_ms, rss_before_mb, rss_after_mb }))
     // _guard drops here, setting status to Idle
 }
 
@@ -449,6 +515,7 @@ pub async fn process_audio(
         target: "pipeline",
         vad_ms = timings.vad_ms,
         inference_ms = timings.inference_ms,
+        correction_ms = timings.correction_ms,
         paste_ms = timings.paste_ms,
         total_ms = total_ms,
         audio_secs = audio_secs,
@@ -627,6 +694,24 @@ pub async fn configure_dictation(
             dictation.code_vocab_prompt = None;
         }
     }
+
+    // Post-model correction toggles.
+    if let Some(v) = options.get("correctionEnabled").and_then(|v| v.as_bool()) {
+        dictation.correction_enabled = v;
+    }
+    if let Some(v) = options.get("correctionFuzzy").and_then(|v| v.as_bool()) {
+        dictation.correction_fuzzy = v;
+    }
+    if let Some(v) = options.get("correctionModelEnabled").and_then(|v| v.as_bool()) {
+        dictation.correction_model_enabled = v;
+    }
+    if let Some(v) = options.get("correctionModelFast").and_then(|v| v.as_bool()) {
+        dictation.correction_model_fast = v;
+    }
+
+    // Rebuild the correction matcher from the (now-updated) unified vocab +
+    // correction settings. Built here on settings-change, never per-utterance.
+    rebuild_correction_matcher(&state.app_state, &dictation);
 
     if let Some(idle_timeout) = options.get("idleTimeoutMinutes").and_then(|v| v.as_u64()) {
         let normalized = match idle_timeout {
@@ -836,6 +921,7 @@ pub async fn stop_native_recording(
         target: "pipeline",
         vad_ms = timings.vad_ms,
         inference_ms = timings.inference_ms,
+        correction_ms = timings.correction_ms,
         paste_ms = timings.paste_ms,
         total_ms = total_ms,
         audio_secs = audio_secs,

@@ -58,6 +58,18 @@ export interface Settings {
   codeVocabEnabled: boolean;
   /** Optional absolute path to a project folder scanned for code identifiers. */
   codeVocabFolder: string;
+  /**
+   * Post-model correction: apply the vocabulary to the transcript *output* of every
+   * backend (Tier 1 exact map + Tier 2 sounds-like). On by default — it's what makes
+   * vocab work on the default Parakeet engine, which ignores Whisper's prompt.
+   */
+  correctionEnabled: boolean;
+  /** Tier 2 phonetic "sounds-like" matching. Gated under correctionEnabled. */
+  correctionFuzzy: boolean;
+  /** Tier 3 local-LLM cleanup pass for context mishears. Opt-in, default off. */
+  correctionModelEnabled: boolean;
+  /** Tier 3 "fast mode": the smaller, faster local model variant. */
+  correctionModelFast: boolean;
 }
 
 export type ModelOption =
@@ -146,6 +158,12 @@ export const DEFAULT_SETTINGS: Settings = {
   cleanupCapitalize: true,
   codeVocabEnabled: false,
   codeVocabFolder: '',
+  // Correction on by default: it's the fix that makes vocab actually apply on the
+  // default Parakeet engine. A no-op when there's no vocabulary configured.
+  correctionEnabled: true,
+  correctionFuzzy: true,
+  correctionModelEnabled: false,
+  correctionModelFast: false,
 };
 
 export const STORAGE_KEY = 'dictation-settings';
@@ -246,6 +264,22 @@ export function loadSettings(): Settings {
       // anything non-string back to the empty default.
       if (typeof parsed.codeVocabFolder !== 'string') {
         parsed.codeVocabFolder = DEFAULT_SETTINGS.codeVocabFolder;
+      }
+
+      // Correction toggles — coerce non-booleans (or absent on pre-feature blobs)
+      // back to defaults. correctionEnabled defaults ON, so an older settings blob
+      // that predates this field opts into correction (the intended migration).
+      if (typeof parsed.correctionEnabled !== 'boolean') {
+        parsed.correctionEnabled = DEFAULT_SETTINGS.correctionEnabled;
+      }
+      if (typeof parsed.correctionFuzzy !== 'boolean') {
+        parsed.correctionFuzzy = DEFAULT_SETTINGS.correctionFuzzy;
+      }
+      if (typeof parsed.correctionModelEnabled !== 'boolean') {
+        parsed.correctionModelEnabled = DEFAULT_SETTINGS.correctionModelEnabled;
+      }
+      if (typeof parsed.correctionModelFast !== 'boolean') {
+        parsed.correctionModelFast = DEFAULT_SETTINGS.correctionModelFast;
       }
 
       return { ...DEFAULT_SETTINGS, ...parsed } as Settings;
