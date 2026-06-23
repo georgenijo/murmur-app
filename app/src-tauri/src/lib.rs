@@ -4,6 +4,7 @@ mod audio;
 mod audio_decode;
 mod cleanup;
 mod commands;
+mod correction;
 mod file_output;
 mod frontmost;
 mod injector;
