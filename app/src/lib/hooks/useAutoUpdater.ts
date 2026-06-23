@@ -113,8 +113,15 @@ export function useAutoUpdater(): UseAutoUpdaterReturn {
     }
   }, []);
 
-  // On mount: always check on launch, then set up 24h periodic interval
+  // On mount: always check on launch, then set up 24h periodic interval.
+  // Skip entirely in dev — a dev build auto-updating to a prod release would
+  // download+relaunch into /Applications, making `tauri dev` impossible.
   useEffect(() => {
+    if (import.meta.env.DEV) {
+      flog.info('updater', 'dev build — skipping automatic update check');
+      return;
+    }
+
     performCheck({ isBackground: true });
 
     const interval = setInterval(() => {
