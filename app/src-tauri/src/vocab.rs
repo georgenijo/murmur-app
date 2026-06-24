@@ -50,11 +50,11 @@ pub const MAX_FILE_BYTES: u64 = 512 * 1024;
 
 /// Cap on the number of files we read in one scan, so a giant repo can't hang
 /// the pipeline. Files are visited in directory-walk order until the cap is hit.
-pub const MAX_FILES: usize = 200;
+pub const MAX_FILES: usize = 1000;
 
 /// Total bytes we will read across all files in one scan. A second guard on top
 /// of the per-file and file-count caps.
-pub const MAX_TOTAL_BYTES: u64 = 8 * 1024 * 1024;
+pub const MAX_TOTAL_BYTES: u64 = 32 * 1024 * 1024;
 
 /// Source file extensions we scan. Kept to common code formats so we don't pull
 /// identifiers out of, say, lockfiles or binary assets.
@@ -226,49 +226,132 @@ fn is_candidate(token: &str) -> bool {
     true
 }
 
-/// Build a Whisper initial-prompt string from in-memory file contents.
+/// A ranked vocabulary term and the number of times it was seen across the scan.
+/// `term` is the first surface form encountered (e.g. `useEffect`), `freq` its
+/// total occurrence count. Returned by [`VocabAccumulator::ranked`] /
+/// [`ranked_vocab_terms`] ordered by descending frequency, ties broken by
+/// first-seen order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RankedTerm {
+    pub term: String,
+    pub freq: u32,
+}
+
+/// Streaming frequency accumulator for identifiers. Fold one file's contents in
+/// at a time via [`VocabAccumulator::add_source`]; the file's `String` can be
+/// dropped immediately after, so peak memory is bounded by the number of unique
+/// terms (not the total bytes read). [`VocabAccumulator::ranked`] then produces a
+/// deterministic descending-frequency ranking.
+#[derive(Default)]
+pub struct VocabAccumulator {
+    /// lowercased key -> occurrence count.
+    freq: HashMap<String, u32>,
+    /// lowercased key -> first surface form seen (preserves original casing).
+    surface: HashMap<String, String>,
+    /// lowercased key -> first-seen ordinal (for stable tie-breaks).
+    order: HashMap<String, usize>,
+    next_order: usize,
+}
+
+impl VocabAccumulator {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Extract identifiers from `source` and fold their counts into the running
+    /// tallies. The caller may drop `source` immediately afterward — nothing from
+    /// it is retained beyond the per-term bookkeeping above.
+    pub fn add_source(&mut self, source: &str) {
+        for ident in extract_identifiers(source) {
+            self.add_identifier(&ident);
+        }
+    }
+
+    /// Fold a single already-extracted identifier into the tallies.
+    fn add_identifier(&mut self, ident: &str) {
+        let key = ident.to_ascii_lowercase();
+        *self.freq.entry(key.clone()).or_insert(0) += 1;
+        self.surface.entry(key.clone()).or_insert_with(|| ident.to_string());
+        let next = &mut self.next_order;
+        self.order.entry(key).or_insert_with(|| {
+            let o = *next;
+            *next += 1;
+            o
+        });
+    }
+
+    /// Number of distinct (case-insensitive) terms accumulated so far. The walk
+    /// hands this to the `on_file` callback so the live UI counter never has to
+    /// re-extract identifiers from already-folded file contents.
+    pub fn len(&self) -> usize {
+        self.freq.len()
+    }
+
+    #[allow(dead_code)]
+    pub fn is_empty(&self) -> bool {
+        self.freq.is_empty()
+    }
+
+    /// Produce the deterministic ranking: descending frequency, ties broken by
+    /// ascending first-seen order, truncated to `max_terms`. `max_terms == 0`
+    /// yields an empty vector.
+    pub fn ranked(&self, max_terms: usize) -> Vec<RankedTerm> {
+        if max_terms == 0 {
+            return Vec::new();
+        }
+        let mut ranked: Vec<(&String, u32)> = self.freq.iter().map(|(k, v)| (k, *v)).collect();
+        // Sort by descending frequency, then ascending first-seen order for stable ties.
+        ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| self.order[a.0].cmp(&self.order[b.0])));
+        ranked
+            .into_iter()
+            .take(max_terms)
+            .map(|(k, freq)| RankedTerm {
+                term: self.surface[k].clone(),
+                freq,
+            })
+            .collect()
+    }
+}
+
+/// Rank identifiers across in-memory file contents into `(term, freq)` pairs.
 ///
 /// Pure: takes `(label, contents)` pairs (the label is only used for ordering
 /// stability and is otherwise ignored), extracts identifiers from every file,
 /// dedupes case-insensitively, ranks by descending frequency (ties broken by
-/// first-seen order for determinism), and returns the top `max_terms` joined by
-/// spaces — directly usable as `params.set_initial_prompt(...)`.
-pub fn build_vocab_prompt<S: AsRef<str>>(files: &[(S, S)], max_terms: usize) -> String {
-    if max_terms == 0 {
-        return String::new();
-    }
-
-    // frequency by lowercased key; remember the first surface form and first-seen
-    // order so ranking is deterministic across runs.
-    let mut freq: HashMap<String, u32> = HashMap::new();
-    let mut surface: HashMap<String, String> = HashMap::new();
-    let mut order: HashMap<String, usize> = HashMap::new();
-    let mut next_order = 0usize;
-
+/// first-seen order for determinism), and returns the top `max_terms`. The
+/// joined-string [`build_vocab_prompt`] is a thin wrapper over this.
+///
+/// Retained as a pure, unit-tested reference for the ranking contract; the live
+/// directory scan folds per-file via [`VocabAccumulator`] (which this delegates
+/// to) so it never needs every file's contents resident at once.
+#[allow(dead_code)]
+pub fn ranked_vocab_terms<S: AsRef<str>>(files: &[(S, S)], max_terms: usize) -> Vec<RankedTerm> {
+    let mut acc = VocabAccumulator::new();
     for (_label, contents) in files {
-        for ident in extract_identifiers(contents.as_ref()) {
-            let key = ident.to_ascii_lowercase();
-            *freq.entry(key.clone()).or_insert(0) += 1;
-            surface.entry(key.clone()).or_insert_with(|| ident.clone());
-            order.entry(key.clone()).or_insert_with(|| {
-                let o = next_order;
-                next_order += 1;
-                o
-            });
-        }
+        acc.add_source(contents.as_ref());
     }
+    acc.ranked(max_terms)
+}
 
-    let mut ranked: Vec<(&String, u32)> = freq.iter().map(|(k, v)| (k, *v)).collect();
-    // Sort by descending frequency, then ascending first-seen order for stable ties.
-    ranked.sort_by(|a, b| {
-        b.1.cmp(&a.1)
-            .then_with(|| order[a.0].cmp(&order[b.0]))
-    });
+/// Build a Whisper initial-prompt string from in-memory file contents.
+///
+/// Pure: ranks identifiers via [`ranked_vocab_terms`] and joins the top
+/// `max_terms` surface forms by spaces — directly usable as
+/// `params.set_initial_prompt(...)`. Retained as the in-memory convenience entry
+/// (and ranking-contract reference) used by tests; the live scan path joins via
+/// [`ranked_terms_to_prompt`] on the streamed [`VocabAccumulator`] ranking.
+#[allow(dead_code)]
+pub fn build_vocab_prompt<S: AsRef<str>>(files: &[(S, S)], max_terms: usize) -> String {
+    ranked_terms_to_prompt(&ranked_vocab_terms(files, max_terms))
+}
 
+/// Join a ranked term list into a space-separated Whisper initial prompt,
+/// preserving rank order. Shared by [`build_vocab_prompt`] and the directory
+/// scan so the prompt string and the ranked list never drift out of sync.
+pub fn ranked_terms_to_prompt(ranked: &[RankedTerm]) -> String {
     ranked
-        .into_iter()
-        .take(max_terms)
-        .map(|(k, _)| surface[k].clone())
+        .iter()
+        .map(|r| r.term.as_str())
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -278,32 +361,73 @@ pub fn build_vocab_prompt<S: AsRef<str>>(files: &[(S, S)], max_terms: usize) -> 
 // this just walks a directory, applies the size/count guards, and reads files.
 // ---------------------------------------------------------------------------
 
+/// Result of walking a project folder: the folded frequency [`VocabAccumulator`]
+/// (identifiers ranked on demand — file contents are *not* retained, so memory is
+/// bounded by unique-term count, not bytes read), how many files were read, how
+/// many directories we declined to descend into, the total bytes read, and
+/// whether the walk stopped *early* on a guard (MAX_FILES / MAX_TOTAL_BYTES)
+/// before the tree was exhausted. `capped` is what the UI surfaces to explain a
+/// partial scan; it is `false` when the walk simply ran dry.
+pub struct ScanOutcome {
+    pub vocab: VocabAccumulator,
+    pub files_read: usize,
+    pub dirs_skipped: usize,
+    pub total_bytes: u64,
+    pub capped: bool,
+}
+
 /// Walk `folder`, read up to the guarded number/size of source files, and build
 /// a vocabulary prompt of at most `max_terms` identifiers. Unreadable files are
 /// logged and skipped. Returns an empty string if nothing usable is found.
 ///
 /// This function is deliberately not unit-tested (it touches the filesystem);
 /// all of its non-trivial logic delegates to the pure functions above.
-#[allow(dead_code)]
 pub fn build_vocab_prompt_from_dir(folder: &Path, max_terms: usize) -> String {
-    let files = collect_source_files(folder);
-    if files.is_empty() {
-        return String::new();
-    }
-    build_vocab_prompt(&files, max_terms)
+    let outcome = collect_source_files(folder, |_, _| {}, |_| {});
+    ranked_terms_to_prompt(&outcome.vocab.ranked(max_terms))
 }
 
-/// Iteratively walk `folder` (no recursion to bound stack), honoring the file
-/// count, per-file size, total-byte, extension, and skip-dir guards. Returns
-/// `(path_string, contents)` pairs ready for [`build_vocab_prompt`].
-#[allow(dead_code)]
-fn collect_source_files(folder: &Path) -> Vec<(String, String)> {
-    let mut files: Vec<(String, String)> = Vec::new();
+/// Iteratively walk `folder` **breadth-first** (FIFO queue, no recursion to
+/// bound stack), honoring the file count, per-file size, total-byte, extension,
+/// and skip-dir guards. Breadth-first so a parent folder (e.g. `~/code`) samples
+/// fairly across its child projects instead of exhausting the file budget by
+/// depth-diving the first subdirectory it finds.
+///
+/// `on_file` is invoked once per source file successfully read, with the file's
+/// path and the running distinct-term count after that file was folded in (so a
+/// caller can surface a live term tally *without* re-extracting identifiers — the
+/// walk already folds each file into the accumulator). `on_skip` is invoked once
+/// per dependency/build/hidden dir declined, with that dir's path. Callers use
+/// both to surface a live scan stream (file rows and struck-through skip rows)
+/// with running counts. Returns a [`ScanOutcome`] recording the files,
+/// skipped-dir count, bytes read, and whether a guard cut the walk short
+/// (`capped`).
+pub fn collect_source_files<F: FnMut(&Path, usize), G: FnMut(&Path)>(
+    folder: &Path,
+    mut on_file: F,
+    mut on_skip: G,
+) -> ScanOutcome {
+    // Fold each file's identifiers in as we read it, then drop the contents — so
+    // peak memory is bounded by the unique-term count, not the bytes scanned.
+    let mut vocab = VocabAccumulator::new();
+    let mut files_read: usize = 0;
     let mut total_bytes: u64 = 0;
-    let mut stack: Vec<std::path::PathBuf> = vec![folder.to_path_buf()];
+    let mut dirs_skipped: usize = 0;
+    let mut capped = false;
+    // FIFO queue (breadth-first): dirs are processed in the order discovered, so
+    // the file budget spreads across sibling subtrees rather than the first one.
+    let mut queue: std::collections::VecDeque<std::path::PathBuf> =
+        std::collections::VecDeque::new();
+    queue.push_back(folder.to_path_buf());
 
-    while let Some(dir) = stack.pop() {
-        if files.len() >= MAX_FILES || total_bytes >= MAX_TOTAL_BYTES {
+    'walk: while let Some(dir) = queue.pop_front() {
+        // Stop once a guard is hit, but do NOT mark `capped` here: popping another
+        // queued dir at/after the cap doesn't prove readable content was skipped
+        // (the remaining dirs may be empty/non-source). `capped` is set only at the
+        // inner break below, where a guard actually blocks reading a candidate
+        // source file — so it never raises a false "hit the cap" warning on a scan
+        // that read exactly MAX_FILES and had nothing left to read.
+        if files_read >= MAX_FILES || total_bytes >= MAX_TOTAL_BYTES {
             break;
         }
         let entries = match std::fs::read_dir(&dir) {
@@ -316,7 +440,12 @@ fn collect_source_files(folder: &Path) -> Vec<(String, String)> {
             }
         };
 
-        for entry in entries.flatten() {
+        // Sort entries by name so repeat scans of the same tree are stable
+        // (read_dir order is filesystem-dependent).
+        let mut sorted: Vec<std::fs::DirEntry> = entries.flatten().collect();
+        sorted.sort_by_key(|e| e.file_name());
+
+        for entry in sorted {
             let path = entry.path();
             let file_type = match entry.file_type() {
                 Ok(t) => t,
@@ -329,9 +458,11 @@ fn collect_source_files(folder: &Path) -> Vec<(String, String)> {
                 // Skip well-known dependency/build dirs and any hidden dir
                 // (leading dot) — both are noise for a vocabulary scan.
                 if name.starts_with('.') || is_skipped_dir(&name) {
+                    dirs_skipped += 1;
+                    on_skip(&path);
                     continue;
                 }
-                stack.push(path);
+                queue.push_back(path);
                 continue;
             }
 
@@ -339,8 +470,9 @@ fn collect_source_files(folder: &Path) -> Vec<(String, String)> {
                 continue;
             }
 
-            if files.len() >= MAX_FILES || total_bytes >= MAX_TOTAL_BYTES {
-                break;
+            if files_read >= MAX_FILES || total_bytes >= MAX_TOTAL_BYTES {
+                capped = true;
+                break 'walk;
             }
 
             // Per-file size guard before reading.
@@ -353,7 +485,14 @@ fn collect_source_files(folder: &Path) -> Vec<(String, String)> {
             match std::fs::read_to_string(&path) {
                 Ok(contents) => {
                     total_bytes += contents.len() as u64;
-                    files.push((path.to_string_lossy().to_string(), contents));
+                    files_read += 1;
+                    // Fold the file's identifiers into the accumulator and drop the
+                    // contents — nothing keeps the `String` alive past this
+                    // iteration. Then hand the callback the running distinct-term
+                    // count so it never has to re-extract (which would double the
+                    // tokenization CPU on a large walk).
+                    vocab.add_source(&contents);
+                    on_file(&path, vocab.len());
                 }
                 Err(e) => {
                     #[cfg(not(test))]
@@ -364,7 +503,7 @@ fn collect_source_files(folder: &Path) -> Vec<(String, String)> {
         }
     }
 
-    files
+    ScanOutcome { vocab, files_read, dirs_skipped, total_bytes, capped }
 }
 
 #[cfg(test)]
@@ -509,6 +648,108 @@ mod tests {
         assert_eq!(prompt, "fooBar");
     }
 
+    // ---- Ranked (term, freq) pairs + budget split ----
+
+    #[test]
+    fn ranked_terms_returns_freq_and_rank_order() {
+        // barBaz 3x, fooBar 1x => barBaz first with freq 3, fooBar second freq 1.
+        let files = vec![("a.rs", "fooBar barBaz barBaz barBaz")];
+        let ranked = ranked_vocab_terms(&files, 10);
+        assert_eq!(ranked.len(), 2);
+        assert_eq!(ranked[0], RankedTerm { term: "barBaz".into(), freq: 3 });
+        assert_eq!(ranked[1], RankedTerm { term: "fooBar".into(), freq: 1 });
+    }
+
+    #[test]
+    fn ranked_terms_respects_max_and_zero() {
+        let files = vec![("a.rs", "oneTwo threeFour fiveSix")];
+        assert_eq!(ranked_vocab_terms(&files, 2).len(), 2);
+        assert!(ranked_vocab_terms(&files, 0).is_empty());
+    }
+
+    #[test]
+    fn ranked_terms_drives_prompt_string() {
+        // build_vocab_prompt must equal the ranked list joined by spaces — the two
+        // share ranked_terms_to_prompt so the prompt and the ranked list can't drift.
+        let files = vec![("a.rs", "alphaOne betaTwo alphaOne")];
+        let ranked = ranked_vocab_terms(&files, 10);
+        assert_eq!(ranked_terms_to_prompt(&ranked), build_vocab_prompt(&files, 10));
+        assert_eq!(ranked[0].term, "alphaOne", "ranked={:?}", ranked);
+    }
+
+    #[test]
+    fn budget_split_top96_is_prefix_of_top500() {
+        // The Whisper budget (96) is the rank-prefix of the correction budget (500):
+        // both come from the same descending-frequency ranking, so the top 96 are
+        // exactly the first 96 of the top 500. Synthesize >96 distinct terms with
+        // strictly descending frequency so order is unambiguous.
+        let mut src = String::new();
+        for i in 0..150 {
+            // term i repeats (150 - i) times => strictly descending frequency.
+            for _ in 0..(150 - i) {
+                src.push_str(&format!("term{:03}X ", i));
+            }
+        }
+        let files = vec![("a.rs", src.as_str())];
+        let top500 = ranked_vocab_terms(&files, 500);
+        let top96 = ranked_vocab_terms(&files, 96);
+        assert_eq!(top500.len(), 150, "all 150 distinct terms fit under 500");
+        assert_eq!(top96.len(), 96, "Whisper budget truncates to 96");
+        // top96 is a strict prefix of top500 (same ranking, just truncated).
+        assert_eq!(&top500[..96], &top96[..]);
+        // whisperCount semantics: min(96, kept) == 96 here.
+        assert_eq!(top96.len().min(96), 96);
+    }
+
+    #[test]
+    fn budget_split_whisper_count_clamps_to_kept() {
+        // Fewer than 96 distinct terms => Whisper budget == kept count, not 96.
+        let files = vec![("a.rs", "alphaOne betaTwo gammaThree")];
+        let kept = ranked_vocab_terms(&files, 500);
+        assert_eq!(kept.len(), 3);
+        assert_eq!(kept.len().min(96), 3, "whisperCount clamps below 96");
+    }
+
+    // ---- Per-file streaming accumulator (bounded memory) ----
+
+    #[test]
+    fn accumulator_folds_per_file_without_retaining_contents() {
+        // Fold three files one String at a time, dropping each before the next —
+        // proving the ranking does NOT need all file contents resident at once.
+        let mut acc = VocabAccumulator::new();
+        {
+            let f1 = String::from("fooBar barBaz");
+            acc.add_source(&f1);
+            // f1 dropped here; nothing in `acc` borrows it.
+        }
+        {
+            let f2 = String::from("fooBar fooBar");
+            acc.add_source(&f2);
+        }
+        {
+            let f3 = String::from("quxQuux");
+            acc.add_source(&f3);
+        }
+        // fooBar seen 3x total across files => ranks first.
+        let ranked = acc.ranked(10);
+        assert_eq!(ranked[0], RankedTerm { term: "fooBar".into(), freq: 3 });
+        assert_eq!(acc.len(), 3, "fooBar, barBaz, quxQuux");
+        // Folding files one at a time matches ranking them all together.
+        let batch = ranked_vocab_terms(
+            &[("a", "fooBar barBaz"), ("b", "fooBar fooBar"), ("c", "quxQuux")],
+            10,
+        );
+        assert_eq!(ranked, batch, "streaming fold == batch ranking");
+    }
+
+    #[test]
+    fn accumulator_empty_is_empty() {
+        let acc = VocabAccumulator::new();
+        assert!(acc.is_empty());
+        assert_eq!(acc.len(), 0);
+        assert!(acc.ranked(10).is_empty());
+    }
+
     #[test]
     fn is_source_file_matches_extensions() {
         assert!(is_source_file(&PathBuf::from("a/b/c.rs")));
@@ -548,6 +789,119 @@ mod tests {
         assert!(MAX_FILES > 0);
         assert!(MAX_TOTAL_BYTES >= MAX_FILE_BYTES);
         assert!(!SOURCE_EXTENSIONS.is_empty());
+        // Caps were raised to accommodate the decoupled correction budget (top
+        // 500 terms) without scanning unbounded repos: 1000 files / 32MB total /
+        // 512KB per file. Pin the new values so an accidental downgrade is caught.
+        assert_eq!(MAX_FILES, 1000);
+        assert_eq!(MAX_TOTAL_BYTES, 32 * 1024 * 1024);
+        assert_eq!(MAX_FILE_BYTES, 512 * 1024);
+    }
+
+    // ---- Filesystem walk (breadth-first, guards, progress) ----
+
+    /// Create a unique scratch dir under the OS temp dir for a walk test.
+    fn scratch_dir(tag: &str) -> PathBuf {
+        let mut p = std::env::temp_dir();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        p.push(format!("murmur_vocab_test_{}_{}", tag, nanos));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    #[test]
+    fn walk_reads_source_files_and_reports_progress() {
+        let dir = scratch_dir("read");
+        std::fs::write(dir.join("a.rs"), "let fooBar = barBaz;").unwrap();
+        std::fs::write(dir.join("b.ts"), "const useWidget = 1;").unwrap();
+        std::fs::write(dir.join("notes.md"), "ignored non-source").unwrap();
+
+        let mut seen = 0usize;
+        let mut last_term_count = 0usize;
+        let outcome = collect_source_files(
+            &dir,
+            |_, terms_so_far| {
+                seen += 1;
+                last_term_count = terms_so_far;
+            },
+            |_| {},
+        );
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert_eq!(outcome.files_read, 2, "only the two source files");
+        assert_eq!(seen, 2, "progress callback fired once per file read");
+        // on_file receives the running distinct-term count (monotonically grows as
+        // files fold in); by the last file it equals the accumulator's total.
+        assert!(last_term_count > 0, "on_file receives a running term count");
+        assert_eq!(last_term_count, outcome.vocab.len(), "final tally matches accumulator");
+        assert!(!outcome.capped, "small tree should not be capped");
+        assert!(outcome.total_bytes > 0);
+        // The accumulator folded both files' identifiers (fooBar, barBaz, useWidget).
+        assert!(outcome.vocab.len() >= 3, "got {} terms", outcome.vocab.len());
+    }
+
+    #[test]
+    fn walk_skips_dependency_dirs_and_counts_them() {
+        let dir = scratch_dir("skip");
+        std::fs::create_dir_all(dir.join("node_modules")).unwrap();
+        std::fs::write(dir.join("node_modules").join("dep.js"), "var depThing = 1;").unwrap();
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::write(dir.join(".git").join("c.rs"), "let gitThing = 1;").unwrap();
+        std::fs::write(dir.join("main.rs"), "let realThing = 1;").unwrap();
+
+        let mut skipped: Vec<String> = Vec::new();
+        let outcome = collect_source_files(&dir, |_, _| {}, |p| {
+            skipped.push(p.file_name().unwrap().to_string_lossy().to_string());
+        });
+        std::fs::remove_dir_all(&dir).ok();
+
+        // Only the top-level real source file; the two skip-dirs are not descended.
+        assert_eq!(outcome.files_read, 1, "got {} files", outcome.files_read);
+        assert_eq!(outcome.dirs_skipped, 2, "node_modules + .git both skipped");
+        // on_skip fires once per declined dir, carrying its path.
+        assert_eq!(skipped.len(), 2, "on_skip fired per skipped dir, got {:?}", skipped);
+        assert!(skipped.contains(&"node_modules".to_string()), "got {:?}", skipped);
+        assert!(skipped.contains(&".git".to_string()), "got {:?}", skipped);
+    }
+
+    #[test]
+    fn walk_is_breadth_first_across_sibling_projects() {
+        // Two sibling project dirs, each with a source file two levels deep. A
+        // depth-first walk that exhausted a 1-file budget would only see one
+        // project; breadth-first must touch the shallow files of both first.
+        let dir = scratch_dir("bfs");
+        for proj in ["projA", "projB"] {
+            let src = dir.join(proj).join("src");
+            std::fs::create_dir_all(&src).unwrap();
+            std::fs::write(dir.join(proj).join(format!("{}Top.rs", proj)), "let topThing = 1;").unwrap();
+            std::fs::write(src.join("deepThing.rs"), "let deepThing = 1;").unwrap();
+        }
+
+        let mut order: Vec<String> = Vec::new();
+        let outcome = collect_source_files(&dir, |p, _| {
+            order.push(p.file_name().unwrap().to_string_lossy().to_string());
+        }, |_| {});
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert_eq!(outcome.files_read, 4);
+        // Both shallow (top-level-of-project) files must come before either deep
+        // file — proof the walk is breadth-first, not depth-first.
+        let pos_a_top = order.iter().position(|n| n == "projATop.rs").unwrap();
+        let pos_b_top = order.iter().position(|n| n == "projBTop.rs").unwrap();
+        let pos_deep = order.iter().position(|n| n == "deepThing.rs").unwrap();
+        assert!(pos_a_top < pos_deep, "shallow projA file before deep, order={:?}", order);
+        assert!(pos_b_top < pos_deep, "shallow projB file before deep, order={:?}", order);
+    }
+
+    #[test]
+    fn walk_not_capped_when_tree_runs_dry() {
+        let dir = scratch_dir("dry");
+        std::fs::write(dir.join("only.rs"), "let oneThing = 1;").unwrap();
+        let outcome = collect_source_files(&dir, |_, _| {}, |_| {});
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(!outcome.capped, "exhausted tree under caps is not 'capped'");
     }
 
     #[test]

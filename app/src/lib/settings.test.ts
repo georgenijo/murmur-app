@@ -240,4 +240,111 @@ describe('loadSettings', () => {
     expect(settings.correctionEnabled).toBe(false);
     expect(settings.correctionFuzzy).toBe(false);
   });
+
+  it('defaults codeVocabLastScan to null when absent', () => {
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      model: 'base.en',
+      doubleTapKey: 'shift_l',
+      language: 'en',
+      recordingMode: 'hold_down',
+    }));
+    const settings = loadSettings();
+    expect(settings.codeVocabLastScan).toBeNull();
+  });
+
+  it('sanitizes a valid codeVocabLastScan with ranked terms', () => {
+    const scan = {
+      files: 87,
+      skipped: 6,
+      terms: 268,
+      bytes: 2_400_000,
+      capped: false,
+      ms: 610,
+      sampleTerms: ['useRecordingState', 'TranscriptionBackend'],
+      rankedTerms: [
+        { term: 'useRecordingState', freq: 42 },
+        { term: 'TranscriptionBackend', freq: 31 },
+      ],
+      whisperCount: 2,
+    };
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      codeVocabLastScan: scan,
+    }));
+    const settings = loadSettings();
+    expect(settings.codeVocabLastScan).toEqual(scan);
+  });
+
+  it('defaults rankedTerms/whisperCount on a pre-feature scan blob', () => {
+    // A scan summary persisted before this feature lacks rankedTerms/whisperCount.
+    const legacyScan = {
+      files: 10,
+      skipped: 1,
+      terms: 5,
+      bytes: 1000,
+      capped: false,
+      ms: 100,
+      sampleTerms: ['foo', 'bar'],
+    };
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      codeVocabLastScan: legacyScan,
+    }));
+    const settings = loadSettings();
+    expect(settings.codeVocabLastScan).not.toBeNull();
+    expect(settings.codeVocabLastScan!.rankedTerms).toEqual([]);
+    expect(settings.codeVocabLastScan!.whisperCount).toBe(0);
+    expect(settings.codeVocabLastScan!.sampleTerms).toEqual(['foo', 'bar']);
+  });
+
+  it('drops malformed ranked-term entries and clamps the list to 500', () => {
+    const ranked = [
+      { term: 'good', freq: 9 },
+      { term: 'noFreq' }, // missing freq -> dropped
+      { freq: 3 }, // missing term -> dropped
+      { term: '', freq: 1 }, // empty term -> dropped
+      { term: 'nanFreq', freq: Number.NaN }, // non-finite -> dropped
+      ...Array.from({ length: 600 }, (_, i) => ({ term: `t${i}`, freq: 1 })),
+    ];
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      codeVocabLastScan: {
+        ...DEFAULT_SETTINGS,
+        files: 1,
+        skipped: 0,
+        terms: 601,
+        bytes: 1,
+        capped: true,
+        ms: 1,
+        sampleTerms: ['good'],
+        rankedTerms: ranked,
+        whisperCount: 96,
+      },
+    }));
+    const settings = loadSettings();
+    const kept = settings.codeVocabLastScan!.rankedTerms;
+    expect(kept.length).toBe(500);
+    expect(kept[0]).toEqual({ term: 'good', freq: 9 });
+    // whisperCount stays valid since 96 <= 500 kept entries.
+    expect(settings.codeVocabLastScan!.whisperCount).toBe(96);
+  });
+
+  it('clamps whisperCount to the number of ranked terms kept', () => {
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      codeVocabLastScan: {
+        files: 1,
+        skipped: 0,
+        terms: 2,
+        bytes: 1,
+        capped: false,
+        ms: 1,
+        sampleTerms: ['a'],
+        rankedTerms: [{ term: 'a', freq: 2 }],
+        whisperCount: 96, // more than the single kept term
+      },
+    }));
+    const settings = loadSettings();
+    expect(settings.codeVocabLastScan!.whisperCount).toBe(1);
+  });
 });

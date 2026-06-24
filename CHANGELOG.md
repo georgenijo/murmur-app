@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-06-24
+
+### Added
+- **Live code-vocabulary scan feedback** — choosing a project folder now shows a live scan strip: a breadth-first walk streams files and skipped directories as it indexes, with running counts, a cap warning when the walk truncates, and the top terms found. Replaces the previous silent, feedback-free scan (`VocabScanStrip`, `useVocabScan`, `scan_code_vocab`).
+- **View-all scanned terms pop-out** — a searchable, sortable modal listing every kept identifier with its frequency, split into the top-96 that feed Whisper's prompt and the remainder that feed Smart Correction (`VocabTermsModal`).
+- **Decoupled vocabulary budgets** — Whisper's initial prompt stays token-bound at the top 96 terms, while Smart Correction now consumes the top 500 (no token limit) — a large recall win for post-recognition correction on every engine.
+
+### Changed
+- **Breadth-first folder scan** — the walk now samples across sibling projects (FIFO, name-sorted) instead of depth-diving the first subdirectory, so a parent folder like `~/code` indexes fairly. Walk caps raised to 1000 files / 32 MB (per-file 512 KB unchanged).
+- **Bounded scan memory** — identifiers are extracted per file during the walk and the contents dropped, so memory is bounded by the unique-term count rather than total bytes scanned.
+- Whisper's initial prompt is now deduplicated across folder-scan, built-in, and custom sources so a term never burns two slots of the token budget.
+
+### Fixed
+- **Smart Correction no longer re-fragments its own output** — Tier-2 fuzzy tokenization treats `_` as a word character, so a snake_case form produced by Tier 1 (e.g. `error_message`) is no longer split and a sub-token fuzzy-rewritten (`error` → `Errorf`).
+- **Tier-2 fuzzy over-correction** — only structured identifiers (camelCase / snake_case / digit) are fuzzy-eligible; plain words (`Errorf`, `Record`, `kubectl`) are exact-match only, so dictating ordinary English no longer flips to a scanned identifier.
+- Smart Correction rebuilds with folder terms on the lazy path after restart (previously stayed built-in-only until an unrelated settings change).
+
 ## [0.13.0] - 2026-06-23
 
 ### Added

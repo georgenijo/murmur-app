@@ -5,12 +5,25 @@ use crate::{audio, audio_decode, injector, keyboard, vad};
 use std::sync::atomic::Ordering;
 use tauri::Emitter;
 
-/// Max number of code identifiers to feed Whisper as an initial prompt. Whisper
-/// truncates the prompt to its context window anyway; this keeps the bias list
-/// focused on the most frequent (most useful) terms.
-const MAX_CODE_VOCAB_TERMS: usize = 96;
+/// Max number of code identifiers fed to Whisper as an initial prompt. Whisper
+/// truncates the prompt to its ~224-token context window anyway, so this keeps
+/// the bias list focused on the most frequent (most useful) terms. This budget is
+/// intentionally *smaller* than [`CORRECTION_TERMS`]: the Whisper prompt is
+/// token-bound, while Smart Correction is not (see [`CORRECTION_TERMS`]).
+const WHISPER_PROMPT_TERMS: usize = 96;
 
-/// Scan `folder` for code identifiers and build a Whisper initial-prompt string.
+/// Max number of code identifiers fed to the Smart Correction matcher
+/// (`correction.rs` Tier 1/2). Unlike the Whisper initial prompt this path has no
+/// token budget — it's a couple of linear passes over the transcript — so a far
+/// larger term list is a pure recall win. The folder scan ranks ALL identifiers
+/// once; the top [`CORRECTION_TERMS`] feed correction and the top
+/// [`WHISPER_PROMPT_TERMS`] (a rank-prefix of them) feed Whisper.
+const CORRECTION_TERMS: usize = 500;
+
+/// Scan `folder` for code identifiers and build the cached folder-scan prompt
+/// string, ranked by descending frequency and capped at [`CORRECTION_TERMS`].
+/// The cache holds the larger (top-500) list; the Whisper path takes its
+/// [`WHISPER_PROMPT_TERMS`] rank-prefix at use time (see [`whisper_prefix`]).
 /// Empty/blank folder returns an empty string. Delegates to the guarded,
 /// pure-logic `vocab` module (file count / size caps live there).
 fn build_code_vocab_prompt(folder: &str) -> String {
@@ -20,7 +33,7 @@ fn build_code_vocab_prompt(folder: &str) -> String {
     }
     let prompt = crate::vocab::build_vocab_prompt_from_dir(
         std::path::Path::new(folder),
-        MAX_CODE_VOCAB_TERMS,
+        CORRECTION_TERMS,
     );
     tracing::info!(
         target: "pipeline",
@@ -29,6 +42,19 @@ fn build_code_vocab_prompt(folder: &str) -> String {
         prompt.len()
     );
     prompt
+}
+
+/// Take the top [`WHISPER_PROMPT_TERMS`] space-separated terms of a ranked
+/// folder-scan prompt. The cached prompt holds the top-[`CORRECTION_TERMS`] list
+/// ranked by descending frequency, so its first 96 words ARE the top-96 terms.
+/// This is what keeps the Whisper budget decoupled from the (larger) correction
+/// budget without a second walk or a second cache field.
+fn whisper_prefix(prompt: &str) -> String {
+    prompt
+        .split_whitespace()
+        .take(WHISPER_PROMPT_TERMS)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Return the code-aware vocabulary prompt for the current settings, or an empty
@@ -55,19 +81,31 @@ fn resolve_code_vocab_prompt(app_state: &AppState) -> String {
 
     let builtin = crate::vocab::builtin_terms_prompt();
 
-    // Optional project scan layered on top of the built-ins.
+    // Optional project scan layered on top of the built-ins. The cache holds the
+    // top-CORRECTION_TERMS (500) ranked list; Whisper's token-bound prompt takes
+    // only its top-WHISPER_PROMPT_TERMS (96) rank-prefix here.
     let folder_prompt = if folder.trim().is_empty() {
         String::new()
     } else if let Some(prompt) = cached {
-        prompt
+        whisper_prefix(&prompt)
     } else {
-        // Not yet scanned: build now and cache (only if settings still match).
+        // Not yet scanned: build now and cache the full (top-500) list (only if
+        // settings still match), then feed Whisper its top-96 prefix.
         let prompt = build_code_vocab_prompt(&folder);
         let mut dictation = app_state.dictation.lock_or_recover();
         if dictation.code_vocab_enabled && dictation.code_vocab_folder == folder {
             dictation.code_vocab_prompt = Some(prompt.clone());
+            // Refresh the correction matcher so Smart Correction picks up this
+            // folder's top-500 terms now, not just on the next settings change.
+            // configure_dictation no longer prebuilds the prompt, so on the common
+            // restart-with-persisted-folder path the matcher would otherwise stay
+            // builtin-only for the whole session (it's rebuilt only here, in
+            // configure_dictation, and in scan_code_vocab — and the transcription
+            // path hits none of the other two). rebuild_correction_matcher writes a
+            // separate leaf mutex, so there's no deadlock with the held guard.
+            rebuild_correction_matcher(app_state, &dictation);
         }
-        prompt
+        whisper_prefix(&prompt)
     };
 
     // Project identifiers first (most specific), built-in dictionary after.
@@ -81,15 +119,37 @@ fn resolve_code_vocab_prompt(app_state: &AppState) -> String {
 /// Merge the manual custom-vocabulary string and the code-aware vocabulary into a
 /// single Whisper initial prompt. Returns `None` when both are blank so the
 /// backend skips setting a prompt entirely.
+///
+/// `code` carries the folder-scan terms ahead of the built-in dictionary (see
+/// [`resolve_code_vocab_prompt`]). The hand-typed `custom` list is concatenated
+/// FIRST so user-entered terms keep precedence: Whisper truncates the initial
+/// prompt to ~224 tokens keeping the START, so a large code-scan prompt must not
+/// crowd out terms the user explicitly typed. Order is therefore custom, then
+/// folder, then builtin — and the whole thing is deduped case-insensitively so the
+/// same term never burns two slots of the budget (the Smart Correction matcher
+/// dedupes separately).
 fn combine_prompts(custom: &str, code: &str) -> Option<String> {
     let custom = custom.trim();
     let code = code.trim();
     match (custom.is_empty(), code.is_empty()) {
         (true, true) => None,
-        (false, true) => Some(custom.to_string()),
-        (true, false) => Some(code.to_string()),
-        (false, false) => Some(format!("{} {}", custom, code)),
+        (false, true) => Some(dedupe_prompt_terms(custom)),
+        (true, false) => Some(dedupe_prompt_terms(code)),
+        (false, false) => Some(dedupe_prompt_terms(&format!("{} {}", custom, code))),
     }
+}
+
+/// Collapse a space-joined prompt to its first occurrence of each term,
+/// case-insensitively, preserving order and the first surface form. Used at the
+/// combine step so cross-source repeats (folder scan vs. built-in dictionary vs.
+/// custom vocabulary) don't waste Whisper's limited prompt budget.
+fn dedupe_prompt_terms(prompt: &str) -> String {
+    let mut seen = std::collections::HashSet::new();
+    prompt
+        .split_whitespace()
+        .filter(|t| seen.insert(t.to_ascii_lowercase()))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Split the free-text custom-vocabulary field into individual written terms.
@@ -119,6 +179,10 @@ fn rebuild_correction_matcher(
         for t in crate::vocab::builtin_terms_prompt().split_whitespace() {
             terms.push(t.to_string());
         }
+        // The cached folder prompt holds the top-CORRECTION_TERMS (500) ranked
+        // identifiers. Unlike the Whisper prompt path (which takes only the top-96
+        // rank-prefix because it's token-bound), Smart Correction has no token
+        // budget, so it consumes the full cached list — a big recall win.
         if let Some(folder_prompt) = &dictation.code_vocab_prompt {
             for t in folder_prompt.split_whitespace() {
                 terms.push(t.to_string());
@@ -682,17 +746,14 @@ pub async fn configure_dictation(
         }
     }
     if code_vocab_dirty {
-        if dictation.code_vocab_enabled && !dictation.code_vocab_folder.trim().is_empty() {
-            // Prebuild the prompt now (on the configure call) so the first
-            // utterance isn't slowed by a directory walk. configure is rare and
-            // the scan is guarded (file count / size caps), so doing it under the
-            // lock here is acceptable.
-            let prompt = build_code_vocab_prompt(&dictation.code_vocab_folder);
-            dictation.code_vocab_prompt = Some(prompt);
-        } else {
-            // Disabled or no folder: clear any stale cached prompt.
-            dictation.code_vocab_prompt = None;
-        }
+        // Invalidate the cached prompt; do NOT walk the tree synchronously here.
+        // The explicit `scan_code_vocab` command owns the (single) walk for a
+        // folder pick and caches the result, so prebuilding under the lock here
+        // would just duplicate that walk — and choosing a folder fires both this
+        // configure path and a scan concurrently. If no scan ever runs (folder set
+        // programmatically), `resolve_code_vocab_prompt` lazily builds + caches the
+        // prompt on the first transcription. Net: exactly one walk per folder.
+        dictation.code_vocab_prompt = None;
     }
 
     // Post-model correction toggles.
@@ -740,6 +801,260 @@ pub async fn configure_dictation(
     Ok(serde_json::json!({
         "type": "configured"
     }))
+}
+
+/// Live progress emitted (throttled) while [`scan_code_vocab`] walks a folder.
+/// Field names are part of the frontend contract — do not rename.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VocabScanProgress {
+    current_path: String,
+    files_read: usize,
+    dirs_skipped: usize,
+    terms_so_far: usize,
+    done: bool,
+}
+
+/// One ranked vocabulary term surfaced to the frontend pop-out: the written form
+/// plus how many times it appeared across the scan. Serialized camelCase (already
+/// single-word, so `term`/`freq` are unchanged). Rank is the array index + 1.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RankedTermJson {
+    term: String,
+    freq: u32,
+}
+
+/// Result of a [`scan_code_vocab`] run, returned to the frontend. Field names are
+/// part of the frontend contract — do not rename.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VocabScanSummary {
+    files: usize,
+    skipped: usize,
+    terms: usize,
+    bytes: u64,
+    capped: bool,
+    ms: u64,
+    /// Top ~12 written forms — a preview of what the scan biases toward.
+    sample_terms: Vec<String>,
+    /// Full ranked list of terms actually kept (<= [`CORRECTION_TERMS`]), ordered
+    /// by descending frequency. Rank = array index + 1. Powers the "all scanned
+    /// terms" pop-out and is the exact list fed to Smart Correction.
+    ranked_terms: Vec<RankedTermJson>,
+    /// How many of `ranked_terms` feed Whisper's initial prompt =
+    /// min([`WHISPER_PROMPT_TERMS`], ranked_terms.len()). The first `whisper_count`
+    /// entries are the Whisper budget; the rest are correction-only.
+    whisper_count: usize,
+}
+
+/// Emit a throttled `vocab-scan-progress` tick carrying the live running counts
+/// and the path being read/skipped. `force` bypasses the throttle (used for skip
+/// rows so struck-through dependency/build dirs always render live). Updates
+/// `*last_emit` when it fires. A free fn (not a closure) so both walk callbacks
+/// can call it without one capturing the other and tripping the borrow checker.
+#[allow(clippy::too_many_arguments)]
+fn emit_scan_progress(
+    handle: &tauri::AppHandle,
+    last_emit: &mut std::time::Instant,
+    current_path: String,
+    files_read: usize,
+    dirs_skipped: usize,
+    terms_so_far: usize,
+    force: bool,
+) {
+    if force
+        || last_emit.elapsed().as_millis() >= VOCAB_PROGRESS_INTERVAL_MS
+        || files_read.is_multiple_of(VOCAB_PROGRESS_EVERY_FILES)
+    {
+        *last_emit = std::time::Instant::now();
+        let _ = handle.emit(
+            "vocab-scan-progress",
+            VocabScanProgress {
+                current_path,
+                files_read,
+                dirs_skipped,
+                terms_so_far,
+                done: false,
+            },
+        );
+    }
+}
+
+/// Number of top written forms surfaced in [`VocabScanSummary::sample_terms`].
+const VOCAB_SAMPLE_TERMS: usize = 12;
+/// Emit a progress event at most this often (alongside the per-N-files gate) so a
+/// fast walk doesn't flood the event channel.
+const VOCAB_PROGRESS_INTERVAL_MS: u128 = 50;
+/// Also emit progress every this many files, so a slow-but-steady walk still
+/// reports even within one throttle window.
+const VOCAB_PROGRESS_EVERY_FILES: usize = 10;
+
+/// Scan `folder` for code identifiers off the UI thread, emitting throttled
+/// `vocab-scan-progress` events as it walks, and return a [`VocabScanSummary`].
+///
+/// On a non-empty result this also adopts the scan: it stores the folder, enables
+/// code-aware vocabulary, caches the built prompt, and rebuilds the correction
+/// matcher — mirroring `configure_dictation` so the scan takes effect immediately
+/// without a second round-trip. The filesystem walk and prompt build run inside
+/// `spawn_blocking`; no std mutex is held across an `.await`.
+#[tauri::command]
+pub async fn scan_code_vocab(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, State>,
+    folder: String,
+) -> Result<VocabScanSummary, String> {
+    let folder_trimmed = folder.trim().to_string();
+    if folder_trimmed.is_empty() {
+        return Err("No folder selected to scan.".to_string());
+    }
+
+    tracing::info!(target: "pipeline", "scan_code_vocab: start");
+
+    // Walk + prompt build are blocking (filesystem + CPU). Run them off the async
+    // runtime; the closure emits throttled progress as files are read.
+    let emit_handle = app_handle.clone();
+    let scan_folder = folder_trimmed.clone();
+    let t_start = std::time::Instant::now();
+    let (prompt, summary) = tokio::task::spawn_blocking(move || {
+        let path = std::path::Path::new(&scan_folder);
+
+        // Running scan counters shared across the file and skip callbacks. Interior
+        // mutability (Cell/RefCell) lets BOTH `FnMut` closures capture the same
+        // state by shared reference — two closures can't each capture the same
+        // locals by `&mut`, which is why this isn't plain `let mut`.
+        let files_read = std::cell::Cell::new(0usize);
+        let dirs_skipped = std::cell::Cell::new(0usize);
+        let last_emit = std::cell::Cell::new(std::time::Instant::now());
+        // Running distinct-term count (case-insensitive) surfaced by the walk's
+        // accumulator, so the live `terms_so_far` count tracks the eventual prompt
+        // size instead of sitting at zero until the walk finishes. The walk already
+        // folds each file in, so we read this count rather than re-extracting (which
+        // would double the tokenization CPU across a 1000-file/32MB scan).
+        let terms_so_far = std::cell::Cell::new(0usize);
+        let walk_start = std::time::Instant::now();
+
+        // Throttled emit reading the shared counters; `force` bypasses the throttle.
+        let emit = |current_path: String, force: bool| {
+            let mut le = last_emit.get();
+            emit_scan_progress(
+                &emit_handle,
+                &mut le,
+                current_path,
+                files_read.get(),
+                dirs_skipped.get(),
+                terms_so_far.get(),
+                force,
+            );
+            last_emit.set(le);
+        };
+
+        let outcome = crate::vocab::collect_source_files(
+            path,
+            |file_path, distinct_terms| {
+                files_read.set(files_read.get() + 1);
+                // Track the live distinct-term tally the walker already computed
+                // (no second extraction). Clamp it to CORRECTION_TERMS — the same
+                // ceiling the final summary.terms is capped at — so the live counter
+                // and the settled "done" total share one ceiling and the number
+                // never visibly drops from e.g. "1,832 terms" back to "500 terms"
+                // at completion. This is only the live counter; the authoritative
+                // ranked term count still comes from the summary.
+                terms_so_far.set(distinct_terms.min(CORRECTION_TERMS));
+                // Throttle: emit on a time window OR every N files, never per-file.
+                emit(file_path.to_string_lossy().to_string(), false);
+            },
+            |skip_path| {
+                dirs_skipped.set(dirs_skipped.get() + 1);
+                // Force-emit skip rows so the struck-through dependency/build dirs
+                // (node_modules, target, .git) always render live, even between
+                // file reads — that live skip stream is the point of the feature.
+                emit(skip_path.to_string_lossy().to_string(), true);
+            },
+        );
+
+        // Rank the folded accumulator ONCE at the larger correction budget. The
+        // walk dropped each file's contents as it read it, so this ranking is the
+        // only term-level data we keep — bounded by unique-term count, not bytes.
+        let ranked = outcome.vocab.ranked(CORRECTION_TERMS);
+        // The cached prompt string IS this ranked list joined; Whisper later takes
+        // its top-WHISPER_PROMPT_TERMS prefix, correction consumes the whole thing.
+        let prompt = crate::vocab::ranked_terms_to_prompt(&ranked);
+        // Preview: top written forms (ranking is descending-frequency, so the
+        // first VOCAB_SAMPLE_TERMS ARE the strip's preview chips).
+        let sample_terms: Vec<String> = ranked
+            .iter()
+            .take(VOCAB_SAMPLE_TERMS)
+            .map(|r| r.term.clone())
+            .collect();
+        // Full ranked list for the pop-out (<= CORRECTION_TERMS), plus how many of
+        // them feed Whisper (min(96, kept)).
+        let ranked_terms: Vec<RankedTermJson> = ranked
+            .iter()
+            .map(|r| RankedTermJson { term: r.term.clone(), freq: r.freq })
+            .collect();
+        let whisper_count = ranked_terms.len().min(WHISPER_PROMPT_TERMS);
+        let terms = ranked_terms.len();
+
+        let summary = VocabScanSummary {
+            files: outcome.files_read,
+            skipped: outcome.dirs_skipped,
+            terms,
+            bytes: outcome.total_bytes,
+            capped: outcome.capped,
+            ms: walk_start.elapsed().as_millis() as u64,
+            sample_terms,
+            ranked_terms,
+            whisper_count,
+        };
+        (prompt, summary)
+    })
+    .await
+    .map_err(|e| format!("Vocab scan task panicked: {}", e))?;
+
+    // Final progress tick so the UI lands on a settled "done" state.
+    let _ = app_handle.emit(
+        "vocab-scan-progress",
+        VocabScanProgress {
+            current_path: String::new(),
+            files_read: summary.files,
+            dirs_skipped: summary.skipped,
+            terms_so_far: summary.terms,
+            done: true,
+        },
+    );
+
+    // Adopt the scan: cache the built prompt and rebuild the correction matcher
+    // under the lock — but ONLY if the current settings still point at the folder
+    // we just walked with code-vocab enabled. The walk runs concurrently with
+    // configure_dictation (both fire on the same folder pick), and a large repo
+    // can take long enough for the user to toggle code-vocab OFF or clear/change
+    // the folder mid-walk. configure_dictation owns code_vocab_enabled +
+    // code_vocab_folder; if it has since cleared them, dropping this stale result
+    // is correct — re-enabling here would silently re-inject the code prompt while
+    // the frontend toggle reads OFF (last-writer-wins divergence). Mirrors the
+    // lazy path's guard in resolve_code_vocab_prompt. The lock is taken AFTER all
+    // awaits, scoped, and released before returning — never held across an `.await`.
+    {
+        let mut dictation = state.app_state.dictation.lock_or_recover();
+        if dictation.code_vocab_enabled && dictation.code_vocab_folder == folder_trimmed {
+            dictation.code_vocab_prompt = Some(prompt);
+            rebuild_correction_matcher(&state.app_state, &dictation);
+        }
+    }
+
+    tracing::info!(
+        target: "pipeline",
+        files = summary.files,
+        skipped = summary.skipped,
+        terms = summary.terms,
+        bytes = summary.bytes,
+        capped = summary.capped,
+        ms = t_start.elapsed().as_millis() as u64,
+        "scan_code_vocab: complete"
+    );
+
+    Ok(summary)
 }
 
 #[tauri::command]
@@ -1143,6 +1458,104 @@ pub async fn transcribe_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dedupe_prompt_drops_case_insensitive_repeats() {
+        // "Tauri"/"tauri" collapse to the first surface form; order preserved.
+        let out = dedupe_prompt_terms("Tauri useEffect tauri useState USEEFFECT");
+        assert_eq!(out, "Tauri useEffect useState");
+    }
+
+    #[test]
+    fn dedupe_prompt_is_noop_when_unique() {
+        let out = dedupe_prompt_terms("alpha beta gamma");
+        assert_eq!(out, "alpha beta gamma");
+    }
+
+    #[test]
+    fn combine_prompts_dedupes_across_sources() {
+        // Cross-source overlap: the folder/builtin `code` carries "Tauri" and the
+        // custom list repeats it (different case). It must appear exactly once,
+        // and order keeps the user-typed custom list first (precedence under
+        // Whisper's start-keeping prompt truncation), then folder/builtin (code).
+        let code = "Tauri serde useEffect";
+        let custom = "tauri myProject SERDE";
+        let combined = combine_prompts(custom, code).unwrap();
+        assert_eq!(combined, "tauri myProject SERDE useEffect");
+        // Each shared term appears exactly once (case-insensitively).
+        let n_tauri = combined.split(' ').filter(|t| t.eq_ignore_ascii_case("tauri")).count();
+        assert_eq!(n_tauri, 1, "combined={:?}", combined);
+        let n_serde = combined.split(' ').filter(|t| t.eq_ignore_ascii_case("serde")).count();
+        assert_eq!(n_serde, 1, "combined={:?}", combined);
+    }
+
+    #[test]
+    fn combine_prompts_handles_single_and_empty_sources() {
+        assert_eq!(combine_prompts("", ""), None);
+        assert_eq!(combine_prompts("custom dupCustom", "").as_deref(), Some("custom dupCustom"));
+        assert_eq!(combine_prompts("", "code dupe Dupe").as_deref(), Some("code dupe"));
+    }
+
+    #[test]
+    fn budget_constants_decoupled_96_and_500() {
+        // The two budgets are intentionally distinct; Whisper's is the smaller.
+        assert_eq!(WHISPER_PROMPT_TERMS, 96);
+        assert_eq!(CORRECTION_TERMS, 500);
+        assert!(WHISPER_PROMPT_TERMS < CORRECTION_TERMS);
+    }
+
+    #[test]
+    fn whisper_prefix_takes_top_96_of_ranked_prompt() {
+        // A ranked prompt longer than the Whisper budget is truncated to its first
+        // WHISPER_PROMPT_TERMS terms (which, given descending-frequency ranking,
+        // are the top-96). The full string is what correction consumes.
+        let full: String = (0..200)
+            .map(|i| format!("term{:03}", i))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let prefix = whisper_prefix(&full);
+        let words: Vec<&str> = prefix.split_whitespace().collect();
+        assert_eq!(words.len(), WHISPER_PROMPT_TERMS, "Whisper budget caps at 96");
+        // Prefix is the leading slice of the full ranked list.
+        assert_eq!(words[0], "term000");
+        assert_eq!(words[WHISPER_PROMPT_TERMS - 1], format!("term{:03}", WHISPER_PROMPT_TERMS - 1));
+        // Shorter-than-budget prompt passes through unchanged.
+        assert_eq!(whisper_prefix("alpha beta gamma"), "alpha beta gamma");
+        assert_eq!(whisper_prefix(""), "");
+    }
+
+    #[test]
+    fn summary_serializes_ranked_terms_and_whisper_count_camel_case() {
+        // rankedTerms / whisperCount must serialize camelCase per the frontend
+        // contract; each ranked entry is { term, freq }.
+        let summary = VocabScanSummary {
+            files: 3,
+            skipped: 1,
+            terms: 2,
+            bytes: 42,
+            capped: false,
+            ms: 7,
+            sample_terms: vec!["fooBar".into()],
+            ranked_terms: vec![
+                RankedTermJson { term: "fooBar".into(), freq: 5 },
+                RankedTermJson { term: "barBaz".into(), freq: 2 },
+            ],
+            whisper_count: 2,
+        };
+        let v = serde_json::to_value(&summary).unwrap();
+        // New camelCase keys present; snake_case absent.
+        assert!(v.get("rankedTerms").is_some(), "rankedTerms missing: {v}");
+        assert!(v.get("whisperCount").is_some(), "whisperCount missing: {v}");
+        assert!(v.get("ranked_terms").is_none(), "snake_case leaked: {v}");
+        assert!(v.get("whisper_count").is_none(), "snake_case leaked: {v}");
+        assert_eq!(v["whisperCount"], 2);
+        // sampleTerms (existing field) stays camelCase too.
+        assert!(v.get("sampleTerms").is_some(), "sampleTerms missing: {v}");
+        // Each ranked entry carries term + freq.
+        let first = &v["rankedTerms"][0];
+        assert_eq!(first["term"], "fooBar");
+        assert_eq!(first["freq"], 5);
+    }
 
     #[test]
     fn idle_guard_resets_status_on_drop() {

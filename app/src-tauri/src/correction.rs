@@ -55,6 +55,9 @@ const MIN_FUZZY_LEN: usize = 5;
 struct Term {
     written: String,
     spoken: String,
+    /// Whether this term may be matched by Tier-2 fuzzy. Only *structured*
+    /// identifiers qualify (see [`is_fuzzy_eligible`]); plain words are exact-only.
+    fuzzy_eligible: bool,
 }
 
 /// A compiled, reusable correction matcher. Build once on settings-change, then
@@ -154,6 +157,7 @@ impl CorrectionMatcher {
             terms.push(Term {
                 written: written.clone(),
                 spoken: spoken.clone(),
+                fuzzy_eligible: is_fuzzy_eligible(written),
             });
         }
 
@@ -273,6 +277,14 @@ impl CorrectionMatcher {
             if term.spoken == lower {
                 continue;
             }
+            // Only structured identifiers are fuzzy-eligible. Plain words (e.g.
+            // "Errorf", "kubectl") are exact-only: their spoken forms sit one edit
+            // from ordinary English ("error", "cube cuddle"), so fuzzy-matching them
+            // over-corrects. Structured terms (camelCase/snake_case/digit) derive to
+            // multi-word spoken forms that don't collide with single English words.
+            if !term.fuzzy_eligible {
+                continue;
+            }
             // Don't fuzzy-match against short vocab terms (same collision risk).
             if term.spoken.len() < MIN_FUZZY_LEN {
                 continue;
@@ -351,16 +363,35 @@ pub fn derive_spoken_form(written: &str) -> String {
     words.join(" ")
 }
 
-/// Split text into alphanumeric word tokens with their byte spans. Punctuation and
-/// whitespace become the gaps between tokens.
+/// A written form is eligible for Tier-2 fuzzy matching only when it carries code
+/// *structure*: an internal uppercase (camelCase/PascalCase), an underscore, or a
+/// digit. Plain words ("Errorf", "Record", "kubectl", "NOOP") are exact-only — their
+/// spoken forms collide with ordinary English a single edit away (say "error", get
+/// "Errorf"), so fuzzy-matching them over-corrects. Structured identifiers derive to
+/// distinctive multi-word spoken forms and are safe to fuzzy-match.
+fn is_fuzzy_eligible(written: &str) -> bool {
+    let has_underscore = written.contains('_');
+    let has_digit = written.bytes().any(|c| c.is_ascii_digit());
+    // Uppercase anywhere after the first char => camelCase/PascalCase/acronym shape.
+    let has_internal_upper = written.bytes().skip(1).any(|c| c.is_ascii_uppercase());
+    has_underscore || has_digit || has_internal_upper
+}
+
+/// Split text into word tokens with their byte spans. Punctuation and whitespace
+/// become the gaps between tokens. An underscore counts as a word char, so a
+/// snake_case identifier stays a single token — this keeps Tier 2 from
+/// re-fragmenting a written form that Tier 1 already produced (e.g. `error_message`)
+/// and fuzzy-rewriting one of its bare sub-tokens (`error` -> `Errorf`). Whole
+/// snake_case tokens fall through to the `written_lower` guard in [`fuzzy_lookup`].
 fn tokenize(text: &str) -> Vec<(&str, usize, usize)> {
+    let is_word = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
     let mut out = Vec::new();
     let bytes = text.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i].is_ascii_alphanumeric() {
+        if is_word(bytes[i]) {
             let start = i;
-            while i < bytes.len() && bytes[i].is_ascii_alphanumeric() {
+            while i < bytes.len() && is_word(bytes[i]) {
                 i += 1;
             }
             out.push((&text[start..i], start, i));
@@ -534,12 +565,58 @@ mod tests {
     }
 
     #[test]
-    fn tier2_single_word_mishear() {
+    fn tier2_does_not_refragment_tier1_snake_case() {
+        // Tier 1 turns "error message" -> error_message. Tier 2 must NOT then split
+        // on the underscore and fuzzy-rewrite the bare "error" into the near vocab
+        // term "Errorf" (1 edit away) — which previously produced "Errorf_message".
+        // The whole snake_case token now hits the written_lower guard and is left alone.
+        let m = CorrectionMatcher::build(
+            &["error_message".to_string(), "Errorf".to_string()],
+            &[],
+            true,  // fuzzy on
+            false,
+        );
+        assert_eq!(m.apply("log the error message now"), "log the error_message now");
+    }
+
+    #[test]
+    fn tier2_unstructured_term_is_exact_only() {
+        // Plain lowercase identifiers (no camelCase / underscore / digit) are NOT
+        // fuzzy-eligible. "kubectl" still exact-matches via Tier 1, but a mishear
+        // "kubecto" is left alone — the precision trade that kills "error"->"Errorf".
         let m = matcher(&["kubectl"]);
-        // "cube cuddle" -> phonetic-ish near "kubectl"? Use a closer mishear.
-        // "kubectl" spoken-form derives to "kubectl"; a near homophone within
-        // edit distance should map. "kubecto" (1 edit) qualifies.
-        assert_eq!(m.apply("run kubecto apply"), "run kubectl apply");
+        assert_eq!(m.apply("run kubecto apply"), "run kubecto apply");
+        // Exact spoken form still corrects (Tier 1 path is unaffected).
+        assert_eq!(m.apply("run kubectl apply"), "run kubectl apply");
+    }
+
+    #[test]
+    fn tier2_unstructured_term_does_not_overcorrect_english() {
+        // The real-world bug: vocab term "Errorf" (Go's Errorf, no structure) sits one
+        // edit from the common word "error". Unstructured terms are exact-only now, so
+        // dictating "error" is left as English instead of flipping to "Errorf".
+        let m = CorrectionMatcher::build(&["Errorf".to_string()], &[], true, false);
+        assert_eq!(m.apply("log the error now"), "log the error now");
+    }
+
+    #[test]
+    fn tier2_structured_term_still_fuzzes() {
+        // Structured identifiers remain fuzzy-eligible: a multi-word mishear of a
+        // camelCase term is still recovered.
+        let m = matcher(&["rePivot"]);
+        assert_eq!(m.apply("then red pivot now"), "then rePivot now");
+    }
+
+    #[test]
+    fn is_fuzzy_eligible_classifies_structure() {
+        assert!(is_fuzzy_eligible("rePivot"));        // internal upper
+        assert!(is_fuzzy_eligible("variable_name"));  // underscore
+        assert!(is_fuzzy_eligible("large_v3"));       // digit
+        assert!(is_fuzzy_eligible("XCTAssertEqual")); // internal upper
+        assert!(!is_fuzzy_eligible("Errorf"));        // leading cap only
+        assert!(!is_fuzzy_eligible("kubectl"));       // plain lowercase
+        assert!(!is_fuzzy_eligible("Record"));        // leading cap only
+        assert!(!is_fuzzy_eligible("noop"));          // plain
     }
 
     #[test]
