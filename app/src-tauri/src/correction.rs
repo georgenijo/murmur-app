@@ -364,17 +364,22 @@ pub fn derive_spoken_form(written: &str) -> String {
 }
 
 /// A written form is eligible for Tier-2 fuzzy matching only when it carries code
-/// *structure*: an internal uppercase (camelCase/PascalCase), an underscore, or a
-/// digit. Plain words ("Errorf", "Record", "kubectl", "NOOP") are exact-only — their
-/// spoken forms collide with ordinary English a single edit away (say "error", get
-/// "Errorf"), so fuzzy-matching them over-corrects. Structured identifiers derive to
-/// distinctive multi-word spoken forms and are safe to fuzzy-match.
+/// *structure*: a camelCase boundary (a lowercase immediately followed by an
+/// uppercase), an underscore, or a digit. Plain words ("Errorf", "Record",
+/// "kubectl") AND all-caps acronyms ("NOOP", "HTTP") are exact-only — they derive to
+/// single-word spoken forms that sit one edit from ordinary English (say "error",
+/// get "Errorf"), so fuzzy-matching them over-corrects. Structured identifiers derive
+/// to distinctive multi-word spoken forms and are safe to fuzzy-match.
+///
+/// Note: "uppercase anywhere after the first char" is NOT enough — an all-caps
+/// acronym satisfies it but has no real word boundary, so we require lower→upper.
 fn is_fuzzy_eligible(written: &str) -> bool {
     let has_underscore = written.contains('_');
     let has_digit = written.bytes().any(|c| c.is_ascii_digit());
-    // Uppercase anywhere after the first char => camelCase/PascalCase/acronym shape.
-    let has_internal_upper = written.bytes().skip(1).any(|c| c.is_ascii_uppercase());
-    has_underscore || has_digit || has_internal_upper
+    let b = written.as_bytes();
+    let has_camel_boundary =
+        (1..b.len()).any(|i| b[i].is_ascii_uppercase() && b[i - 1].is_ascii_lowercase());
+    has_underscore || has_digit || has_camel_boundary
 }
 
 /// Split text into word tokens with their byte spans. Punctuation and whitespace
@@ -609,14 +614,16 @@ mod tests {
 
     #[test]
     fn is_fuzzy_eligible_classifies_structure() {
-        assert!(is_fuzzy_eligible("rePivot"));        // internal upper
+        assert!(is_fuzzy_eligible("rePivot"));        // camel boundary
         assert!(is_fuzzy_eligible("variable_name"));  // underscore
         assert!(is_fuzzy_eligible("large_v3"));       // digit
-        assert!(is_fuzzy_eligible("XCTAssertEqual")); // internal upper
+        assert!(is_fuzzy_eligible("XCTAssertEqual")); // camel boundary (t->E)
         assert!(!is_fuzzy_eligible("Errorf"));        // leading cap only
         assert!(!is_fuzzy_eligible("kubectl"));       // plain lowercase
         assert!(!is_fuzzy_eligible("Record"));        // leading cap only
         assert!(!is_fuzzy_eligible("noop"));          // plain
+        assert!(!is_fuzzy_eligible("NOOP"));          // all-caps acronym, no lower->upper
+        assert!(!is_fuzzy_eligible("HTTP"));          // all-caps acronym
     }
 
     #[test]

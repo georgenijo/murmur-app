@@ -58,6 +58,9 @@ export interface VocabScanSummary {
 /** Hard ceiling on the persisted ranked list, mirroring the backend cap. */
 const MAX_RANKED_TERMS = 500;
 
+/** Hard ceiling on the persisted sample-chip list (backend sends ~12). */
+const MAX_SAMPLE_TERMS = 50;
+
 export interface Settings {
   model: ModelOption;
   doubleTapKey: DoubleTapKey;
@@ -234,7 +237,7 @@ function sanitizeVocabScan(raw: unknown): VocabScanSummary | null {
           );
         })
         .slice(0, MAX_RANKED_TERMS)
-        .map((t) => ({ term: t.term, freq: t.freq }))
+        .map((t) => ({ term: t.term, freq: Math.max(0, Math.trunc(t.freq)) }))
     : [];
 
   // whisperCount is additive too; coerce anything non-finite to 0 and never let
@@ -245,14 +248,20 @@ function sanitizeVocabScan(raw: unknown): VocabScanSummary | null {
       ? Math.max(0, Math.min(Math.trunc(rawWhisper), rankedTerms.length))
       : 0;
 
+  // Counts passed the finite check above; coerce to non-negative integers so a
+  // tampered blob can't surface negative/fractional stats (NaN already rejected).
+  const count = (v: unknown) => Math.max(0, Math.trunc(v as number));
   return {
-    files: r.files as number,
-    skipped: r.skipped as number,
-    terms: r.terms as number,
-    bytes: r.bytes as number,
-    ms: r.ms as number,
+    files: count(r.files),
+    skipped: count(r.skipped),
+    terms: count(r.terms),
+    bytes: count(r.bytes),
+    ms: count(r.ms),
     capped: r.capped as boolean,
-    sampleTerms: (r.sampleTerms as unknown[]).filter((t): t is string => typeof t === 'string'),
+    // Bound the persisted sample list so a tampered blob can't bloat the chip row.
+    sampleTerms: (r.sampleTerms as unknown[])
+      .filter((t): t is string => typeof t === 'string')
+      .slice(0, MAX_SAMPLE_TERMS),
     rankedTerms,
     whisperCount,
   };

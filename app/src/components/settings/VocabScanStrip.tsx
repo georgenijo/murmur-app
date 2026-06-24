@@ -184,11 +184,21 @@ export function VocabScanStrip({
               Point at a single project (e.g. <b>/code/murmur-app</b>) for full coverage.
             </WarnBox>
           )}
-          {/* empty result warning */}
+          {/* empty result warning — distinguish "no files scanned" from
+              "scanned files but no identifiers" (status==='empty' is terms===0). */}
           {!summary.capped && status === 'empty' && (
             <WarnBox>
-              Found <b>0 source files</b>. Wrong folder, or everything was in skipped dirs
-              (node_modules, target, .git).
+              {summary.files > 0 ? (
+                <>
+                  Scanned <b>{summary.files} files</b> but found <b>0 identifiers</b> —
+                  built-in dev terms still apply.
+                </>
+              ) : (
+                <>
+                  Found <b>0 source files</b>. Wrong folder, or everything was in skipped dirs
+                  (node_modules, target, .git).
+                </>
+              )}
             </WarnBox>
           )}
 

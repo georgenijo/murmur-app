@@ -421,13 +421,13 @@ pub fn collect_source_files<F: FnMut(&Path, usize), G: FnMut(&Path)>(
     queue.push_back(folder.to_path_buf());
 
     'walk: while let Some(dir) = queue.pop_front() {
-        // Stop once a guard is hit, but do NOT mark `capped` here: popping another
-        // queued dir at/after the cap doesn't prove readable content was skipped
-        // (the remaining dirs may be empty/non-source). `capped` is set only at the
-        // inner break below, where a guard actually blocks reading a candidate
-        // source file — so it never raises a false "hit the cap" warning on a scan
-        // that read exactly MAX_FILES and had nothing left to read.
+        // We just popped a directory but a guard blocks processing it, so this
+        // subtree (and anything else still queued) goes un-indexed — a real
+        // truncation. Mark `capped`. NOTE: when the tree is genuinely exhausted the
+        // `while let` ends on an empty queue *without* reaching this break, so a scan
+        // that read everything (even exactly MAX_FILES) still reports capped=false.
         if files_read >= MAX_FILES || total_bytes >= MAX_TOTAL_BYTES {
+            capped = true;
             break;
         }
         let entries = match std::fs::read_dir(&dir) {
