@@ -24,6 +24,40 @@ export interface VoiceCommand {
   replacement: string;
 }
 
+/**
+ * Result of a code-vocabulary scan. Shape matches the Rust `scan_code_vocab`
+ * command return value exactly (serde camelCase). Persisted so the settings
+ * panel can show the last completed scan when reopened.
+ */
+/** One ranked term actually kept by the scan. `rank` is the array index + 1. */
+export interface RankedTerm {
+  term: string;
+  freq: number;
+}
+
+export interface VocabScanSummary {
+  files: number;
+  skipped: number;
+  terms: number;
+  bytes: number;
+  capped: boolean;
+  ms: number;
+  /** Top ~12 written forms surfaced as sample chips. */
+  sampleTerms: string[];
+  /**
+   * Full ranked list of terms actually kept (<=500), ordered by frequency.
+   * rank = array index + 1. Powers the View-all pop-out. The top
+   * `whisperCount` of these also feed Whisper's token-bound prompt; the rest
+   * are Smart-Correction-only.
+   */
+  rankedTerms: RankedTerm[];
+  /** How many of `rankedTerms` feed the Whisper prompt (= min(96, len)). */
+  whisperCount: number;
+}
+
+/** Hard ceiling on the persisted ranked list, mirroring the backend cap. */
+const MAX_RANKED_TERMS = 500;
+
 export interface Settings {
   model: ModelOption;
   doubleTapKey: DoubleTapKey;
@@ -58,6 +92,11 @@ export interface Settings {
   codeVocabEnabled: boolean;
   /** Optional absolute path to a project folder scanned for code identifiers. */
   codeVocabFolder: string;
+  /**
+   * Last completed code-vocab scan summary, persisted so the settings panel
+   * shows the done-state on reopen. `null` until the folder has been scanned.
+   */
+  codeVocabLastScan: VocabScanSummary | null;
   /**
    * Post-model correction: apply the vocabulary to the transcript *output* of every
    * backend (Tier 1 exact map + Tier 2 sounds-like). On by default — it's what makes
@@ -154,6 +193,7 @@ export const DEFAULT_SETTINGS: Settings = {
   cleanupCapitalize: true,
   codeVocabEnabled: false,
   codeVocabFolder: '',
+  codeVocabLastScan: null,
   // Correction on by default: it's the fix that makes vocab actually apply on the
   // default Parakeet engine. A no-op when there's no vocabulary configured.
   correctionEnabled: true,
@@ -161,6 +201,62 @@ export const DEFAULT_SETTINGS: Settings = {
 };
 
 export const STORAGE_KEY = 'dictation-settings';
+
+/**
+ * Validate a persisted code-vocab scan summary. Returns a clean
+ * `VocabScanSummary` only when every field has the expected type; otherwise
+ * `null` (treated as "never scanned"). Keeps a malformed/partial blob from
+ * rendering NaN counts or a non-array chip list in the done-state.
+ */
+function sanitizeVocabScan(raw: unknown): VocabScanSummary | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const nums = ['files', 'skipped', 'terms', 'bytes', 'ms'] as const;
+  for (const k of nums) {
+    if (typeof r[k] !== 'number' || !Number.isFinite(r[k] as number)) return null;
+  }
+  if (typeof r.capped !== 'boolean') return null;
+  if (!Array.isArray(r.sampleTerms)) return null;
+
+  // rankedTerms is additive (absent on pre-feature blobs). Drop malformed
+  // entries, keep only well-formed { term:string, freq:finite-number } rows,
+  // and clamp the length to the backend cap so a bad blob can't bloat the modal.
+  const rankedTerms: RankedTerm[] = Array.isArray(r.rankedTerms)
+    ? (r.rankedTerms as unknown[])
+        .filter((t): t is RankedTerm => {
+          if (!t || typeof t !== 'object') return false;
+          const e = t as Record<string, unknown>;
+          return (
+            typeof e.term === 'string' &&
+            e.term.length > 0 &&
+            typeof e.freq === 'number' &&
+            Number.isFinite(e.freq)
+          );
+        })
+        .slice(0, MAX_RANKED_TERMS)
+        .map((t) => ({ term: t.term, freq: t.freq }))
+    : [];
+
+  // whisperCount is additive too; coerce anything non-finite to 0 and never let
+  // it exceed how many ranked terms we actually have.
+  const rawWhisper = r.whisperCount;
+  const whisperCount =
+    typeof rawWhisper === 'number' && Number.isFinite(rawWhisper)
+      ? Math.max(0, Math.min(Math.trunc(rawWhisper), rankedTerms.length))
+      : 0;
+
+  return {
+    files: r.files as number,
+    skipped: r.skipped as number,
+    terms: r.terms as number,
+    bytes: r.bytes as number,
+    ms: r.ms as number,
+    capped: r.capped as boolean,
+    sampleTerms: (r.sampleTerms as unknown[]).filter((t): t is string => typeof t === 'string'),
+    rankedTerms,
+    whisperCount,
+  };
+}
 
 export function loadSettings(): Settings {
   try {
@@ -259,6 +355,11 @@ export function loadSettings(): Settings {
       if (typeof parsed.codeVocabFolder !== 'string') {
         parsed.codeVocabFolder = DEFAULT_SETTINGS.codeVocabFolder;
       }
+
+      // codeVocabLastScan is a persisted scan summary (or null). Validate the
+      // whole shape — a partial/malformed blob would render bad numbers in the
+      // done-state, so coerce anything that doesn't match back to null.
+      parsed.codeVocabLastScan = sanitizeVocabScan(parsed.codeVocabLastScan);
 
       // Correction toggles — coerce non-booleans (or absent on pre-feature blobs)
       // back to defaults. correctionEnabled defaults ON, so an older settings blob

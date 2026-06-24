@@ -10,6 +10,8 @@ import {
 } from '../../lib/settings';
 import { Select } from '../ui/Select';
 import { SettingsSection } from './SettingsSection';
+import { VocabScanStrip } from './VocabScanStrip';
+import { useVocabScan } from '../../lib/hooks/useVocabScan';
 import { countVocabTokens } from '../../lib/dictation';
 import type { DictationStatus } from '../../lib/types';
 import type { UpdateStatus } from '../../lib/updater';
@@ -440,15 +442,43 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
     }
   };
 
+  // Code-vocab scan: live walker + ticking counts + done-state. Seeded from the
+  // persisted last-scan summary so reopening settings shows the prior result.
+  const vocabScan = useVocabScan(settings.codeVocabLastScan);
+  // useVocabScan returns a fresh object literal each render, but scan/cancel are
+  // stable useCallbacks — depend on the function, not the whole object, so
+  // runVocabScan (and the closures built from it) keep a stable identity.
+  const { scan: doScan } = vocabScan;
+
+  // Run a scan against a folder and persist its summary so the done-state
+  // survives a settings reopen. Persisting via onUpdateSettings keeps the hook
+  // and localStorage in sync (the hook also resolves to the summary).
+  const runVocabScan = useCallback(
+    async (folder: string) => {
+      if (!folder) return;
+      const summary = await doScan(folder);
+      if (summary) onUpdateSettings({ codeVocabLastScan: summary });
+    },
+    [doScan, onUpdateSettings],
+  );
+
   const handleChooseCodeVocabFolder = async () => {
     try {
       const selected = await open({ directory: true, multiple: false });
       if (typeof selected === 'string') {
         onUpdateSettings({ codeVocabFolder: selected });
+        // Auto-scan the freshly chosen folder.
+        void runVocabScan(selected);
       }
     } catch {
       // Dialog cancelled or unavailable — keep the current folder.
     }
+  };
+
+  // Clear the folder: also drop the persisted scan and reset the strip to idle.
+  const handleClearCodeVocabFolder = () => {
+    vocabScan.cancel();
+    onUpdateSettings({ codeVocabFolder: '', codeVocabLastScan: null });
   };
 
   const saveToFile = settings.saveTranscript || settings.saveAudio;
@@ -1180,13 +1210,24 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
                 </button>
                 {settings.codeVocabFolder && (
                   <button
-                    onClick={() => onUpdateSettings({ codeVocabFolder: '' })}
+                    onClick={handleClearCodeVocabFolder}
                     className="text-xs font-medium text-stone-500 hover:text-stone-800 dark:text-stone-500 dark:hover:text-stone-300 underline hover:no-underline transition-colors"
                   >
                     Clear
                   </button>
                 )}
               </div>
+
+              {/* Live scan feedback strip: idle / scanning / done+empty. */}
+              <VocabScanStrip
+                status={vocabScan.status}
+                walker={vocabScan.walker}
+                stats={vocabScan.stats}
+                folder={settings.codeVocabFolder}
+                onScan={() => void runVocabScan(settings.codeVocabFolder)}
+                onCancel={vocabScan.cancel}
+              />
+
               <p className="mt-2 text-xs text-stone-500 dark:text-stone-400">
                 Optional. When set, the folder is scanned once for your identifiers (dependency and build directories are skipped) and layered on top of the built-in terms. Re-select to rescan after big code changes.
               </p>
