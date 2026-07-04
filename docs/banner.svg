@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 220" width="900" height="220" role="img" aria-label="murmur — Local voice-to-text for macOS">
+  <rect x="0" y="0" width="900" height="220" fill="#f6f2e8"/>
+  <text x="40" y="108" font-family="ui-monospace, 'DejaVu Sans Mono', Menlo, Consolas, monospace" font-size="22" font-weight="600" fill="#b5351c">05</text>
+  <text x="88.4" y="108" font-family="ui-monospace, 'DejaVu Sans Mono', Menlo, Consolas, monospace" font-size="54" font-weight="700" fill="#1c1710">murmur</text>
+  <text x="40" y="146" font-family="ui-monospace, 'DejaVu Sans Mono', Menlo, Consolas, monospace" font-size="16" fill="#a2957f">═════════════════════════════════════════════════════════════════════════════════════</text>
+  <text x="40" y="180" font-family="ui-monospace, 'DejaVu Sans Mono', Menlo, Consolas, monospace" font-size="20" fill="#6e6353">Local voice-to-text for macOS</text>
+  <text x="860" y="204" font-family="ui-monospace, 'DejaVu Sans Mono', Menlo, Consolas, monospace" font-size="13" fill="#a2957f" text-anchor="end">georgenijo.com · ssh georgenijo.com</text>
+</svg>
