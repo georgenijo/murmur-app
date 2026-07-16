@@ -1,9 +1,9 @@
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub mod coreml;
 pub mod parakeet;
 pub mod whisper;
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use coreml::CoreMlBackend;
 pub use parakeet::ParakeetBackend;
 pub use whisper::WhisperBackend;

@@ -3,7 +3,7 @@
 //! Run with an installed FluidAudio cache and a 16 kHz mono PCM fixture:
 //! `MURMUR_COREML_TEST_WAV=/path/to/prompt.wav cargo test --test coreml_transcription_integration -- --ignored`
 
-#![cfg(target_os = "macos")]
+#![cfg(all(target_os = "macos", target_arch = "aarch64"))]
 
 use ui_lib::transcriber::{
     coreml, parse_wav_to_samples, CoreMlBackend, TranscriptionBackend, COREML_MODEL_NAME,

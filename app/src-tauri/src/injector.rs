@@ -151,15 +151,11 @@ fn simulate_paste_native() -> Result<(), String> {
 
 #[cfg(target_os = "macos")]
 fn simulate_paste_osascript() -> Result<(), String> {
-    use std::process::Command;
-
     tracing::info!(target: "pipeline", "simulate_paste: using osascript compatibility fallback");
 
-    let output = Command::new("osascript")
-        .arg("-e")
-        .arg(r#"tell application "System Events" to keystroke "v" using command down"#)
-        .output()
-        .map_err(|e| format!("Failed to run osascript: {}", e))?;
+    let output = run_osascript_with_timeout(
+        r#"tell application "System Events" to keystroke "v" using command down"#,
+    )?;
 
     if output.status.success() {
         tracing::info!(target: "pipeline", "simulate_paste: osascript fallback completed successfully");
@@ -167,6 +163,60 @@ fn simulate_paste_osascript() -> Result<(), String> {
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
         Err(format!("osascript failed: {}", stderr))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn run_osascript_with_timeout(script: &str) -> Result<std::process::Output, String> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    use std::thread;
+    use std::time::Duration;
+
+    const TIMEOUT: Duration = Duration::from_millis(250);
+    const POLL_INTERVAL: Duration = Duration::from_millis(5);
+
+    let mut child = Command::new("osascript")
+        .arg("-e")
+        .arg(script)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Failed to run osascript: {error}"))?;
+    let started = Instant::now();
+
+    loop {
+        match child
+            .try_wait()
+            .map_err(|error| format!("Failed to wait for osascript: {error}"))?
+        {
+            Some(status) => {
+                let mut stdout = Vec::new();
+                let mut stderr = Vec::new();
+                if let Some(mut pipe) = child.stdout.take() {
+                    pipe.read_to_end(&mut stdout)
+                        .map_err(|error| format!("Failed to read osascript output: {error}"))?;
+                }
+                if let Some(mut pipe) = child.stderr.take() {
+                    pipe.read_to_end(&mut stderr)
+                        .map_err(|error| format!("Failed to read osascript error: {error}"))?;
+                }
+                return Ok(std::process::Output {
+                    status,
+                    stdout,
+                    stderr,
+                });
+            }
+            None if started.elapsed() >= TIMEOUT => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "osascript timed out after {}ms",
+                    TIMEOUT.as_millis()
+                ));
+            }
+            None => thread::sleep(POLL_INTERVAL),
+        }
     }
 }
 
@@ -416,8 +466,6 @@ fn focused_role_native() -> Result<String, String> {
 
 #[cfg(target_os = "macos")]
 fn focused_role_osascript() -> Result<String, String> {
-    use std::process::Command;
-
     // `missing value` (AppleScript's null) is returned when there is no focused
     // element; we map both that and the empty string to Unknown below.
     let script = r#"tell application "System Events"
@@ -430,11 +478,7 @@ fn focused_role_osascript() -> Result<String, String> {
     end try
 end tell"#;
 
-    let output = Command::new("osascript")
-        .arg("-e")
-        .arg(script)
-        .output()
-        .map_err(|e| format!("failed to run osascript: {}", e))?;
+    let output = run_osascript_with_timeout(script)?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -929,6 +973,25 @@ mod focus_tests {
             "AX focused-element query returned -25204"
         ));
         assert!(!is_native_ax_timeout("AX role query returned -25205"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn osascript_runner_captures_output() {
+        let output = run_osascript_with_timeout(r#"return "ready""#)
+            .expect("short AppleScript should complete");
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "ready");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn osascript_runner_terminates_after_deadline() {
+        let started = Instant::now();
+        let error = run_osascript_with_timeout("delay 1")
+            .expect_err("slow AppleScript should be terminated");
+        assert!(error.contains("timed out after 250ms"));
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
     }
 }
 

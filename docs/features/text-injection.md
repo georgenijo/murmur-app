@@ -33,7 +33,7 @@ The paste delay is configurable via a range slider in the settings panel (10–5
 
 ### Retry Behavior
 
-CoreGraphics event posting has no delivery result, so a successful native post completes immediately. Event construction failures use the `osascript` compatibility path, whose non-zero exit status is observable. If a paste attempt returns an error, the injector logs a warning, waits 100ms, and retries once. Only after both attempts fail does it return an error. The caller's 2s timeout only stops waiting for the injection future; it does not cancel an in-flight main-thread `Command::output()`, so the osascript fallback can still run to completion after the caller has already timed out.
+CoreGraphics event posting has no delivery result, so a successful native post completes immediately. Event construction failures use the `osascript` compatibility path, whose non-zero exit status is observable. Each AppleScript fallback is forcibly terminated after 250ms. If a paste attempt returns an error, the injector logs a warning, waits 100ms, and retries once. Only after both attempts fail does it return an error; the caller also enforces a 2s timeout for the complete injection operation.
 
 ### Failure Notification
 
