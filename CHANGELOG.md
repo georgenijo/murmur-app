@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-07-16
+
+### Changed
+- Migrated installed clients to the `latest-v2.json` updater channel while retaining macOS 13 compatibility. This bridge release keeps automatic updates working before Murmur's macOS 14 transition.
+
 ## [0.14.0] - 2026-06-24
 
 ### Added

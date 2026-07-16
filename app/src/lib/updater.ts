@@ -3,7 +3,7 @@ const LAST_CHECK_KEY = 'updater-last-check';
 export const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 const LATEST_JSON_URL =
-  'https://github.com/georgenijo/murmur-app/releases/latest/download/latest.json';
+  'https://github.com/georgenijo/murmur-app/releases/latest/download/latest-v2.json';
 
 // --- Semver comparison ---
 
@@ -87,7 +87,7 @@ export function isDueForCheck(): boolean {
 // --- min_version fetch ---
 
 /**
- * Fetch the custom min_version field from latest.json.
+ * Fetch the custom min_version field from the current update channel.
  * Returns null if absent, fetch fails, or JSON is invalid.
  */
 export async function fetchMinVersion(): Promise<string | null> {
