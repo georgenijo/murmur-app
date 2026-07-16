@@ -158,19 +158,20 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
     if (isStartingRef.current) return;
     isStartingRef.current = true;
     try {
-      const now = Date.now();
-      flog.info('recording', 'setting recordingStartTime', { value: now });
-      recordingStartTimeRef.current = now;
-      setRecordingStartTime(now);
       setError('');
       const res = await startRecording(microphoneRef.current);
       if (isDictationStatus(res.state)) setStatus(res.state);
-      if (res.type !== 'recording_started') {
+      if (res.type === 'recording_started') {
+        if (!recordingStartTimeRef.current) {
+          const now = Date.now();
+          flog.info('recording', 'setting recordingStartTime', { value: now });
+          recordingStartTimeRef.current = now;
+          setRecordingStartTime(now);
+        }
+      } else {
         if (res.type === 'error') setError(res.error || 'Unknown error');
         else if (res.type === 'busy_benchmarking') setError('Wait for the benchmark to finish.');
         else if (res.type === 'busy_transcribing_file') setError('Wait for the file transcription to finish.');
-        setRecordingStartTime(null);
-        recordingStartTimeRef.current = null;
       }
     } catch (err) {
       setError(String(err));

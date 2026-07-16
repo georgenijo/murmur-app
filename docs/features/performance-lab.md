@@ -26,10 +26,11 @@ Murmur normalizes both texts into words and calculates word error rate (WER):
 (substitutions + deletions + insertions) / reference words
 ```
 
-The report keeps the reference, model output, error count, and reference word
-count for every clip. This makes the accuracy result inspectable. Free-form
-speech without a known transcript can measure latency but cannot produce an
-honest accuracy score.
+The report keeps the reference, median-error measured output, error count, and
+reference word count for every clip. This makes the accuracy result inspectable
+without letting a single outlier iteration decide the ranking. Free-form speech
+without a known transcript can measure latency but cannot produce an honest
+accuracy score.
 
 ## Workloads
 
@@ -54,7 +55,7 @@ The report separates:
 - Cached model load time
 - First inference time
 - Warm median and p95 inference
-- Speed relative to the audio duration
+- Duration-weighted corpus speed from each clip's median latency
 - Weighted WER across the corpus
 - Process memory increase observed at benchmark checkpoints
 

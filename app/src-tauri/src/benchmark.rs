@@ -544,6 +544,7 @@ pub fn run(
             Err(error) => {
                 results.push(error_result(&model, error));
                 completed = model_start + steps_per_model;
+                emit_progress(app, completed, total_steps, &model, None, "complete");
                 continue;
             }
         };
@@ -552,6 +553,7 @@ pub fn run(
         if let Err(error) = backend.load_model(&model.model_name) {
             results.push(error_result(&model, error));
             completed = model_start + steps_per_model;
+            emit_progress(app, completed, total_steps, &model, None, "complete");
             continue;
         }
         let model_load_ms = load_started.elapsed().as_secs_f64() * 1000.0;
@@ -559,10 +561,11 @@ pub fn run(
         let mut peak_rss = get_process_rss_mb();
         let mut first_inference_ms = None;
         let mut all_warm = Vec::new();
-        let mut all_realtime_factors = Vec::new();
         let mut fixture_results = Vec::with_capacity(fixtures.len());
         let mut total_errors = 0;
         let mut total_reference_words = 0;
+        let mut corpus_warm_seconds = 0.0;
+        let mut corpus_audio_seconds = 0.0;
         let mut failed = None;
 
         for prepared in &fixtures {
@@ -596,7 +599,7 @@ pub fn run(
             peak_rss = peak_rss.max(get_process_rss_mb());
 
             let mut warm = Vec::with_capacity(iterations);
-            let mut transcript = None;
+            let mut transcripts = Vec::with_capacity(iterations);
             for _ in 0..iterations {
                 if coordinator.is_cancelled() {
                     backend.reset();
@@ -612,7 +615,7 @@ pub fn run(
                 );
                 let started = Instant::now();
                 match backend.transcribe(samples, "en", None, true) {
-                    Ok(output) => transcript = Some(output),
+                    Ok(output) => transcripts.push(output),
                     Err(error) => {
                         failed = Some(error);
                         break;
@@ -620,7 +623,6 @@ pub fn run(
                 }
                 let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
                 warm.push(elapsed_ms);
-                all_realtime_factors.push(elapsed_ms / 1000.0 / audio_seconds);
                 completed += 1;
                 peak_rss = peak_rss.max(get_process_rss_mb());
             }
@@ -630,8 +632,20 @@ pub fn run(
             let warm_median_ms = percentile(&warm, 0.5).unwrap_or(0.0);
             let warm_p95_ms = percentile(&warm, 0.95).unwrap_or(0.0);
             all_warm.extend_from_slice(&warm);
-            let transcript = transcript.expect("benchmark presets include measured iterations");
-            let (errors, reference_words) = word_errors(fixture.reference, &transcript);
+            corpus_warm_seconds += warm_median_ms / 1000.0;
+            corpus_audio_seconds += audio_seconds;
+            let mut scored_transcripts = transcripts
+                .into_iter()
+                .map(|transcript| {
+                    let (errors, reference_words) = word_errors(fixture.reference, &transcript);
+                    (errors, reference_words, transcript)
+                })
+                .collect::<Vec<_>>();
+            scored_transcripts.sort_by_key(|(errors, _, _)| *errors);
+            let (errors, reference_words, transcript) = scored_transcripts
+                .into_iter()
+                .nth((iterations - 1) / 2)
+                .expect("benchmark presets include measured iterations");
             total_errors += errors;
             total_reference_words += reference_words;
             fixture_results.push(FixtureResult {
@@ -653,6 +667,7 @@ pub fn run(
         if let Some(error) = failed {
             results.push(error_result(&model, error));
             completed = model_start + steps_per_model;
+            emit_progress(app, completed, total_steps, &model, None, "complete");
             continue;
         }
         results.push(ModelResult {
@@ -664,7 +679,7 @@ pub fn run(
             first_inference_ms,
             warm_median_ms: percentile(&all_warm, 0.5),
             warm_p95_ms: percentile(&all_warm, 0.95),
-            realtime_factor: percentile(&all_realtime_factors, 0.5),
+            realtime_factor: Some(corpus_warm_seconds / corpus_audio_seconds),
             word_error_rate: Some(total_errors as f64 / total_reference_words as f64),
             memory_delta_mb: peak_rss.saturating_sub(baseline_rss),
             fixtures: fixture_results,

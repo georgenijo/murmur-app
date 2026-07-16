@@ -684,6 +684,10 @@ pub async fn process_audio(
             tracing::warn!(target: "pipeline", "process_audio: blocked — file transcription in progress");
             return Err("Cannot process audio while a file transcription is in progress.".to_string());
         }
+        if state.benchmark.is_running() {
+            tracing::warn!(target: "pipeline", "process_audio: blocked — benchmark in progress");
+            return Err("Cannot process audio while a benchmark is in progress.".to_string());
+        }
         dictation.status = DictationStatus::Processing;
         state.app_state.recording_id.load(Ordering::SeqCst)
     };
