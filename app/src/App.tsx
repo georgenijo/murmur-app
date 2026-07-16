@@ -27,6 +27,9 @@ const ResourceMonitor = lazy(() => import('./components/ResourceMonitor').then(m
 const UsageDashboard = lazy(() => import('./components/UsageDashboard').then(m => ({ default: m.UsageDashboard })));
 import { resetStats } from './lib/stats';
 import { ModelDownloader } from './components/ModelDownloader';
+import { OnboardingFlow } from './components/onboarding/OnboardingFlow';
+import { isOnboardingComplete, markOnboardingComplete, resetOnboarding } from './lib/onboarding';
+import { checkMicrophonePermissionStatus } from './lib/dictation';
 
 function App() {
   // --- Diagnostic: track when main window becomes visible/focused ---
@@ -65,6 +68,39 @@ function App() {
       .catch(() => setModelReady(true)); // fail open so main UI still loads
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Setup-assistant gate. Runs when the completion flag is absent, but
+  // grandfathers existing installs: if both permissions and the model are
+  // already in place, set the flag silently so upgrades never see the wizard.
+  const [onboardingState, setOnboardingState] = useState<'unknown' | 'needed' | 'done'>('unknown');
+  useEffect(() => {
+    if (isOnboardingComplete()) {
+      setOnboardingState('done');
+      return;
+    }
+    (async () => {
+      const [micStatus, axGranted, modelExists] = await Promise.all([
+        checkMicrophonePermissionStatus().catch(() => 'unknown' as const),
+        invoke<boolean>('check_accessibility_permission').catch(() => false),
+        invoke<boolean>('check_specific_model_exists', { modelName: settings.model }).catch(() => false),
+      ]);
+      if (micStatus === 'granted' && axGranted && modelExists) {
+        flog.info('main', 'Onboarding grandfathered: permissions and model already present');
+        markOnboardingComplete();
+        setOnboardingState('done');
+      } else {
+        flog.info('main', 'Onboarding needed', { micStatus, axGranted, modelExists });
+        setOnboardingState('needed');
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const completeOnboarding = useCallback((model: typeof settings.model) => {
+    markOnboardingComplete();
+    markModelReady(model);
+    setOnboardingState('done');
+  }, [markModelReady]);
 
   // Keep settings in sync when the overlay's quick controls change them.
   useOverlaySettingsSync(applyExternalSettings);
@@ -137,7 +173,17 @@ function App() {
 
   const error = initError || recordingError;
 
-  if (modelReady === null) return <div className="h-screen bg-stone-50 dark:bg-stone-900" />;
+  if (onboardingState === 'unknown' || modelReady === null) {
+    return <div className="h-screen bg-stone-50 dark:bg-stone-900" />;
+  }
+  if (onboardingState === 'needed') {
+    return (
+      <OnboardingFlow
+        initialModel={settings.model}
+        onComplete={completeOnboarding}
+      />
+    );
+  }
   if (modelReady === false) {
     return (
       <ModelDownloader
@@ -217,6 +263,11 @@ function App() {
           status={status}
           onResetStats={handleResetStats}
           onViewLogs={() => invoke('open_log_viewer').catch((e: unknown) => flog.warn('main', 'Failed to open log viewer', { error: String(e) }))}
+          onRerunSetup={() => {
+            setIsSettingsOpen(false);
+            resetOnboarding();
+            setOnboardingState('needed');
+          }}
           accessibilityGranted={accessibilityGranted}
           onCheckForUpdate={checkForUpdate}
           updateStatus={updateStatus}

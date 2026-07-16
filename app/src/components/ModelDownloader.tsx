@@ -26,6 +26,8 @@ const MODELS = DOWNLOAD_MODEL_KEYS.map((key) => {
 interface Props {
   initialModel: ModelOption;
   onComplete: (model: ModelOption) => void;
+  /** Notifies embedders when a download starts/stops (e.g. to lock navigation). */
+  onDownloadingChange?: (downloading: boolean) => void;
 }
 
 type DownloadState =
@@ -33,7 +35,12 @@ type DownloadState =
   | { phase: 'downloading'; received: number; total: number }
   | { phase: 'error'; message: string };
 
-export function ModelDownloader({ initialModel, onComplete }: Props) {
+/**
+ * Model picker + download progress card, without the full-screen chrome.
+ * Used by the standalone first-launch gate (ModelDownloader) and embedded in
+ * the onboarding wizard's model step (OnboardingFlow).
+ */
+export function ModelDownloadPanel({ initialModel, onComplete, onDownloadingChange }: Props) {
   const [selected, setSelected] = useState<ModelOption>(
     MODELS.some((model) => model.name === initialModel) ? initialModel : MODELS[0].name
   );
@@ -48,6 +55,7 @@ export function ModelDownloader({ initialModel, onComplete }: Props) {
   }, []);
 
   const handleDownload = async () => {
+    onDownloadingChange?.(true);
     setDownloadState({ phase: 'downloading', received: 0, total: 0 });
 
     const unlisten = await listen<{ received: number; total: number }>(
@@ -66,10 +74,12 @@ export function ModelDownloader({ initialModel, onComplete }: Props) {
       await invoke('download_model', { modelName: selected });
       unlisten();
       downloadUnlistenRef.current = null;
+      onDownloadingChange?.(false);
       onComplete(selected);
     } catch (err) {
       unlisten();
       downloadUnlistenRef.current = null;
+      onDownloadingChange?.(false);
       setDownloadState({
         phase: 'error',
         message: String(err),
@@ -85,16 +95,8 @@ export function ModelDownloader({ initialModel, onComplete }: Props) {
   const isDownloading = downloadState.phase === 'downloading';
 
   return (
-    <div className="h-screen bg-stone-50 dark:bg-stone-900 flex flex-col items-center justify-center p-8">
-      <div className="w-full max-w-md">
-        <h1 className="text-xl font-semibold text-stone-800 dark:text-stone-100 mb-1">
-          Download a Model
-        </h1>
-        <p className="text-sm text-stone-500 dark:text-stone-400 mb-6">
-          A model file is required for transcription. Choose one to download.
-        </p>
-
-        <div className="space-y-2 mb-6">
+    <div>
+      <div className="space-y-2 mb-6">
           {MODELS.map((model) => (
             <button
               key={model.name}
@@ -163,6 +165,25 @@ export function ModelDownloader({ initialModel, onComplete }: Props) {
             ? 'Retry Download'
             : 'Download'}
         </button>
+    </div>
+  );
+}
+
+/**
+ * Full-screen first-launch gate shown when the selected model is missing but
+ * onboarding has already completed (e.g. the model file was deleted).
+ */
+export function ModelDownloader({ initialModel, onComplete }: Props) {
+  return (
+    <div className="h-screen bg-stone-50 dark:bg-stone-900 flex flex-col items-center justify-center p-8">
+      <div className="w-full max-w-md">
+        <h1 className="text-xl font-semibold text-stone-800 dark:text-stone-100 mb-1">
+          Download a Model
+        </h1>
+        <p className="text-sm text-stone-500 dark:text-stone-400 mb-6">
+          A model file is required for transcription. Choose one to download.
+        </p>
+        <ModelDownloadPanel initialModel={initialModel} onComplete={onComplete} />
       </div>
     </div>
   );

@@ -124,6 +124,53 @@ pub fn request_microphone_permission() -> Result<(), String> {
     { Ok(()) }
 }
 
+/// Trigger the native macOS microphone permission prompt (TCC) in-flow.
+///
+/// Calls `AVCaptureDevice.requestAccessForMediaType:completionHandler:`. When the
+/// status is `notDetermined` this shows the system dialog and registers the app in
+/// the Microphone pane — without opening the device, so it cannot duck other apps'
+/// audio (issue #177). When the status is already determined the completion fires
+/// immediately and no dialog appears. Fire-and-forget: callers observe the outcome
+/// by polling `check_microphone_permission_status`, so this never blocks on the
+/// user's answer.
+#[tauri::command]
+pub fn request_microphone_access() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::msg_send;
+        use objc2::runtime::{AnyClass, Bool};
+        use objc2_foundation::NSString;
+
+        unsafe {
+            let Some(cls) = AnyClass::get(c"AVCaptureDevice") else {
+                return Err("AVCaptureDevice is unavailable".to_string());
+            };
+            // AVMediaTypeAudio == @"soun"
+            let media = NSString::from_str("soun");
+            // The completion handler runs on an arbitrary dispatch queue after the
+            // user answers; the block only logs, all state reads go through the
+            // polling commands.
+            let handler = block2::RcBlock::new(|granted: Bool| {
+                tracing::info!(
+                    target: "system",
+                    "microphone access request completed: granted={}",
+                    granted.as_bool()
+                );
+            });
+            let _: () = msg_send![
+                cls,
+                requestAccessForMediaType: &*media,
+                completionHandler: &*handler
+            ];
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(())
+    }
+}
+
 /// Reset this app's stale macOS Microphone TCC entry, then reopen the pane.
 ///
 /// Mirrors `reset_accessibility_permission` for the case where the running build

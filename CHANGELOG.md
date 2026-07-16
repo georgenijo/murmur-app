@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+- **First-launch setup assistant** — new installs get a guided wizard (Welcome → Microphone → Accessibility → Model download → Done) instead of a dismissible permissions banner next to a lone model-download screen. The microphone step fires the native macOS permission dialog in-app (new `request_microphone_access` command via `AVCaptureDevice.requestAccess`) instead of waiting for the first recording attempt; both permission steps poll live so a grant made in System Settings flips the step when you come back, and denied/stale-TCC states get inline reset-and-retry paths. Existing installs with permissions and a model already in place are grandfathered silently. Re-run anytime via Settings → About → Run Setup Assistant (`OnboardingFlow.tsx`, `lib/onboarding.ts`).
+
 ## [0.14.1] - 2026-07-16
 
 ### Changed

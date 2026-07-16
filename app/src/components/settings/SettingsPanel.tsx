@@ -392,6 +392,8 @@ interface SettingsPanelProps {
   status: DictationStatus;
   onResetStats: () => void;
   onViewLogs: () => void;
+  /** Relaunch the first-run setup assistant (permission troubleshooting). */
+  onRerunSetup: () => void;
   accessibilityGranted: boolean | null;
   onCheckForUpdate: () => Promise<void>;
   updateStatus: UpdateStatus;
@@ -406,7 +408,7 @@ const SETTINGS_CATEGORIES = [
   { id: 'about', label: 'About' },
 ] as const;
 
-export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, status, onResetStats, onViewLogs, accessibilityGranted, onCheckForUpdate, updateStatus }: SettingsPanelProps) {
+export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, status, onResetStats, onViewLogs, onRerunSetup, accessibilityGranted, onCheckForUpdate, updateStatus }: SettingsPanelProps) {
   const [confirmReset, setConfirmReset] = useState(false);
   const [activeCat, setActiveCat] = useState<string>('transcription');
   const [version, setVersion] = useState('');
@@ -1366,6 +1368,20 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
           >
             View Logs
           </button>
+        </div>
+
+        {/* Setup assistant */}
+        <div>
+          <button
+            onClick={onRerunSetup}
+            className="w-full px-3 py-2 rounded-lg text-xs font-medium border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-600 transition-colors"
+          >
+            Run Setup Assistant
+          </button>
+          <p className="mt-1.5 text-xs text-stone-400 dark:text-stone-500">
+            Re-check permissions and the model step by step — useful if a
+            permission was revoked or stopped working.
+          </p>
         </div>
 
         {/* Updates */}
