@@ -170,6 +170,21 @@ jobs:
           cache: 'npm'
           cache-dependency-path: app/package-lock.json
 
+      - name: Free disk space for CUDA release build
+        run: |
+          echo "=== Disk before cleanup ==="
+          df -h /
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL
+          sudo apt-get clean
+          docker system prune --all --force || true
+          echo "=== Disk after cleanup ==="
+          df -h /
+
       # actions/checkout above must run first so the local composite action is on disk.
       - name: Setup Linux build environment
         uses: ./.github/actions/setup-linux-build
