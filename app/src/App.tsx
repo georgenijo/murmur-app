@@ -29,7 +29,7 @@ import { resetStats } from './lib/stats';
 import { ModelDownloader } from './components/ModelDownloader';
 import { OnboardingFlow } from './components/onboarding/OnboardingFlow';
 import { isOnboardingComplete, markOnboardingComplete, resetOnboarding } from './lib/onboarding';
-import { checkMicrophonePermissionStatus } from './lib/dictation';
+import { checkAccessibilityPermission, checkMicrophonePermissionStatus, checkModelExists } from './lib/dictation';
 
 function App() {
   // --- Diagnostic: track when main window becomes visible/focused ---
@@ -63,7 +63,7 @@ function App() {
   // mount (not reactively) so changing models in Settings uses the inline
   // download flow there rather than re-showing this full-screen downloader.
   useEffect(() => {
-    invoke<boolean>('check_specific_model_exists', { modelName: settings.model })
+    checkModelExists(settings.model)
       .then(setModelReady)
       .catch(() => setModelReady(true)); // fail open so main UI still loads
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -81,8 +81,8 @@ function App() {
     (async () => {
       const [micStatus, axGranted, modelExists] = await Promise.all([
         checkMicrophonePermissionStatus().catch(() => 'unknown' as const),
-        invoke<boolean>('check_accessibility_permission').catch(() => false),
-        invoke<boolean>('check_specific_model_exists', { modelName: settings.model }).catch(() => false),
+        checkAccessibilityPermission().catch(() => false),
+        checkModelExists(settings.model).catch(() => false),
       ]);
       if (micStatus === 'granted' && axGranted && modelExists) {
         flog.info('main', 'Onboarding grandfathered: permissions and model already present');

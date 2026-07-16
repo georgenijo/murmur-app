@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
 import {
+  checkAccessibilityPermission,
   checkMicrophonePermissionStatus,
+  checkModelExists,
+  openMicrophoneSettings,
+  requestAccessibilityPermission,
+  requestMicrophoneAccess,
   resetAccessibilityPermission,
   resetMicrophonePermission,
   type MicPermissionStatus,
@@ -73,7 +77,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
       mic = 'unknown';
     }
     try {
-      ax = await invoke<boolean>('check_accessibility_permission');
+      ax = await checkAccessibilityPermission();
     } catch {
       // keep previous value; a probe glitch must not flip the UI
     }
@@ -96,7 +100,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   // model step (re-run of the wizard, or a partially completed first launch).
   useEffect(() => {
     if (step !== 'model') return;
-    invoke<boolean>('check_specific_model_exists', { modelName: initialModel })
+    checkModelExists(initialModel)
       .then(setModelInstalled)
       // Fail open (skip the download) — matches the standalone gate's behavior;
       // a genuine fresh install resolves to `false` rather than throwing.
@@ -116,7 +120,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
     try {
       // Fires the native TCC dialog when the status is notDetermined; the
       // 1s poll picks up the answer.
-      await invoke('request_microphone_access');
+      await requestMicrophoneAccess();
     } catch (error) {
       setMicError(typeof error === 'string' ? error : 'Could not request microphone access.');
     }
@@ -125,7 +129,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   const handleOpenMicSettings = async () => {
     setMicError(null);
     try {
-      await invoke('request_microphone_permission');
+      await openMicrophoneSettings();
     } catch (error) {
       setMicError(typeof error === 'string' ? error : 'Could not open System Settings.');
     }
@@ -155,7 +159,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
     try {
       // Registers Murmur in the Accessibility list, shows the system dialog,
       // and opens the Accessibility pane.
-      await invoke('request_accessibility_permission');
+      await requestAccessibilityPermission();
     } catch (error) {
       setAxError(typeof error === 'string' ? error : 'Could not open System Settings.');
     }

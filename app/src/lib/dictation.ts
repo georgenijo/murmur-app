@@ -145,6 +145,38 @@ export async function resetAccessibilityPermission(): Promise<void> {
   return await invoke('reset_accessibility_permission');
 }
 
+/** Check whether accessibility permission is currently granted (macOS). */
+export async function checkAccessibilityPermission(): Promise<boolean> {
+  return await invoke('check_accessibility_permission');
+}
+
+/**
+ * Trigger the accessibility permission flow: registers the app in the
+ * Accessibility list, shows the system dialog, and opens the settings pane.
+ */
+export async function requestAccessibilityPermission(): Promise<void> {
+  return await invoke('request_accessibility_permission');
+}
+
+/**
+ * Fire the native microphone TCC prompt in-app (no device open, no audio
+ * ducking). Fire-and-forget: poll `checkMicrophonePermissionStatus` to observe
+ * the user's answer.
+ */
+export async function requestMicrophoneAccess(): Promise<void> {
+  return await invoke('request_microphone_access');
+}
+
+/** Open System Settings at the Microphone privacy pane. */
+export async function openMicrophoneSettings(): Promise<void> {
+  return await invoke('request_microphone_permission');
+}
+
+/** Check whether a specific model's files already exist on disk. */
+export async function checkModelExists(modelName: string): Promise<boolean> {
+  return await invoke('check_specific_model_exists', { modelName });
+}
+
 /** Live microphone authorization state, mirroring the Rust banner-state mapping. */
 export type MicPermissionStatus = 'granted' | 'denied' | 'notDetermined' | 'unknown';
 
