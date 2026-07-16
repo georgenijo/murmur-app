@@ -243,16 +243,24 @@ jobs:
 
       - name: Collect updater artifact info
         run: |
-          ARTIFACTS='${{ steps.tauri-build.outputs.artifactPaths }}'
-          APPIMAGE_FILE=$(echo "$ARTIFACTS" | jq -r '.[]' | grep '\.AppImage\.tar\.gz$' | head -1)
+          # Tauri v2 reuses the AppImage itself as the Linux updater bundle.
+          # Do not rely on tauri-action's artifactPaths output here: it can omit
+          # updater-only paths even when the signed files exist on disk.
+          APPIMAGE_FILE=$(find app/src-tauri/target/release/bundle/appimage \
+            -maxdepth 1 -type f -name '*.AppImage' -print -quit)
+          if [ -z "$APPIMAGE_FILE" ]; then
+            echo "ERROR: Linux updater AppImage was not generated"
+            exit 1
+          fi
           APPIMAGE_BASENAME=$(basename "$APPIMAGE_FILE")
           RUNNER_ARCH=$(uname -m)
 
           SIG_FILE="${APPIMAGE_FILE}.sig"
-          SIGNATURE=""
-          if [ -f "$SIG_FILE" ]; then
-            SIGNATURE=$(cat "$SIG_FILE")
+          if [ ! -s "$SIG_FILE" ]; then
+            echo "ERROR: Linux updater signature was not generated: $SIG_FILE"
+            exit 1
           fi
+          SIGNATURE=$(cat "$SIG_FILE")
 
           mkdir -p updater-info
           cat > updater-info/linux.json <<ENDJSON
@@ -270,8 +278,7 @@ jobs:
           path: |
             app/src-tauri/target/release/bundle/deb/*.deb
             app/src-tauri/target/release/bundle/appimage/*.AppImage
-            app/src-tauri/target/release/bundle/appimage/*.AppImage.tar.gz
-            app/src-tauri/target/release/bundle/appimage/*.AppImage.tar.gz.sig
+            app/src-tauri/target/release/bundle/appimage/*.AppImage.sig
 
       - name: Upload updater info
         uses: actions/upload-artifact@v4
