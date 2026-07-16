@@ -145,10 +145,7 @@ impl TranscriptionBackend for WhisperBackend {
 
     fn is_model_loaded(&self, model_name: &str) -> bool {
         self.loaded_model_name.as_deref() == Some(model_name)
-            && self.context.is_some()
-            && self.state.is_some()
     }
-
     fn transcribe(&mut self, samples: &[f32], language: &str, initial_prompt: Option<&str>, smart_punctuation: bool) -> Result<String, String> {
         let state = self
             .state
