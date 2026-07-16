@@ -17,7 +17,7 @@ When `auto_paste` is enabled in settings:
 1. Copy text to clipboard
 2. Check `AXIsProcessTrusted()` — if accessibility not granted, stop here (text is still in clipboard)
 3. Wait for the configurable delay (default 50ms) for window focus to settle
-4. Resolve the frontmost process with `NSWorkspace` and query its focused element role with the macOS Accessibility API. If the native query fails, fall back to the previous System Events `osascript` query
+4. Resolve the frontmost process with `NSWorkspace` and query its focused element role with the macOS Accessibility API. If the native query fails with a non-timeout error, fall back to the previous System Events `osascript` query. Native AX timeout (`-25204`) returns `Unknown` immediately and skips the fallback (allow-paste).
 5. Skip auto-paste only when the focused role is on the confirmed non-editable denylist; unknown roles still allow paste
 6. Post Command-modified `V` key-down and key-up events through the CoreGraphics HID event tap. If event construction fails, fall back to the previous System Events `osascript` paste
 7. If the paste attempt reports a failure, wait 100ms and retry once
@@ -33,7 +33,7 @@ The paste delay is configurable via a range slider in the settings panel (10–5
 
 ### Retry Behavior
 
-CoreGraphics event posting has no delivery result, so a successful native post completes immediately. Event construction failures use the `osascript` compatibility path, whose non-zero exit status is observable. If a paste attempt returns an error, the injector logs a warning, waits 100ms, and retries once. Only after both attempts fail does it return an error; the caller still enforces a 2s timeout.
+CoreGraphics event posting has no delivery result, so a successful native post completes immediately. Event construction failures use the `osascript` compatibility path, whose non-zero exit status is observable. If a paste attempt returns an error, the injector logs a warning, waits 100ms, and retries once. Only after both attempts fail does it return an error. The caller's 2s timeout only stops waiting for the injection future; it does not cancel an in-flight main-thread `Command::output()`, so the osascript fallback can still run to completion after the caller has already timed out.
 
 ### Failure Notification
 

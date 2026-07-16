@@ -11,7 +11,7 @@ use ui_lib::transcriber::{
     parse_wav_to_samples, ParakeetBackend, TranscriptionBackend, WhisperBackend,
     WHISPER_SAMPLE_RATE,
 };
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use ui_lib::transcriber::{CoreMlBackend, COREML_MODEL_NAME};
 
 const DEFAULT_AUDIO_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../bench/audio");
@@ -83,12 +83,14 @@ fn parse_args() -> Result<Args, String> {
 
 fn backend(engine: &str) -> Result<(Box<dyn TranscriptionBackend>, &'static str), String> {
     match engine {
-        #[cfg(target_os = "macos")]
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         "coreml" => Ok((Box::new(CoreMlBackend::new()), COREML_MODEL_NAME)),
         "parakeet" => Ok((Box::new(ParakeetBackend::new()), PARAKEET_MODEL)),
         "whisper" => Ok((Box::new(WhisperBackend::new()), WHISPER_MODEL)),
-        #[cfg(not(target_os = "macos"))]
-        "coreml" => Err("Core ML is available only on macOS".to_string()),
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        "coreml" => Err(
+            "Core ML is available only on macOS 14 or newer with Apple Silicon".to_string(),
+        ),
         _ => Err(format!("unknown engine: {engine}")),
     }
 }
@@ -157,6 +159,12 @@ fn main() -> Result<(), String> {
         let bytes = std::fs::read(&wav_path)
             .map_err(|error| format!("could not read {}: {error}", wav_path.display()))?;
         let samples = parse_wav_to_samples(&bytes)?;
+        if samples.is_empty() {
+            return Err(format!(
+                "fixture {} contains no audio samples",
+                wav_path.display()
+            ));
+        }
         let audio_seconds = samples.len() as f64 / WHISPER_SAMPLE_RATE as f64;
         let fixture = wav_path
             .file_stem()

@@ -30,24 +30,25 @@ cd app && npm run tauri build
 
 ```bash
 # Rust unit tests (single-threaded — timing-sensitive tests use sleep)
-cd app/src-tauri && cargo test --lib -- --test-threads=1
+(cd app/src-tauri && cargo test --lib -- --test-threads=1)
 
 # Whisper integration tests (requires models on disk, skips if absent)
-cd app/src-tauri && cargo test --test transcription_integration -- --test-threads=1
+(cd app/src-tauri && cargo test --test transcription_integration -- --test-threads=1)
 
 # FluidAudio Core ML integration test (explicit opt-in; requires its model cache)
-MURMUR_COREML_TEST_WAV=/path/to/16khz-mono.wav cargo test --test coreml_transcription_integration -- --ignored
+(cd app/src-tauri && MURMUR_COREML_TEST_WAV=/path/to/16khz-mono.wav cargo test --test coreml_transcription_integration -- --ignored)
 
 # Frontend unit tests (settings migration)
-cd app && npm test
+(cd app && npm test)
 
 # TypeScript type check
-cd app && npx tsc --noEmit
+(cd app && npx tsc --noEmit)
 
-# Same-corpus Core ML vs CPU benchmarks (generate fixtures first)
-bench/make_audio.sh
-cd app/src-tauri && cargo run --release --example transcription_bench -- --engine coreml --iterations 5
-cd app/src-tauri && cargo run --release --example transcription_bench -- --engine parakeet --iterations 5
+# Same-corpus Core ML vs CPU benchmarks (generate fixtures first; install the
+# selected model through Murmur's setup screen before running)
+./bench/make_audio.sh
+(cd app/src-tauri && cargo run --release --example transcription_bench -- --engine coreml --iterations 5)
+(cd app/src-tauri && cargo run --release --example transcription_bench -- --engine parakeet --iterations 5)
 ```
 
 Rust unit tests cover backend dispatch/cache validation, keyboard detection, audio RMS, tray rendering, and WAV parsing. Frontend tests cover settings migration and preservation of existing model selections. Model-backed integration tests are optional so CI never downloads hundreds of megabytes.

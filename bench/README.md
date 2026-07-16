@@ -5,6 +5,8 @@ The runner reports model loading separately from first and warm inference and
 uses ordered word-error rate (WER) against the adjacent reference transcript.
 
 ```bash
+# First install the selected Core ML or Parakeet model through Murmur's
+# model setup screen (the runner loads an existing cache; it does not download).
 bench/make_audio.sh
 cd app/src-tauri
 cargo run --release --example transcription_bench -- --engine coreml --iterations 5

@@ -16,9 +16,9 @@ pub fn check_specific_model_exists(model_name: String) -> bool {
         return false;
     }
     if transcriber::is_coreml_model(&model_name) {
-        #[cfg(target_os = "macos")]
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         return transcriber::coreml::specific_model_exists(&model_name);
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         return false;
     }
     // --- Parakeet backend (removable): delete this branch to remove. ---
@@ -39,9 +39,12 @@ pub async fn download_model(app_handle: tauri::AppHandle, model_name: String) ->
         "large-v3-turbo", "small.en", "base.en", "tiny.en", "medium.en",
     ];
     let is_coreml = transcriber::is_coreml_model(&model_name);
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
     if is_coreml {
-        return Err("Core ML transcription is available only on macOS 14 or newer".to_string());
+        return Err(
+            "Core ML transcription is available only on macOS 14 or newer with Apple Silicon"
+                .to_string(),
+        );
     }
     // --- Parakeet backend (removable): delete this branch + download_parakeet_model to remove. ---
     let is_parakeet = transcriber::parakeet::is_parakeet_model(&model_name);
@@ -68,7 +71,7 @@ pub async fn download_model(app_handle: tauri::AppHandle, model_name: String) ->
             "received": 0,
             "total": 0
         }));
-        #[cfg(target_os = "macos")]
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             let model_name = model_name.clone();
             tokio::task::spawn_blocking(move || transcriber::coreml::prepare_model(&model_name))

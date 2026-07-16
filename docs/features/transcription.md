@@ -6,7 +6,7 @@
 cpal audio capture → f32 samples in memory → resample to 16kHz mono → backend inference → text
 ```
 
-All processing is local during transcription; network access is used only for an explicit model download. New installs default to FluidAudio Core ML on the Apple Neural Engine, while Whisper/Metal and sherpa-onnx/CPU remain selectable.
+Transcription processing is local. Network access occurs for model setup and may also be used to fetch a missing VAD asset in the background. New installs default to FluidAudio Core ML on the Apple Neural Engine, while Whisper/Metal and sherpa-onnx/CPU remain selectable.
 
 ## Audio Capture (`audio.rs`)
 

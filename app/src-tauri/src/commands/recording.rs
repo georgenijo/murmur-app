@@ -768,12 +768,15 @@ pub async fn configure_dictation(
     let model = options.get("model").and_then(|v| v.as_str()).map(String::from);
     let language = options.get("language").and_then(|v| v.as_str()).map(String::from);
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
     if model
         .as_deref()
         .is_some_and(transcriber::is_coreml_model)
     {
-        return Err("Core ML transcription is available only on macOS 14 or newer".to_string());
+        return Err(
+            "Core ML transcription is available only on macOS 14 or newer with Apple Silicon"
+                .to_string(),
+        );
     }
 
     let mut dictation = state.app_state.dictation.lock_or_recover();
@@ -956,14 +959,15 @@ pub async fn configure_dictation(
         };
         if backend.name() != desired_backend {
             *backend = if want_coreml {
-                #[cfg(target_os = "macos")]
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                 {
                     Box::new(transcriber::CoreMlBackend::new())
                 }
-                #[cfg(not(target_os = "macos"))]
+                #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
                 {
                     return Err(
-                        "Core ML transcription is available only on macOS 14 or newer".to_string()
+                        "Core ML transcription is available only on macOS 14 or newer with Apple Silicon"
+                            .to_string(),
                     );
                 }
             } else if want_parakeet {
@@ -978,6 +982,10 @@ pub async fn configure_dictation(
     }
 
     if let Some(model_name) = idle_preparation {
+        // Treat warmup as activity so an already-expired idle timer cannot
+        // immediately release the model this preparation is about to load.
+        *state.app_state.last_transcription_at.lock_or_recover() =
+            Some(std::time::Instant::now());
         spawn_idle_model_preparation(app_handle, model_name);
     }
 

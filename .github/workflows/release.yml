@@ -332,6 +332,12 @@ jobs:
           LINUX_URL="${BASE_URL}/$(echo "$LINUX" | jq -r '.url_basename')"
           LINUX_SIG=$(echo "$LINUX" | jq -r '.signature')
 
+          if [ -z "$MACOS_PLATFORM" ] || [ -z "$MACOS_SIG" ] \
+            || [ -z "$LINUX_PLATFORM" ] || [ -z "$LINUX_SIG" ]; then
+            echo "ERROR: current updater artifact metadata or signature is missing"
+            exit 1
+          fi
+
           # New builds use this channel. It includes macOS 14+ and Linux so the
           # shared Tauri config works on both platforms.
           jq -n \
