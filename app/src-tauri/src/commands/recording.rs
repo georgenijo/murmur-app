@@ -506,7 +506,8 @@ async fn run_transcription_pipeline(
         return Ok((String::new(), PipelineTimings { vad_ms, model_load_ms: 0, decode_ms: 0, inference_ms: 0, correction_ms: 0, paste_ms: 0, rss_before_mb: 0, rss_after_mb: 0 }));
     }
 
-    // Phase: Transcription (includes lazy model load on first run)
+    // Phase: Transcription. Model preparation normally overlaps startup or
+    // recording; load_model remains the synchronized fallback and cache check.
     let rss_before_mb = crate::resource_monitor::get_process_rss_mb();
     let t_transcribe = std::time::Instant::now();
     // Combine the manual custom vocabulary with the code-aware vocabulary
