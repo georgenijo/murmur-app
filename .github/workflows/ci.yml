@@ -111,9 +111,6 @@ jobs:
           cuda-version: '12.8.0'
           rust-cache-shared-key: linux-cuda-debug
 
-      - name: Compile check
-        run: cd app/src-tauri && cargo check
-
       - name: Run tests
         run: cd app/src-tauri && cargo test --lib -- --test-threads=1
 
