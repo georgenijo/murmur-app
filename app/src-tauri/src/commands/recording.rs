@@ -1273,6 +1273,13 @@ pub async fn start_native_recording(
                 "state": "idle"
             }));
         }
+        if state.benchmark.is_running() {
+            tracing::warn!(target: "pipeline", "start_native_recording: blocked — benchmark in progress");
+            return Ok(serde_json::json!({
+                "type": "busy_benchmarking",
+                "state": "idle"
+            }));
+        }
         match dictation.status {
             DictationStatus::Recording => {
                 tracing::warn!(target: "pipeline", "start_native_recording: already recording");
@@ -1546,6 +1553,9 @@ pub async fn transcribe_file(
     let _file_guard = FileTranscribeGuard { app_state: &state.app_state };
     {
         let dictation = state.app_state.dictation.lock_or_recover();
+        if state.benchmark.is_running() {
+            return Err("Wait for the benchmark to finish before transcribing a file.".to_string());
+        }
         if dictation.status != DictationStatus::Idle {
             return Err(
                 "Can't transcribe a file while recording or processing live audio. \

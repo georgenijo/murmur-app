@@ -1,0 +1,672 @@
+use crate::commands::models::check_specific_model_exists;
+use crate::resource_monitor::get_process_rss_mb;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+use crate::transcriber::CoreMlBackend;
+use crate::transcriber::{
+    ParakeetBackend, TranscriptionBackend, WhisperBackend, COREML_MODEL_NAME, WHISPER_SAMPLE_RATE,
+};
+use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
+use tauri::Emitter;
+
+const PARAKEET_CPU_MODEL: &str = "parakeet-tdt-0.6b-v2-fp16";
+
+struct Fixture {
+    id: &'static str,
+    label: &'static str,
+    wav: &'static [u8],
+    reference: &'static str,
+}
+
+const FIXTURES: &[Fixture] = &[
+    Fixture {
+        id: "short",
+        label: "Short",
+        wav: include_bytes!("../../../bench/audio/short.wav"),
+        reference: include_str!("../../../bench/audio/short.txt"),
+    },
+    Fixture {
+        id: "medium",
+        label: "Medium",
+        wav: include_bytes!("../../../bench/audio/medium.wav"),
+        reference: include_str!("../../../bench/audio/medium.txt"),
+    },
+    Fixture {
+        id: "long",
+        label: "Long",
+        wav: include_bytes!("../../../bench/audio/long.wav"),
+        reference: include_str!("../../../bench/audio/long.txt"),
+    },
+    Fixture {
+        id: "xlong",
+        label: "Extra long",
+        wav: include_bytes!("../../../bench/audio/xlong.wav"),
+        reference: include_str!("../../../bench/audio/xlong.txt"),
+    },
+];
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BenchmarkModel {
+    pub model_name: String,
+    pub label: String,
+    pub backend: String,
+    pub accelerator: String,
+    pub size: String,
+    pub supported: bool,
+    pub installed: bool,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BenchmarkPreset {
+    Quick,
+    Standard,
+    Thorough,
+}
+
+impl BenchmarkPreset {
+    fn iterations(self) -> usize {
+        match self {
+            Self::Quick => 3,
+            Self::Standard => 5,
+            Self::Thorough => 10,
+        }
+    }
+
+    fn fixtures(self) -> &'static [Fixture] {
+        match self {
+            Self::Quick => &FIXTURES[..2],
+            Self::Standard | Self::Thorough => FIXTURES,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BenchmarkRequest {
+    pub model_names: Vec<String>,
+    pub preset: BenchmarkPreset,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FixtureResult {
+    pub fixture_id: String,
+    pub label: String,
+    pub audio_seconds: f64,
+    pub warm_median_ms: f64,
+    pub warm_p95_ms: f64,
+    pub realtime_factor: f64,
+    pub word_error_rate: f64,
+    pub word_errors: usize,
+    pub reference_words: usize,
+    pub reference: String,
+    pub transcript: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelResult {
+    pub model_name: String,
+    pub label: String,
+    pub backend: String,
+    pub accelerator: String,
+    pub model_load_ms: Option<f64>,
+    pub first_inference_ms: Option<f64>,
+    pub warm_median_ms: Option<f64>,
+    pub warm_p95_ms: Option<f64>,
+    pub realtime_factor: Option<f64>,
+    pub word_error_rate: Option<f64>,
+    pub memory_delta_mb: u64,
+    pub fixtures: Vec<FixtureResult>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Recommendations {
+    pub fastest: Option<String>,
+    pub most_accurate: Option<String>,
+    pub balanced: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BenchmarkReport {
+    pub created_at: String,
+    pub app_version: String,
+    pub platform: String,
+    pub preset: BenchmarkPreset,
+    pub iterations: usize,
+    pub results: Vec<ModelResult>,
+    pub recommendations: Recommendations,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BenchmarkProgress {
+    completed: usize,
+    total: usize,
+    model_name: String,
+    model_label: String,
+    fixture: Option<String>,
+    phase: &'static str,
+}
+
+pub struct BenchmarkCoordinator {
+    running: AtomicBool,
+    cancelled: AtomicBool,
+}
+
+impl BenchmarkCoordinator {
+    pub fn new() -> Self {
+        Self {
+            running: AtomicBool::new(false),
+            cancelled: AtomicBool::new(false),
+        }
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.running.load(Ordering::SeqCst)
+    }
+
+    pub fn try_start(&self) -> bool {
+        if self
+            .running
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            self.cancelled.store(false, Ordering::SeqCst);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+
+    pub fn finish(&self) {
+        self.running.store(false, Ordering::SeqCst);
+    }
+}
+
+impl Default for BenchmarkCoordinator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub fn benchmark_models() -> Vec<BenchmarkModel> {
+    let coreml_supported = cfg!(all(target_os = "macos", target_arch = "aarch64"));
+    let whisper_accelerator = if cfg!(target_os = "macos") {
+        "Metal GPU"
+    } else {
+        "GPU / CPU"
+    };
+    let definitions = [
+        (
+            COREML_MODEL_NAME,
+            "Parakeet v3",
+            "Core ML",
+            "Apple Neural Engine",
+            "~470 MB",
+            coreml_supported,
+        ),
+        (
+            PARAKEET_CPU_MODEL,
+            "Parakeet v2",
+            "sherpa-onnx",
+            "CPU",
+            "~1.2 GB",
+            true,
+        ),
+        (
+            "tiny.en",
+            "Whisper Tiny",
+            "whisper.cpp",
+            whisper_accelerator,
+            "~75 MB",
+            true,
+        ),
+        (
+            "base.en",
+            "Whisper Base",
+            "whisper.cpp",
+            whisper_accelerator,
+            "~150 MB",
+            true,
+        ),
+        (
+            "small.en",
+            "Whisper Small",
+            "whisper.cpp",
+            whisper_accelerator,
+            "~500 MB",
+            true,
+        ),
+        (
+            "medium.en",
+            "Whisper Medium",
+            "whisper.cpp",
+            whisper_accelerator,
+            "~1.5 GB",
+            true,
+        ),
+        (
+            "large-v3-turbo",
+            "Whisper Large Turbo",
+            "whisper.cpp",
+            whisper_accelerator,
+            "~3 GB",
+            true,
+        ),
+    ];
+
+    definitions
+        .into_iter()
+        .map(
+            |(model_name, label, backend, accelerator, size, supported)| BenchmarkModel {
+                model_name: model_name.to_string(),
+                label: label.to_string(),
+                backend: backend.to_string(),
+                accelerator: accelerator.to_string(),
+                size: size.to_string(),
+                supported,
+                installed: supported && check_specific_model_exists(model_name.to_string()),
+            },
+        )
+        .collect()
+}
+
+fn backend_for(model_name: &str) -> Result<Box<dyn TranscriptionBackend>, String> {
+    match model_name {
+        COREML_MODEL_NAME => {
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            {
+                Ok(Box::new(CoreMlBackend::new()))
+            }
+            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+            {
+                Err("Core ML requires an Apple Silicon Mac".to_string())
+            }
+        }
+        PARAKEET_CPU_MODEL => Ok(Box::new(ParakeetBackend::new())),
+        "tiny.en" | "base.en" | "small.en" | "medium.en" | "large-v3-turbo" => {
+            Ok(Box::new(WhisperBackend::new()))
+        }
+        _ => Err(format!("Unknown benchmark model '{model_name}'")),
+    }
+}
+
+fn words(text: &str) -> Vec<String> {
+    text.to_lowercase()
+        .split(|character: char| !character.is_alphanumeric() && character != '\'')
+        .filter(|word| !word.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn word_errors(reference: &str, hypothesis: &str) -> (usize, usize) {
+    let reference = words(reference);
+    let hypothesis = words(hypothesis);
+    let mut previous: Vec<usize> = (0..=hypothesis.len()).collect();
+    for (row, reference_word) in reference.iter().enumerate() {
+        let mut current = vec![row + 1; hypothesis.len() + 1];
+        for (column, hypothesis_word) in hypothesis.iter().enumerate() {
+            current[column + 1] = (previous[column + 1] + 1)
+                .min(current[column] + 1)
+                .min(previous[column] + usize::from(reference_word != hypothesis_word));
+        }
+        previous = current;
+    }
+    (previous[hypothesis.len()], reference.len())
+}
+
+fn percentile(values: &[f64], percentile: f64) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    let index = ((percentile * sorted.len() as f64).ceil() as usize)
+        .saturating_sub(1)
+        .min(sorted.len() - 1);
+    Some(sorted[index])
+}
+
+fn emit_progress(
+    app: &tauri::AppHandle,
+    completed: usize,
+    total: usize,
+    model: &BenchmarkModel,
+    fixture: Option<&str>,
+    phase: &'static str,
+) {
+    let _ = app.emit(
+        "benchmark-progress",
+        BenchmarkProgress {
+            completed,
+            total,
+            model_name: model.model_name.clone(),
+            model_label: model.label.clone(),
+            fixture: fixture.map(ToString::to_string),
+            phase,
+        },
+    );
+}
+
+fn error_result(model: &BenchmarkModel, error: String) -> ModelResult {
+    ModelResult {
+        model_name: model.model_name.clone(),
+        label: model.label.clone(),
+        backend: model.backend.clone(),
+        accelerator: model.accelerator.clone(),
+        model_load_ms: None,
+        first_inference_ms: None,
+        warm_median_ms: None,
+        warm_p95_ms: None,
+        realtime_factor: None,
+        word_error_rate: None,
+        memory_delta_mb: 0,
+        fixtures: Vec::new(),
+        error: Some(error),
+    }
+}
+
+fn recommendations(results: &[ModelResult]) -> Recommendations {
+    let successful = results
+        .iter()
+        .filter(|result| result.error.is_none())
+        .collect::<Vec<_>>();
+    let fastest = successful
+        .iter()
+        .filter_map(|result| result.warm_median_ms.map(|value| (*result, value)))
+        .min_by(|left, right| left.1.total_cmp(&right.1))
+        .map(|(result, _)| result.model_name.clone());
+    let most_accurate = successful
+        .iter()
+        .filter_map(|result| result.word_error_rate.map(|value| (*result, value)))
+        .min_by(|left, right| left.1.total_cmp(&right.1))
+        .map(|(result, _)| result.model_name.clone());
+    let best_wer = successful
+        .iter()
+        .filter_map(|result| result.word_error_rate)
+        .min_by(f64::total_cmp);
+    let balanced = best_wer.and_then(|best| {
+        successful
+            .iter()
+            .filter(|result| result.word_error_rate.is_some_and(|wer| wer <= best + 0.02))
+            .filter_map(|result| result.warm_median_ms.map(|value| (*result, value)))
+            .min_by(|left, right| left.1.total_cmp(&right.1))
+            .map(|(result, _)| result.model_name.clone())
+    });
+    Recommendations {
+        fastest,
+        most_accurate,
+        balanced,
+    }
+}
+
+pub fn run(
+    app: &tauri::AppHandle,
+    coordinator: &BenchmarkCoordinator,
+    request: BenchmarkRequest,
+) -> Result<BenchmarkReport, String> {
+    if request.model_names.is_empty() {
+        return Err("Select at least one installed model".to_string());
+    }
+    let catalog = benchmark_models();
+    let mut seen = HashSet::new();
+    let model_names = request
+        .model_names
+        .into_iter()
+        .filter(|name| seen.insert(name.clone()))
+        .collect::<Vec<_>>();
+    let selected = model_names
+        .iter()
+        .map(|name| {
+            catalog
+                .iter()
+                .find(|model| model.model_name == *name)
+                .cloned()
+                .ok_or_else(|| format!("Unknown benchmark model '{name}'"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if let Some(model) = selected
+        .iter()
+        .find(|model| !model.supported || !model.installed)
+    {
+        return Err(format!("{} is not installed on this machine", model.label));
+    }
+
+    let fixtures = request.preset.fixtures();
+    let iterations = request.preset.iterations();
+    let total_steps = selected.len() * (1 + fixtures.len() * (1 + iterations));
+    let mut completed = 0;
+    let mut results = Vec::with_capacity(selected.len());
+
+    for model in selected {
+        if coordinator.is_cancelled() {
+            return Err("Benchmark cancelled".to_string());
+        }
+        emit_progress(app, completed, total_steps, &model, None, "loading");
+        let mut backend = match backend_for(&model.model_name) {
+            Ok(backend) => backend,
+            Err(error) => {
+                results.push(error_result(&model, error));
+                continue;
+            }
+        };
+        let baseline_rss = get_process_rss_mb();
+        let load_started = Instant::now();
+        if let Err(error) = backend.load_model(&model.model_name) {
+            results.push(error_result(&model, error));
+            continue;
+        }
+        let model_load_ms = load_started.elapsed().as_secs_f64() * 1000.0;
+        completed += 1;
+        let mut peak_rss = get_process_rss_mb();
+        let mut first_inference_ms = None;
+        let mut all_warm = Vec::new();
+        let mut fixture_results = Vec::with_capacity(fixtures.len());
+        let mut total_errors = 0;
+        let mut total_reference_words = 0;
+        let mut total_audio_seconds = 0.0;
+        let mut total_warm_seconds = 0.0;
+        let mut failed = None;
+
+        for fixture in fixtures {
+            if coordinator.is_cancelled() {
+                backend.reset();
+                return Err("Benchmark cancelled".to_string());
+            }
+            let samples = match crate::transcriber::parse_wav_to_samples(fixture.wav) {
+                Ok(samples) => samples,
+                Err(error) => {
+                    failed = Some(error);
+                    break;
+                }
+            };
+            let audio_seconds = samples.len() as f64 / WHISPER_SAMPLE_RATE as f64;
+            emit_progress(
+                app,
+                completed,
+                total_steps,
+                &model,
+                Some(fixture.label),
+                "warming",
+            );
+            let warmup_started = Instant::now();
+            let transcript = match backend.transcribe(&samples, "en", None, true) {
+                Ok(transcript) => transcript,
+                Err(error) => {
+                    failed = Some(error);
+                    break;
+                }
+            };
+            if first_inference_ms.is_none() {
+                first_inference_ms = Some(warmup_started.elapsed().as_secs_f64() * 1000.0);
+            }
+            completed += 1;
+            peak_rss = peak_rss.max(get_process_rss_mb());
+
+            let mut warm = Vec::with_capacity(iterations);
+            for _ in 0..iterations {
+                if coordinator.is_cancelled() {
+                    backend.reset();
+                    return Err("Benchmark cancelled".to_string());
+                }
+                emit_progress(
+                    app,
+                    completed,
+                    total_steps,
+                    &model,
+                    Some(fixture.label),
+                    "measuring",
+                );
+                let started = Instant::now();
+                if let Err(error) = backend.transcribe(&samples, "en", None, true) {
+                    failed = Some(error);
+                    break;
+                }
+                warm.push(started.elapsed().as_secs_f64() * 1000.0);
+                completed += 1;
+                peak_rss = peak_rss.max(get_process_rss_mb());
+            }
+            if failed.is_some() {
+                break;
+            }
+            let warm_median_ms = percentile(&warm, 0.5).unwrap_or(0.0);
+            let warm_p95_ms = percentile(&warm, 0.95).unwrap_or(0.0);
+            all_warm.extend_from_slice(&warm);
+            total_audio_seconds += audio_seconds * warm.len() as f64;
+            total_warm_seconds += warm.iter().sum::<f64>() / 1000.0;
+            let (errors, reference_words) = word_errors(fixture.reference, &transcript);
+            total_errors += errors;
+            total_reference_words += reference_words;
+            fixture_results.push(FixtureResult {
+                fixture_id: fixture.id.to_string(),
+                label: fixture.label.to_string(),
+                audio_seconds,
+                warm_median_ms,
+                warm_p95_ms,
+                realtime_factor: warm_median_ms / 1000.0 / audio_seconds,
+                word_error_rate: errors as f64 / reference_words as f64,
+                word_errors: errors,
+                reference_words,
+                reference: fixture.reference.trim().to_string(),
+                transcript,
+            });
+        }
+
+        backend.reset();
+        if let Some(error) = failed {
+            results.push(error_result(&model, error));
+            continue;
+        }
+        results.push(ModelResult {
+            model_name: model.model_name,
+            label: model.label,
+            backend: model.backend,
+            accelerator: model.accelerator,
+            model_load_ms: Some(model_load_ms),
+            first_inference_ms,
+            warm_median_ms: percentile(&all_warm, 0.5),
+            warm_p95_ms: percentile(&all_warm, 0.95),
+            realtime_factor: Some(total_warm_seconds / total_audio_seconds),
+            word_error_rate: Some(total_errors as f64 / total_reference_words as f64),
+            memory_delta_mb: peak_rss.saturating_sub(baseline_rss),
+            fixtures: fixture_results,
+            error: None,
+        });
+    }
+
+    emit_progress(
+        app,
+        total_steps,
+        total_steps,
+        results
+            .last()
+            .and_then(|result| {
+                catalog
+                    .iter()
+                    .find(|model| model.model_name == result.model_name)
+            })
+            .unwrap_or(&catalog[0]),
+        None,
+        "complete",
+    );
+    let recommendations = recommendations(&results);
+    Ok(BenchmarkReport {
+        created_at: chrono::Utc::now().to_rfc3339(),
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        platform: format!("{} {}", std::env::consts::OS, std::env::consts::ARCH),
+        preset: request.preset,
+        iterations,
+        results,
+        recommendations,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn word_error_rate_counts_substitutions_insertions_and_deletions() {
+        assert_eq!(word_errors("one two three", "one four three"), (1, 3));
+        assert_eq!(word_errors("one two three", "one two three four"), (1, 3));
+        assert_eq!(word_errors("one two three", "one three"), (1, 3));
+    }
+
+    #[test]
+    fn percentile_uses_nearest_rank() {
+        assert_eq!(percentile(&[4.0, 1.0, 3.0, 2.0], 0.5), Some(2.0));
+        assert_eq!(percentile(&[4.0, 1.0, 3.0, 2.0], 0.95), Some(4.0));
+        assert_eq!(percentile(&[], 0.5), None);
+    }
+
+    #[test]
+    fn presets_have_bounded_workloads() {
+        assert_eq!(BenchmarkPreset::Quick.fixtures().len(), 2);
+        assert_eq!(BenchmarkPreset::Quick.iterations(), 3);
+        assert_eq!(BenchmarkPreset::Standard.fixtures().len(), 4);
+        assert_eq!(BenchmarkPreset::Thorough.iterations(), 10);
+    }
+
+    #[test]
+    fn balanced_prefers_fastest_model_within_two_accuracy_points() {
+        let result = |name: &str, latency: f64, wer: f64| ModelResult {
+            model_name: name.to_string(),
+            label: name.to_string(),
+            backend: String::new(),
+            accelerator: String::new(),
+            model_load_ms: Some(1.0),
+            first_inference_ms: Some(1.0),
+            warm_median_ms: Some(latency),
+            warm_p95_ms: Some(latency),
+            realtime_factor: Some(latency / 1000.0),
+            word_error_rate: Some(wer),
+            memory_delta_mb: 0,
+            fixtures: Vec::new(),
+            error: None,
+        };
+        let recommendations = recommendations(&[
+            result("accurate", 300.0, 0.05),
+            result("balanced", 100.0, 0.06),
+            result("fast", 50.0, 0.10),
+        ]);
+        assert_eq!(recommendations.fastest.as_deref(), Some("fast"));
+        assert_eq!(recommendations.most_accurate.as_deref(), Some("accurate"));
+        assert_eq!(recommendations.balanced.as_deref(), Some("balanced"));
+    }
+}

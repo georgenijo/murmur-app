@@ -25,12 +25,7 @@ pub fn check_specific_model_exists(model_name: String) -> bool {
     if transcriber::parakeet::is_parakeet_model(&model_name) {
         return transcriber::parakeet::specific_model_exists(&model_name);
     }
-    let backend = transcriber::WhisperBackend::new();
-    let models_dir = match backend.models_dir() {
-        Ok(d) => d,
-        Err(_) => return false,
-    };
-    models_dir.join(format!("ggml-{}.bin", model_name)).exists()
+    transcriber::whisper::specific_model_exists(&model_name)
 }
 
 #[tauri::command]

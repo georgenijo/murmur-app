@@ -70,6 +70,10 @@ fn get_model_path(model_name: &str) -> Result<PathBuf, String> {
     ))
 }
 
+pub fn specific_model_exists(model_name: &str) -> bool {
+    get_model_path(model_name).is_ok()
+}
+
 pub struct WhisperBackend {
     context: Option<WhisperContext>,
     state: Option<WhisperState>,

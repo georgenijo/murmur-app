@@ -1,3 +1,4 @@
+pub mod benchmark;
 pub mod keyboard;
 pub mod logging;
 pub mod models;

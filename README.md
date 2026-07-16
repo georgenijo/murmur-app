@@ -4,12 +4,14 @@
 
 Privacy-first voice-to-text for macOS. Hold a key, speak, release — your words land in any app. No cloud, no subscriptions, no data leaves your machine.
 
-Built with [Tauri 2](https://tauri.app/) (Rust + React), powered by [whisper.cpp](https://github.com/ggerganov/whisper.cpp) running locally with Metal GPU acceleration.
+Built with [Tauri 2](https://tauri.app/) (Rust + React), with local transcription through Core ML on the Apple Neural Engine, whisper.cpp on Metal, or sherpa-onnx on CPU.
 
 ## Features
 
-- **100% local** — all transcription runs on-device via Metal GPU. Zero network calls, works offline
-- **5 Whisper models** — choose from tiny to large, all GPU-accelerated via Metal. Models from ~75 MB to ~3 GB
+- **100% local** — all transcription runs on-device. Audio and benchmark results never leave the machine
+- **Apple Neural Engine default** — multilingual Parakeet v3 through Core ML for very low-latency transcription
+- **Multiple local engines** — compare Core ML/ANE, whisper.cpp/Metal, and sherpa-onnx/CPU configurations
+- **Performance Lab** — benchmark installed models on identical speech, including median/p95 latency, real-time speed, memory, and word error rate
 - **Two recording modes** — Hold Down (hold to record, release to stop) or Double-Tap (tap twice to start, tap once to stop)
 - **Clipboard-first output** — text always copied to clipboard. Optional auto-paste into your focused app
 - **Floating overlay** — always-on-top widget with animated waveform, click to toggle recording
@@ -39,15 +41,19 @@ Grant these in **System Settings > Privacy & Security** when prompted:
 
 Choose a model based on your speed/accuracy tradeoff. Models download automatically on first launch, or you can switch models in Settings at any time.
 
-### Whisper (Metal GPU)
+| Model | Engine | Accelerator | Size | Notes |
+|-------|--------|-------------|------|-------|
+| Parakeet v3 | Core ML | Apple Neural Engine | ~470 MB | Default, multilingual, lowest latency |
+| Parakeet v2 | sherpa-onnx | CPU | ~1.2 GB | English CPU fallback |
+| Whisper Tiny | whisper.cpp | Metal GPU | ~75 MB | English |
+| Whisper Base | whisper.cpp | Metal GPU | ~150 MB | English |
+| Whisper Small | whisper.cpp | Metal GPU | ~500 MB | English |
+| Whisper Medium | whisper.cpp | Metal GPU | ~1.5 GB | English |
+| Whisper Large Turbo | whisper.cpp | Metal GPU | ~3 GB | Multilingual |
 
-| Model | Size | Speed | Notes |
-|-------|------|-------|-------|
-| tiny.en | ~75 MB | Fastest | Fair accuracy |
-| base.en | ~142 MB | Fast | Good accuracy |
-| small.en | ~488 MB | Medium | Better accuracy |
-| medium.en | ~1.5 GB | Slow | Very good accuracy |
-| large-v3-turbo | ~3 GB | Slowest | Best accuracy |
+Open **Settings > Performance** to benchmark installed configurations on your
+machine. Accuracy is measured as word error rate against bundled speech with
+known reference transcripts.
 
 ## Recording Modes
 
@@ -66,7 +72,7 @@ Transcribed text is always copied to your clipboard. Enable **Auto-Paste** in Se
 | App framework | Tauri 2 |
 | Backend | Rust |
 | Frontend | React 18, TypeScript, Tailwind CSS 4 |
-| Transcription | whisper-rs (whisper.cpp + Metal) |
+| Transcription | FluidAudio/Core ML, whisper-rs/Metal, sherpa-onnx/CPU |
 | Audio capture | cpal |
 | Keyboard listener | rdev |
 | Clipboard | arboard |
