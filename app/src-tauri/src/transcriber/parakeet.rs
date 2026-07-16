@@ -198,6 +198,10 @@ impl TranscriptionBackend for ParakeetBackend {
         Ok(())
     }
 
+    fn is_model_loaded(&self, model_name: &str) -> bool {
+        self.loaded_model_name.as_deref() == Some(model_name) && self.recognizer.is_some()
+    }
+
     fn transcribe(
         &mut self,
         samples: &[f32],

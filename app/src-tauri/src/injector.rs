@@ -1,9 +1,11 @@
 use arboard::Clipboard;
+use std::time::Instant;
 
 /// Copy text to clipboard and optionally simulate Cmd+V paste.
 /// `delay_ms` controls the pause before pasting (window focus settling).
 /// On paste failure, retries once after a 100ms backoff.
 pub fn inject_text(text: &str, auto_paste: bool, delay_ms: u64) -> Result<(), String> {
+    let inject_started = Instant::now();
     tracing::info!(target: "pipeline", "inject_text called with auto_paste={}, delay_ms={}, text_len={}", auto_paste, delay_ms, text.len());
 
     // Skip if text is empty
@@ -18,10 +20,20 @@ pub fn inject_text(text: &str, auto_paste: bool, delay_ms: u64) -> Result<(), St
     // Copy transcription to clipboard
     clipboard.set_text(text)
         .map_err(|e| format!("Failed to copy to clipboard: {}", e))?;
+    let clipboard_ms = inject_started.elapsed().as_millis() as u64;
     tracing::info!(target: "pipeline", "inject_text: text copied to clipboard");
 
     // If auto-paste is disabled, we're done
     if !auto_paste {
+        tracing::info!(
+            target: "pipeline",
+            clipboard_ms,
+            delay_ms = 0_u64,
+            focus_ms = 0_u64,
+            key_event_ms = 0_u64,
+            total_ms = inject_started.elapsed().as_millis() as u64,
+            "inject timing"
+        );
         return Ok(());
     }
 
@@ -44,13 +56,26 @@ pub fn inject_text(text: &str, auto_paste: bool, delay_ms: u64) -> Result<(), St
         // element is non-editable; on any uncertainty we allow the paste so the
         // common "a field is focused" case is never broken. See
         // `focused_field_state` for the false-negative bias.
-        if focused_field_state() == FocusedFieldState::NonEditable {
+        let focus_started = Instant::now();
+        let focused_state = focused_field_state();
+        let focus_ms = focus_started.elapsed().as_millis() as u64;
+        if focused_state == FocusedFieldState::NonEditable {
+            tracing::info!(
+                target: "pipeline",
+                clipboard_ms,
+                delay_ms,
+                focus_ms,
+                key_event_ms = 0_u64,
+                total_ms = inject_started.elapsed().as_millis() as u64,
+                "inject timing"
+            );
             tracing::warn!(target: "pipeline", "inject_text: focused element is not an editable text field — skipping paste, text in clipboard only");
             return Err("No editable text field is focused".to_string());
         }
 
         // Simulate paste keystroke, retry once on failure
-        match simulate_paste() {
+        let key_event_started = Instant::now();
+        let result = match simulate_paste() {
             Ok(()) => Ok(()),
             Err(first_err) => {
                 tracing::warn!(target: "pipeline", "inject_text: first paste attempt failed: {}, retrying in 100ms", first_err);
@@ -59,16 +84,76 @@ pub fn inject_text(text: &str, auto_paste: bool, delay_ms: u64) -> Result<(), St
                     format!("Auto-paste failed after retry: {}", retry_err)
                 })
             }
+        };
+        tracing::info!(
+            target: "pipeline",
+            clipboard_ms,
+            delay_ms,
+            focus_ms,
+            key_event_ms = key_event_started.elapsed().as_millis() as u64,
+            total_ms = inject_started.elapsed().as_millis() as u64,
+            "inject timing"
+        );
+        result
+    }
+}
+
+/// Simulate Cmd+V using native CoreGraphics events. Event posting itself has no
+/// failure result, but construction can fail; in that case retain the proven
+/// System Events path as a compatibility fallback.
+#[cfg(target_os = "macos")]
+fn simulate_paste() -> Result<(), String> {
+    match simulate_paste_native() {
+        Ok(()) => {
+            tracing::info!(target: "pipeline", "simulate_paste: native CGEvent completed");
+            Ok(())
+        }
+        Err(native_err) => {
+            tracing::warn!(target: "pipeline", "simulate_paste: native CGEvent failed: {}; falling back to osascript", native_err);
+            simulate_paste_osascript()
         }
     }
 }
 
-/// Simulate Cmd+V keystroke using osascript (most reliable on macOS Sonoma/Sequoia)
 #[cfg(target_os = "macos")]
-fn simulate_paste() -> Result<(), String> {
+fn create_native_paste_events() -> Result<
+    (core_graphics::event::CGEvent, core_graphics::event::CGEvent),
+    String,
+> {
+    use core_graphics::event::{CGEvent, CGEventFlags, KeyCode};
+    use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+
+    let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
+        .map_err(|_| "could not create CGEvent source".to_string())?;
+    let key_down = CGEvent::new_keyboard_event(source.clone(), KeyCode::ANSI_V, true)
+        .map_err(|_| "could not create Cmd+V key-down event".to_string())?;
+    let key_up = CGEvent::new_keyboard_event(source, KeyCode::ANSI_V, false)
+        .map_err(|_| "could not create Cmd+V key-up event".to_string())?;
+    key_down.set_flags(CGEventFlags::CGEventFlagCommand);
+    key_up.set_flags(CGEventFlags::CGEventFlagCommand);
+    Ok((key_down, key_up))
+}
+
+#[cfg(target_os = "macos")]
+fn simulate_paste_native() -> Result<(), String> {
+    use core_graphics::event::CGEventTapLocation;
+    use std::thread;
+    use std::time::Duration;
+
+    let (key_down, key_up) = create_native_paste_events()?;
+    key_down.post(CGEventTapLocation::HID);
+    // Some applications drop an instantaneous down/up burst. This remains far
+    // below the old subprocess cost while matching hardware-like key timing.
+    thread::sleep(Duration::from_millis(3));
+    key_up.post(CGEventTapLocation::HID);
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn simulate_paste_osascript() -> Result<(), String> {
     use std::process::Command;
 
-    tracing::info!(target: "pipeline", "simulate_paste: using osascript to simulate Cmd+V");
+    tracing::info!(target: "pipeline", "simulate_paste: using osascript compatibility fallback");
 
     let output = Command::new("osascript")
         .arg("-e")
@@ -77,7 +162,7 @@ fn simulate_paste() -> Result<(), String> {
         .map_err(|e| format!("Failed to run osascript: {}", e))?;
 
     if output.status.success() {
-        tracing::info!(target: "pipeline", "simulate_paste: completed successfully");
+        tracing::info!(target: "pipeline", "simulate_paste: osascript fallback completed successfully");
         Ok(())
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -172,14 +257,141 @@ fn is_non_editable_desktop_role(role: &str) -> bool {
 /// Determine whether the frontmost app currently has an editable text element
 /// focused, returning a tri-state so callers can apply a false-negative bias.
 ///
-/// Asks System Events for the AX role of `AXFocusedUIElement` of the frontmost
-/// process. Any failure (osascript missing, permission denied, no focused
-/// element) or any unrecognised role yields `Unknown` so the caller defaults to
-/// allowing the paste — we only ever return `NonEditable` when the role is read
-/// successfully AND matches the confirmed non-editable desktop denylist
-/// (`is_non_editable_desktop_role`).
+/// Queries the frontmost process directly with AppKit and Accessibility APIs.
+/// If that native query fails, the previous System Events implementation is
+/// retained as a compatibility fallback. Any complete failure or unrecognised
+/// role yields `Unknown`, so the caller defaults to allowing the paste.
 #[cfg(target_os = "macos")]
 fn focused_field_state() -> FocusedFieldState {
+    let role = match focused_role_native() {
+        Ok(role) => {
+            tracing::info!(target: "pipeline", "focused_field_state: native AX query completed");
+            role
+        }
+        Err(native_err) => {
+            tracing::warn!(target: "pipeline", "focused_field_state: native AX query failed: {}; falling back to osascript", native_err);
+            match focused_role_osascript() {
+                Ok(role) => role,
+                Err(fallback_err) => {
+                    tracing::warn!(target: "pipeline", "focused_field_state: osascript fallback failed: {}", fallback_err);
+                    return FocusedFieldState::Unknown;
+                }
+            }
+        }
+    };
+    classify_focused_role(&role)
+}
+
+#[cfg(target_os = "macos")]
+fn focused_role_native() -> Result<String, String> {
+    use objc2_app_kit::NSWorkspace;
+    use std::ffi::{c_char, c_void, CStr};
+
+    type AXUIElementRef = *const c_void;
+    type CFTypeRef = *const c_void;
+
+    #[link(name = "ApplicationServices", kind = "framework")]
+    extern "C" {
+        fn AXUIElementCreateApplication(pid: i32) -> AXUIElementRef;
+        fn AXUIElementCopyAttributeValue(
+            element: AXUIElementRef,
+            attribute: CFTypeRef,
+            value: *mut CFTypeRef,
+        ) -> i32;
+        fn CFStringCreateWithCString(
+            allocator: CFTypeRef,
+            string: *const c_char,
+            encoding: u32,
+        ) -> CFTypeRef;
+        fn CFStringGetCString(
+            string: CFTypeRef,
+            buffer: *mut c_char,
+            buffer_size: isize,
+            encoding: u32,
+        ) -> bool;
+        fn CFRelease(value: CFTypeRef);
+    }
+
+    const AX_SUCCESS: i32 = 0;
+    const UTF8_ENCODING: u32 = 0x0800_0100;
+
+    let frontmost = NSWorkspace::sharedWorkspace()
+        .frontmostApplication()
+        .ok_or_else(|| "no frontmost application".to_string())?;
+    let app = unsafe { AXUIElementCreateApplication(frontmost.processIdentifier()) };
+    if app.is_null() {
+        return Err("could not create frontmost AX application".to_string());
+    }
+
+    let focused_attribute = unsafe {
+        CFStringCreateWithCString(
+            std::ptr::null(),
+            b"AXFocusedUIElement\0".as_ptr().cast(),
+            UTF8_ENCODING,
+        )
+    };
+    if focused_attribute.is_null() {
+        unsafe { CFRelease(app) };
+        return Err("could not create AX focused-element attribute".to_string());
+    }
+    let mut focused: CFTypeRef = std::ptr::null();
+    let focused_status = unsafe {
+        AXUIElementCopyAttributeValue(app, focused_attribute, &mut focused)
+    };
+    unsafe { CFRelease(focused_attribute) };
+    unsafe { CFRelease(app) };
+    if focused_status != AX_SUCCESS || focused.is_null() {
+        if !focused.is_null() {
+            unsafe { CFRelease(focused) };
+        }
+        return Err(format!("AX focused-element query returned {}", focused_status));
+    }
+
+    let role_attribute = unsafe {
+        CFStringCreateWithCString(
+            std::ptr::null(),
+            b"AXRole\0".as_ptr().cast(),
+            UTF8_ENCODING,
+        )
+    };
+    if role_attribute.is_null() {
+        unsafe { CFRelease(focused) };
+        return Err("could not create AX role attribute".to_string());
+    }
+    let mut role: CFTypeRef = std::ptr::null();
+    let role_status = unsafe {
+        AXUIElementCopyAttributeValue(focused, role_attribute, &mut role)
+    };
+    unsafe { CFRelease(role_attribute) };
+    unsafe { CFRelease(focused) };
+    if role_status != AX_SUCCESS || role.is_null() {
+        if !role.is_null() {
+            unsafe { CFRelease(role) };
+        }
+        return Err(format!("AX role query returned {}", role_status));
+    }
+
+    let mut buffer = [0 as c_char; 128];
+    let converted = unsafe {
+        CFStringGetCString(
+            role,
+            buffer.as_mut_ptr(),
+            buffer.len() as isize,
+            UTF8_ENCODING,
+        )
+    };
+    unsafe { CFRelease(role) };
+    if !converted {
+        return Err("could not convert AX role to UTF-8".to_string());
+    }
+
+    Ok(unsafe { CStr::from_ptr(buffer.as_ptr()) }
+        .to_string_lossy()
+        .into_owned())
+}
+
+#[cfg(target_os = "macos")]
+fn focused_role_osascript() -> Result<String, String> {
     use std::process::Command;
 
     // `missing value` (AppleScript's null) is returned when there is no focused
@@ -194,22 +406,18 @@ fn focused_field_state() -> FocusedFieldState {
     end try
 end tell"#;
 
-    let output = match Command::new("osascript").arg("-e").arg(script).output() {
-        Ok(output) => output,
-        Err(e) => {
-            tracing::warn!(target: "pipeline", "focused_field_state: failed to run osascript: {}", e);
-            return FocusedFieldState::Unknown;
-        }
-    };
+    let output = Command::new("osascript")
+        .arg("-e")
+        .arg(script)
+        .output()
+        .map_err(|e| format!("failed to run osascript: {}", e))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        tracing::warn!(target: "pipeline", "focused_field_state: osascript failed: {}", stderr.trim());
-        return FocusedFieldState::Unknown;
+        return Err(format!("osascript failed: {}", stderr.trim()));
     }
 
-    let role = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    classify_focused_role(&role)
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 /// Non-macOS platforms have no AX focus concept; never skip the paste here.
@@ -660,6 +868,33 @@ mod focus_tests {
                 "{} should classify as Editable",
                 role
             );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_paste_events_can_be_constructed() {
+        let (key_down, key_up) = create_native_paste_events()
+            .expect("CoreGraphics should construct Cmd+V events");
+        assert_eq!(
+            key_down.get_flags(),
+            core_graphics::event::CGEventFlags::CGEventFlagCommand
+        );
+        assert_eq!(
+            key_up.get_flags(),
+            core_graphics::event::CGEventFlags::CGEventFlagCommand
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_focus_query_returns_an_ax_role_when_trusted() {
+        if !is_accessibility_enabled() {
+            return;
+        }
+
+        if let Ok(role) = focused_role_native() {
+            assert!(role.starts_with("AX"), "unexpected AX role: {}", role);
         }
     }
 }

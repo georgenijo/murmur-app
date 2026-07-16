@@ -62,17 +62,17 @@ jobs:
             exit 1
           fi
           echo "Found: $CLANG_RT"
-          echo "RUSTFLAGS=-C link-arg=$CLANG_RT" >> $GITHUB_ENV
+          echo "RUSTFLAGS=-C link-arg=$CLANG_RT -C link-arg=-mmacosx-version-min=14.0 -C link-arg=-Wl,-rpath,/usr/lib/swift" >> $GITHUB_ENV
 
       - name: Build, sign, and notarize
         id: tauri-build
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MACOSX_DEPLOYMENT_TARGET: "13.0"
-          CMAKE_OSX_DEPLOYMENT_TARGET: "13.0"
-          CMAKE_C_FLAGS: "-march=armv8.5-a -mmacosx-version-min=13.0"
-          CMAKE_CXX_FLAGS: "-march=armv8.5-a -mmacosx-version-min=13.0"
+          MACOSX_DEPLOYMENT_TARGET: "14.0"
+          CMAKE_OSX_DEPLOYMENT_TARGET: "14.0"
+          CMAKE_C_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
+          CMAKE_CXX_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -311,7 +311,7 @@ jobs:
               --repo "${{ github.repository }}"
           done
 
-      - name: Generate and upload latest.json
+      - name: Generate and upload updater channel manifests
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -332,6 +332,8 @@ jobs:
           LINUX_URL="${BASE_URL}/$(echo "$LINUX" | jq -r '.url_basename')"
           LINUX_SIG=$(echo "$LINUX" | jq -r '.signature')
 
+          # New builds use this channel. It includes macOS 14+ and Linux so the
+          # shared Tauri config works on both platforms.
           jq -n \
             --arg version "$VERSION" \
             --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -350,10 +352,54 @@ jobs:
                 ($linux_platform): { url: $linux_url, signature: $linux_sig }
               },
               notes: $notes
+            }' > latest-v2.json
+
+          # Clients older than v0.14.1 still request latest.json. Route those
+          # Macs through the signed macOS 13-compatible bridge, whose embedded
+          # updater endpoint is latest-v2. Linux updates directly.
+          BRIDGE_TAG="v0.14.1"
+          BRIDGE_RELEASE=$(gh api "repos/${REPO}/releases/tags/${BRIDGE_TAG}")
+          BRIDGE_URL=$(echo "$BRIDGE_RELEASE" | jq -r '
+            [.assets[] | select(.name | endswith(".app.tar.gz")) | .browser_download_url][0] // empty
+          ')
+          BRIDGE_SIG_URL=$(echo "$BRIDGE_RELEASE" | jq -r '
+            [.assets[] | select(.name | endswith(".app.tar.gz.sig")) | .browser_download_url][0] // empty
+          ')
+          if [ -z "$BRIDGE_URL" ] || [ -z "$BRIDGE_SIG_URL" ]; then
+            echo "ERROR: ${BRIDGE_TAG} is missing its signed macOS updater artifact"
+            exit 1
+          fi
+          BRIDGE_SIG=$(curl --fail --silent --show-error --location "$BRIDGE_SIG_URL")
+          if [ -z "$BRIDGE_SIG" ]; then
+            echo "ERROR: ${BRIDGE_TAG} updater signature is empty"
+            exit 1
+          fi
+
+          jq -n \
+            --arg version "$VERSION" \
+            --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg macos_platform "$MACOS_PLATFORM" \
+            --arg macos_url "$BRIDGE_URL" \
+            --arg macos_sig "$BRIDGE_SIG" \
+            --arg linux_platform "$LINUX_PLATFORM" \
+            --arg linux_url "$LINUX_URL" \
+            --arg linux_sig "$LINUX_SIG" \
+            --arg notes "Compatibility bridge for existing macOS installs. Murmur will offer the current release after relaunch." \
+            '{
+              version: $version,
+              pub_date: $pub_date,
+              platforms: {
+                ($macos_platform): { url: $macos_url, signature: $macos_sig },
+                ($linux_platform): { url: $linux_url, signature: $linux_sig }
+              },
+              notes: $notes
             }' > latest.json
 
+          echo "=== Modern v2 channel ==="
+          cat latest-v2.json
+          echo "=== legacy channel (macOS 13 bridge + current Linux) ==="
           cat latest.json
-          gh release upload "${TAG}" latest.json \
+          gh release upload "${TAG}" latest-v2.json latest.json \
             --repo "${{ github.repository }}" \
             --clobber
 

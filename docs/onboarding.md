@@ -4,8 +4,8 @@
 
 - [Node.js](https://nodejs.org/) 18+
 - [Rust](https://rustup.rs/) (latest stable)
-- macOS (tested on 14+)
-- A Whisper model file (see below)
+- macOS 14 or newer on Apple Silicon
+- A transcription model (the app downloads one on first launch)
 
 ## Setup
 
@@ -32,17 +32,29 @@ cd app && npm run tauri build
 # Rust unit tests (single-threaded — timing-sensitive tests use sleep)
 cd app/src-tauri && cargo test --lib -- --test-threads=1
 
-# Transcription integration tests (requires models on disk, skips if absent)
+# Whisper integration tests (requires models on disk, skips if absent)
 cd app/src-tauri && cargo test --test transcription_integration -- --test-threads=1
+
+# FluidAudio Core ML integration test (explicit opt-in; requires its model cache)
+MURMUR_COREML_TEST_WAV=/path/to/16khz-mono.wav cargo test --test coreml_transcription_integration -- --ignored
 
 # Frontend unit tests (settings migration)
 cd app && npm test
 
 # TypeScript type check
 cd app && npx tsc --noEmit
+
+# Same-corpus Core ML vs CPU benchmarks (generate fixtures first)
+bench/make_audio.sh
+cd app/src-tauri && cargo run --release --example transcription_bench -- --engine coreml --iterations 5
+cd app/src-tauri && cargo run --release --example transcription_bench -- --engine parakeet --iterations 5
 ```
 
-Rust unit tests cover keyboard detection, audio RMS, tray icon rendering, and WAV parsing. Frontend tests cover settings migration from legacy formats. Integration tests validate the Whisper transcription pipeline end-to-end — they auto-skip when models aren't installed.
+Rust unit tests cover backend dispatch/cache validation, keyboard detection, audio RMS, tray rendering, and WAV parsing. Frontend tests cover settings migration and preservation of existing model selections. Model-backed integration tests are optional so CI never downloads hundreds of megabytes.
+
+## Default Core ML Model
+
+New installs use `parakeet-tdt-0.6b-v3-coreml`, powered by FluidAudio and the Apple Neural Engine. First launch downloads and compiles about 470 MB into `~/Library/Application Support/FluidAudio/Models/parakeet-tdt-0.6b-v3/`. This can take tens of seconds the first time. Whisper and the sherpa-onnx CPU Parakeet model remain available in Settings.
 
 CI runs `cargo check`, `cargo test --lib`, `npx tsc --noEmit`, and `npm test` on every push to main and on PRs.
 

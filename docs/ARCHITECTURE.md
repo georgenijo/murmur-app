@@ -21,7 +21,7 @@ Built with **Tauri 2** (Rust backend + React frontend). ~25MB installed, no Pyth
 | Keyboard listening | rdev (git main branch) | Global key events; single background thread |
 | Telemetry | tracing + tracing-subscriber | Structured events: ring buffer, JSONL file, real-time frontend emission |
 | System info | sysinfo | CPU and memory monitoring for resource panel |
-| Release | GitHub Actions + Apple notarization | Signed DMG, auto-updater via `latest.json` |
+| Release | GitHub Actions + Apple notarization | Signed DMG, platform-safe updater channels |
 
 ---
 
@@ -94,7 +94,7 @@ struct AppState {
 }
 ```
 
-`DictationState::default()` and the frontend's `DEFAULT_SETTINGS.model` both use `"base.en"` as the runtime default. The first-launch model downloader pre-selects `"large-v3-turbo"` as the recommended download choice (see `ModelDownloader.tsx`).
+`DictationState::default()` uses `"base.en"` only as the pre-configuration fallback. The frontend's new-install default and first-launch recommendation are `"parakeet-tdt-0.6b-v3-coreml"`; the first `configure_dictation` call selects FluidAudio. Existing persisted Whisper and sherpa selections remain valid.
 
 ### `audio.rs` -- Audio Capture
 
@@ -525,9 +525,9 @@ cd app && npx tsc --noEmit         # TypeScript check
 2. GitHub Actions: TypeScript check + `cargo test`
 3. macOS: `tauri-action` -> Developer ID signing -> Apple notarization
 4. Smoke test: launch built `.app`, verify alive for 5 seconds
-5. Publish: `.dmg`, `.app.tar.gz`, `.sig`, `latest.json` -> GitHub Release
+5. Publish: `.dmg`, `.app.tar.gz`, `.sig`, `latest-v2.json`, legacy-safe `latest.json` -> GitHub Release
 
-**Auto-updater**: Tauri updater plugin checks `latest.json` on GitHub Releases. Updates are signed (ed25519). Min-version enforcement removes "Skip"/"Later" for required updates.
+**Auto-updater**: New builds check the dual-platform `latest-v2.json`; legacy `latest.json` routes old Macs through the signed, macOS 13-compatible v0.14.1 bridge before they receive the macOS 14 build. Updates are signed (ed25519). Min-version enforcement removes "Skip"/"Later" for required updates.
 
 ### Release Profile
 

@@ -4,6 +4,7 @@ version = "0.14.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
+default-run = "ui"
 
 [lib]
 name = "ui_lib"
@@ -46,10 +47,12 @@ aho-corasick = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 whisper-rs = { version = "0.15", features = ["metal"] }
+fluidaudio-rs = { version = "=0.14.1", default-features = false, features = ["asr"] }
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSScreen", "NSApplication", "NSRunningApplication"] }
+objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSScreen", "NSApplication", "NSRunningApplication", "NSWorkspace"] }
 objc2-foundation = "0.3"
 block2 = "0.6"
+core-graphics = "0.25"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 rdev = { git = "https://github.com/Narsil/rdev", branch = "main", features = ["x11"] }

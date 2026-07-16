@@ -15,6 +15,12 @@ pub fn check_specific_model_exists(model_name: String) -> bool {
     if model_name.contains("..") || model_name.contains('/') || model_name.contains('\\') {
         return false;
     }
+    if transcriber::is_coreml_model(&model_name) {
+        #[cfg(target_os = "macos")]
+        return transcriber::coreml::specific_model_exists(&model_name);
+        #[cfg(not(target_os = "macos"))]
+        return false;
+    }
     // --- Parakeet backend (removable): delete this branch to remove. ---
     if transcriber::parakeet::is_parakeet_model(&model_name) {
         return transcriber::parakeet::specific_model_exists(&model_name);
@@ -28,13 +34,21 @@ pub fn check_specific_model_exists(model_name: String) -> bool {
 }
 
 #[tauri::command]
-pub async fn download_model(app_handle: tauri::AppHandle, model_name: String, state: tauri::State<'_, State>) -> Result<(), String> {
+pub async fn download_model(app_handle: tauri::AppHandle, model_name: String) -> Result<(), String> {
     const ALLOWED_MODELS: &[&str] = &[
         "large-v3-turbo", "small.en", "base.en", "tiny.en", "medium.en",
     ];
+    let is_coreml = transcriber::is_coreml_model(&model_name);
+    #[cfg(not(target_os = "macos"))]
+    if is_coreml {
+        return Err("Core ML transcription is available only on macOS 14 or newer".to_string());
+    }
     // --- Parakeet backend (removable): delete this branch + download_parakeet_model to remove. ---
     let is_parakeet = transcriber::parakeet::is_parakeet_model(&model_name);
-    if is_parakeet {
+    if is_coreml {
+        // The explicit Core ML value is also prefixed with "parakeet"; classify
+        // it before the broad sherpa sentinel.
+    } else if is_parakeet {
         if transcriber::parakeet::download_spec(&model_name).is_none() {
             return Err(format!("Unknown Parakeet model '{}'", model_name));
         }
@@ -42,12 +56,30 @@ pub async fn download_model(app_handle: tauri::AppHandle, model_name: String, st
         return Err(format!("Unknown model '{}'. Allowed: {}", model_name, ALLOWED_MODELS.join(", ")));
     }
 
-    let models_dir = state.app_state.backend.lock_or_recover().models_dir()?;
+    // Whisper and sherpa share Murmur's models directory. FluidAudio owns a
+    // separate Application Support cache, but VAD must still land here.
+    let models_dir = transcriber::WhisperBackend::new().models_dir()?;
     tokio::fs::create_dir_all(&models_dir)
         .await
         .map_err(|e| format!("Failed to create models directory: {}", e))?;
 
-    if is_parakeet {
+    if is_coreml {
+        let _ = app_handle.emit("download-progress", serde_json::json!({
+            "received": 0,
+            "total": 0
+        }));
+        #[cfg(target_os = "macos")]
+        {
+            let model_name = model_name.clone();
+            tokio::task::spawn_blocking(move || transcriber::coreml::prepare_model(&model_name))
+                .await
+                .map_err(|error| format!("Core ML setup task failed: {error}"))??;
+        }
+        let _ = app_handle.emit("download-progress", serde_json::json!({
+            "received": 1,
+            "total": 1
+        }));
+    } else if is_parakeet {
         download_parakeet_model(&app_handle, &model_name, &models_dir).await?;
     } else {
         download_whisper_model(&app_handle, &model_name, &models_dir).await?;
@@ -73,6 +105,26 @@ pub async fn download_model(app_handle: tauri::AppHandle, model_name: String, st
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn specific_model_check_rejects_paths() {
+        assert!(!check_specific_model_exists("../base.en".to_string()));
+        assert!(!check_specific_model_exists("models/base.en".to_string()));
+        assert!(!check_specific_model_exists("models\\base.en".to_string()));
+    }
+
+    #[test]
+    fn coreml_model_is_not_dispatched_as_sherpa_download() {
+        assert!(transcriber::is_coreml_model(transcriber::COREML_MODEL_NAME));
+        assert!(transcriber::parakeet::is_parakeet_model(
+            transcriber::COREML_MODEL_NAME
+        ));
+    }
 }
 
 /// Download a single whisper ggml .bin file from Hugging Face.

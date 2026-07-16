@@ -5,7 +5,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { getVersion } from '@tauri-apps/api/app';
 import {
   Settings, RecordingMode, DEFAULT_SETTINGS,
-  MODEL_OPTIONS, DOUBLE_TAP_KEY_OPTIONS, RECORDING_MODE_OPTIONS,
+  AVAILABLE_MODEL_OPTIONS, DOUBLE_TAP_KEY_OPTIONS, RECORDING_MODE_OPTIONS,
   IDLE_TIMEOUT_OPTIONS, LANGUAGE_OPTIONS, AppProfile, VoiceCommand,
 } from '../../lib/settings';
 import { Select } from '../ui/Select';
@@ -570,8 +570,8 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
       ? 'Double-tap to start recording, single tap to stop'
       : 'Hold to start recording, release to stop';
   const isRecording = status !== 'idle';
-  const selectedModel = MODEL_OPTIONS.find(m => m.value === settings.model);
-  // Parakeet is English-only (like the .en Whisper models); lock the language picker.
+  const selectedModel = AVAILABLE_MODEL_OPTIONS.find(m => m.value === settings.model);
+  // The sherpa Parakeet bundle is English-only; FluidAudio Parakeet v3 is multilingual.
   const isEnglishOnlyModel = settings.model.endsWith('.en') || selectedModel?.backend === 'parakeet';
   const downloadProgressPercent =
     modelDownload.phase === 'downloading' && modelDownload.total > 0
@@ -625,7 +625,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
             value={settings.model}
             onChange={(value) => onUpdateSettings({ model: value })}
             disabled={isRecording}
-            items={MODEL_OPTIONS.map((m) => ({ value: m.value, label: `${m.label} (${m.size})` }))}
+            items={AVAILABLE_MODEL_OPTIONS.map((m) => ({ value: m.value, label: `${m.label} (${m.size})` }))}
           />
           <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
             Larger models are more accurate but slower.
@@ -1243,7 +1243,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
                 Smart Correction
               </label>
               <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
-                Fix vocabulary in the transcript after recognition, on every model (including the default Parakeet). Turns "use effect" into useEffect and, with Code-Aware on, "standard error" into stderr.
+                Fix vocabulary in the transcript after recognition, on every model. Turns "use effect" into useEffect and, with Code-Aware on, "standard error" into stderr.
               </p>
             </div>
             <button
@@ -1300,7 +1300,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
         <div>
           <div className="text-sm text-stone-600 dark:text-stone-400">
             <p><strong>Model:</strong> {selectedModel?.label}</p>
-            <p><strong>Backend:</strong> Whisper (Metal GPU)</p>
+            <p><strong>Backend:</strong> {selectedModel?.backend === 'coreml' ? 'FluidAudio (Apple Neural Engine)' : selectedModel?.backend === 'parakeet' ? 'sherpa-onnx (CPU)' : 'Whisper (Metal GPU)'}</p>
             <p><strong>Size:</strong> {selectedModel?.size}</p>
           </div>
         </div>

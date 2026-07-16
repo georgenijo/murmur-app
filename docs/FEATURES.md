@@ -143,7 +143,7 @@
 
 ### Auto-Updater
 - Background update check on launch and every 24 hours
-- Endpoint: GitHub releases latest.json
+- Endpoint: GitHub releases latest-v2.json (current dual-platform channel)
 - Forced updates: if current version is below remote min_version, update is required (no skip/dismiss)
 - Skip version: user can skip a specific version (persisted to localStorage)
 - Dismiss: user can dismiss without skipping

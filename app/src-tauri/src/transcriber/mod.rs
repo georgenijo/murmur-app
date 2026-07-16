@@ -1,12 +1,25 @@
+#[cfg(target_os = "macos")]
+pub mod coreml;
 pub mod parakeet;
 pub mod whisper;
 
+#[cfg(target_os = "macos")]
+pub use coreml::CoreMlBackend;
 pub use parakeet::ParakeetBackend;
 pub use whisper::WhisperBackend;
 
 use hound::{SampleFormat, WavReader};
 use std::io::Cursor;
 use std::path::PathBuf;
+
+/// Stable settings value for FluidAudio's Parakeet v3 Core ML backend.
+/// Kept outside the macOS-only module so unsupported targets can reject a
+/// persisted selection without compiling or linking FluidAudio.
+pub const COREML_MODEL_NAME: &str = "parakeet-tdt-0.6b-v3-coreml";
+
+pub fn is_coreml_model(model_name: &str) -> bool {
+    model_name == COREML_MODEL_NAME
+}
 
 /// Sample rate required by transcription models (16kHz).
 pub const WHISPER_SAMPLE_RATE: u32 = 16000;
@@ -19,6 +32,9 @@ pub trait TranscriptionBackend: Send + Sync {
 
     /// Load model by name. Called lazily on first transcription.
     fn load_model(&mut self, model_name: &str) -> Result<(), String>;
+
+    /// Whether `model_name` is already initialized in this backend.
+    fn is_model_loaded(&self, model_name: &str) -> bool;
 
     /// Run inference on 16kHz mono f32 samples. If `smart_punctuation` is false, punctuation is stripped from the returned text.
     fn transcribe(&mut self, samples: &[f32], language: &str, initial_prompt: Option<&str>, smart_punctuation: bool) -> Result<String, String>;

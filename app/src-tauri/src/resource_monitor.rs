@@ -171,6 +171,18 @@ struct IdleState {
     app_handle: tauri::AppHandle,
 }
 
+fn should_release_model(
+    timeout_min: u32,
+    status: crate::state::DictationStatus,
+    idle_for: Option<std::time::Duration>,
+) -> bool {
+    timeout_min > 0
+        && status == crate::state::DictationStatus::Idle
+        && idle_for.is_some_and(|elapsed| {
+            elapsed >= std::time::Duration::from_secs(timeout_min as u64 * 60)
+        })
+}
+
 pub fn set_idle_timeout(app_handle: tauri::AppHandle) {
     if let Ok(mut guard) = IDLE_TIMEOUT.lock() {
         *guard = Some(IdleState { app_handle });
@@ -194,29 +206,28 @@ fn check_idle_timeout() {
 
     let state = handle.state::<crate::State>();
     let timeout_min = *state.app_state.idle_timeout_minutes.lock_or_recover();
-    if timeout_min == 0 {
-        return;
-    }
-
-    let threshold = std::time::Duration::from_secs(timeout_min as u64 * 60);
     let should_release = {
+        let status = state.app_state.dictation.lock_or_recover().status;
         let last = state.app_state.last_transcription_at.lock_or_recover();
-        last.map_or(false, |t: std::time::Instant| t.elapsed() >= threshold)
+        should_release_model(timeout_min, status, last.map(|t| t.elapsed()))
     };
     if should_release {
         let mut backend = state.app_state.backend.lock_or_recover();
-        // Re-check after acquiring the lock (a transcription may have started)
+        // Hold the status lock through reset so a racing recording either makes
+        // us skip release or starts after reset and prepares the model normally.
+        let dictation = state.app_state.dictation.lock_or_recover();
         let still_idle = {
             let last = state.app_state.last_transcription_at.lock_or_recover();
-            last.map_or(false, |t: std::time::Instant| t.elapsed() >= threshold)
+            should_release_model(timeout_min, dictation.status, last.map(|t| t.elapsed()))
         };
         if still_idle {
+            let backend_name = backend.name().to_string();
             backend.reset();
             *state.app_state.last_transcription_at.lock_or_recover() = None;
             let rss = get_process_rss_mb();
             let heap = crate::rust_heap_mb();
             let ffi = crate::ffi_heap_mb();
-            tracing::info!(target: "pipeline", rss_mb = rss, rust_heap_mb = heap, ffi_heap_mb = ffi, "whisper_idle_release");
+            tracing::info!(target: "pipeline", backend = backend_name, rss_mb = rss, rust_heap_mb = heap, ffi_heap_mb = ffi, "model_idle_release");
         }
     }
 }
@@ -262,5 +273,34 @@ pub fn get_resource_usage() -> ResourceUsage {
         rss_mb,
         rust_heap_mb: crate::rust_heap_mb(),
         ffi_heap_mb: crate::ffi_heap_mb(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::DictationStatus;
+
+    #[test]
+    fn idle_release_requires_expired_idle_status() {
+        let expired = Some(std::time::Duration::from_secs(5 * 60));
+        assert!(should_release_model(5, DictationStatus::Idle, expired));
+        assert!(!should_release_model(5, DictationStatus::Recording, expired));
+        assert!(!should_release_model(5, DictationStatus::Processing, expired));
+    }
+
+    #[test]
+    fn idle_release_respects_disabled_and_recent_activity() {
+        assert!(!should_release_model(
+            0,
+            DictationStatus::Idle,
+            Some(std::time::Duration::from_secs(60 * 60)),
+        ));
+        assert!(!should_release_model(
+            5,
+            DictationStatus::Idle,
+            Some(std::time::Duration::from_secs(5 * 60 - 1)),
+        ));
+        assert!(!should_release_model(5, DictationStatus::Idle, None));
     }
 }

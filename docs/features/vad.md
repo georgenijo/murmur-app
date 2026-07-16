@@ -22,9 +22,9 @@ The VAD analysis produces one of three outcomes:
 
 Silero VAD returns speech segments as centisecond timestamps. These are converted to sample indices (at 16kHz) and the corresponding sample ranges are extracted. If all extracted segments are empty after conversion, the result is treated as NoSpeech.
 
-### Configuration: 1 thread, GPU disabled
+### Configuration and context cache
 
-The VAD context is configured to use a single thread with GPU acceleration disabled. Unlike the transcription `WhisperState`, the `WhisperVadContext` is created fresh per transcription and not cached across runs.
+The VAD context uses one CPU thread with GPU acceleration disabled. Because `WhisperVadContext` is `!Send`/`!Sync`, Murmur caches one context per Tokio blocking worker and keys it by model path. Repeated dictations handled by the same worker reuse the loaded Silero context; a different worker pays initialization once for its own context. Threshold and audio samples remain per-inference inputs, so caching does not change filtering behavior.
 
 ## Sensitivity
 

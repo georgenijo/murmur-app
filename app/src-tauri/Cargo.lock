@@ -1358,6 +1358,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fluidaudio-rs"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6181071acbec602782db378d0677cccfa48c60bc8d759524c4bfe57188a234dc"
+dependencies = [
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5812,8 +5821,10 @@ dependencies = [
  "block2",
  "bzip2 0.5.2",
  "chrono",
+ "core-graphics",
  "cpal",
  "dirs 5.0.1",
+ "fluidaudio-rs",
  "futures-util",
  "hound",
  "memory-stats",

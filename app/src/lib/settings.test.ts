@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { loadSettings, DEFAULT_SETTINGS } from './settings';
+import {
+  loadSettings,
+  DEFAULT_SETTINGS,
+  defaultModelForPlatform,
+  modelOptionsForPlatform,
+} from './settings';
 
 beforeEach(() => {
   localStorage.clear();
@@ -85,6 +90,25 @@ describe('loadSettings', () => {
     }));
     const settings = loadSettings();
     expect(settings.model).toBe(DEFAULT_SETTINGS.model);
+  });
+
+  it('uses Core ML for new macOS installs and CPU Parakeet elsewhere', () => {
+    expect(defaultModelForPlatform('MacIntel')).toBe('parakeet-tdt-0.6b-v3-coreml');
+    expect(defaultModelForPlatform('Linux x86_64')).toBe('parakeet-tdt-0.6b-v2-fp16');
+    expect(defaultModelForPlatform('Win32')).toBe('parakeet-tdt-0.6b-v2-fp16');
+  });
+
+  it('hides the Core ML option outside macOS', () => {
+    expect(modelOptionsForPlatform('MacIntel').some((model) => model.backend === 'coreml')).toBe(true);
+    expect(modelOptionsForPlatform('Linux x86_64').some((model) => model.backend === 'coreml')).toBe(false);
+  });
+
+  it('preserves an existing CPU Parakeet selection', () => {
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      model: 'parakeet-tdt-0.6b-v2-fp16',
+    }));
+    expect(loadSettings().model).toBe('parakeet-tdt-0.6b-v2-fp16');
   });
 
   it('preserves valid recordingMode values', () => {

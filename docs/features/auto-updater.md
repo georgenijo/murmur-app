@@ -14,10 +14,19 @@ The app checks for updates on launch and every 24 hours. Updates are downloaded 
 The update manifest is fetched from:
 
 ```
-https://github.com/georgenijo/murmur-app/releases/latest/download/latest.json
+https://github.com/georgenijo/murmur-app/releases/latest/download/latest-v2.json
 ```
 
 This URL is configured in `tauri.conf.json` as the updater plugin endpoint. The fetch uses `cache: 'no-store'` to bypass browser caching.
+
+### macOS 14 Channel Migration
+
+The Core ML release raises Murmur's minimum macOS version from 13 to 14. Existing v0.14.0 macOS clients request the legacy `latest.json`, so publishing a macOS 14 binary there would let them install an app that cannot launch. Version 0.14.1 is a macOS 13-compatible bridge whose release-facing change is moving its updater endpoint to `latest-v2.json`. Release automation therefore publishes two manifests:
+
+- `latest-v2.json`: the current dual-platform channel for new builds, with macOS 14+ and Linux artifacts
+- `latest.json`: the legacy channel, with the current Linux artifact and the signed v0.14.1 macOS bridge artifact
+
+An old Mac installs the bridge from `latest.json`, relaunches on the new endpoint, and then receives the current Core ML build from `latest-v2.json`. The modern release job fails if it cannot resolve the signed v0.14.1 bridge asset, preventing a release that would strand older clients. Keep the bridge release published while pre-v0.14.1 clients may still exist.
 
 The manifest contains version information, download URLs, signatures, and an optional `min_version` field for forced updates.
 

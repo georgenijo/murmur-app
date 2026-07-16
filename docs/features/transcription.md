@@ -6,7 +6,7 @@
 cpal audio capture → f32 samples in memory → resample to 16kHz mono → backend inference → text
 ```
 
-All processing is local during transcription (network only required to download models beforehand). Transcription uses the **Whisper** backend (`whisper-rs`) with Metal GPU acceleration.
+All processing is local during transcription; network access is used only for an explicit model download. New installs default to FluidAudio Core ML on the Apple Neural Engine, while Whisper/Metal and sherpa-onnx/CPU remain selectable.
 
 ## Audio Capture (`audio.rs`)
 
@@ -31,12 +31,22 @@ pub trait TranscriptionBackend: Send + Sync {
 }
 ```
 
-The active backend is stored as `Mutex<Box<dyn TranscriptionBackend>>` in `AppState`. The trait is kept for future extensibility.
+The active backend is stored as `Mutex<Box<dyn TranscriptionBackend>>` in `AppState`. `configure_dictation` dispatches the explicit Core ML model before the broad `parakeet*` sherpa classifier.
+
+### FluidAudio Core ML Backend (`transcriber/coreml.rs`)
+
+- macOS 14+ and Apple Silicon only
+- Parakeet TDT 0.6B v3 on Core ML / Apple Neural Engine
+- Default for new installs; existing persisted backend choices are preserved
+- FluidAudio owns download/compilation in its Application Support cache
+- An installed model warms in the background after startup configuration; recording-start preparation remains the fallback after idle unloading or a model change
+- Language is auto-detected; the current Rust bridge ignores language hints and initial prompts
 
 ### Whisper Backend (`transcriber/whisper.rs`)
 
 - Uses `whisper-rs` with Metal GPU acceleration
-- **Lazy loading**: Whisper context is initialized on first transcription, not at app startup
+- Enables flash attention; Murmur consumes segment text and does not use the incompatible DTW token timestamps
+- **Recording-start preparation**: model initialization begins after capture starts, overlapping cold load with speech rather than post-release latency
 - If the user changes models in settings, the context is dropped and re-created on next transcription
 - Model files are single `.bin` files (e.g., `ggml-base.en.bin`)
 - Model search paths are documented in `docs/onboarding.md`
@@ -45,6 +55,8 @@ The active backend is stored as `Mutex<Box<dyn TranscriptionBackend>>` in `AppSt
 
 | Model | Setting Value | Backend | English-only | Speed |
 |-------|--------------|---------|-------------|-------|
+| Parakeet v3 Core ML | `parakeet-tdt-0.6b-v3-coreml` | FluidAudio / ANE | No | Fastest |
+| Parakeet v2 fp16 | `parakeet-tdt-0.6b-v2-fp16` | sherpa-onnx / CPU | Yes | Fast |
 | Tiny | `tiny.en` | Whisper | Yes | Fast |
 | Base | `base.en` | Whisper | Yes | Fast |
 | Small | `small.en` | Whisper | Yes | Medium |
@@ -56,7 +68,7 @@ The active backend is stored as `Mutex<Box<dyn TranscriptionBackend>>` in `AppSt
 `run_transcription_pipeline()` is the shared entry point:
 
 1. Read model/language/auto_paste from `DictationState` (single lock)
-2. Load model via backend if needed (lazy init)
+2. Confirm the recording-start model preparation completed (or load synchronously as a fallback)
 3. Run transcription via the active backend
 4. Inject text (clipboard + optional paste) on main thread
 5. Reset status to Idle
@@ -65,7 +77,7 @@ Uses `IdleGuard` (RAII) to reset status on any early return or error — prevent
 
 ## Model Downloads (`commands/models.rs`)
 
-The `download_model` command downloads Whisper models as single `.bin` files from Hugging Face, streaming the download with progress events (`download-progress`).
+The `download_model` command streams Murmur-managed Whisper and sherpa downloads with `download-progress` events. FluidAudio Core ML setup runs on a blocking worker and is indeterminate because the upstream Rust bridge owns its Hugging Face download and Core ML compilation without exposing progress callbacks.
 
 ## Status Flow
 

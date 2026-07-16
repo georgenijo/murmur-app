@@ -1,2 +1,7 @@
 [target.aarch64-apple-darwin]
-rustflags = ["-C", "link-arg=-mmacosx-version-min=13.0"]
+rustflags = [
+  "-C",
+  "link-arg=-mmacosx-version-min=14.0",
+  "-C",
+  "link-arg=-Wl,-rpath,/usr/lib/swift",
+]

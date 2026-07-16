@@ -46,9 +46,14 @@ function App() {
   }, []);
 
   const [modelReady, setModelReady] = useState<boolean | null>(null);
-  const markModelReady = useCallback(() => setModelReady(true), []);
 
   const { settings, updateSettings, applyExternalSettings } = useSettings();
+  const markModelReady = useCallback((downloadedModel: typeof settings.model) => {
+    if (downloadedModel !== settings.model) {
+      updateSettings({ model: downloadedModel });
+    }
+    setModelReady(true);
+  }, [settings.model, updateSettings]);
   const { initialized, error: initError } = useInitialization(settings);
 
   // First-launch gate: is the currently-selected model present? Checked once on
@@ -133,7 +138,14 @@ function App() {
   const error = initError || recordingError;
 
   if (modelReady === null) return <div className="h-screen bg-stone-50 dark:bg-stone-900" />;
-  if (modelReady === false) return <ModelDownloader onComplete={markModelReady} />;
+  if (modelReady === false) {
+    return (
+      <ModelDownloader
+        initialModel={settings.model}
+        onComplete={markModelReady}
+      />
+    );
+  }
 
   return (
     <div className="h-screen bg-stone-50 dark:bg-stone-900 flex flex-col font-[-apple-system,BlinkMacSystemFont,'Segoe_UI',Roboto,sans-serif]">

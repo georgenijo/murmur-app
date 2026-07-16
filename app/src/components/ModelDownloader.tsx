@@ -1,23 +1,31 @@
 import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { MODEL_OPTIONS, type ModelOption } from '../lib/settings';
+import { AVAILABLE_MODEL_OPTIONS, type ModelOption } from '../lib/settings';
 
 const MODEL_DESCRIPTIONS: Record<string, string> = {
-  'parakeet-tdt-0.6b-v2-fp16': 'Fastest, great accuracy — English only (recommended)',
+  'parakeet-tdt-0.6b-v3-coreml': 'Fastest on Apple Silicon — multilingual, Apple Neural Engine (recommended)',
+  'parakeet-tdt-0.6b-v2-fp16': 'Fast CPU fallback — English only',
   'large-v3-turbo': 'Highest accuracy, slower (1-2 seconds)',
   'base.en': 'Good balance of speed and accuracy',
 };
 
 /** Subset of models shown on the initial download screen (first = default). */
-const DOWNLOAD_MODEL_KEYS: ModelOption[] = ['parakeet-tdt-0.6b-v2-fp16', 'large-v3-turbo', 'base.en'];
+const DOWNLOAD_MODEL_KEYS: ModelOption[] = [
+  'parakeet-tdt-0.6b-v3-coreml',
+  'parakeet-tdt-0.6b-v2-fp16',
+  'large-v3-turbo',
+  'base.en',
+];
 const MODELS = DOWNLOAD_MODEL_KEYS.map((key) => {
-  const opt = MODEL_OPTIONS.find((m) => m.value === key)!;
+  const opt = AVAILABLE_MODEL_OPTIONS.find((m) => m.value === key);
+  if (!opt) return null;
   return { name: opt.value, label: opt.label, size: opt.size, description: MODEL_DESCRIPTIONS[key] ?? '' };
-});
+}).filter((model): model is NonNullable<typeof model> => model !== null);
 
 interface Props {
-  onComplete: () => void;
+  initialModel: ModelOption;
+  onComplete: (model: ModelOption) => void;
 }
 
 type DownloadState =
@@ -25,8 +33,10 @@ type DownloadState =
   | { phase: 'downloading'; received: number; total: number }
   | { phase: 'error'; message: string };
 
-export function ModelDownloader({ onComplete }: Props) {
-  const [selected, setSelected] = useState<string>(MODELS[0].name);
+export function ModelDownloader({ initialModel, onComplete }: Props) {
+  const [selected, setSelected] = useState<ModelOption>(
+    MODELS.some((model) => model.name === initialModel) ? initialModel : MODELS[0].name
+  );
   const [downloadState, setDownloadState] = useState<DownloadState>({ phase: 'idle' });
   const downloadUnlistenRef = useRef<(() => void) | null>(null);
 
@@ -56,7 +66,7 @@ export function ModelDownloader({ onComplete }: Props) {
       await invoke('download_model', { modelName: selected });
       unlisten();
       downloadUnlistenRef.current = null;
-      onComplete();
+      onComplete(selected);
     } catch (err) {
       unlisten();
       downloadUnlistenRef.current = null;

@@ -30,7 +30,7 @@ interface UseAutoUpdaterReturn {
 - Sends a macOS notification when an update is discovered during a background check.
 
 **Key interactions:**
-- Fetches `min_version` from GitHub releases `latest.json` via HTTP.
+- Fetches `min_version` from the current GitHub releases `latest-v2.json` channel via HTTP.
 - Stores skipped version in localStorage under `skipped-update-version`.
 - Stores last check timestamp in localStorage under `updater-last-check`.
 

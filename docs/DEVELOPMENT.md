@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- macOS 12+ (Apple Silicon recommended for Metal GPU)
+- macOS 14+ on Apple Silicon
 - Node.js 18+
 - Rust (install via rustup)
 
