@@ -571,6 +571,8 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
       : 'Hold to start recording, release to stop';
   const isRecording = status !== 'idle';
   const selectedModel = AVAILABLE_MODEL_OPTIONS.find(m => m.value === settings.model);
+  const supportsCoreMl = AVAILABLE_MODEL_OPTIONS.some(m => m.backend === 'coreml');
+  const useNeuralEngine = selectedModel?.backend === 'coreml';
   // The sherpa Parakeet bundle is English-only; FluidAudio Parakeet v3 is multilingual.
   const isEnglishOnlyModel = settings.model.endsWith('.en') || selectedModel?.backend === 'parakeet';
   const downloadProgressPercent =
@@ -616,6 +618,42 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-2xl px-6 py-5">
         <SettingsSection pageId="transcription" activePage={activeCat} title="Transcription" subtitle="Model, language, microphone">
+        {supportsCoreMl && (
+          <div className="flex items-center justify-between gap-6">
+            <div>
+              <label className="block text-sm font-medium text-stone-700 dark:text-stone-300">
+                Apple Neural Engine
+              </label>
+              <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
+                {useNeuralEngine
+                  ? 'Parakeet v3 via Core ML (fastest)'
+                  : 'Enable to switch to the Core ML transcription path'}
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={useNeuralEngine}
+              aria-label="Use Apple Neural Engine"
+              disabled={isRecording}
+              onClick={() => onUpdateSettings({
+                model: useNeuralEngine
+                  ? 'parakeet-tdt-0.6b-v2-fp16'
+                  : 'parakeet-tdt-0.6b-v3-coreml',
+              })}
+              className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-stone-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 ${
+                useNeuralEngine ? 'bg-stone-800 dark:bg-stone-300' : 'bg-stone-300 dark:bg-stone-500'
+              }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                  useNeuralEngine ? 'translate-x-6' : 'translate-x-1'
+                }`}
+              />
+            </button>
+          </div>
+        )}
+
         {/* Model Selector */}
         <div>
           <label className="block text-sm font-medium text-stone-700 dark:text-stone-300 mb-2">
