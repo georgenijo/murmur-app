@@ -165,8 +165,10 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
       setError('');
       const res = await startRecording(microphoneRef.current);
       if (isDictationStatus(res.state)) setStatus(res.state);
-      if (res.type === 'error') {
-        setError(res.error || 'Unknown error');
+      if (res.type !== 'recording_started') {
+        if (res.type === 'error') setError(res.error || 'Unknown error');
+        else if (res.type === 'busy_benchmarking') setError('Wait for the benchmark to finish.');
+        else if (res.type === 'busy_transcribing_file') setError('Wait for the file transcription to finish.');
         setRecordingStartTime(null);
         recordingStartTimeRef.current = null;
       }

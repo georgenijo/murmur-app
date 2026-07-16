@@ -8,6 +8,7 @@ import { flog } from '../lib/log';
 import { STORAGE_KEY, DEFAULT_SETTINGS, loadSettings, saveSettings } from '../lib/settings';
 import type { Settings } from '../lib/settings';
 import { buildConfigureOptions } from '../lib/dictation';
+import type { DictationResponse } from '../lib/dictation';
 
 const BAR_COUNT = 7;
 const COLLAPSE_DELAY_MS = 300;
@@ -316,8 +317,12 @@ export function OverlayWidget() {
             }
           } catch { /* ignore parse errors */ }
           flog.info('overlay', 'invoking start_native_recording', { deviceName });
-          const res = await invoke('start_native_recording', { deviceName });
-          flog.info('overlay', 'start_native_recording result', { res: res as Record<string, unknown> });
+          const res = await invoke<DictationResponse>('start_native_recording', { deviceName });
+          flog.info('overlay', 'start_native_recording result', { type: res.type, state: res.state });
+          if (res.type !== 'recording_started') {
+            flog.warn('overlay', 'recording start declined', { type: res.type });
+            setLockedMode(false);
+          }
         } catch (err) {
           flog.error('overlay', 'start_native_recording error', { error: String(err) });
           setLockedMode(false);

@@ -9,6 +9,7 @@ import {
   addBenchmarkReport,
   cancelBenchmark,
   clearBenchmarkReports,
+  getBenchmarkActivity,
   getBenchmarkModels,
   loadBenchmarkReports,
   runBenchmark,
@@ -136,6 +137,7 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
   const [copied, setCopied] = useState(false);
   const [downloading, setDownloading] = useState<string | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
+  const [fileTranscribing, setFileTranscribing] = useState(false);
   const mounted = useRef(true);
   const runningRef = useRef(false);
 
@@ -181,12 +183,34 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
     };
   }, []);
 
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    getBenchmarkActivity()
+      .then((activity) => {
+        if (!disposed) setFileTranscribing(activity.fileTranscribing);
+      })
+      .catch(() => {});
+    listen<boolean>('file-transcription-status-changed', (event) => {
+      if (!disposed) setFileTranscribing(event.payload);
+    })
+      .then((dispose) => {
+        if (disposed) dispose();
+        else unlisten = dispose;
+      })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
   const installedCount = models.filter((model) => model.installed).length;
   const report = dashboard.reports.find((item) => item.createdAt === dashboard.selectedAt) ?? null;
   const progressPercent = progress && progress.total > 0
     ? Math.round((progress.completed / progress.total) * 100)
     : 0;
-  const canRun = selected.length > 0 && !running && status === 'idle';
+  const canRun = selected.length > 0 && !running && status === 'idle' && !fileTranscribing;
 
   const selectedSet = useMemo(() => new Set(selected), [selected]);
   const toggleModel = (modelName: string) => {
@@ -366,6 +390,9 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
         )}
         {status !== 'idle' && (
           <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">Finish the current recording first.</p>
+        )}
+        {fileTranscribing && (
+          <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">Finish the file transcription first.</p>
         )}
         {error && (
           <p className="mt-2 text-xs text-red-600 dark:text-red-400 break-words">{error}</p>

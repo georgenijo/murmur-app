@@ -8,6 +8,7 @@ use crate::transcriber::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use std::time::Instant;
 use tauri::Emitter;
 
@@ -163,33 +164,56 @@ struct BenchmarkProgress {
 }
 
 pub struct BenchmarkCoordinator {
-    running: AtomicBool,
+    activity: Mutex<CoordinatorActivity>,
     cancelled: AtomicBool,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum CoordinatorActivity {
+    Idle,
+    Benchmark,
+    SharedBackendChange,
 }
 
 impl BenchmarkCoordinator {
     pub fn new() -> Self {
         Self {
-            running: AtomicBool::new(false),
+            activity: Mutex::new(CoordinatorActivity::Idle),
             cancelled: AtomicBool::new(false),
         }
     }
 
     pub fn is_running(&self) -> bool {
-        self.running.load(Ordering::SeqCst)
+        *self
+            .activity
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            == CoordinatorActivity::Benchmark
     }
 
     pub fn try_start(&self) -> bool {
-        if self
-            .running
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-        {
-            self.cancelled.store(false, Ordering::SeqCst);
-            true
-        } else {
-            false
+        let mut activity = self
+            .activity
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *activity != CoordinatorActivity::Idle {
+            return false;
         }
+        *activity = CoordinatorActivity::Benchmark;
+        self.cancelled.store(false, Ordering::SeqCst);
+        true
+    }
+
+    pub fn try_start_shared_backend_change(&self) -> bool {
+        let mut activity = self
+            .activity
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *activity != CoordinatorActivity::Idle {
+            return false;
+        }
+        *activity = CoordinatorActivity::SharedBackendChange;
+        true
     }
 
     pub fn cancel(&self) {
@@ -201,7 +225,20 @@ impl BenchmarkCoordinator {
     }
 
     pub fn finish(&self) {
-        self.running.store(false, Ordering::SeqCst);
+        *self
+            .activity
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = CoordinatorActivity::Idle;
+    }
+
+    pub fn finish_shared_backend_change(&self) {
+        let mut activity = self
+            .activity
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *activity == CoordinatorActivity::SharedBackendChange {
+            *activity = CoordinatorActivity::Idle;
+        }
     }
 }
 
@@ -461,7 +498,6 @@ pub fn run(
     app: &tauri::AppHandle,
     coordinator: &BenchmarkCoordinator,
     request: BenchmarkRequest,
-    vad_threshold: f32,
 ) -> Result<BenchmarkReport, String> {
     if request.model_names.is_empty() {
         return Err("Select at least one installed model".to_string());
@@ -490,13 +526,15 @@ pub fn run(
         return Err(format!("{} is not installed on this machine", model.label));
     }
 
-    let fixtures = prepare_fixtures(request.preset.fixtures(), vad_threshold)?;
+    let fixtures = prepare_fixtures(request.preset.fixtures(), 0.5)?;
     let iterations = request.preset.iterations();
-    let total_steps = selected.len() * (1 + fixtures.len() * (1 + iterations));
+    let steps_per_model = 1 + fixtures.len() * (1 + iterations);
+    let total_steps = selected.len() * steps_per_model;
     let mut completed = 0;
     let mut results = Vec::with_capacity(selected.len());
 
     for model in selected {
+        let model_start = completed;
         if coordinator.is_cancelled() {
             return Err("Benchmark cancelled".to_string());
         }
@@ -505,6 +543,7 @@ pub fn run(
             Ok(backend) => backend,
             Err(error) => {
                 results.push(error_result(&model, error));
+                completed = model_start + steps_per_model;
                 continue;
             }
         };
@@ -512,6 +551,7 @@ pub fn run(
         let load_started = Instant::now();
         if let Err(error) = backend.load_model(&model.model_name) {
             results.push(error_result(&model, error));
+            completed = model_start + steps_per_model;
             continue;
         }
         let model_load_ms = load_started.elapsed().as_secs_f64() * 1000.0;
@@ -519,11 +559,10 @@ pub fn run(
         let mut peak_rss = get_process_rss_mb();
         let mut first_inference_ms = None;
         let mut all_warm = Vec::new();
+        let mut all_realtime_factors = Vec::new();
         let mut fixture_results = Vec::with_capacity(fixtures.len());
         let mut total_errors = 0;
         let mut total_reference_words = 0;
-        let mut total_audio_seconds = 0.0;
-        let mut total_warm_seconds = 0.0;
         let mut failed = None;
 
         for prepared in &fixtures {
@@ -543,8 +582,8 @@ pub fn run(
                 "warming",
             );
             let warmup_started = Instant::now();
-            let transcript = match backend.transcribe(samples, "en", None, true) {
-                Ok(transcript) => transcript,
+            match backend.transcribe(samples, "en", None, true) {
+                Ok(_) => {}
                 Err(error) => {
                     failed = Some(error);
                     break;
@@ -557,6 +596,7 @@ pub fn run(
             peak_rss = peak_rss.max(get_process_rss_mb());
 
             let mut warm = Vec::with_capacity(iterations);
+            let mut transcript = None;
             for _ in 0..iterations {
                 if coordinator.is_cancelled() {
                     backend.reset();
@@ -571,11 +611,16 @@ pub fn run(
                     "measuring",
                 );
                 let started = Instant::now();
-                if let Err(error) = backend.transcribe(samples, "en", None, true) {
-                    failed = Some(error);
-                    break;
+                match backend.transcribe(samples, "en", None, true) {
+                    Ok(output) => transcript = Some(output),
+                    Err(error) => {
+                        failed = Some(error);
+                        break;
+                    }
                 }
-                warm.push(started.elapsed().as_secs_f64() * 1000.0);
+                let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+                warm.push(elapsed_ms);
+                all_realtime_factors.push(elapsed_ms / 1000.0 / audio_seconds);
                 completed += 1;
                 peak_rss = peak_rss.max(get_process_rss_mb());
             }
@@ -585,8 +630,7 @@ pub fn run(
             let warm_median_ms = percentile(&warm, 0.5).unwrap_or(0.0);
             let warm_p95_ms = percentile(&warm, 0.95).unwrap_or(0.0);
             all_warm.extend_from_slice(&warm);
-            total_audio_seconds += audio_seconds * warm.len() as f64;
-            total_warm_seconds += warm.iter().sum::<f64>() / 1000.0;
+            let transcript = transcript.expect("benchmark presets include measured iterations");
             let (errors, reference_words) = word_errors(fixture.reference, &transcript);
             total_errors += errors;
             total_reference_words += reference_words;
@@ -608,6 +652,7 @@ pub fn run(
         backend.reset();
         if let Some(error) = failed {
             results.push(error_result(&model, error));
+            completed = model_start + steps_per_model;
             continue;
         }
         results.push(ModelResult {
@@ -619,7 +664,7 @@ pub fn run(
             first_inference_ms,
             warm_median_ms: percentile(&all_warm, 0.5),
             warm_p95_ms: percentile(&all_warm, 0.95),
-            realtime_factor: Some(total_warm_seconds / total_audio_seconds),
+            realtime_factor: percentile(&all_realtime_factors, 0.5),
             word_error_rate: Some(total_errors as f64 / total_reference_words as f64),
             memory_delta_mb: peak_rss.saturating_sub(baseline_rss),
             fixtures: fixture_results,
@@ -690,6 +735,19 @@ mod tests {
         assert!(prepared
             .iter()
             .all(|fixture| !fixture.samples.is_empty() && fixture.audio_seconds > 0.0));
+    }
+
+    #[test]
+    fn benchmark_and_shared_backend_changes_are_mutually_exclusive() {
+        let coordinator = BenchmarkCoordinator::new();
+        assert!(coordinator.try_start_shared_backend_change());
+        assert!(!coordinator.try_start());
+        coordinator.finish_shared_backend_change();
+
+        assert!(coordinator.try_start());
+        assert!(!coordinator.try_start_shared_backend_change());
+        coordinator.finish();
+        assert!(coordinator.try_start_shared_backend_change());
     }
 
     #[test]

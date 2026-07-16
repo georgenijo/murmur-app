@@ -21,6 +21,11 @@ export interface BenchmarkProgress {
   phase: 'loading' | 'warming' | 'measuring' | 'complete';
 }
 
+export interface BenchmarkActivity {
+  benchmarkRunning: boolean;
+  fileTranscribing: boolean;
+}
+
 export interface BenchmarkFixtureResult {
   fixtureId: string;
   label: string;
@@ -179,6 +184,10 @@ export function clearBenchmarkReports(): void {
 
 export function getBenchmarkModels(): Promise<BenchmarkModel[]> {
   return invoke('get_benchmark_models');
+}
+
+export function getBenchmarkActivity(): Promise<BenchmarkActivity> {
+  return invoke('get_benchmark_activity');
 }
 
 export function runBenchmark(modelNames: string[], preset: BenchmarkPreset): Promise<BenchmarkReport> {

@@ -3,6 +3,7 @@ use crate::state::{AppState, DictationStatus};
 use crate::transcriber;
 use crate::{audio, audio_decode, injector, keyboard, vad};
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use tauri::{Emitter, Manager};
 
 /// Max number of code identifiers fed to Whisper as an initial prompt. Whisper
@@ -243,11 +244,23 @@ impl Drop for IdleGuard<'_> {
 /// or success).
 struct FileTranscribeGuard<'a> {
     app_state: &'a AppState,
+    app_handle: Option<tauri::AppHandle>,
 }
 
 impl Drop for FileTranscribeGuard<'_> {
     fn drop(&mut self) {
         self.app_state.file_transcribing.store(false, Ordering::SeqCst);
+        if let Some(app_handle) = &self.app_handle {
+            let _ = app_handle.emit("file-transcription-status-changed", false);
+        }
+    }
+}
+
+struct SharedBackendChangeGuard(Arc<crate::benchmark::BenchmarkCoordinator>);
+
+impl Drop for SharedBackendChangeGuard {
+    fn drop(&mut self) {
+        self.0.finish_shared_backend_change();
     }
 }
 
@@ -333,9 +346,14 @@ fn spawn_model_preparation(
 /// compiled model cache already exists. Starting it while the app is idle keeps
 /// that cost away from the user's first short dictation; recording-start
 /// preparation remains the fallback if recording begins first.
-fn spawn_idle_model_preparation(app_handle: tauri::AppHandle, model_name: String) {
+fn spawn_idle_model_preparation(
+    app_handle: tauri::AppHandle,
+    model_name: String,
+    change_guard: SharedBackendChangeGuard,
+) {
     let queued_at = std::time::Instant::now();
     let _ = tauri::async_runtime::spawn_blocking(move || {
+        let _change_guard = change_guard;
         let state = app_handle.state::<State>();
         let is_current = {
             let dictation = state.app_state.dictation.lock_or_recover();
@@ -782,6 +800,21 @@ pub async fn configure_dictation(
 
     let mut dictation = state.app_state.dictation.lock_or_recover();
 
+    let mut model_change_guard = if model
+        .as_deref()
+        .is_some_and(|requested| requested != dictation.model_name)
+    {
+        if !state.benchmark.try_start_shared_backend_change() {
+            return Err(
+                "Wait for the benchmark or current model preparation to finish before changing models."
+                    .to_string(),
+            );
+        }
+        Some(SharedBackendChangeGuard(state.benchmark.clone()))
+    } else {
+        None
+    };
+
     let model_changed = if let Some(m) = model {
         if m != dictation.model_name {
             dictation.model_name = m;
@@ -987,7 +1020,13 @@ pub async fn configure_dictation(
         // immediately release the model this preparation is about to load.
         *state.app_state.last_transcription_at.lock_or_recover() =
             Some(std::time::Instant::now());
-        spawn_idle_model_preparation(app_handle, model_name);
+        spawn_idle_model_preparation(
+            app_handle,
+            model_name,
+            model_change_guard
+                .take()
+                .expect("model changes hold the shared backend lease"),
+        );
     }
 
     Ok(serde_json::json!({
@@ -1550,7 +1589,11 @@ pub async fn transcribe_file(
     if state.app_state.file_transcribing.swap(true, Ordering::SeqCst) {
         return Err("Already transcribing a file.".to_string());
     }
-    let _file_guard = FileTranscribeGuard { app_state: &state.app_state };
+    let _file_guard = FileTranscribeGuard {
+        app_state: &state.app_state,
+        app_handle: Some(app_handle.clone()),
+    };
+    let _ = app_handle.emit("file-transcription-status-changed", true);
     {
         let dictation = state.app_state.dictation.lock_or_recover();
         if state.benchmark.is_running() {
@@ -1821,10 +1864,24 @@ mod tests {
         let app_state = AppState::default();
         app_state.file_transcribing.store(true, Ordering::SeqCst);
         {
-            let _guard = FileTranscribeGuard { app_state: &app_state };
+            let _guard = FileTranscribeGuard {
+                app_state: &app_state,
+                app_handle: None,
+            };
             // guard drops here
         }
         assert!(!app_state.file_transcribing.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn shared_backend_change_guard_releases_coordinator_on_drop() {
+        let coordinator = Arc::new(crate::benchmark::BenchmarkCoordinator::new());
+        assert!(coordinator.try_start_shared_backend_change());
+        {
+            let _guard = SharedBackendChangeGuard(coordinator.clone());
+            assert!(!coordinator.try_start());
+        }
+        assert!(coordinator.try_start());
     }
 
     #[test]

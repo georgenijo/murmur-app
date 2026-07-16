@@ -40,10 +40,12 @@ honest accuracy score.
 | Thorough | All four clips | 10 |
 
 The bundled clips first pass through the same Silero VAD speech filter used by
-normal dictation. VAD time is excluded from inference measurements, and the
-reported audio duration reflects speech retained by VAD. One untimed inference
-then warms each clip before measured iterations begin. Models run sequentially
-and are released between configurations to avoid contention.
+normal dictation at a fixed threshold, keeping runs comparable even when the
+user changes dictation sensitivity. VAD time is excluded from inference
+measurements, and the reported audio duration reflects speech retained by VAD.
+One untimed inference then warms each clip before measured iterations begin.
+Models run sequentially and are released between configurations to avoid
+contention.
 
 ## Results
 

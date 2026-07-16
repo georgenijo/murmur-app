@@ -156,6 +156,7 @@ pub fn run() {
             commands::models::check_specific_model_exists,
             commands::models::download_model,
             commands::benchmark::get_benchmark_models,
+            commands::benchmark::get_benchmark_activity,
             commands::benchmark::run_benchmark,
             commands::benchmark::cancel_benchmark,
             commands::tray::update_tray_icon,
