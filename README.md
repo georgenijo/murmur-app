@@ -9,7 +9,7 @@ Built with [Tauri 2](https://tauri.app/) (Rust + React), with local transcriptio
 ## Features
 
 - **100% local** — all transcription runs on-device. Audio and benchmark results never leave the machine
-- **Apple Neural Engine default** — multilingual Parakeet v3 through Core ML for very low-latency transcription
+- **Apple Neural Engine default on Apple silicon** — multilingual Parakeet v3 through Core ML for very low-latency transcription; Intel Macs use the CPU fallback
 - **Multiple local engines** — compare Core ML/ANE, whisper.cpp/Metal, and sherpa-onnx/CPU configurations
 - **Performance Lab** — benchmark installed models on identical speech, including median/p95 latency, real-time speed, memory, and word error rate
 - **Two recording modes** — Hold Down (hold to record, release to stop) or Double-Tap (tap twice to start, tap once to stop)
@@ -43,8 +43,8 @@ Choose a model based on your speed/accuracy tradeoff. Models download automatica
 
 | Model | Engine | Accelerator | Size | Notes |
 |-------|--------|-------------|------|-------|
-| Parakeet v3 | Core ML | Apple Neural Engine | ~470 MB | Default, multilingual, lowest latency |
-| Parakeet v2 | sherpa-onnx | CPU | ~1.2 GB | English CPU fallback |
+| Parakeet v3 | Core ML | Apple Neural Engine | ~470 MB | Apple silicon default, multilingual, lowest latency |
+| Parakeet v2 | sherpa-onnx | CPU | ~1.2 GB | English fallback, including Intel macOS |
 | Whisper Tiny | whisper.cpp | Metal GPU | ~75 MB | English |
 | Whisper Base | whisper.cpp | Metal GPU | ~150 MB | English |
 | Whisper Small | whisper.cpp | Metal GPU | ~500 MB | English |
@@ -101,7 +101,7 @@ cd app && npx tsc --noEmit                            # TypeScript type check
 ## Architecture
 
 ```
-Hotkey (rdev) → Audio Capture (cpal) → Transcription (whisper-rs) → Clipboard (arboard) → Auto-Paste (osascript)
+Hotkey (rdev) → Audio Capture (cpal) → Local Transcription Engine → Clipboard (arboard) → Auto-Paste (osascript)
        ↕                    ↕                        ↕                                    ↕
    Frontend (React) ←——— Tauri IPC ———→ Rust Backend ———→ System Tray + Overlay
 ```

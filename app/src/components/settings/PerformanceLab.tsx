@@ -1,41 +1,27 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { invoke } from '@tauri-apps/api/core';
 import {
   BenchmarkModel,
+  BenchmarkModelResult,
   BenchmarkPreset,
   BenchmarkProgress,
   BenchmarkReport,
-  MAX_SAVED_BENCHMARK_REPORTS,
   addBenchmarkReport,
   cancelBenchmark,
+  clearBenchmarkReports,
   getBenchmarkModels,
+  loadBenchmarkReports,
   runBenchmark,
+  saveBenchmarkReports,
 } from '../../lib/benchmark';
+import { downloadModel } from '../../lib/dictation';
 import type { DictationStatus } from '../../lib/types';
-
-const REPORT_KEY = 'murmur-benchmark-report';
-const REPORTS_KEY = 'murmur-benchmark-reports';
 
 const PRESETS: { id: BenchmarkPreset; label: string; detail: string }[] = [
   { id: 'quick', label: 'Quick', detail: '2 clips x 3 runs' },
   { id: 'standard', label: 'Standard', detail: '4 clips x 5 runs' },
   { id: 'thorough', label: 'Thorough', detail: '4 clips x 10 runs' },
 ];
-
-function loadReports(): BenchmarkReport[] {
-  try {
-    const saved = localStorage.getItem(REPORTS_KEY);
-    if (saved) {
-      const reports = JSON.parse(saved) as BenchmarkReport[];
-      if (Array.isArray(reports)) return reports.slice(0, MAX_SAVED_BENCHMARK_REPORTS);
-    }
-    const legacy = localStorage.getItem(REPORT_KEY);
-    return legacy ? [JSON.parse(legacy) as BenchmarkReport] : [];
-  } catch {
-    return [];
-  }
-}
 
 function milliseconds(value: number | null): string {
   return value === null ? '-' : `${Math.round(value)} ms`;
@@ -54,13 +40,24 @@ function modelLabel(report: BenchmarkReport, modelName: string | null): string {
   return report.results.find((result) => result.modelName === modelName)?.label ?? modelName;
 }
 
-function successfulResults(report: BenchmarkReport) {
-  return report.results.filter((result) => !result.error && result.warmMedianMs !== null);
+type LatencyResult = BenchmarkModelResult & { warmMedianMs: number; warmP95Ms: number };
+type AccuracyResult = BenchmarkModelResult & { wordErrorRate: number };
+
+function latencyResults(report: BenchmarkReport): LatencyResult[] {
+  return report.results.filter((result): result is LatencyResult => (
+    !result.error && result.warmMedianMs !== null && result.warmP95Ms !== null
+  ));
+}
+
+function accuracyResults(report: BenchmarkReport): AccuracyResult[] {
+  return report.results.filter((result): result is AccuracyResult => (
+    !result.error && result.wordErrorRate !== null
+  ));
 }
 
 function LatencyChart({ report }: { report: BenchmarkReport }) {
-  const results = successfulResults(report);
-  const maximum = Math.max(...results.map((result) => result.warmP95Ms ?? 0), 1);
+  const results = latencyResults(report);
+  const maximum = Math.max(...results.map((result) => result.warmP95Ms), 1);
   return (
     <div>
       <div className="mb-2 flex items-center justify-between gap-3">
@@ -77,15 +74,15 @@ function LatencyChart({ report }: { report: BenchmarkReport }) {
             <div className="relative h-4 rounded-sm bg-stone-100 dark:bg-stone-800 overflow-hidden">
               <div
                 className="absolute inset-y-0 left-0 bg-stone-300 dark:bg-stone-600"
-                style={{ width: `${((result.warmP95Ms ?? 0) / maximum) * 100}%` }}
+                style={{ width: `${(result.warmP95Ms / maximum) * 100}%` }}
               />
               <div
                 className="absolute left-0 top-[5px] h-1.5 bg-emerald-500"
-                style={{ width: `${((result.warmMedianMs ?? 0) / maximum) * 100}%` }}
+                style={{ width: `${(result.warmMedianMs / maximum) * 100}%` }}
               />
             </div>
             <span className="text-right text-[10px] tabular-nums text-stone-500 dark:text-stone-400">
-              {Math.round(result.warmMedianMs ?? 0)} / {Math.round(result.warmP95Ms ?? 0)}
+              {Math.round(result.warmMedianMs)} / {Math.round(result.warmP95Ms)}
             </span>
           </div>
         ))}
@@ -95,7 +92,7 @@ function LatencyChart({ report }: { report: BenchmarkReport }) {
 }
 
 function AccuracyChart({ report }: { report: BenchmarkReport }) {
-  const results = successfulResults(report);
+  const results = accuracyResults(report);
   return (
     <div>
       <div className="mb-2 flex items-center justify-between gap-3">
@@ -104,7 +101,7 @@ function AccuracyChart({ report }: { report: BenchmarkReport }) {
       </div>
       <div className="space-y-2">
         {results.map((result) => {
-          const accuracy = Math.max(0, 1 - (result.wordErrorRate ?? 1));
+          const accuracy = Math.max(0, 1 - result.wordErrorRate);
           return (
             <div key={result.modelName} className="grid grid-cols-[6.5rem_1fr_3rem] items-center gap-2">
               <span className="truncate text-[11px] font-medium text-stone-600 dark:text-stone-300" title={result.label}>{result.label}</span>
@@ -131,7 +128,7 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
     reports: BenchmarkReport[];
     selectedAt: string | null;
   }>(() => {
-    const reports = loadReports();
+    const reports = loadBenchmarkReports();
     return { reports, selectedAt: reports[0]?.createdAt ?? null };
   });
   const [running, setRunning] = useState(false);
@@ -169,9 +166,19 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
+    let disposed = false;
     listen<BenchmarkProgress>('benchmark-progress', (event) => setProgress(event.payload))
-      .then((dispose) => { unlisten = dispose; });
-    return () => unlisten?.();
+      .then((dispose) => {
+        if (disposed) dispose();
+        else unlisten = dispose;
+      })
+      .catch((reason: unknown) => {
+        if (!disposed) setError(`Could not watch benchmark progress: ${String(reason)}`);
+      });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   }, []);
 
   const installedCount = models.filter((model) => model.installed).length;
@@ -198,9 +205,7 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
       const next = await runBenchmark(selected, preset);
       if (!mounted.current) return;
       setDashboard((current) => {
-        const reports = addBenchmarkReport(current.reports, next);
-        localStorage.setItem(REPORTS_KEY, JSON.stringify(reports));
-        localStorage.removeItem(REPORT_KEY);
+        const reports = saveBenchmarkReports(addBenchmarkReport(current.reports, next));
         return { reports, selectedAt: next.createdAt };
       });
     } catch (reason) {
@@ -225,7 +230,7 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
         const { received, total } = event.payload;
         setDownloadProgress(total > 0 ? Math.round((received / total) * 100) : null);
       });
-      await invoke('download_model', { modelName });
+      await downloadModel(modelName);
       await refreshModels();
       setSelected((current) => current.includes(modelName) ? current : [...current, modelName]);
     } catch (reason) {
@@ -402,7 +407,7 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
             <button
               type="button"
               onClick={() => {
-                localStorage.removeItem(REPORTS_KEY);
+                clearBenchmarkReports();
                 setDashboard({ reports: [], selectedAt: null });
               }}
               className="shrink-0 px-2 py-1.5 text-xs text-stone-500 dark:text-stone-400 hover:text-red-600 dark:hover:text-red-400"

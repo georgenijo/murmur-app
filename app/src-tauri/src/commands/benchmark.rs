@@ -26,7 +26,7 @@ pub async fn run_benchmark(
     request: BenchmarkRequest,
 ) -> Result<BenchmarkReport, String> {
     let coordinator = state.benchmark.clone();
-    {
+    let vad_threshold = {
         let dictation = state.app_state.dictation.lock_or_recover();
         if dictation.status != DictationStatus::Idle {
             return Err("Stop recording before running a benchmark".to_string());
@@ -37,11 +37,16 @@ pub async fn run_benchmark(
         if !coordinator.try_start() {
             return Err("A benchmark is already running".to_string());
         }
-    }
+        1.0 - (dictation.vad_sensitivity as f32 / 100.0)
+    };
+    let guard = BenchmarkRunGuard(coordinator.clone());
+    super::models::ensure_vad_model(&app_handle)
+        .await
+        .map_err(|error| format!("Could not prepare speech filtering: {error}"))?;
 
     tokio::task::spawn_blocking(move || {
-        let _guard = BenchmarkRunGuard(coordinator.clone());
-        benchmark::run(&app_handle, &coordinator, request)
+        let _guard = guard;
+        benchmark::run(&app_handle, &coordinator, request, vad_threshold)
     })
     .await
     .map_err(|error| format!("Benchmark task failed: {error}"))?

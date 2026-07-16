@@ -20,6 +20,12 @@ struct Fixture {
     reference: &'static str,
 }
 
+struct PreparedFixture<'a> {
+    fixture: &'a Fixture,
+    samples: Vec<f32>,
+    audio_seconds: f64,
+}
+
 const FIXTURES: &[Fixture] = &[
     Fixture {
         id: "short",
@@ -382,6 +388,41 @@ fn error_result(model: &BenchmarkModel, error: String) -> ModelResult {
     }
 }
 
+fn prepare_fixtures(
+    fixtures: &[Fixture],
+    vad_threshold: f32,
+) -> Result<Vec<PreparedFixture<'_>>, String> {
+    let vad_path = crate::vad::vad_model_path()
+        .filter(|path| path.exists())
+        .ok_or_else(|| "Silero VAD model is not installed".to_string())?;
+    let vad_path = vad_path.to_string_lossy();
+
+    fixtures
+        .iter()
+        .map(|fixture| {
+            let samples = crate::transcriber::parse_wav_to_samples(fixture.wav)
+                .map_err(|error| format!("Could not decode {} fixture: {error}", fixture.label))?;
+            let samples = match crate::vad::filter_speech(&vad_path, &samples, vad_threshold)
+                .map_err(|error| format!("VAD failed for {} fixture: {error}", fixture.label))?
+            {
+                crate::vad::VadResult::Speech(samples) => samples,
+                crate::vad::VadResult::NoSpeech => {
+                    return Err(format!(
+                        "VAD detected no speech in the {} benchmark fixture",
+                        fixture.label
+                    ));
+                }
+            };
+            let audio_seconds = samples.len() as f64 / WHISPER_SAMPLE_RATE as f64;
+            Ok(PreparedFixture {
+                fixture,
+                samples,
+                audio_seconds,
+            })
+        })
+        .collect()
+}
+
 fn recommendations(results: &[ModelResult]) -> Recommendations {
     let successful = results
         .iter()
@@ -420,6 +461,7 @@ pub fn run(
     app: &tauri::AppHandle,
     coordinator: &BenchmarkCoordinator,
     request: BenchmarkRequest,
+    vad_threshold: f32,
 ) -> Result<BenchmarkReport, String> {
     if request.model_names.is_empty() {
         return Err("Select at least one installed model".to_string());
@@ -448,7 +490,7 @@ pub fn run(
         return Err(format!("{} is not installed on this machine", model.label));
     }
 
-    let fixtures = request.preset.fixtures();
+    let fixtures = prepare_fixtures(request.preset.fixtures(), vad_threshold)?;
     let iterations = request.preset.iterations();
     let total_steps = selected.len() * (1 + fixtures.len() * (1 + iterations));
     let mut completed = 0;
@@ -484,19 +526,14 @@ pub fn run(
         let mut total_warm_seconds = 0.0;
         let mut failed = None;
 
-        for fixture in fixtures {
+        for prepared in &fixtures {
+            let fixture = prepared.fixture;
             if coordinator.is_cancelled() {
                 backend.reset();
                 return Err("Benchmark cancelled".to_string());
             }
-            let samples = match crate::transcriber::parse_wav_to_samples(fixture.wav) {
-                Ok(samples) => samples,
-                Err(error) => {
-                    failed = Some(error);
-                    break;
-                }
-            };
-            let audio_seconds = samples.len() as f64 / WHISPER_SAMPLE_RATE as f64;
+            let samples = &prepared.samples;
+            let audio_seconds = prepared.audio_seconds;
             emit_progress(
                 app,
                 completed,
@@ -506,7 +543,7 @@ pub fn run(
                 "warming",
             );
             let warmup_started = Instant::now();
-            let transcript = match backend.transcribe(&samples, "en", None, true) {
+            let transcript = match backend.transcribe(samples, "en", None, true) {
                 Ok(transcript) => transcript,
                 Err(error) => {
                     failed = Some(error);
@@ -534,7 +571,7 @@ pub fn run(
                     "measuring",
                 );
                 let started = Instant::now();
-                if let Err(error) = backend.transcribe(&samples, "en", None, true) {
+                if let Err(error) = backend.transcribe(samples, "en", None, true) {
                     failed = Some(error);
                     break;
                 }
@@ -641,6 +678,18 @@ mod tests {
         assert_eq!(BenchmarkPreset::Quick.iterations(), 3);
         assert_eq!(BenchmarkPreset::Standard.fixtures().len(), 4);
         assert_eq!(BenchmarkPreset::Thorough.iterations(), 10);
+    }
+
+    #[test]
+    fn bundled_fixtures_retain_speech_after_vad() {
+        if !crate::vad::vad_model_exists() {
+            return;
+        }
+        let prepared = prepare_fixtures(FIXTURES, 0.5).expect("prepare benchmark fixtures");
+        assert_eq!(prepared.len(), FIXTURES.len());
+        assert!(prepared
+            .iter()
+            .all(|fixture| !fixture.samples.is_empty() && fixture.audio_seconds > 0.0));
     }
 
     #[test]

@@ -3,6 +3,9 @@ import {
   BenchmarkReport,
   MAX_SAVED_BENCHMARK_REPORTS,
   addBenchmarkReport,
+  clearBenchmarkReports,
+  loadBenchmarkReports,
+  saveBenchmarkReports,
 } from './benchmark';
 
 function report(createdAt: string): BenchmarkReport {
@@ -33,6 +36,27 @@ describe('addBenchmarkReport', () => {
     const result = addBenchmarkReport(existing, newest);
     expect(result).toHaveLength(MAX_SAVED_BENCHMARK_REPORTS);
     expect(result[0]).toBe(newest);
-    expect(result).not.toContain(existing[existing.length - 1]);
+    expect(result).not.toContain(existing[0]);
+  });
+});
+
+describe('benchmark report storage', () => {
+  it('migrates a valid legacy report and clears the legacy key', () => {
+    const legacy = report('2026-07-16T12:00:00Z');
+    localStorage.setItem('murmur-benchmark-report', JSON.stringify(legacy));
+
+    expect(loadBenchmarkReports()).toEqual([legacy]);
+    expect(localStorage.getItem('murmur-benchmark-report')).toBeNull();
+    expect(JSON.parse(localStorage.getItem('murmur-benchmark-reports') ?? '[]')).toEqual([legacy]);
+  });
+
+  it('rejects malformed reports and clears both keys', () => {
+    localStorage.setItem('murmur-benchmark-reports', JSON.stringify([report('2026-07-16T12:00:00Z'), { createdAt: 'bad' }]));
+    expect(loadBenchmarkReports()).toEqual([report('2026-07-16T12:00:00Z')]);
+
+    saveBenchmarkReports([report('2026-07-16T13:00:00Z')]);
+    clearBenchmarkReports();
+    expect(localStorage.getItem('murmur-benchmark-reports')).toBeNull();
+    expect(localStorage.getItem('murmur-benchmark-report')).toBeNull();
   });
 });
