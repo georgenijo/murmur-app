@@ -311,7 +311,7 @@ jobs:
               --repo "${{ github.repository }}"
           done
 
-      - name: Generate and upload latest.json
+      - name: Generate and upload updater channel manifests
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -352,8 +352,13 @@ jobs:
               notes: $notes
             }' > latest.json
 
-          cat latest.json
-          gh release upload "${TAG}" latest.json \
+          # v0.14.1 is the macOS 13-compatible bridge. Publishing identical
+          # manifests under both names moves installed clients from the legacy
+          # endpoint to latest-v2 without interrupting this release.
+          cp latest.json latest-v2.json
+          cmp latest.json latest-v2.json
+          cat latest-v2.json
+          gh release upload "${TAG}" latest.json latest-v2.json \
             --repo "${{ github.repository }}" \
             --clobber
 

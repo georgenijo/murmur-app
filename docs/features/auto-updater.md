@@ -14,10 +14,18 @@ The app checks for updates on launch and every 24 hours. Updates are downloaded 
 The update manifest is fetched from:
 
 ```
-https://github.com/georgenijo/murmur-app/releases/latest/download/latest.json
+https://github.com/georgenijo/murmur-app/releases/latest/download/latest-v2.json
 ```
 
 This URL is configured in `tauri.conf.json` as the updater plugin endpoint. The fetch uses `cache: 'no-store'` to bypass browser caching.
+
+### macOS 14 Transition Bridge
+
+Version 0.14.1 remains compatible with macOS 13 and changes the installed
+updater endpoint from `latest.json` to `latest-v2.json`. Its release publishes
+the same signed macOS 13 artifact through both names. This lets a later release
+raise its deployment target without leaving existing installations behind or
+offering macOS 13 an application that cannot launch.
 
 The manifest contains version information, download URLs, signatures, and an optional `min_version` field for forced updates.
 
