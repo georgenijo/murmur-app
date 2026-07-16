@@ -55,6 +55,9 @@ fn find_whisper_model() -> Option<String> {
         let name = entry.file_name();
         let name = name.to_str()?;
         if let Some(model) = name.strip_prefix("ggml-").and_then(|n| n.strip_suffix(".bin")) {
+            if model.starts_with("silero") {
+                continue;
+            }
             return Some(model.to_string());
         }
     }
