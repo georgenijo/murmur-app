@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import {
   checkMicrophonePermissionStatus,
@@ -7,14 +7,23 @@ import {
   type MicPermissionStatus,
 } from '../../lib/dictation';
 import { ModelDownloadPanel } from '../ModelDownloader';
-import type { ModelOption } from '../../lib/settings';
+import type { DoubleTapKey, ModelOption, RecordingMode } from '../../lib/settings';
 
 type Step = 'welcome' | 'microphone' | 'accessibility' | 'model' | 'done';
 
 const STEP_ORDER: Step[] = ['welcome', 'microphone', 'accessibility', 'model', 'done'];
 
+const KEY_LABELS: Record<DoubleTapKey, string> = {
+  shift_l: 'Left Shift',
+  alt_l: 'Left Option',
+  ctrl_r: 'Right Control',
+};
+
 interface Props {
   initialModel: ModelOption;
+  /** Configured recording trigger, so the final tip shows the real binding. */
+  recordingMode: RecordingMode;
+  triggerKey: DoubleTapKey;
   /** Called when the user finishes the wizard; receives the installed model. */
   onComplete: (model: ModelOption) => void;
 }
@@ -35,7 +44,7 @@ interface Props {
  *   returns the status to `notDetermined` so the in-app prompt works again
  * - accessibility listed-but-stale → reset entry + re-grant manually
  */
-export function OnboardingFlow({ initialModel, onComplete }: Props) {
+export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComplete }: Props) {
   const [step, setStep] = useState<Step>('welcome');
   const [micStatus, setMicStatus] = useState<MicPermissionStatus>('unknown');
   const [micRequested, setMicRequested] = useState(false);
@@ -51,17 +60,26 @@ export function OnboardingFlow({ initialModel, onComplete }: Props) {
   // second concurrent download of the same file.
   const [modelDownloading, setModelDownloading] = useState(false);
 
+  // Monotonic sequence so an interval probe overlapping a focus probe can't
+  // apply an older TCC result over a newer one.
+  const pollSeq = useRef(0);
   const refreshPermissions = useCallback(async () => {
+    const seq = ++pollSeq.current;
+    let mic: MicPermissionStatus = 'unknown';
+    let ax: boolean | null = null;
     try {
-      setMicStatus(await checkMicrophonePermissionStatus());
+      mic = await checkMicrophonePermissionStatus();
     } catch {
-      setMicStatus('unknown');
+      mic = 'unknown';
     }
     try {
-      setAxGranted(await invoke<boolean>('check_accessibility_permission'));
+      ax = await invoke<boolean>('check_accessibility_permission');
     } catch {
       // keep previous value; a probe glitch must not flip the UI
     }
+    if (seq !== pollSeq.current) return; // superseded by a newer probe
+    setMicStatus(mic);
+    if (ax !== null) setAxGranted(ax);
   }, []);
 
   useEffect(() => {
@@ -377,7 +395,7 @@ export function OnboardingFlow({ initialModel, onComplete }: Props) {
             <div className="space-y-2 mb-6">
               <SummaryRow ok={micGranted} label="Microphone" okText="Granted" missingText="Not granted — grant later from the in-app banner or Settings" />
               <SummaryRow ok={axGranted === true} label="Accessibility" okText="Granted" missingText="Not granted — the recording key won't work outside the app" />
-              <SummaryRow ok label="Model" okText="Installed" missingText="" />
+              <SummaryRow ok={modelInstalled === true} label="Model" okText="Installed" missingText="Not verified — the app will ask again if it's missing" />
             </div>
 
             <div className="mb-6 px-4 py-3 bg-stone-100 dark:bg-stone-800 rounded-lg">
@@ -385,10 +403,16 @@ export function OnboardingFlow({ initialModel, onComplete }: Props) {
                 Try it out
               </p>
               <p className="text-xs text-stone-500 dark:text-stone-400">
-                Hold <kbd className="px-1 py-0.5 rounded bg-white dark:bg-stone-700 border border-stone-300 dark:border-stone-600 font-mono text-[10px]">Left Shift</kbd> and
-                speak, then release — your words are transcribed and copied to the
-                clipboard. The recording key, auto-paste, and everything else can be
-                changed in Settings.
+                {recordingMode === 'double_tap' ? 'Double-tap ' : 'Hold '}
+                <kbd className="px-1 py-0.5 rounded bg-white dark:bg-stone-700 border border-stone-300 dark:border-stone-600 font-mono text-[10px]">{KEY_LABELS[triggerKey]}</kbd>
+                {recordingMode === 'double_tap'
+                  ? ' to start recording and tap it once to stop'
+                  : recordingMode === 'both'
+                  ? ' and speak, then release (or double-tap to toggle)'
+                  : ' and speak, then release'}
+                {' '}— your words are transcribed and copied to the clipboard. The
+                recording key, auto-paste, and everything else can be changed in
+                Settings.
               </p>
             </div>
 

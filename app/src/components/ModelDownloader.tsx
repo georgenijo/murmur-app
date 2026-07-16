@@ -58,26 +58,29 @@ export function ModelDownloadPanel({ initialModel, onComplete, onDownloadingChan
     onDownloadingChange?.(true);
     setDownloadState({ phase: 'downloading', received: 0, total: 0 });
 
-    const unlisten = await listen<{ received: number; total: number }>(
-      'download-progress',
-      (event) => {
-        setDownloadState({
-          phase: 'downloading',
-          received: event.payload.received,
-          total: event.payload.total,
-        });
-      }
-    );
-    downloadUnlistenRef.current = unlisten;
-
+    // Single try/catch covering listen() as well as the download itself, so a
+    // listen failure can't strand the downloading state (or an embedder's
+    // navigation lock) forever.
     try {
+      const unlisten = await listen<{ received: number; total: number }>(
+        'download-progress',
+        (event) => {
+          setDownloadState({
+            phase: 'downloading',
+            received: event.payload.received,
+            total: event.payload.total,
+          });
+        }
+      );
+      downloadUnlistenRef.current = unlisten;
+
       await invoke('download_model', { modelName: selected });
       unlisten();
       downloadUnlistenRef.current = null;
       onDownloadingChange?.(false);
       onComplete(selected);
     } catch (err) {
-      unlisten();
+      downloadUnlistenRef.current?.();
       downloadUnlistenRef.current = null;
       onDownloadingChange?.(false);
       setDownloadState({

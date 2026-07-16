@@ -127,10 +127,14 @@ function App() {
   const [statsResetVersion, setStatsResetVersion] = useState(0);
   const combinedStatsVersion = statsVersion + statsResetVersion;
   const handleResetStats = () => { resetStats(); setStatsResetVersion(v => v + 1); };
-  useHoldDownToggle({ enabled: settings.recordingMode === 'hold_down', initialized, accessibilityGranted, holdDownKey: settings.doubleTapKey, onStart: handleStart, onStop: handleStop });
-  useDoubleTapToggle({ enabled: settings.recordingMode === 'double_tap', initialized, accessibilityGranted, doubleTapKey: settings.doubleTapKey, status, onToggle: toggleRecording });
-  useCombinedToggle({ enabled: settings.recordingMode === 'both', initialized, accessibilityGranted, triggerKey: settings.doubleTapKey, status, onStart: handleStart, onStop: handleStop, onToggle: toggleRecording });
-  useEscapeCancel({ status, enabled: initialized && accessibilityGranted === true });
+  // Keep the global hotkeys disarmed until onboarding completes — accessibility
+  // can be granted mid-wizard, and a hold/double-tap must not start a recording
+  // behind the OnboardingFlow screen.
+  const hotkeysArmed = onboardingState === 'done';
+  useHoldDownToggle({ enabled: hotkeysArmed && settings.recordingMode === 'hold_down', initialized, accessibilityGranted, holdDownKey: settings.doubleTapKey, onStart: handleStart, onStop: handleStop });
+  useDoubleTapToggle({ enabled: hotkeysArmed && settings.recordingMode === 'double_tap', initialized, accessibilityGranted, doubleTapKey: settings.doubleTapKey, status, onToggle: toggleRecording });
+  useCombinedToggle({ enabled: hotkeysArmed && settings.recordingMode === 'both', initialized, accessibilityGranted, triggerKey: settings.doubleTapKey, status, onStart: handleStart, onStop: handleStop, onToggle: toggleRecording });
+  useEscapeCancel({ status, enabled: hotkeysArmed && initialized && accessibilityGranted === true });
   const { showAbout, setShowAbout } = useShowAboutListener();
   const updater = useAutoUpdater();
 
@@ -180,6 +184,8 @@ function App() {
     return (
       <OnboardingFlow
         initialModel={settings.model}
+        recordingMode={settings.recordingMode}
+        triggerKey={settings.doubleTapKey}
         onComplete={completeOnboarding}
       />
     );
