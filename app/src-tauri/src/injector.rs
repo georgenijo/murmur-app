@@ -268,6 +268,10 @@ fn focused_field_state() -> FocusedFieldState {
             tracing::info!(target: "pipeline", "focused_field_state: native AX query completed");
             role
         }
+        Err(native_err) if is_native_ax_timeout(&native_err) => {
+            tracing::warn!(target: "pipeline", "focused_field_state: native AX query timed out; allowing paste");
+            return FocusedFieldState::Unknown;
+        }
         Err(native_err) => {
             tracing::warn!(target: "pipeline", "focused_field_state: native AX query failed: {}; falling back to osascript", native_err);
             match focused_role_osascript() {
@@ -280,6 +284,13 @@ fn focused_field_state() -> FocusedFieldState {
         }
     };
     classify_focused_role(&role)
+}
+
+#[cfg(target_os = "macos")]
+fn is_native_ax_timeout(error: &str) -> bool {
+    // kAXErrorCannotComplete is returned when the target app does not answer
+    // within the per-element messaging timeout.
+    error.contains("returned -25204")
 }
 
 #[cfg(target_os = "macos")]
@@ -298,6 +309,7 @@ fn focused_role_native() -> Result<String, String> {
             attribute: CFTypeRef,
             value: *mut CFTypeRef,
         ) -> i32;
+        fn AXUIElementSetMessagingTimeout(element: AXUIElementRef, timeout: f32) -> i32;
         fn CFStringCreateWithCString(
             allocator: CFTypeRef,
             string: *const c_char,
@@ -313,6 +325,7 @@ fn focused_role_native() -> Result<String, String> {
     }
 
     const AX_SUCCESS: i32 = 0;
+    const AX_QUERY_TIMEOUT_SECONDS: f32 = 0.025;
     const UTF8_ENCODING: u32 = 0x0800_0100;
 
     let frontmost = NSWorkspace::sharedWorkspace()
@@ -321,6 +334,11 @@ fn focused_role_native() -> Result<String, String> {
     let app = unsafe { AXUIElementCreateApplication(frontmost.processIdentifier()) };
     if app.is_null() {
         return Err("could not create frontmost AX application".to_string());
+    }
+    let timeout_status = unsafe { AXUIElementSetMessagingTimeout(app, AX_QUERY_TIMEOUT_SECONDS) };
+    if timeout_status != AX_SUCCESS {
+        unsafe { CFRelease(app) };
+        return Err(format!("AX timeout configuration returned {timeout_status}"));
     }
 
     let focused_attribute = unsafe {
@@ -345,6 +363,12 @@ fn focused_role_native() -> Result<String, String> {
             unsafe { CFRelease(focused) };
         }
         return Err(format!("AX focused-element query returned {}", focused_status));
+    }
+    let timeout_status =
+        unsafe { AXUIElementSetMessagingTimeout(focused, AX_QUERY_TIMEOUT_SECONDS) };
+    if timeout_status != AX_SUCCESS {
+        unsafe { CFRelease(focused) };
+        return Err(format!("AX timeout configuration returned {timeout_status}"));
     }
 
     let role_attribute = unsafe {
@@ -896,6 +920,15 @@ mod focus_tests {
         if let Ok(role) = focused_role_native() {
             assert!(role.starts_with("AX"), "unexpected AX role: {}", role);
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn ax_timeout_detection_matches_cannot_complete_only() {
+        assert!(is_native_ax_timeout(
+            "AX focused-element query returned -25204"
+        ));
+        assert!(!is_native_ax_timeout("AX role query returned -25205"));
     }
 }
 
