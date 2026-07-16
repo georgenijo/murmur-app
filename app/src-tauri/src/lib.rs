@@ -2,6 +2,7 @@
 mod alloc;
 mod audio;
 mod audio_decode;
+mod benchmark;
 mod cleanup;
 mod commands;
 mod correction;
@@ -64,6 +65,7 @@ impl<T> MutexExt<T> for Mutex<T> {
 
 pub(crate) struct State {
     pub(crate) app_state: AppState,
+    pub(crate) benchmark: std::sync::Arc<benchmark::BenchmarkCoordinator>,
     /// Cached notch dimensions (notch_width, menu_bar_height) from setup (main thread).
     pub(crate) notch_info: Mutex<Option<(f64, f64)>>,
 }
@@ -117,6 +119,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(State {
             app_state: AppState::default(),
+            benchmark: std::sync::Arc::new(benchmark::BenchmarkCoordinator::new()),
             notch_info: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
@@ -152,6 +155,10 @@ pub fn run() {
             commands::models::check_model_exists,
             commands::models::check_specific_model_exists,
             commands::models::download_model,
+            commands::benchmark::get_benchmark_models,
+            commands::benchmark::get_benchmark_activity,
+            commands::benchmark::run_benchmark,
+            commands::benchmark::cancel_benchmark,
             commands::tray::update_tray_icon,
             commands::overlay::show_overlay,
             commands::overlay::hide_overlay,

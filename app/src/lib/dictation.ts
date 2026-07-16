@@ -121,6 +121,11 @@ export async function countVocabTokens(text: string): Promise<number | null> {
   return await invoke('count_vocab_tokens', { text });
 }
 
+/** Download a local transcription model by its catalog name. */
+export async function downloadModel(modelName: string): Promise<void> {
+  await invoke('download_model', { modelName });
+}
+
 /**
  * Transcribe an existing audio file (WAV/MP3/M4A) via the Rust `transcribe_file`
  * command. Unlike live recording this returns the text directly (no auto-paste).

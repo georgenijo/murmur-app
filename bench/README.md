@@ -1,5 +1,8 @@
 # Transcription benchmark
 
+The same corpus is available to users through **Settings > Performance**. This
+CLI remains useful for developer automation and raw backend investigations.
+
 This corpus compares Murmur backends with identical 16 kHz mono WAV input.
 The runner reports model loading separately from first and warm inference and
 uses ordered word-error rate (WER) against the adjacent reference transcript.

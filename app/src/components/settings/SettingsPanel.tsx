@@ -11,6 +11,7 @@ import {
 import { Select } from '../ui/Select';
 import { SettingsSection } from './SettingsSection';
 import { VocabScanStrip } from './VocabScanStrip';
+import { PerformanceLab } from './PerformanceLab';
 import { useVocabScan } from '../../lib/hooks/useVocabScan';
 import { countVocabTokens } from '../../lib/dictation';
 import type { DictationStatus } from '../../lib/types';
@@ -403,6 +404,7 @@ const SETTINGS_CATEGORIES = [
   { id: 'output', label: 'Output & Paste' },
   { id: 'profiles', label: 'Per-App Profiles' },
   { id: 'vocab', label: 'Vocabulary' },
+  { id: 'performance', label: 'Performance' },
   { id: 'about', label: 'About' },
 ] as const;
 
@@ -1331,6 +1333,10 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
             </div>
           )}
         </div>
+        </SettingsSection>
+
+        <SettingsSection pageId="performance" activePage={activeCat} title="Performance Lab" subtitle="Compare local transcription engines">
+          <PerformanceLab status={status} />
         </SettingsSection>
 
         <SettingsSection pageId="about" activePage={activeCat} title="About" subtitle="Stats, logs, updates">

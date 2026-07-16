@@ -205,6 +205,9 @@ fn check_idle_timeout() {
     };
 
     let state = handle.state::<crate::State>();
+    if state.benchmark.is_running() {
+        return;
+    }
     let timeout_min = *state.app_state.idle_timeout_minutes.lock_or_recover();
     let should_release = {
         let status = state.app_state.dictation.lock_or_recover().status;
@@ -220,7 +223,7 @@ fn check_idle_timeout() {
             let last = state.app_state.last_transcription_at.lock_or_recover();
             should_release_model(timeout_min, dictation.status, last.map(|t| t.elapsed()))
         };
-        if still_idle {
+        if still_idle && !state.benchmark.is_running() {
             let backend_name = backend.name().to_string();
             backend.reset();
             *state.app_state.last_transcription_at.lock_or_recover() = None;
