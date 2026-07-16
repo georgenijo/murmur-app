@@ -1,0 +1,1 @@
+The transcription pipeline loads the Parakeet model lazily on first inference to keep app startup time low and memory usage minimal.

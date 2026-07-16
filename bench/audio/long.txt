@@ -1,0 +1,1 @@
+When the recording stops, the audio buffer is resampled to sixteen kilohertz mono and passed through the voice activity detector before being handed to the transcription backend. The resulting text is copied to the clipboard and optionally pasted into the focused application.

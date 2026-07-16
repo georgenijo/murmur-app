@@ -3,7 +3,7 @@ use crate::state::{AppState, DictationStatus};
 use crate::transcriber;
 use crate::{audio, audio_decode, injector, keyboard, vad};
 use std::sync::atomic::Ordering;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 /// Max number of code identifiers fed to Whisper as an initial prompt. Whisper
 /// truncates the prompt to its ~224-token context window anyway, so this keeps
@@ -251,8 +251,148 @@ impl Drop for FileTranscribeGuard<'_> {
     }
 }
 
+/// Start loading the selected model after audio capture is live, overlapping the
+/// expensive cold initialization with the user's speech. The normal pipeline
+/// still calls `load_model`, so it either observes a hit or waits on this same
+/// backend lock when a very short recording ends before preparation completes.
+fn spawn_model_preparation(
+    app_handle: tauri::AppHandle,
+    model_name: String,
+    recording_id: u64,
+) {
+    let queued_at = std::time::Instant::now();
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        let queue_ms = queued_at.elapsed().as_millis() as u64;
+        let state = app_handle.state::<State>();
+        let is_active = {
+            let dictation = state.app_state.dictation.lock_or_recover();
+            state.app_state.recording_id.load(Ordering::SeqCst) == recording_id
+                && dictation.status == DictationStatus::Recording
+                && dictation.model_name == model_name
+        };
+        if !is_active {
+            return;
+        }
+
+        let lock_started = std::time::Instant::now();
+        let mut backend = state.app_state.backend.lock_or_recover();
+        let lock_wait_ms = lock_started.elapsed().as_millis() as u64;
+
+        // The recording may have been cancelled while this worker waited for a
+        // previous inference or model switch to release the backend.
+        let is_still_active = {
+            let dictation = state.app_state.dictation.lock_or_recover();
+            state.app_state.recording_id.load(Ordering::SeqCst) == recording_id
+                && dictation.status == DictationStatus::Recording
+                && dictation.model_name == model_name
+        };
+        if !is_still_active {
+            return;
+        }
+
+        let cache_hit = backend.is_model_loaded(&model_name);
+        let rss_before_mb = crate::resource_monitor::get_process_rss_mb();
+        let load_started = std::time::Instant::now();
+        let result = backend.load_model(&model_name);
+        let load_ms = load_started.elapsed().as_millis() as u64;
+        let rss_after_mb = crate::resource_monitor::get_process_rss_mb();
+        let total_ms = queued_at.elapsed().as_millis() as u64;
+        match result {
+            Ok(()) => tracing::info!(
+                target: "pipeline",
+                recording_id,
+                model = model_name.as_str(),
+                backend = backend.name(),
+                cache_hit,
+                queue_ms,
+                lock_wait_ms,
+                load_ms,
+                total_ms,
+                rss_before_mb,
+                rss_after_mb,
+                "model_prepare_complete"
+            ),
+            Err(error) => tracing::warn!(
+                target: "pipeline",
+                recording_id,
+                model = model_name.as_str(),
+                backend = backend.name(),
+                cache_hit,
+                lock_wait_ms,
+                load_ms,
+                total_ms,
+                error = error.as_str(),
+                "model_prepare_failed"
+            ),
+        }
+    });
+}
+
+/// Warm an installed Core ML model after startup configuration. A newly linked
+/// application binary can trigger one-time ANE specialization even when the
+/// compiled model cache already exists. Starting it while the app is idle keeps
+/// that cost away from the user's first short dictation; recording-start
+/// preparation remains the fallback if recording begins first.
+fn spawn_idle_model_preparation(app_handle: tauri::AppHandle, model_name: String) {
+    let queued_at = std::time::Instant::now();
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<State>();
+        let is_current = {
+            let dictation = state.app_state.dictation.lock_or_recover();
+            dictation.status == DictationStatus::Idle && dictation.model_name == model_name
+        };
+        if !is_current {
+            return;
+        }
+
+        let lock_started = std::time::Instant::now();
+        let mut backend = state.app_state.backend.lock_or_recover();
+        let lock_wait_ms = lock_started.elapsed().as_millis() as u64;
+        let is_still_current = {
+            let dictation = state.app_state.dictation.lock_or_recover();
+            dictation.status == DictationStatus::Idle && dictation.model_name == model_name
+        };
+        if !is_still_current {
+            return;
+        }
+
+        let cache_hit = backend.is_model_loaded(&model_name);
+        let load_started = std::time::Instant::now();
+        let result = backend.load_model(&model_name);
+        let load_ms = load_started.elapsed().as_millis() as u64;
+        let total_ms = queued_at.elapsed().as_millis() as u64;
+        match result {
+            Ok(()) => tracing::info!(
+                target: "pipeline",
+                model = model_name.as_str(),
+                backend = backend.name(),
+                cache_hit,
+                lock_wait_ms,
+                load_ms,
+                total_ms,
+                reason = "startup_configuration",
+                "model_prepare_complete"
+            ),
+            Err(error) => tracing::info!(
+                target: "pipeline",
+                model = model_name.as_str(),
+                backend = backend.name(),
+                cache_hit,
+                lock_wait_ms,
+                load_ms,
+                total_ms,
+                reason = "startup_configuration",
+                error = error.as_str(),
+                "model_prepare_skipped"
+            ),
+        }
+    });
+}
+
 pub(crate) struct PipelineTimings {
     pub vad_ms: u64,
+    pub model_load_ms: u64,
+    pub decode_ms: u64,
     pub inference_ms: u64,
     pub correction_ms: u64,
     pub paste_ms: u64,
@@ -310,7 +450,7 @@ async fn run_transcription_pipeline(
     // Checkpoint 1: cancelled before VAD?
     if app_state.is_cancelled(recording_id) {
         tracing::info!(target: "pipeline", "cancelled before VAD (recording_id={})", recording_id);
-        return Ok((String::new(), PipelineTimings { vad_ms: 0, inference_ms: 0, correction_ms: 0, paste_ms: 0, rss_before_mb: 0, rss_after_mb: 0 }));
+        return Ok((String::new(), PipelineTimings { vad_ms: 0, model_load_ms: 0, decode_ms: 0, inference_ms: 0, correction_ms: 0, paste_ms: 0, rss_before_mb: 0, rss_after_mb: 0 }));
     }
 
     // Phase: VAD -- filter out silence to prevent Whisper hallucination loops
@@ -332,7 +472,7 @@ async fn run_transcription_pipeline(
                 Ok(vad::VadResult::NoSpeech) => {
                     tracing::info!(target: "pipeline", "VAD detected no speech ({} samples, {:?}), skipping transcription",
                         samples.len(), t_vad.elapsed());
-                    return Ok((String::new(), PipelineTimings { vad_ms: t_vad.elapsed().as_millis() as u64, inference_ms: 0, correction_ms: 0, paste_ms: 0, rss_before_mb: 0, rss_after_mb: 0 }));
+                    return Ok((String::new(), PipelineTimings { vad_ms: t_vad.elapsed().as_millis() as u64, model_load_ms: 0, decode_ms: 0, inference_ms: 0, correction_ms: 0, paste_ms: 0, rss_before_mb: 0, rss_after_mb: 0 }));
                 }
                 Ok(vad::VadResult::Speech(trimmed)) => {
                     tracing::info!(target: "pipeline", "VAD trimmed {} -> {} samples ({:.0}% speech, {:?})",
@@ -363,22 +503,28 @@ async fn run_transcription_pipeline(
     // Checkpoint 2: cancelled before transcription?
     if app_state.is_cancelled(recording_id) {
         tracing::info!(target: "pipeline", "cancelled before transcription (recording_id={})", recording_id);
-        return Ok((String::new(), PipelineTimings { vad_ms, inference_ms: 0, correction_ms: 0, paste_ms: 0, rss_before_mb: 0, rss_after_mb: 0 }));
+        return Ok((String::new(), PipelineTimings { vad_ms, model_load_ms: 0, decode_ms: 0, inference_ms: 0, correction_ms: 0, paste_ms: 0, rss_before_mb: 0, rss_after_mb: 0 }));
     }
 
-    // Phase: Transcription (includes lazy model load on first run)
+    // Phase: Transcription. Model preparation normally overlaps startup or
+    // recording; load_model remains the synchronized fallback and cache check.
     let rss_before_mb = crate::resource_monitor::get_process_rss_mb();
     let t_transcribe = std::time::Instant::now();
-    let text = {
-        // Combine the manual custom vocabulary with the code-aware vocabulary
-        // (when enabled). Both feed Whisper's initial prompt; the manual list
-        // comes first so user-typed terms take precedence within the context window.
-        let sanitized = custom_vocabulary.replace('\0', "");
-        let code_vocab = resolve_code_vocab_prompt(app_state);
-        let prompt = combine_prompts(&sanitized, &code_vocab);
+    // Combine the manual custom vocabulary with the code-aware vocabulary
+    // (when enabled). Both feed Whisper's initial prompt; the manual list comes
+    // first so user-typed terms take precedence within the context window.
+    let sanitized = custom_vocabulary.replace('\0', "");
+    let code_vocab = resolve_code_vocab_prompt(app_state);
+    let prompt = combine_prompts(&sanitized, &code_vocab);
+    let (text, model_load_ms, decode_ms) = {
+        let load_started = std::time::Instant::now();
         let mut backend = app_state.backend.lock_or_recover();
         backend.load_model(&model_name)?;
-        backend.transcribe(&samples_for_transcription, &language, prompt.as_deref(), smart_punctuation)?
+        let model_load_ms = load_started.elapsed().as_millis() as u64;
+        let decode_started = std::time::Instant::now();
+        let text = backend.transcribe(&samples_for_transcription, &language, prompt.as_deref(), smart_punctuation)?;
+        let decode_ms = decode_started.elapsed().as_millis() as u64;
+        (text, model_load_ms, decode_ms)
     };
     let inference_ms = t_transcribe.elapsed().as_millis() as u64;
     let rss_after_mb = crate::resource_monitor::get_process_rss_mb();
@@ -440,7 +586,7 @@ async fn run_transcription_pipeline(
     // Checkpoint 3: cancelled before text injection?
     if app_state.is_cancelled(recording_id) {
         tracing::info!(target: "pipeline", "cancelled before injection (recording_id={})", recording_id);
-        return Ok((String::new(), PipelineTimings { vad_ms, inference_ms, correction_ms, paste_ms: 0, rss_before_mb, rss_after_mb }));
+        return Ok((String::new(), PipelineTimings { vad_ms, model_load_ms, decode_ms, inference_ms, correction_ms, paste_ms: 0, rss_before_mb, rss_after_mb }));
     }
 
     // Phase: File output (optional) -- persist audio/transcript before injection.
@@ -492,7 +638,7 @@ async fn run_transcription_pipeline(
     let paste_ms = t_inject.elapsed().as_millis() as u64;
     tracing::info!(target: "pipeline", "inject (clipboard + paste): {:?}", t_inject.elapsed());
 
-    Ok((text, PipelineTimings { vad_ms, inference_ms, correction_ms, paste_ms, rss_before_mb, rss_after_mb }))
+    Ok((text, PipelineTimings { vad_ms, model_load_ms, decode_ms, inference_ms, correction_ms, paste_ms, rss_before_mb, rss_after_mb }))
     // _guard drops here, setting status to Idle
 }
 
@@ -577,7 +723,10 @@ pub async fn process_audio(
     };
     tracing::info!(
         target: "pipeline",
+        recording_id = rid,
         vad_ms = timings.vad_ms,
+        model_load_ms = timings.model_load_ms,
+        decode_ms = timings.decode_ms,
         inference_ms = timings.inference_ms,
         correction_ms = timings.correction_ms,
         paste_ms = timings.paste_ms,
@@ -612,12 +761,24 @@ pub async fn get_status(state: tauri::State<'_, State>) -> Result<serde_json::Va
 #[tauri::command]
 pub async fn configure_dictation(
     options: serde_json::Value,
+    app_handle: tauri::AppHandle,
     state: tauri::State<'_, State>,
 ) -> Result<serde_json::Value, String> {
     tracing::info!(target: "pipeline", "configure_dictation: {}", options);
 
     let model = options.get("model").and_then(|v| v.as_str()).map(String::from);
     let language = options.get("language").and_then(|v| v.as_str()).map(String::from);
+
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    if model
+        .as_deref()
+        .is_some_and(transcriber::is_coreml_model)
+    {
+        return Err(
+            "Core ML transcription is available only on macOS 14 or newer with Apple Silicon"
+                .to_string(),
+        );
+    }
 
     let mut dictation = state.app_state.dictation.lock_or_recover();
 
@@ -778,16 +939,39 @@ pub async fn configure_dictation(
 
     // If model changed, swap/reset the backend so the next transcription loads
     // the right engine for the selected model.
+    let mut idle_preparation = None;
     if model_changed {
         let new_model = dictation.model_name.clone();
+        if transcriber::is_coreml_model(&new_model) {
+            idle_preparation = Some(new_model.clone());
+        }
         drop(dictation); // Release dictation lock first
         let mut backend = state.app_state.backend.lock_or_recover();
-        // --- Parakeet backend dispatch (removable): this is the only call site
-        // that constructs ParakeetBackend. To remove the backend, revert this
-        // block to a plain `backend.reset();`. ---
+        // Core ML must be classified first because its explicit model value also
+        // starts with "parakeet", which is the sherpa backend's broad sentinel.
+        let want_coreml = transcriber::is_coreml_model(&new_model);
         let want_parakeet = transcriber::parakeet::is_parakeet_model(&new_model);
-        if want_parakeet != (backend.name() == "parakeet") {
-            *backend = if want_parakeet {
+        let desired_backend = if want_coreml {
+            "coreml"
+        } else if want_parakeet {
+            "parakeet"
+        } else {
+            "whisper"
+        };
+        if backend.name() != desired_backend {
+            *backend = if want_coreml {
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                {
+                    Box::new(transcriber::CoreMlBackend::new())
+                }
+                #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+                {
+                    return Err(
+                        "Core ML transcription is available only on macOS 14 or newer with Apple Silicon"
+                            .to_string(),
+                    );
+                }
+            } else if want_parakeet {
                 Box::new(transcriber::ParakeetBackend::new())
             } else {
                 Box::new(transcriber::WhisperBackend::new())
@@ -796,6 +980,14 @@ pub async fn configure_dictation(
         } else {
             backend.reset();
         }
+    }
+
+    if let Some(model_name) = idle_preparation {
+        // Treat warmup as activity so an already-expired idle timer cannot
+        // immediately release the model this preparation is about to load.
+        *state.app_state.last_transcription_at.lock_or_recover() =
+            Some(std::time::Instant::now());
+        spawn_idle_model_preparation(app_handle, model_name);
     }
 
     Ok(serde_json::json!({
@@ -1069,7 +1261,7 @@ pub async fn start_native_recording(
     }
     // Check and update status in one lock; assign recording ID in the same
     // critical section so no concurrent cancel/start can slip between them.
-    let rid = {
+    let (rid, model_name) = {
         let mut dictation = state.app_state.dictation.lock_or_recover();
         // Refuse if a file transcription holds the shared Whisper backend.
         // Checked under the dictation lock (which `transcribe_file` takes only
@@ -1099,7 +1291,7 @@ pub async fn start_native_recording(
             DictationStatus::Idle => {
                 let rid = state.app_state.next_recording_id();
                 dictation.status = DictationStatus::Recording;
-                rid
+                (rid, dictation.model_name.clone())
             }
         }
     };
@@ -1110,8 +1302,10 @@ pub async fn start_native_recording(
         dictation.status = DictationStatus::Idle;
         return Err(e);
     }
+    *state.app_state.last_transcription_at.lock_or_recover() = Some(std::time::Instant::now());
     let _ = app_handle.emit("recording-status-changed", "recording");
     tracing::info!(target: "pipeline", "start_native_recording: started");
+    spawn_model_preparation(app_handle.clone(), model_name, rid);
 
     Ok(serde_json::json!({
         "type": "recording_started",
@@ -1228,7 +1422,10 @@ pub async fn stop_native_recording(
 
     tracing::info!(
         target: "pipeline",
+        recording_id = rid,
         vad_ms = timings.vad_ms,
+        model_load_ms = timings.model_load_ms,
+        decode_ms = timings.decode_ms,
         inference_ms = timings.inference_ms,
         correction_ms = timings.correction_ms,
         paste_ms = timings.paste_ms,
@@ -1428,19 +1625,26 @@ pub async fn transcribe_file(
 
     // Phase: transcription (lazy model load), mirroring run_transcription_pipeline.
     let t_transcribe = std::time::Instant::now();
-    let text = {
+    let (text, model_load_ms, decode_ms) = {
         let sanitized = custom_vocabulary.replace('\0', "");
         let code_vocab = resolve_code_vocab_prompt(&state.app_state);
         let prompt = combine_prompts(&sanitized, &code_vocab);
+        let load_started = std::time::Instant::now();
         let mut backend = state.app_state.backend.lock_or_recover();
         backend.load_model(&model_name)?;
-        backend.transcribe(&samples_for_transcription, &language, prompt.as_deref(), smart_punctuation)?
+        let model_load_ms = load_started.elapsed().as_millis() as u64;
+        let decode_started = std::time::Instant::now();
+        let text = backend.transcribe(&samples_for_transcription, &language, prompt.as_deref(), smart_punctuation)?;
+        let decode_ms = decode_started.elapsed().as_millis() as u64;
+        (text, model_load_ms, decode_ms)
     };
     *state.app_state.last_transcription_at.lock_or_recover() = Some(std::time::Instant::now());
 
     let word_count = if text.trim().is_empty() { 0 } else { text.split_whitespace().count() };
     tracing::info!(
         target: "pipeline",
+        model_load_ms,
+        decode_ms,
         inference_ms = t_transcribe.elapsed().as_millis() as u64,
         audio_secs = duration_secs,
         word_count = word_count,

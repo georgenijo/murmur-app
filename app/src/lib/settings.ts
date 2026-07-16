@@ -103,7 +103,7 @@ export interface Settings {
   /**
    * Post-model correction: apply the vocabulary to the transcript *output* of every
    * backend (Tier 1 exact map + Tier 2 sounds-like). On by default — it's what makes
-   * vocab work on the default Parakeet engine, which ignores Whisper's prompt.
+   * vocab work on non-Whisper engines, which ignore Whisper's prompt.
    */
   correctionEnabled: boolean;
   /** Tier 2 phonetic "sounds-like" matching. Gated under correctionEnabled. */
@@ -111,6 +111,7 @@ export interface Settings {
 }
 
 export type ModelOption =
+  | 'parakeet-tdt-0.6b-v3-coreml'
   | 'tiny.en'
   | 'base.en'
   | 'small.en'
@@ -119,9 +120,10 @@ export type ModelOption =
   // --- Parakeet backend (removable): delete this member to remove. ---
   | 'parakeet-tdt-0.6b-v2-fp16';
 
-export type TranscriptionBackend = 'whisper' | 'parakeet';
+export type TranscriptionBackend = 'whisper' | 'parakeet' | 'coreml';
 
 export const MODEL_OPTIONS: { value: ModelOption; label: string; size: string; backend: TranscriptionBackend }[] = [
+  { value: 'parakeet-tdt-0.6b-v3-coreml', label: 'Parakeet Core ML', size: '~470 MB', backend: 'coreml' },
   { value: 'tiny.en', label: 'Whisper Tiny (English)', size: '~75 MB', backend: 'whisper' },
   { value: 'base.en', label: 'Whisper Base (English)', size: '~150 MB', backend: 'whisper' },
   { value: 'small.en', label: 'Whisper Small (English)', size: '~500 MB', backend: 'whisper' },
@@ -130,6 +132,25 @@ export const MODEL_OPTIONS: { value: ModelOption; label: string; size: string; b
   // --- Parakeet backend (removable): delete this entry to remove. ---
   { value: 'parakeet-tdt-0.6b-v2-fp16', label: 'Parakeet TDT 0.6B (English, fast)', size: '~1.2 GB', backend: 'parakeet' },
 ];
+
+export function isMacOSPlatform(platform: string): boolean {
+  return platform.startsWith('Mac');
+}
+
+export function modelOptionsForPlatform(platform: string): typeof MODEL_OPTIONS {
+  return isMacOSPlatform(platform)
+    ? MODEL_OPTIONS
+    : MODEL_OPTIONS.filter((model) => model.backend !== 'coreml');
+}
+
+export function defaultModelForPlatform(platform: string): ModelOption {
+  return isMacOSPlatform(platform)
+    ? 'parakeet-tdt-0.6b-v3-coreml'
+    : 'parakeet-tdt-0.6b-v2-fp16';
+}
+
+const runtimePlatform = typeof navigator === 'undefined' ? '' : navigator.platform;
+export const AVAILABLE_MODEL_OPTIONS = modelOptionsForPlatform(runtimePlatform);
 
 export const DOUBLE_TAP_KEY_OPTIONS: { value: DoubleTapKey; label: string }[] = [
   { value: 'shift_l', label: 'Shift' },
@@ -169,11 +190,12 @@ export const LANGUAGE_OPTIONS: { value: string; label: string }[] = [
 ];
 
 export const DEFAULT_SETTINGS: Settings = {
-  // Parakeet fp16 is the default transcription model (faster; English-only).
-  model: 'parakeet-tdt-0.6b-v2-fp16',
+  // FluidAudio runs Parakeet v3 on the Apple Neural Engine. Existing persisted
+  // Whisper and sherpa selections remain valid and are never force-migrated.
+  model: defaultModelForPlatform(runtimePlatform),
   doubleTapKey: 'shift_l',
   // 'auto' lets Whisper auto-detect the spoken language ("just works"); the
-  // default Parakeet model is English-only and ignores this value.
+  // non-Whisper models may auto-detect or ignore this value.
   language: 'auto',
   autoPaste: false,
   autoPasteDelayMs: 50,
@@ -198,7 +220,7 @@ export const DEFAULT_SETTINGS: Settings = {
   codeVocabFolder: '',
   codeVocabLastScan: null,
   // Correction on by default: it's the fix that makes vocab actually apply on the
-  // default Parakeet engine. A no-op when there's no vocabulary configured.
+  // non-Whisper engines. A no-op when there's no vocabulary configured.
   correctionEnabled: true,
   correctionFuzzy: true,
 };
@@ -283,7 +305,7 @@ export function loadSettings(): Settings {
       delete parsed.hotkey;
 
       // Validate model against current allow-list (includes Moonshine migration)
-      const validModels = new Set<string>(MODEL_OPTIONS.map((m) => m.value));
+      const validModels = new Set<string>(AVAILABLE_MODEL_OPTIONS.map((m) => m.value));
       if (typeof parsed.model !== 'string' || !validModels.has(parsed.model)) {
         parsed.model = DEFAULT_SETTINGS.model;
       }

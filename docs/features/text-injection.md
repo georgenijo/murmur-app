@@ -2,7 +2,7 @@
 
 ## Overview
 
-After transcription, text is always copied to the clipboard. Optionally, the app simulates a paste keystroke into the focused application: `Cmd+V` on macOS via `osascript`, `Ctrl+V` on Linux via `xdotool` (X11) or `wtype` (Wayland).
+After transcription, text is always copied to the clipboard. Optionally, the app simulates a paste keystroke into the focused application: native CoreGraphics `Cmd+V` events on macOS, `Ctrl+V` via `xdotool` (X11) or `wtype` (Wayland) on Linux.
 
 ## Clipboard (`injector.rs`)
 
@@ -17,9 +17,11 @@ When `auto_paste` is enabled in settings:
 1. Copy text to clipboard
 2. Check `AXIsProcessTrusted()` — if accessibility not granted, stop here (text is still in clipboard)
 3. Wait for the configurable delay (default 50ms) for window focus to settle
-4. Run `osascript -e 'tell application "System Events" to keystroke "v" using command down'`
-5. If paste fails, wait 100ms and retry once
-6. If both attempts fail, emit `auto-paste-failed` event so the frontend can notify the user
+4. Resolve the frontmost process with `NSWorkspace` and query its focused element role with the macOS Accessibility API. If the native query fails with a non-timeout error, fall back to the previous System Events `osascript` query. Native AX timeout (`-25204`) returns `Unknown` immediately and skips the fallback (allow-paste).
+5. Skip auto-paste only when the focused role is on the confirmed non-editable denylist; unknown roles still allow paste
+6. Post Command-modified `V` key-down and key-up events through the CoreGraphics HID event tap. If event construction fails, fall back to the previous System Events `osascript` paste
+7. If the paste attempt reports a failure, wait 100ms and retry once
+8. If both attempts fail, emit `auto-paste-failed` so the frontend can notify the user
 
 ### Delay Rationale
 
@@ -31,15 +33,15 @@ The paste delay is configurable via a range slider in the settings panel (10–5
 
 ### Retry Behavior
 
-If the first `osascript` paste attempt fails (non-zero exit), the injector logs a warning, waits 100ms, and retries once. Only after both attempts fail does it return an error. Worst-case blocking on the main thread is ~250ms (50ms delay + paste + 100ms retry delay + retry paste), well within the 2s timeout budget.
+CoreGraphics event posting has no delivery result, so a successful native post completes immediately. Event construction failures use the `osascript` compatibility path, whose non-zero exit status is observable. Each AppleScript fallback is forcibly terminated after 250ms. If a paste attempt returns an error, the injector logs a warning, waits 100ms, and retries once. Only after both attempts fail does it return an error; the caller also enforces a 2s timeout for the complete injection operation.
 
 ### Failure Notification
 
 When paste fails (injection error, sender dropped, or 2s timeout), the Rust pipeline emits an `auto-paste-failed` Tauri event with the message "Text is in your clipboard — press Cmd+V to paste manually." The frontend displays this in the existing error banner and auto-clears it after 5 seconds.
 
-### Why osascript?
+### Native path and compatibility fallback
 
-Previous approaches tried (`enigo`, `rdev` key simulation) had issues on macOS Sonoma/Sequoia. `osascript` via System Events is the most reliable method for keystroke simulation on modern macOS.
+The primary path avoids launching System Events twice per dictation: `NSWorkspace` and `AXUIElement` inspect focus in-process, while `CGEvent` posts Cmd+V in-process. The previous `osascript` implementation remains as a compatibility fallback because earlier `enigo` and `rdev` key simulation approaches had reliability issues on macOS Sonoma and Sequoia.
 
 ## Linux Auto-Paste
 
@@ -79,7 +81,7 @@ Non-`NotFound` errors (process ran but exited non-zero, permission denied, etc.)
 
 ### Threading
 
-`inject_text()` runs on the main thread via `app_handle.run_on_main_thread()` because macOS keyboard APIs require main thread access. On Linux, `std::process::Command` is safe from any thread, so this constraint has no effect.
+`inject_text()` runs on the main thread via `app_handle.run_on_main_thread()` so its AppKit focus lookup and macOS keyboard APIs execute in the expected context. On Linux, `std::process::Command` is safe from any thread, so this constraint has no effect.
 
 ## Permissions
 

@@ -114,7 +114,11 @@ impl TranscriptionBackend for WhisperBackend {
             .to_str()
             .ok_or_else(|| "Model path contains invalid UTF-8 characters".to_string())?;
 
-        let params = WhisperContextParameters::default();
+        let mut params = WhisperContextParameters::default();
+        // Murmur consumes segment text, not DTW token timestamps. Flash
+        // attention therefore gives Metal/CUDA a fused, lower-memory path
+        // without removing any output the application uses.
+        params.flash_attn(true);
 
         let gpu_backend = if cfg!(target_os = "macos") {
             "metal"
@@ -139,6 +143,9 @@ impl TranscriptionBackend for WhisperBackend {
         Ok(())
     }
 
+    fn is_model_loaded(&self, model_name: &str) -> bool {
+        self.loaded_model_name.as_deref() == Some(model_name)
+    }
     fn transcribe(&mut self, samples: &[f32], language: &str, initial_prompt: Option<&str>, smart_punctuation: bool) -> Result<String, String> {
         let state = self
             .state

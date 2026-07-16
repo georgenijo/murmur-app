@@ -57,3 +57,4 @@ PROJECT_SUMMARY.md
 
 # Scripts
 agents.sh
+bench/audio/*.wav
