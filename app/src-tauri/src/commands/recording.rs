@@ -1298,6 +1298,10 @@ pub async fn start_native_recording(
     state: tauri::State<'_, State>,
     device_name: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    // Hold through cpal readiness and the recording event. A quick release can
+    // invoke stop while start_recording is waiting for its capture thread; the
+    // stop command must observe the fully-started recorder, never a midpoint.
+    let _transition = state.app_state.recording_transition.lock().await;
     if keyboard::is_app_disabled() {
         tracing::info!(target: "pipeline", "start_native_recording: app disabled — ignoring");
         return Ok(serde_json::json!({ "type": "app_disabled", "state": "idle" }));
@@ -1368,6 +1372,7 @@ pub async fn stop_native_recording(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, State>,
 ) -> Result<serde_json::Value, String> {
+    let transition = state.app_state.recording_transition.lock().await;
     // Atomic check-and-set + rid capture in a single lock to avoid TOCTOU gap
     let rid = {
         let mut dictation = state.app_state.dictation.lock_or_recover();
@@ -1406,6 +1411,9 @@ pub async fn stop_native_recording(
         }
         e
     })?;
+    // Audio is now detached from the recorder state. Let cancel or another
+    // rejected start inspect Processing while inference continues.
+    drop(transition);
     tracing::info!(target: "pipeline", "audio teardown + resample: {:?}", t_total.elapsed());
 
     if samples.is_empty() {
@@ -1519,6 +1527,7 @@ pub async fn cancel_native_recording(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, State>,
 ) -> Result<(), String> {
+    let _transition = state.app_state.recording_transition.lock().await;
     let (prev_status, rid) = {
         let mut dictation = state.app_state.dictation.lock_or_recover();
         let prev = dictation.status;
