@@ -27,6 +27,9 @@ const ResourceMonitor = lazy(() => import('./components/ResourceMonitor').then(m
 const UsageDashboard = lazy(() => import('./components/UsageDashboard').then(m => ({ default: m.UsageDashboard })));
 import { resetStats } from './lib/stats';
 import { ModelDownloader } from './components/ModelDownloader';
+import { OnboardingFlow } from './components/onboarding/OnboardingFlow';
+import { isOnboardingComplete, markOnboardingComplete, resetOnboarding } from './lib/onboarding';
+import { checkAccessibilityPermission, checkMicrophonePermissionStatus, checkModelExists } from './lib/dictation';
 
 function App() {
   // --- Diagnostic: track when main window becomes visible/focused ---
@@ -60,11 +63,44 @@ function App() {
   // mount (not reactively) so changing models in Settings uses the inline
   // download flow there rather than re-showing this full-screen downloader.
   useEffect(() => {
-    invoke<boolean>('check_specific_model_exists', { modelName: settings.model })
+    checkModelExists(settings.model)
       .then(setModelReady)
       .catch(() => setModelReady(true)); // fail open so main UI still loads
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Setup-assistant gate. Runs when the completion flag is absent, but
+  // grandfathers existing installs: if both permissions and the model are
+  // already in place, set the flag silently so upgrades never see the wizard.
+  const [onboardingState, setOnboardingState] = useState<'unknown' | 'needed' | 'done'>('unknown');
+  useEffect(() => {
+    if (isOnboardingComplete()) {
+      setOnboardingState('done');
+      return;
+    }
+    (async () => {
+      const [micStatus, axGranted, modelExists] = await Promise.all([
+        checkMicrophonePermissionStatus().catch(() => 'unknown' as const),
+        checkAccessibilityPermission().catch(() => false),
+        checkModelExists(settings.model).catch(() => false),
+      ]);
+      if (micStatus === 'granted' && axGranted && modelExists) {
+        flog.info('main', 'Onboarding grandfathered: permissions and model already present');
+        markOnboardingComplete();
+        setOnboardingState('done');
+      } else {
+        flog.info('main', 'Onboarding needed', { micStatus, axGranted, modelExists });
+        setOnboardingState('needed');
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const completeOnboarding = useCallback((model: typeof settings.model) => {
+    markOnboardingComplete();
+    markModelReady(model);
+    setOnboardingState('done');
+  }, [markModelReady]);
 
   // Keep settings in sync when the overlay's quick controls change them.
   useOverlaySettingsSync(applyExternalSettings);
@@ -91,10 +127,14 @@ function App() {
   const [statsResetVersion, setStatsResetVersion] = useState(0);
   const combinedStatsVersion = statsVersion + statsResetVersion;
   const handleResetStats = () => { resetStats(); setStatsResetVersion(v => v + 1); };
-  useHoldDownToggle({ enabled: settings.recordingMode === 'hold_down', initialized, accessibilityGranted, holdDownKey: settings.doubleTapKey, onStart: handleStart, onStop: handleStop });
-  useDoubleTapToggle({ enabled: settings.recordingMode === 'double_tap', initialized, accessibilityGranted, doubleTapKey: settings.doubleTapKey, status, onToggle: toggleRecording });
-  useCombinedToggle({ enabled: settings.recordingMode === 'both', initialized, accessibilityGranted, triggerKey: settings.doubleTapKey, status, onStart: handleStart, onStop: handleStop, onToggle: toggleRecording });
-  useEscapeCancel({ status, enabled: initialized && accessibilityGranted === true });
+  // Keep the global hotkeys disarmed until onboarding completes — accessibility
+  // can be granted mid-wizard, and a hold/double-tap must not start a recording
+  // behind the OnboardingFlow screen.
+  const hotkeysArmed = onboardingState === 'done';
+  useHoldDownToggle({ enabled: hotkeysArmed && settings.recordingMode === 'hold_down', initialized, accessibilityGranted, holdDownKey: settings.doubleTapKey, onStart: handleStart, onStop: handleStop });
+  useDoubleTapToggle({ enabled: hotkeysArmed && settings.recordingMode === 'double_tap', initialized, accessibilityGranted, doubleTapKey: settings.doubleTapKey, status, onToggle: toggleRecording });
+  useCombinedToggle({ enabled: hotkeysArmed && settings.recordingMode === 'both', initialized, accessibilityGranted, triggerKey: settings.doubleTapKey, status, onStart: handleStart, onStop: handleStop, onToggle: toggleRecording });
+  useEscapeCancel({ status, enabled: hotkeysArmed && initialized && accessibilityGranted === true });
   const { showAbout, setShowAbout } = useShowAboutListener();
   const updater = useAutoUpdater();
 
@@ -137,7 +177,19 @@ function App() {
 
   const error = initError || recordingError;
 
-  if (modelReady === null) return <div className="h-screen bg-stone-50 dark:bg-stone-900" />;
+  if (onboardingState === 'unknown' || modelReady === null) {
+    return <div className="h-screen bg-stone-50 dark:bg-stone-900" />;
+  }
+  if (onboardingState === 'needed') {
+    return (
+      <OnboardingFlow
+        initialModel={settings.model}
+        recordingMode={settings.recordingMode}
+        triggerKey={settings.doubleTapKey}
+        onComplete={completeOnboarding}
+      />
+    );
+  }
   if (modelReady === false) {
     return (
       <ModelDownloader
@@ -217,6 +269,11 @@ function App() {
           status={status}
           onResetStats={handleResetStats}
           onViewLogs={() => invoke('open_log_viewer').catch((e: unknown) => flog.warn('main', 'Failed to open log viewer', { error: String(e) }))}
+          onRerunSetup={() => {
+            setIsSettingsOpen(false);
+            resetOnboarding();
+            setOnboardingState('needed');
+          }}
           accessibilityGranted={accessibilityGranted}
           onCheckForUpdate={checkForUpdate}
           updateStatus={updateStatus}

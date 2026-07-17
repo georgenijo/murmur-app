@@ -138,6 +138,7 @@ pub fn run() {
             commands::permissions::request_accessibility_permission,
             commands::permissions::reset_accessibility_permission,
             commands::permissions::request_microphone_permission,
+            commands::permissions::request_microphone_access,
             commands::permissions::check_microphone_permission,
             commands::permissions::check_microphone_permission_status,
             commands::permissions::reset_microphone_permission,

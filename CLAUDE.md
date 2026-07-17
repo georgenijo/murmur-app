@@ -16,6 +16,7 @@ cd app && npx tsc --noEmit         # TypeScript check
 Read these before working on a feature:
 
 - **[docs/onboarding.md](docs/onboarding.md)** — Setup, permissions, model installation, logs
+- **[docs/features/onboarding-flow.md](docs/features/onboarding-flow.md)** — First-launch setup assistant (permissions wizard + model download)
 - **[docs/features/recording-modes.md](docs/features/recording-modes.md)** — Hold-down and double-tap modes, state machine, rdev threading
 - **[docs/features/transcription.md](docs/features/transcription.md)** — Audio capture, whisper pipeline, status flow
 - **[docs/features/text-injection.md](docs/features/text-injection.md)** — Clipboard, auto-paste, osascript
@@ -35,7 +36,7 @@ Read these before working on a feature:
 | `lib.rs` | App wiring: mod declarations, `State`, `MutexExt`, `run()` |
 | `commands/mod.rs` | Re-exports command sub-modules |
 | `commands/recording.rs` | `IdleGuard`, transcription pipeline with VAD, 7 recording/status commands |
-| `commands/permissions.rs` | 6 permission and audio device commands |
+| `commands/permissions.rs` | Permission check/request/reset and audio device commands (incl. in-app mic TCC prompt) |
 | `commands/keyboard.rs` | 4 keyboard listener commands |
 | `commands/logging.rs` | 4 logging commands, delegates to telemetry.rs |
 | `commands/models.rs` | Model download pipeline and existence checks |
@@ -56,6 +57,7 @@ Read these before working on a feature:
 |------|---------|
 | `App.tsx` | Main orchestrator, wires hooks together |
 | `lib/settings.ts` | Settings types, defaults, localStorage persistence |
+| `lib/onboarding.ts` | First-launch setup-assistant completion flag |
 | `lib/events.ts` | Event types, stream/level definitions, color constants |
 | `lib/history.ts` | History entry types and localStorage persistence |
 | `lib/stats.ts` | Usage metrics: words, WPM, recordings, tokens |
@@ -72,6 +74,7 @@ Read these before working on a feature:
 | `lib/hooks/useShowAboutListener.ts` | Listens for show-about tray event |
 | `lib/hooks/useEventStore.ts` | Structured event log buffer with live streaming |
 | `lib/hooks/useResourceMonitor.ts` | CPU/memory polling with rolling buffer |
+| `components/onboarding/OnboardingFlow.tsx` | First-launch setup assistant (permissions + model wizard) |
 | `components/settings/SettingsPanel.tsx` | Settings UI with mode switching |
 | `components/log-viewer/LogViewerApp.tsx` | Structured event viewer with Events + Metrics tabs |
 | `components/OverlayWidget.tsx` | Dynamic Island notch overlay |
