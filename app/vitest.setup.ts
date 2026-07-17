@@ -29,3 +29,5 @@ Object.defineProperty(globalThis, 'localStorage', { value: storage, configurable
 if (typeof window !== 'undefined') {
   Object.defineProperty(window, 'localStorage', { value: storage, configurable: true });
 }
+
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });

@@ -86,6 +86,9 @@ Idle → Recording (on start) → Processing (on stop) → Idle (after transcrip
 ```
 
 Status is managed in `DictationState` behind a `Mutex` with poison recovery (`MutexExt` trait).
+Recorder start, stop, and cancel also share an async transition mutex. The lock
+is held until cpal confirms startup or audio teardown completes, preventing a
+fast hotkey release from stopping a recorder that is still starting.
 
 ## Frontend Integration
 

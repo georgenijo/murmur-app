@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+- Fast hold-down dictations no longer disappear when key release races Core Audio startup; native start, stop, and cancel transitions are serialized and the frontend waits for startup before processing (#216).
+
 ## [0.16.0] - 2026-07-17
 
 ### Added

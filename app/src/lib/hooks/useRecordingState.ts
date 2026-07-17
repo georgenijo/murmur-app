@@ -28,6 +28,7 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
   useEffect(() => { statusRef.current = status; }, [status]);
   useEffect(() => { microphoneRef.current = microphone; }, [microphone]);
   const isStartingRef = useRef(false);
+  const startOperationRef = useRef<Promise<void> | null>(null);
   const isStoppingRef = useRef(false);
 
   // Recording duration timer
@@ -54,6 +55,9 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
           recordingStartTime: recordingStartTimeRef.current,
           isStopping: isStoppingRef.current,
         });
+        // Update the ref synchronously. Hotkey events can arrive before React
+        // commits the state update, and transition decisions read this ref.
+        statusRef.current = event.payload;
         setStatus(event.payload);
         // When recording starts from the overlay, handleStart doesn't run in this window.
         // Seed recordingStartTime so the duration timer ticks.
@@ -155,30 +159,48 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
     flog.info('recording', 'handleStart called', {
       isStarting: isStartingRef.current, status: statusRef.current,
     });
-    if (isStartingRef.current) return;
+    if (startOperationRef.current) {
+      await startOperationRef.current;
+      return;
+    }
     isStartingRef.current = true;
-    try {
-      setError('');
-      const res = await startRecording(microphoneRef.current);
-      if (isDictationStatus(res.state)) setStatus(res.state);
-      if (res.type === 'recording_started') {
-        if (!recordingStartTimeRef.current) {
-          const now = Date.now();
-          flog.info('recording', 'setting recordingStartTime', { value: now });
-          recordingStartTimeRef.current = now;
-          setRecordingStartTime(now);
+    const operation = (async () => {
+      try {
+        setError('');
+        const res = await startRecording(microphoneRef.current);
+        if (isDictationStatus(res.state)) {
+          statusRef.current = res.state;
+          setStatus(res.state);
         }
-      } else {
-        if (res.type === 'error') setError(res.error || 'Unknown error');
-        else if (res.type === 'busy_benchmarking') setError('Wait for the benchmark to finish.');
-        else if (res.type === 'busy_transcribing_file') setError('Wait for the file transcription to finish.');
+        if (res.type === 'recording_started') {
+          if (!recordingStartTimeRef.current) {
+            const now = Date.now();
+            flog.info('recording', 'setting recordingStartTime', { value: now });
+            recordingStartTimeRef.current = now;
+            setRecordingStartTime(now);
+          }
+        } else {
+          if (res.type === 'error') setError(res.error || 'Unknown error');
+          else if (res.type === 'busy_benchmarking') setError('Wait for the benchmark to finish.');
+          else if (res.type === 'busy_transcribing_file') setError('Wait for the file transcription to finish.');
+        }
+      } catch (err) {
+        statusRef.current = 'idle';
+        setStatus('idle');
+        setError(String(err));
+        setRecordingStartTime(null);
+        recordingStartTimeRef.current = null;
+      } finally {
+        isStartingRef.current = false;
       }
-    } catch (err) {
-      setError(String(err));
-      setRecordingStartTime(null);
-      recordingStartTimeRef.current = null;
+    })();
+    startOperationRef.current = operation;
+    try {
+      await operation;
     } finally {
-      isStartingRef.current = false;
+      if (startOperationRef.current === operation) {
+        startOperationRef.current = null;
+      }
     }
   }, []);
 
@@ -189,11 +211,24 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
     });
     if (isStoppingRef.current) return;
     isStoppingRef.current = true;
-    const duration = recordingStartTimeRef.current
-      ? Math.floor((Date.now() - recordingStartTimeRef.current) / 1000)
-      : 0;
-    flog.info('recording', 'computed duration', { duration });
     try {
+      // Hold-down release can arrive while native audio startup is still in
+      // flight. Wait for its result so Processing cannot precede Recording.
+      if (startOperationRef.current) {
+        flog.info('recording', 'handleStop waiting for recording startup');
+        await startOperationRef.current;
+      }
+      if (statusRef.current !== 'recording') {
+        flog.info('recording', 'handleStop ignored after startup', {
+          status: statusRef.current,
+        });
+        return;
+      }
+      const duration = recordingStartTimeRef.current
+        ? Math.floor((Date.now() - recordingStartTimeRef.current) / 1000)
+        : 0;
+      flog.info('recording', 'computed duration', { duration });
+      statusRef.current = 'processing';
       setStatus('processing');
       const res = await stopRecording();
       if (res.text) {
@@ -205,17 +240,21 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
       // Only update status from the return value if we're still in
       // processing. If cancel already set us to idle (or a new recording
       // started), don't clobber the current state with a stale result.
-      // Functional update ensures atomic check-and-set even if statusRef
-      // hasn't synced yet.
+      // Event handlers update statusRef synchronously, so this check cannot
+      // lag behind React rendering.
       const newStatus = isDictationStatus(res.state) ? res.state : 'idle';
-      setStatus(prev => prev === 'processing' ? newStatus : prev);
+      if (statusRef.current === 'processing') {
+        statusRef.current = newStatus;
+        setStatus(newStatus);
+      }
     } catch (err) {
       setError(String(err));
+      statusRef.current = 'idle';
       setStatus('idle');
     } finally {
       isStoppingRef.current = false;
     }
-  }, [addEntry]);
+  }, []);
 
   // Stable toggle for hotkey use — reads status from ref
   const toggleRecording = useCallback(async () => {

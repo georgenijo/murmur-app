@@ -126,6 +126,10 @@ impl Default for DictationState {
 
 pub struct AppState {
     pub dictation: Mutex<DictationState>,
+    /// Serializes recorder start/stop/cancel transitions. Audio startup waits
+    /// for the cpal stream to become ready, so a fast key release must not tear
+    /// the recorder down until that startup has fully completed.
+    pub recording_transition: tokio::sync::Mutex<()>,
     pub backend: Mutex<Box<dyn TranscriptionBackend>>,
     pub last_transcription_at: Mutex<Option<Instant>>,
     pub idle_timeout_minutes: Mutex<u32>,
@@ -165,6 +169,7 @@ impl Default for AppState {
     fn default() -> Self {
         Self {
             dictation: Mutex::new(DictationState::default()),
+            recording_transition: tokio::sync::Mutex::new(()),
             backend: Mutex::new(Box::new(WhisperBackend::new())),
             last_transcription_at: Mutex::new(None),
             idle_timeout_minutes: Mutex::new(5),
@@ -173,5 +178,19 @@ impl Default for AppState {
             file_transcribing: AtomicBool::new(false),
             correction_matcher: Mutex::new(None),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recording_transition_allows_only_one_audio_operation() {
+        let state = AppState::default();
+        let first = state.recording_transition.try_lock().unwrap();
+        assert!(state.recording_transition.try_lock().is_err());
+        drop(first);
+        assert!(state.recording_transition.try_lock().is_ok());
     }
 }
