@@ -9,3 +9,20 @@ body {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.5; transform: scale(0.85); }
 }
+
+@keyframes model-download-indeterminate {
+  from { transform: translateX(-120%); }
+  to { transform: translateX(280%); }
+}
+
+.model-download-indeterminate {
+  width: 40%;
+  animation: model-download-indeterminate 1.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .model-download-indeterminate {
+    width: 100%;
+    animation: pulse 1.5s ease-in-out infinite;
+  }
+}

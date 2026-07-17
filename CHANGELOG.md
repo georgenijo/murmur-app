@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+- Parakeet v2 downloads now survive an interrupted extraction: Murmur reuses the completed archive, validates a staged bundle, and publishes it atomically instead of leaving a partial model that appears undownloaded (#215).
+- Core ML model setup now shows an animated indeterminate Installing state across onboarding, Settings, and Performance Lab instead of a frozen 0% bar (#217).
+
 ## [0.16.0] - 2026-07-17
 
 ### Added

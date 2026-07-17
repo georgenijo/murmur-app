@@ -104,6 +104,12 @@ pub fn specific_model_exists(model_name: &str) -> bool {
     }
 }
 
+/// Check a model bundle under an explicit models root. Download installation
+/// uses this to validate a staging directory before publishing it atomically.
+pub(crate) fn specific_model_exists_in(model_name: &str, models_dir: &Path) -> bool {
+    variant_for(model_name).is_some_and(|variant| variant.is_complete(models_dir))
+}
+
 /// Download info for a Parakeet model: `(tarball_url, extracted_dir_name)`.
 /// The sherpa-onnx release ships each bundle as `<dir>.tar.bz2` which unpacks
 /// to a top-level `<dir>/` folder. Returns None for unknown models.

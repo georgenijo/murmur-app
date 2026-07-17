@@ -144,6 +144,17 @@ The settings panel supports downloading models without leaving the settings view
 4. On error: red error banner with message and "Retry" link
 5. Stale-request protection prevents progress updates from a previously selected model
 
+Core ML setup has no byte-progress callback in FluidAudio, so onboarding,
+Settings, and Performance Lab show an animated indeterminate **Installing**
+state instead of a misleading frozen 0%. Whisper and sherpa downloads continue
+to show measured byte percentages.
+
+Parakeet archives are retained until installation succeeds. Extraction happens
+under a staging directory, the four required files are validated there, and the
+bundle is renamed into its final location only after validation. If Murmur exits
+during extraction, Retry reuses the completed local archive rather than
+downloading 1.2 GB again; partial bundles are never reported as installed.
+
 Model selection is disabled while recording is active.
 
 ## Settings
