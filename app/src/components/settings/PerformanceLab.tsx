@@ -16,6 +16,11 @@ import {
   saveBenchmarkReports,
 } from '../../lib/benchmark';
 import { downloadModel } from '../../lib/dictation';
+import {
+  modelDownloadLabel,
+  modelDownloadPercent,
+  type ModelDownloadProgress,
+} from '../../lib/modelDownload';
 import type { DictationStatus } from '../../lib/types';
 
 const PRESETS: { id: BenchmarkPreset; label: string; detail: string }[] = [
@@ -136,7 +141,7 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [downloading, setDownloading] = useState<string | null>(null);
-  const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
+  const [downloadProgress, setDownloadProgress] = useState<ModelDownloadProgress | null>(null);
   const [fileTranscribing, setFileTranscribing] = useState(false);
   const mounted = useRef(true);
   const runningRef = useRef(false);
@@ -250,9 +255,8 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
     setDownloadProgress(null);
     let unlisten: (() => void) | undefined;
     try {
-      unlisten = await listen<{ received: number; total: number }>('download-progress', (event) => {
-        const { received, total } = event.payload;
-        setDownloadProgress(total > 0 ? Math.round((received / total) * 100) : null);
+      unlisten = await listen<ModelDownloadProgress>('download-progress', (event) => {
+        setDownloadProgress(event.payload);
       });
       await downloadModel(modelName);
       await refreshModels();
@@ -327,7 +331,11 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
                   className="shrink-0 px-2.5 py-1.5 text-xs font-medium border border-stone-300 dark:border-stone-600 rounded-md text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-700 disabled:opacity-50"
                 >
                   {downloading === model.modelName
-                    ? downloadProgress === null ? 'Preparing...' : `${downloadProgress}%`
+                    ? downloadProgress === null
+                      ? 'Starting...'
+                      : modelDownloadPercent(downloadProgress) === null
+                        ? modelDownloadLabel(downloadProgress)
+                        : `${modelDownloadPercent(downloadProgress)}%`
                     : 'Download'}
                 </button>
               )}
