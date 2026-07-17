@@ -1,7 +1,22 @@
 use crate::{MutexExt, State};
 use crate::transcriber::{self, TranscriptionBackend};
 use crate::vad;
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex};
 use tauri::Emitter;
+
+type ModelInstallLock = Arc<tokio::sync::Mutex<()>>;
+
+static MODEL_INSTALL_LOCKS: LazyLock<Mutex<HashMap<String, ModelInstallLock>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn model_install_lock(model_name: &str) -> ModelInstallLock {
+    let mut locks = MODEL_INSTALL_LOCKS.lock_or_recover();
+    locks
+        .entry(model_name.to_string())
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
+}
 
 #[tauri::command]
 pub fn check_model_exists(state: tauri::State<'_, State>) -> bool {
@@ -54,6 +69,11 @@ pub async fn download_model(app_handle: tauri::AppHandle, model_name: String) ->
         return Err(format!("Unknown model '{}'. Allowed: {}", model_name, ALLOWED_MODELS.join(", ")));
     }
 
+    // The entire existence-check/download/install transaction is single-flight
+    // per model. Different models may still download concurrently.
+    let install_lock = model_install_lock(&model_name);
+    let _install_guard = install_lock.lock().await;
+
     // Whisper and sherpa share Murmur's models directory. FluidAudio owns a
     // separate Application Support cache, but VAD must still land here.
     let models_dir = transcriber::WhisperBackend::new().models_dir()?;
@@ -85,23 +105,10 @@ pub async fn download_model(app_handle: tauri::AppHandle, model_name: String) ->
         download_whisper_model(&app_handle, &model_name, &models_dir).await?;
     }
 
-    // Co-download VAD model alongside the transcription model (~1.8MB)
-    if !vad::vad_model_exists() {
-        let vad_dest = models_dir.join(vad::VAD_MODEL_FILENAME);
-        let vad_tmp = models_dir.join(format!("{}.tmp", vad::VAD_MODEL_FILENAME));
-        match stream_download(&app_handle, vad::VAD_MODEL_URL, &vad_tmp).await {
-            Ok(bytes) => {
-                if let Err(e) = tokio::fs::rename(&vad_tmp, &vad_dest).await {
-                    let _ = tokio::fs::remove_file(&vad_tmp).await;
-                    tracing::warn!(target: "system", "Failed to finalize VAD model download: {}", e);
-                } else {
-                    tracing::info!(target: "system", "VAD model co-downloaded: {} ({} bytes)", vad::VAD_MODEL_FILENAME, bytes);
-                }
-            }
-            Err(e) => {
-                tracing::warn!(target: "system", "VAD model co-download failed (non-fatal): {}", e);
-            }
-        }
+    // Co-download VAD model alongside the transcription model (~1.8MB).
+    // Its own lock prevents different model installs from sharing a temp file.
+    if let Err(error) = ensure_vad_model(&app_handle).await {
+        tracing::warn!(target: "system", "VAD model co-download failed (non-fatal): {}", error);
     }
 
     Ok(())
@@ -201,10 +208,65 @@ mod tests {
         let error = extract_parakeet_archive(&archive_path, &models_dir, model_name, &dir_name)
             .unwrap_err();
 
-        assert!(error.contains("incomplete"));
+        assert!(
+            matches!(error, ParakeetInstallError::InvalidArchive(_)),
+            "unexpected classification: {error:?}"
+        );
+        assert!(should_discard_archive(&error));
         assert!(!models_dir.join(&dir_name).exists());
         assert!(!models_dir.join(format!(".{dir_name}.extracting")).exists());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn corrupt_parakeet_archive_is_marked_for_redownload() {
+        let root = test_dir("parakeet-corrupt-archive");
+        let models_dir = root.join("models");
+        fs::create_dir_all(&models_dir).unwrap();
+        let model_name = "parakeet-tdt-0.6b-v2-fp16";
+        let (_, dir_name) = transcriber::parakeet::download_spec(model_name).unwrap();
+        let archive_path = root.join("model.tar.bz2");
+        fs::write(&archive_path, b"not a bzip2 archive").unwrap();
+
+        let error = extract_parakeet_archive(&archive_path, &models_dir, model_name, &dir_name)
+            .unwrap_err();
+
+        assert!(
+            matches!(error, ParakeetInstallError::InvalidArchive(_)),
+            "unexpected classification: {error:?}"
+        );
+        assert!(should_discard_archive(&error));
+        assert!(!models_dir.join(&dir_name).exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn transient_publish_failure_preserves_a_retryable_archive() {
+        let root = test_dir("parakeet-transient-install");
+        let models_dir = root.join("models");
+        fs::create_dir_all(&models_dir).unwrap();
+        let model_name = "parakeet-tdt-0.6b-v2-fp16";
+        let (_, dir_name) = transcriber::parakeet::download_spec(model_name).unwrap();
+        let archive_path = root.join("model.tar.bz2");
+        write_parakeet_archive(&archive_path, &dir_name, true);
+        fs::write(models_dir.join(&dir_name), b"blocks directory publication").unwrap();
+
+        let error = extract_parakeet_archive(&archive_path, &models_dir, model_name, &dir_name)
+            .unwrap_err();
+
+        assert!(matches!(error, ParakeetInstallError::Installation(_)));
+        assert!(!should_discard_archive(&error));
+        assert!(archive_path.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn model_install_locks_are_keyed_and_reused() {
+        let first = model_install_lock("test-model-a");
+        let same = model_install_lock("test-model-a");
+        let different = model_install_lock("test-model-b");
+        assert!(Arc::ptr_eq(&first, &same));
+        assert!(!Arc::ptr_eq(&first, &different));
     }
 }
 
@@ -259,53 +321,99 @@ async fn download_parakeet_model(
         let root = models_dir.to_path_buf();
         let model = model_name.to_string();
         let bundle = dir_name.clone();
-        match tokio::task::spawn_blocking(move || {
-            extract_parakeet_archive(&archive, &root, &model, &bundle)
-        })
-        .await
-        .map_err(|e| format!("Extraction task failed: {}", e))?
-        {
+        match extract_parakeet_archive_on_worker(archive, root, model, bundle).await {
             Ok(()) => {
                 let _ = tokio::fs::remove_file(&legacy_temp_path).await;
+                let _ = tokio::fs::remove_file(&archive_path).await;
                 tracing::info!(target: "system", "Recovered Parakeet installation from retained archive: {}", dir_name);
                 return Ok(());
             }
-            Err(error) => {
+            Err(error) if should_discard_archive(&error) => {
                 tracing::warn!(target: "system", "Retained Parakeet archive was unusable; downloading again: {}", error);
                 let _ = tokio::fs::remove_file(&legacy_temp_path).await;
             }
+            Err(error) => return Err(error.to_string()),
         }
     }
 
-    // A finalized archive is retained when extraction fails (for example due
-    // to low disk space), so Retry performs only the local install work.
-    if !archive_path.is_file() {
-        let download_path = models_dir.join(format!("{}.tar.bz2.download", dir_name));
-        let received = stream_download(app_handle, &url, &download_path).await?;
-        tokio::fs::rename(&download_path, &archive_path)
-            .await
-            .map_err(|e| {
-                let _ = std::fs::remove_file(&download_path);
-                format!("Failed to finalize Parakeet archive: {}", e)
-            })?;
-        tracing::info!(target: "system", "Parakeet archive downloaded: {} ({} bytes)", dir_name, received);
-    }
+    let mut downloaded_this_attempt = false;
+    loop {
+        // A finalized archive is retained after transient installation failures
+        // so Retry performs only local work. Invalid contents are discarded and
+        // downloaded once more in the same attempt.
+        if !archive_path.is_file() {
+            let download_path = models_dir.join(format!("{}.tar.bz2.download", dir_name));
+            let received = stream_download(app_handle, &url, &download_path).await?;
+            tokio::fs::rename(&download_path, &archive_path)
+                .await
+                .map_err(|e| {
+                    let _ = std::fs::remove_file(&download_path);
+                    format!("Failed to finalize Parakeet archive: {}", e)
+                })?;
+            downloaded_this_attempt = true;
+            tracing::info!(target: "system", "Parakeet archive downloaded: {} ({} bytes)", dir_name, received);
+        }
 
-    emit_installing(app_handle);
-    let archive = archive_path.clone();
-    let root = models_dir.to_path_buf();
-    let model = model_name.to_string();
-    let bundle = dir_name.clone();
+        emit_installing(app_handle);
+        let result = extract_parakeet_archive_on_worker(
+            archive_path.clone(),
+            models_dir.to_path_buf(),
+            model_name.to_string(),
+            dir_name.clone(),
+        )
+        .await;
+
+        match result {
+            Ok(()) => {
+                let _ = tokio::fs::remove_file(&archive_path).await;
+                tracing::info!(target: "system", "Parakeet model installed: {}", dir_name);
+                return Ok(());
+            }
+            Err(error) if should_discard_archive(&error) => {
+                let _ = tokio::fs::remove_file(&archive_path).await;
+                if downloaded_this_attempt {
+                    return Err(error.to_string());
+                }
+                tracing::warn!(target: "system", "Retained Parakeet archive was invalid; downloading again: {}", error);
+            }
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ParakeetInstallError {
+    InvalidArchive(String),
+    Installation(String),
+}
+
+impl std::fmt::Display for ParakeetInstallError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidArchive(message) | Self::Installation(message) => {
+                formatter.write_str(message)
+            }
+        }
+    }
+}
+
+fn should_discard_archive(error: &ParakeetInstallError) -> bool {
+    matches!(error, ParakeetInstallError::InvalidArchive(_))
+}
+
+async fn extract_parakeet_archive_on_worker(
+    archive_path: std::path::PathBuf,
+    models_dir: std::path::PathBuf,
+    model_name: String,
+    dir_name: String,
+) -> Result<(), ParakeetInstallError> {
     tokio::task::spawn_blocking(move || {
-        extract_parakeet_archive(&archive, &root, &model, &bundle)
+        extract_parakeet_archive(&archive_path, &models_dir, &model_name, &dir_name)
     })
     .await
-    .map_err(|e| format!("Extraction task failed: {}", e))??;
-
-    let _ = tokio::fs::remove_file(&archive_path).await;
-
-    tracing::info!(target: "system", "Parakeet model installed: {}", dir_name);
-    Ok(())
+    .map_err(|error| {
+        ParakeetInstallError::Installation(format!("Extraction task failed: {error}"))
+    })?
 }
 
 fn emit_installing(app_handle: &tauri::AppHandle) {
@@ -321,7 +429,7 @@ fn extract_parakeet_archive(
     models_dir: &std::path::Path,
     model_name: &str,
     dir_name: &str,
-) -> Result<(), String> {
+) -> Result<(), ParakeetInstallError> {
     let final_dir = models_dir.join(dir_name);
     let staging_root = models_dir.join(format!(".{}.extracting", dir_name));
     let staged_dir = staging_root.join(dir_name);
@@ -331,24 +439,43 @@ fn extract_parakeet_archive(
         && !transcriber::parakeet::specific_model_exists_in(model_name, models_dir)
     {
         std::fs::remove_dir_all(&final_dir)
-            .map_err(|e| format!("Failed to remove incomplete model bundle: {}", e))?;
+            .map_err(|e| {
+                ParakeetInstallError::Installation(format!(
+                    "Failed to remove incomplete model bundle: {}",
+                    e
+                ))
+            })?;
     }
     std::fs::create_dir_all(&staging_root)
-        .map_err(|e| format!("Failed to create extraction staging directory: {}", e))?;
+        .map_err(|e| {
+            ParakeetInstallError::Installation(format!(
+                "Failed to create extraction staging directory: {}",
+                e
+            ))
+        })?;
 
     let extraction = (|| {
         let file = std::fs::File::open(archive_path)
-            .map_err(|e| format!("Failed to open archive: {}", e))?;
+            .map_err(|e| {
+                ParakeetInstallError::Installation(format!("Failed to open archive: {}", e))
+            })?;
         let decompressor = bzip2::read::BzDecoder::new(file);
         let mut archive = tar::Archive::new(decompressor);
         archive
             .unpack(&staging_root)
-            .map_err(|e| format!("Failed to extract archive: {}", e))?;
+            .map_err(classify_archive_unpack_error)?;
         if !transcriber::parakeet::specific_model_exists_in(model_name, &staging_root) {
-            return Err("Extracted Parakeet bundle is incomplete".to_string());
+            return Err(ParakeetInstallError::InvalidArchive(
+                "Extracted Parakeet bundle is incomplete".to_string(),
+            ));
         }
         std::fs::rename(&staged_dir, &final_dir)
-            .map_err(|e| format!("Failed to publish Parakeet model bundle: {}", e))?;
+            .map_err(|e| {
+                ParakeetInstallError::Installation(format!(
+                    "Failed to publish Parakeet model bundle: {}",
+                    e
+                ))
+            })?;
         Ok(())
     })();
 
@@ -356,10 +483,29 @@ fn extract_parakeet_archive(
     extraction
 }
 
+fn classify_archive_unpack_error(error: std::io::Error) -> ParakeetInstallError {
+    let message = error.to_string();
+    let normalized = message.to_ascii_lowercase();
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::InvalidData | std::io::ErrorKind::UnexpectedEof
+    )
+        || normalized.contains("data integrity")
+        || normalized.contains("corrupt")
+        || normalized.contains("failed to iterate over archive")
+    {
+        ParakeetInstallError::InvalidArchive(format!("Invalid Parakeet archive: {message}"))
+    } else {
+        ParakeetInstallError::Installation(format!("Failed to extract archive: {message}"))
+    }
+}
+
 /// Ensure the VAD model is present, downloading it if necessary.
 /// This is the fallback for users who have a transcription model but not the
 /// VAD model (e.g. upgrade from a pre-VAD version or manual model install).
 pub(crate) async fn ensure_vad_model(app_handle: &tauri::AppHandle) -> Result<(), String> {
+    let install_lock = model_install_lock(vad::VAD_MODEL_FILENAME);
+    let _install_guard = install_lock.lock().await;
     if vad::vad_model_exists() {
         return Ok(());
     }

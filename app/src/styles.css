@@ -23,6 +23,6 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .model-download-indeterminate {
     width: 100%;
-    animation: pulse 1.5s ease-in-out infinite;
+    animation: none;
   }
 }

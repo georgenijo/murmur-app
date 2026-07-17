@@ -98,7 +98,7 @@ The main app controls are gated on `initialized` (which requires a model to exis
 
 - Uses `reqwest` with 30s connect timeout and 15-minute overall timeout
 - Writes chunks to a temp file (`.tmp` suffix)
-- Emits `download-progress` events with `{ received, total }` payload
+- Emits `download-progress` events with `{ received, total, phase }` payload
 - On success: atomic rename from `.tmp` to final path
 - On failure: temp file cleaned up
 
@@ -108,7 +108,7 @@ Single `.bin` file downloaded directly from HuggingFace. Atomic rename on comple
 
 ### Parakeet Downloads
 
-The model bundle ships as a `.tar.bz2` from the sherpa-onnx `asr-models` GitHub release. `download_parakeet_model` streams it (same progress events), then decompresses (`bzip2`) and untars (`tar`) on a blocking thread into the models dir, replacing any stale bundle. The temp archive is removed afterward.
+The model bundle ships as a `.tar.bz2` from the sherpa-onnx `asr-models` GitHub release. `download_parakeet_model` streams it with the same progress events, retains the completed archive, and extracts it on a blocking thread under a staging directory. Murmur validates all required files before atomically renaming the bundle into the models directory. The archive is deleted only after a successful install or when its contents are invalid; transient extraction or publication failures preserve it for Retry. Partial bundles are never published.
 
 ### FluidAudio Core ML Setup
 
