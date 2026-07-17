@@ -14,6 +14,11 @@ import { VocabScanStrip } from './VocabScanStrip';
 import { PerformanceLab } from './PerformanceLab';
 import { useVocabScan } from '../../lib/hooks/useVocabScan';
 import { countVocabTokens } from '../../lib/dictation';
+import {
+  modelDownloadLabel,
+  modelDownloadPercent,
+  type ModelDownloadProgress,
+} from '../../lib/modelDownload';
 import type { DictationStatus } from '../../lib/types';
 import type { UpdateStatus } from '../../lib/updater';
 
@@ -491,7 +496,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
   const [modelAvailable, setModelAvailable] = useState<boolean | null>(null);
   const [modelDownload, setModelDownload] = useState<
     | { phase: 'idle' }
-    | { phase: 'downloading'; received: number; total: number }
+    | { phase: 'downloading'; progress: ModelDownloadProgress }
     | { phase: 'error'; message: string }
   >({ phase: 'idle' });
   const downloadUnlistenRef = useRef<(() => void) | null>(null);
@@ -518,17 +523,19 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
   const handleModelDownload = useCallback(async () => {
     const modelName = settings.model;
     downloadModelRef.current = modelName;
-    setModelDownload({ phase: 'downloading', received: 0, total: 0 });
+    setModelDownload({
+      phase: 'downloading',
+      progress: { received: 0, total: 0, phase: 'downloading' },
+    });
     let unlisten: (() => void) | null = null;
     try {
-      unlisten = await listen<{ received: number; total: number }>(
+      unlisten = await listen<ModelDownloadProgress>(
         'download-progress',
         (event) => {
           if (downloadModelRef.current !== modelName) return;
           setModelDownload({
             phase: 'downloading',
-            received: event.payload.received,
-            total: event.payload.total,
+            progress: event.payload,
           });
         }
       );
@@ -579,10 +586,12 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
   const useNeuralEngine = selectedModel?.backend === 'coreml';
   // The sherpa Parakeet bundle is English-only; FluidAudio Parakeet v3 is multilingual.
   const isEnglishOnlyModel = settings.model.endsWith('.en') || selectedModel?.backend === 'parakeet';
-  const downloadProgressPercent =
-    modelDownload.phase === 'downloading' && modelDownload.total > 0
-      ? Math.round((modelDownload.received / modelDownload.total) * 100)
-      : null;
+  const activeModelDownload = modelDownload.phase === 'downloading'
+    ? modelDownload.progress
+    : null;
+  const downloadProgressPercent = activeModelDownload
+    ? modelDownloadPercent(activeModelDownload)
+    : null;
 
   return (
     <div className="flex-1 flex overflow-hidden bg-white dark:bg-stone-900">
@@ -696,22 +705,30 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
           {modelDownload.phase === 'downloading' && (
             <div className="mt-2">
               <div className="flex justify-between text-xs text-stone-500 dark:text-stone-400 mb-1">
-                <span>Downloading…</span>
+                <span>{activeModelDownload ? modelDownloadLabel(activeModelDownload) : 'Starting...'}</span>
                 {downloadProgressPercent !== null ? (
                   <span>{downloadProgressPercent}%</span>
                 ) : (
-                  <span>Starting…</span>
+                  <span>Working...</span>
                 )}
               </div>
               <div className="w-full h-1.5 bg-stone-200 dark:bg-stone-700 rounded-full overflow-hidden">
                 <div
                   role="progressbar"
-                  aria-valuenow={downloadProgressPercent ?? 0}
+                  aria-valuenow={downloadProgressPercent ?? undefined}
                   aria-valuemin={0}
                   aria-valuemax={100}
-                  aria-valuetext={`Download progress: ${downloadProgressPercent ?? 0} percent`}
-                  className="h-full bg-blue-500 rounded-full transition-all duration-200"
-                  style={{ width: `${downloadProgressPercent ?? 0}%` }}
+                  aria-valuetext={downloadProgressPercent === null
+                    ? 'Model installation in progress'
+                    : `Download progress: ${downloadProgressPercent} percent`}
+                  className={`h-full bg-blue-500 rounded-full ${
+                    downloadProgressPercent === null
+                      ? 'model-download-indeterminate'
+                      : 'transition-all duration-200'
+                  }`}
+                  style={downloadProgressPercent === null
+                    ? undefined
+                    : { width: `${downloadProgressPercent}%` }}
                 />
               </div>
             </div>

@@ -2,6 +2,11 @@ import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { AVAILABLE_MODEL_OPTIONS, type ModelOption } from '../lib/settings';
+import {
+  modelDownloadLabel,
+  modelDownloadPercent,
+  type ModelDownloadProgress,
+} from '../lib/modelDownload';
 
 const MODEL_DESCRIPTIONS: Record<string, string> = {
   'parakeet-tdt-0.6b-v3-coreml': 'Fastest on Apple Silicon — multilingual, Apple Neural Engine (recommended)',
@@ -32,7 +37,7 @@ interface Props {
 
 type DownloadState =
   | { phase: 'idle' }
-  | { phase: 'downloading'; received: number; total: number }
+  | { phase: 'downloading'; progress: ModelDownloadProgress }
   | { phase: 'error'; message: string };
 
 /**
@@ -56,19 +61,21 @@ export function ModelDownloadPanel({ initialModel, onComplete, onDownloadingChan
 
   const handleDownload = async () => {
     onDownloadingChange?.(true);
-    setDownloadState({ phase: 'downloading', received: 0, total: 0 });
+    setDownloadState({
+      phase: 'downloading',
+      progress: { received: 0, total: 0, phase: 'downloading' },
+    });
 
     // Single try/catch covering listen() as well as the download itself, so a
     // listen failure can't strand the downloading state (or an embedder's
     // navigation lock) forever.
     try {
-      const unlisten = await listen<{ received: number; total: number }>(
+      const unlisten = await listen<ModelDownloadProgress>(
         'download-progress',
         (event) => {
           setDownloadState({
             phase: 'downloading',
-            received: event.payload.received,
-            total: event.payload.total,
+            progress: event.payload,
           });
         }
       );
@@ -90,10 +97,8 @@ export function ModelDownloadPanel({ initialModel, onComplete, onDownloadingChan
     }
   };
 
-  const progressPercent =
-    downloadState.phase === 'downloading' && downloadState.total > 0
-      ? Math.round((downloadState.received / downloadState.total) * 100)
-      : null;
+  const progress = downloadState.phase === 'downloading' ? downloadState.progress : null;
+  const progressPercent = progress ? modelDownloadPercent(progress) : null;
 
   const isDownloading = downloadState.phase === 'downloading';
 
@@ -129,23 +134,32 @@ export function ModelDownloadPanel({ initialModel, onComplete, onDownloadingChan
         {isDownloading && (
           <div className="mb-4">
             <div className="flex justify-between text-xs text-stone-500 dark:text-stone-400 mb-1">
-              <span>Downloading…</span>
+              <span>{progress ? modelDownloadLabel(progress) : 'Starting...'}</span>
               {progressPercent !== null ? (
                 <span>{progressPercent}%</span>
               ) : (
-                <span>Starting…</span>
+                <span>Working...</span>
               )}
             </div>
             <div className="w-full h-2 bg-stone-200 dark:bg-stone-700 rounded-full overflow-hidden">
               <div
-                className="h-full bg-blue-500 rounded-full transition-all duration-200"
-                style={{ width: `${progressPercent ?? 0}%` }}
+                role="progressbar"
+                aria-valuenow={progressPercent ?? undefined}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuetext={progressPercent === null ? 'Model installation in progress' : undefined}
+                className={`h-full bg-blue-500 rounded-full ${
+                  progressPercent === null
+                    ? 'model-download-indeterminate'
+                    : 'transition-all duration-200'
+                }`}
+                style={progressPercent === null ? undefined : { width: `${progressPercent}%` }}
               />
             </div>
-            {downloadState.total > 0 && (
+            {progress && progress.total > 0 && progress.phase !== 'installing' && (
               <p className="text-xs text-stone-400 dark:text-stone-500 mt-1 text-right">
-                {(downloadState.received / 1024 / 1024).toFixed(1)} /{' '}
-                {(downloadState.total / 1024 / 1024).toFixed(1)} MB
+                {(progress.received / 1024 / 1024).toFixed(1)} /{' '}
+                {(progress.total / 1024 / 1024).toFixed(1)} MB
               </p>
             )}
           </div>
@@ -163,7 +177,7 @@ export function ModelDownloadPanel({ initialModel, onComplete, onDownloadingChan
           className="w-full py-2.5 px-4 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors"
         >
           {isDownloading
-            ? 'Downloading…'
+            ? progress ? modelDownloadLabel(progress) : 'Starting...'
             : downloadState.phase === 'error'
             ? 'Retry Download'
             : 'Download'}
