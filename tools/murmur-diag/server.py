@@ -12,7 +12,17 @@ from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("murmur-diag")
 
-LOG_DIR = Path.home() / "Library" / "Application Support" / "local-dictation" / "logs"
+DEFAULT_LOG_DIR = Path.home() / "Library" / "Application Support" / "local-dictation" / "logs"
+LOG_DIR = Path(os.environ.get("MURMUR_LOG_DIR", DEFAULT_LOG_DIR)).expanduser()
+
+STRUCTURED_LOG_PATTERNS = (
+    "events.jsonl*",
+    "events.dev.jsonl*",
+)
+PRETTY_LOG_PATTERNS = (
+    "app.log*",
+    "app.dev.log*",
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -49,24 +59,77 @@ def parse_event_ts(ts_str: str) -> datetime:
     return datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
 
 
-def read_jsonl_files(*names: str) -> list[dict[str, Any]]:
-    """Read and merge JSONL files, returning parsed events sorted by timestamp."""
+def log_build(path: Path) -> str:
+    """Return the Murmur build identity represented by a log filename."""
+    return "dev" if ".dev." in path.name else "release"
+
+
+def select_log_files(*patterns: str) -> list[Path]:
+    """Resolve log globs once, deduplicating overlapping paths and aliases."""
+    selected: list[Path] = []
+    seen: set[tuple[int, int] | str] = set()
+
+    for pattern in patterns:
+        for path in sorted(LOG_DIR.glob(pattern)):
+            if not path.is_file():
+                continue
+            try:
+                stat = path.stat()
+                identity: tuple[int, int] | str = (stat.st_dev, stat.st_ino)
+            except OSError:
+                identity = str(path.resolve())
+            if identity in seen:
+                continue
+            seen.add(identity)
+            selected.append(path)
+
+    return selected
+
+
+def read_jsonl_files(*patterns: str) -> list[dict[str, Any]]:
+    """Read release and dev JSONL files once, sorted by timestamp."""
+    if not patterns:
+        patterns = STRUCTURED_LOG_PATTERNS
     events: list[dict[str, Any]] = []
-    for name in names:
-        path = LOG_DIR / name
-        if not path.exists():
-            continue
+    for path in select_log_files(*patterns):
+        source = {"build": log_build(path), "file": path.name}
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             for line in f:
                 line = line.strip()
                 if not line:
                     continue
                 try:
-                    events.append(json.loads(line))
+                    event = json.loads(line)
+                    if isinstance(event, dict):
+                        event["diag_source"] = source
+                        events.append(event)
                 except json.JSONDecodeError:
                     continue
     events.sort(key=lambda e: e.get("timestamp", ""))
     return events
+
+
+def event_build(event: dict[str, Any]) -> str:
+    """Return source build metadata attached during JSONL ingestion."""
+    source = event.get("diag_source", {})
+    return source.get("build", "unknown") if isinstance(source, dict) else "unknown"
+
+
+def parse_pretty_log_line(raw: str) -> tuple[str | None, str | None, str]:
+    """Parse current tracing output and the legacy bracketed log format."""
+    timestamp = r"(\d{4}-\d{2}-\d{2}T[\d:.]+(?:Z|[+-]\d{2}:\d{2})?)"
+    tracing_match = re.match(
+        rf"^{timestamp}\s+(TRACE|DEBUG|INFO|WARN|ERROR)\s+\S+:\s?(.*)$",
+        raw,
+    )
+    if tracing_match:
+        return tracing_match.group(1), tracing_match.group(2), tracing_match.group(3)
+
+    legacy_match = re.match(rf"^{timestamp}\s+\[(\w+)]\s+(.*)$", raw)
+    if legacy_match:
+        return legacy_match.group(1), legacy_match.group(2), legacy_match.group(3)
+
+    return None, None, raw
 
 
 def pair_keyboard_to_recordings(
@@ -216,7 +279,7 @@ def query_events(
     limit: int = 50,
     offset: int = 0,
 ) -> dict:
-    """Filter and search structured events from events.jsonl.
+    """Filter and search structured events from release and dev JSONL logs.
 
     Args:
         stream: Filter by stream name (keyboard, pipeline, audio, system).
@@ -229,7 +292,7 @@ def query_events(
     """
     since_dt = parse_time(since)
     until_dt = parse_time(until)
-    all_events = read_jsonl_files("events.jsonl.1", "events.jsonl")
+    all_events = read_jsonl_files()
     matched = filter_events(all_events, stream=stream, level=level,
                             since=since_dt, until=until_dt, pattern=pattern)
     total = len(matched)
@@ -237,7 +300,12 @@ def query_events(
     time_range = {}
     if matched:
         time_range = {"first": matched[0].get("timestamp"), "last": matched[-1].get("timestamp")}
-    return {"events": page, "total_matched": total, "time_range": time_range}
+    return {
+        "events": page,
+        "total_matched": total,
+        "time_range": time_range,
+        "sources": sorted({event_build(event) for event in matched}),
+    }
 
 
 @mcp.tool()
@@ -246,7 +314,7 @@ def correlate_keyboard(
     until: str | None = None,
     max_gap_ms: int = 500,
 ) -> dict:
-    """Correlate keyboard hotkey events with recording starts.
+    """Correlate keyboard hotkey events with same-build recording starts.
 
     Answers: 'did every hotkey press result in a recording?'
 
@@ -257,31 +325,58 @@ def correlate_keyboard(
     """
     since_dt = parse_time(since)
     until_dt = parse_time(until)
-    all_events = read_jsonl_files("events.jsonl.1", "events.jsonl")
+    all_events = read_jsonl_files()
     filtered = filter_events(all_events, since=since_dt, until=until_dt)
 
-    # Keyboard start events — directional classification (handles toggle stops)
-    kb_starts = extract_kb_starts(filtered)
+    total_keyboard_starts = 0
+    total_recording_starts = 0
+    total_correlated = 0
+    missed: list[dict] = []
+    overlap_entries: list[dict] = []
+    source_results: dict[str, dict[str, int]] = {}
 
-    # Recording start events from pipeline (exclude "already recording" overlaps)
-    rec_starts = [e for e in filtered if e.get("stream") == "pipeline"
-                  and "start_native_recording" in e.get("summary", "")
-                  and "already recording" not in e.get("summary", "").lower()]
-
-    # Overlap events: keyboard tried to start but recording was already active
-    overlaps = [e for e in filtered if "already recording" in e.get("summary", "").lower()]
-
-    correlated, missed = pair_keyboard_to_recordings(
-        kb_starts, rec_starts, filtered, max_gap_ms=max_gap_ms)
-
-    overlap_entries = [{"timestamp": e.get("timestamp"), "summary": e.get("summary")} for e in overlaps]
+    # Never correlate two concurrently-running build identities to each other.
+    for source in sorted({event_build(event) for event in filtered}):
+        source_events = [event for event in filtered if event_build(event) == source]
+        kb_starts = extract_kb_starts(source_events)
+        rec_starts = [
+            event for event in source_events
+            if event.get("stream") == "pipeline"
+            and "start_native_recording" in event.get("summary", "")
+            and "already recording" not in event.get("summary", "").lower()
+        ]
+        overlaps = [
+            event for event in source_events
+            if "already recording" in event.get("summary", "").lower()
+        ]
+        correlated, source_missed = pair_keyboard_to_recordings(
+            kb_starts, rec_starts, source_events, max_gap_ms=max_gap_ms)
+        for entry in source_missed:
+            entry["source"] = source
+        missed.extend(source_missed)
+        overlap_entries.extend({
+            "timestamp": event.get("timestamp"),
+            "summary": event.get("summary"),
+            "source": source,
+        } for event in overlaps)
+        total_keyboard_starts += len(kb_starts)
+        total_recording_starts += len(rec_starts)
+        total_correlated += correlated
+        source_results[source] = {
+            "keyboard_starts": len(kb_starts),
+            "recording_starts": len(rec_starts),
+            "correlated": correlated,
+            "missed": len(source_missed),
+            "overlap": len(overlaps),
+        }
 
     return {
-        "total_keyboard_starts": len(kb_starts),
-        "total_recording_starts": len(rec_starts),
-        "correlated": correlated,
+        "total_keyboard_starts": total_keyboard_starts,
+        "total_recording_starts": total_recording_starts,
+        "correlated": total_correlated,
         "missed": missed,
         "overlap": overlap_entries,
+        "sources": source_results,
     }
 
 
@@ -290,7 +385,7 @@ def session_summary(
     since: str | None = "7d",
     limit: int = 10,
 ) -> dict:
-    """High-level view of app sessions.
+    """High-level view of release and dev app sessions.
 
     Identifies sessions by 'app setup' events and summarizes each one.
 
@@ -299,65 +394,71 @@ def session_summary(
         limit: Max sessions to return (default 10).
     """
     since_dt = parse_time(since)
-    all_events = read_jsonl_files("events.jsonl.1", "events.jsonl")
+    all_events = read_jsonl_files()
     if since_dt:
         all_events = [e for e in all_events
                       if parse_event_ts(e.get("timestamp", "1970-01-01T00:00:00Z")) >= since_dt]
 
-    # Find session boundaries
-    session_starts: list[int] = []
-    for i, ev in enumerate(all_events):
-        if ev.get("summary", "").startswith("app setup"):
-            session_starts.append(i)
-
     sessions = []
-    for j, start_idx in enumerate(session_starts):
-        end_idx = session_starts[j + 1] if j + 1 < len(session_starts) else len(all_events)
-        session_events = all_events[start_idx:end_idx]
-        if not session_events:
-            continue
+    for source in sorted({event_build(event) for event in all_events}):
+        source_events = [event for event in all_events if event_build(event) == source]
+        session_starts = [
+            i for i, event in enumerate(source_events)
+            if event.get("summary", "").startswith("app setup")
+        ]
 
-        setup_ev = session_events[0]
-        version_match = re.search(r"v([\d.]+)", setup_ev.get("summary", ""))
-        version = version_match.group(0) if version_match else "unknown"
+        for j, start_idx in enumerate(session_starts):
+            end_idx = (
+                session_starts[j + 1]
+                if j + 1 < len(session_starts)
+                else len(source_events)
+            )
+            session_events = source_events[start_idx:end_idx]
+            if not session_events:
+                continue
 
-        recordings = sum(1 for e in session_events
-                         if "start_native_recording" in e.get("summary", "")
-                         and "already recording" not in e.get("summary", "").lower())
-        kb_events = sum(1 for e in session_events if e.get("stream") == "keyboard")
-        errors = sum(1 for e in session_events if e.get("level") == "error")
-        warnings = sum(1 for e in session_events if e.get("level") == "warn")
+            setup_ev = session_events[0]
+            version_match = re.search(r"v([\d.]+)", setup_ev.get("summary", ""))
+            version = version_match.group(0) if version_match else "unknown"
 
-        # Missed hotkeys using the same pairing logic as correlate_keyboard
-        kb_starts = extract_kb_starts(session_events)
-        rec_starts = [e for e in session_events if e.get("stream") == "pipeline"
-                      and "start_native_recording" in e.get("summary", "")
-                      and "already recording" not in e.get("summary", "").lower()]
-        _, missed_list = pair_keyboard_to_recordings(kb_starts, rec_starts, session_events)
-        missed_hotkeys = len(missed_list)
+            recordings = sum(1 for e in session_events
+                             if "start_native_recording" in e.get("summary", "")
+                             and "already recording" not in e.get("summary", "").lower())
+            kb_events = sum(1 for e in session_events if e.get("stream") == "keyboard")
+            errors = sum(1 for e in session_events if e.get("level") == "error")
+            warnings = sum(1 for e in session_events if e.get("level") == "warn")
 
-        # Peak RSS from heartbeat/baseline data
-        peak_rss: float | None = None
-        for e in session_events:
-            rss = e.get("data", {}).get("rss_mb")
-            if rss is not None:
-                if peak_rss is None or rss > peak_rss:
-                    peak_rss = rss
+            # Missed hotkeys using the same pairing logic as correlate_keyboard
+            kb_starts = extract_kb_starts(session_events)
+            rec_starts = [e for e in session_events if e.get("stream") == "pipeline"
+                          and "start_native_recording" in e.get("summary", "")
+                          and "already recording" not in e.get("summary", "").lower()]
+            _, missed_list = pair_keyboard_to_recordings(kb_starts, rec_starts, session_events)
+            missed_hotkeys = len(missed_list)
 
-        sessions.append({
-            "started": session_events[0].get("timestamp"),
-            "ended": session_events[-1].get("timestamp"),
-            "version": version,
-            "recordings": recordings,
-            "keyboard_events": kb_events,
-            "errors": errors,
-            "warnings": warnings,
-            "missed_hotkeys": missed_hotkeys,
-            "peak_rss_mb": peak_rss,
-        })
+            # Peak RSS from heartbeat/baseline data
+            peak_rss: float | None = None
+            for e in session_events:
+                rss = e.get("data", {}).get("rss_mb")
+                if rss is not None:
+                    if peak_rss is None or rss > peak_rss:
+                        peak_rss = rss
+
+            sessions.append({
+                "started": session_events[0].get("timestamp"),
+                "ended": session_events[-1].get("timestamp"),
+                "version": version,
+                "source": source,
+                "recordings": recordings,
+                "keyboard_events": kb_events,
+                "errors": errors,
+                "warnings": warnings,
+                "missed_hotkeys": missed_hotkeys,
+                "peak_rss_mb": peak_rss,
+            })
 
     # Return most recent sessions first
-    sessions.reverse()
+    sessions.sort(key=lambda session: session.get("started", ""), reverse=True)
     return {"sessions": sessions[:limit], "total_sessions": len(sessions)}
 
 
@@ -368,7 +469,7 @@ def check_health() -> dict:
     Returns the most recent keyboard event, recording, error, listener status,
     session uptime, and whether processing appears stuck.
     """
-    all_events = read_jsonl_files("events.jsonl.1", "events.jsonl")
+    all_events = read_jsonl_files()
     now = datetime.now(timezone.utc)
 
     def find_last(predicate):
@@ -388,7 +489,12 @@ def check_health() -> dict:
             age = (now - ts).total_seconds()
         except (ValueError, TypeError):
             return None
-        return {"timestamp": ts_str, "summary": ev.get("summary"), "age_seconds": round(age)}
+        return {
+            "timestamp": ts_str,
+            "summary": ev.get("summary"),
+            "age_seconds": round(age),
+            "source": event_build(ev),
+        }
 
     last_kb = find_last(lambda e: e.get("stream") == "keyboard")
     last_rec = find_last(lambda e: "start_native_recording" in e.get("summary", "")
@@ -448,7 +554,7 @@ def search_logs(
     context: int = 0,
     limit: int = 50,
 ) -> dict:
-    """Search the unstructured app.log for detail not captured in events.jsonl.
+    """Search release and dev text logs for detail absent from structured events.
 
     Args:
         pattern: Regex to match against log lines.
@@ -461,13 +567,7 @@ def search_logs(
     until_dt = parse_time(until)
     pat = re.compile(pattern, re.IGNORECASE)
 
-    # app.log format: "2026-03-02T06:36:00Z [INFO] message"
-    line_re = re.compile(r"^(\d{4}-\d{2}-\d{2}T[\d:.]+Z?)\s+\[(\w+)]\s+(.*)")
-
-    log_files = []
-    for name in sorted(LOG_DIR.glob("app.log*")):
-        if ".dev." not in name.name:
-            log_files.append(name)
+    log_files = select_log_files(*PRETTY_LOG_PATTERNS)
 
     # Read all lines with parsed metadata
     all_lines: list[dict] = []
@@ -477,13 +577,11 @@ def search_logs(
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             for line_num, raw in enumerate(f, 1):
                 raw = raw.rstrip("\n")
-                m = line_re.match(raw)
-                ts_str = m.group(1) if m else None
-                level = m.group(2) if m else None
-                message = m.group(3) if m else raw
+                ts_str, level, message = parse_pretty_log_line(raw)
                 all_lines.append({
                     "line_number": line_num,
                     "file": path.name,
+                    "source": log_build(path),
                     "timestamp": ts_str,
                     "level": level,
                     "message": message,
@@ -523,6 +621,7 @@ def search_logs(
                 matches.append({
                     "line_number": entry["line_number"],
                     "file": entry["file"],
+                    "source": entry["source"],
                     "timestamp": entry["timestamp"],
                     "level": entry["level"],
                     "message": entry["message"],
@@ -530,7 +629,11 @@ def search_logs(
                     "context_after": ctx_after,
                 })
 
-    return {"matches": matches, "total_matched": total_matched}
+    return {
+        "matches": matches,
+        "total_matched": total_matched,
+        "sources": sorted({entry["source"] for entry in all_lines}),
+    }
 
 
 if __name__ == "__main__":
