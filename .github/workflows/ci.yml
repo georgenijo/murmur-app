@@ -45,9 +45,14 @@ jobs:
             github:
               - '.github/**'
               - 'scripts/validate_workflow_policy.py'
+              - 'scripts/release_artifacts.py'
+              - 'tests/test_release_artifacts.py'
+              - 'tests/test_workflow_policy.py'
 
       - name: Validate workflow policy
-        run: python3 scripts/validate_workflow_policy.py
+        run: |
+          python3 scripts/validate_workflow_policy.py
+          python3 -m unittest tests/test_release_artifacts.py tests/test_workflow_policy.py
 
   typecheck:
     needs: changes

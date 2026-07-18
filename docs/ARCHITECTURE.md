@@ -521,11 +521,19 @@ cd app && npx tsc --noEmit         # TypeScript check
 
 ### Release Pipeline
 
-1. `git tag vX.Y.Z && git push --tags`
-2. GitHub Actions: TypeScript check + `cargo test`
-3. macOS: `tauri-action` -> Developer ID signing -> Apple notarization
-4. Smoke test: launch built `.app`, verify alive for 5 seconds
-5. Publish: `.dmg`, `.app.tar.gz`, `.sig`, `latest-v2.json`, legacy-safe `latest.json` -> GitHub Release
+1. Push the `chore: bump version ...` commit to trusted `main`.
+2. `Release Build` runs frontend verification, macOS signing/notarization, and
+   Linux CUDA packaging concurrently, including package launch smoke tests.
+3. The successful build stores macOS and Linux artifacts plus SHA-256
+   provenance under names keyed by the exact commit SHA.
+4. After a separate final confirmation, push `vX.Y.Z` at that same commit.
+5. The tag workflow validates the tag/build/artifact/signature chain, promotes
+   the already-built assets, verifies the remote `.sig` files, generates
+   `latest-v2.json` and the legacy-safe `latest.json`, then publishes.
+
+Tag workflows never build or save Cargo/CUDA caches. See
+[`docs/release.md`](release.md) for trust boundaries, rehearsals, cache policy,
+and the supported cold fallback.
 
 **Auto-updater**: New builds check the dual-platform `latest-v2.json`; legacy `latest.json` routes old Macs through the signed, macOS 13-compatible v0.14.1 bridge before they receive the macOS 14 build. Updates are signed (ed25519). Min-version enforcement removes "Skip"/"Later" for required updates.
 

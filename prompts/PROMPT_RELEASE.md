@@ -1,6 +1,6 @@
 # Agent Startup — Release Mode
 
-You are starting a release session for the Murmur project. Work autonomously through every step. Only stop to confirm the final release action before pushing the tag.
+You are starting a release session for the Murmur project. Work autonomously through preparation and the trusted release build. Stop for a separate explicit final confirmation before creating or pushing the tag, because the tag promotes and publishes the release.
 
 ## 1. Load Context
 
@@ -42,26 +42,51 @@ If any of the above apply, ask: **"Is this a critical update? Should min_version
 
 Include the min_version decision in the release summary.
 
-## 4. Summarise and Confirm
+## 4. Summarise the Build Plan
 
 Present a concise release summary:
 - Current version → New version (and why: major/minor/patch)
 - Bullet list of what's included (one line per meaningful commit, skip chores/docs)
-- Ask: **"Ready to release v{new_version}? Confirm to proceed."**
+- Explain that pushing the version-bump commit starts a signed, non-publishing
+  `Release Build`; the tag/publish confirmation comes only after that build is green.
+- Ask: **"Ready to prepare the signed v{new_version} build on main? This will not create a tag or publish a release."**
 
-Stop and wait for confirmation.
+Stop and wait for confirmation. This confirmation authorizes only the version
+bump, main push, and non-publishing build. Do not create or push a tag yet.
 
-## 5. Execute Release
+## 5. Build Trusted Artifacts
 
-On confirmation, run these steps in order:
+Run these steps in order:
 
 1. Bump `"version"` in `app/src-tauri/tauri.conf.json`
 2. Bump `version` (package field only) in `app/src-tauri/Cargo.toml`
 3. Commit: `git add app/src-tauri/tauri.conf.json app/src-tauri/Cargo.toml && git commit -m "chore: bump version to {new_version}"`
 4. Push: `git push origin main`
-5. Tag: `git tag v{new_version}`
-6. Push tag: `git push origin v{new_version}`
-7. Wait for the GitHub release to be created by CI (~1–2 min), then update its notes:
+5. Wait for the `Release Build` workflow on that exact commit to succeed.
+6. Verify its `typecheck`, `release-macos`, and `release-linux` jobs, signed
+   artifacts named with the exact 40-character commit SHA, package smoke tests,
+   and cache summaries. Do not continue if any job or artifact is missing.
+
+If the build fails, use the cold fallback in `docs/release.md`; do not tag.
+
+## 6. Final Tag and Publish Confirmation
+
+Present the exact commit SHA, successful Release Build run URL/timings, artifact
+names, and proposed tag. Ask:
+
+**"The signed artifacts are ready. Confirm pushing v{new_version}; this will promote and publish the GitHub Release."**
+
+Stop and wait for explicit confirmation. A prior confirmation to prepare or
+build the release does not authorize the tag.
+
+## 7. Promote Release
+
+Only after the final confirmation:
+
+1. Tag the already-built commit: `git tag v{new_version}`
+2. Push the tag: `git push origin v{new_version}`
+3. Wait for the tag-triggered `Release` workflow to validate and publish the
+   immutable artifacts (normally under two minutes), then update its notes:
    ```
    gh release edit v{new_version} --repo georgenijo/murmur-app --notes "$(cat <<'EOF'
    ## What's New
@@ -80,9 +105,9 @@ On confirmation, run these steps in order:
    ```
    Write the notes yourself from the commit list in Step 3 — use clear, user-facing language (not raw commit messages). Omit any section that has no entries. Skip `chore:`, `docs:`, `test:` commits.
 
-## 6. Hand Off
+## 8. Hand Off
 
 Tell the user:
-- Tag pushed — GitHub Actions is now building the signed DMG (~15–20 min)
+- Tag pushed — GitHub Actions is promoting the already-built signed artifacts
 - Where to watch: `https://github.com/georgenijo/murmur-app/actions`
 - Release will publish automatically at: `https://github.com/georgenijo/murmur-app/releases`

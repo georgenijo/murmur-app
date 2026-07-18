@@ -1,5 +1,5 @@
 name: Setup Linux build environment
-description: Installs apt deps, CUDA toolkit (cached), and sets up Rust cache for whisper-rs-sys.
+description: Installs apt deps, restores the minimal CUDA toolchain, and configures Rust caching.
 
 inputs:
   cuda-version:
@@ -14,7 +14,10 @@ inputs:
     default: 'linux-cuda-debug'
   rust-cache-save-if:
     description: Expression controlling whether the Rust cache is saved; defaults to main-branch pushes only
-    default: "${{ github.ref == 'refs/heads/main' }}"
+    default: "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}"
+  cuda-cache-save-if:
+    description: Expression controlling whether the CUDA cache is saved; defaults to trusted main-branch pushes only
+    default: "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}"
 
 runs:
   using: composite
@@ -44,14 +47,8 @@ runs:
       id: cuda-cache
       uses: actions/cache/restore@v4
       with:
-        path: |
-          /usr/local/cuda-${{ env.CUDA_MM }}
-          /usr/local/cuda
-          /usr/lib/x86_64-linux-gnu/libcuda*
-          /usr/lib/x86_64-linux-gnu/libnvidia-*
-          /etc/ld.so.conf.d/cuda-*.conf
-          /etc/ld.so.conf.d/nvidia-*.conf
-        key: cuda-toolkit-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cuda-version }}-jimver-v0.2.21
+        path: /usr/local/cuda-${{ env.CUDA_MM }}
+        key: cuda-minimal-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cuda-version }}-v1
 
     - name: Install CUDA toolkit
       if: steps.cuda-cache.outputs.cache-hit != 'true'
@@ -59,38 +56,67 @@ runs:
       with:
         cuda: ${{ inputs.cuda-version }}
         method: network
+        sub-packages: '["nvcc", "cudart-dev"]'
+        non-cuda-sub-packages: '["libcublas-dev"]'
 
-    # On cache hit Jimver does not run, so we must restore the env vars it normally sets.
-    # These mirror what Jimver exports; any missing var surfaces as a hard linker error in
-    # the next cargo step (not a silent wrong binary).
-    - name: Restore CUDA env vars on cache hit
-      if: steps.cuda-cache.outputs.cache-hit == 'true'
+    # Cache only the physical versioned tree. Recreate transient aliases and loader
+    # configuration on every runner so archives cannot contain duplicate/unstable paths.
+    - name: Configure CUDA environment
       shell: bash
       run: |
+        if [ ! -d "/usr/local/cuda-${CUDA_MM}" ]; then
+          echo "ERROR: CUDA tree is missing: /usr/local/cuda-${CUDA_MM}"
+          exit 1
+        fi
+        if [ -e /usr/local/cuda ] && [ ! -L /usr/local/cuda ]; then
+          sudo rm -rf /usr/local/cuda
+        fi
+        sudo ln -sfn "/usr/local/cuda-${CUDA_MM}" /usr/local/cuda
+        echo '/usr/local/cuda/lib64' | sudo tee /etc/ld.so.conf.d/cuda-murmur.conf >/dev/null
+        echo '/usr/local/cuda/targets/x86_64-linux/lib' | sudo tee -a /etc/ld.so.conf.d/cuda-murmur.conf >/dev/null
         echo "/usr/local/cuda/bin" >> "$GITHUB_PATH"
         echo "CUDA_PATH=/usr/local/cuda" >> "$GITHUB_ENV"
         echo "CUDA_PATH_V${CUDA_MM//./_}=/usr/local/cuda" >> "$GITHUB_ENV"
-        echo "LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+        echo "LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/cuda/targets/x86_64-linux/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
         sudo ldconfig
 
-    # Runs on both hit and miss paths; fails immediately if the install or cache restore
-    # produced a broken layout rather than waiting for cmake to die midway through.
+    # A claimed hit with a damaged tree fails closed. It must not silently reinstall and
+    # overwrite a trusted cache with another ambiguous archive.
     - name: Verify CUDA install
       shell: bash
-      run: nvcc --version || { echo "CUDA toolkit not available after install/restore"; exit 1; }
+      run: |
+        NVCC="/usr/local/cuda-${CUDA_MM}/bin/nvcc"
+        if [ ! -x "$NVCC" ]; then
+          echo "ERROR: CUDA cache-hit=${{ steps.cuda-cache.outputs.cache-hit }} but nvcc is missing: $NVCC"
+          exit 1
+        fi
+        "$NVCC" --version | tee /tmp/murmur-nvcc-version.txt
+        if ! grep -q "release ${CUDA_MM}" /tmp/murmur-nvcc-version.txt; then
+          echo "ERROR: nvcc version does not match requested CUDA ${CUDA_MM}"
+          exit 1
+        fi
+        if ! find "/usr/local/cuda-${CUDA_MM}" -name 'libcublas.so*' -print -quit | grep -q .; then
+          echo "ERROR: minimal CUDA tree is missing cuBLAS runtime/development libraries"
+          exit 1
+        fi
 
     - name: Save CUDA toolkit cache
-      if: steps.cuda-cache.outputs.cache-hit != 'true'
+      if: steps.cuda-cache.outputs.cache-hit != 'true' && inputs.cuda-cache-save-if == 'true'
       uses: actions/cache/save@v4
       with:
-        path: |
-          /usr/local/cuda-${{ env.CUDA_MM }}
-          /usr/local/cuda
-          /usr/lib/x86_64-linux-gnu/libcuda*
-          /usr/lib/x86_64-linux-gnu/libnvidia-*
-          /etc/ld.so.conf.d/cuda-*.conf
-          /etc/ld.so.conf.d/nvidia-*.conf
-        key: cuda-toolkit-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cuda-version }}-jimver-v0.2.21
+        path: /usr/local/cuda-${{ env.CUDA_MM }}
+        key: cuda-minimal-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cuda-version }}-v1
+
+    - name: Summarize CUDA cache policy
+      shell: bash
+      run: |
+        {
+          echo "### CUDA cache"
+          echo "- key: \`cuda-minimal-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cuda-version }}-v1\`"
+          echo "- restore hit: \`${{ steps.cuda-cache.outputs.cache-hit || 'false' }}\`"
+          echo "- write authorized: \`${{ inputs.cuda-cache-save-if }}\`"
+          echo "- physical tree: \`/usr/local/cuda-${CUDA_MM}\` ($(du -sh "/usr/local/cuda-${CUDA_MM}" | cut -f1))"
+        } >> "$GITHUB_STEP_SUMMARY"
 
     # cuda-${{ inputs.cuda-version }} is appended to the key so a CUDA upgrade invalidates
     # stale whisper-rs-sys kernels compiled against older headers.
