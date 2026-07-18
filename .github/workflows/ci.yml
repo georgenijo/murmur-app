@@ -11,6 +11,7 @@ concurrency:
 
 jobs:
   changes:
+    if: "${{ github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'chore: bump version') }}"
     runs-on: ubuntu-latest
     outputs:
       frontend: ${{ steps.filter.outputs.frontend }}
@@ -43,6 +44,10 @@ jobs:
               - 'Cargo.lock'
             github:
               - '.github/**'
+              - 'scripts/validate_workflow_policy.py'
+
+      - name: Validate workflow policy
+        run: python3 scripts/validate_workflow_policy.py
 
   typecheck:
     needs: changes
@@ -116,7 +121,9 @@ jobs:
 
   ci-pass:
     needs: [changes, typecheck, rust-macos, linux]
-    if: always()
+    # Keep this guard aligned with `changes`; otherwise the sentinel would turn
+    # an intentionally skipped release-bump run into a failure.
+    if: "${{ always() && (github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'chore: bump version')) }}"
     runs-on: ubuntu-latest
     steps:
       - name: Check CI result
