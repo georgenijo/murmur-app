@@ -11,6 +11,7 @@ CI_WORKFLOW = ROOT / ".github/workflows/ci.yml"
 RELEASE_BUILD_WORKFLOW = ROOT / ".github/workflows/release-build.yml"
 RELEASE_WORKFLOW = ROOT / ".github/workflows/release.yml"
 LINUX_SETUP_ACTION = ROOT / ".github/actions/setup-linux-build/action.yml"
+CARGO_TOML = ROOT / "app/src-tauri/Cargo.toml"
 
 CI_GUARD = (
     '"${{ github.event_name != \'push\' || '
@@ -117,6 +118,9 @@ def validate_release_build(workflow: str) -> int:
     assert "linux-release-${{ needs.context.outputs.source-sha }}" in workflow
     assert "shared-key: macos-release-v1" in workflow
     assert "shared-key: linux-cuda-release-v1" in workflow
+    linux_build = named_step_block(workflow, "Build signed packages", 6)
+    assert "args: --bundles deb,appimage --verbose" in linux_build
+    assert "rpm" not in linux_build
     assert workflow.count("${{ needs.context.outputs.cache-write == 'true' }}") >= 3
     assert "AppImage must not contain the runner-local NVIDIA driver stub" in workflow
     assert workflow.count(
@@ -182,6 +186,12 @@ def validate_linux_cache_policy(action: str) -> None:
     assert "${LD_LIBRARY_PATH:-}" not in configure
 
 
+def validate_release_profile(cargo_toml: str) -> None:
+    profile = cargo_toml.split("[profile.release]", 1)[1]
+    profile = profile.split("\n[", 1)[0]
+    assert re.search(r"^strip\s*=\s*false\s*$", profile, re.MULTILINE)
+
+
 def validate_promotion_policy(workflow: str) -> int:
     assert "tags:\n      - 'v*'" in workflow
     assert "\n  workflow_dispatch:" in workflow
@@ -219,10 +229,12 @@ def main() -> None:
     release_build = RELEASE_BUILD_WORKFLOW.read_text()
     release = RELEASE_WORKFLOW.read_text()
     linux_action = LINUX_SETUP_ACTION.read_text()
+    cargo_toml = CARGO_TOML.read_text()
 
     ci_cases = validate_ci(ci)
     release_build_cases = validate_release_build(release_build)
     validate_linux_cache_policy(linux_action)
+    validate_release_profile(cargo_toml)
     publication_steps = validate_promotion_policy(release)
 
     print(

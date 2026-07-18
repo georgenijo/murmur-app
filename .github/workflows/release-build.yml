@@ -246,6 +246,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: app
+          args: --bundles deb,appimage --verbose
 
       - name: Install package smoke-test dependencies
         run: sudo apt-get install -y xvfb dbus-x11 at-spi2-core

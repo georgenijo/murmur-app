@@ -65,4 +65,6 @@ panic = "abort"
 codegen-units = 1
 lto = true
 opt-level = "s"
-strip = true
+# Tauri patches an embedded bundle-type marker after compilation so the updater
+# can distinguish deb/AppImage packages. Full stripping removes that marker.
+strip = false

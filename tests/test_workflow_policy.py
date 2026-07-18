@@ -5,6 +5,7 @@ from scripts.validate_workflow_policy import (
     validate_linux_cache_policy,
     validate_promotion_policy,
     validate_release_build,
+    validate_release_profile,
 )
 
 
@@ -85,6 +86,21 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
         )
         with self.assertRaises(AssertionError):
             validate_release_build(mutated_workflow)
+
+    def test_release_build_rejects_rpm_or_non_verbose_packaging(self) -> None:
+        workflow = (ROOT / ".github/workflows/release-build.yml").read_text()
+        mutated = workflow.replace(
+            "args: --bundles deb,appimage --verbose",
+            "args: --bundles all",
+            1,
+        )
+        with self.assertRaises(AssertionError):
+            validate_release_build(mutated)
+
+    def test_release_profile_must_retain_tauri_bundle_marker(self) -> None:
+        cargo_toml = (ROOT / "app/src-tauri/Cargo.toml").read_text()
+        with self.assertRaises(AssertionError):
+            validate_release_profile(cargo_toml.replace("strip = false", "strip = true"))
 
 
 if __name__ == "__main__":
