@@ -107,7 +107,7 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             validate_release_build(mutated)
 
-    def test_cuda_driver_audit_does_not_reject_libcudart(self) -> None:
+    def test_cuda_driver_audit_rejects_broad_libcuda_glob(self) -> None:
         workflow = (ROOT / ".github/workflows/release-build.yml").read_text()
         mutated = workflow.replace(
             "-name 'libcuda.so*' -print -quit",
