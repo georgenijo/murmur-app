@@ -4,434 +4,274 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Full trusted-main commit SHA to rehearse (never publishes)
+        required: true
+      artifact_run_id:
+        description: Successful Release Build workflow run ID for that SHA
+        required: true
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: read
 
 jobs:
-  typecheck:
+  resolve:
     runs-on: ubuntu-latest
+    outputs:
+      source-sha: ${{ steps.resolve.outputs.source_sha }}
+      artifact-run-id: ${{ steps.resolve.outputs.artifact_run_id }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      publish: ${{ steps.resolve.outputs.publish }}
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: app/package-lock.json
+          fetch-depth: 0
 
-      - name: Install dependencies
-        run: cd app && npm ci
-
-      - name: TypeScript check
-        run: cd app && npx tsc --noEmit
-
-      - name: Unit tests
-        run: cd app && npm test
-
-  release-macos:
-    needs: [typecheck]
-    runs-on: macos-latest
-    permissions:
-      contents: write
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: app/package-lock.json
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Rust dependencies
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: app/src-tauri
-
-      - name: Install frontend dependencies
-        run: cd app && npm ci
-
-      - name: Locate clang runtime for ggml-metal symbol resolution
-        run: |
-          CLANG_RT=$(find /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang \
-            -name "libclang_rt.osx.a" 2>/dev/null | sort -V | tail -1)
-          if [ -z "$CLANG_RT" ]; then
-            echo "ERROR: libclang_rt.osx.a not found"
-            find /Applications/Xcode.app/Contents/Developer/Toolchains -name "libclang_rt*.a" 2>/dev/null | head -10
-            exit 1
-          fi
-          echo "Found: $CLANG_RT"
-          echo "RUSTFLAGS=-C link-arg=$CLANG_RT -C link-arg=-mmacosx-version-min=14.0 -C link-arg=-Wl,-rpath,/usr/lib/swift" >> $GITHUB_ENV
-
-      - name: Build, sign, and notarize
-        id: tauri-build
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MACOSX_DEPLOYMENT_TARGET: "14.0"
-          CMAKE_OSX_DEPLOYMENT_TARGET: "14.0"
-          CMAKE_C_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
-          CMAKE_CXX_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          projectPath: app
-
-      - name: Smoke test — verify .app launches
-        run: |
-          APP=$(find app/src-tauri/target/release/bundle/macos -maxdepth 1 -name "*.app" | head -1)
-          BINARY="$APP/Contents/MacOS/$(ls "$APP/Contents/MacOS/" | head -1)"
-
-          echo "=== Verifying bundle exists ==="
-          ls -la "$APP/Contents/MacOS/"
-
-          echo "=== Launching binary ==="
-          "$BINARY" &
-          PID=$!
-          echo "Started with PID $PID"
-
-          echo "=== Waiting 5 seconds ==="
-          for i in 1 2 3 4 5; do
-            sleep 1
-            if ! kill -0 "$PID" 2>/dev/null; then
-              echo "FAIL: Process died after ${i}s"
-              echo "=== Crash logs ==="
-              find ~/Library/Logs/DiagnosticReports -name "ui-*" -newer "$BINARY" 2>/dev/null \
-                | head -5 | while read -r f; do
-                  echo "--- $f ---"
-                  cat "$f"
-                done
-              exit 1
-            fi
-            echo "  Alive at ${i}s"
-          done
-
-          echo "=== Smoke test passed — killing process ==="
-          kill "$PID" 2>/dev/null || true
-          wait "$PID" 2>/dev/null || true
-
-      - name: Collect updater artifact info
-        run: |
-          ARTIFACTS='${{ steps.tauri-build.outputs.artifactPaths }}'
-          TAR_GZ_FILE=$(echo "$ARTIFACTS" | jq -r '.[]' | grep '\.app\.tar\.gz$' | head -1)
-          TAR_GZ_BASENAME=$(basename "$TAR_GZ_FILE")
-          RUNNER_ARCH=$(uname -m)
-          [ "$RUNNER_ARCH" = "arm64" ] && RUNNER_ARCH="aarch64"
-
-          SIG_FILE="${TAR_GZ_FILE}.sig"
-          SIGNATURE=""
-          if [ -f "$SIG_FILE" ]; then
-            SIGNATURE=$(cat "$SIG_FILE")
-          fi
-
-          mkdir -p updater-info
-          cat > updater-info/macos.json <<ENDJSON
-          {
-            "platform": "darwin-${RUNNER_ARCH}",
-            "url_basename": "${TAR_GZ_BASENAME}",
-            "signature": "${SIGNATURE}"
-          }
-          ENDJSON
-
-      - name: Upload release artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-artifacts
-          path: |
-            app/src-tauri/target/release/bundle/dmg/*.dmg
-            app/src-tauri/target/release/bundle/macos/*.app.tar.gz
-            app/src-tauri/target/release/bundle/macos/*.app.tar.gz.sig
-
-      - name: Upload updater info
-        uses: actions/upload-artifact@v4
-        with:
-          name: updater-macos
-          path: updater-info/macos.json
-
-  release-linux:
-    needs: [typecheck]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: app/package-lock.json
-
-      - name: Free disk space for CUDA release build
-        run: |
-          echo "=== Disk before cleanup ==="
-          df -h /
-          sudo rm -rf \
-            /usr/local/lib/android \
-            /usr/share/dotnet \
-            /opt/ghc \
-            /usr/local/.ghcup \
-            /opt/hostedtoolcache/CodeQL
-          sudo apt-get clean
-          docker system prune --all --force || true
-          echo "=== Disk after cleanup ==="
-          df -h /
-
-      # actions/checkout above must run first so the local composite action is on disk.
-      - name: Setup Linux build environment
-        uses: ./.github/actions/setup-linux-build
-        with:
-          cuda-version: '12.8.0'
-          rust-cache-shared-key: linux-cuda-release
-          rust-cache-save-if: ${{ startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' }}
-
-      - name: Install frontend dependencies
-        run: cd app && npm ci
-
-      - name: Build
-        id: tauri-build
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          projectPath: app
-
-      - name: Install smoke test dependencies
-        run: sudo apt-get install -y xvfb dbus-x11 at-spi2-core
-
-      - name: Smoke test — verify binary launches and frontend mounts
-        run: |
-          BINARY="app/src-tauri/target/release/ui"
-          LOG="$HOME/.local/share/local-dictation/logs/app.log"
-
-          echo "=== Verifying binary exists ==="
-          ls -la "$BINARY"
-
-          echo "=== Clearing any prior log ==="
-          rm -f "$LOG"
-
-          echo "=== Launching under xvfb + dbus ==="
-          xvfb-run -a --server-args="-screen 0 1280x800x24" \
-            dbus-run-session -- "$BINARY" > /tmp/murmur-smoke.log 2>&1 &
-          PID=$!
-          echo "Started with PID $PID"
-
-          echo "=== Waiting up to 20s for [main] App mounted ==="
-          MOUNTED=0
-          for i in $(seq 1 20); do
-            sleep 1
-            if ! kill -0 "$PID" 2>/dev/null; then
-              echo "FAIL: Process died after ${i}s"
-              echo "--- stderr ---"; tail -50 /tmp/murmur-smoke.log || true
-              echo "--- app.log ---"; tail -50 "$LOG" 2>/dev/null || echo "(no log)"
-              exit 1
-            fi
-            if grep -q "\[main\] App mounted" "$LOG" 2>/dev/null; then
-              echo "  Mounted at ${i}s"
-              MOUNTED=1
-              break
-            fi
-            echo "  Alive at ${i}s (not mounted yet)"
-          done
-
-          if [ "$MOUNTED" != "1" ]; then
-            echo "FAIL: Frontend never mounted within 20s"
-            echo "--- stderr ---"; tail -50 /tmp/murmur-smoke.log || true
-            echo "--- app.log ---"; tail -80 "$LOG" 2>/dev/null || echo "(no log)"
-            kill "$PID" 2>/dev/null || true
-            exit 1
-          fi
-
-          echo "=== Smoke test passed — killing process ==="
-          kill "$PID" 2>/dev/null || true
-          wait "$PID" 2>/dev/null || true
-
-      - name: Collect updater artifact info
-        run: |
-          # Tauri v2 reuses the AppImage itself as the Linux updater bundle.
-          # Do not rely on tauri-action's artifactPaths output here: it can omit
-          # updater-only paths even when the signed files exist on disk.
-          APPIMAGE_FILE=$(find app/src-tauri/target/release/bundle/appimage \
-            -maxdepth 1 -type f -name '*.AppImage' -print -quit)
-          if [ -z "$APPIMAGE_FILE" ]; then
-            echo "ERROR: Linux updater AppImage was not generated"
-            exit 1
-          fi
-          APPIMAGE_BASENAME=$(basename "$APPIMAGE_FILE")
-          RUNNER_ARCH=$(uname -m)
-
-          SIG_FILE="${APPIMAGE_FILE}.sig"
-          if [ ! -s "$SIG_FILE" ]; then
-            echo "ERROR: Linux updater signature was not generated: $SIG_FILE"
-            exit 1
-          fi
-          SIGNATURE=$(cat "$SIG_FILE")
-
-          mkdir -p updater-info
-          cat > updater-info/linux.json <<ENDJSON
-          {
-            "platform": "linux-${RUNNER_ARCH}",
-            "url_basename": "${APPIMAGE_BASENAME}",
-            "signature": "${SIGNATURE}"
-          }
-          ENDJSON
-
-      - name: Upload release artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-artifacts
-          path: |
-            app/src-tauri/target/release/bundle/deb/*.deb
-            app/src-tauri/target/release/bundle/appimage/*.AppImage
-            app/src-tauri/target/release/bundle/appimage/*.AppImage.sig
-
-      - name: Upload updater info
-        uses: actions/upload-artifact@v4
-        with:
-          name: updater-linux
-          path: updater-info/linux.json
-
-  publish:
-    needs: [release-macos, release-linux]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
-    steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      - name: Create draft release
+      - name: Resolve exact trusted build
+        id: resolve
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_SOURCE_SHA: ${{ inputs.source_sha }}
+          INPUT_ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}
         run: |
-          gh release create "${{ github.ref_name }}" \
-            --repo "${{ github.repository }}" \
-            --title "${{ github.ref_name }}" \
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            TAG="$GITHUB_REF_NAME"
+            if ! echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$'; then
+              echo "ERROR: invalid release tag: $TAG"
+              exit 1
+            fi
+            SOURCE_SHA=$(git rev-list -n 1 "$TAG")
+            VERSION=$(jq -r '.version' app/src-tauri/tauri.conf.json)
+            CARGO_VERSION=$(sed -n 's/^version = "\([^"]*\)"/\1/p' app/src-tauri/Cargo.toml | head -1)
+            if [ "v$VERSION" != "$TAG" ] || [ "$CARGO_VERSION" != "$VERSION" ]; then
+              echo "ERROR: tag/config versions differ: tag=$TAG tauri=$VERSION cargo=$CARGO_VERSION"
+              exit 1
+            fi
+
+            RUNS=$(gh api --method GET \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/release-build.yml/runs" \
+              -f head_sha="$SOURCE_SHA" -f status=success -f per_page=100)
+            ARTIFACT_RUN_ID=$(echo "$RUNS" | jq -r --arg sha "$SOURCE_SHA" '
+              [.workflow_runs[]
+                | select(.head_sha == $sha)
+                | select(.head_branch == "main")
+                | select(.event == "push")
+                | select(.conclusion == "success")]
+              | sort_by(.run_number) | last | .id // empty
+            ')
+            if [ -z "$ARTIFACT_RUN_ID" ]; then
+              echo "ERROR: no successful trusted-main Release Build exists for tag SHA $SOURCE_SHA"
+              exit 1
+            fi
+            PUBLISH=true
+          else
+            TAG=""
+            SOURCE_SHA="$INPUT_SOURCE_SHA"
+            ARTIFACT_RUN_ID="$INPUT_ARTIFACT_RUN_ID"
+            PUBLISH=false
+          fi
+
+          if ! echo "$SOURCE_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "ERROR: source SHA must be a full lowercase 40-character commit SHA"
+            exit 1
+          fi
+          if ! echo "$ARTIFACT_RUN_ID" | grep -Eq '^[1-9][0-9]*$'; then
+            echo "ERROR: artifact run ID must be a positive integer"
+            exit 1
+          fi
+
+          RUN=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${ARTIFACT_RUN_ID}")
+          echo "$RUN" | jq -e --arg sha "$SOURCE_SHA" '
+            .name == "Release Build"
+            and .head_sha == $sha
+            and .head_branch == "main"
+            and (.event == "push" or .event == "workflow_dispatch")
+            and .status == "completed"
+            and .conclusion == "success"
+            and (.path | startswith(".github/workflows/release-build.yml"))
+          ' >/dev/null || {
+            echo "ERROR: workflow run $ARTIFACT_RUN_ID is not a successful trusted-main Release Build for $SOURCE_SHA"
+            exit 1
+          }
+          if [ "$PUBLISH" = "true" ] && [ "$(echo "$RUN" | jq -r .event)" != "push" ]; then
+            echo "ERROR: automatic tag publication requires the trusted main push build"
+            exit 1
+          fi
+
+          ARTIFACTS=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${ARTIFACT_RUN_ID}/artifacts")
+          for NAME in "macos-release-${SOURCE_SHA}" "linux-release-${SOURCE_SHA}"; do
+            COUNT=$(echo "$ARTIFACTS" | jq --arg name "$NAME" \
+              '[.artifacts[] | select(.name == $name and .expired == false)] | length')
+            if [ "$COUNT" != "1" ]; then
+              echo "ERROR: expected one unexpired $NAME artifact on run $ARTIFACT_RUN_ID, found $COUNT"
+              exit 1
+            fi
+          done
+
+          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "artifact_run_id=$ARTIFACT_RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Immutable promotion source"
+            echo "- commit: \`$SOURCE_SHA\`"
+            echo "- Release Build run: \`$ARTIFACT_RUN_ID\`"
+            echo "- tag: \`${TAG:-rehearsal-only}\`"
+            echo "- publish authorized: \`$PUBLISH\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  promote:
+    needs: resolve
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.source-sha }}
+
+      - name: Download immutable macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-release-${{ needs.resolve.outputs.source-sha }}
+          path: artifacts/macos
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.resolve.outputs.artifact-run-id }}
+
+      - name: Download immutable Linux artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-release-${{ needs.resolve.outputs.source-sha }}
+          path: artifacts/linux
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.resolve.outputs.artifact-run-id }}
+
+      - name: Validate SHA, provenance, artifact hashes, and updater signatures
+        run: |
+          python3 scripts/release_artifacts.py validate \
+            --artifacts artifacts \
+            --expected-sha '${{ needs.resolve.outputs.source-sha }}' \
+            --expected-run-id '${{ needs.resolve.outputs.artifact-run-id }}' \
+            --output validated-release.json
+
+      - name: Report non-publishing promotion rehearsal
+        if: needs.resolve.outputs.publish != 'true'
+        run: |
+          {
+            echo "### Promotion rehearsal passed"
+            echo "All commit-SHA, workflow-run, artifact-hash, and updater-signature gates passed."
+            echo "No tag, draft release, release asset, updater manifest, or published release was created."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create draft release
+        if: needs.resolve.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$TAG" \
             --generate-notes \
             --draft
 
-      - name: Upload release assets
+      - name: Upload signed release assets
+        if: needs.resolve.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.resolve.outputs.tag }}
         run: |
-          find artifacts/macos-artifacts artifacts/linux-artifacts -type f | while read -r file; do
-            echo "Uploading: $file"
-            gh release upload "${{ github.ref_name }}" "$file" \
-              --repo "${{ github.repository }}"
+          find artifacts/macos artifacts/linux -maxdepth 1 -type f ! -name provenance.json \
+            -print0 | while IFS= read -r -d '' FILE; do
+              echo "Uploading: $FILE"
+              gh release upload "$TAG" "$FILE" --repo "$GITHUB_REPOSITORY"
+            done
+
+      - name: Verify uploaded updater signatures
+        if: needs.resolve.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          mkdir -p remote-signatures
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern '*.sig' --dir remote-signatures
+          for LOCAL in artifacts/macos/*.sig artifacts/linux/*.sig; do
+            REMOTE="remote-signatures/$(basename "$LOCAL")"
+            if [ ! -f "$REMOTE" ] || ! cmp -s "$LOCAL" "$REMOTE"; then
+              echo "ERROR: uploaded signature differs from trusted build artifact: $(basename "$LOCAL")"
+              exit 1
+            fi
           done
 
-      - name: Generate and upload updater channel manifests
+      - name: Generate updater channel manifests from verified signatures
+        if: needs.resolve.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.resolve.outputs.tag }}
         run: |
-          TAG="${{ github.ref_name }}"
-          VERSION="${TAG#v}"
-          REPO="${{ github.repository }}"
-          BASE_URL="https://github.com/${REPO}/releases/download/${TAG}"
-
-          # Read platform info from both builds
-          MACOS=$(cat artifacts/updater-macos/macos.json)
-          LINUX=$(cat artifacts/updater-linux/linux.json)
-
-          MACOS_PLATFORM=$(echo "$MACOS" | jq -r '.platform')
-          MACOS_URL="${BASE_URL}/$(echo "$MACOS" | jq -r '.url_basename')"
-          MACOS_SIG=$(echo "$MACOS" | jq -r '.signature')
-
-          LINUX_PLATFORM=$(echo "$LINUX" | jq -r '.platform')
-          LINUX_URL="${BASE_URL}/$(echo "$LINUX" | jq -r '.url_basename')"
-          LINUX_SIG=$(echo "$LINUX" | jq -r '.signature')
-
-          if [ -z "$MACOS_PLATFORM" ] || [ -z "$MACOS_SIG" ] \
-            || [ -z "$LINUX_PLATFORM" ] || [ -z "$LINUX_SIG" ]; then
-            echo "ERROR: current updater artifact metadata or signature is missing"
-            exit 1
-          fi
-
-          # New builds use this channel. It includes macOS 14+ and Linux so the
-          # shared Tauri config works on both platforms.
-          jq -n \
-            --arg version "$VERSION" \
-            --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            --arg macos_platform "$MACOS_PLATFORM" \
-            --arg macos_url "$MACOS_URL" \
-            --arg macos_sig "$MACOS_SIG" \
-            --arg linux_platform "$LINUX_PLATFORM" \
-            --arg linux_url "$LINUX_URL" \
-            --arg linux_sig "$LINUX_SIG" \
-            --arg notes "See release notes at https://github.com/${REPO}/releases/tag/${TAG}" \
-            '{
-              version: $version,
-              pub_date: $pub_date,
-              platforms: {
-                ($macos_platform): { url: $macos_url, signature: $macos_sig },
-                ($linux_platform): { url: $linux_url, signature: $linux_sig }
-              },
-              notes: $notes
-            }' > latest-v2.json
-
-          # Clients older than v0.14.1 still request latest.json. Route those
-          # Macs through the signed macOS 13-compatible bridge, whose embedded
-          # updater endpoint is latest-v2. Linux updates directly.
-          BRIDGE_TAG="v0.14.1"
-          BRIDGE_RELEASE=$(gh api "repos/${REPO}/releases/tags/${BRIDGE_TAG}")
-          BRIDGE_URL=$(echo "$BRIDGE_RELEASE" | jq -r '
-            [.assets[] | select(.name | endswith(".app.tar.gz")) | .browser_download_url][0] // empty
-          ')
-          BRIDGE_SIG_URL=$(echo "$BRIDGE_RELEASE" | jq -r '
-            [.assets[] | select(.name | endswith(".app.tar.gz.sig")) | .browser_download_url][0] // empty
-          ')
+          BRIDGE_TAG=v0.14.1
+          BRIDGE_RELEASE=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${BRIDGE_TAG}")
+          BRIDGE_URL=$(echo "$BRIDGE_RELEASE" | jq -r \
+            '[.assets[] | select(.name | endswith(".app.tar.gz")) | .browser_download_url][0] // empty')
+          BRIDGE_SIG_URL=$(echo "$BRIDGE_RELEASE" | jq -r \
+            '[.assets[] | select(.name | endswith(".app.tar.gz.sig")) | .browser_download_url][0] // empty')
           if [ -z "$BRIDGE_URL" ] || [ -z "$BRIDGE_SIG_URL" ]; then
-            echo "ERROR: ${BRIDGE_TAG} is missing its signed macOS updater artifact"
+            echo "ERROR: $BRIDGE_TAG is missing its signed macOS updater artifact"
             exit 1
           fi
           BRIDGE_SIG=$(curl --fail --silent --show-error --location "$BRIDGE_SIG_URL")
-          if [ -z "$BRIDGE_SIG" ]; then
-            echo "ERROR: ${BRIDGE_TAG} updater signature is empty"
-            exit 1
-          fi
+          python3 scripts/release_artifacts.py manifests \
+            --validated validated-release.json \
+            --tag "$TAG" \
+            --repository "$GITHUB_REPOSITORY" \
+            --bridge-url "$BRIDGE_URL" \
+            --bridge-signature "$BRIDGE_SIG" \
+            --output-dir manifests
 
-          jq -n \
-            --arg version "$VERSION" \
-            --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            --arg macos_platform "$MACOS_PLATFORM" \
-            --arg macos_url "$BRIDGE_URL" \
-            --arg macos_sig "$BRIDGE_SIG" \
-            --arg linux_platform "$LINUX_PLATFORM" \
-            --arg linux_url "$LINUX_URL" \
-            --arg linux_sig "$LINUX_SIG" \
-            --arg notes "Compatibility bridge for existing macOS installs. Murmur will offer the current release after relaunch." \
-            '{
-              version: $version,
-              pub_date: $pub_date,
-              platforms: {
-                ($macos_platform): { url: $macos_url, signature: $macos_sig },
-                ($linux_platform): { url: $linux_url, signature: $linux_sig }
-              },
-              notes: $notes
-            }' > latest.json
+          PUB_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          for MANIFEST in manifests/latest-v2.json manifests/latest.json; do
+            jq --arg pub_date "$PUB_DATE" '.pub_date = $pub_date' "$MANIFEST" > "$MANIFEST.tmp"
+            mv "$MANIFEST.tmp" "$MANIFEST"
+          done
 
-          echo "=== Modern v2 channel ==="
-          cat latest-v2.json
-          echo "=== legacy channel (macOS 13 bridge + current Linux) ==="
-          cat latest.json
-          gh release upload "${TAG}" latest-v2.json latest.json \
-            --repo "${{ github.repository }}" \
-            --clobber
-
-      - name: Publish release
+      - name: Upload and verify updater manifests
+        if: needs.resolve.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit "${{ github.ref_name }}" --draft=false --repo "${{ github.repository }}"
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          gh release upload "$TAG" manifests/latest-v2.json manifests/latest.json \
+            --repo "$GITHUB_REPOSITORY" --clobber
+          mkdir -p remote-manifests
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'latest*.json' --dir remote-manifests
+          cmp manifests/latest-v2.json remote-manifests/latest-v2.json
+          cmp manifests/latest.json remote-manifests/latest.json
+
+          MACOS_SIG=$(cat artifacts/macos/*.app.tar.gz.sig)
+          LINUX_SIG=$(cat artifacts/linux/*.AppImage.sig)
+          jq -e --arg mac "$MACOS_SIG" --arg linux "$LINUX_SIG" '
+            ([.platforms[] | .signature] | index($mac)) != null
+            and ([.platforms[] | .signature] | index($linux)) != null
+          ' remote-manifests/latest-v2.json >/dev/null || {
+            echo "ERROR: published modern manifest signatures do not match uploaded .sig assets"
+            exit 1
+          }
+
+      - name: Publish release
+        if: needs.resolve.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: gh release edit "$TAG" --draft=false --repo "$GITHUB_REPOSITORY"

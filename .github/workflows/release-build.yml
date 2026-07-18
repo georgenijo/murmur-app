@@ -1,0 +1,346 @@
+name: Release Build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      prime_caches:
+        description: Save trusted main release caches after this non-publishing rehearsal
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  context:
+    if: "${{ github.event_name == 'workflow_dispatch' || startsWith(github.event.head_commit.message, 'chore: bump version') }}"
+    runs-on: ubuntu-latest
+    outputs:
+      source-sha: ${{ steps.context.outputs.source_sha }}
+      cache-write: ${{ steps.context.outputs.cache_write }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate trusted main source
+        id: context
+        env:
+          PRIME_CACHES: ${{ inputs.prime_caches || false }}
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "ERROR: release builds may only execute from the trusted main branch"
+            exit 1
+          fi
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "ERROR: release source $GITHUB_SHA is not on origin/main"
+            exit 1
+          fi
+
+          CACHE_WRITE=false
+          if [ "$GITHUB_EVENT_NAME" = "push" ] || [ "$PRIME_CACHES" = "true" ]; then
+            CACHE_WRITE=true
+          fi
+          echo "source_sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          echo "cache_write=$CACHE_WRITE" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Trusted release build"
+            echo "- source: \`$GITHUB_SHA\`"
+            echo "- event: \`$GITHUB_EVENT_NAME\`"
+            echo "- cache write authorized: \`$CACHE_WRITE\`"
+            echo "- publication: disabled (artifacts only)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  typecheck:
+    needs: context
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.context.outputs.source-sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install dependencies
+        run: cd app && npm ci
+
+      - name: TypeScript check
+        run: cd app && npx tsc --noEmit
+
+      - name: Unit tests
+        run: cd app && npm test
+
+      - name: Workflow and artifact policy tests
+        run: |
+          python3 scripts/validate_workflow_policy.py
+          python3 -m unittest tests/test_release_artifacts.py tests/test_workflow_policy.py
+
+  release-macos:
+    needs: context
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.context.outputs.source-sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore release-profile Rust cache
+        id: rust-cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+          shared-key: macos-release-v1
+          key: profile-release
+          add-job-id-key: false
+          save-if: ${{ needs.context.outputs.cache-write == 'true' }}
+
+      - name: Install frontend dependencies
+        run: cd app && npm ci
+
+      - name: Locate clang runtime for ggml-metal symbol resolution
+        run: |
+          CLANG_RT=$(find /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang \
+            -name "libclang_rt.osx.a" 2>/dev/null | sort -V | tail -1)
+          if [ -z "$CLANG_RT" ]; then
+            echo "ERROR: libclang_rt.osx.a not found"
+            exit 1
+          fi
+          echo "RUSTFLAGS=-C link-arg=$CLANG_RT -C link-arg=-mmacosx-version-min=14.0 -C link-arg=-Wl,-rpath,/usr/lib/swift" >> "$GITHUB_ENV"
+
+      - name: Build, sign, and notarize
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MACOSX_DEPLOYMENT_TARGET: "14.0"
+          CMAKE_OSX_DEPLOYMENT_TARGET: "14.0"
+          CMAKE_C_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
+          CMAKE_CXX_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: app
+
+      - name: Smoke test signed application
+        run: |
+          APP=$(find app/src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)
+          BINARY="$APP/Contents/MacOS/$(ls "$APP/Contents/MacOS/" | head -1)"
+          if [ -z "$APP" ] || [ ! -x "$BINARY" ]; then
+            echo "ERROR: signed application bundle or binary is missing"
+            exit 1
+          fi
+          "$BINARY" &
+          PID=$!
+          for i in 1 2 3 4 5; do
+            sleep 1
+            if ! kill -0 "$PID" 2>/dev/null; then
+              echo "ERROR: signed application exited after ${i}s"
+              exit 1
+            fi
+          done
+          kill "$PID" 2>/dev/null || true
+          wait "$PID" 2>/dev/null || true
+
+      - name: Stage immutable macOS artifacts
+        env:
+          SOURCE_SHA: ${{ needs.context.outputs.source-sha }}
+        run: |
+          mkdir -p release-artifacts
+          find app/src-tauri/target/release/bundle/dmg -maxdepth 1 -type f -name '*.dmg' \
+            -exec cp {} release-artifacts/ \;
+          find app/src-tauri/target/release/bundle/macos -maxdepth 1 -type f \
+            \( -name '*.app.tar.gz' -o -name '*.app.tar.gz.sig' \) \
+            -exec cp {} release-artifacts/ \;
+          ARCH=$(uname -m)
+          [ "$ARCH" = "arm64" ] && ARCH=aarch64
+          python3 scripts/release_artifacts.py record \
+            --platform macos \
+            --platform-key "darwin-${ARCH}" \
+            --artifacts release-artifacts \
+            --commit-sha "$SOURCE_SHA" \
+            --run-id "$GITHUB_RUN_ID"
+
+      - name: Upload immutable macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-release-${{ needs.context.outputs.source-sha }}
+          path: release-artifacts
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+          overwrite: true
+
+      - name: Summarize macOS cache
+        run: |
+          {
+            echo "### macOS release cache"
+            echo "- restore hit: \`${{ steps.rust-cache.outputs.cache-hit || 'false' }}\`"
+            echo "- write authorized: \`${{ needs.context.outputs.cache-write }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  release-linux:
+    needs: context
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.context.outputs.source-sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Free disk space for CUDA release build
+        run: |
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL
+          sudo apt-get clean
+          docker system prune --all --force || true
+
+      - name: Setup minimal Linux release environment
+        uses: ./.github/actions/setup-linux-build
+        with:
+          cuda-version: '12.8.0'
+          rust-cache-shared-key: linux-cuda-release-v1
+          rust-cache-save-if: ${{ needs.context.outputs.cache-write == 'true' }}
+          cuda-cache-save-if: ${{ needs.context.outputs.cache-write == 'true' }}
+
+      - name: Install frontend dependencies
+        run: cd app && npm ci
+
+      - name: Build signed packages
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: app
+
+      - name: Install package smoke-test dependencies
+        run: sudo apt-get install -y xvfb dbus-x11 at-spi2-core
+
+      - name: Smoke test deb and AppImage packages
+        run: |
+          LOG="$HOME/.local/share/local-dictation/logs/app.log"
+          DEB=$(find app/src-tauri/target/release/bundle/deb -maxdepth 1 -type f -name '*.deb' -print -quit)
+          APPIMAGE=$(find app/src-tauri/target/release/bundle/appimage -maxdepth 1 -type f -name '*.AppImage' -print -quit)
+          if [ -z "$DEB" ] || [ -z "$APPIMAGE" ]; then
+            echo "ERROR: deb or AppImage package is missing"
+            exit 1
+          fi
+
+          rm -rf /tmp/murmur-deb-root
+          mkdir -p /tmp/murmur-deb-root
+          dpkg-deb -x "$DEB" /tmp/murmur-deb-root
+          DEB_BINARY=$(find /tmp/murmur-deb-root/usr/bin -maxdepth 1 -type f -perm -111 -print -quit)
+          if [ -z "$DEB_BINARY" ]; then
+            echo "ERROR: deb package has no executable in /usr/bin"
+            exit 1
+          fi
+          rm -f "$LOG"
+          LD_LIBRARY_PATH="$CUDA_DRIVER_STUB_DIR:${LD_LIBRARY_PATH:-}" \
+            xvfb-run -a dbus-run-session -- "$DEB_BINARY" >/tmp/murmur-deb-smoke.log 2>&1 &
+          PID=$!
+          for i in $(seq 1 20); do
+            sleep 1
+            if ! kill -0 "$PID" 2>/dev/null; then
+              tail -80 /tmp/murmur-deb-smoke.log || true
+              echo "ERROR: deb executable exited during smoke test"
+              exit 1
+            fi
+            grep -q '\[main\] App mounted' "$LOG" 2>/dev/null && break
+          done
+          grep -q '\[main\] App mounted' "$LOG" || { echo "ERROR: deb frontend did not mount"; exit 1; }
+          kill "$PID" 2>/dev/null || true
+          wait "$PID" 2>/dev/null || true
+
+          chmod +x "$APPIMAGE"
+          rm -f "$LOG"
+          LD_LIBRARY_PATH="$CUDA_DRIVER_STUB_DIR:${LD_LIBRARY_PATH:-}" \
+            xvfb-run -a dbus-run-session -- "$APPIMAGE" --appimage-extract-and-run \
+            >/tmp/murmur-appimage-smoke.log 2>&1 &
+          PID=$!
+          for i in $(seq 1 30); do
+            sleep 1
+            if ! kill -0 "$PID" 2>/dev/null; then
+              tail -80 /tmp/murmur-appimage-smoke.log || true
+              echo "ERROR: AppImage exited during smoke test"
+              exit 1
+            fi
+            grep -q '\[main\] App mounted' "$LOG" 2>/dev/null && break
+          done
+          grep -q '\[main\] App mounted' "$LOG" || { echo "ERROR: AppImage frontend did not mount"; exit 1; }
+          kill "$PID" 2>/dev/null || true
+          wait "$PID" 2>/dev/null || true
+
+      - name: Audit packaged CUDA libraries
+        run: |
+          APPIMAGE=$(find app/src-tauri/target/release/bundle/appimage -maxdepth 1 -type f -name '*.AppImage' -print -quit)
+          rm -rf squashfs-root
+          "$APPIMAGE" --appimage-extract >/dev/null
+          find squashfs-root -type f \( -name 'libcuda*' -o -name 'libcublas*' -o -name 'libnv*' \) \
+            -print | sort | tee /tmp/murmur-packaged-cuda-libraries.txt
+          {
+            echo "### Packaged CUDA libraries"
+            echo '```'
+            cat /tmp/murmur-packaged-cuda-libraries.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Stage immutable Linux artifacts
+        env:
+          SOURCE_SHA: ${{ needs.context.outputs.source-sha }}
+        run: |
+          mkdir -p release-artifacts
+          find app/src-tauri/target/release/bundle/deb -maxdepth 1 -type f -name '*.deb' \
+            -exec cp {} release-artifacts/ \;
+          find app/src-tauri/target/release/bundle/appimage -maxdepth 1 -type f \
+            \( -name '*.AppImage' -o -name '*.AppImage.sig' \) \
+            -exec cp {} release-artifacts/ \;
+          python3 scripts/release_artifacts.py record \
+            --platform linux \
+            --platform-key "linux-$(uname -m)" \
+            --artifacts release-artifacts \
+            --commit-sha "$SOURCE_SHA" \
+            --run-id "$GITHUB_RUN_ID"
+
+      - name: Upload immutable Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-release-${{ needs.context.outputs.source-sha }}
+          path: release-artifacts
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+          overwrite: true

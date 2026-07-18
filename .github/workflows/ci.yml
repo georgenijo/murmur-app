@@ -45,9 +45,14 @@ jobs:
             github:
               - '.github/**'
               - 'scripts/validate_workflow_policy.py'
+              - 'scripts/release_artifacts.py'
+              - 'tests/test_release_artifacts.py'
+              - 'tests/test_workflow_policy.py'
 
       - name: Validate workflow policy
-        run: python3 scripts/validate_workflow_policy.py
+        run: |
+          python3 scripts/validate_workflow_policy.py
+          python3 -m unittest tests/test_release_artifacts.py tests/test_workflow_policy.py
 
   typecheck:
     needs: changes
@@ -117,7 +122,10 @@ jobs:
           rust-cache-shared-key: linux-cuda-debug
 
       - name: Run tests
-        run: cd app/src-tauri && cargo test --lib -- --test-threads=1
+        run: |
+          cd app/src-tauri
+          LD_LIBRARY_PATH="$CUDA_DRIVER_STUB_DIR:${LD_LIBRARY_PATH:-}" \
+            cargo test --lib -- --test-threads=1
 
   ci-pass:
     needs: [changes, typecheck, rust-macos, linux]
