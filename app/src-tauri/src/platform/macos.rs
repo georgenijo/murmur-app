@@ -1,4 +1,5 @@
-use super::{cpu_percent_between, CpuTicks};
+use super::{update_cpu_percent, CpuTicks};
+use crate::MutexExt;
 use std::os::raw::c_int;
 use std::sync::Mutex;
 
@@ -24,32 +25,25 @@ unsafe extern "C" {
     ) -> c_int;
 }
 
-fn snapshot() -> CpuTicks {
+fn snapshot() -> Option<CpuTicks> {
     let mut info = HostCpuLoadInfo::default();
     let mut count = HOST_CPU_LOAD_INFO_COUNT;
     let host = unsafe { mach_host_self() };
     let result = unsafe { host_statistics64(host, HOST_CPU_LOAD_INFO, &mut info, &mut count) };
     unsafe { mach_port_deallocate(mach_task_self(), host) };
     if result != KERN_SUCCESS {
-        return CpuTicks::new(0, 0);
+        return None;
     }
 
-    CpuTicks::new(
+    Some(CpuTicks::new(
         info.ticks[0] as u64 + info.ticks[1] as u64 + info.ticks[3] as u64,
         info.ticks[2] as u64,
-    )
+    ))
 }
 
 static PREVIOUS: Mutex<Option<CpuTicks>> = Mutex::new(None);
 
 pub(super) fn cpu_percent() -> f32 {
     let current = snapshot();
-    let mut previous = PREVIOUS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let percent = previous
-        .map(|sample| cpu_percent_between(sample, current))
-        .unwrap_or(0.0);
-    *previous = Some(current);
-    percent
+    update_cpu_percent(&mut PREVIOUS.lock_or_recover(), current)
 }

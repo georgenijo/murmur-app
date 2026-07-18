@@ -38,6 +38,20 @@ pub(super) fn cpu_percent_between(previous: CpuTicks, current: CpuTicks) -> f32 
     }
 }
 
+pub(super) fn update_cpu_percent(
+    previous: &mut Option<CpuTicks>,
+    current: Option<CpuTicks>,
+) -> f32 {
+    let Some(current) = current else {
+        return 0.0;
+    };
+    let percent = previous
+        .map(|sample| cpu_percent_between(sample, current))
+        .unwrap_or(0.0);
+    *previous = Some(current);
+    percent
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -55,5 +69,18 @@ mod tests {
         let snapshot = CpuTicks::new(1_000, 4_000);
 
         assert_eq!(cpu_percent_between(snapshot, snapshot), 0.0);
+    }
+
+    #[test]
+    fn failed_sample_preserves_the_previous_baseline() {
+        let baseline = CpuTicks::new(1_000, 4_000);
+        let mut previous = Some(baseline);
+
+        assert_eq!(update_cpu_percent(&mut previous, None), 0.0);
+        assert_eq!(previous, Some(baseline));
+        assert_eq!(
+            update_cpu_percent(&mut previous, Some(CpuTicks::new(1_025, 4_075))),
+            25.0
+        );
     }
 }

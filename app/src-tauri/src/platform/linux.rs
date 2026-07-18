@@ -1,4 +1,5 @@
-use super::{cpu_percent_between, CpuTicks};
+use super::{update_cpu_percent, CpuTicks};
+use crate::MutexExt;
 use std::sync::Mutex;
 
 fn parse_snapshot(contents: &str) -> Option<CpuTicks> {
@@ -43,17 +44,7 @@ fn snapshot() -> Option<CpuTicks> {
 static PREVIOUS: Mutex<Option<CpuTicks>> = Mutex::new(None);
 
 pub(super) fn cpu_percent() -> f32 {
-    let Some(current) = snapshot() else {
-        return 0.0;
-    };
-    let mut previous = PREVIOUS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let percent = previous
-        .map(|sample| cpu_percent_between(sample, current))
-        .unwrap_or(0.0);
-    *previous = Some(current);
-    percent
+    update_cpu_percent(&mut PREVIOUS.lock_or_recover(), snapshot())
 }
 
 #[cfg(test)]
