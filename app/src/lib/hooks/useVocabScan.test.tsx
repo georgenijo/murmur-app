@@ -153,4 +153,28 @@ describe('useVocabScan correlation and adoption', () => {
     expect(current.status).toBe('superseded');
     expect(current.stats.summary?.adopted).toBe(false);
   });
+
+  it('invalidates the matching backend scan when canceled', async () => {
+    const pending = deferred<VocabScanSummary>();
+    mocks.invoke.mockImplementation((command: string) =>
+      command === 'scan_code_vocab' ? pending.promise : Promise.resolve(true),
+    );
+
+    let scanRun!: Promise<VocabScanSummary | null>;
+    await act(async () => {
+      scanRun = current.scan('/cancel-me');
+      await Promise.resolve();
+    });
+    const scanId = mocks.invoke.mock.calls[0][1].scanId as string;
+
+    await act(async () => current.cancel());
+    expect(mocks.invoke).toHaveBeenCalledWith('cancel_code_vocab_scan', { scanId });
+    expect(current.status).toBe('idle');
+
+    pending.resolve(summary(false));
+    await act(async () => {
+      expect(await scanRun).toBeNull();
+    });
+    expect(current.status).toBe('idle');
+  });
 });

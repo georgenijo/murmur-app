@@ -44,6 +44,7 @@ export interface VocabScanStats {
 
 const EVENT = 'vocab-scan-progress';
 const COMMAND = 'scan_code_vocab';
+const CANCEL_COMMAND = 'cancel_code_vocab_scan';
 /** Cap the in-memory walker so a huge repo can't grow the list unbounded. */
 const MAX_WALKER_ROWS = 200;
 let scanSequence = 0;
@@ -111,6 +112,7 @@ export function useVocabScan(initial?: VocabScanSummary | null): UseVocabScan {
   // async scan() closure always sees the current listener without re-running.
   const unlistenRef = useRef<UnlistenFn | null>(null);
   const runIdRef = useRef(0);
+  const activeScanIdRef = useRef<string | null>(null);
   const rowIdRef = useRef(0);
   const mountedRef = useRef(true);
   // Previous tick's CUMULATIVE backend counts, used to classify each new row as
@@ -142,6 +144,13 @@ export function useVocabScan(initial?: VocabScanSummary | null): UseVocabScan {
     // Bump the run id so any in-flight listen()/invoke from the cancelled scan
     // is ignored, then detach and reset visible state.
     runIdRef.current += 1;
+    const scanId = activeScanIdRef.current;
+    activeScanIdRef.current = null;
+    if (scanId) {
+      void invoke<boolean>(CANCEL_COMMAND, { scanId }).catch((err) => {
+        if (import.meta.env.DEV) console.debug('[useVocabScan cancel]', err);
+      });
+    }
     detach();
     prevFilesRef.current = 0;
     prevSkipsRef.current = 0;
@@ -157,6 +166,7 @@ export function useVocabScan(initial?: VocabScanSummary | null): UseVocabScan {
       // never double-subscribe to the progress stream.
       const runId = runIdRef.current + 1;
       const scanId = createScanId();
+      activeScanIdRef.current = scanId;
       runIdRef.current = runId;
       detach();
       prevFilesRef.current = 0;
@@ -232,6 +242,7 @@ export function useVocabScan(initial?: VocabScanSummary | null): UseVocabScan {
           return null;
         }
         detach();
+        if (activeScanIdRef.current === scanId) activeScanIdRef.current = null;
         setStats({
           filesRead: summary.files,
           dirsSkipped: summary.skipped,
@@ -246,6 +257,7 @@ export function useVocabScan(initial?: VocabScanSummary | null): UseVocabScan {
           return null;
         }
         detach();
+        if (activeScanIdRef.current === scanId) activeScanIdRef.current = null;
         if (import.meta.env.DEV) console.debug('[useVocabScan]', err);
         // Treat a failed scan as an empty result so the UI leaves the spinner.
         setStatus('empty');

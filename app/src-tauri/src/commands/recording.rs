@@ -1158,6 +1158,21 @@ fn complete_code_vocab_scan(
     adopted
 }
 
+/// Invalidate one explicit scan without disturbing a newer overlapping scan.
+fn cancel_code_vocab_scan_id(app_state: &AppState, scan_id: &str) -> bool {
+    let mut dictation = app_state.dictation.lock_or_recover();
+    if dictation.code_vocab_scan_id.as_deref() != Some(scan_id) {
+        return false;
+    }
+    dictation.code_vocab_scan_id = None;
+    true
+}
+
+#[tauri::command]
+pub fn cancel_code_vocab_scan(state: tauri::State<'_, State>, scan_id: String) -> bool {
+    cancel_code_vocab_scan_id(&state.app_state, &scan_id)
+}
+
 /// Emit a throttled `vocab-scan-progress` tick carrying the live running counts
 /// and the path being read/skipped. `force` bypasses the throttle (used for skip
 /// rows so struck-through dependency/build dirs always render live). Updates
@@ -2029,6 +2044,26 @@ mod tests {
         let dictation = app_state.dictation.lock_or_recover();
         assert_eq!(dictation.code_vocab_prompt.as_deref(), Some("currentTerm"));
         assert!(dictation.code_vocab_scan_id.is_none());
+    }
+
+    #[test]
+    fn cancellation_only_invalidates_the_matching_scan() {
+        let app_state = AppState::default();
+        begin_code_vocab_scan(&app_state, "scan-a", "/project");
+
+        assert!(!cancel_code_vocab_scan_id(&app_state, "scan-b"));
+        assert_eq!(
+            app_state.dictation.lock_or_recover().code_vocab_scan_id.as_deref(),
+            Some("scan-a"),
+        );
+        assert!(cancel_code_vocab_scan_id(&app_state, "scan-a"));
+        assert!(!complete_code_vocab_scan(
+            &app_state,
+            "scan-a",
+            "/project",
+            "canceledTerm".into(),
+        ));
+        assert!(app_state.dictation.lock_or_recover().code_vocab_prompt.is_none());
     }
 
     #[test]
