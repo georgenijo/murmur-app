@@ -52,7 +52,7 @@ export function SettingsSection({ title, subtitle, defaultExpanded = true, child
         aria-expanded={expanded}
         aria-controls={contentId}
         onClick={handleToggle}
-        className="flex w-full items-center justify-between py-3 text-sm font-semibold text-on-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-1 rounded-sm"
+        className={`flex w-full items-center justify-between rounded-sm py-3 text-sm font-semibold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-1 ${expanded ? 'text-primary' : 'text-on-surface hover:text-primary'}`}
       >
         <span className="text-left">
           {title}
@@ -61,9 +61,7 @@ export function SettingsSection({ title, subtitle, defaultExpanded = true, child
           )}
         </span>
         <svg
-          className={`w-4 h-4 text-on-surface-variant shrink-0 transition-transform duration-200 ${
-            expanded ? 'rotate-180' : ''
-          }`}
+          className={`w-4 h-4 shrink-0 transition-transform duration-200 ${expanded ? 'rotate-180 text-primary' : 'text-on-surface-variant'}`}
           fill="none"
           stroke="currentColor"
           viewBox="0 0 24 24"

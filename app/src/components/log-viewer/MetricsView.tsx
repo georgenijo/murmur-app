@@ -56,18 +56,18 @@ function StatCard({ label, value, average, color, unit = 'ms' }: StatCardProps) 
   const trend = diff > average * 0.1 ? 'up' : diff < -average * 0.1 ? 'down' : 'flat';
 
   return (
-    <div className="flex-1 rounded-lg border border-stone-200 dark:border-stone-700 p-3 min-w-0">
+    <div className="min-w-0 flex-1 rounded-xl bg-surface-container-lowest p-3 shadow-sm">
       <div className="flex items-center gap-2 mb-1">
         <span className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />
-        <span className="text-[11px] text-stone-500 dark:text-stone-400 truncate">{label}</span>
+        <span className="truncate text-[11px] text-on-surface-variant">{label}</span>
       </div>
       <div className="flex items-baseline gap-1.5">
-        <span className="text-lg font-semibold tabular-nums text-stone-900 dark:text-stone-100">
+        <span className="text-lg font-semibold tabular-nums text-on-surface">
           {value}
         </span>
-        <span className="text-[11px] text-stone-400 dark:text-stone-500">{unit}</span>
+        <span className="text-[11px] text-on-surface-variant">{unit}</span>
         <span className={`text-[10px] ml-auto ${
-          trend === 'up' ? 'text-red-500' : trend === 'down' ? 'text-emerald-500' : 'text-stone-400 dark:text-stone-500'
+          trend === 'up' ? 'text-error' : trend === 'down' ? 'text-emerald-500' : 'text-on-surface-variant'
         }`}>
           {trend === 'up' ? '\u25B2' : trend === 'down' ? '\u25BC' : '\u2014'} avg {average}{unit}
         </span>
@@ -79,19 +79,19 @@ function StatCard({ label, value, average, color, unit = 'ms' }: StatCardProps) 
 // --- Line Chart ---
 
 const SERIES_CONFIG: Record<string, { color: string; label: string }> = {
-  total:     { color: '#57534e', label: 'Total' },      // stone-600
-  inference: { color: '#f59e0b', label: 'Inference' },   // amber-500
-  vad:       { color: '#a8a29e', label: 'VAD' },         // stone-400
-  paste:     { color: '#64748b', label: 'Paste' },       // slate-500
+  total:     { color: 'var(--murmur-primary)', label: 'Total' },
+  inference: { color: '#d97706', label: 'Inference' },
+  vad:       { color: 'var(--murmur-outline-variant)', label: 'VAD' },
+  paste:     { color: '#64748b', label: 'Paste' },
 };
 
 type SeriesKey = 'total' | 'inference' | 'vad' | 'paste';
 const ALL_SERIES: SeriesKey[] = ['total', 'inference', 'vad', 'paste'];
 
-const MEMORY_COLOR = '#ef4444';    // red-500
-const HEAP_COLOR = '#f59e0b';      // amber-500
-const EXTERNAL_COLOR = '#8b5cf6';  // violet-500
-const CPU_COLOR = '#3b82f6';       // blue-500
+const MEMORY_COLOR = 'var(--murmur-error)';
+const HEAP_COLOR = '#d97706';
+const EXTERNAL_COLOR = '#7c3aed';
+const CPU_COLOR = 'var(--murmur-primary)';
 
 interface Series {
   key: string;
@@ -139,7 +139,7 @@ function LineChart({ series, height = 140 }: { series: Series[]; height?: number
             x2={chartW - padding.right} y2={toY(tick)}
             stroke="currentColor" strokeOpacity={0.08}
           />
-          <text x={padding.left - 8} y={toY(tick) + 3.5} textAnchor="end" className="fill-stone-400 dark:fill-stone-500" fontSize="9">
+          <text x={padding.left - 8} y={toY(tick) + 3.5} textAnchor="end" className="fill-on-surface-variant" fontSize="9">
             {tick}
           </text>
         </g>
@@ -147,7 +147,7 @@ function LineChart({ series, height = 140 }: { series: Series[]; height?: number
 
       {/* X-axis labels (transcription index) */}
       {Array.from({ length: count }, (_, i) => (
-        <text key={i} x={toX(i)} y={chartH - 4} textAnchor="middle" className="fill-stone-300 dark:fill-stone-600" fontSize="8">
+        <text key={i} x={toX(i)} y={chartH - 4} textAnchor="middle" className="fill-on-surface-variant opacity-70" fontSize="8">
           {i + 1}
         </text>
       ))}
@@ -221,7 +221,7 @@ function LiveChart({ series, height = 160, label }: { series: Series[]; height?:
   return (
     <svg viewBox={`0 0 ${chartW} ${chartH}`} className="w-full" preserveAspectRatio="xMidYMid meet">
       {label && (
-        <text x={padding.left} y={14} className="fill-stone-500 dark:fill-stone-400" fontSize="10" fontWeight="500">
+        <text x={padding.left} y={14} className="fill-on-surface-variant" fontSize="10" fontWeight="500">
           {label}
         </text>
       )}
@@ -242,7 +242,7 @@ function LiveChart({ series, height = 160, label }: { series: Series[]; height?:
             x2={chartW - padding.right} y2={toY(tick)}
             stroke="currentColor" strokeOpacity={0.06}
           />
-          <text x={padding.left - 8} y={toY(tick) + 3.5} textAnchor="end" className="fill-stone-400 dark:fill-stone-500" fontSize="9">
+          <text x={padding.left - 8} y={toY(tick) + 3.5} textAnchor="end" className="fill-on-surface-variant" fontSize="9">
             {tick}
           </text>
         </g>
@@ -255,7 +255,7 @@ function LiveChart({ series, height = 160, label }: { series: Series[]; height?:
           x={padding.left + slot * xStep}
           y={chartH - 4}
           textAnchor="middle"
-          className="fill-stone-400 dark:fill-stone-500"
+          className="fill-on-surface-variant"
           fontSize="9"
         >
           {label}
@@ -304,7 +304,7 @@ function LiveChart({ series, height = 160, label }: { series: Series[]; height?:
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <div className="text-[11px] font-medium text-stone-400 dark:text-stone-500 uppercase tracking-wider">
+    <div className="text-[11px] font-medium uppercase tracking-wider text-on-surface-variant">
       {children}
     </div>
   );
@@ -314,16 +314,16 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 
 function SimpleStatCard({ label, value, color, unit = 'MB' }: { label: string; value: number; color: string; unit?: string }) {
   return (
-    <div className="flex-1 rounded-lg border border-stone-200 dark:border-stone-700 p-3 min-w-0">
+    <div className="min-w-0 flex-1 rounded-xl bg-surface-container-lowest p-3 shadow-sm">
       <div className="flex items-center gap-2 mb-1">
         <span className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />
-        <span className="text-[11px] text-stone-500 dark:text-stone-400 truncate">{label}</span>
+        <span className="truncate text-[11px] text-on-surface-variant">{label}</span>
       </div>
       <div className="flex items-baseline gap-1.5">
-        <span className="text-lg font-semibold tabular-nums text-stone-900 dark:text-stone-100">
+        <span className="text-lg font-semibold tabular-nums text-on-surface">
           {value}
         </span>
-        <span className="text-[11px] text-stone-400 dark:text-stone-500">{unit}</span>
+        <span className="text-[11px] text-on-surface-variant">{unit}</span>
       </div>
     </div>
   );
@@ -346,7 +346,7 @@ export function MetricsView({ events, resourceReadings }: MetricsViewProps) {
 
   if (metrics.length === 0 && resourceReadings.length === 0) {
     return (
-      <div className="flex items-center justify-center h-48 text-stone-400 dark:text-stone-500 text-sm">
+      <div className="flex h-48 items-center justify-center text-sm text-on-surface-variant">
         No data yet. System metrics will appear shortly.
       </div>
     );
@@ -391,8 +391,8 @@ export function MetricsView({ events, resourceReadings }: MetricsViewProps) {
                   onClick={() => toggle(key)}
                   className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-all ${
                     active
-                      ? 'ring-1 ring-stone-300 dark:ring-stone-600 text-stone-700 dark:text-stone-300'
-                      : 'text-stone-400 dark:text-stone-600'
+                      ? 'bg-surface-container-lowest text-on-surface ring-1 ring-outline-variant/20 shadow-sm'
+                      : 'text-on-surface-variant opacity-60'
                   }`}
                 >
                   <span

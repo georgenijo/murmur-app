@@ -8,11 +8,11 @@ interface StatusHeaderProps {
   isSettingsOpen: boolean;
 }
 
-function getStatusColor(status: DictationStatus, initialized: boolean): string {
-  if (status === 'recording') return 'text-red-500 dark:text-red-400';
-  if (status === 'processing') return 'text-amber-600 dark:text-amber-500';
-  if (initialized) return 'text-emerald-600 dark:text-emerald-500';
-  return 'text-stone-400 dark:text-stone-500';
+function getStatusDotColor(status: DictationStatus, initialized: boolean): string {
+  if (status === 'recording') return 'bg-error';
+  if (status === 'processing') return 'bg-amber-500';
+  if (initialized) return 'bg-emerald-500';
+  return 'bg-outline-variant';
 }
 
 function getStatusText(status: DictationStatus, initialized: boolean, duration: number): string {
@@ -23,38 +23,31 @@ function getStatusText(status: DictationStatus, initialized: boolean, duration: 
 }
 
 export function StatusHeader({ status, initialized, recordingDuration, onSettingsToggle, isSettingsOpen }: StatusHeaderProps) {
-  const statusColor = getStatusColor(status, initialized);
+  const statusDotColor = getStatusDotColor(status, initialized);
   const statusText = getStatusText(status, initialized, recordingDuration);
 
   return (
     <header
       data-tauri-drag-region
-      className="shrink-0 flex items-center justify-between px-4 py-3 bg-surface-container-low/90 backdrop-blur-sm"
+      className="flex shrink-0 items-center justify-between bg-background/90 px-4 py-3 backdrop-blur-sm"
     >
-      <span className="text-sm font-semibold text-on-surface">Murmur</span>
+      <span className="text-sm font-bold tracking-tight text-primary">Murmur</span>
 
       <div className="flex items-center gap-3">
-        <div className={`flex items-center gap-1.5 text-sm font-medium ${statusColor}`}>
-          {status === 'processing' ? (
-            <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-            </svg>
-          ) : (
-            <svg className={`w-4 h-4 ${status === 'recording' ? 'animate-pulse' : ''}`} fill="currentColor" viewBox="0 0 24 24">
-              <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
-              <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
-            </svg>
-          )}
+        <div className="flex items-center gap-2 rounded-full bg-surface-container-low px-3 py-1.5 text-xs font-semibold text-on-surface">
+          <span
+            aria-hidden="true"
+            className={`h-2 w-2 rounded-full ${statusDotColor} ${status === 'recording' || status === 'processing' ? 'animate-pulse' : ''}`}
+          />
           <span>{statusText}</span>
         </div>
 
         <button
           onClick={onSettingsToggle}
-          className={`p-1.5 rounded-md transition-colors ${
+          className={`p-1.5 rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
             isSettingsOpen
               ? 'text-on-surface bg-surface-container-high'
-              : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-container'
+              : 'text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface'
           }`}
           aria-label="Toggle settings"
           aria-expanded={isSettingsOpen}

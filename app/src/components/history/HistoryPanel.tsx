@@ -27,17 +27,18 @@ export function HistoryPanel({ entries, onClearHistory }: HistoryPanelProps) {
   };
 
   const formatDuration = (seconds: number): string => {
-    if (seconds < 60) {
-      return `${seconds}s`;
+    const wholeSeconds = Math.round(seconds);
+    if (wholeSeconds < 60) {
+      return `${wholeSeconds}s`;
     }
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
+    const mins = Math.floor(wholeSeconds / 60);
+    const secs = wholeSeconds % 60;
     return `${mins}m ${secs}s`;
   };
 
   if (entries.length === 0) {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center text-stone-400 dark:text-stone-500">
+      <div className="flex-1 flex flex-col items-center justify-center text-on-surface-variant">
         <svg
           className="w-12 h-12 mb-3"
           fill="none"
@@ -63,27 +64,30 @@ export function HistoryPanel({ entries, onClearHistory }: HistoryPanelProps) {
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       {/* Scrollable list */}
-      <div className="flex-1 overflow-y-auto space-y-2">
-        {sortedEntries.map((entry) => (
-          <button
-            key={entry.id}
-            onClick={() => handleCopy(entry)}
-            className={`w-full text-left p-3 rounded-lg border transition-all ${
-              copiedId === entry.id
-                ? 'bg-emerald-50 dark:bg-emerald-900/20 border-emerald-300 dark:border-emerald-700'
-                : 'bg-stone-50 dark:bg-stone-700/50 border-stone-200 dark:border-stone-600 hover:bg-stone-100 dark:hover:bg-stone-700'
-            }`}
-          >
+      <div className="flex-1 overflow-y-auto space-y-3 px-0.5 py-0.5">
+        {sortedEntries.map((entry) => {
+          const wordCount = entry.text.trim() ? entry.text.trim().split(/\s+/).length : 0;
+          return (
+            <button
+              key={entry.id}
+              onClick={() => handleCopy(entry)}
+              aria-label={`Copy transcription from ${formatTimestamp(entry.timestamp)}`}
+              className={`group w-full rounded-xl p-3.5 text-left shadow-sm transition-[box-shadow,background-color] hover:shadow-md focus:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
+                copiedId === entry.id
+                  ? 'bg-emerald-50 dark:bg-emerald-950/40'
+                  : 'bg-surface-container-lowest hover:bg-surface-container-low'
+              }`}
+            >
             {/* Header row with timestamp and duration */}
             <div className="flex items-center justify-between mb-1 gap-2">
               <div className="flex items-center gap-2 min-w-0">
-                <span className="text-xs text-stone-500 dark:text-stone-400 shrink-0">
+                <span className="shrink-0 text-xs text-on-surface-variant">
                   {formatTimestamp(entry.timestamp)}
                 </span>
                 {(entry.source ?? 'recording') === 'file' ? (
                   <span
                     title={entry.sourceName}
-                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 min-w-0 max-w-[180px]"
+                    className="inline-flex max-w-[180px] min-w-0 items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary"
                   >
                     <svg className="w-2.5 h-2.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
@@ -91,7 +95,7 @@ export function HistoryPanel({ entries, onClearHistory }: HistoryPanelProps) {
                     <span className="truncate">{entry.sourceName || 'File'}</span>
                   </span>
                 ) : (
-                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-stone-200 text-stone-600 dark:bg-stone-600 dark:text-stone-300 shrink-0">
+                  <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-surface-container px-2 py-0.5 text-[10px] font-medium text-on-surface-variant">
                     <svg className="w-2.5 h-2.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-14 0m7 7v3m-4 0h8m-4-6a3 3 0 01-3-3V5a3 3 0 016 0v4a3 3 0 01-3 3z" />
                     </svg>
@@ -100,7 +104,10 @@ export function HistoryPanel({ entries, onClearHistory }: HistoryPanelProps) {
                 )}
               </div>
               <div className="flex items-center gap-2 shrink-0">
-                <span className="text-xs text-stone-400 dark:text-stone-500">
+                <span className="rounded-full bg-surface-container px-2 py-0.5 text-[10px] font-medium text-on-surface-variant">
+                  {wordCount} {wordCount === 1 ? 'word' : 'words'}
+                </span>
+                <span className="text-xs text-on-surface-variant">
                   {formatDuration(entry.duration)}
                 </span>
                 {copiedId === entry.id ? (
@@ -109,7 +116,7 @@ export function HistoryPanel({ entries, onClearHistory }: HistoryPanelProps) {
                   </span>
                 ) : (
                   <svg
-                    className="w-3.5 h-3.5 text-stone-400 dark:text-stone-500"
+                    className="h-3.5 w-3.5 text-on-surface-variant opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
                     fill="none"
                     stroke="currentColor"
                     viewBox="0 0 24 24"
@@ -125,18 +132,19 @@ export function HistoryPanel({ entries, onClearHistory }: HistoryPanelProps) {
               </div>
             </div>
             {/* Text content */}
-            <p className="text-sm text-stone-900 dark:text-stone-100 overflow-y-auto max-h-32">
+            <p className="max-h-32 overflow-y-auto text-sm leading-relaxed text-on-surface">
               {entry.text}
             </p>
-          </button>
-        ))}
+            </button>
+          );
+        })}
       </div>
 
       {/* Clear history button */}
-      <div className="shrink-0 pt-3 border-t border-stone-200 dark:border-stone-700 mt-3">
+      <div className="mt-3 shrink-0 pt-1">
         <button
           onClick={handleClear}
-          className="w-full px-3 py-2 text-sm text-stone-500 dark:text-stone-400 hover:bg-stone-100 dark:hover:bg-stone-700 rounded-lg transition-colors"
+          className="w-full rounded-lg bg-surface-container-lowest px-3 py-2 text-sm font-medium text-on-surface-variant shadow-sm transition-colors hover:bg-surface-container hover:text-error focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
         >
           Clear History
         </button>

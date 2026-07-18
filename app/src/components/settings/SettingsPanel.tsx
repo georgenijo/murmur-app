@@ -29,10 +29,10 @@ function PasteDelaySlider({ value, onCommit }: { value: number; onCommit: (v: nu
   return (
     <div className="mt-3">
       <div className="flex items-center justify-between mb-1">
-        <label className="text-xs text-stone-600 dark:text-stone-400">
+        <label className="text-xs text-on-surface-variant">
           Paste Delay
         </label>
-        <span className="text-xs font-medium text-stone-700 dark:text-stone-300">
+        <span className="text-xs font-medium text-on-surface">
           {draft}ms
         </span>
       </div>
@@ -44,9 +44,9 @@ function PasteDelaySlider({ value, onCommit }: { value: number; onCommit: (v: nu
         value={draft}
         onChange={(e) => setDraft(Number(e.target.value))}
         onPointerUp={() => onCommit(draft)}
-        className="w-full h-1.5 bg-surface-container-highest rounded-full appearance-none cursor-pointer accent-stone-800 dark:accent-stone-300"
+        className="w-full h-1.5 bg-surface-container-highest rounded-full appearance-none cursor-pointer accent-primary"
       />
-      <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
+      <p className="mt-1 text-xs text-on-surface-variant">
         Delay before paste. Increase if paste lands in the wrong window.
       </p>
     </div>
@@ -69,7 +69,7 @@ function CustomVocabularyTextarea({ value, onCommit }: { value: string; onCommit
 
   return (
     <div>
-      <label className="block text-sm font-medium text-stone-700 dark:text-stone-300 mb-2">
+      <label className="block text-sm font-medium text-on-surface mb-2">
         Custom Vocabulary
       </label>
       <textarea
@@ -82,17 +82,17 @@ function CustomVocabularyTextarea({ value, onCommit }: { value: string; onCommit
         autoCorrect="off"
         autoCapitalize="off"
         spellCheck={false}
-        className="w-full px-3 py-2 text-xs rounded-lg border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 placeholder-stone-400 dark:placeholder-stone-500 focus:outline-none focus:ring-2 focus:ring-stone-500 resize-y"
+        className="w-full resize-y rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface placeholder:text-on-surface-variant focus:outline-none focus:ring-2 focus:ring-primary"
       />
       <div className="mt-1.5 flex items-start justify-between gap-2">
-        <p className="text-xs text-stone-500 dark:text-stone-400">
+        <p className="text-xs text-on-surface-variant">
           Comma-separated. Whisper models only.
         </p>
         {draft.trim().length > 0 && (() => {
           const displayCount = tokenCount ?? Math.ceil(draft.trim().length / 4);
           const isEstimate = tokenCount === null;
           return (
-            <span className={`text-xs tabular-nums whitespace-nowrap ${displayCount > 200 ? 'text-amber-600 dark:text-amber-400' : 'text-stone-400 dark:text-stone-500'}`}>
+            <span className={`whitespace-nowrap text-xs tabular-nums ${displayCount > 200 ? 'text-amber-600 dark:text-amber-400' : 'text-on-surface-variant'}`}>
               {isEstimate ? `~${displayCount}` : displayCount} tokens
             </span>
           );
@@ -109,10 +109,10 @@ function VadSensitivitySlider({ value, onCommit }: { value: number; onCommit: (v
   return (
     <div>
       <div className="flex items-center justify-between mb-1">
-        <label className="text-xs text-stone-600 dark:text-stone-400">
+        <label className="text-xs text-on-surface-variant">
           Sensitivity
         </label>
-        <span className="text-xs font-medium text-stone-700 dark:text-stone-300">
+        <span className="text-xs font-medium text-on-surface">
           {draft}%
         </span>
       </div>
@@ -124,9 +124,9 @@ function VadSensitivitySlider({ value, onCommit }: { value: number; onCommit: (v
         value={draft}
         onChange={(e) => setDraft(Number(e.target.value))}
         onPointerUp={() => onCommit(draft)}
-        className="w-full h-1.5 bg-surface-container-highest rounded-full appearance-none cursor-pointer accent-stone-800 dark:accent-stone-300"
+        className="w-full h-1.5 bg-surface-container-highest rounded-full appearance-none cursor-pointer accent-primary"
       />
-      <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
+      <p className="mt-1 text-xs text-on-surface-variant">
         Higher = keeps more audio. Lower = trims silence more aggressively.
       </p>
     </div>
@@ -183,14 +183,14 @@ function AppProfilesEditor({ profiles, onChange }: {
 
   const chipClass = (value: boolean | null) =>
     value === null
-      ? 'border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-600 dark:text-stone-300'
+      ? 'border-outline-variant/30 bg-surface-container-lowest text-on-surface-variant'
       : value
         ? 'border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400'
         : 'border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400';
 
   return (
     <div>
-      <p className="mb-2 text-xs text-stone-500 dark:text-stone-400">
+      <p className="mb-2 text-xs text-on-surface-variant">
         Override auto-paste and transcript cleanup for specific apps by bundle id
         (e.g. <span className="font-mono">com.apple.Terminal</span>). The frontmost
         app when you finish dictating decides the behavior. Each toggle cycles
@@ -202,16 +202,16 @@ function AppProfilesEditor({ profiles, onChange }: {
           {profiles.map((p) => (
             <li
               key={p.bundleId}
-              className="flex flex-col gap-2 px-2.5 py-2 rounded-lg border border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700/40"
+              className="flex flex-col gap-2 rounded-lg bg-surface-container-lowest px-2.5 py-2 shadow-sm"
             >
               <div className="flex items-center gap-2">
                 <div className="min-w-0 flex-1">
                   {p.label && (
-                    <div className="text-xs font-medium text-stone-700 dark:text-stone-300 truncate">
+                    <div className="text-xs font-medium text-on-surface truncate">
                       {p.label}
                     </div>
                   )}
-                  <div className="text-xs font-mono text-stone-500 dark:text-stone-400 truncate">
+                  <div className="text-xs font-mono text-on-surface-variant truncate">
                     {p.bundleId}
                   </div>
                 </div>
@@ -219,7 +219,7 @@ function AppProfilesEditor({ profiles, onChange }: {
                   type="button"
                   onClick={() => handleRemove(p.bundleId)}
                   aria-label={`Remove profile for ${p.label || p.bundleId}`}
-                  className="shrink-0 p-1 rounded-md text-stone-400 hover:text-red-600 hover:bg-stone-100 dark:hover:bg-stone-600 transition-colors"
+                  className="shrink-0 rounded-md p-1 text-on-surface-variant transition-colors hover:bg-surface-container hover:text-error focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
                 >
                   <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -259,7 +259,7 @@ function AppProfilesEditor({ profiles, onChange }: {
           autoCorrect="off"
           autoCapitalize="off"
           spellCheck={false}
-          className="w-full px-3 py-2 text-xs rounded-lg border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 placeholder-stone-400 dark:placeholder-stone-500 focus:outline-none focus:ring-2 focus:ring-stone-500"
+          className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface placeholder:text-on-surface-variant focus:outline-none focus:ring-2 focus:ring-primary"
         />
         <div className="flex gap-2">
           <input
@@ -272,13 +272,13 @@ function AppProfilesEditor({ profiles, onChange }: {
             autoCorrect="off"
             autoCapitalize="off"
             spellCheck={false}
-            className="flex-1 min-w-0 px-3 py-2 text-xs font-mono rounded-lg border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 placeholder-stone-400 dark:placeholder-stone-500 focus:outline-none focus:ring-2 focus:ring-stone-500"
+            className="min-w-0 flex-1 rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 font-mono text-xs text-on-surface placeholder:text-on-surface-variant focus:outline-none focus:ring-2 focus:ring-primary"
           />
           <button
             type="button"
             onClick={handleAdd}
             disabled={!bundleId.trim()}
-            className="shrink-0 px-3 py-2 rounded-lg text-xs font-medium border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="shrink-0 px-3 py-2 rounded-lg text-xs font-medium border border-outline-variant/20 bg-surface-container-lowest text-on-surface-variant hover:bg-surface-container hover:text-primary transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             Add
           </button>
@@ -316,7 +316,7 @@ function VoiceCommandsEditor({ commands, onChange }: {
 
   return (
     <div className="mt-3">
-      <p className="mb-2 text-xs text-stone-500 dark:text-stone-400">
+      <p className="mb-2 text-xs text-on-surface-variant">
         Add your own spoken phrases. When you say the phrase it's replaced by the
         text (case-insensitive). Runs after the built-in commands.
       </p>
@@ -326,13 +326,13 @@ function VoiceCommandsEditor({ commands, onChange }: {
           {commands.map((c) => (
             <li
               key={c.phrase}
-              className="flex items-center gap-2 px-2.5 py-2 rounded-lg border border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700/40"
+              className="flex items-center gap-2 rounded-lg bg-surface-container-lowest px-2.5 py-2 shadow-sm"
             >
               <div className="min-w-0 flex-1">
-                <div className="text-xs font-medium text-stone-700 dark:text-stone-300 truncate">
+                <div className="text-xs font-medium text-on-surface truncate">
                   “{c.phrase}”
                 </div>
-                <div className="text-xs font-mono text-stone-500 dark:text-stone-400 truncate">
+                <div className="text-xs font-mono text-on-surface-variant truncate">
                   → {c.replacement || '(empty)'}
                 </div>
               </div>
@@ -340,7 +340,7 @@ function VoiceCommandsEditor({ commands, onChange }: {
                 type="button"
                 onClick={() => handleRemove(c.phrase)}
                 aria-label={`Remove voice command ${c.phrase}`}
-                className="shrink-0 p-1 rounded-md text-stone-400 hover:text-red-600 hover:bg-stone-100 dark:hover:bg-stone-600 transition-colors"
+                className="shrink-0 rounded-md p-1 text-on-surface-variant transition-colors hover:bg-surface-container hover:text-error focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
               >
                 <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -361,7 +361,7 @@ function VoiceCommandsEditor({ commands, onChange }: {
           autoCorrect="off"
           autoCapitalize="off"
           spellCheck={false}
-          className="w-full px-3 py-2 text-xs rounded-lg border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 placeholder-stone-400 dark:placeholder-stone-500 focus:outline-none focus:ring-2 focus:ring-stone-500"
+          className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface placeholder:text-on-surface-variant focus:outline-none focus:ring-2 focus:ring-primary"
         />
         <div className="flex gap-2">
           <input
@@ -374,13 +374,13 @@ function VoiceCommandsEditor({ commands, onChange }: {
             autoCorrect="off"
             autoCapitalize="off"
             spellCheck={false}
-            className="flex-1 min-w-0 px-3 py-2 text-xs rounded-lg border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 placeholder-stone-400 dark:placeholder-stone-500 focus:outline-none focus:ring-2 focus:ring-stone-500"
+            className="min-w-0 flex-1 rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface placeholder:text-on-surface-variant focus:outline-none focus:ring-2 focus:ring-primary"
           />
           <button
             type="button"
             onClick={handleAdd}
             disabled={!phrase.trim()}
-            className="shrink-0 px-3 py-2 rounded-lg text-xs font-medium border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="shrink-0 px-3 py-2 rounded-lg text-xs font-medium border border-outline-variant/20 bg-surface-container-lowest text-on-surface-variant hover:bg-surface-container hover:text-primary transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             Add
           </button>
@@ -618,7 +618,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
               onClick={() => setActiveCat(c.id)}
               className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${
                 activeCat === c.id
-                  ? 'bg-surface-container-high text-on-surface font-medium'
+                  ? 'bg-surface-container-high text-primary font-medium'
                   : 'text-on-surface-variant hover:bg-surface-container'
               }`}
             >
@@ -635,10 +635,10 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
         {supportsCoreMl && (
           <div className="flex items-center justify-between gap-6">
             <div>
-              <label className="block text-sm font-medium text-stone-700 dark:text-stone-300">
+              <label className="block text-sm font-medium text-on-surface">
                 Apple Neural Engine
               </label>
-              <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
+              <p className="mt-1 text-xs text-on-surface-variant">
                 {useNeuralEngine
                   ? 'Parakeet v3 via Core ML (fastest)'
                   : 'Enable to switch to the Core ML transcription path'}
@@ -655,12 +655,12 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
                   ? 'parakeet-tdt-0.6b-v2-fp16'
                   : 'parakeet-tdt-0.6b-v3-coreml',
               })}
-              className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-stone-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 ${
-                useNeuralEngine ? 'bg-stone-800 dark:bg-stone-300' : 'bg-stone-300 dark:bg-stone-500'
+              className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 ${
+                useNeuralEngine ? 'bg-primary' : 'bg-surface-container-highest'
               }`}
             >
               <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                className={`inline-block h-4 w-4 transform rounded-full bg-on-primary shadow transition-transform ${
                   useNeuralEngine ? 'translate-x-6' : 'translate-x-1'
                 }`}
               />
@@ -670,7 +670,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
 
         {/* Model Selector */}
         <div>
-          <label className="block text-sm font-medium text-stone-700 dark:text-stone-300 mb-2">
+          <label className="block text-sm font-medium text-on-surface mb-2">
             Transcription Model
           </label>
           <Select
@@ -679,7 +679,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
             disabled={isRecording}
             items={AVAILABLE_MODEL_OPTIONS.map((m) => ({ value: m.value, label: `${m.label} (${m.size})` }))}
           />
-          <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
+          <p className="mt-1 text-xs text-on-surface-variant">
             Larger models are more accurate but slower.
           </p>
           {isRecording && (
@@ -705,7 +705,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
           {/* Download in progress */}
           {modelDownload.phase === 'downloading' && (
             <div className="mt-2">
-              <div className="flex justify-between text-xs text-stone-500 dark:text-stone-400 mb-1">
+              <div className="flex justify-between text-xs text-on-surface-variant mb-1">
                 <span>{activeModelDownload ? modelDownloadLabel(activeModelDownload) : 'Starting...'}</span>
                 {downloadProgressPercent !== null ? (
                   <span>{downloadProgressPercent}%</span>
@@ -722,7 +722,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
                   aria-valuetext={downloadProgressPercent === null
                     ? 'Model installation in progress'
                     : `Download progress: ${downloadProgressPercent} percent`}
-                  className={`h-full bg-blue-500 rounded-full ${
+                  className={`h-full rounded-full bg-primary ${
                     downloadProgressPercent === null
                       ? 'model-download-indeterminate'
                       : 'transition-all duration-200'
@@ -751,7 +751,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
 
         {/* Language Selector */}
         <div>
-          <label className="block text-sm font-medium text-stone-700 dark:text-stone-300 mb-2">
+          <label className="block text-sm font-medium text-on-surface mb-2">
             Language
           </label>
           <Select
@@ -761,7 +761,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
             items={LANGUAGE_OPTIONS}
           />
           {isEnglishOnlyModel ? (
-            <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
+            <p className="mt-1 text-xs text-on-surface-variant">
               English only model — switch to Whisper Large Turbo for other languages.
             </p>
           ) : isRecording ? (
@@ -769,7 +769,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
               Stop recording before changing language
             </p>
           ) : (
-            <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
+            <p className="mt-1 text-xs text-on-surface-variant">
               Auto Detect lets Whisper identify the language each recording.
             </p>
           )}
@@ -778,10 +778,10 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
         {/* Smart Punctuation Toggle */}
         <div className="flex items-center justify-between">
           <div>
-            <label className="block text-sm font-medium text-stone-700 dark:text-stone-300">
+            <label className="block text-sm font-medium text-on-surface">
               Smart Punctuation
             </label>
-            <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
+            <p className="mt-1 text-xs text-on-surface-variant">
               Add periods, commas, and capitalization to transcriptions.
             </p>
           </div>
@@ -791,12 +791,12 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
             aria-checked={settings.smartPunctuation}
             aria-label="Smart punctuation"
             onClick={() => onUpdateSettings({ smartPunctuation: !settings.smartPunctuation })}
-            className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-stone-500 focus:ring-offset-2 ${
-              settings.smartPunctuation ? 'bg-stone-800 dark:bg-stone-300' : 'bg-stone-300 dark:bg-stone-500'
+            className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 ${
+              settings.smartPunctuation ? 'bg-primary' : 'bg-surface-container-highest'
             }`}
           >
             <span
-              className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+              className={`inline-block h-4 w-4 transform rounded-full bg-on-primary shadow transition-transform ${
                 settings.smartPunctuation ? 'translate-x-6' : 'translate-x-1'
               }`}
             />
@@ -805,7 +805,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
 
         {/* Microphone Selector */}
         <div>
-          <label className="block text-sm font-medium text-stone-700 dark:text-stone-300 mb-2">
+          <label className="block text-sm font-medium text-on-surface mb-2">
             Microphone
           </label>
           <Select
@@ -827,7 +827,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
 
         {/* Idle Timeout */}
         <div>
-          <label className="block text-sm font-medium text-stone-700 dark:text-stone-300 mb-2">
+          <label className="block text-sm font-medium text-on-surface mb-2">
             Release Model After Inactivity
           </label>
           <Select
@@ -836,7 +836,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
             disabled={isRecording}
             items={IDLE_TIMEOUT_OPTIONS.map((o) => ({ value: String(o.value), label: o.label }))}
           />
-          <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
+          <p className="mt-1 text-xs text-on-surface-variant">
             Free memory by unloading the model when idle. Set to Never to keep it loaded.
           </p>
         </div>
@@ -844,10 +844,10 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
         {/* Transcript Cleanup Toggle */}
         <div className="flex items-center justify-between">
           <div>
-            <label className="block text-sm font-medium text-stone-700 dark:text-stone-300">
+            <label className="block text-sm font-medium text-on-surface">
               Transcript Cleanup
             </label>
-            <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
+            <p className="mt-1 text-xs text-on-surface-variant">
               Strip filler words (um, uh) and tidy spacing before pasting.
             </p>
           </div>
@@ -857,12 +857,12 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
             aria-checked={settings.cleanupEnabled}
             aria-label="Transcript cleanup"
             onClick={() => onUpdateSettings({ cleanupEnabled: !settings.cleanupEnabled })}
-            className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-stone-500 focus:ring-offset-2 ${
-              settings.cleanupEnabled ? 'bg-stone-800 dark:bg-stone-300' : 'bg-stone-300 dark:bg-stone-500'
+            className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 ${
+              settings.cleanupEnabled ? 'bg-primary' : 'bg-surface-container-highest'
             }`}
           >
             <span
-              className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+              className={`inline-block h-4 w-4 transform rounded-full bg-on-primary shadow transition-transform ${
                 settings.cleanupEnabled ? 'translate-x-6' : 'translate-x-1'
               }`}
             />
@@ -873,7 +873,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
         {settings.cleanupEnabled && (
           <div className="ml-3 pl-3 space-y-3">
             <div className="flex items-center justify-between">
-              <label className="text-xs text-stone-600 dark:text-stone-400">
+              <label className="text-xs text-on-surface-variant">
                 Remove filler words (um, uh)
               </label>
               <button
@@ -882,19 +882,19 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
                 aria-checked={settings.cleanupRemoveFiller}
                 aria-label="Remove filler words"
                 onClick={() => onUpdateSettings({ cleanupRemoveFiller: !settings.cleanupRemoveFiller })}
-                className={`relative inline-flex shrink-0 h-5 w-9 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-stone-500 focus:ring-offset-2 ${
-                  settings.cleanupRemoveFiller ? 'bg-stone-800 dark:bg-stone-300' : 'bg-stone-300 dark:bg-stone-500'
+                className={`relative inline-flex shrink-0 h-5 w-9 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 ${
+                  settings.cleanupRemoveFiller ? 'bg-primary' : 'bg-surface-container-highest'
                 }`}
               >
                 <span
-                  className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${
+                  className={`inline-block h-3.5 w-3.5 transform rounded-full bg-on-primary shadow transition-transform ${
                     settings.cleanupRemoveFiller ? 'translate-x-4' : 'translate-x-1'
                   }`}
                 />
               </button>
             </div>
             <div className="flex items-center justify-between">
-              <label className="text-xs text-stone-600 dark:text-stone-400">
+              <label className="text-xs text-on-surface-variant">
                 Capitalize sentences
               </label>
               <button
@@ -903,12 +903,12 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
                 aria-checked={settings.cleanupCapitalize}
                 aria-label="Capitalize sentences"
                 onClick={() => onUpdateSettings({ cleanupCapitalize: !settings.cleanupCapitalize })}
-                className={`relative inline-flex shrink-0 h-5 w-9 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-stone-500 focus:ring-offset-2 ${
-                  settings.cleanupCapitalize ? 'bg-stone-800 dark:bg-stone-300' : 'bg-stone-300 dark:bg-stone-500'
+                className={`relative inline-flex shrink-0 h-5 w-9 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 ${
+                  settings.cleanupCapitalize ? 'bg-primary' : 'bg-surface-container-highest'
                 }`}
               >
                 <span
-                  className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${
+                  className={`inline-block h-3.5 w-3.5 transform rounded-full bg-on-primary shadow transition-transform ${
                     settings.cleanupCapitalize ? 'translate-x-4' : 'translate-x-1'
                   }`}
                 />
@@ -921,7 +921,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
         <SettingsSection pageId="recording" activePage={activeCat} title="Recording" subtitle="Trigger mode, shortcut key">
         {/* Voice Detection */}
         <div>
-          <label className="block text-sm font-medium text-stone-700 dark:text-stone-300 mb-2">
+          <label className="block text-sm font-medium text-on-surface mb-2">
             Voice Detection
           </label>
           <VadSensitivitySlider
@@ -932,7 +932,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
 
         {/* Recording Trigger */}
         <div>
-          <label className="block text-sm font-medium text-stone-700 dark:text-stone-300 mb-2">
+          <label className="block text-sm font-medium text-on-surface mb-2">
             Recording Trigger
           </label>
           <div className="flex gap-2">
@@ -943,8 +943,8 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
                 onClick={() => onUpdateSettings({ recordingMode: option.value as RecordingMode })}
                 className={`flex-1 px-3 py-2 rounded-lg text-xs font-medium border transition-colors ${
                   settings.recordingMode === option.value
-                    ? 'bg-stone-800 dark:bg-stone-200 text-white dark:text-stone-900 border-stone-800 dark:border-stone-200'
-                    : 'bg-white dark:bg-stone-700 text-stone-700 dark:text-stone-300 border-stone-300 dark:border-stone-600 hover:bg-stone-50 dark:hover:bg-stone-600'
+                    ? 'bg-primary text-on-primary border-primary'
+                    : 'bg-surface-container-lowest text-on-surface border-outline-variant/20 hover:bg-surface-container'
                 } ${isRecording ? 'opacity-50 cursor-not-allowed' : ''}`}
               >
                 {option.label}
@@ -974,7 +974,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
 
         {/* Trigger Key Selector */}
         <div>
-          <label className="block text-sm font-medium text-stone-700 dark:text-stone-300 mb-2">
+          <label className="block text-sm font-medium text-on-surface mb-2">
             {keyLabel}
           </label>
           <Select
@@ -983,7 +983,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
             disabled={isRecording}
             items={DOUBLE_TAP_KEY_OPTIONS}
           />
-          <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
+          <p className="mt-1 text-xs text-on-surface-variant">
             {keyHelpText}
           </p>
         </div>
@@ -991,10 +991,10 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
         {(isDoubleTap || isBoth) && (
           <div className="flex items-center justify-between gap-6">
             <div>
-              <label className="block text-sm font-medium text-stone-700 dark:text-stone-300">
+              <label className="block text-sm font-medium text-on-surface">
                 Hotkey Timing Feedback
               </label>
-              <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
+              <p className="mt-1 text-xs text-on-surface-variant">
                 Flash the overlay when a tap misses the double-tap window
               </p>
             </div>
@@ -1004,12 +1004,12 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
               aria-checked={settings.hotkeyMissFeedback}
               aria-label="Hotkey timing feedback"
               onClick={() => onUpdateSettings({ hotkeyMissFeedback: !settings.hotkeyMissFeedback })}
-              className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-stone-500 focus:ring-offset-2 ${
-                settings.hotkeyMissFeedback ? 'bg-stone-800 dark:bg-stone-300' : 'bg-stone-300 dark:bg-stone-500'
+              className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 ${
+                settings.hotkeyMissFeedback ? 'bg-primary' : 'bg-surface-container-highest'
               }`}
             >
               <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                className={`inline-block h-4 w-4 transform rounded-full bg-on-primary shadow transition-transform ${
                   settings.hotkeyMissFeedback ? 'translate-x-6' : 'translate-x-1'
                 }`}
               />
@@ -1023,10 +1023,10 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
         <div>
           <div className="flex items-center justify-between">
             <div>
-              <label className="block text-sm font-medium text-stone-700 dark:text-stone-300">
+              <label className="block text-sm font-medium text-on-surface">
                 Auto-Paste
               </label>
-              <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
+              <p className="mt-1 text-xs text-on-surface-variant">
                 Automatically paste transcription (requires Accessibility permission)
               </p>
             </div>
@@ -1036,12 +1036,12 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
               aria-checked={settings.autoPaste}
               aria-label="Auto paste"
               onClick={() => onUpdateSettings({ autoPaste: !settings.autoPaste })}
-              className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-stone-500 focus:ring-offset-2 ${
-                settings.autoPaste ? 'bg-stone-800 dark:bg-stone-300' : 'bg-stone-300 dark:bg-stone-500'
+              className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 ${
+                settings.autoPaste ? 'bg-primary' : 'bg-surface-container-highest'
               }`}
             >
               <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                className={`inline-block h-4 w-4 transform rounded-full bg-on-primary shadow transition-transform ${
                   settings.autoPaste ? 'translate-x-6' : 'translate-x-1'
                 }`}
               />
@@ -1088,10 +1088,10 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
         {/* Save Transcript to File Toggle */}
         <div className="flex items-center justify-between">
           <div>
-            <label className="block text-sm font-medium text-stone-700 dark:text-stone-300">
+            <label className="block text-sm font-medium text-on-surface">
               Save Transcript to File
             </label>
-            <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
+            <p className="mt-1 text-xs text-on-surface-variant">
               Write each transcription to a .txt file
             </p>
           </div>
@@ -1101,12 +1101,12 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
             aria-checked={settings.saveTranscript}
             aria-label="Save transcript to file"
             onClick={() => onUpdateSettings({ saveTranscript: !settings.saveTranscript })}
-            className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-stone-500 focus:ring-offset-2 ${
-              settings.saveTranscript ? 'bg-stone-800 dark:bg-stone-300' : 'bg-stone-300 dark:bg-stone-500'
+            className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 ${
+              settings.saveTranscript ? 'bg-primary' : 'bg-surface-container-highest'
             }`}
           >
             <span
-              className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+              className={`inline-block h-4 w-4 transform rounded-full bg-on-primary shadow transition-transform ${
                 settings.saveTranscript ? 'translate-x-6' : 'translate-x-1'
               }`}
             />
@@ -1117,10 +1117,10 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
         <div>
           <div className="flex items-center justify-between">
             <div>
-              <label className="block text-sm font-medium text-stone-700 dark:text-stone-300">
+              <label className="block text-sm font-medium text-on-surface">
                 Save Audio to File
               </label>
-              <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
+              <p className="mt-1 text-xs text-on-surface-variant">
                 Write each recording to a .wav file
               </p>
             </div>
@@ -1130,12 +1130,12 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
               aria-checked={settings.saveAudio}
               aria-label="Save audio to file"
               onClick={() => onUpdateSettings({ saveAudio: !settings.saveAudio })}
-              className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-stone-500 focus:ring-offset-2 ${
-                settings.saveAudio ? 'bg-stone-800 dark:bg-stone-300' : 'bg-stone-300 dark:bg-stone-500'
+              className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 ${
+                settings.saveAudio ? 'bg-primary' : 'bg-surface-container-highest'
               }`}
             >
               <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                className={`inline-block h-4 w-4 transform rounded-full bg-on-primary shadow transition-transform ${
                   settings.saveAudio ? 'translate-x-6' : 'translate-x-1'
                 }`}
               />
@@ -1144,29 +1144,29 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
 
           {saveToFile && (
             <div className="mt-3">
-              <label className="block text-xs text-stone-600 dark:text-stone-400 mb-1">
+              <label className="block text-xs text-on-surface-variant mb-1">
                 Output Folder
               </label>
-              <div className="px-3 py-2 text-xs rounded-lg border border-stone-300 dark:border-stone-600 bg-stone-50 dark:bg-stone-700/50 text-stone-700 dark:text-stone-300 break-all">
+              <div className="break-all rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface">
                 {settings.outputDir || 'Documents/Murmur (default)'}
               </div>
               <div className="mt-2 flex items-center gap-3">
                 <button
                   onClick={handleChooseFolder}
-                  className="text-xs font-medium text-stone-600 hover:text-stone-900 dark:text-stone-400 dark:hover:text-stone-200 underline hover:no-underline transition-colors"
+                  className="text-xs font-medium text-on-surface-variant underline transition-colors hover:text-primary hover:no-underline"
                 >
                   Choose Folder
                 </button>
                 {settings.outputDir && (
                   <button
                     onClick={() => onUpdateSettings({ outputDir: '' })}
-                    className="text-xs font-medium text-stone-500 hover:text-stone-800 dark:text-stone-500 dark:hover:text-stone-300 underline hover:no-underline transition-colors"
+                    className="text-xs font-medium text-on-surface-variant underline transition-colors hover:text-primary hover:no-underline"
                   >
                     Reset to default
                   </button>
                 )}
               </div>
-              <p className="mt-2 text-xs text-stone-500 dark:text-stone-400">
+              <p className="mt-2 text-xs text-on-surface-variant">
                 Text is still copied to the clipboard, but auto-paste is paused while saving to file.
               </p>
             </div>
@@ -1177,10 +1177,10 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
         <div>
           <div className="flex items-center justify-between">
             <div>
-              <label className="block text-sm font-medium text-stone-700 dark:text-stone-300">
+              <label className="block text-sm font-medium text-on-surface">
                 Launch at Login
               </label>
-              <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
+              <p className="mt-1 text-xs text-on-surface-variant">
                 Automatically start when you log in
               </p>
             </div>
@@ -1190,12 +1190,12 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
               aria-checked={settings.launchAtLogin}
               aria-label="Launch at login"
               onClick={() => onUpdateSettings({ launchAtLogin: !settings.launchAtLogin })}
-              className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-stone-500 focus:ring-offset-2 ${
-                settings.launchAtLogin ? 'bg-stone-800 dark:bg-stone-300' : 'bg-stone-300 dark:bg-stone-500'
+              className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 ${
+                settings.launchAtLogin ? 'bg-primary' : 'bg-surface-container-highest'
               }`}
             >
               <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                className={`inline-block h-4 w-4 transform rounded-full bg-on-primary shadow transition-transform ${
                   settings.launchAtLogin ? 'translate-x-6' : 'translate-x-1'
                 }`}
               />
@@ -1206,10 +1206,10 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
         {/* Voice Commands Toggle */}
         <div className="flex items-center justify-between">
           <div>
-            <label className="block text-sm font-medium text-stone-700 dark:text-stone-300">
+            <label className="block text-sm font-medium text-on-surface">
               Voice Commands
             </label>
-            <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
+            <p className="mt-1 text-xs text-on-surface-variant">
               Spoken tokens like "new line", "period", or "scratch that" transform the text before pasting.
             </p>
           </div>
@@ -1219,12 +1219,12 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
             aria-checked={settings.voiceCommandsEnabled}
             aria-label="Voice commands"
             onClick={() => onUpdateSettings({ voiceCommandsEnabled: !settings.voiceCommandsEnabled })}
-            className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-stone-500 focus:ring-offset-2 ${
-              settings.voiceCommandsEnabled ? 'bg-stone-800 dark:bg-stone-300' : 'bg-stone-300 dark:bg-stone-500'
+            className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 ${
+              settings.voiceCommandsEnabled ? 'bg-primary' : 'bg-surface-container-highest'
             }`}
           >
             <span
-              className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+              className={`inline-block h-4 w-4 transform rounded-full bg-on-primary shadow transition-transform ${
                 settings.voiceCommandsEnabled ? 'translate-x-6' : 'translate-x-1'
               }`}
             />
@@ -1257,10 +1257,10 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
         <div>
           <div className="flex items-center justify-between">
             <div>
-              <label className="block text-sm font-medium text-stone-700 dark:text-stone-300">
+              <label className="block text-sm font-medium text-on-surface">
                 Code-Aware Vocabulary
               </label>
-              <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
+              <p className="mt-1 text-xs text-on-surface-variant">
                 Bias transcription toward common dev terms (useEffect, kubectl, stderr) — works out of the box, no folder needed. Optionally add a project folder for your own identifiers. With Smart Correction on (below), these terms are also fixed in the transcript on every model, including Parakeet.
               </p>
             </div>
@@ -1270,12 +1270,12 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
               aria-checked={settings.codeVocabEnabled}
               aria-label="Code-aware vocabulary"
               onClick={() => onUpdateSettings({ codeVocabEnabled: !settings.codeVocabEnabled })}
-              className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-stone-500 focus:ring-offset-2 ${
-                settings.codeVocabEnabled ? 'bg-stone-800 dark:bg-stone-300' : 'bg-stone-300 dark:bg-stone-500'
+              className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 ${
+                settings.codeVocabEnabled ? 'bg-primary' : 'bg-surface-container-highest'
               }`}
             >
               <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                className={`inline-block h-4 w-4 transform rounded-full bg-on-primary shadow transition-transform ${
                   settings.codeVocabEnabled ? 'translate-x-6' : 'translate-x-1'
                 }`}
               />
@@ -1284,23 +1284,23 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
 
           {settings.codeVocabEnabled && (
             <div className="mt-3">
-              <label className="block text-xs text-stone-600 dark:text-stone-400 mb-1">
+              <label className="block text-xs text-on-surface-variant mb-1">
                 Project Folder (optional)
               </label>
-              <div className="px-3 py-2 text-xs rounded-lg border border-stone-300 dark:border-stone-600 bg-stone-50 dark:bg-stone-700/50 text-stone-700 dark:text-stone-300 break-all">
+              <div className="break-all rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface">
                 {settings.codeVocabFolder || 'No folder — built-in dev terms only'}
               </div>
               <div className="mt-2 flex items-center gap-3">
                 <button
                   onClick={handleChooseCodeVocabFolder}
-                  className="text-xs font-medium text-stone-600 hover:text-stone-900 dark:text-stone-400 dark:hover:text-stone-200 underline hover:no-underline transition-colors"
+                  className="text-xs font-medium text-on-surface-variant underline transition-colors hover:text-primary hover:no-underline"
                 >
                   Choose Folder
                 </button>
                 {settings.codeVocabFolder && (
                   <button
                     onClick={handleClearCodeVocabFolder}
-                    className="text-xs font-medium text-stone-500 hover:text-stone-800 dark:text-stone-500 dark:hover:text-stone-300 underline hover:no-underline transition-colors"
+                    className="text-xs font-medium text-on-surface-variant underline transition-colors hover:text-primary hover:no-underline"
                   >
                     Clear
                   </button>
@@ -1317,7 +1317,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
                 onCancel={vocabScan.cancel}
               />
 
-              <p className="mt-2 text-xs text-stone-500 dark:text-stone-400">
+              <p className="mt-2 text-xs text-on-surface-variant">
                 Optional. When set, the folder is scanned once for your identifiers (dependency and build directories are skipped) and layered on top of the built-in terms. Re-select to rescan after big code changes.
               </p>
             </div>
@@ -1328,10 +1328,10 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
         <div>
           <div className="flex items-center justify-between">
             <div>
-              <label className="block text-sm font-medium text-stone-700 dark:text-stone-300">
+              <label className="block text-sm font-medium text-on-surface">
                 Smart Correction
               </label>
-              <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
+              <p className="mt-1 text-xs text-on-surface-variant">
                 Fix vocabulary in the transcript after recognition, on every model. Turns "use effect" into useEffect and, with Code-Aware on, "standard error" into stderr.
               </p>
             </div>
@@ -1341,12 +1341,12 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
               aria-checked={settings.correctionEnabled}
               aria-label="Smart correction"
               onClick={() => onUpdateSettings({ correctionEnabled: !settings.correctionEnabled })}
-              className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-stone-500 focus:ring-offset-2 ${
-                settings.correctionEnabled ? 'bg-stone-800 dark:bg-stone-300' : 'bg-stone-300 dark:bg-stone-500'
+              className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 ${
+                settings.correctionEnabled ? 'bg-primary' : 'bg-surface-container-highest'
               }`}
             >
               <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                className={`inline-block h-4 w-4 transform rounded-full bg-on-primary shadow transition-transform ${
                   settings.correctionEnabled ? 'translate-x-6' : 'translate-x-1'
                 }`}
               />
@@ -1356,10 +1356,10 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
           {settings.correctionEnabled && (
             <div className="mt-3 flex items-center justify-between gap-4">
               <div>
-                <label className="block text-xs font-medium text-stone-700 dark:text-stone-300">
+                <label className="block text-xs font-medium text-on-surface">
                   Sounds-like matching
                 </label>
-                <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
+                <p className="mt-1 text-xs text-on-surface-variant">
                   Also recover close mishearings near your vocabulary (e.g. "red pivot" → "rePivot"). Turn off if you see unwanted swaps.
                 </p>
               </div>
@@ -1369,12 +1369,12 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
                 aria-checked={settings.correctionFuzzy}
                 aria-label="Sounds-like matching"
                 onClick={() => onUpdateSettings({ correctionFuzzy: !settings.correctionFuzzy })}
-                className={`relative inline-flex shrink-0 h-5 w-9 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-stone-500 focus:ring-offset-2 ${
-                  settings.correctionFuzzy ? 'bg-stone-800 dark:bg-stone-300' : 'bg-stone-300 dark:bg-stone-500'
+                className={`relative inline-flex shrink-0 h-5 w-9 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 ${
+                  settings.correctionFuzzy ? 'bg-primary' : 'bg-surface-container-highest'
                 }`}
               >
                 <span
-                  className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${
+                  className={`inline-block h-3.5 w-3.5 transform rounded-full bg-on-primary shadow transition-transform ${
                     settings.correctionFuzzy ? 'translate-x-4' : 'translate-x-1'
                   }`}
                 />
@@ -1391,7 +1391,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
         <SettingsSection pageId="about" activePage={activeCat} title="About" subtitle="Stats, logs, updates">
         {/* Model Info */}
         <div>
-          <div className="text-sm text-stone-600 dark:text-stone-400">
+          <div className="text-sm text-on-surface-variant">
             <p><strong>Model:</strong> {selectedModel?.label}</p>
             <p><strong>Backend:</strong> {selectedModel?.backend === 'coreml' ? 'FluidAudio (Apple Neural Engine)' : selectedModel?.backend === 'parakeet' ? 'sherpa-onnx (CPU)' : 'Whisper (Metal GPU)'}</p>
             <p><strong>Size:</strong> {selectedModel?.size}</p>
@@ -1406,7 +1406,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
             className={`w-full px-3 py-2 rounded-lg text-xs font-medium border transition-colors ${
               confirmReset
                 ? 'border-red-400 dark:border-red-600 bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/40'
-                : 'border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-600'
+                : 'border-outline-variant/20 bg-surface-container-lowest text-on-surface-variant hover:bg-surface-container hover:text-primary'
             }`}
           >
             {confirmReset ? 'Confirm Reset' : 'Reset Stats'}
@@ -1417,7 +1417,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
         <div>
           <button
             onClick={onViewLogs}
-            className="w-full px-3 py-2 rounded-lg text-xs font-medium border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-600 transition-colors"
+            className="w-full px-3 py-2 rounded-lg text-xs font-medium border border-outline-variant/20 bg-surface-container-lowest text-on-surface-variant hover:bg-surface-container hover:text-primary transition-colors"
           >
             View Logs
           </button>
@@ -1427,11 +1427,11 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
         <div>
           <button
             onClick={onRerunSetup}
-            className="w-full px-3 py-2 rounded-lg text-xs font-medium border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-600 transition-colors"
+            className="w-full px-3 py-2 rounded-lg text-xs font-medium border border-outline-variant/20 bg-surface-container-lowest text-on-surface-variant hover:bg-surface-container hover:text-primary transition-colors"
           >
             Run Setup Assistant
           </button>
-          <p className="mt-1.5 text-xs text-stone-400 dark:text-stone-500">
+          <p className="mt-1.5 text-xs text-on-surface-variant">
             Re-check permissions and the model step by step — useful if a
             permission was revoked or stopped working.
           </p>
@@ -1442,7 +1442,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
           <button
             onClick={onCheckForUpdate}
             disabled={updateStatus.phase === 'checking' || updateStatus.phase === 'downloading'}
-            className="w-full px-3 py-2 rounded-lg text-xs font-medium border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="w-full px-3 py-2 rounded-lg text-xs font-medium border border-outline-variant/20 bg-surface-container-lowest text-on-surface-variant hover:bg-surface-container hover:text-primary transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {updateStatus.phase === 'checking' ? 'Checking...' : 'Check for Updates'}
           </button>
@@ -1452,7 +1452,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
             </p>
           )}
           {updateStatus.phase === 'available' && (
-            <p className="mt-1.5 text-xs text-blue-600 dark:text-blue-400">
+            <p className="mt-1.5 text-xs text-primary">
               v{updateStatus.version} available
             </p>
           )}
@@ -1466,7 +1466,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
         {/* Version */}
         {version && (
           <div className="text-center">
-            <span className="text-xs text-stone-400 dark:text-stone-500">v{version}</span>
+            <span className="text-xs text-on-surface-variant">v{version}</span>
           </div>
         )}
         </SettingsSection>

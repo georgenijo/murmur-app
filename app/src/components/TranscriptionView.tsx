@@ -8,7 +8,7 @@ interface TranscriptionViewProps {
 
 export function TranscriptionView({ historyEntries, onClearHistory }: TranscriptionViewProps) {
   return (
-    <div className="flex-1 flex flex-col overflow-hidden">
+    <div className="flex flex-1 flex-col overflow-hidden rounded-2xl bg-surface-container-low p-3">
       <HistoryPanel
         entries={historyEntries}
         onClearHistory={onClearHistory}
