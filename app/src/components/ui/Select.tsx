@@ -175,14 +175,14 @@ export function Select<T extends string = string>({
         aria-selected={isSelected}
         onClick={() => selectOption(option)}
         onMouseEnter={() => setHighlightedIndex(index)}
-        className={`px-3 py-2 text-sm cursor-pointer flex items-center justify-between ${
-          isHighlighted ? 'bg-stone-100 dark:bg-stone-600' : ''
-        } ${isSelected ? 'font-medium' : ''} text-stone-900 dark:text-stone-100`}
+        className={`flex cursor-pointer items-center justify-between px-3 py-2 text-sm text-on-surface ${
+          isHighlighted ? 'bg-surface-container' : ''
+        } ${isSelected ? 'font-medium' : ''}`}
       >
         <span className="truncate">{option.label}</span>
         {isSelected && (
           <svg
-            className="w-4 h-4 text-stone-500 dark:text-stone-400 shrink-0 ml-2"
+            className="ml-2 h-4 w-4 shrink-0 text-primary"
             fill="none"
             stroke="currentColor"
             viewBox="0 0 24 24"
@@ -224,13 +224,13 @@ export function Select<T extends string = string>({
         aria-label={ariaLabel}
         disabled={disabled}
         onClick={() => (isOpen ? close() : open())}
-        className={`w-full px-3 py-2 rounded-lg border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 text-sm text-left focus:ring-2 focus:ring-stone-500 focus:border-transparent transition-colors flex items-center justify-between ${
+        className={`flex w-full items-center justify-between rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-left text-sm text-on-surface transition-colors focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary ${
           disabled ? 'opacity-50 cursor-not-allowed' : ''
         }`}
       >
         <span className="truncate">{displayLabel}</span>
         <svg
-          className={`w-4 h-4 text-stone-400 shrink-0 ml-2 transition-transform ${
+          className={`ml-2 h-4 w-4 shrink-0 text-on-surface-variant transition-transform ${
             isOpen ? 'rotate-180' : ''
           }`}
           fill="none"
@@ -251,7 +251,7 @@ export function Select<T extends string = string>({
           ref={listboxRef}
           role="listbox"
           id={`${id}-listbox`}
-          className="absolute z-10 mt-1 w-full max-h-60 overflow-auto rounded-lg border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 shadow-lg py-1"
+          className="absolute z-10 mt-1 max-h-60 w-full overflow-auto rounded-lg border border-outline-variant/30 bg-surface-container-lowest py-1 shadow-lg"
         >
           {isGrouped(items)
             ? items.map((group, gi) => (
@@ -262,7 +262,7 @@ export function Select<T extends string = string>({
                   >
                     <span
                       id={`${id}-group-${gi}`}
-                      className="block px-3 py-1.5 text-xs font-semibold text-stone-500 dark:text-stone-400 uppercase tracking-wider select-none"
+                      className="block select-none px-3 py-1.5 text-xs font-semibold uppercase tracking-wider text-on-surface-variant"
                     >
                       {group.label}
                     </span>

@@ -220,15 +220,15 @@ function App() {
 
       <div className="flex-1 flex overflow-hidden">
         <main className={`flex-1 flex-col overflow-hidden p-4 gap-4 ${isSettingsOpen ? 'hidden' : 'flex'}`}>
-          <div className="shrink-0 flex gap-1 p-1 self-start bg-stone-100 dark:bg-stone-800 rounded-lg">
+          <div className="shrink-0 flex gap-1 p-1 self-start bg-surface-container rounded-xl">
             {(['record', 'file'] as const).map((tab) => (
               <button
                 key={tab}
                 onClick={() => setMainTab(tab)}
                 className={`px-3 py-1 text-sm font-medium rounded-md transition-colors ${
                   mainTab === tab
-                    ? 'bg-white text-stone-900 shadow-sm dark:bg-stone-700 dark:text-stone-100'
-                    : 'text-stone-500 hover:text-stone-700 dark:text-stone-400 dark:hover:text-stone-200'
+                    ? 'bg-surface-container-lowest text-on-surface shadow-sm'
+                    : 'text-on-surface-variant hover:text-on-surface'
                 }`}
               >
                 {tab === 'record' ? 'Record' : 'Transcribe File'}
@@ -249,7 +249,7 @@ function App() {
                 </div>
               )}
 
-              <RecordingControls status={status} initialized={initialized} onStart={handleStart} onStop={handleStop} />
+              <RecordingControls status={status} initialized={initialized} onStart={handleStart} onStop={handleStop} triggerKey={settings.doubleTapKey} />
 
               <Suspense fallback={null}><UsageDashboard statsVersion={combinedStatsVersion} /></Suspense>
 

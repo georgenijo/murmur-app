@@ -112,19 +112,19 @@ export function ModelDownloadPanel({ initialModel, onComplete, onDownloadingChan
               disabled={isDownloading}
               className={`w-full text-left px-4 py-3 rounded-lg border transition-colors ${
                 selected === model.name
-                  ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 dark:border-blue-400'
-                  : 'border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 hover:border-stone-300 dark:hover:border-stone-600'
+                  ? 'border-primary bg-surface-container-low'
+                  : 'border-outline-variant/20 bg-surface-container-lowest hover:border-primary/50'
               } ${isDownloading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
             >
               <div className="flex items-center justify-between">
-                <span className="text-sm font-medium text-stone-800 dark:text-stone-100">
+                <span className="text-sm font-medium text-on-surface">
                   {model.label}
                 </span>
-                <span className="text-xs text-stone-400 dark:text-stone-500 font-mono">
+                <span className="text-xs text-on-surface-variant font-mono">
                   {model.size}
                 </span>
               </div>
-              <p className="text-xs text-stone-500 dark:text-stone-400 mt-0.5">
+              <p className="text-xs text-on-surface-variant mt-0.5">
                 {model.description}
               </p>
             </button>
@@ -133,7 +133,7 @@ export function ModelDownloadPanel({ initialModel, onComplete, onDownloadingChan
 
         {isDownloading && (
           <div className="mb-4">
-            <div className="flex justify-between text-xs text-stone-500 dark:text-stone-400 mb-1">
+            <div className="flex justify-between text-xs text-on-surface-variant mb-1">
               <span>{progress ? modelDownloadLabel(progress) : 'Starting...'}</span>
               {progressPercent !== null ? (
                 <span>{progressPercent}%</span>
@@ -141,14 +141,14 @@ export function ModelDownloadPanel({ initialModel, onComplete, onDownloadingChan
                 <span>Working...</span>
               )}
             </div>
-            <div className="w-full h-2 bg-stone-200 dark:bg-stone-700 rounded-full overflow-hidden">
+            <div className="w-full h-2 bg-surface-container-highest rounded-full overflow-hidden">
               <div
                 role="progressbar"
                 aria-valuenow={progressPercent ?? undefined}
                 aria-valuemin={0}
                 aria-valuemax={100}
                 aria-valuetext={progressPercent === null ? 'Model installation in progress' : undefined}
-                className={`h-full bg-blue-500 rounded-full ${
+                className={`h-full bg-primary rounded-full ${
                   progressPercent === null
                     ? 'model-download-indeterminate'
                     : 'transition-all duration-200'
@@ -157,7 +157,7 @@ export function ModelDownloadPanel({ initialModel, onComplete, onDownloadingChan
               />
             </div>
             {progress && progress.total > 0 && progress.phase !== 'installing' && (
-              <p className="text-xs text-stone-400 dark:text-stone-500 mt-1 text-right">
+              <p className="text-xs text-on-surface-variant mt-1 text-right">
                 {(progress.received / 1024 / 1024).toFixed(1)} /{' '}
                 {(progress.total / 1024 / 1024).toFixed(1)} MB
               </p>
@@ -166,15 +166,15 @@ export function ModelDownloadPanel({ initialModel, onComplete, onDownloadingChan
         )}
 
         {downloadState.phase === 'error' && (
-          <div className="mb-4 px-4 py-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
-            <p className="text-sm text-red-600 dark:text-red-400">{downloadState.message}</p>
+          <div className="mb-4 rounded-lg border border-error/30 bg-error/10 px-4 py-3">
+            <p className="text-sm text-error">{downloadState.message}</p>
           </div>
         )}
 
         <button
           onClick={handleDownload}
           disabled={isDownloading}
-          className="w-full py-2.5 px-4 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors"
+          className="w-full rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-on-primary transition-colors hover:bg-primary-dim disabled:cursor-not-allowed disabled:opacity-50"
         >
           {isDownloading
             ? progress ? modelDownloadLabel(progress) : 'Starting...'
@@ -192,12 +192,12 @@ export function ModelDownloadPanel({ initialModel, onComplete, onDownloadingChan
  */
 export function ModelDownloader({ initialModel, onComplete }: Props) {
   return (
-    <div className="h-screen bg-stone-50 dark:bg-stone-900 flex flex-col items-center justify-center p-8">
+    <div className="h-screen bg-background flex flex-col items-center justify-center p-8">
       <div className="w-full max-w-md">
-        <h1 className="text-xl font-semibold text-stone-800 dark:text-stone-100 mb-1">
+        <h1 className="text-xl font-semibold text-on-surface mb-1">
           Download a Model
         </h1>
-        <p className="text-sm text-stone-500 dark:text-stone-400 mb-6">
+        <p className="text-sm text-on-surface-variant mb-6">
           A model file is required for transcription. Choose one to download.
         </p>
         <ModelDownloadPanel initialModel={initialModel} onComplete={onComplete} />

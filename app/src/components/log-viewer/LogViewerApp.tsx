@@ -70,16 +70,17 @@ export function LogViewerApp() {
       <div className="shrink-0 bg-surface-container-low px-4 py-3">
         <div className="flex items-center justify-between mb-3">
           {/* Tabs */}
-          <div className="flex gap-1">
+          <div className="flex gap-1 rounded-xl bg-surface-container p-1">
             {(['events', 'metrics'] as Tab[]).map((t) => (
               <button
                 key={t}
                 onClick={() => setTab(t)}
-                className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-[background-color,box-shadow,color] ${
                   tab === t
-                    ? 'bg-primary text-on-primary'
-                    : 'text-on-surface-variant hover:bg-surface-container hover:text-on-surface'
+                    ? 'bg-surface-container-lowest text-on-surface shadow-sm'
+                    : 'text-on-surface-variant hover:text-on-surface'
                 }`}
+                aria-pressed={tab === t}
               >
                 {t.charAt(0).toUpperCase() + t.slice(1)}
               </button>
@@ -89,13 +90,13 @@ export function LogViewerApp() {
           <div className="flex gap-2">
             <button
               onClick={handleCopyAll}
-              className="px-3 py-1 rounded-md text-xs font-medium border border-outline-variant/10 bg-surface-container-lowest text-on-surface hover:bg-surface-container transition-colors"
+              className="rounded-lg border border-outline-variant/10 bg-surface-container-lowest px-3 py-1.5 text-xs font-medium text-on-surface-variant shadow-sm transition-colors hover:bg-surface-container hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
             >
               Copy All
             </button>
             <button
               onClick={clear}
-              className="px-3 py-1 rounded-md text-xs font-medium border border-outline-variant/10 bg-surface-container-lowest text-on-surface hover:bg-surface-container transition-colors"
+              className="rounded-lg border border-outline-variant/10 bg-surface-container-lowest px-3 py-1.5 text-xs font-medium text-on-surface-variant shadow-sm transition-colors hover:bg-surface-container hover:text-error focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
             >
               Clear
             </button>
