@@ -65,9 +65,9 @@ export function LogViewerApp() {
   }, [filteredEvents]);
 
   return (
-    <div className="h-screen flex flex-col bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100">
+    <div className="h-screen flex flex-col bg-background text-on-surface">
       {/* Header */}
-      <div className="shrink-0 border-b border-stone-200 dark:border-stone-700 px-4 py-3">
+      <div className="shrink-0 bg-surface-container-low px-4 py-3">
         <div className="flex items-center justify-between mb-3">
           {/* Tabs */}
           <div className="flex gap-1">
@@ -77,8 +77,8 @@ export function LogViewerApp() {
                 onClick={() => setTab(t)}
                 className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
                   tab === t
-                    ? 'bg-stone-800 dark:bg-stone-200 text-white dark:text-stone-900'
-                    : 'text-stone-500 dark:text-stone-400 hover:bg-stone-100 dark:hover:bg-stone-800'
+                    ? 'bg-primary text-on-primary'
+                    : 'text-on-surface-variant hover:bg-surface-container hover:text-on-surface'
                 }`}
               >
                 {t.charAt(0).toUpperCase() + t.slice(1)}
@@ -89,13 +89,13 @@ export function LogViewerApp() {
           <div className="flex gap-2">
             <button
               onClick={handleCopyAll}
-              className="px-3 py-1 rounded-md text-xs font-medium border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-800 text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-700 transition-colors"
+              className="px-3 py-1 rounded-md text-xs font-medium border border-outline-variant/10 bg-surface-container-lowest text-on-surface hover:bg-surface-container transition-colors"
             >
               Copy All
             </button>
             <button
               onClick={clear}
-              className="px-3 py-1 rounded-md text-xs font-medium border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-800 text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-700 transition-colors"
+              className="px-3 py-1 rounded-md text-xs font-medium border border-outline-variant/10 bg-surface-container-lowest text-on-surface hover:bg-surface-container transition-colors"
             >
               Clear
             </button>
@@ -118,7 +118,7 @@ export function LogViewerApp() {
           className="flex-1 overflow-y-auto font-mono text-xs"
         >
           {filteredEvents.length === 0 ? (
-            <div className="flex items-center justify-center h-32 text-stone-400 dark:text-stone-500 text-sm">
+            <div className="flex items-center justify-center h-32 text-on-surface-variant text-sm">
               No events to display
             </div>
           ) : (

@@ -44,7 +44,7 @@ function PasteDelaySlider({ value, onCommit }: { value: number; onCommit: (v: nu
         value={draft}
         onChange={(e) => setDraft(Number(e.target.value))}
         onPointerUp={() => onCommit(draft)}
-        className="w-full h-1.5 bg-stone-200 dark:bg-stone-600 rounded-full appearance-none cursor-pointer accent-stone-800 dark:accent-stone-300"
+        className="w-full h-1.5 bg-surface-container-highest rounded-full appearance-none cursor-pointer accent-stone-800 dark:accent-stone-300"
       />
       <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
         Delay before paste. Increase if paste lands in the wrong window.
@@ -124,7 +124,7 @@ function VadSensitivitySlider({ value, onCommit }: { value: number; onCommit: (v
         value={draft}
         onChange={(e) => setDraft(Number(e.target.value))}
         onPointerUp={() => onCommit(draft)}
-        className="w-full h-1.5 bg-stone-200 dark:bg-stone-600 rounded-full appearance-none cursor-pointer accent-stone-800 dark:accent-stone-300"
+        className="w-full h-1.5 bg-surface-container-highest rounded-full appearance-none cursor-pointer accent-stone-800 dark:accent-stone-300"
       />
       <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
         Higher = keeps more audio. Lower = trims silence more aggressively.
@@ -595,15 +595,15 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
     : null;
 
   return (
-    <div className="flex-1 flex overflow-hidden bg-white dark:bg-stone-900">
+    <div className="flex-1 flex overflow-hidden bg-surface text-on-surface">
       {/* Left: category nav rail */}
-      <nav className="w-48 shrink-0 flex flex-col border-r border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800/40 overflow-y-auto">
+      <nav className="w-48 shrink-0 flex flex-col bg-surface-container-low overflow-y-auto">
         <div className="flex items-center justify-between h-12 shrink-0 px-3">
-          <h2 className="text-sm font-semibold text-stone-900 dark:text-stone-100">Settings</h2>
+          <h2 className="text-sm font-semibold text-on-surface">Settings</h2>
           <button
             onClick={onClose}
             aria-label="Close settings"
-            className="p-1 rounded-md text-stone-500 hover:bg-stone-200 dark:hover:bg-stone-700 transition-colors"
+            className="p-1 rounded-md text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -618,8 +618,8 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
               onClick={() => setActiveCat(c.id)}
               className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${
                 activeCat === c.id
-                  ? 'bg-stone-200 dark:bg-stone-700 text-stone-900 dark:text-stone-100 font-medium'
-                  : 'text-stone-600 dark:text-stone-400 hover:bg-stone-100 dark:hover:bg-stone-700/50'
+                  ? 'bg-surface-container-high text-on-surface font-medium'
+                  : 'text-on-surface-variant hover:bg-surface-container'
               }`}
             >
               {c.label}
@@ -713,7 +713,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
                   <span>Working...</span>
                 )}
               </div>
-              <div className="w-full h-1.5 bg-stone-200 dark:bg-stone-700 rounded-full overflow-hidden">
+              <div className="w-full h-1.5 bg-surface-container-highest rounded-full overflow-hidden">
                 <div
                   role="progressbar"
                   aria-valuenow={downloadProgressPercent ?? undefined}
@@ -871,7 +871,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
 
         {/* Cleanup sub-options — only meaningful while cleanup is enabled. */}
         {settings.cleanupEnabled && (
-          <div className="ml-3 pl-3 border-l border-stone-200 dark:border-stone-700 space-y-3">
+          <div className="ml-3 pl-3 space-y-3">
             <div className="flex items-center justify-between">
               <label className="text-xs text-stone-600 dark:text-stone-400">
                 Remove filler words (um, uh)
