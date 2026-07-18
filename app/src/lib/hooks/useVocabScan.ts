@@ -8,14 +8,16 @@ import type { VocabScanSummary } from '../settings';
  * `vocab-scan-progress` event exactly (serde camelCase).
  */
 export interface VocabScanProgress {
+  scanId: string;
   currentPath: string;
   filesRead: number;
   dirsSkipped: number;
   termsSoFar: number;
   done: boolean;
+  adopted: boolean;
 }
 
-export type VocabScanStatus = 'idle' | 'scanning' | 'done' | 'empty';
+export type VocabScanStatus = 'idle' | 'scanning' | 'done' | 'empty' | 'superseded';
 
 /** One streamed row in the live walker tree. */
 export interface WalkerRow {
@@ -42,8 +44,15 @@ export interface VocabScanStats {
 
 const EVENT = 'vocab-scan-progress';
 const COMMAND = 'scan_code_vocab';
+const CANCEL_COMMAND = 'cancel_code_vocab_scan';
 /** Cap the in-memory walker so a huge repo can't grow the list unbounded. */
 const MAX_WALKER_ROWS = 200;
+let scanSequence = 0;
+
+function createScanId(): string {
+  scanSequence += 1;
+  return `${Date.now().toString(36)}-${scanSequence.toString(36)}`;
+}
 
 const EMPTY_STATS: VocabScanStats = {
   filesRead: 0,
@@ -79,7 +88,13 @@ export interface UseVocabScan {
  */
 export function useVocabScan(initial?: VocabScanSummary | null): UseVocabScan {
   const [status, setStatus] = useState<VocabScanStatus>(() =>
-    initial ? (initial.terms > 0 ? 'done' : 'empty') : 'idle',
+    initial
+      ? initial.adopted
+        ? initial.terms > 0
+          ? 'done'
+          : 'empty'
+        : 'superseded'
+      : 'idle',
   );
   const [walker, setWalker] = useState<WalkerRow[]>([]);
   const [stats, setStats] = useState<VocabScanStats>(() =>
@@ -97,6 +112,7 @@ export function useVocabScan(initial?: VocabScanSummary | null): UseVocabScan {
   // async scan() closure always sees the current listener without re-running.
   const unlistenRef = useRef<UnlistenFn | null>(null);
   const runIdRef = useRef(0);
+  const activeScanIdRef = useRef<string | null>(null);
   const rowIdRef = useRef(0);
   const mountedRef = useRef(true);
   // Previous tick's CUMULATIVE backend counts, used to classify each new row as
@@ -128,6 +144,13 @@ export function useVocabScan(initial?: VocabScanSummary | null): UseVocabScan {
     // Bump the run id so any in-flight listen()/invoke from the cancelled scan
     // is ignored, then detach and reset visible state.
     runIdRef.current += 1;
+    const scanId = activeScanIdRef.current;
+    activeScanIdRef.current = null;
+    if (scanId) {
+      void invoke<boolean>(CANCEL_COMMAND, { scanId }).catch((err) => {
+        if (import.meta.env.DEV) console.debug('[useVocabScan cancel]', err);
+      });
+    }
     detach();
     prevFilesRef.current = 0;
     prevSkipsRef.current = 0;
@@ -142,6 +165,8 @@ export function useVocabScan(initial?: VocabScanSummary | null): UseVocabScan {
       // New run: invalidate any prior scan and tear down its listener so we
       // never double-subscribe to the progress stream.
       const runId = runIdRef.current + 1;
+      const scanId = createScanId();
+      activeScanIdRef.current = scanId;
       runIdRef.current = runId;
       detach();
       prevFilesRef.current = 0;
@@ -158,6 +183,7 @@ export function useVocabScan(initial?: VocabScanSummary | null): UseVocabScan {
         // Stale listener from a superseded scan — ignore.
         if (runId !== runIdRef.current || !mountedRef.current) return;
         const p = event.payload;
+        if (p.scanId !== scanId) return;
 
         // Terminal event: the backend's final tick carries the real cumulative
         // counts and an empty path. Settle the running counters + terminal status
@@ -171,7 +197,7 @@ export function useVocabScan(initial?: VocabScanSummary | null): UseVocabScan {
             dirsSkipped: p.dirsSkipped,
             termsSoFar: p.termsSoFar,
           }));
-          setStatus(p.termsSoFar > 0 ? 'done' : 'empty');
+          setStatus(p.adopted ? (p.termsSoFar > 0 ? 'done' : 'empty') : 'superseded');
           return;
         }
 
@@ -206,7 +232,7 @@ export function useVocabScan(initial?: VocabScanSummary | null): UseVocabScan {
       unlistenRef.current = unlisten;
 
       try {
-        const summary = await invoke<VocabScanSummary>(COMMAND, { folder });
+        const summary = await invoke<VocabScanSummary>(COMMAND, { folder, scanId });
         // Superseded or unmounted mid-walk — discard the result. Only tear down a
         // listener that still belongs to THIS run: a newer scan has already
         // installed its own listener into unlistenRef, and the shared detach()
@@ -216,13 +242,14 @@ export function useVocabScan(initial?: VocabScanSummary | null): UseVocabScan {
           return null;
         }
         detach();
+        if (activeScanIdRef.current === scanId) activeScanIdRef.current = null;
         setStats({
           filesRead: summary.files,
           dirsSkipped: summary.skipped,
           termsSoFar: summary.terms,
           summary,
         });
-        setStatus(summary.terms > 0 ? 'done' : 'empty');
+        setStatus(summary.adopted ? (summary.terms > 0 ? 'done' : 'empty') : 'superseded');
         return summary;
       } catch (err) {
         if (runId !== runIdRef.current || !mountedRef.current) {
@@ -230,6 +257,7 @@ export function useVocabScan(initial?: VocabScanSummary | null): UseVocabScan {
           return null;
         }
         detach();
+        if (activeScanIdRef.current === scanId) activeScanIdRef.current = null;
         if (import.meta.env.DEV) console.debug('[useVocabScan]', err);
         // Treat a failed scan as an empty result so the UI leaves the spinner.
         setStatus('empty');

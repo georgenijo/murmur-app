@@ -290,6 +290,7 @@ describe('loadSettings', () => {
         { term: 'TranscriptionBackend', freq: 31 },
       ],
       whisperCount: 2,
+      adopted: true,
     };
     localStorage.setItem('dictation-settings', JSON.stringify({
       ...DEFAULT_SETTINGS,
@@ -319,6 +320,7 @@ describe('loadSettings', () => {
     expect(settings.codeVocabLastScan!.rankedTerms).toEqual([]);
     expect(settings.codeVocabLastScan!.whisperCount).toBe(0);
     expect(settings.codeVocabLastScan!.sampleTerms).toEqual(['foo', 'bar']);
+    expect(settings.codeVocabLastScan!.adopted).toBe(true);
   });
 
   it('drops malformed ranked-term entries and clamps the list to 500', () => {

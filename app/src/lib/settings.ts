@@ -53,6 +53,8 @@ export interface VocabScanSummary {
   rankedTerms: RankedTerm[];
   /** How many of `rankedTerms` feed the Whisper prompt (= min(96, len)). */
   whisperCount: number;
+  /** False when a newer scan or settings change superseded this walk. */
+  adopted: boolean;
 }
 
 /** Hard ceiling on the persisted ranked list, mirroring the backend cap. */
@@ -286,6 +288,9 @@ function sanitizeVocabScan(raw: unknown): VocabScanSummary | null {
       .slice(0, MAX_SAMPLE_TERMS),
     rankedTerms,
     whisperCount,
+    // Added after persisted summaries first shipped; old successful summaries
+    // predate the field and are therefore treated as adopted.
+    adopted: typeof r.adopted === 'boolean' ? r.adopted : true,
   };
 }
 

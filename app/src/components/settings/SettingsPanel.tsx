@@ -466,7 +466,8 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
     async (folder: string) => {
       if (!folder) return;
       const summary = await doScan(folder);
-      if (summary) onUpdateSettings({ codeVocabLastScan: summary });
+      if (summary?.adopted) onUpdateSettings({ codeVocabLastScan: summary });
+      else if (summary) onUpdateSettings({ codeVocabLastScan: null });
     },
     [doScan, onUpdateSettings],
   );
@@ -475,7 +476,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
     try {
       const selected = await open({ directory: true, multiple: false });
       if (typeof selected === 'string') {
-        onUpdateSettings({ codeVocabFolder: selected });
+        onUpdateSettings({ codeVocabFolder: selected, codeVocabLastScan: null });
         // Auto-scan the freshly chosen folder.
         void runVocabScan(selected);
       }
