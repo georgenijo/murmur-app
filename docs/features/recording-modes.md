@@ -71,7 +71,7 @@ To stop (when recording):
 
 ```text
 Idle → KeyDown(target) → WaitingFirstUp
-WaitingFirstUp → KeyUp(target) within 300ms → FIRE
+WaitingFirstUp → KeyUp(target) within 200ms → FIRE
 ```
 
 ### Rejection Rules

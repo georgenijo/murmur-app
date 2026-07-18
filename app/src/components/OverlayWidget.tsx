@@ -651,7 +651,7 @@ export function OverlayWidget() {
                 <line x1="18" y1="6" x2="6" y2="18" />
               </svg>
             ) : showHotkeyMiss ? (
-              <span className="w-3 h-3 rounded-full border border-amber-400 text-amber-300 flex items-center justify-center font-bold" style={{ fontSize: 8, lineHeight: 1 }}>
+              <span className="w-3 h-3 rounded-full border border-amber-400 text-amber-300 text-[8px] leading-none flex items-center justify-center font-bold">
                 !
               </span>
             ) : status === 'recording' ? (
@@ -679,7 +679,7 @@ export function OverlayWidget() {
 
           {/* Right side — waveform (only when active) */}
           {showHotkeyMiss ? (
-            <span className="shrink-0 text-amber-300 font-medium" style={{ fontSize: 10 }}>
+            <span className="shrink-0 text-amber-300 text-[10px] font-medium">
               Tap missed
             </span>
           ) : (
