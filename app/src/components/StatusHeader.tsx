@@ -29,9 +29,9 @@ export function StatusHeader({ status, initialized, recordingDuration, onSetting
   return (
     <header
       data-tauri-drag-region
-      className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-stone-200 dark:border-stone-700 bg-white/80 dark:bg-stone-800/80 backdrop-blur-sm"
+      className="shrink-0 flex items-center justify-between px-4 py-3 bg-surface-container-low/90 backdrop-blur-sm"
     >
-      <span className="text-sm font-semibold text-stone-800 dark:text-stone-100">Murmur</span>
+      <span className="text-sm font-semibold text-on-surface">Murmur</span>
 
       <div className="flex items-center gap-3">
         <div className={`flex items-center gap-1.5 text-sm font-medium ${statusColor}`}>
@@ -53,8 +53,8 @@ export function StatusHeader({ status, initialized, recordingDuration, onSetting
           onClick={onSettingsToggle}
           className={`p-1.5 rounded-md transition-colors ${
             isSettingsOpen
-              ? 'text-stone-900 dark:text-stone-100 bg-stone-100 dark:bg-stone-700'
-              : 'text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-700'
+              ? 'text-on-surface bg-surface-container-high'
+              : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-container'
           }`}
           aria-label="Toggle settings"
           aria-expanded={isSettingsOpen}

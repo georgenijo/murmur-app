@@ -35,9 +35,9 @@ export function SettingsSection({ title, subtitle, defaultExpanded = true, child
     if (activePage !== undefined && activePage !== pageId) return null;
     return (
       <div>
-        <h1 className="text-base font-semibold text-stone-900 dark:text-stone-100">{title}</h1>
+        <h1 className="text-base font-semibold text-on-surface">{title}</h1>
         {subtitle && (
-          <p className="mt-0.5 text-xs text-stone-400 dark:text-stone-500">{subtitle}</p>
+          <p className="mt-0.5 text-xs text-on-surface-variant">{subtitle}</p>
         )}
         <div className="pt-4 space-y-4">{children}</div>
       </div>
@@ -45,23 +45,23 @@ export function SettingsSection({ title, subtitle, defaultExpanded = true, child
   }
 
   return (
-    <div className="border-b border-stone-200 dark:border-stone-700">
+    <div className="mb-2 last:mb-0">
       <button
         type="button"
         id={headerId}
         aria-expanded={expanded}
         aria-controls={contentId}
         onClick={handleToggle}
-        className="flex w-full items-center justify-between py-3 text-sm font-semibold text-stone-900 dark:text-stone-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-stone-500 focus-visible:ring-offset-1 rounded-sm"
+        className="flex w-full items-center justify-between py-3 text-sm font-semibold text-on-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-1 rounded-sm"
       >
         <span className="text-left">
           {title}
           {subtitle && !expanded && (
-            <span className="block text-xs font-normal text-stone-400 dark:text-stone-500">{subtitle}</span>
+            <span className="block text-xs font-normal text-on-surface-variant">{subtitle}</span>
           )}
         </span>
         <svg
-          className={`w-4 h-4 text-stone-400 shrink-0 transition-transform duration-200 ${
+          className={`w-4 h-4 text-on-surface-variant shrink-0 transition-transform duration-200 ${
             expanded ? 'rotate-180' : ''
           }`}
           fill="none"
