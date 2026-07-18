@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import type { VocabScanSummary } from '../../lib/settings';
 import type {
   VocabScanStatus,
@@ -58,14 +58,16 @@ export function VocabScanStrip({
   onCancel,
 }: VocabScanStripProps) {
   const [modalOpen, setModalOpen] = useState(false);
+  const viewAllRef = useRef<HTMLButtonElement>(null);
   const scanning = status === 'scanning';
   const summary: VocabScanSummary | null = stats.summary;
   // Result card needs the full Summary; only render it once invoke() has resolved.
-  const showResult = (status === 'done' || status === 'empty') && summary !== null;
+  const showResult =
+    (status === 'done' || status === 'empty' || status === 'superseded') && summary !== null;
   // The walk has settled (terminal status) even if the Summary hasn't landed yet.
   // Keep the progress bar full across that gap so it doesn't collapse to 0% for a
   // few ms between the done tick and the invoke() resolution.
-  const settled = status === 'done' || status === 'empty';
+  const settled = status === 'done' || status === 'empty' || status === 'superseded';
 
   // Status dot color.
   const dotClass =
@@ -75,6 +77,8 @@ export function VocabScanStrip({
         ? 'bg-green-500'
         : status === 'empty'
           ? 'bg-amber-500'
+          : status === 'superseded'
+            ? 'bg-stone-400 dark:bg-stone-500'
           : 'bg-stone-400 dark:bg-stone-500';
 
   // Header label + sub copy per state. The terminal 'done'/'empty' status lands a
@@ -95,6 +99,9 @@ export function VocabScanStrip({
   } else if (status === 'empty') {
     label = 'No identifiers found';
     sub = 'Folder had no source files — built-in dev terms still active.';
+  } else if (status === 'superseded') {
+    label = 'Scan superseded';
+    sub = 'Settings changed before this scan finished, so its terms were not applied.';
   } else {
     label = 'Not scanned yet';
     sub = 'Built-in dev terms active. Scan this folder to add your own identifiers.';
@@ -103,7 +110,7 @@ export function VocabScanStrip({
   // Primary action button.
   const actionLabel = scanning
     ? 'Cancel'
-    : status === 'done' || status === 'empty'
+    : status === 'done' || status === 'empty' || status === 'superseded'
       ? 'Rescan'
       : 'Scan now';
   const actionDisabled = !scanning && !folder;
@@ -177,6 +184,13 @@ export function VocabScanStrip({
             <Stat num={formatMs(summary.ms)} cap="duration" />
           </div>
 
+          {status === 'superseded' && (
+            <WarnBox>
+              This result was <b>not applied</b> because the selected folder, toggle, or active
+              scan changed while it was running. Rescan the current folder to use its terms.
+            </WarnBox>
+          )}
+
           {/* cap warning steers toward a single project */}
           {summary.capped && (
             <WarnBox>
@@ -203,7 +217,7 @@ export function VocabScanStrip({
           )}
 
           {/* sample-term chips */}
-          {summary.sampleTerms.length > 0 && (
+          {summary.adopted && summary.sampleTerms.length > 0 && (
             <div className="mt-3">
               <div className="mb-1.5 text-[10px] uppercase tracking-wide text-stone-500 dark:text-stone-500">
                 Top terms found
@@ -225,6 +239,7 @@ export function VocabScanStrip({
                 {/* View-all link: only when the backend returned a ranked list. */}
                 {summary.rankedTerms.length > 0 && (
                   <button
+                    ref={viewAllRef}
                     type="button"
                     onClick={() => setModalOpen(true)}
                     className="ml-0.5 cursor-pointer text-[11px] font-semibold text-blue-500 underline hover:no-underline dark:text-blue-400"
@@ -244,6 +259,7 @@ export function VocabScanStrip({
           summary={summary}
           folder={folder}
           onClose={() => setModalOpen(false)}
+          returnFocusRef={viewAllRef}
         />
       )}
     </div>

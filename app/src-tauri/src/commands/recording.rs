@@ -980,6 +980,7 @@ pub async fn configure_dictation(
         // programmatically), `resolve_code_vocab_prompt` lazily builds + caches the
         // prompt on the first transcription. Net: exactly one walk per folder.
         dictation.code_vocab_prompt = None;
+        dictation.code_vocab_scan_id = None;
     }
 
     // Post-model correction toggles.
@@ -1071,11 +1072,13 @@ pub async fn configure_dictation(
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VocabScanProgress {
+    scan_id: String,
     current_path: String,
     files_read: usize,
     dirs_skipped: usize,
     terms_so_far: usize,
     done: bool,
+    adopted: bool,
 }
 
 /// One ranked vocabulary term surfaced to the frontend pop-out: the written form
@@ -1109,6 +1112,50 @@ pub struct VocabScanSummary {
     /// min([`WHISPER_PROMPT_TERMS`], ranked_terms.len()). The first `whisper_count`
     /// entries are the Whisper budget; the rest are correction-only.
     whisper_count: usize,
+    /// Whether this result was adopted into the live dictation settings. False
+    /// means a newer scan or settings change superseded it while it was walking.
+    adopted: bool,
+}
+
+/// Register an explicit scan as the latest settings intent before walking. This
+/// makes the command own the folder transition even when the frontend's
+/// configure call is still in flight, while the scan id lets later changes
+/// supersede it deterministically.
+fn begin_code_vocab_scan(app_state: &AppState, scan_id: &str, folder: &str) {
+    let mut dictation = app_state.dictation.lock_or_recover();
+    let folder_changed = dictation.code_vocab_folder != folder;
+    let was_disabled = !dictation.code_vocab_enabled;
+    dictation.code_vocab_enabled = true;
+    dictation.code_vocab_folder = folder.to_string();
+    dictation.code_vocab_scan_id = Some(scan_id.to_string());
+    if folder_changed || was_disabled {
+        dictation.code_vocab_prompt = None;
+        rebuild_correction_matcher(app_state, &dictation);
+    }
+}
+
+/// Adopt a completed scan only when it is still the latest run and the settings
+/// still target the folder it walked. Returns false for overlapping scans and
+/// for enable/folder changes made during the walk.
+fn complete_code_vocab_scan(
+    app_state: &AppState,
+    scan_id: &str,
+    folder: &str,
+    prompt: String,
+) -> bool {
+    let mut dictation = app_state.dictation.lock_or_recover();
+    let is_active = dictation.code_vocab_scan_id.as_deref() == Some(scan_id);
+    let adopted = is_active
+        && dictation.code_vocab_enabled
+        && dictation.code_vocab_folder == folder;
+    if adopted {
+        dictation.code_vocab_prompt = Some(prompt);
+        dictation.code_vocab_scan_id = None;
+        rebuild_correction_matcher(app_state, &dictation);
+    } else if is_active {
+        dictation.code_vocab_scan_id = None;
+    }
+    adopted
 }
 
 /// Emit a throttled `vocab-scan-progress` tick carrying the live running counts
@@ -1119,6 +1166,7 @@ pub struct VocabScanSummary {
 #[allow(clippy::too_many_arguments)]
 fn emit_scan_progress(
     handle: &tauri::AppHandle,
+    scan_id: &str,
     last_emit: &mut std::time::Instant,
     current_path: String,
     files_read: usize,
@@ -1134,11 +1182,13 @@ fn emit_scan_progress(
         let _ = handle.emit(
             "vocab-scan-progress",
             VocabScanProgress {
+                scan_id: scan_id.to_string(),
                 current_path,
                 files_read,
                 dirs_skipped,
                 terms_so_far,
                 done: false,
+                adopted: false,
             },
         );
     }
@@ -1166,17 +1216,24 @@ pub async fn scan_code_vocab(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, State>,
     folder: String,
+    scan_id: String,
 ) -> Result<VocabScanSummary, String> {
     let folder_trimmed = folder.trim().to_string();
     if folder_trimmed.is_empty() {
         return Err("No folder selected to scan.".to_string());
     }
+    if scan_id.trim().is_empty() {
+        return Err("Missing scan id.".to_string());
+    }
+
+    begin_code_vocab_scan(&state.app_state, &scan_id, &folder_trimmed);
 
     tracing::info!(target: "pipeline", "scan_code_vocab: start");
 
     // Walk + prompt build are blocking (filesystem + CPU). Run them off the async
     // runtime; the closure emits throttled progress as files are read.
     let emit_handle = app_handle.clone();
+    let emit_scan_id = scan_id.clone();
     let scan_folder = folder_trimmed.clone();
     let t_start = std::time::Instant::now();
     let (prompt, summary) = tokio::task::spawn_blocking(move || {
@@ -1202,6 +1259,7 @@ pub async fn scan_code_vocab(
             let mut le = last_emit.get();
             emit_scan_progress(
                 &emit_handle,
+                &emit_scan_id,
                 &mut le,
                 current_path,
                 files_read.get(),
@@ -1269,42 +1327,35 @@ pub async fn scan_code_vocab(
             sample_terms,
             ranked_terms,
             whisper_count,
+            adopted: false,
         };
         (prompt, summary)
     })
     .await
     .map_err(|e| format!("Vocab scan task panicked: {}", e))?;
 
-    // Final progress tick so the UI lands on a settled "done" state.
+    let mut summary = summary;
+    summary.adopted = complete_code_vocab_scan(
+        &state.app_state,
+        &scan_id,
+        &folder_trimmed,
+        prompt,
+    );
+
+    // Final progress tick so the UI lands on the accurate adopted/superseded
+    // state before the command result resolves.
     let _ = app_handle.emit(
         "vocab-scan-progress",
         VocabScanProgress {
+            scan_id: scan_id.clone(),
             current_path: String::new(),
             files_read: summary.files,
             dirs_skipped: summary.skipped,
             terms_so_far: summary.terms,
             done: true,
+            adopted: summary.adopted,
         },
     );
-
-    // Adopt the scan: cache the built prompt and rebuild the correction matcher
-    // under the lock — but ONLY if the current settings still point at the folder
-    // we just walked with code-vocab enabled. The walk runs concurrently with
-    // configure_dictation (both fire on the same folder pick), and a large repo
-    // can take long enough for the user to toggle code-vocab OFF or clear/change
-    // the folder mid-walk. configure_dictation owns code_vocab_enabled +
-    // code_vocab_folder; if it has since cleared them, dropping this stale result
-    // is correct — re-enabling here would silently re-inject the code prompt while
-    // the frontend toggle reads OFF (last-writer-wins divergence). Mirrors the
-    // lazy path's guard in resolve_code_vocab_prompt. The lock is taken AFTER all
-    // awaits, scoped, and released before returning — never held across an `.await`.
-    {
-        let mut dictation = state.app_state.dictation.lock_or_recover();
-        if dictation.code_vocab_enabled && dictation.code_vocab_folder == folder_trimmed {
-            dictation.code_vocab_prompt = Some(prompt);
-            rebuild_correction_matcher(&state.app_state, &dictation);
-        }
-    }
 
     tracing::info!(
         target: "pipeline",
@@ -1313,6 +1364,7 @@ pub async fn scan_code_vocab(
         terms = summary.terms,
         bytes = summary.bytes,
         capped = summary.capped,
+        adopted = summary.adopted,
         ms = t_start.elapsed().as_millis() as u64,
         "scan_code_vocab: complete"
     );
@@ -1921,6 +1973,7 @@ mod tests {
                 RankedTermJson { term: "barBaz".into(), freq: 2 },
             ],
             whisper_count: 2,
+            adopted: true,
         };
         let v = serde_json::to_value(&summary).unwrap();
         // New camelCase keys present; snake_case absent.
@@ -1929,12 +1982,83 @@ mod tests {
         assert!(v.get("ranked_terms").is_none(), "snake_case leaked: {v}");
         assert!(v.get("whisper_count").is_none(), "snake_case leaked: {v}");
         assert_eq!(v["whisperCount"], 2);
+        assert_eq!(v["adopted"], true);
         // sampleTerms (existing field) stays camelCase too.
         assert!(v.get("sampleTerms").is_some(), "sampleTerms missing: {v}");
         // Each ranked entry carries term + freq.
         let first = &v["rankedTerms"][0];
         assert_eq!(first["term"], "fooBar");
         assert_eq!(first["freq"], 5);
+    }
+
+    #[test]
+    fn progress_serializes_scan_id_camel_case() {
+        let progress = VocabScanProgress {
+            scan_id: "scan-42".into(),
+            current_path: "/project/src/main.rs".into(),
+            files_read: 1,
+            dirs_skipped: 0,
+            terms_so_far: 3,
+            done: false,
+            adopted: false,
+        };
+        let value = serde_json::to_value(progress).unwrap();
+        assert_eq!(value["scanId"], "scan-42");
+        assert!(value.get("scan_id").is_none());
+    }
+
+    #[test]
+    fn newer_scan_prevents_older_result_adoption() {
+        let app_state = AppState::default();
+        begin_code_vocab_scan(&app_state, "scan-a", "/project");
+        begin_code_vocab_scan(&app_state, "scan-b", "/project");
+
+        assert!(!complete_code_vocab_scan(
+            &app_state,
+            "scan-a",
+            "/project",
+            "staleTerm".into(),
+        ));
+        assert!(complete_code_vocab_scan(
+            &app_state,
+            "scan-b",
+            "/project",
+            "currentTerm".into(),
+        ));
+
+        let dictation = app_state.dictation.lock_or_recover();
+        assert_eq!(dictation.code_vocab_prompt.as_deref(), Some("currentTerm"));
+        assert!(dictation.code_vocab_scan_id.is_none());
+    }
+
+    #[test]
+    fn settings_changes_during_scan_report_non_adoption() {
+        for change in ["disable", "folder"] {
+            let app_state = AppState::default();
+            begin_code_vocab_scan(&app_state, "scan-a", "/project-a");
+            {
+                let mut dictation = app_state.dictation.lock_or_recover();
+                if change == "disable" {
+                    dictation.code_vocab_enabled = false;
+                } else {
+                    dictation.code_vocab_folder = "/project-b".into();
+                }
+                dictation.code_vocab_prompt = None;
+                dictation.code_vocab_scan_id = None;
+            }
+
+            assert!(
+                !complete_code_vocab_scan(
+                    &app_state,
+                    "scan-a",
+                    "/project-a",
+                    "staleTerm".into(),
+                ),
+                "{change} must supersede the in-flight scan",
+            );
+            let dictation = app_state.dictation.lock_or_recover();
+            assert!(dictation.code_vocab_prompt.is_none());
+        }
     }
 
     #[test]

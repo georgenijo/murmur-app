@@ -81,6 +81,10 @@ pub struct DictationState {
     /// when the folder/enabled flag changes so we don't rescan every utterance.
     /// `None` means "not yet scanned" (build lazily on first use).
     pub code_vocab_prompt: Option<String>,
+    /// Correlates the currently running explicit folder scan. A newer scan or a
+    /// settings change supersedes the previous id so its result cannot be
+    /// adopted after the user's intent has moved on.
+    pub code_vocab_scan_id: Option<String>,
     /// Post-model correction (Tier 1 exact map + Tier 2 sounds-like). Applies the
     /// vocabulary to the text *output* of every backend (not just Whisper's
     /// prompt), so the default Parakeet engine benefits too.
@@ -116,6 +120,7 @@ impl Default for DictationState {
             code_vocab_enabled: false,
             code_vocab_folder: String::new(),
             code_vocab_prompt: None,
+            code_vocab_scan_id: None,
             // Post-model correction on by default: it's the fix that makes vocab
             // actually work on the default Parakeet engine. No-op without vocab.
             correction_enabled: true,

@@ -7,6 +7,8 @@ interface VocabTermsModalProps {
   /** Absolute path of the scanned folder, shown in the subheader. */
   folder: string;
   onClose: () => void;
+  /** Explicit opener for reliable focus restoration after AX-initiated clicks. */
+  returnFocusRef?: React.RefObject<HTMLElement>;
 }
 
 type SortMode = 'freq' | 'alpha';
@@ -20,10 +22,16 @@ type SortMode = 'freq' | 'alpha';
  *
  * Closes on Escape, the close button, and a click on the backdrop.
  */
-export function VocabTermsModal({ summary, folder, onClose }: VocabTermsModalProps) {
+export function VocabTermsModal({
+  summary,
+  folder,
+  onClose,
+  returnFocusRef,
+}: VocabTermsModalProps) {
   const [query, setQuery] = useState('');
   const [sortMode, setSortMode] = useState<SortMode>('freq');
   const [copied, setCopied] = useState(false);
+  const dialogRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -37,18 +45,54 @@ export function VocabTermsModal({ summary, folder, onClose }: VocabTermsModalPro
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
-  // Esc closes; focus the search box on open.
+  // Keep keyboard focus inside the dialog, close on Escape, and restore the
+  // element that opened it after unmount.
   useEffect(() => {
+    const previouslyFocused =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onCloseRef.current();
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        onCloseRef.current();
+        return;
+      }
+      if (e.key !== 'Tab') return;
+
+      const dialog = dialogRef.current;
+      if (!dialog) return;
+      const focusable = Array.from(
+        dialog.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((element) => !element.hasAttribute('hidden'));
+      if (focusable.length === 0) {
+        e.preventDefault();
+        dialog.focus();
+        return;
+      }
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement;
+      if (!dialog.contains(active)) {
+        e.preventDefault();
+        (e.shiftKey ? last : first).focus();
+      } else if (e.shiftKey && active === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && active === last) {
+        e.preventDefault();
+        first.focus();
+      }
     };
     document.addEventListener('keydown', onKey);
     const t = setTimeout(() => searchRef.current?.focus(), 60);
     return () => {
       document.removeEventListener('keydown', onKey);
       clearTimeout(t);
+      (returnFocusRef?.current ?? previouslyFocused)?.focus();
     };
-  }, []);
+  }, [returnFocusRef]);
 
   // Clean up the "Copied" reset timer on unmount.
   useEffect(
@@ -98,11 +142,21 @@ export function VocabTermsModal({ summary, folder, onClose }: VocabTermsModalPro
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="flex max-h-[82vh] w-full max-w-[560px] flex-col overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-2xl dark:border-stone-700 dark:bg-stone-900">
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="vocab-terms-title"
+        tabIndex={-1}
+        className="flex max-h-[82vh] w-full max-w-[560px] flex-col overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-2xl dark:border-stone-700 dark:bg-stone-900"
+      >
         {/* header */}
         <div className="border-b border-stone-200 px-[18px] pb-3 pt-4 dark:border-stone-800">
           <div className="flex items-center justify-between">
-            <div className="text-[15px] font-semibold text-stone-800 dark:text-stone-200">
+            <div
+              id="vocab-terms-title"
+              className="text-[15px] font-semibold text-stone-800 dark:text-stone-200"
+            >
               Scanned vocabulary
             </div>
             <button
@@ -150,6 +204,7 @@ export function VocabTermsModal({ summary, folder, onClose }: VocabTermsModalPro
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Filter terms…"
+              aria-label="Filter scanned terms"
               autoComplete="off"
               spellCheck={false}
               className="min-w-0 flex-1 border-none bg-transparent text-xs text-stone-800 outline-none placeholder:text-stone-400 dark:text-stone-200 dark:placeholder:text-stone-600"

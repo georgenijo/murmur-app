@@ -466,7 +466,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
     async (folder: string) => {
       if (!folder) return;
       const summary = await doScan(folder);
-      if (summary) onUpdateSettings({ codeVocabLastScan: summary });
+      if (summary?.adopted) onUpdateSettings({ codeVocabLastScan: summary });
     },
     [doScan, onUpdateSettings],
   );
