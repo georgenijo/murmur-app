@@ -182,6 +182,7 @@ impl TranscriptionBackend for CoreMlBackend {
             .transcribe_samples(samples)
             .map_err(|error| format!("Core ML transcription failed: {error}"))?;
         let text = normalize_result_text(&result.text);
+        let output = if smart_punctuation { text.clone() } else { strip_punctuation(&text) };
 
         tracing::info!(
             target: "pipeline",
@@ -190,11 +191,19 @@ impl TranscriptionBackend for CoreMlBackend {
             "coreml_transcription_complete"
         );
 
-        if smart_punctuation {
-            Ok(text)
-        } else {
-            Ok(strip_punctuation(&text))
+        if output.trim().is_empty() {
+            let diagnostics = empty_output_diagnostics(samples.len(), &result.text, &text);
+            tracing::warn!(
+                target: "pipeline",
+                input_sample_count = diagnostics.input_sample_count,
+                raw_output_length = diagnostics.raw_output_length,
+                normalized_length = diagnostics.normalized_length,
+                period_only = diagnostics.period_only,
+                "coreml_empty_output"
+            );
         }
+
+        Ok(output)
     }
 
     fn token_count(&self, _text: &str) -> Option<usize> {
@@ -230,6 +239,29 @@ fn strip_punctuation(input: &str) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+#[derive(Debug, PartialEq)]
+struct EmptyOutputDiagnostics {
+    input_sample_count: usize,
+    raw_output_length: usize,
+    normalized_length: usize,
+    period_only: bool,
+}
+
+fn empty_output_diagnostics(
+    input_sample_count: usize,
+    raw_output: &str,
+    normalized_output: &str,
+) -> EmptyOutputDiagnostics {
+    let raw_trimmed = raw_output.trim();
+    EmptyOutputDiagnostics {
+        input_sample_count,
+        raw_output_length: raw_output.chars().count(),
+        normalized_length: normalized_output.chars().count(),
+        period_only: !raw_trimmed.is_empty()
+            && raw_trimmed.chars().all(|character| character == '.'),
+    }
 }
 
 /// FluidAudio can occasionally emit a standalone sentence-boundary token at
@@ -301,6 +333,24 @@ mod tests {
         assert_eq!(normalize_result_text(".NET is fast."), ".NET is fast.");
         assert_eq!(normalize_result_text("...and then."), "...and then.");
         assert_eq!(normalize_result_text("Hello there."), "Hello there.");
+    }
+
+    #[test]
+    fn empty_output_diagnostics_are_privacy_safe_and_complete() {
+        let diagnostics = empty_output_diagnostics(12_345, " ... ", "");
+        assert_eq!(
+            diagnostics,
+            EmptyOutputDiagnostics {
+                input_sample_count: 12_345,
+                raw_output_length: 5,
+                normalized_length: 0,
+                period_only: true,
+            }
+        );
+
+        let diagnostics = empty_output_diagnostics(80, "", "");
+        assert_eq!(diagnostics.raw_output_length, 0);
+        assert!(!diagnostics.period_only);
     }
 
     #[test]

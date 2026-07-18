@@ -23,14 +23,6 @@ use tauri::Emitter;
 /// Max duration a single tap can be held before it's rejected
 const MAX_HOLD_DURATION_MS: u128 = 200;
 
-/// Grace window after the hold-promotion timer fires during which a key release
-/// cancels (instead of stops) the speculative recording. Audio thread init has
-/// been observed to take up to ~233 ms, so 300 ms leaves headroom while keeping
-/// the total minimum intentional hold at ~500 ms (200 ms timer + 300 ms grace).
-/// This is a workaround for the RECORDING_STATE mutex race in audio::start_recording
-/// — not a true fix of the underlying audio-init contention.
-const MIN_POST_PROMOTION_MS: u128 = 300;
-
 /// Max gap between first key-up and second key-down
 const DOUBLE_TAP_WINDOW_MS: u128 = 400;
 
@@ -479,11 +471,6 @@ fn log_rejection(reason: RejectionReason, mode: DetectorMode, event_type: &Event
 static HOLD_PRESS_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// Set to true by the timer thread when it promotes a press to a real hold.
 static HOLD_PROMOTED: AtomicBool = AtomicBool::new(false);
-/// Unix-epoch millis at the moment the promotion timer emitted `hold-down-start`.
-/// Zero means no active promotion. Used to detect releases that arrive inside the
-/// audio-init grace window so they can be converted into `hold-down-cancel` instead
-/// of `hold-down-stop`.
-static HOLD_PROMOTED_AT_MS: AtomicU64 = AtomicU64::new(0);
 /// When true, the Both-mode callback ignores all key events.
 /// Set by lib.rs when the transcription pipeline is running.
 static IS_PROCESSING: AtomicBool = AtomicBool::new(false);
@@ -514,7 +501,6 @@ pub fn set_processing(processing: bool) {
         // Entering processing: invalidate any pending hold-promotion timer
         // so it can't fire hold-down-start during active processing.
         HOLD_PROMOTED.store(false, Ordering::SeqCst);
-        HOLD_PROMOTED_AT_MS.store(0, Ordering::SeqCst);
         HOLD_PRESS_COUNTER.fetch_add(1, Ordering::SeqCst);
         if let Ok(mut det) = HOLD_DOWN_DETECTOR.lock() {
             if let Some(d) = det.as_mut() {
@@ -542,7 +528,6 @@ pub fn set_processing(processing: bool) {
             }
         }
         HOLD_PROMOTED.store(false, Ordering::SeqCst);
-        HOLD_PROMOTED_AT_MS.store(0, Ordering::SeqCst);
         HOLD_PRESS_COUNTER.fetch_add(1, Ordering::SeqCst);
     }
 }
@@ -561,7 +546,6 @@ pub fn set_app_disabled(disabled: bool) {
     if !was_disabled && disabled {
         // Transitioning false → true: clean up any partial detector state
         HOLD_PROMOTED.store(false, Ordering::SeqCst);
-        HOLD_PROMOTED_AT_MS.store(0, Ordering::SeqCst);
         HOLD_PRESS_COUNTER.fetch_add(1, Ordering::SeqCst);
         if let Ok(mut det) = HOLD_DOWN_DETECTOR.lock() {
             if let Some(d) = det.as_mut() {
@@ -731,7 +715,6 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
                     }
                     // Invalidate pending hold-promotion timers
                     HOLD_PROMOTED.store(false, Ordering::SeqCst);
-                    HOLD_PROMOTED_AT_MS.store(0, Ordering::SeqCst);
                     HOLD_PRESS_COUNTER.fetch_add(1, Ordering::SeqCst);
 
                     tracing::info!(target: "keyboard", "Escape pressed — emitting escape-cancel");
@@ -858,8 +841,6 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
                                                 .unwrap_or(false)
                                         };
                                         if still_held {
-                                            HOLD_PROMOTED_AT_MS
-                                                .store(now_unix_ms(), Ordering::SeqCst);
                                             HOLD_PROMOTED.store(true, Ordering::SeqCst);
                                             tracing::info!(target: "keyboard", "BOTH -> timer promoted to hold-down-start");
                                             let _ = timer_handle.emit("hold-down-start", ());
@@ -869,24 +850,15 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
                             }
                             HoldDownEvent::Stop => {
                                 let promoted = HOLD_PROMOTED.load(Ordering::SeqCst);
-                                let promoted_at = HOLD_PROMOTED_AT_MS.load(Ordering::SeqCst);
                                 HOLD_PROMOTED.store(false, Ordering::SeqCst);
-                                HOLD_PROMOTED_AT_MS.store(0, Ordering::SeqCst);
                                 // Invalidate any pending timer
                                 HOLD_PRESS_COUNTER.fetch_add(1, Ordering::SeqCst);
 
                                 if promoted {
-                                    let elapsed = now_unix_ms().saturating_sub(promoted_at) as u128;
-                                    if promoted_at != 0 && elapsed < MIN_POST_PROMOTION_MS {
-                                        // Release arrived inside the audio-init grace window —
-                                        // cancel the speculative recording instead of stopping.
-                                        tracing::info!(target: "keyboard", "BOTH -> emit hold-down-cancel (grace window; elapsed={}ms, threshold={}ms)", elapsed, MIN_POST_PROMOTION_MS);
-                                        let _ = handle.emit("hold-down-cancel", ());
-                                    } else {
-                                        // Real hold ended — stop + transcribe
-                                        tracing::info!(target: "keyboard", "BOTH -> emit hold-down-stop (promoted hold; elapsed={}ms)", elapsed);
-                                        let _ = handle.emit("hold-down-stop", ());
-                                    }
+                                    // Recorder transitions are serialized, so a stop safely
+                                    // waits for an in-flight start even on an immediate release.
+                                    tracing::info!(target: "keyboard", "BOTH -> emit hold-down-stop (promoted hold)");
+                                    let _ = handle.emit("hold-down-stop", ());
                                 } else if dtap_fired {
                                     // Double-tap completed
                                     tracing::info!(target: "keyboard", "BOTH -> emit double-tap-toggle");
@@ -967,7 +939,6 @@ pub fn stop_listener() {
         }
     }
     HOLD_PROMOTED.store(false, Ordering::SeqCst);
-    HOLD_PROMOTED_AT_MS.store(0, Ordering::SeqCst);
     HOLD_PRESS_COUNTER.fetch_add(1, Ordering::SeqCst); // invalidate pending timers
 }
 
@@ -1593,21 +1564,17 @@ mod tests {
     #[derive(Debug, PartialEq)]
     enum BothEmit {
         HoldStop,
-        HoldCancel,
         DoubleTapToggle,
     }
 
     /// Simulate the Both-mode deferred-hold arbitration logic.
     /// `promoted` simulates whether the timer thread promoted the press
     /// to a real hold (i.e. HOLD_PROMOTED was true).
-    /// `elapsed_since_promotion_ms` simulates how many ms have passed since
-    /// promotion — used to exercise the MIN_POST_PROMOTION_MS grace window.
     fn both_handle_event(
         hold: &mut HoldDownDetector,
         dtap: &mut DoubleTapDetector,
         event_type: &EventType,
         promoted: bool,
-        elapsed_since_promotion_ms: u128,
     ) -> Vec<BothEmit> {
         // Check dtap phase BEFORE feeding — also verify the window hasn't expired
         let dtap_second_phase = matches!(
@@ -1632,11 +1599,7 @@ mod tests {
             }
             HoldDownEvent::Stop => {
                 if promoted {
-                    if elapsed_since_promotion_ms < MIN_POST_PROMOTION_MS {
-                        emitted.push(BothEmit::HoldCancel);
-                    } else {
-                        emitted.push(BothEmit::HoldStop);
-                    }
+                    emitted.push(BothEmit::HoldStop);
                 } else if dtap_fired {
                     emitted.push(BothEmit::DoubleTapToggle);
                 }
@@ -1657,14 +1620,14 @@ mod tests {
         let mut dtap = make_detector(Key::ShiftLeft);
 
         // Press — no synchronous emission (timer deferred)
-        let e = both_handle_event(&mut hold, &mut dtap, &press(Key::ShiftLeft), false, 0);
+        let e = both_handle_event(&mut hold, &mut dtap, &press(Key::ShiftLeft), false);
         assert_eq!(e, vec![]);
 
         // Wait past the tap threshold (timer would have promoted)
         sleep(Duration::from_millis(250));
 
-        // Release — promoted hold past grace window → stop
-        let e = both_handle_event(&mut hold, &mut dtap, &release(Key::ShiftLeft), true, 500);
+        // Release after promotion → stop
+        let e = both_handle_event(&mut hold, &mut dtap, &release(Key::ShiftLeft), true);
         assert_eq!(e, vec![BothEmit::HoldStop]);
     }
 
@@ -1674,10 +1637,10 @@ mod tests {
         let mut dtap = make_detector(Key::ShiftLeft);
 
         // Quick press + release — no promotion, no emission
-        let e = both_handle_event(&mut hold, &mut dtap, &press(Key::ShiftLeft), false, 0);
+        let e = both_handle_event(&mut hold, &mut dtap, &press(Key::ShiftLeft), false);
         assert_eq!(e, vec![]);
 
-        let e = both_handle_event(&mut hold, &mut dtap, &release(Key::ShiftLeft), false, 0);
+        let e = both_handle_event(&mut hold, &mut dtap, &release(Key::ShiftLeft), false);
         assert_eq!(e, vec![]);
         assert_eq!(dtap.state, DetectorState::WaitingSecondDown);
     }
@@ -1688,16 +1651,16 @@ mod tests {
         let mut dtap = make_detector(Key::ShiftLeft);
 
         // First tap
-        both_handle_event(&mut hold, &mut dtap, &press(Key::ShiftLeft), false, 0);
-        both_handle_event(&mut hold, &mut dtap, &release(Key::ShiftLeft), false, 0);
+        both_handle_event(&mut hold, &mut dtap, &press(Key::ShiftLeft), false);
+        both_handle_event(&mut hold, &mut dtap, &release(Key::ShiftLeft), false);
         assert_eq!(dtap.state, DetectorState::WaitingSecondDown);
 
         // Second tap — hold suppressed (second phase), dtap completes
-        let e = both_handle_event(&mut hold, &mut dtap, &press(Key::ShiftLeft), false, 0);
+        let e = both_handle_event(&mut hold, &mut dtap, &press(Key::ShiftLeft), false);
         assert_eq!(e, vec![]); // hold suppressed
         assert_eq!(dtap.state, DetectorState::WaitingSecondUp);
 
-        let e = both_handle_event(&mut hold, &mut dtap, &release(Key::ShiftLeft), false, 0);
+        let e = both_handle_event(&mut hold, &mut dtap, &release(Key::ShiftLeft), false);
         assert_eq!(e, vec![BothEmit::DoubleTapToggle]);
     }
 
@@ -1708,11 +1671,11 @@ mod tests {
         dtap.recording = true;
 
         // Press — no sync emission
-        let e = both_handle_event(&mut hold, &mut dtap, &press(Key::ShiftLeft), false, 0);
+        let e = both_handle_event(&mut hold, &mut dtap, &press(Key::ShiftLeft), false);
         assert_eq!(e, vec![]);
 
         // Quick release — dtap fires (single tap to stop)
-        let e = both_handle_event(&mut hold, &mut dtap, &release(Key::ShiftLeft), false, 0);
+        let e = both_handle_event(&mut hold, &mut dtap, &release(Key::ShiftLeft), false);
         assert_eq!(e, vec![BothEmit::DoubleTapToggle]);
     }
 
@@ -1722,42 +1685,42 @@ mod tests {
         let mut dtap = make_detector(Key::ShiftLeft);
 
         // First tap
-        both_handle_event(&mut hold, &mut dtap, &press(Key::ShiftLeft), false, 0);
-        both_handle_event(&mut hold, &mut dtap, &release(Key::ShiftLeft), false, 0);
+        both_handle_event(&mut hold, &mut dtap, &press(Key::ShiftLeft), false);
+        both_handle_event(&mut hold, &mut dtap, &release(Key::ShiftLeft), false);
 
         // Wait for double-tap window + hold cooldown to expire
         sleep(Duration::from_millis(550));
 
         // Next press — fresh sequence, timer would start (no sync emission)
-        let e = both_handle_event(&mut hold, &mut dtap, &press(Key::ShiftLeft), false, 0);
+        let e = both_handle_event(&mut hold, &mut dtap, &press(Key::ShiftLeft), false);
         assert_eq!(e, vec![]);
     }
 
     #[test]
-    fn both_promoted_release_within_grace_window_cancels() {
+    fn both_promoted_release_immediately_stops() {
         let mut hold = make_hold_detector(Key::ShiftLeft);
         let mut dtap = make_detector(Key::ShiftLeft);
 
         // Press — timer would start (no sync emission)
-        let e = both_handle_event(&mut hold, &mut dtap, &press(Key::ShiftLeft), false, 0);
+        let e = both_handle_event(&mut hold, &mut dtap, &press(Key::ShiftLeft), false);
         assert_eq!(e, vec![]);
 
-        // Release 40ms after promotion — within the 300ms grace window → cancel
-        let e = both_handle_event(&mut hold, &mut dtap, &release(Key::ShiftLeft), true, 40);
-        assert_eq!(e, vec![BothEmit::HoldCancel]);
+        // Release 40ms after promotion — the promoted hold must stop and transcribe.
+        let e = both_handle_event(&mut hold, &mut dtap, &release(Key::ShiftLeft), true);
+        assert_eq!(e, vec![BothEmit::HoldStop]);
     }
 
     #[test]
-    fn both_promoted_release_after_grace_window_stops() {
+    fn both_promoted_later_release_stops() {
         let mut hold = make_hold_detector(Key::ShiftLeft);
         let mut dtap = make_detector(Key::ShiftLeft);
 
         // Press — timer would start (no sync emission)
-        let e = both_handle_event(&mut hold, &mut dtap, &press(Key::ShiftLeft), false, 0);
+        let e = both_handle_event(&mut hold, &mut dtap, &press(Key::ShiftLeft), false);
         assert_eq!(e, vec![]);
 
-        // Release 400ms after promotion — past the 300ms grace window → stop
-        let e = both_handle_event(&mut hold, &mut dtap, &release(Key::ShiftLeft), true, 400);
+        // A later release remains a normal stop.
+        let e = both_handle_event(&mut hold, &mut dtap, &release(Key::ShiftLeft), true);
         assert_eq!(e, vec![BothEmit::HoldStop]);
     }
 

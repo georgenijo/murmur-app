@@ -418,6 +418,30 @@ pub(crate) struct PipelineTimings {
     pub rss_after_mb: u64,
 }
 
+#[allow(clippy::too_many_arguments)]
+fn transcribe_with_coreml_vad_retry(
+    backend: &mut dyn transcriber::TranscriptionBackend,
+    model_name: &str,
+    samples_for_transcription: &[f32],
+    original_samples: &[f32],
+    vad_trimmed: bool,
+    language: &str,
+    prompt: Option<&str>,
+    smart_punctuation: bool,
+) -> Result<String, String> {
+    let text = backend.transcribe(samples_for_transcription, language, prompt, smart_punctuation)?;
+    if transcriber::is_coreml_model(model_name) && vad_trimmed && text.trim().is_empty() {
+        tracing::warn!(
+            target: "pipeline",
+            filtered_sample_count = samples_for_transcription.len(),
+            original_sample_count = original_samples.len(),
+            "coreml_empty_after_vad_retry_original"
+        );
+        return backend.transcribe(original_samples, language, prompt, smart_punctuation);
+    }
+    Ok(text)
+}
+
 /// Shared transcription pipeline: model init -> transcribe -> inject text -> set idle.
 /// `recording_id` is checked against `app_state.cancelled_id` at checkpoints;
 /// if cancelled, returns empty text without clipboard write or paste.
@@ -474,7 +498,7 @@ async fn run_transcription_pipeline(
     // Phase: VAD -- filter out silence to prevent Whisper hallucination loops
     let vad_threshold = 1.0 - (vad_sensitivity as f32 / 100.0);
     let t_vad = std::time::Instant::now();
-    let samples_for_transcription = match vad::vad_model_path() {
+    let (samples_for_transcription, vad_trimmed) = match vad::vad_model_path() {
         Some(vad_path) if vad_path.exists() => {
             let vad_path_str = vad_path.to_string_lossy().to_string();
             let samples_owned = samples.to_vec();
@@ -497,11 +521,12 @@ async fn run_transcription_pipeline(
                         samples.len(), trimmed.len(),
                         trimmed.len() as f64 / samples.len() as f64 * 100.0,
                         t_vad.elapsed());
-                    trimmed
+                    let vad_trimmed = trimmed.len() != samples.len();
+                    (trimmed, vad_trimmed)
                 }
                 Err(e) => {
                     tracing::warn!(target: "pipeline", "VAD failed ({}), proceeding without filtering", e);
-                    samples.to_vec()
+                    (samples.to_vec(), false)
                 }
             }
         }
@@ -513,7 +538,7 @@ async fn run_transcription_pipeline(
                     tracing::warn!(target: "pipeline", "VAD model download failed ({}), skipping VAD", e);
                 }
             });
-            samples.to_vec()
+            (samples.to_vec(), false)
         }
     };
     let vad_ms = t_vad.elapsed().as_millis() as u64;
@@ -540,7 +565,10 @@ async fn run_transcription_pipeline(
         backend.load_model(&model_name)?;
         let model_load_ms = load_started.elapsed().as_millis() as u64;
         let decode_started = std::time::Instant::now();
-        let text = backend.transcribe(&samples_for_transcription, &language, prompt.as_deref(), smart_punctuation)?;
+        let text = transcribe_with_coreml_vad_retry(
+            backend.as_mut(), &model_name, &samples_for_transcription, samples,
+            vad_trimmed, &language, prompt.as_deref(), smart_punctuation,
+        )?;
         let decode_ms = decode_started.elapsed().as_millis() as u64;
         (text, model_load_ms, decode_ms)
     };
@@ -1653,7 +1681,7 @@ pub async fn transcribe_file(
 
     // Phase: VAD — skip silence, best-effort with fallback to full audio (mirrors live).
     let vad_threshold = 1.0 - (vad_sensitivity as f32 / 100.0);
-    let samples_for_transcription = match vad::vad_model_path() {
+    let (samples_for_transcription, vad_trimmed) = match vad::vad_model_path() {
         Some(vad_path) if vad_path.exists() => {
             let vad_path_str = vad_path.to_string_lossy().to_string();
             let samples_owned = samples.clone();
@@ -1670,10 +1698,13 @@ pub async fn transcribe_file(
                         "type": "file_transcription", "text": "", "duration": duration_secs
                     }));
                 }
-                Ok(vad::VadResult::Speech(trimmed)) => trimmed,
+                Ok(vad::VadResult::Speech(trimmed)) => {
+                    let vad_trimmed = trimmed.len() != samples.len();
+                    (trimmed, vad_trimmed)
+                }
                 Err(e) => {
                     tracing::warn!(target: "pipeline", "transcribe_file: VAD failed ({}), proceeding without filtering", e);
-                    samples
+                    (samples.clone(), false)
                 }
             }
         }
@@ -1685,7 +1716,7 @@ pub async fn transcribe_file(
                     tracing::warn!(target: "pipeline", "transcribe_file: VAD model download failed ({})", e);
                 }
             });
-            samples
+            (samples.clone(), false)
         }
     };
 
@@ -1700,7 +1731,10 @@ pub async fn transcribe_file(
         backend.load_model(&model_name)?;
         let model_load_ms = load_started.elapsed().as_millis() as u64;
         let decode_started = std::time::Instant::now();
-        let text = backend.transcribe(&samples_for_transcription, &language, prompt.as_deref(), smart_punctuation)?;
+        let text = transcribe_with_coreml_vad_retry(
+            backend.as_mut(), &model_name, &samples_for_transcription, &samples,
+            vad_trimmed, &language, prompt.as_deref(), smart_punctuation,
+        )?;
         let decode_ms = decode_started.elapsed().as_millis() as u64;
         (text, model_load_ms, decode_ms)
     };
@@ -1728,6 +1762,82 @@ pub async fn transcribe_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
+    use std::path::PathBuf;
+
+    struct RetryTestBackend {
+        responses: VecDeque<String>,
+        sample_counts: Vec<usize>,
+    }
+
+    impl RetryTestBackend {
+        fn new(responses: &[&str]) -> Self {
+            Self {
+                responses: responses.iter().map(|response| response.to_string()).collect(),
+                sample_counts: Vec::new(),
+            }
+        }
+    }
+
+    impl transcriber::TranscriptionBackend for RetryTestBackend {
+        fn name(&self) -> &str { "retry-test" }
+        fn load_model(&mut self, _model_name: &str) -> Result<(), String> { Ok(()) }
+        fn is_model_loaded(&self, _model_name: &str) -> bool { true }
+        fn transcribe(&mut self, samples: &[f32], _language: &str, _initial_prompt: Option<&str>, _smart_punctuation: bool) -> Result<String, String> {
+            self.sample_counts.push(samples.len());
+            self.responses.pop_front().ok_or_else(|| "unexpected extra transcription attempt".to_string())
+        }
+        fn token_count(&self, _text: &str) -> Option<usize> { None }
+        fn model_exists(&self) -> bool { true }
+        fn models_dir(&self) -> Result<PathBuf, String> { Ok(std::env::temp_dir()) }
+        fn reset(&mut self) {}
+    }
+
+    #[test]
+    fn empty_coreml_result_after_vad_retries_original_audio_once() {
+        let filtered = vec![0.0; 8_000];
+        let original = vec![0.0; 16_000];
+        let mut backend = RetryTestBackend::new(&["", "recovered words"]);
+        let text = transcribe_with_coreml_vad_retry(
+            &mut backend, transcriber::COREML_MODEL_NAME, &filtered, &original,
+            true, "auto", None, true,
+        ).unwrap();
+        assert_eq!(text, "recovered words");
+        assert_eq!(backend.sample_counts, vec![8_000, 16_000]);
+    }
+
+    #[test]
+    fn still_empty_coreml_retry_is_bounded_to_two_attempts() {
+        let filtered = vec![0.0; 8_000];
+        let original = vec![0.0; 16_000];
+        let mut backend = RetryTestBackend::new(&["", ""]);
+        let text = transcribe_with_coreml_vad_retry(
+            &mut backend, transcriber::COREML_MODEL_NAME, &filtered, &original,
+            true, "auto", None, true,
+        ).unwrap();
+        assert!(text.is_empty());
+        assert_eq!(backend.sample_counts, vec![8_000, 16_000]);
+    }
+
+    #[test]
+    fn empty_result_without_coreml_vad_trim_is_not_retried() {
+        let samples = vec![0.0; 8_000];
+        let mut non_coreml = RetryTestBackend::new(&[""]);
+        let text = transcribe_with_coreml_vad_retry(
+            &mut non_coreml, "base.en", &samples, &samples,
+            true, "en", None, true,
+        ).unwrap();
+        assert!(text.is_empty());
+        assert_eq!(non_coreml.sample_counts, vec![8_000]);
+
+        let mut untrimmed_coreml = RetryTestBackend::new(&[""]);
+        let text = transcribe_with_coreml_vad_retry(
+            &mut untrimmed_coreml, transcriber::COREML_MODEL_NAME, &samples, &samples,
+            false, "auto", None, true,
+        ).unwrap();
+        assert!(text.is_empty());
+        assert_eq!(untrimmed_coreml.sample_counts, vec![8_000]);
+    }
 
     #[test]
     fn dedupe_prompt_drops_case_insensitive_repeats() {
