@@ -150,6 +150,10 @@ All files stored in `~/Library/Application Support/local-dictation/logs/`:
 |------|--------|---------|
 | `app.log` / `app.dev.log` | Pretty-printed text | Human-readable log (read by `get_log_contents`) |
 | `events.jsonl` / `events.dev.jsonl` | JSONL | Structured events, rotated at 5MB |
-| `events.jsonl.1` | JSONL | Previous rotated JSONL file |
+| `events.jsonl.1` / `events.dev.jsonl.1` | JSONL | Previous rotated JSONL file |
 
 `clear_logs` removes all known log file variants, including legacy files (`frontend.log`, `transcription.log`, dated rolling files).
+
+For read-only diagnostics across both release and dev logs, including MCP setup
+and the single user-level registration model, see
+[`tools/murmur-diag/README.md`](../../tools/murmur-diag/README.md).

@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - Release automation now builds signed macOS and Linux artifacts once on trusted `main`, keeps Cargo/CUDA cache ownership off tags and pull requests, and promotes only commit-SHA-matched artifacts with fail-closed updater-signature checks (#220).
 
 ### Fixed
+- `murmur-diag` now reads and source-labels both release and dev log streams without duplicate file ingestion, keeps cross-build correlation isolated, and uses one documented user-level MCP registration instead of per-worktree registrations (#191).
 - Code-vocabulary scans now keep the View-all dialog keyboard focus contained and restore the opener on close, correlate live progress by scan ID, and report superseded results when settings change during a walk instead of presenting non-adopted terms as complete (#209).
 - Global modifier hotkeys now recover when macOS disables the underlying event tap, avoid stale modifier-state dead zones after system context changes, and no longer process mouse movement or perform main-thread key-name translation on the modifier hot path (#194, fixes #137).
 - Quick Both-mode holds now stop and transcribe as soon as the 200 ms promotion threshold is reached instead of being discarded by an obsolete 300 ms grace window; empty Core ML results after VAD also retry once with the original audio and emit privacy-safe diagnostics (#221).

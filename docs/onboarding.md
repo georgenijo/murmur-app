@@ -96,4 +96,10 @@ The app searches these locations in order:
 
 ## Logs
 
-App logs are at `~/Library/Application Support/local-dictation/logs/app.log` with automatic rotation at 5 MB.
+Release and dev builds write to the same local directory:
+`~/Library/Application Support/local-dictation/logs/`. Release files are
+`app.log` and `events.jsonl`; debug files are `app.dev.log` and
+`events.dev.jsonl`. Structured logs rotate at 5 MB. See
+[`features/log-viewer.md`](features/log-viewer.md) for the event architecture and
+[`tools/murmur-diag/README.md`](../tools/murmur-diag/README.md) for local MCP
+diagnostics.
