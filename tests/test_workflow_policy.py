@@ -107,6 +107,16 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             validate_release_build(mutated)
 
+    def test_cuda_driver_audit_rejects_broad_libcuda_glob(self) -> None:
+        workflow = (ROOT / ".github/workflows/release-build.yml").read_text()
+        mutated = workflow.replace(
+            "-name 'libcuda.so*' -print -quit",
+            "-name 'libcuda*' -print -quit",
+            1,
+        )
+        with self.assertRaises(AssertionError):
+            validate_release_build(mutated)
+
     def test_release_profile_must_retain_tauri_bundle_marker(self) -> None:
         cargo_toml = (ROOT / "app/src-tauri/Cargo.toml").read_text()
         with self.assertRaises(AssertionError):

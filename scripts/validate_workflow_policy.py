@@ -123,6 +123,8 @@ def validate_release_build(workflow: str) -> int:
     assert "rpm" not in linux_build
     assert workflow.count("${{ needs.context.outputs.cache-write == 'true' }}") >= 3
     assert "AppImage must not contain the runner-local NVIDIA driver stub" in workflow
+    assert "-name 'libcuda.so*' -print -quit" in workflow
+    assert "-name 'libcuda*' -print -quit" not in workflow
     assert workflow.count(
         "LD_LIBRARY_PATH=\"$CUDA_DRIVER_STUB_DIR${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}\""
     ) == 2
