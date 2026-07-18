@@ -1,7 +1,7 @@
 use crate::{MutexExt, State};
 use crate::state::{AppState, DictationStatus};
 use crate::transcriber;
-use crate::{audio, audio_decode, injector, keyboard, vad};
+use crate::{audio, audio_decode, injector, keyboard, streaming, vad};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
@@ -407,6 +407,7 @@ fn spawn_idle_model_preparation(
     });
 }
 
+#[derive(Default)]
 pub(crate) struct PipelineTimings {
     pub vad_ms: u64,
     pub model_load_ms: u64,
@@ -416,6 +417,9 @@ pub(crate) struct PipelineTimings {
     pub paste_ms: u64,
     pub rss_before_mb: u64,
     pub rss_after_mb: u64,
+    pub incremental_chunks: u32,
+    pub streaming_inference_ms: u64,
+    pub final_chunk_ms: u64,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -450,6 +454,7 @@ async fn run_transcription_pipeline(
     app_handle: &tauri::AppHandle,
     app_state: &AppState,
     recording_id: u64,
+    incremental: Option<streaming::IncrementalTranscript>,
 ) -> Result<(String, PipelineTimings), String> {
     // Guard resets status to Idle on any return path (error or success),
     // but only if this recording is still the active one
@@ -492,89 +497,124 @@ async fn run_transcription_pipeline(
     // Checkpoint 1: cancelled before VAD?
     if app_state.is_cancelled(recording_id) {
         tracing::info!(target: "pipeline", "cancelled before VAD (recording_id={})", recording_id);
-        return Ok((String::new(), PipelineTimings { vad_ms: 0, model_load_ms: 0, decode_ms: 0, inference_ms: 0, correction_ms: 0, paste_ms: 0, rss_before_mb: 0, rss_after_mb: 0 }));
+        return Ok((String::new(), PipelineTimings::default()));
     }
 
-    // Phase: VAD -- filter out silence to prevent Whisper hallucination loops
-    let vad_threshold = 1.0 - (vad_sensitivity as f32 / 100.0);
-    let t_vad = std::time::Instant::now();
-    let (samples_for_transcription, vad_trimmed) = match vad::vad_model_path() {
-        Some(vad_path) if vad_path.exists() => {
-            let vad_path_str = vad_path.to_string_lossy().to_string();
-            let samples_owned = samples.to_vec();
-            let vad_result = tokio::task::spawn_blocking(move || {
-                vad::filter_speech(&vad_path_str, &samples_owned, vad_threshold)
-            })
-            .await
-            .unwrap_or_else(|e| {
-                Err(format!("VAD task panicked: {}", e))
-            });
+    let (text, mut timings) = if let Some(incremental) = incremental {
+        tracing::info!(
+            target: "pipeline",
+            recording_id,
+            chunks = incremental.chunk_count,
+            streaming_inference_ms = incremental.streaming_inference_ms,
+            final_chunk_ms = incremental.final_chunk_ms,
+            "using authoritative incremental transcript"
+        );
+        (
+            incremental.text,
+            PipelineTimings {
+                vad_ms: incremental.vad_ms,
+                inference_ms: incremental.final_chunk_ms,
+                decode_ms: incremental.final_chunk_ms,
+                rss_before_mb: incremental.rss_before_mb,
+                rss_after_mb: incremental.rss_after_mb,
+                incremental_chunks: incremental.chunk_count,
+                streaming_inference_ms: incremental.streaming_inference_ms,
+                final_chunk_ms: incremental.final_chunk_ms,
+                ..PipelineTimings::default()
+            },
+        )
+    } else {
+        // Batch fallback and all non-Whisper backends retain the pre-existing
+        // full-buffer VAD + inference behavior.
+        let vad_threshold = 1.0 - (vad_sensitivity as f32 / 100.0);
+        let t_vad = std::time::Instant::now();
+        let (samples_for_transcription, vad_trimmed) = match vad::vad_model_path() {
+            Some(vad_path) if vad_path.exists() => {
+                let vad_path_str = vad_path.to_string_lossy().to_string();
+                let samples_owned = samples.to_vec();
+                let vad_result = tokio::task::spawn_blocking(move || {
+                    vad::filter_speech(&vad_path_str, &samples_owned, vad_threshold)
+                })
+                .await
+                .unwrap_or_else(|e| Err(format!("VAD task panicked: {}", e)));
 
-            match vad_result {
-                Ok(vad::VadResult::NoSpeech) => {
-                    tracing::info!(target: "pipeline", "VAD detected no speech ({} samples, {:?}), skipping transcription",
-                        samples.len(), t_vad.elapsed());
-                    return Ok((String::new(), PipelineTimings { vad_ms: t_vad.elapsed().as_millis() as u64, model_load_ms: 0, decode_ms: 0, inference_ms: 0, correction_ms: 0, paste_ms: 0, rss_before_mb: 0, rss_after_mb: 0 }));
-                }
-                Ok(vad::VadResult::Speech(trimmed)) => {
-                    tracing::info!(target: "pipeline", "VAD trimmed {} -> {} samples ({:.0}% speech, {:?})",
-                        samples.len(), trimmed.len(),
-                        trimmed.len() as f64 / samples.len() as f64 * 100.0,
-                        t_vad.elapsed());
-                    let vad_trimmed = trimmed.len() != samples.len();
-                    (trimmed, vad_trimmed)
-                }
-                Err(e) => {
-                    tracing::warn!(target: "pipeline", "VAD failed ({}), proceeding without filtering", e);
-                    (samples.to_vec(), false)
+                match vad_result {
+                    Ok(vad::VadResult::NoSpeech) => {
+                        tracing::info!(target: "pipeline", "VAD detected no speech ({} samples, {:?}), skipping transcription",
+                            samples.len(), t_vad.elapsed());
+                        return Ok((String::new(), PipelineTimings {
+                            vad_ms: t_vad.elapsed().as_millis() as u64,
+                            ..PipelineTimings::default()
+                        }));
+                    }
+                    Ok(vad::VadResult::Speech(trimmed)) => {
+                        tracing::info!(target: "pipeline", "VAD trimmed {} -> {} samples ({:.0}% speech, {:?})",
+                            samples.len(), trimmed.len(),
+                            trimmed.len() as f64 / samples.len() as f64 * 100.0,
+                            t_vad.elapsed());
+                        let vad_trimmed = trimmed.len() != samples.len();
+                        (trimmed, vad_trimmed)
+                    }
+                    Err(e) => {
+                        tracing::warn!(target: "pipeline", "VAD failed ({}), proceeding without filtering", e);
+                        (samples.to_vec(), false)
+                    }
                 }
             }
-        }
-        _ => {
-            // VAD model not available -- kick off background download for next time
-            let handle = app_handle.clone();
-            tokio::spawn(async move {
-                if let Err(e) = super::models::ensure_vad_model(&handle).await {
-                    tracing::warn!(target: "pipeline", "VAD model download failed ({}), skipping VAD", e);
-                }
-            });
-            (samples.to_vec(), false)
-        }
-    };
-    let vad_ms = t_vad.elapsed().as_millis() as u64;
+            _ => {
+                let handle = app_handle.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = super::models::ensure_vad_model(&handle).await {
+                        tracing::warn!(target: "pipeline", "VAD model download failed ({}), skipping VAD", e);
+                    }
+                });
+                (samples.to_vec(), false)
+            }
+        };
+        let vad_ms = t_vad.elapsed().as_millis() as u64;
 
-    // Checkpoint 2: cancelled before transcription?
-    if app_state.is_cancelled(recording_id) {
-        tracing::info!(target: "pipeline", "cancelled before transcription (recording_id={})", recording_id);
-        return Ok((String::new(), PipelineTimings { vad_ms, model_load_ms: 0, decode_ms: 0, inference_ms: 0, correction_ms: 0, paste_ms: 0, rss_before_mb: 0, rss_after_mb: 0 }));
-    }
+        if app_state.is_cancelled(recording_id) {
+            tracing::info!(target: "pipeline", "cancelled before transcription (recording_id={})", recording_id);
+            return Ok((String::new(), PipelineTimings {
+                vad_ms,
+                ..PipelineTimings::default()
+            }));
+        }
 
-    // Phase: Transcription. Model preparation normally overlaps startup or
-    // recording; load_model remains the synchronized fallback and cache check.
-    let rss_before_mb = crate::resource_monitor::get_process_rss_mb();
-    let t_transcribe = std::time::Instant::now();
-    // Combine the manual custom vocabulary with the code-aware vocabulary
-    // (when enabled). Both feed Whisper's initial prompt; the manual list comes
-    // first so user-typed terms take precedence within the context window.
-    let sanitized = custom_vocabulary.replace('\0', "");
-    let code_vocab = resolve_code_vocab_prompt(app_state);
-    let prompt = combine_prompts(&sanitized, &code_vocab);
-    let (text, model_load_ms, decode_ms) = {
-        let load_started = std::time::Instant::now();
-        let mut backend = app_state.backend.lock_or_recover();
-        backend.load_model(&model_name)?;
-        let model_load_ms = load_started.elapsed().as_millis() as u64;
-        let decode_started = std::time::Instant::now();
-        let text = transcribe_with_coreml_vad_retry(
-            backend.as_mut(), &model_name, &samples_for_transcription, samples,
-            vad_trimmed, &language, prompt.as_deref(), smart_punctuation,
-        )?;
-        let decode_ms = decode_started.elapsed().as_millis() as u64;
-        (text, model_load_ms, decode_ms)
+        let rss_before_mb = crate::resource_monitor::get_process_rss_mb();
+        let t_transcribe = std::time::Instant::now();
+        let sanitized = custom_vocabulary.replace('\0', "");
+        let code_vocab = resolve_code_vocab_prompt(app_state);
+        let prompt = combine_prompts(&sanitized, &code_vocab);
+        let (text, model_load_ms, decode_ms) = {
+            let load_started = std::time::Instant::now();
+            let mut backend = app_state.backend.lock_or_recover();
+            backend.load_model(&model_name)?;
+            let model_load_ms = load_started.elapsed().as_millis() as u64;
+            let decode_started = std::time::Instant::now();
+            let text = transcribe_with_coreml_vad_retry(
+                backend.as_mut(), &model_name, &samples_for_transcription, samples,
+                vad_trimmed, &language, prompt.as_deref(), smart_punctuation,
+            )?;
+            let decode_ms = decode_started.elapsed().as_millis() as u64;
+            (text, model_load_ms, decode_ms)
+        };
+        let inference_ms = t_transcribe.elapsed().as_millis() as u64;
+        let rss_after_mb = crate::resource_monitor::get_process_rss_mb();
+        tracing::info!(target: "pipeline", "transcription ({} samples): {:?}", samples_for_transcription.len(), t_transcribe.elapsed());
+        (
+            text,
+            PipelineTimings {
+                vad_ms,
+                model_load_ms,
+                decode_ms,
+                inference_ms,
+                rss_before_mb,
+                rss_after_mb,
+                ..PipelineTimings::default()
+            },
+        )
     };
-    let inference_ms = t_transcribe.elapsed().as_millis() as u64;
-    let rss_after_mb = crate::resource_monitor::get_process_rss_mb();
-    tracing::info!(target: "pipeline", "transcription ({} samples): {:?}", samples_for_transcription.len(), t_transcribe.elapsed());
 
     // Phase: rule-based cleanup (filler removal + punctuation/spacing tidy).
     // Runs on the transcript before injection and file output so what the user
@@ -632,7 +672,8 @@ async fn run_transcription_pipeline(
     // Checkpoint 3: cancelled before text injection?
     if app_state.is_cancelled(recording_id) {
         tracing::info!(target: "pipeline", "cancelled before injection (recording_id={})", recording_id);
-        return Ok((String::new(), PipelineTimings { vad_ms, model_load_ms, decode_ms, inference_ms, correction_ms, paste_ms: 0, rss_before_mb, rss_after_mb }));
+        timings.correction_ms = correction_ms;
+        return Ok((String::new(), timings));
     }
 
     // Phase: File output (optional) -- persist audio/transcript before injection.
@@ -684,7 +725,9 @@ async fn run_transcription_pipeline(
     let paste_ms = t_inject.elapsed().as_millis() as u64;
     tracing::info!(target: "pipeline", "inject (clipboard + paste): {:?}", t_inject.elapsed());
 
-    Ok((text, PipelineTimings { vad_ms, model_load_ms, decode_ms, inference_ms, correction_ms, paste_ms, rss_before_mb, rss_after_mb }))
+    timings.correction_ms = correction_ms;
+    timings.paste_ms = paste_ms;
+    Ok((text, timings))
     // _guard drops here, setting status to Idle
 }
 
@@ -746,7 +789,14 @@ pub async fn process_audio(
     guard.disarm();
 
     let t_total = std::time::Instant::now();
-    let pipeline_result = run_transcription_pipeline(&samples, &app_handle, &state.app_state, rid).await;
+    let pipeline_result = run_transcription_pipeline(
+        &samples,
+        &app_handle,
+        &state.app_state,
+        rid,
+        None,
+    )
+    .await;
     // Only emit idle if this recording wasn't cancelled/superseded.
     // Hold the dictation lock across the check+emit to prevent a concurrent
     // start from interleaving a "recording" status between our check and emit.
@@ -778,6 +828,9 @@ pub async fn process_audio(
         model_load_ms = timings.model_load_ms,
         decode_ms = timings.decode_ms,
         inference_ms = timings.inference_ms,
+        incremental_chunks = timings.incremental_chunks,
+        streaming_inference_ms = timings.streaming_inference_ms,
+        final_chunk_ms = timings.final_chunk_ms,
         correction_ms = timings.correction_ms,
         paste_ms = timings.paste_ms,
         total_ms = total_ms,
@@ -1403,7 +1456,7 @@ pub async fn start_native_recording(
     }
     // Check and update status in one lock; assign recording ID in the same
     // critical section so no concurrent cancel/start can slip between them.
-    let (rid, model_name) = {
+    let (rid, model_name, language, vad_sensitivity, custom_vocabulary, smart_punctuation, streaming_prompt_ready) = {
         let mut dictation = state.app_state.dictation.lock_or_recover();
         // Refuse if a file transcription holds the shared Whisper backend.
         // Checked under the dictation lock (which `transcribe_file` takes only
@@ -1440,7 +1493,17 @@ pub async fn start_native_recording(
             DictationStatus::Idle => {
                 let rid = state.app_state.next_recording_id();
                 dictation.status = DictationStatus::Recording;
-                (rid, dictation.model_name.clone())
+                (
+                    rid,
+                    dictation.model_name.clone(),
+                    dictation.language.clone(),
+                    dictation.vad_sensitivity,
+                    dictation.custom_vocabulary.clone(),
+                    dictation.smart_punctuation,
+                    !dictation.code_vocab_enabled
+                        || dictation.code_vocab_folder.trim().is_empty()
+                        || dictation.code_vocab_prompt.is_some(),
+                )
             }
         }
     };
@@ -1454,7 +1517,30 @@ pub async fn start_native_recording(
     *state.app_state.last_transcription_at.lock_or_recover() = Some(std::time::Instant::now());
     let _ = app_handle.emit("recording-status-changed", "recording");
     tracing::info!(target: "pipeline", "start_native_recording: started");
-    spawn_model_preparation(app_handle.clone(), model_name, rid);
+    spawn_model_preparation(app_handle.clone(), model_name.clone(), rid);
+    if streaming_prompt_ready {
+        let sanitized = custom_vocabulary.replace('\0', "");
+        let code_vocab = resolve_code_vocab_prompt(&state.app_state);
+        let prompt = combine_prompts(&sanitized, &code_vocab);
+        streaming::start_session(
+            app_handle.clone(),
+            streaming::StreamingConfig {
+                recording_id: rid,
+                model_name,
+                language,
+                prompt,
+                smart_punctuation,
+                vad_threshold: 1.0 - (vad_sensitivity as f32 / 100.0),
+            },
+        )
+        .await;
+    } else {
+        tracing::info!(
+            target: "pipeline",
+            recording_id = rid,
+            "incremental transcription skipped until code vocabulary cache is ready"
+        );
+    }
 
     Ok(serde_json::json!({
         "type": "recording_started",
@@ -1492,6 +1578,7 @@ pub async fn stop_native_recording(
     keyboard::set_processing(true);
     tracing::info!(target: "pipeline", "stop_native_recording: stopping");
     let _ = app_handle.emit("recording-status-changed", "processing");
+    let streaming_session = streaming::begin_finish(&state.app_state, rid).await;
 
     // Guard resets status to Idle if stop_recording fails or samples are empty;
     // disarmed before handing off to run_transcription_pipeline (which has its own guard)
@@ -1512,6 +1599,7 @@ pub async fn stop_native_recording(
     tracing::info!(target: "pipeline", "audio teardown + resample: {:?}", t_total.elapsed());
 
     if samples.is_empty() {
+        streaming::discard(streaming_session);
         tracing::info!(target: "pipeline", "stop_native_recording: no audio captured");
         // guard drops on return, resetting status to Idle
         if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
@@ -1529,6 +1617,7 @@ pub async fn stop_native_recording(
     const MIN_RECORDING_SAMPLES: usize = 4_800; // 0.3s at 16kHz
 
     if samples.len() < MIN_RECORDING_SAMPLES {
+        streaming::discard(streaming_session);
         tracing::info!(target: "pipeline", "stop_native_recording: recording too short ({}ms), discarding",
             samples.len() / 16); // samples / 16_000 * 1000
         if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
@@ -1544,7 +1633,15 @@ pub async fn stop_native_recording(
     // Hand off status management to the pipeline's own guard
     guard.disarm();
 
-    let pipeline_result = run_transcription_pipeline(&samples, &app_handle, &state.app_state, rid).await;
+    let incremental = streaming::finalize(app_handle.clone(), streaming_session, &samples).await;
+    let pipeline_result = run_transcription_pipeline(
+        &samples,
+        &app_handle,
+        &state.app_state,
+        rid,
+        incremental,
+    )
+    .await;
     // Only emit idle if this recording wasn't cancelled/superseded by a new one.
     // Hold the dictation lock across the check+emit to prevent a concurrent
     // start from interleaving a "recording" status between our check and emit.
@@ -1580,6 +1677,9 @@ pub async fn stop_native_recording(
         model_load_ms = timings.model_load_ms,
         decode_ms = timings.decode_ms,
         inference_ms = timings.inference_ms,
+        incremental_chunks = timings.incremental_chunks,
+        streaming_inference_ms = timings.streaming_inference_ms,
+        final_chunk_ms = timings.final_chunk_ms,
         correction_ms = timings.correction_ms,
         paste_ms = timings.paste_ms,
         total_ms = total_ms,
@@ -1635,6 +1735,7 @@ pub async fn cancel_native_recording(
         }
         (prev, rid)
     };
+    streaming::cancel(&state.app_state, rid).await;
 
     let stop_err = match prev_status {
         DictationStatus::Recording => {

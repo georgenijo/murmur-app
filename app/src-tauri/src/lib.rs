@@ -12,6 +12,7 @@ mod injector;
 mod keyboard;
 mod resource_monitor;
 mod state;
+mod streaming;
 pub mod telemetry;
 pub mod transcriber;
 mod vad;

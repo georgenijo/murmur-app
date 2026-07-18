@@ -1,5 +1,6 @@
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub mod coreml;
+pub mod chunking;
 pub mod parakeet;
 pub mod whisper;
 
@@ -19,6 +20,10 @@ pub const COREML_MODEL_NAME: &str = "parakeet-tdt-0.6b-v3-coreml";
 
 pub fn is_coreml_model(model_name: &str) -> bool {
     model_name == COREML_MODEL_NAME
+}
+
+pub fn is_whisper_model(model_name: &str) -> bool {
+    !is_coreml_model(model_name) && !parakeet::is_parakeet_model(model_name)
 }
 
 /// Sample rate required by transcription models (16kHz).
@@ -161,6 +166,14 @@ mod tests {
     fn parse_wav_rejects_garbage() {
         let result = parse_wav_to_samples(b"not a wav file");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn incremental_classifier_selects_only_whisper_models() {
+        assert!(is_whisper_model("base.en"));
+        assert!(is_whisper_model("large-v3-turbo"));
+        assert!(!is_whisper_model(COREML_MODEL_NAME));
+        assert!(!is_whisper_model("parakeet-tdt-0.6b-v2-fp16"));
     }
 
 }

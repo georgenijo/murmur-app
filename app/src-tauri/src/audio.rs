@@ -324,6 +324,73 @@ pub fn stop_recording() -> Result<Vec<f32>, String> {
     }
 }
 
+/// Number of 16 kHz-equivalent samples currently captured. This reads only the
+/// buffer length, so the incremental scheduler can decide whether a complete
+/// fixed-size window exists without cloning the recording.
+pub(crate) fn recording_sample_count_16k() -> Option<usize> {
+    let state = RECORDING_STATE.get()?;
+    let guard = state.lock().unwrap_or_else(|poisoned| {
+        tracing::warn!(target: "audio", "recording_sample_count_16k: recording state mutex was poisoned, recovering");
+        poisoned.into_inner()
+    });
+    if !guard.active.load(Ordering::Relaxed) || guard.sample_rate == 0 {
+        return None;
+    }
+    let sample_rate = guard.sample_rate as usize;
+    let buffer = Arc::clone(guard.shared.as_ref()?);
+    drop(guard);
+    let raw_len = buffer.lock().unwrap_or_else(|poisoned| {
+        tracing::warn!(target: "audio", "recording_sample_count_16k: samples mutex was poisoned, recovering");
+        poisoned.into_inner()
+    }).len();
+    Some(raw_len.saturating_mul(WHISPER_SAMPLE_RATE as usize) / sample_rate)
+}
+
+/// Copy one bounded range from the live recording and convert it to 16 kHz.
+/// Indices use the final pipeline's 16 kHz sample coordinate system. The full
+/// recording buffer remains owned by `stop_recording`; this function never
+/// clears it and never creates an audio queue.
+pub(crate) fn snapshot_recording_window_16k(start: usize, end: usize) -> Option<Vec<f32>> {
+    if start >= end {
+        return Some(Vec::new());
+    }
+    let state = RECORDING_STATE.get()?;
+    let guard = state.lock().unwrap_or_else(|poisoned| {
+        tracing::warn!(target: "audio", "snapshot_recording_window_16k: recording state mutex was poisoned, recovering");
+        poisoned.into_inner()
+    });
+    if !guard.active.load(Ordering::Relaxed) || guard.sample_rate == 0 {
+        return None;
+    }
+    let sample_rate = guard.sample_rate as usize;
+    let buffer = Arc::clone(guard.shared.as_ref()?);
+    drop(guard);
+
+    let raw_start = start.saturating_mul(sample_rate) / WHISPER_SAMPLE_RATE as usize;
+    let raw_end = end
+        .saturating_mul(sample_rate)
+        .saturating_add(WHISPER_SAMPLE_RATE as usize - 1)
+        / WHISPER_SAMPLE_RATE as usize;
+    let raw = {
+        let samples = buffer.lock().unwrap_or_else(|poisoned| {
+            tracing::warn!(target: "audio", "snapshot_recording_window_16k: samples mutex was poisoned, recovering");
+            poisoned.into_inner()
+        });
+        if raw_end > samples.len() {
+            return None;
+        }
+        samples[raw_start.min(raw_end)..raw_end].to_vec()
+    };
+
+    let mut converted = if sample_rate as u32 == WHISPER_SAMPLE_RATE {
+        raw
+    } else {
+        resample(&raw, sample_rate as u32, WHISPER_SAMPLE_RATE)
+    };
+    converted.truncate(end - start);
+    Some(converted)
+}
+
 #[allow(dead_code)]
 pub fn is_recording() -> bool {
     if let Some(state) = RECORDING_STATE.get() {

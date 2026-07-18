@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- **True incremental Whisper transcription** — long Whisper dictations now process one bounded overlapping audio window at a time during recording and transcribe only the remaining tail after stop. The existing cached model is reused (no duplicate context), overlap reconciliation is deterministic, and any worker/VAD/session reliability failure falls back to the original authoritative full-buffer path (#129).
 - Optional **Hotkey Timing Feedback** flashes the overlay amber when a bare-modifier tap times out before its second tap in Double-Tap or Both mode. The setting is off by default, and intentional holds, modifier shortcuts, processing skips, and valid double-taps remain silent (#154).
 
 ### Fixed

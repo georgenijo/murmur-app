@@ -1,7 +1,9 @@
 # Research: Streaming/Chunked Whisper Transcription
 
 **Date:** 2026-03-04
-**Status:** Research complete — not yet implemented
+**Status:** Implemented for live Whisper dictation in issue #129 (2026-07-18)
+
+> Implementation update: the preview-only hybrid recommendation below was superseded. PR #205 was closed because it duplicated the Whisper model/context and still re-ran the full recording after stop, so it did not reduce stop-to-final latency. The shipped design reuses the existing cached backend, processes one bounded 10-second window every 8 seconds, reconciles a 2-second overlap, and transcribes only the remaining tail after stop. Any reliability failure returns to the original full-buffer path. The rest of this document is retained as the original feasibility record.
 
 ## Context
 
