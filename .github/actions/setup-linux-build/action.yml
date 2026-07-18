@@ -127,6 +127,21 @@ runs:
           exit 1
         }
 
+    # Tauri's binary-releases mirror currently serves a July 2024 linuxdeploy
+    # build that predates LINUXDEPLOY_EXCLUDED_LIBRARIES. Seed Tauri's tool cache
+    # with a checksum-pinned upstream build so the runner-only CUDA driver stub
+    # is available for dependency resolution but cannot enter the AppImage.
+    - name: Install driver-stub-aware linuxdeploy
+      shell: bash
+      run: |
+        LINUXDEPLOY_URL="https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"
+        LINUXDEPLOY_SHA256="e87ee0815d109282fdda73e34c2361d64d02b0ffaea3674b18f1fd1f6a687dcf"
+        LINUXDEPLOY_PATH="$HOME/.cache/tauri/linuxdeploy-x86_64.AppImage"
+        mkdir -p "$(dirname "$LINUXDEPLOY_PATH")"
+        curl --fail --location --retry 3 "$LINUXDEPLOY_URL" --output "$LINUXDEPLOY_PATH"
+        echo "$LINUXDEPLOY_SHA256  $LINUXDEPLOY_PATH" | sha256sum --check --strict
+        chmod +x "$LINUXDEPLOY_PATH"
+
     - name: Save CUDA toolkit cache
       if: steps.cuda-cache.outputs.cache-hit != 'true' && inputs.cuda-cache-save-if == 'true'
       uses: actions/cache/save@v4

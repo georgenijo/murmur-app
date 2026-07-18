@@ -148,6 +148,20 @@ def validate_linux_cache_policy(action: str) -> None:
     assert "CUDA_DRIVER_STUB_DIR=$STUB_DIR" in action
     assert "LINUXDEPLOY_EXCLUDED_LIBRARIES=libcuda.so.1" in action
 
+    linuxdeploy = named_step_block(
+        action, "Install driver-stub-aware linuxdeploy", 4
+    )
+    assert (
+        "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/"
+        "linuxdeploy-x86_64.AppImage"
+    ) in linuxdeploy
+    assert (
+        'LINUXDEPLOY_SHA256="e87ee0815d109282fdda73e34c2361d64d02b0ffaea3674b18f1fd1f6a687dcf"'
+        in linuxdeploy
+    )
+    assert 'LINUXDEPLOY_PATH="$HOME/.cache/tauri/linuxdeploy-x86_64.AppImage"' in linuxdeploy
+    assert "sha256sum --check --strict" in linuxdeploy
+
     prepare = named_step_block(action, "Prepare CUDA cache restore path", 4)
     assert 'sudo mkdir -p "/usr/local/cuda-${CUDA_MM}"' in prepare
     assert 'sudo chown -R "$(id -u):$(id -g)"' in prepare

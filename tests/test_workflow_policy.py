@@ -68,6 +68,16 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             validate_linux_cache_policy(mutated)
 
+    def test_linuxdeploy_override_must_be_checksum_pinned(self) -> None:
+        action = (ROOT / ".github/actions/setup-linux-build/action.yml").read_text()
+        mutated = action.replace(
+            "sha256sum --check --strict",
+            'echo "linuxdeploy checksum validation skipped"',
+            1,
+        )
+        with self.assertRaises(AssertionError):
+            validate_linux_cache_policy(mutated)
+
     def test_cuda_stub_paths_reject_empty_loader_segments(self) -> None:
         action = (ROOT / ".github/actions/setup-linux-build/action.yml").read_text()
         mutated_action = action.replace(
