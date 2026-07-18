@@ -35,7 +35,7 @@ hound = "3.5"
 symphonia = { version = "0.5", default-features = false, features = ["wav", "pcm", "mp3", "isomp4", "aac", "alac"] }
 dirs = "5"
 cpal = "0.15"
-rdev = { git = "https://github.com/Narsil/rdev", branch = "main" }
+rdev = { git = "https://github.com/georgenijo/rdev", rev = "9f510e406327b797eaf2acdc30adcda3dc1e1bb3", features = ["macos_keyboard_only", "macos_no_modifier_event_name", "macos_test_force_tap_timeout"] }
 memory-stats = "1"
 reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls"] }
 futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
@@ -57,7 +57,7 @@ core-graphics = "0.25"
 fluidaudio-rs = { version = "=0.14.1", default-features = false, features = ["asr"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-rdev = { git = "https://github.com/Narsil/rdev", branch = "main", features = ["x11"] }
+rdev = { git = "https://github.com/georgenijo/rdev", rev = "9f510e406327b797eaf2acdc30adcda3dc1e1bb3", features = ["x11"] }
 whisper-rs = { version = "0.15", features = ["cuda"] }
 
 [profile.release]

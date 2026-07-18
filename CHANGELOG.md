@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Fixed
+- Global modifier hotkeys now recover when macOS disables the underlying event tap, avoid stale modifier-state dead zones after system context changes, and no longer process mouse movement or perform main-thread key-name translation on the modifier hot path (#194, fixes #137).
 - Quick Both-mode holds now stop and transcribe as soon as the 200 ms promotion threshold is reached instead of being discarded by an obsolete 300 ms grace window; empty Core ML results after VAD also retry once with the original audio and emit privacy-safe diagnostics (#221).
 - Fast hold-down dictations no longer disappear when key release races Core Audio startup; native start, stop, and cancel transitions are serialized and the frontend waits for startup before processing (#216).
 - Parakeet v2 downloads now survive an interrupted extraction: Murmur reuses the completed archive, validates a staged bundle, and publishes it atomically instead of leaving a partial model that appears undownloaded (#215).
