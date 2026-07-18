@@ -269,7 +269,8 @@ jobs:
             exit 1
           fi
           rm -f "$LOG"
-          xvfb-run -a dbus-run-session -- "$DEB_BINARY" >/tmp/murmur-deb-smoke.log 2>&1 &
+          LD_LIBRARY_PATH="$CUDA_DRIVER_STUB_DIR:${LD_LIBRARY_PATH:-}" \
+            xvfb-run -a dbus-run-session -- "$DEB_BINARY" >/tmp/murmur-deb-smoke.log 2>&1 &
           PID=$!
           for i in $(seq 1 20); do
             sleep 1
@@ -286,7 +287,8 @@ jobs:
 
           chmod +x "$APPIMAGE"
           rm -f "$LOG"
-          xvfb-run -a dbus-run-session -- "$APPIMAGE" --appimage-extract-and-run \
+          LD_LIBRARY_PATH="$CUDA_DRIVER_STUB_DIR:${LD_LIBRARY_PATH:-}" \
+            xvfb-run -a dbus-run-session -- "$APPIMAGE" --appimage-extract-and-run \
             >/tmp/murmur-appimage-smoke.log 2>&1 &
           PID=$!
           for i in $(seq 1 30); do

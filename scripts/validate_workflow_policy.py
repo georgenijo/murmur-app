@@ -135,6 +135,8 @@ def validate_linux_cache_policy(action: str) -> None:
     assert "cuda-minimal-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cuda-version }}-v1" in action
     assert 'sub-packages: \'["nvcc", "cudart-dev"]\'' in action
     assert 'non-cuda-sub-packages: \'["libcublas-dev"]\'' in action
+    assert 'STUB_DIR="$RUNNER_TEMP/murmur-cuda-driver-stub"' in action
+    assert "CUDA_DRIVER_STUB_DIR=$STUB_DIR" in action
 
     restore = named_step_block(action, "Restore CUDA toolkit cache", 4)
     save = named_step_block(action, "Save CUDA toolkit cache", 4)
@@ -148,6 +150,8 @@ def validate_linux_cache_policy(action: str) -> None:
     ):
         assert forbidden not in restore
         assert forbidden not in save
+    assert "$RUNNER_TEMP" not in restore
+    assert "$RUNNER_TEMP" not in save
     assert (
         "if: steps.cuda-cache.outputs.cache-hit != 'true' && "
         "inputs.cuda-cache-save-if == 'true'"

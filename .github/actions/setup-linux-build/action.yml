@@ -80,6 +80,19 @@ runs:
         echo "LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/cuda/targets/x86_64-linux/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
         sudo ldconfig
 
+        # GitHub-hosted runners have no NVIDIA driver. cuda-driver-dev supplies
+        # a link-time libcuda.so stub but no libcuda.so.1 runtime soname. Keep a
+        # runner-local alias for tests/smoke only; never cache or package it.
+        DRIVER_STUB=$(find "/usr/local/cuda-${CUDA_MM}" -path '*/stubs/libcuda.so' -print -quit)
+        if [ -z "$DRIVER_STUB" ]; then
+          echo "ERROR: minimal CUDA tree is missing the driver development stub"
+          exit 1
+        fi
+        STUB_DIR="$RUNNER_TEMP/murmur-cuda-driver-stub"
+        mkdir -p "$STUB_DIR"
+        ln -sfn "$DRIVER_STUB" "$STUB_DIR/libcuda.so.1"
+        echo "CUDA_DRIVER_STUB_DIR=$STUB_DIR" >> "$GITHUB_ENV"
+
     # A claimed hit with a damaged tree fails closed. It must not silently reinstall and
     # overwrite a trusted cache with another ambiguous archive.
     - name: Verify CUDA install
@@ -99,6 +112,10 @@ runs:
           echo "ERROR: minimal CUDA tree is missing cuBLAS runtime/development libraries"
           exit 1
         fi
+        test -L "$CUDA_DRIVER_STUB_DIR/libcuda.so.1" || {
+          echo "ERROR: runner-local libcuda.so.1 test stub was not configured"
+          exit 1
+        }
 
     - name: Save CUDA toolkit cache
       if: steps.cuda-cache.outputs.cache-hit != 'true' && inputs.cuda-cache-save-if == 'true'
