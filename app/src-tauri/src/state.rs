@@ -151,6 +151,10 @@ pub struct AppState {
     /// `configure_dictation`. Lives outside `DictationState` because the compiled
     /// Aho-Corasick automaton isn't serializable.
     pub correction_matcher: Mutex<Option<std::sync::Arc<crate::correction::CorrectionMatcher>>>,
+    /// At most one bounded incremental Whisper worker is attached to the active
+    /// recording. The handle owns no audio; it snapshots one fixed-size window
+    /// at a time and stores only reconciled text and timing counters.
+    pub streaming_session: tokio::sync::Mutex<Option<crate::streaming::StreamingSession>>,
 }
 
 impl AppState {
@@ -182,6 +186,7 @@ impl Default for AppState {
             cancelled_id: AtomicU64::new(0),
             file_transcribing: AtomicBool::new(false),
             correction_matcher: Mutex::new(None),
+            streaming_session: tokio::sync::Mutex::new(None),
         }
     }
 }
