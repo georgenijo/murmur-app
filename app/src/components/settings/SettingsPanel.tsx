@@ -987,6 +987,35 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
             {keyHelpText}
           </p>
         </div>
+
+        {(isDoubleTap || isBoth) && (
+          <div className="flex items-center justify-between gap-6">
+            <div>
+              <label className="block text-sm font-medium text-stone-700 dark:text-stone-300">
+                Hotkey Timing Feedback
+              </label>
+              <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
+                Flash the overlay when a tap misses the double-tap window
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={settings.hotkeyMissFeedback}
+              aria-label="Hotkey timing feedback"
+              onClick={() => onUpdateSettings({ hotkeyMissFeedback: !settings.hotkeyMissFeedback })}
+              className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-stone-500 focus:ring-offset-2 ${
+                settings.hotkeyMissFeedback ? 'bg-stone-800 dark:bg-stone-300' : 'bg-stone-300 dark:bg-stone-500'
+              }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                  settings.hotkeyMissFeedback ? 'translate-x-6' : 'translate-x-1'
+                }`}
+              />
+            </button>
+          </div>
+        )}
         </SettingsSection>
 
         <SettingsSection pageId="output" activePage={activeCat} title="Output" subtitle="Auto-paste, launch at login">

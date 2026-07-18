@@ -88,6 +88,10 @@ Expanded width. Red pulsing dot on the left, animated 7-bar waveform on the righ
 ### Processing
 Same expanded width. Spinning circle on the left, dimmed waveform on the right.
 
+### Hotkey Timing Miss (optional)
+
+When `hotkeyMissFeedback` is enabled and the backend emits `hotkey-tap-rejected` for an expired second-tap window, the pill briefly expands for 500ms with an amber outlined exclamation, amber border glow, and `Tap missed` label. This is visually distinct from the red recording dot and the red cancellation X. The setting is off by default.
+
 **Styling:** Dark background (`rgba(20, 20, 20, 0.92)`), 40px backdrop blur, rounded bottom corners.
 
 ## Waveform Animation
@@ -153,7 +157,8 @@ The observer is intentionally leaked (`std::mem::forget`) for app-lifetime obser
 | `audio-level` | Number (RMS 0.0-1.0) | Real-time audio level for waveform |
 | `notch-info-changed` | `{ notch_width, notch_height }` or `null` | Display configuration changed |
 | `app-disabled-changed` | Boolean | Global-disable state changed (updates the top-bar mic + speaker-slash) |
-| `settings-changed` | (none) | Auto-paste/disable changed in another window; listeners re-read localStorage |
+| `settings-changed` | (none) | Overlay-relevant settings changed in another window; listeners re-read localStorage |
+| `hotkey-tap-rejected` | `{ reason: "second_tap_expired", mode: "double_tap" \| "both" }` | Drives the opt-in amber timing-miss flash |
 | `open-settings` | (none) | Overlay gear asks the main window to open the Settings panel |
 
 The entire overlay surface is a Tauri drag region (`data-tauri-drag-region`), allowing the user to reposition it. Overlay position save/restore is currently disabled (TODO: re-enable after notch positioning is stable).

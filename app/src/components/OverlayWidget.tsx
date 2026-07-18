@@ -9,6 +9,11 @@ import { STORAGE_KEY, DEFAULT_SETTINGS, loadSettings, saveSettings } from '../li
 import type { Settings } from '../lib/settings';
 import { buildConfigureOptions } from '../lib/dictation';
 import type { DictationResponse } from '../lib/dictation';
+import {
+  HOTKEY_MISS_FLASH_MS,
+  isHotkeyTapRejectedPayload,
+  shouldShowHotkeyMissFeedback,
+} from '../lib/hotkeyFeedback';
 
 const BAR_COUNT = 7;
 const COLLAPSE_DELAY_MS = 300;
@@ -59,6 +64,7 @@ function SlidersIcon({ stroke }: { stroke: string }) {
 export function OverlayWidget() {
   const [status, setStatus] = useState<DictationStatus>('idle');
   const [showCancelled, setShowCancelled] = useState(false);
+  const [showHotkeyMiss, setShowHotkeyMiss] = useState(false);
   const [lockedMode, setLockedMode] = useState(false);
   const [disabled, setDisabled] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -76,7 +82,9 @@ export function OverlayWidget() {
   const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const collapseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const shrinkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hotkeyMissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const audioLevelRef = useRef(0);
+  const hotkeyMissFeedbackRef = useRef(false);
   const barRefs = useRef<(HTMLDivElement | null)[]>([]);
 
   useEffect(() => { statusRef.current = status; }, [status]);
@@ -88,6 +96,8 @@ export function OverlayWidget() {
     setDisabled(settings.disabled);
     setAutoPaste(settings.autoPaste);
     setFileOutputEnabled(settings.saveTranscript || settings.saveAudio);
+    hotkeyMissFeedbackRef.current = settings.hotkeyMissFeedback;
+    if (!settings.hotkeyMissFeedback) setShowHotkeyMiss(false);
   }, []);
 
   // Log mount + fetch notch dimensions + read initial disabled state
@@ -113,6 +123,7 @@ export function OverlayWidget() {
       if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
       if (collapseTimerRef.current) clearTimeout(collapseTimerRef.current);
       if (shrinkTimerRef.current) clearTimeout(shrinkTimerRef.current);
+      if (hotkeyMissTimerRef.current) clearTimeout(hotkeyMissTimerRef.current);
     };
   }, [applySettingsSnapshot]);
 
@@ -148,12 +159,53 @@ export function OverlayWidget() {
         setStatus(event.payload);
         if (event.payload === 'idle') {
           setLockedMode(false);
+        } else {
+          setShowHotkeyMiss(false);
+          if (hotkeyMissTimerRef.current) {
+            clearTimeout(hotkeyMissTimerRef.current);
+            hotkeyMissTimerRef.current = null;
+          }
         }
       }
     }).then((fn) => {
       if (cancelled) { fn(); } else { unlisten = fn; }
     });
     return () => { cancelled = true; unlisten?.(); };
+  }, []);
+
+  // A rejected-tap event is emitted only when the double-tap window expires.
+  // The setting gate lives here because the overlay is a separate webview with
+  // its own React context and reads the shared localStorage settings snapshot.
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    listen<unknown>('hotkey-tap-rejected', (event) => {
+      if (!isHotkeyTapRejectedPayload(event.payload)) return;
+      let feedbackEnabled = hotkeyMissFeedbackRef.current;
+      try {
+        feedbackEnabled = loadSettings().hotkeyMissFeedback;
+        hotkeyMissFeedbackRef.current = feedbackEnabled;
+      } catch { /* use the latest settings snapshot */ }
+      if (!shouldShowHotkeyMissFeedback(
+        feedbackEnabled,
+        statusRef.current,
+        event.payload,
+      )) return;
+
+      if (hotkeyMissTimerRef.current) clearTimeout(hotkeyMissTimerRef.current);
+      setShowHotkeyMiss(true);
+      hotkeyMissTimerRef.current = setTimeout(() => {
+        if (!cancelled) setShowHotkeyMiss(false);
+        hotkeyMissTimerRef.current = null;
+      }, HOTKEY_MISS_FLASH_MS);
+    }).then((fn) => {
+      if (cancelled) { fn(); } else { unlisten = fn; }
+    });
+    return () => {
+      cancelled = true;
+      if (hotkeyMissTimerRef.current) clearTimeout(hotkeyMissTimerRef.current);
+      unlisten?.();
+    };
   }, []);
 
   // Subscribe to recording-cancelled for brief red X flash
@@ -368,7 +420,7 @@ export function OverlayWidget() {
     }, 250);
   }, []);
 
-  const isActive = status === 'recording' || status === 'processing' || showCancelled;
+  const isActive = status === 'recording' || status === 'processing' || showCancelled || showHotkeyMiss;
 
   // Raw mousedown — fires before click/double-click debouncing
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
@@ -583,6 +635,7 @@ export function OverlayWidget() {
           height: expanded ? topH + 56 : topH,
           marginLeft: 32,
           background: 'rgba(20, 20, 20, 0.92)',
+          boxShadow: showHotkeyMiss ? 'inset 0 -2px 0 rgba(245,158,11,0.9), 0 3px 16px rgba(245,158,11,0.22)' : 'none',
           backdropFilter: 'blur(40px)',
           WebkitBackdropFilter: 'blur(40px)',
           transition: 'width 400ms cubic-bezier(0.34,1.56,0.64,1), height 360ms cubic-bezier(0.34,1.56,0.64,1)',
@@ -597,6 +650,10 @@ export function OverlayWidget() {
                 <line x1="6" y1="6" x2="18" y2="18" />
                 <line x1="18" y1="6" x2="6" y2="18" />
               </svg>
+            ) : showHotkeyMiss ? (
+              <span className="w-3 h-3 rounded-full border border-amber-400 text-amber-300 text-[8px] leading-none flex items-center justify-center font-bold">
+                !
+              </span>
             ) : status === 'recording' ? (
               <div className="w-2.5 h-2.5 rounded-full bg-red-500" style={{ animation: 'pulse 0.8s ease-in-out infinite' }} />
             ) : status === 'processing' ? (
@@ -621,24 +678,30 @@ export function OverlayWidget() {
           <div className="flex-1" />
 
           {/* Right side — waveform (only when active) */}
-          <div
-            className="flex items-center gap-[1.5px] h-4 shrink-0 transition-opacity duration-300"
-            style={{ opacity: isActive ? 1 : 0 }}
-          >
-            {Array.from({ length: BAR_COUNT }, (_, i) => (
-              <div
-                key={i}
-                ref={el => { barRefs.current[i] = el; }}
-                className={`w-[2px] rounded-full ${
-                  status === 'recording' ? 'bg-white/90' : 'bg-white/40'
-                }`}
-                style={{
-                  height: '2px',
-                  transition: `height ${status === 'recording' ? '50ms' : '300ms'} ease-out`,
-                }}
-              />
-            ))}
-          </div>
+          {showHotkeyMiss ? (
+            <span className="shrink-0 text-amber-300 text-[10px] font-medium">
+              Tap missed
+            </span>
+          ) : (
+            <div
+              className="flex items-center gap-[1.5px] h-4 shrink-0 transition-opacity duration-300"
+              style={{ opacity: isActive ? 1 : 0 }}
+            >
+              {Array.from({ length: BAR_COUNT }, (_, i) => (
+                <div
+                  key={i}
+                  ref={el => { barRefs.current[i] = el; }}
+                  className={`w-[2px] rounded-full ${
+                    status === 'recording' ? 'bg-white/90' : 'bg-white/40'
+                  }`}
+                  style={{
+                    height: '2px',
+                    transition: `height ${status === 'recording' ? '50ms' : '300ms'} ease-out`,
+                  }}
+                />
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Quick-settings dropdown — revealed on hover (identical in idle/recording) */}

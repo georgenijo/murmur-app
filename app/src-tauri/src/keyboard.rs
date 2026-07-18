@@ -12,6 +12,7 @@
 //!
 //! Both modes reject modifier+letter combos (e.g. Shift+A).
 
+use crate::MutexExt;
 #[cfg(target_os = "macos")]
 use rdev::set_is_main_thread;
 use rdev::{listen, Event, EventType, Key};
@@ -70,6 +71,7 @@ struct DoubleTapDetector {
     recording: bool,
     state_entered_at: Instant,
     last_fired_at: Option<Instant>,
+    last_rejection: Option<RejectionReason>,
 }
 
 impl DoubleTapDetector {
@@ -80,6 +82,7 @@ impl DoubleTapDetector {
             recording: false,
             state_entered_at: Instant::now(),
             last_fired_at: None,
+            last_rejection: None,
         }
     }
 
@@ -108,7 +111,8 @@ impl DoubleTapDetector {
             .unwrap_or(false)
     }
 
-    fn log_rejection(&self, reason: RejectionReason, event_type: &EventType) {
+    fn log_rejection(&mut self, reason: RejectionReason, event_type: &EventType) {
+        self.last_rejection = Some(reason);
         tracing::info!(
             target: "keyboard",
             detector = "double_tap",
@@ -124,6 +128,7 @@ impl DoubleTapDetector {
 
     /// Process a keyboard event. Returns true if a double-tap was detected.
     fn handle_event(&mut self, event_type: &EventType) -> bool {
+        self.last_rejection = None;
         let target = match self.target_key {
             Some(k) => k,
             None => return false,
@@ -239,6 +244,27 @@ impl DoubleTapDetector {
                 false
             }
         }
+    }
+
+    fn take_rejection(&mut self) -> Option<RejectionReason> {
+        self.last_rejection.take()
+    }
+
+    fn second_tap_wait_started_at(&self) -> Option<Instant> {
+        (self.state == DetectorState::WaitingSecondDown).then_some(self.state_entered_at)
+    }
+
+    fn expire_second_tap_wait(&mut self, started_at: Instant) -> Option<u64> {
+        if self.state != DetectorState::WaitingSecondDown
+            || self.state_entered_at != started_at
+            || self.elapsed_ms() <= DOUBLE_TAP_WINDOW_MS
+        {
+            return None;
+        }
+
+        let elapsed_ms = self.elapsed_ms() as u64;
+        self.reset();
+        Some(elapsed_ms)
     }
 }
 
@@ -378,6 +404,98 @@ enum DetectorMode {
     Both,
 }
 
+impl DetectorMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::DoubleTap => "double_tap",
+            Self::HoldDown => "hold_down",
+            Self::Both => "both",
+        }
+    }
+}
+
+fn should_surface_hotkey_rejection(reason: RejectionReason, mode: DetectorMode) -> bool {
+    reason == RejectionReason::SecondTapExpired
+        && matches!(mode, DetectorMode::DoubleTap | DetectorMode::Both)
+}
+
+fn emit_hotkey_rejection(
+    app_handle: &tauri::AppHandle,
+    reason: RejectionReason,
+    mode: DetectorMode,
+) {
+    if !should_surface_hotkey_rejection(reason, mode) {
+        return;
+    }
+
+    let _ = app_handle.emit(
+        "hotkey-tap-rejected",
+        serde_json::json!({
+            "reason": reason.as_str(),
+            "mode": mode.as_str(),
+        }),
+    );
+}
+
+fn schedule_second_tap_expiry(
+    app_handle: tauri::AppHandle,
+    mode: DetectorMode,
+    listener_generation: u64,
+    started_at: Instant,
+) {
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(
+            DOUBLE_TAP_WINDOW_MS as u64 + 5,
+        ));
+
+        if !listener_context_matches(mode, listener_generation) {
+            return;
+        }
+
+        let elapsed_ms = {
+            let mut det = DOUBLE_TAP_DETECTOR.lock_or_recover();
+            det.as_mut()
+                .and_then(|d| d.expire_second_tap_wait(started_at))
+        };
+
+        if let Some(elapsed_ms) =
+            elapsed_ms.filter(|_| listener_context_matches(mode, listener_generation))
+        {
+            tracing::info!(
+                target: "keyboard",
+                detector = "double_tap",
+                reason = RejectionReason::SecondTapExpired.as_str(),
+                state = ?DetectorState::WaitingSecondDown,
+                elapsed_ms,
+                recording = false,
+                mode = mode.as_str(),
+                "keyboard detector rejected sequence"
+            );
+            emit_hotkey_rejection(&app_handle, RejectionReason::SecondTapExpired, mode);
+        }
+    });
+}
+
+fn listener_context_matches(mode: DetectorMode, generation: u64) -> bool {
+    listener_context_is_current(
+        LISTENER_ACTIVE.load(Ordering::SeqCst),
+        *ACTIVE_MODE.lock_or_recover(),
+        LISTENER_GENERATION.load(Ordering::SeqCst),
+        mode,
+        generation,
+    )
+}
+
+fn listener_context_is_current(
+    active: bool,
+    active_mode: DetectorMode,
+    active_generation: u64,
+    expected_mode: DetectorMode,
+    expected_generation: u64,
+) -> bool {
+    active && active_mode == expected_mode && active_generation == expected_generation
+}
+
 fn now_unix_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -423,7 +541,7 @@ fn modifier_edge(event_type: &EventType) -> &'static str {
 
 fn detector_state_snapshot() -> (Option<DetectorState>, Option<HoldState>) {
     let double_tap_state = {
-        let det = DOUBLE_TAP_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
+        let det = DOUBLE_TAP_DETECTOR.lock_or_recover();
         det.as_ref().map(|d| d.state)
     };
     let hold_state = {
@@ -572,6 +690,7 @@ pub fn is_app_disabled() -> bool {
 
 static LISTENER_ACTIVE: AtomicBool = AtomicBool::new(false);
 static LISTENER_THREAD_SPAWNED: AtomicBool = AtomicBool::new(false);
+static LISTENER_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 static ACTIVE_MODE: Mutex<DetectorMode> = Mutex::new(DetectorMode::DoubleTap);
 static DOUBLE_TAP_DETECTOR: Mutex<Option<DoubleTapDetector>> = Mutex::new(None);
@@ -580,8 +699,9 @@ static HOLD_DOWN_DETECTOR: Mutex<Option<HoldDownDetector>> = Mutex::new(None);
 /// Start the keyboard listener. Spawns the rdev listener thread if not already running.
 /// If already running, just updates the target key, mode, and re-enables.
 ///
-/// `mode` should be `"double_tap"` or `"hold_down"`.
+/// `mode` should be `"double_tap"`, `"hold_down"`, or `"both"`.
 pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
+    LISTENER_GENERATION.fetch_add(1, Ordering::SeqCst);
     let target = hotkey_to_rdev_key(hotkey);
 
     let detector_mode = match mode {
@@ -685,9 +805,10 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
                 LAST_TAP_SILENCE_WARNING_AT_MS.store(0, Ordering::SeqCst);
 
                 let mode = {
-                    let m = ACTIVE_MODE.lock().unwrap_or_else(|p| p.into_inner());
+                    let m = ACTIVE_MODE.lock_or_recover();
                     *m
                 };
+                let listener_generation = LISTENER_GENERATION.load(Ordering::SeqCst);
                 trace_raw_callback(&event, mode);
 
                 // Escape key: cancel recording/transcription regardless of mode.
@@ -728,16 +849,30 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
 
                 match mode {
                     DetectorMode::DoubleTap => {
-                        let fired = {
-                            let mut det = DOUBLE_TAP_DETECTOR
-                                .lock()
-                                .unwrap_or_else(|p| p.into_inner());
+                        let (fired, rejection, wait_started_at) = {
+                            let mut det = DOUBLE_TAP_DETECTOR.lock_or_recover();
                             if let Some(d) = det.as_mut() {
-                                d.handle_event(&event.event_type)
+                                let previous_wait = d.second_tap_wait_started_at();
+                                let fired = d.handle_event(&event.event_type);
+                                let wait_started_at = d
+                                    .second_tap_wait_started_at()
+                                    .filter(|started_at| Some(*started_at) != previous_wait);
+                                (fired, d.take_rejection(), wait_started_at)
                             } else {
-                                false
+                                (false, None, None)
                             }
                         };
+                        if let Some(reason) = rejection {
+                            emit_hotkey_rejection(&handle, reason, mode);
+                        }
+                        if let Some(started_at) = wait_started_at {
+                            schedule_second_tap_expiry(
+                                handle.clone(),
+                                mode,
+                                listener_generation,
+                                started_at,
+                            );
+                        }
                         if fired {
                             let _ = handle.emit("double-tap-toggle", ());
                         }
@@ -808,16 +943,30 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
                         };
 
                         // Always feed double-tap
-                        let dtap_fired = {
-                            let mut det = DOUBLE_TAP_DETECTOR
-                                .lock()
-                                .unwrap_or_else(|p| p.into_inner());
+                        let (dtap_fired, rejection, wait_started_at) = {
+                            let mut det = DOUBLE_TAP_DETECTOR.lock_or_recover();
                             if let Some(d) = det.as_mut() {
-                                d.handle_event(&event.event_type)
+                                let previous_wait = d.second_tap_wait_started_at();
+                                let fired = d.handle_event(&event.event_type);
+                                let wait_started_at = d
+                                    .second_tap_wait_started_at()
+                                    .filter(|started_at| Some(*started_at) != previous_wait);
+                                (fired, d.take_rejection(), wait_started_at)
                             } else {
-                                false
+                                (false, None, None)
                             }
                         };
+                        if let Some(reason) = rejection {
+                            emit_hotkey_rejection(&handle, reason, mode);
+                        }
+                        if let Some(started_at) = wait_started_at {
+                            schedule_second_tap_expiry(
+                                handle.clone(),
+                                mode,
+                                listener_generation,
+                                started_at,
+                            );
+                        }
 
                         match hold_result {
                             HoldDownEvent::Start => {
@@ -922,6 +1071,7 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
 /// Stop processing keyboard events (the thread stays alive but idle).
 pub fn stop_listener() {
     LISTENER_ACTIVE.store(false, Ordering::SeqCst);
+    LISTENER_GENERATION.fetch_add(1, Ordering::SeqCst);
 
     // Reset both detectors and Both-mode state
     {
@@ -1104,6 +1254,89 @@ mod tests {
         // the press event itself is consumed by the timeout check
         assert!(!d.handle_event(&press(Key::ShiftLeft)));
         assert_eq!(d.state, DetectorState::Idle);
+    }
+
+    #[test]
+    fn second_tap_wait_expires_without_another_keyboard_event() {
+        let mut d = make_detector(Key::ShiftLeft);
+        d.handle_event(&press(Key::ShiftLeft));
+        d.handle_event(&release(Key::ShiftLeft));
+        let started_at = d.second_tap_wait_started_at().unwrap();
+
+        sleep(Duration::from_millis(DOUBLE_TAP_WINDOW_MS as u64 + 10));
+
+        let elapsed_ms = d.expire_second_tap_wait(started_at);
+        assert!(elapsed_ms.is_some());
+        assert_eq!(d.state, DetectorState::Idle);
+    }
+
+    #[test]
+    fn stale_expiry_cannot_reject_a_new_double_tap_sequence() {
+        let mut d = make_detector(Key::ShiftLeft);
+        d.handle_event(&press(Key::ShiftLeft));
+        d.handle_event(&release(Key::ShiftLeft));
+        let stale_started_at = d.second_tap_wait_started_at().unwrap();
+
+        d.reset();
+        d.handle_event(&press(Key::ShiftLeft));
+        d.handle_event(&release(Key::ShiftLeft));
+
+        assert_eq!(d.expire_second_tap_wait(stale_started_at), None);
+        assert_eq!(d.state, DetectorState::WaitingSecondDown);
+    }
+
+    #[test]
+    fn user_feedback_only_surfaces_expired_tap_windows() {
+        for mode in [DetectorMode::DoubleTap, DetectorMode::Both] {
+            assert!(should_surface_hotkey_rejection(
+                RejectionReason::SecondTapExpired,
+                mode,
+            ));
+            for reason in [
+                RejectionReason::HeldTooLong,
+                RejectionReason::ComboCancelled,
+                RejectionReason::SingleShortTapNoop,
+                RejectionReason::ProcessingSkipped,
+            ] {
+                assert!(!should_surface_hotkey_rejection(reason, mode));
+            }
+        }
+        assert!(!should_surface_hotkey_rejection(
+            RejectionReason::SecondTapExpired,
+            DetectorMode::HoldDown,
+        ));
+    }
+
+    #[test]
+    fn expiry_feedback_requires_the_same_active_listener_generation_and_mode() {
+        assert!(listener_context_is_current(
+            true,
+            DetectorMode::DoubleTap,
+            7,
+            DetectorMode::DoubleTap,
+            7,
+        ));
+        assert!(!listener_context_is_current(
+            false,
+            DetectorMode::DoubleTap,
+            7,
+            DetectorMode::DoubleTap,
+            7,
+        ));
+        assert!(!listener_context_is_current(
+            true,
+            DetectorMode::HoldDown,
+            7,
+            DetectorMode::DoubleTap,
+            7,
+        ));
+        assert!(!listener_context_is_current(
+            true,
+            DetectorMode::DoubleTap,
+            8,
+            DetectorMode::DoubleTap,
+            7,
+        ));
     }
 
     #[test]

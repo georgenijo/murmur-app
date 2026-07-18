@@ -1,6 +1,6 @@
 # User Settings Reference
 
-This document describes all 9 user-configurable settings in Murmur. Settings are managed on the frontend by the `useSettings` hook and persisted to `localStorage`. Relevant settings are pushed to the Rust backend via the `configure_dictation` command.
+This document describes Murmur's user-configurable settings. Settings are managed on the frontend by the `useSettings` hook and persisted to `localStorage`. Relevant settings are pushed to the Rust backend via the `configure_dictation` command.
 
 For the hook that manages settings, see [hooks.md](hooks.md). For the backend command that receives configuration, see [commands.md](commands.md).
 
@@ -22,6 +22,7 @@ interface Settings {
   autoPaste: boolean;
   autoPasteDelayMs: number;
   recordingMode: RecordingMode;
+  hotkeyMissFeedback: boolean;
   microphone: string;
   launchAtLogin: boolean;
   vadSensitivity: number;
@@ -57,6 +58,7 @@ Both the Rust-side `DictationState::default()` and the frontend default use `bas
 |---------|------|---------|-------------------|-------------|
 | `recordingMode` | `RecordingMode` | `'hold_down'` | `'hold_down'`, `'double_tap'`, `'both'` | How recording is triggered via keyboard. Hold-down: press-and-hold to record. Double-tap: double-tap to start, single-tap to stop. Both: combined mode with deferred hold promotion. |
 | `doubleTapKey` | `DoubleTapKey` | `'shift_l'` | `'shift_l'` (Shift), `'alt_l'` (Option), `'ctrl_r'` (Control) | The modifier key used for recording triggers. Used by all three recording modes as the trigger key. Label in the settings UI changes based on `recordingMode`. |
+| `hotkeyMissFeedback` | `boolean` | `false` | `true` / `false` | In Double-Tap or Both mode, briefly flashes the overlay amber when the 400ms second-tap window expires. It does not fire for holds, modifier shortcuts, processing skips, or successful gestures. Frontend/overlay only. |
 | `vadSensitivity` | `number` | `50` | 0-100, step 5 in UI | Voice Activity Detection sensitivity. Higher values keep more audio; lower values trim silence more aggressively. The backend converts this to a threshold: `1.0 - (sensitivity / 100.0)`. Clamped to 0-100 by the backend. |
 
 ### Recording Mode Details
@@ -124,6 +126,7 @@ When settings change, `useSettings.updateSettings` pushes the following fields t
 | `outputDir` | `outputDir` | Yes |
 | `doubleTapKey` | _(sent via `update_keyboard_key`)_ | Via keyboard hooks |
 | `recordingMode` | _(controls which hook is active)_ | Frontend only |
+| `hotkeyMissFeedback` | _(controls overlay rejection feedback)_ | Frontend only |
 | `microphone` | _(sent as param to `start_native_recording`)_ | Per recording |
 | `launchAtLogin` | _(sent via autostart plugin)_ | Via OS API |
 
