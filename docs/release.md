@@ -10,6 +10,8 @@ application and cannot save Cargo or CUDA caches.
   with `chore: bump version`, or by an explicit `workflow_dispatch` on `main`.
 - Frontend validation, macOS build/sign/notarization, and Linux CUDA packaging
   run concurrently. A workflow run is successful only when all three pass.
+- Linux release packaging is limited to the supported updater artifacts (`deb`
+  and `AppImage`); RPM is intentionally skipped to keep it off the critical path.
 - Cargo and CUDA cache writes are authorized only for trusted `main` pushes or
   a manually dispatched cache-prime rehearsal. Pull requests restore default-
   branch caches but never save CUDA or release-profile Cargo caches.
@@ -26,6 +28,9 @@ Each successful build uploads these 30-day artifacts:
 
 - `macos-release-<40-character-commit-sha>`
 - `linux-release-<40-character-commit-sha>`
+
+Release binaries retain the Tauri bundle-type marker (Cargo release stripping
+is disabled) so the updater can distinguish the deb and AppImage packages.
 
 Each artifact contains `provenance.json` with the exact commit SHA, workflow
 run ID, platform/updater names, sizes, and SHA-256 hashes. Promotion accepts one

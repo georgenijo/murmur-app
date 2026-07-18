@@ -246,6 +246,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: app
+          args: --bundles deb,appimage --verbose
 
       - name: Install package smoke-test dependencies
         run: sudo apt-get install -y xvfb dbus-x11 at-spi2-core
@@ -269,7 +270,7 @@ jobs:
             exit 1
           fi
           rm -f "$LOG"
-          LD_LIBRARY_PATH="$CUDA_DRIVER_STUB_DIR:${LD_LIBRARY_PATH:-}" \
+          LD_LIBRARY_PATH="$CUDA_DRIVER_STUB_DIR${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
             xvfb-run -a dbus-run-session -- "$DEB_BINARY" >/tmp/murmur-deb-smoke.log 2>&1 &
           PID=$!
           for i in $(seq 1 20); do
@@ -287,7 +288,7 @@ jobs:
 
           chmod +x "$APPIMAGE"
           rm -f "$LOG"
-          LD_LIBRARY_PATH="$CUDA_DRIVER_STUB_DIR:${LD_LIBRARY_PATH:-}" \
+          LD_LIBRARY_PATH="$CUDA_DRIVER_STUB_DIR${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
             xvfb-run -a dbus-run-session -- "$APPIMAGE" --appimage-extract-and-run \
             >/tmp/murmur-appimage-smoke.log 2>&1 &
           PID=$!
@@ -317,6 +318,10 @@ jobs:
             cat /tmp/murmur-packaged-cuda-libraries.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          if find squashfs-root -type f -name 'libcuda*' -print -quit | grep -q .; then
+            echo "ERROR: AppImage must not contain the runner-local NVIDIA driver stub"
+            exit 1
+          fi
 
       - name: Stage immutable Linux artifacts
         env:
