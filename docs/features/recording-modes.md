@@ -96,6 +96,7 @@ WaitingFirstUp → KeyUp(target) within 300ms → FIRE
 
 - Both modes share a single `rdev::listen()` background thread (spawned once, lives for app lifetime)
 - `set_is_main_thread(false)` is called before `listen()` — this is **critical** on macOS because rdev's keyboard translation calls TIS/TSM APIs that Apple requires on the main thread. Without this flag, the app segfaults on key press.
+- rdev is pinned to Murmur's fork by commit revision. Its macOS listener derives modifier press/release directly from the physical keycode and device-specific flag (no cached global modifier state), automatically re-enables a disabled event tap, listens only for key events, and skips key-name translation for modifier events.
 - `AtomicBool` (`LISTENER_ACTIVE`) gates event processing without killing the thread
 - `DetectorMode` enum (`DoubleTap` | `HoldDown`) determines which detector processes events
 - Separate `Mutex`-wrapped detectors: `DOUBLE_TAP_DETECTOR` and `HOLD_DOWN_DETECTOR`
