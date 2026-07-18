@@ -17,9 +17,9 @@ export function EventRow({ event }: EventRowProps) {
   const timeStr = event.timestamp.replace(/.*T/, '').replace('Z', '');
 
   return (
-    <div className="border-b border-stone-100 dark:border-stone-800 last:border-0">
+    <div>
       <div
-        className={`flex items-baseline gap-2 py-1 px-1 ${hasData ? 'cursor-pointer hover:bg-stone-50 dark:hover:bg-stone-800/50' : ''}`}
+        className={`flex items-baseline gap-2 py-1 px-1 ${hasData ? 'cursor-pointer hover:bg-surface-container-low' : ''}`}
         onClick={() => hasData && setExpanded(!expanded)}
         {...(hasData && {
           role: 'button',
@@ -33,7 +33,7 @@ export function EventRow({ event }: EventRowProps) {
           },
         })}
       >
-        <span className="text-stone-400 dark:text-stone-500 shrink-0 tabular-nums text-[11px]">
+        <span className="text-on-surface-variant shrink-0 tabular-nums text-[11px]">
           {timeStr}
         </span>
         <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold shrink-0 ${streamColors.bg} ${streamColors.text}`}>
@@ -42,17 +42,17 @@ export function EventRow({ event }: EventRowProps) {
         <span className={`text-[10px] font-medium shrink-0 uppercase ${levelColor}`}>
           {event.level}
         </span>
-        <span className="text-stone-700 dark:text-stone-300 text-xs break-all flex-1">
+        <span className="text-on-surface text-xs break-all flex-1">
           {event.summary}
         </span>
         {hasData && (
-          <span className={`text-stone-400 dark:text-stone-500 text-xs shrink-0 transition-transform ${expanded ? 'rotate-90' : ''}`}>
+          <span className={`text-on-surface-variant text-xs shrink-0 transition-transform ${expanded ? 'rotate-90' : ''}`}>
             &#9656;
           </span>
         )}
       </div>
       {expanded && hasData && (
-        <pre className="mx-1 mb-1 px-3 py-2 bg-stone-100 dark:bg-stone-900 rounded text-[11px] text-stone-600 dark:text-stone-400 overflow-x-auto">
+        <pre className="mx-1 mb-1 px-3 py-2 bg-surface-container-low rounded text-[11px] text-on-surface-variant overflow-x-auto">
           {JSON.stringify(event.data, null, 2)}
         </pre>
       )}

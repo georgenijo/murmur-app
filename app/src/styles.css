@@ -1,8 +1,91 @@
 @import "tailwindcss";
 
+:root {
+  color-scheme: light;
+  --murmur-background: #f7fafc;
+  --murmur-surface: #f7fafc;
+  --murmur-surface-container-low: #eff4f8;
+  --murmur-surface-container: #e9eff3;
+  --murmur-surface-container-high: #e2e9ee;
+  --murmur-surface-container-lowest: #ffffff;
+  --murmur-surface-container-highest: #dbe4e9;
+  --murmur-primary: #036785;
+  --murmur-primary-dim: #005a75;
+  --murmur-on-primary: #f3faff;
+  --murmur-on-surface: #2b3438;
+  --murmur-on-surface-variant: #586065;
+  --murmur-outline-variant: #abb3b9;
+  --murmur-error: #a83836;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --murmur-background: #0b0f11;
+    --murmur-surface: #0b0f11;
+    --murmur-surface-container-low: #151a1e;
+    --murmur-surface-container: #1e2529;
+    --murmur-surface-container-high: #283035;
+    --murmur-surface-container-lowest: #0f1315;
+    --murmur-surface-container-highest: #323b41;
+    --murmur-primary: #92dbfe;
+    --murmur-primary-dim: #84cdef;
+    --murmur-on-primary: #00394b;
+    --murmur-on-surface: #dbe4e9;
+    --murmur-on-surface-variant: #abb3b9;
+    --murmur-outline-variant: #586065;
+    --murmur-error: #fa746f;
+  }
+}
+
+/* Tailwind v4 generates semantic utilities from the runtime theme variables. */
+@theme inline {
+  --color-background: var(--murmur-background);
+  --color-surface: var(--murmur-surface);
+  --color-surface-container-low: var(--murmur-surface-container-low);
+  --color-surface-container: var(--murmur-surface-container);
+  --color-surface-container-high: var(--murmur-surface-container-high);
+  --color-surface-container-lowest: var(--murmur-surface-container-lowest);
+  --color-surface-container-highest: var(--murmur-surface-container-highest);
+  --color-primary: var(--murmur-primary);
+  --color-primary-dim: var(--murmur-primary-dim);
+  --color-on-primary: var(--murmur-on-primary);
+  --color-on-surface: var(--murmur-on-surface);
+  --color-on-surface-variant: var(--murmur-on-surface-variant);
+  --color-outline-variant: var(--murmur-outline-variant);
+  --color-error: var(--murmur-error);
+}
+
 body {
+  background: var(--murmur-background);
+  color: var(--murmur-on-surface);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  scrollbar-color: color-mix(in srgb, var(--murmur-outline-variant) 24%, transparent) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--murmur-outline-variant) 24%, transparent);
+  background-clip: padding-box;
+  border: 3px solid transparent;
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--murmur-outline-variant) 40%, transparent);
+  background-clip: padding-box;
 }
 
 @keyframes pulse {
