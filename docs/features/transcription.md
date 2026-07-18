@@ -3,7 +3,7 @@
 ## Overview
 
 ```
-cpal audio capture → f32 samples in memory → resample to 16kHz mono → backend inference → text
+cpal audio capture → f32 samples in memory → 16kHz windows/full buffer → backend inference → text
 ```
 
 Transcription processing is local. Network access occurs for model setup and may also be used to fetch a missing VAD asset in the background. New installs default to FluidAudio Core ML on the Apple Neural Engine, while Whisper/Metal and sherpa-onnx/CPU remain selectable.
@@ -51,6 +51,18 @@ The active backend is stored as `Mutex<Box<dyn TranscriptionBackend>>` in `AppSt
 - Model files are single `.bin` files (e.g., `ggml-base.en.bin`)
 - Model search paths are documented in `docs/onboarding.md`
 
+### Incremental Whisper path (`streaming.rs`, `transcriber/chunking.rs`)
+
+Long live recordings selected to the Whisper backend use true incremental output:
+
+- A single sequential worker snapshots one bounded 10-second window every 8 seconds (2-second overlap) while capture continues.
+- Every window passes through the same Silero VAD threshold and the existing cached Whisper backend. There is no second model/context and never more than one inference in flight.
+- Chunk text is reconciled by a deterministic word-boundary algorithm. It removes the largest near-equal suffix/prefix overlap within 12 words and retains the earlier surface form.
+- On stop, the worker is signalled before audio teardown and only the unprocessed tail plus the 2-second overlap is inferred. The reconciled result becomes the authoritative text used by the unchanged cleanup, voice-command, correction, file-output, clipboard, paste, history, and stats paths.
+- Short recordings (under the first 10-second window), non-Whisper backends, missing/failed VAD, stale sessions, model changes, worker lag, panics, or final-tail failures use the original full-buffer pipeline.
+
+The worker holds no queued audio. It reads the current buffer length, copies only one fixed window, awaits that inference, and abandons incremental mode if capture advances by more than one step. Recording IDs and cancellation generations prevent completed work from a stopped/cancelled session from being adopted by a newer recording.
+
 ## Model Options
 
 | Model | Setting Value | Backend | English-only | Speed |
@@ -65,11 +77,11 @@ The active backend is stored as `Mutex<Box<dyn TranscriptionBackend>>` in `AppSt
 
 ## Pipeline Orchestration (`lib.rs`)
 
-`run_transcription_pipeline()` is the shared entry point:
+`run_transcription_pipeline()` remains the single authoritative completion entry point:
 
 1. Read model/language/auto_paste from `DictationState` (single lock)
 2. Confirm the recording-start model preparation completed (or load synchronously as a fallback)
-3. Run transcription via the active backend
+3. Adopt a successfully finalized incremental Whisper transcript, or run the full-buffer backend fallback
 4. Inject text (clipboard + optional paste) on main thread
 5. Reset status to Idle
 

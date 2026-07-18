@@ -43,6 +43,14 @@ runs:
           libxdo-dev \
           libasound2-dev
 
+    # actions/cache extracts as the runner user. The versioned CUDA path lives
+    # below root-owned /usr/local, so create the exact restore target first.
+    - name: Prepare CUDA cache restore path
+      shell: bash
+      run: |
+        sudo mkdir -p "/usr/local/cuda-${CUDA_MM}"
+        sudo chown -R "$(id -u):$(id -g)" "/usr/local/cuda-${CUDA_MM}"
+
     - name: Restore CUDA toolkit cache
       id: cuda-cache
       uses: actions/cache/restore@v4
@@ -77,12 +85,12 @@ runs:
         echo "/usr/local/cuda/bin" >> "$GITHUB_PATH"
         echo "CUDA_PATH=/usr/local/cuda" >> "$GITHUB_ENV"
         echo "CUDA_PATH_V${CUDA_MM//./_}=/usr/local/cuda" >> "$GITHUB_ENV"
-        echo "LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/cuda/targets/x86_64-linux/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
         sudo ldconfig
 
         # GitHub-hosted runners have no NVIDIA driver. cuda-driver-dev supplies
         # a link-time libcuda.so stub but no libcuda.so.1 runtime soname. Keep a
-        # runner-local alias for tests/smoke only; never cache or package it.
+        # runner-local alias for tests, bundler dependency resolution, and smoke
+        # only. linuxdeploy is explicitly told not to package the driver stub.
         DRIVER_STUB=$(find "/usr/local/cuda-${CUDA_MM}" -path '*/stubs/libcuda.so' -print -quit)
         if [ -z "$DRIVER_STUB" ]; then
           echo "ERROR: minimal CUDA tree is missing the driver development stub"
@@ -92,6 +100,8 @@ runs:
         mkdir -p "$STUB_DIR"
         ln -sfn "$DRIVER_STUB" "$STUB_DIR/libcuda.so.1"
         echo "CUDA_DRIVER_STUB_DIR=$STUB_DIR" >> "$GITHUB_ENV"
+        echo "LD_LIBRARY_PATH=$STUB_DIR:/usr/local/cuda/lib64:/usr/local/cuda/targets/x86_64-linux/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" >> "$GITHUB_ENV"
+        echo "LINUXDEPLOY_EXCLUDED_LIBRARIES=libcuda.so.1" >> "$GITHUB_ENV"
 
     # A claimed hit with a damaged tree fails closed. It must not silently reinstall and
     # overwrite a trusted cache with another ambiguous archive.

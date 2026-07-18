@@ -545,7 +545,7 @@ panic = "abort"
 codegen-units = 1
 lto = true
 opt-level = "s"
-strip = true
+strip = false # retain Tauri's updater bundle-type marker
 ```
 
 ---
