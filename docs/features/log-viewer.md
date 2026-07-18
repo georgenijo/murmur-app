@@ -57,7 +57,7 @@ Tracing targets map to stream names used for filtering:
 |--------|--------|----------------|
 | `pipeline` | pipeline | Transcription timing, VAD results, model loading |
 | `audio` | audio | Device selection, sample rates, audio levels |
-| `keyboard` | keyboard | Hotkey detection, mode changes, listener lifecycle |
+| `keyboard` | keyboard | Hotkey detection, rejection reasons/timing, mode changes, listener lifecycle |
 | `system` | system | Startup, permissions, updates, resource usage |
 
 ### Frontend Logging

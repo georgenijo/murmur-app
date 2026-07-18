@@ -70,6 +70,7 @@ export interface Settings {
   autoPaste: boolean;
   autoPasteDelayMs: number;
   recordingMode: RecordingMode;
+  hotkeyMissFeedback: boolean;
   microphone: string;
   launchAtLogin: boolean;
   vadSensitivity: number;
@@ -202,6 +203,7 @@ export const DEFAULT_SETTINGS: Settings = {
   autoPaste: false,
   autoPasteDelayMs: 50,
   recordingMode: 'hold_down',
+  hotkeyMissFeedback: false,
   microphone: 'system_default',
   launchAtLogin: false,
   vadSensitivity: 50,
@@ -378,6 +380,10 @@ export function loadSettings(): Settings {
       // (including absent on older settings blobs) back to the default.
       if (typeof parsed.cleanupEnabled !== 'boolean') {
         parsed.cleanupEnabled = DEFAULT_SETTINGS.cleanupEnabled;
+      }
+
+      if (typeof parsed.hotkeyMissFeedback !== 'boolean') {
+        parsed.hotkeyMissFeedback = DEFAULT_SETTINGS.hotkeyMissFeedback;
       }
 
       // codeVocabEnabled gates the Rust scan — coerce non-booleans (or a missing

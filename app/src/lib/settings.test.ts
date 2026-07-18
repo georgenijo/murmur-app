@@ -40,6 +40,21 @@ describe('loadSettings', () => {
     const settings = loadSettings();
     expect(settings.autoPaste).toBe(DEFAULT_SETTINGS.autoPaste);
     expect(settings.recordingMode).toBe('double_tap');
+    expect(settings.hotkeyMissFeedback).toBe(false);
+  });
+
+  it('validates the opt-in hotkey timing feedback setting', () => {
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      hotkeyMissFeedback: true,
+    }));
+    expect(loadSettings().hotkeyMissFeedback).toBe(true);
+
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      hotkeyMissFeedback: 'yes',
+    }));
+    expect(loadSettings().hotkeyMissFeedback).toBe(false);
   });
 
   it('migrates legacy "hotkey" recordingMode to "hold_down"', () => {

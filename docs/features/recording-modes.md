@@ -1,6 +1,6 @@
 # Recording Modes
 
-The app supports two ways to trigger recording, selectable in Settings. Both use `rdev` for low-level keyboard event listening and require Accessibility permission.
+The app supports Hold-Down, Double-Tap, and a combined Both mode, selectable in Settings. All use `rdev` for low-level keyboard event listening and require Accessibility permission.
 
 ## Hold-Down Mode (default)
 
@@ -62,9 +62,9 @@ To start (when not recording):
 
 ```text
 Idle → KeyDown(target) → WaitingFirstUp
-WaitingFirstUp → KeyUp(target) within 300ms → WaitingSecondDown
+WaitingFirstUp → KeyUp(target) within 200ms → WaitingSecondDown
 WaitingSecondDown → KeyDown(target) within 400ms → WaitingSecondUp
-WaitingSecondUp → KeyUp(target) within 300ms → FIRE
+WaitingSecondUp → KeyUp(target) within 200ms → FIRE
 ```
 
 To stop (when recording):
@@ -76,10 +76,10 @@ WaitingFirstUp → KeyUp(target) within 300ms → FIRE
 
 ### Rejection Rules
 
-- **Held key** (>300ms): Resets to Idle
+- **Held key** (>200ms): Resets to Idle
 - **Modifier + letter** (e.g. Shift+A): Resets on non-modifier KeyPress
-- **Slow gap** between taps (>400ms): Resets to Idle
-- **Triple-tap spam**: 500ms cooldown after firing
+- **Slow gap** between taps (>400ms): A timer resets to Idle at expiry, without waiting for another keyboard event
+- **Triple-tap spam**: 50ms cooldown after firing
 - **Key repeat events**: Ignored while within hold duration
 
 ### Code Path
@@ -89,6 +89,12 @@ WaitingFirstUp → KeyUp(target) within 300ms → FIRE
 - Rust `keyboard::start_listener(app_handle, hotkey, "double_tap")` spawns rdev thread
 - On detection: emits `"double-tap-toggle"` event to frontend via `app_handle.emit()`
 - Frontend event handler calls `toggleRecording()`
+
+### Optional Timing-Miss Feedback
+
+The `hotkeyMissFeedback` setting is off by default. When enabled, expiration of the 400ms second-tap window in Double-Tap or Both mode emits `hotkey-tap-rejected` with `{ reason: "second_tap_expired", mode }`. The overlay shows a distinct amber `Tap missed` flash for 500ms.
+
+Only the expired second-tap window is surfaced. Existing structured diagnostics still record other rejection reasons, but the UI stays silent for long holds, modifier+letter combinations, processing skips, Both mode's first short tap, and valid double-taps. This prevents ordinary modifier use from producing feedback noise.
 
 ## Shared Infrastructure
 
@@ -112,8 +118,8 @@ Single-threaded because timing tests use `sleep()`.
 
 ## Settings Integration
 
-Both modes share the `doubleTapKey` setting (`shift_l`, `alt_l`, `ctrl_r`). The `recordingMode` setting (`'hold_down' | 'double_tap'`) determines which hook is active.
+All modes share the `doubleTapKey` setting (`shift_l`, `alt_l`, `ctrl_r`). The `recordingMode` setting (`'hold_down' | 'double_tap' | 'both'`) determines which hook is active.
 
-Both hooks are always called (React Rules of Hooks) but only the active one registers listeners, via the `enabled` prop.
+All three hooks are always called (React Rules of Hooks) but only the active one registers listeners, via the `enabled` prop.
 
 Mode switching is disabled while recording (`status !== 'idle'`).
