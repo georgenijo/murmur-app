@@ -118,6 +118,7 @@ def validate_release_build(workflow: str) -> int:
     assert "shared-key: macos-release-v1" in workflow
     assert "shared-key: linux-cuda-release-v1" in workflow
     assert workflow.count("${{ needs.context.outputs.cache-write == 'true' }}") >= 3
+    assert "AppImage must not contain the runner-local NVIDIA driver stub" in workflow
 
     cases = (
         ("push", "chore: bump version to 0.17.0", True),
@@ -137,6 +138,11 @@ def validate_linux_cache_policy(action: str) -> None:
     assert 'non-cuda-sub-packages: \'["libcublas-dev"]\'' in action
     assert 'STUB_DIR="$RUNNER_TEMP/murmur-cuda-driver-stub"' in action
     assert "CUDA_DRIVER_STUB_DIR=$STUB_DIR" in action
+    assert "LINUXDEPLOY_EXCLUDED_LIBRARIES=libcuda.so.1" in action
+
+    prepare = named_step_block(action, "Prepare CUDA cache restore path", 4)
+    assert 'sudo mkdir -p "/usr/local/cuda-${CUDA_MM}"' in prepare
+    assert 'sudo chown -R "$(id -u):$(id -g)"' in prepare
 
     restore = named_step_block(action, "Restore CUDA toolkit cache", 4)
     save = named_step_block(action, "Save CUDA toolkit cache", 4)
@@ -162,6 +168,9 @@ def validate_linux_cache_policy(action: str) -> None:
     assert '"$NVCC" --version' in verify
     assert "cache-hit=${{ steps.cuda-cache.outputs.cache-hit }}" in verify
     assert "release ${CUDA_MM}" in verify
+
+    configure = named_step_block(action, "Configure CUDA environment", 4)
+    assert "LD_LIBRARY_PATH=$STUB_DIR:/usr/local/cuda/lib64:" in configure
 
 
 def validate_promotion_policy(workflow: str) -> int:

@@ -317,6 +317,10 @@ jobs:
             cat /tmp/murmur-packaged-cuda-libraries.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          if find squashfs-root -type f -name 'libcuda*' -print -quit | grep -q .; then
+            echo "ERROR: AppImage must not contain the runner-local NVIDIA driver stub"
+            exit 1
+          fi
 
       - name: Stage immutable Linux artifacts
         env:

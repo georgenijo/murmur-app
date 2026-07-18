@@ -47,6 +47,26 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             validate_release_build(mutated)
 
+    def test_cuda_cache_restore_requires_writable_target(self) -> None:
+        action = (ROOT / ".github/actions/setup-linux-build/action.yml").read_text()
+        mutated = action.replace(
+            'sudo mkdir -p "/usr/local/cuda-${CUDA_MM}"',
+            'echo "skip restore path preparation"',
+            1,
+        )
+        with self.assertRaises(AssertionError):
+            validate_linux_cache_policy(mutated)
+
+    def test_linuxdeploy_must_exclude_driver_stub(self) -> None:
+        action = (ROOT / ".github/actions/setup-linux-build/action.yml").read_text()
+        mutated = action.replace(
+            "LINUXDEPLOY_EXCLUDED_LIBRARIES=libcuda.so.1",
+            "LINUXDEPLOY_EXCLUDED_LIBRARIES=",
+            1,
+        )
+        with self.assertRaises(AssertionError):
+            validate_linux_cache_policy(mutated)
+
 
 if __name__ == "__main__":
     unittest.main()
