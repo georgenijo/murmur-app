@@ -100,7 +100,7 @@ runs:
         mkdir -p "$STUB_DIR"
         ln -sfn "$DRIVER_STUB" "$STUB_DIR/libcuda.so.1"
         echo "CUDA_DRIVER_STUB_DIR=$STUB_DIR" >> "$GITHUB_ENV"
-        echo "LD_LIBRARY_PATH=$STUB_DIR:/usr/local/cuda/lib64:/usr/local/cuda/targets/x86_64-linux/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+        echo "LD_LIBRARY_PATH=$STUB_DIR:/usr/local/cuda/lib64:/usr/local/cuda/targets/x86_64-linux/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" >> "$GITHUB_ENV"
         echo "LINUXDEPLOY_EXCLUDED_LIBRARIES=libcuda.so.1" >> "$GITHUB_ENV"
 
     # A claimed hit with a damaged tree fails closed. It must not silently reinstall and

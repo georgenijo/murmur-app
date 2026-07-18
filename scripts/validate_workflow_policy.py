@@ -119,6 +119,10 @@ def validate_release_build(workflow: str) -> int:
     assert "shared-key: linux-cuda-release-v1" in workflow
     assert workflow.count("${{ needs.context.outputs.cache-write == 'true' }}") >= 3
     assert "AppImage must not contain the runner-local NVIDIA driver stub" in workflow
+    assert workflow.count(
+        "LD_LIBRARY_PATH=\"$CUDA_DRIVER_STUB_DIR${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}\""
+    ) == 2
+    assert 'LD_LIBRARY_PATH="$CUDA_DRIVER_STUB_DIR:${LD_LIBRARY_PATH:-}"' not in workflow
 
     cases = (
         ("push", "chore: bump version to 0.17.0", True),
@@ -170,7 +174,12 @@ def validate_linux_cache_policy(action: str) -> None:
     assert "release ${CUDA_MM}" in verify
 
     configure = named_step_block(action, "Configure CUDA environment", 4)
-    assert "LD_LIBRARY_PATH=$STUB_DIR:/usr/local/cuda/lib64:" in configure
+    assert (
+        "LD_LIBRARY_PATH=$STUB_DIR:/usr/local/cuda/lib64:"
+        "/usr/local/cuda/targets/x86_64-linux/lib"
+        "${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+    ) in configure
+    assert "${LD_LIBRARY_PATH:-}" not in configure
 
 
 def validate_promotion_policy(workflow: str) -> int:

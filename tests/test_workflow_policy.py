@@ -67,6 +67,25 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             validate_linux_cache_policy(mutated)
 
+    def test_cuda_stub_paths_reject_empty_loader_segments(self) -> None:
+        action = (ROOT / ".github/actions/setup-linux-build/action.yml").read_text()
+        mutated_action = action.replace(
+            "${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}",
+            ":${LD_LIBRARY_PATH:-}",
+            1,
+        )
+        with self.assertRaises(AssertionError):
+            validate_linux_cache_policy(mutated_action)
+
+        workflow = (ROOT / ".github/workflows/release-build.yml").read_text()
+        mutated_workflow = workflow.replace(
+            "${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}",
+            ":${LD_LIBRARY_PATH:-}",
+            1,
+        )
+        with self.assertRaises(AssertionError):
+            validate_release_build(mutated_workflow)
+
 
 if __name__ == "__main__":
     unittest.main()
