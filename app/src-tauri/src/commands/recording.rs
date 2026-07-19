@@ -616,56 +616,41 @@ async fn run_transcription_pipeline(
         )
     };
 
-    // Phase: rule-based cleanup (filler removal + punctuation/spacing tidy).
-    // Runs on the transcript before injection and file output so what the user
-    // pastes matches what's saved. Conservative and independent of any other
-    // post-processing (e.g. voice commands), operating only on its own setting.
-    // Runs BEFORE voice commands so filler/punctuation tidy never mangles the
-    // structural tokens (e.g. inserted "\n" from "new line") that voice commands
-    // emit downstream.
-    // `profile_cleanup` already folds in any per-app override of the global toggle.
-    let text = if profile_cleanup && !text.trim().is_empty() {
-        let opts = crate::cleanup::CleanupOptions {
-            remove_filler: cleanup_remove_filler,
-            capitalize: cleanup_capitalize,
-        };
-        let cleaned = crate::cleanup::clean_transcript(&text, opts);
-        tracing::info!(target: "pipeline", "cleanup applied ({} -> {} chars)", text.len(), cleaned.len());
-        cleaned
-    } else {
-        text
-    };
-
-    // Phase: Voice commands -- rewrite the built-in spoken tokens (e.g. "new line",
-    // "scratch that") plus any user-defined commands before the text reaches file
-    // output / clipboard / paste.
+    // Post-recognition transformation is backend-neutral and ordered in one
+    // authoritative entry point. The effective cleanup toggle has already folded
+    // in the existing per-app override; issue #245 will supply an opaque resolved
+    // context handle without moving profile resolution into this module.
     let custom_commands: Vec<(String, String)> = voice_command_pairs
         .into_iter()
         .map(|vc| (vc.phrase, vc.replacement))
         .collect();
-    let text = crate::voice_commands::apply_voice_commands_with_custom(&text, voice_commands_enabled, &custom_commands);
-
-    // Phase: post-model correction (Tier 1 exact map + Tier 2 sounds-like). Applies
-    // the unified vocabulary to the transcript on EVERY backend — this is what makes
-    // vocab work on the default Parakeet engine (which ignores Whisper's prompt).
-    // The matcher is prebuilt on settings-change; this is a couple of linear passes.
-    let t_correction = std::time::Instant::now();
-    let text = if correction_enabled && !text.trim().is_empty() {
-        let matcher = app_state.correction_matcher.lock_or_recover().clone();
-        match matcher {
-            Some(m) if !m.is_empty() => {
-                let corrected = m.apply(&text);
-                if corrected != text {
-                    tracing::info!(target: "pipeline", "correction applied ({} -> {} chars)", text.len(), corrected.len());
-                }
-                corrected
-            }
-            _ => text,
-        }
-    } else {
-        text
+    let transform_context = crate::transcript_transform::TranscriptContext {
+        session_id: app_state.next_transcript_session_id(),
+        source: crate::transcript_transform::TranscriptSource::Live,
+        context_handle: None,
+        model: model_name.clone(),
+        language: language.clone(),
+        stages: crate::transcript_transform::TranscriptStageConfig {
+            cleanup_enabled: profile_cleanup,
+            cleanup_remove_filler,
+            cleanup_capitalize,
+            voice_commands_enabled,
+            smart_correction_enabled: correction_enabled,
+        },
     };
-    let correction_ms = t_correction.elapsed().as_millis() as u64;
+    let transform_resources = crate::transcript_transform::TranscriptTransformResources {
+        custom_commands,
+        correction_matcher: app_state.correction_matcher.lock_or_recover().clone(),
+    };
+    let transformed = crate::transcript_transform::transform_transcript(
+        text,
+        &transform_context,
+        transform_resources,
+    )
+    .map_err(|error| error.to_string())?;
+    let correction_ms = transformed
+        .stage_duration_ms(crate::transcript_transform::SMART_CORRECTION_STAGE);
+    let text = transformed.text;
 
     // Update last_transcription_at for idle timeout tracking
     *app_state.last_transcription_at.lock_or_recover() = Some(std::time::Instant::now());
@@ -1906,6 +1891,25 @@ pub async fn transcribe_file(
         let decode_ms = decode_started.elapsed().as_millis() as u64;
         (text, model_load_ms, decode_ms)
     };
+    // Imported files retain their existing raw-ASR output. They still pass through
+    // the same authoritative transformation entry point with every stage disabled,
+    // leaving delivery/UI behavior byte-for-byte unchanged.
+    let transform_context = crate::transcript_transform::TranscriptContext {
+        session_id: state.app_state.next_transcript_session_id(),
+        source: crate::transcript_transform::TranscriptSource::File,
+        context_handle: None,
+        model: model_name.clone(),
+        language: language.clone(),
+        stages: crate::transcript_transform::TranscriptStageConfig::verbatim(),
+    };
+    let text = crate::transcript_transform::transform_transcript(
+        text,
+        &transform_context,
+        crate::transcript_transform::TranscriptTransformResources::empty(),
+    )
+    .map_err(|error| error.to_string())?
+    .text;
+
     *state.app_state.last_transcription_at.lock_or_recover() = Some(std::time::Instant::now());
 
     let word_count = if text.trim().is_empty() { 0 } else { text.split_whitespace().count() };

@@ -14,6 +14,7 @@ mod platform;
 mod resource_monitor;
 mod state;
 mod streaming;
+mod transcript_transform;
 pub mod telemetry;
 pub mod transcriber;
 mod vad;
