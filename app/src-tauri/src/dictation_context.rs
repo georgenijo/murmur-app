@@ -7,7 +7,7 @@
 
 use crate::cli_command::CliFormattingMode;
 use crate::correction::CorrectionMatcher;
-use crate::state::{AppProfile, DictationState, VoiceCommand};
+use crate::state::{AppProfile, DictationState, VoiceCommand, WritingStyle};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,6 +23,7 @@ pub struct MatchedAppProfile {
     pub cleanup_override: Option<bool>,
     pub cli_formatting_override: Option<bool>,
     pub smart_formatting_override: Option<bool>,
+    pub writing_style: Option<WritingStyle>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +77,7 @@ pub struct TransformationSettings {
     pub correction_enabled: bool,
     pub correction_matcher: Option<Arc<CorrectionMatcher>>,
     pub cli_formatting_mode: CliFormattingMode,
+    pub cli_formatting_enabled: bool,
     pub smart_formatting_enabled: bool,
 }
 
@@ -98,6 +100,7 @@ pub struct DictationContextSnapshot {
     pub vocabulary: VocabularyIdentity,
     pub enabled_command_groups: EnabledCommandGroups,
     pub context_capture: ContextCapturePermissions,
+    pub writing_style: WritingStyle,
 }
 
 /// Ephemeral overrides supplied by the recording trigger. No caller supplies
@@ -127,6 +130,14 @@ pub struct ResolverInputs<'a> {
 /// matching entry with `None` falls through to the next duplicate entry.
 pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
     let global = inputs.global;
+    let writing_style =
+        resolve_profile_optional(inputs.bundle_id, &global.app_profiles, |profile| {
+            profile
+                .writing_style
+                .filter(|style| *style != WritingStyle::Inherit)
+        })
+        .unwrap_or(WritingStyle::Inherit);
+    let style = StylePolicy::for_style(writing_style);
     let auto_paste = inputs.session_overrides.auto_paste.unwrap_or_else(|| {
         resolve_profile_override(
             global.auto_paste,
@@ -137,27 +148,31 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
     });
     let cleanup_enabled = inputs.session_overrides.cleanup_enabled.unwrap_or_else(|| {
         resolve_profile_override(
-            global.cleanup_enabled,
+            style.cleanup_enabled.unwrap_or(global.cleanup_enabled),
             inputs.bundle_id,
             &global.app_profiles,
             |profile| profile.cleanup_override,
         )
     });
-    let cli_formatting_mode = match inputs.session_overrides.cli_formatting_enabled.or_else(|| {
+    let cli_override = inputs.session_overrides.cli_formatting_enabled.or_else(|| {
         resolve_profile_optional(inputs.bundle_id, &global.app_profiles, |profile| {
             profile.cli_formatting_override
         })
-    }) {
+    });
+    let cli_formatting_mode = match cli_override {
         Some(true) => CliFormattingMode::Enabled,
         Some(false) => CliFormattingMode::Disabled,
-        None => CliFormattingMode::Auto,
+        None => style.cli_formatting_mode.unwrap_or(CliFormattingMode::Auto),
     };
+    let cli_formatting_enabled = cli_override.is_some() || style.cli_formatting_enabled;
     let smart_formatting_enabled = inputs
         .session_overrides
         .smart_formatting_enabled
         .unwrap_or_else(|| {
             resolve_profile_override(
-                global.smart_formatting_enabled,
+                style
+                    .smart_formatting_enabled
+                    .unwrap_or(global.smart_formatting_enabled),
                 inputs.bundle_id,
                 &global.app_profiles,
                 |profile| profile.smart_formatting_override,
@@ -175,6 +190,7 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
                 cleanup_override: profile.cleanup_override,
                 cli_formatting_override: profile.cli_formatting_override,
                 smart_formatting_override: profile.smart_formatting_override,
+                writing_style: profile.writing_style,
             })
     });
     let custom_vocab = !global.custom_vocabulary.trim().is_empty();
@@ -185,7 +201,9 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
         (false, true) => VocabularySource::CodeAware,
         (true, true) => VocabularySource::CustomAndCodeAware,
     };
-    let voice_commands = global.voice_commands_enabled;
+    let voice_commands = style
+        .voice_commands_enabled
+        .unwrap_or(global.voice_commands_enabled);
 
     DictationContextSnapshot {
         app: ActiveAppIdentity {
@@ -201,12 +219,19 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
         },
         transformations: TransformationSettings {
             cleanup_enabled,
-            cleanup_remove_filler: global.cleanup_remove_filler,
-            cleanup_capitalize: global.cleanup_capitalize,
+            cleanup_remove_filler: style
+                .cleanup_remove_filler
+                .unwrap_or(global.cleanup_remove_filler),
+            cleanup_capitalize: style
+                .cleanup_capitalize
+                .unwrap_or(global.cleanup_capitalize),
             voice_command_pairs: global.voice_command_pairs.clone(),
-            correction_enabled: global.correction_enabled,
+            correction_enabled: style
+                .correction_enabled
+                .unwrap_or(global.correction_enabled),
             correction_matcher: inputs.correction_matcher,
             cli_formatting_mode,
+            cli_formatting_enabled,
             smart_formatting_enabled,
         },
         delivery: DeliverySettings {
@@ -227,6 +252,80 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
         // No selected-text, screen-text, or clipboard reads exist. Future
         // features must add an explicit setting/profile override here first.
         context_capture: ContextCapturePermissions::default(),
+        writing_style,
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StylePolicy {
+    cleanup_enabled: Option<bool>,
+    cleanup_remove_filler: Option<bool>,
+    cleanup_capitalize: Option<bool>,
+    voice_commands_enabled: Option<bool>,
+    correction_enabled: Option<bool>,
+    smart_formatting_enabled: Option<bool>,
+    cli_formatting_mode: Option<CliFormattingMode>,
+    cli_formatting_enabled: bool,
+}
+
+impl StylePolicy {
+    fn for_style(style: WritingStyle) -> Self {
+        let inherit = Self {
+            cleanup_enabled: None,
+            cleanup_remove_filler: None,
+            cleanup_capitalize: None,
+            voice_commands_enabled: None,
+            correction_enabled: None,
+            smart_formatting_enabled: None,
+            cli_formatting_mode: None,
+            cli_formatting_enabled: true,
+        };
+        match style {
+            WritingStyle::Inherit => inherit,
+            WritingStyle::Conversational => Self {
+                cleanup_enabled: Some(true),
+                cleanup_remove_filler: Some(true),
+                cleanup_capitalize: Some(true),
+                smart_formatting_enabled: Some(false),
+                cli_formatting_mode: Some(CliFormattingMode::Disabled),
+                ..inherit
+            },
+            WritingStyle::Polished => Self {
+                cleanup_enabled: Some(true),
+                cleanup_remove_filler: Some(true),
+                cleanup_capitalize: Some(true),
+                correction_enabled: Some(true),
+                smart_formatting_enabled: Some(true),
+                cli_formatting_mode: Some(CliFormattingMode::Disabled),
+                ..inherit
+            },
+            WritingStyle::CodeTechnical => Self {
+                cleanup_enabled: Some(false),
+                voice_commands_enabled: Some(false),
+                correction_enabled: Some(true),
+                smart_formatting_enabled: Some(false),
+                cli_formatting_mode: Some(CliFormattingMode::Enabled),
+                ..inherit
+            },
+            WritingStyle::Verbatim => Self {
+                cleanup_enabled: Some(false),
+                voice_commands_enabled: Some(false),
+                correction_enabled: Some(false),
+                smart_formatting_enabled: Some(false),
+                cli_formatting_mode: Some(CliFormattingMode::Disabled),
+                cli_formatting_enabled: false,
+                ..inherit
+            },
+            WritingStyle::Notes => Self {
+                cleanup_enabled: Some(true),
+                cleanup_remove_filler: Some(true),
+                cleanup_capitalize: Some(false),
+                correction_enabled: Some(true),
+                smart_formatting_enabled: Some(true),
+                cli_formatting_mode: Some(CliFormattingMode::Disabled),
+                ..inherit
+            },
+        }
     }
 }
 
@@ -262,6 +361,31 @@ fn resolve_profile_override<T: Copy>(
 mod tests {
     use super::*;
 
+    fn transform_with_snapshot(raw: &str, snapshot: &DictationContextSnapshot) -> String {
+        let context = crate::transcript_transform::TranscriptContext {
+            session_id: 1,
+            source: crate::transcript_transform::TranscriptSource::Live,
+            context_handle: Some("test-context".to_string()),
+            cli_formatting_mode: snapshot.transformations.cli_formatting_mode,
+            stages: crate::transcript_transform::TranscriptStageConfig {
+                cleanup_enabled: snapshot.transformations.cleanup_enabled,
+                cleanup_remove_filler: snapshot.transformations.cleanup_remove_filler,
+                cleanup_capitalize: snapshot.transformations.cleanup_capitalize,
+                voice_commands_enabled: snapshot.enabled_command_groups.built_in_voice_commands,
+                smart_correction_enabled: snapshot.transformations.correction_enabled,
+                smart_formatting_enabled: snapshot.transformations.smart_formatting_enabled,
+                cli_command_enabled: snapshot.transformations.cli_formatting_enabled,
+            },
+        };
+        crate::transcript_transform::transform_transcript(
+            raw.to_string(),
+            &context,
+            crate::transcript_transform::TranscriptTransformResources::empty(),
+        )
+        .unwrap()
+        .text
+    }
+
     fn profile(
         bundle_id: &str,
         auto_paste_override: Option<bool>,
@@ -274,6 +398,7 @@ mod tests {
             cleanup_override,
             cli_formatting_override: None,
             smart_formatting_override: None,
+            writing_style: None,
         }
     }
 
@@ -501,5 +626,303 @@ mod tests {
             ContextCapturePermissions::default()
         );
         assert!(snapshot.delivery.auto_paste);
+    }
+
+    #[test]
+    fn writing_styles_resolve_only_typed_transformation_policy() {
+        let mut global = DictationState {
+            model_name: "small.en".to_string(),
+            language: "es".to_string(),
+            auto_paste: true,
+            save_transcript: true,
+            output_dir: "/tmp/murmur-style-test".to_string(),
+            cleanup_enabled: false,
+            voice_commands_enabled: true,
+            smart_formatting_enabled: false,
+            correction_enabled: false,
+            ..DictationState::default()
+        };
+        let mut profile = profile("com.example.Editor", None, None);
+        profile.writing_style = Some(WritingStyle::CodeTechnical);
+        global.app_profiles = vec![profile];
+
+        let snapshot = resolve_test(
+            &global,
+            Some("com.example.Editor"),
+            SessionOverrides::default(),
+        );
+
+        assert_eq!(snapshot.writing_style, WritingStyle::CodeTechnical);
+        assert!(!snapshot.transformations.cleanup_enabled);
+        assert!(!snapshot.enabled_command_groups.built_in_voice_commands);
+        assert!(!snapshot.transformations.smart_formatting_enabled);
+        assert!(snapshot.transformations.correction_enabled);
+        assert_eq!(
+            snapshot.transformations.cli_formatting_mode,
+            CliFormattingMode::Enabled
+        );
+        assert!(snapshot.transformations.cli_formatting_enabled);
+        assert_eq!(snapshot.transcription.model_name, "small.en");
+        assert_eq!(snapshot.transcription.language, "es");
+        assert!(snapshot.delivery.auto_paste);
+        assert!(snapshot.delivery.save_transcript);
+        assert_eq!(snapshot.delivery.output_dir, "/tmp/murmur-style-test");
+        assert_eq!(
+            snapshot.context_capture,
+            ContextCapturePermissions::default()
+        );
+    }
+
+    #[test]
+    fn named_styles_have_transparent_deterministic_effects() {
+        let mut global = DictationState {
+            cleanup_enabled: false,
+            cleanup_remove_filler: false,
+            cleanup_capitalize: false,
+            voice_commands_enabled: true,
+            correction_enabled: false,
+            smart_formatting_enabled: false,
+            ..DictationState::default()
+        };
+
+        let cases = [
+            (WritingStyle::Conversational, true, true, false, false, true),
+            (WritingStyle::Polished, true, true, true, true, true),
+            (WritingStyle::Notes, true, true, true, true, true),
+            (WritingStyle::CodeTechnical, false, false, false, true, true),
+            (WritingStyle::Verbatim, false, false, false, false, false),
+        ];
+
+        for (style, cleanup, commands, prose, correction, cli_stage) in cases {
+            let mut app = profile("com.example.App", None, None);
+            app.writing_style = Some(style);
+            global.app_profiles = vec![app];
+            let snapshot = resolve_test(
+                &global,
+                Some("com.example.App"),
+                SessionOverrides::default(),
+            );
+            assert_eq!(snapshot.writing_style, style);
+            assert_eq!(snapshot.transformations.cleanup_enabled, cleanup);
+            assert_eq!(
+                snapshot.enabled_command_groups.built_in_voice_commands,
+                commands
+            );
+            assert_eq!(snapshot.transformations.smart_formatting_enabled, prose);
+            assert_eq!(snapshot.transformations.correction_enabled, correction);
+            assert_eq!(snapshot.transformations.cli_formatting_enabled, cli_stage);
+        }
+    }
+
+    #[test]
+    fn inherit_and_unclassified_apps_preserve_current_behavior() {
+        let mut global = DictationState {
+            cleanup_enabled: true,
+            cleanup_remove_filler: false,
+            cleanup_capitalize: false,
+            voice_commands_enabled: true,
+            correction_enabled: false,
+            smart_formatting_enabled: true,
+            ..DictationState::default()
+        };
+        let mut terminal = profile("com.apple.Terminal", None, None);
+        terminal.writing_style = Some(WritingStyle::Inherit);
+        global.app_profiles = vec![terminal];
+
+        for bundle_id in [Some("com.apple.Terminal"), Some("com.apple.dt.Xcode"), None] {
+            let snapshot = resolve_test(&global, bundle_id, SessionOverrides::default());
+            assert_eq!(snapshot.writing_style, WritingStyle::Inherit);
+            assert!(snapshot.transformations.cleanup_enabled);
+            assert!(!snapshot.transformations.cleanup_remove_filler);
+            assert!(!snapshot.transformations.cleanup_capitalize);
+            assert!(snapshot.enabled_command_groups.built_in_voice_commands);
+            assert!(!snapshot.transformations.correction_enabled);
+            assert!(snapshot.transformations.smart_formatting_enabled);
+            assert_eq!(
+                snapshot.transformations.cli_formatting_mode,
+                CliFormattingMode::Auto
+            );
+            assert!(snapshot.transformations.cli_formatting_enabled);
+        }
+    }
+
+    #[test]
+    fn duplicate_profiles_preserve_per_field_fallthrough_for_style() {
+        let mut first = profile("com.example.Editor", None, Some(false));
+        first.label = "first identity".to_string();
+        let mut second = profile("com.example.Editor", Some(false), None);
+        second.writing_style = Some(WritingStyle::Polished);
+        let mut global = DictationState {
+            auto_paste: true,
+            cleanup_enabled: false,
+            ..DictationState::default()
+        };
+        global.app_profiles = vec![first, second];
+
+        let snapshot = resolve_test(
+            &global,
+            Some("com.example.Editor"),
+            SessionOverrides::default(),
+        );
+
+        assert_eq!(snapshot.writing_style, WritingStyle::Polished);
+        assert_eq!(snapshot.matched_profile.unwrap().label, "first identity");
+        assert!(!snapshot.delivery.auto_paste);
+        // First profile's explicit field still wins over the later style policy.
+        assert!(!snapshot.transformations.cleanup_enabled);
+        assert!(snapshot.transformations.smart_formatting_enabled);
+    }
+
+    #[test]
+    fn explicit_profile_and_session_overrides_fine_tune_style() {
+        let mut app = profile("com.example.Editor", None, Some(true));
+        app.writing_style = Some(WritingStyle::Verbatim);
+        app.smart_formatting_override = Some(true);
+        app.cli_formatting_override = Some(true);
+        let mut global = DictationState::default();
+        global.app_profiles = vec![app];
+
+        let snapshot = resolve_test(
+            &global,
+            Some("com.example.Editor"),
+            SessionOverrides {
+                cleanup_enabled: Some(false),
+                smart_formatting_enabled: Some(false),
+                cli_formatting_enabled: Some(false),
+                ..SessionOverrides::default()
+            },
+        );
+
+        assert!(!snapshot.transformations.cleanup_enabled);
+        assert!(!snapshot.transformations.smart_formatting_enabled);
+        assert_eq!(
+            snapshot.transformations.cli_formatting_mode,
+            CliFormattingMode::Disabled
+        );
+        assert!(snapshot.transformations.cli_formatting_enabled);
+    }
+
+    #[test]
+    fn resolved_style_snapshot_is_immutable() {
+        let mut app = profile("com.example.Editor", None, None);
+        app.writing_style = Some(WritingStyle::Polished);
+        let mut global = DictationState::default();
+        global.app_profiles = vec![app];
+        let snapshot = resolve_test(
+            &global,
+            Some("com.example.Editor"),
+            SessionOverrides::default(),
+        );
+
+        global.app_profiles[0].writing_style = Some(WritingStyle::Verbatim);
+
+        assert_eq!(snapshot.writing_style, WritingStyle::Polished);
+        assert!(snapshot.transformations.cleanup_enabled);
+        assert!(snapshot.transformations.smart_formatting_enabled);
+    }
+
+    #[test]
+    fn style_transform_outputs_use_only_reviewed_deterministic_stages() {
+        let mut global = DictationState {
+            cleanup_enabled: false,
+            voice_commands_enabled: false,
+            correction_enabled: false,
+            smart_formatting_enabled: false,
+            ..DictationState::default()
+        };
+
+        let cases = [
+            (
+                "com.example.Chat",
+                WritingStyle::Conversational,
+                "um the tasks are first review second ship",
+                "The tasks are first review second ship",
+            ),
+            (
+                "com.apple.mail",
+                WritingStyle::Polished,
+                "um the tasks are first review second ship",
+                "The tasks are:\n1. Review\n2. Ship",
+            ),
+            (
+                "com.microsoft.VSCode",
+                WritingStyle::CodeTechnical,
+                "NPM run Tauri dev",
+                "npm run tauri dev",
+            ),
+            (
+                "com.apple.Notes",
+                WritingStyle::Notes,
+                "um the notes are first review second ship",
+                "the notes are:\n1. Review\n2. Ship",
+            ),
+            (
+                "com.apple.Terminal",
+                WritingStyle::Verbatim,
+                "  um command NPM new line  ",
+                "  um command NPM new line  ",
+            ),
+        ];
+
+        for (bundle_id, style, raw, expected) in cases {
+            let mut app = profile(bundle_id, None, None);
+            app.writing_style = Some(style);
+            global.app_profiles = vec![app];
+            let snapshot = resolve_test(&global, Some(bundle_id), SessionOverrides::default());
+            assert_eq!(transform_with_snapshot(raw, &snapshot), expected);
+        }
+    }
+
+    #[test]
+    fn writing_style_telemetry_values_are_stable_and_content_free() {
+        let styles = [
+            (WritingStyle::Inherit, "inherit", 0),
+            (WritingStyle::Conversational, "conversational", 1),
+            (WritingStyle::Polished, "polished", 2),
+            (WritingStyle::CodeTechnical, "code_technical", 3),
+            (WritingStyle::Verbatim, "verbatim", 4),
+            (WritingStyle::Notes, "notes", 5),
+        ];
+        for (style, name, code) in styles {
+            assert_eq!(style.as_str(), name);
+            assert_eq!(style.code(), code);
+        }
+    }
+
+    #[test]
+    fn verbatim_and_inherit_preserve_false_positive_inputs_byte_for_byte() {
+        let raw = "  um NPM new line command cargo test first second  ";
+        let mut app = profile("com.example.Verbatim", None, None);
+        app.writing_style = Some(WritingStyle::Verbatim);
+        let mut global = DictationState {
+            cleanup_enabled: false,
+            voice_commands_enabled: false,
+            correction_enabled: false,
+            smart_formatting_enabled: false,
+            ..DictationState::default()
+        };
+        global.app_profiles = vec![app];
+
+        let verbatim = resolve_test(
+            &global,
+            Some("com.example.Verbatim"),
+            SessionOverrides::default(),
+        );
+        assert_eq!(
+            transform_with_snapshot(raw, &verbatim).as_bytes(),
+            raw.as_bytes()
+        );
+
+        // A terminal/editor-looking bundle id does not imply a style.
+        let inherit = resolve_test(
+            &global,
+            Some("com.apple.Terminal"),
+            SessionOverrides::default(),
+        );
+        assert_eq!(inherit.writing_style, WritingStyle::Inherit);
+        assert_eq!(
+            transform_with_snapshot(raw, &inherit).as_bytes(),
+            raw.as_bytes()
+        );
     }
 }

@@ -6,7 +6,8 @@ import { getVersion } from '@tauri-apps/api/app';
 import {
   Settings, RecordingMode, DEFAULT_SETTINGS,
   AVAILABLE_MODEL_OPTIONS, DOUBLE_TAP_KEY_OPTIONS, RECORDING_MODE_OPTIONS,
-  IDLE_TIMEOUT_OPTIONS, LANGUAGE_OPTIONS, AppProfile, VoiceCommand,
+  IDLE_TIMEOUT_OPTIONS, LANGUAGE_OPTIONS, WRITING_STYLE_OPTIONS,
+  AppProfile, VoiceCommand, WritingStyle, WritingStyleChoice,
 } from '../../lib/settings';
 import { Select } from '../ui/Select';
 import { SettingsSection } from './SettingsSection';
@@ -133,9 +134,26 @@ function VadSensitivitySlider({ value, onCommit }: { value: number; onCommit: (v
   );
 }
 
-// Per-app profiles: simple add/remove list mapping a macOS bundle id to an
-// auto-paste override. The override cycles Default -> On -> Off so the whole
-// control fits in one tap-through button.
+const WRITING_STYLE_SUMMARIES: Record<WritingStyleChoice, string> = {
+  inherit: 'Uses your current global behavior and the fine-tuning controls below.',
+  conversational: 'Removes filler and repeated words, tidies capitalization, and keeps your wording.',
+  polished: 'Cleans speech and applies explicitly spoken lists, punctuation, symbols, and corrections.',
+  code_technical: 'Preserves technical wording and enables deterministic command formatting.',
+  verbatim: 'Leaves recognized text unchanged, including filler, spacing, and spoken command words.',
+  notes: 'Removes filler, keeps note-like capitalization, and turns explicit list, paragraph, and line cues into structure.',
+};
+
+const WRITING_STYLE_CATEGORIES: Record<WritingStyleChoice, string> = {
+  inherit: 'Cleanup, corrections, prose structure, and command formatting all inherit.',
+  conversational: 'Cleanup on · Prose structure off · Automatic command formatting off',
+  polished: 'Cleanup on · Vocabulary corrections on · Prose structure on · Automatic command formatting off',
+  code_technical: 'Cleanup off · Vocabulary corrections on · Prose structure off · Command formatting on',
+  verbatim: 'Cleanup, corrections, prose structure, and command formatting all off',
+  notes: 'Cleanup on · Vocabulary corrections on · Prose structure on · Automatic command formatting off',
+};
+
+// Per-app profiles map a macOS bundle id to an explicit writing style plus
+// independent delivery/transformation overrides.
 function AppProfilesEditor({ profiles, onChange }: {
   profiles: AppProfile[];
   onChange: (next: AppProfile[]) => void;
@@ -161,6 +179,7 @@ function AppProfilesEditor({ profiles, onChange }: {
         cleanupOverride: null,
         smartFormattingOverride: null,
         cliFormattingOverride: null,
+        writingStyle: null,
       },
     ]);
     setBundleId('');
@@ -195,6 +214,13 @@ function AppProfilesEditor({ profiles, onChange }: {
       p.bundleId === id ? { ...p, smartFormattingOverride: cycle(p.smartFormattingOverride) } : p));
   };
 
+  const changeWritingStyle = (id: string, choice: WritingStyleChoice) => {
+    onChange(profiles.map((p) =>
+      p.bundleId === id
+        ? { ...p, writingStyle: choice === 'inherit' ? null : choice as WritingStyle }
+        : p));
+  };
+
   const chipLabel = (kind: string, value: boolean | null) =>
     value === null ? `${kind}: Default` : value ? `${kind}: On` : `${kind}: Off`;
 
@@ -208,10 +234,10 @@ function AppProfilesEditor({ profiles, onChange }: {
   return (
     <div>
       <p className="mb-2 text-xs text-on-surface-variant">
-        Override auto-paste, transcript cleanup, smart prose formatting, and command formatting for specific apps by bundle id
+        Choose a local writing style and optional fine-tuning for specific apps by bundle id
         (e.g. <span className="font-mono">com.apple.Terminal</span>). The frontmost
-        app when you start dictating decides the behavior. Each toggle cycles
-        Default → On → Off.
+        app when you start dictating selects the profile. Murmur never classifies
+        apps automatically or reads their screen, selection, or clipboard content.
       </p>
 
       {profiles.length > 0 && (
@@ -243,6 +269,26 @@ function AppProfilesEditor({ profiles, onChange }: {
                   </svg>
                 </button>
               </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-on-surface">
+                  Writing style
+                </label>
+                <Select
+                  value={p.writingStyle ?? 'inherit'}
+                  onChange={(choice) => changeWritingStyle(p.bundleId, choice)}
+                  items={WRITING_STYLE_OPTIONS}
+                  aria-label={`Writing style for ${p.label || p.bundleId}`}
+                />
+                <p className="mt-1 text-xs text-on-surface-variant">
+                  {WRITING_STYLE_SUMMARIES[p.writingStyle ?? 'inherit']}
+                </p>
+                <p className="mt-1 text-xs font-medium text-on-surface-variant">
+                  {WRITING_STYLE_CATEGORIES[p.writingStyle ?? 'inherit']}
+                </p>
+              </div>
+              <p className="text-xs text-on-surface-variant">
+                Fine-tune this profile below. Each control cycles Inherit → On → Off.
+              </p>
               <div className="grid grid-cols-2 gap-1.5">
                 <button
                   type="button"
@@ -263,18 +309,18 @@ function AppProfilesEditor({ profiles, onChange }: {
                 <button
                   type="button"
                   onClick={() => cycleSmartFormatting(p.bundleId)}
-                  aria-label={`Smart formatting for ${p.label || p.bundleId}: ${chipLabel('Smart', p.smartFormattingOverride)}`}
+                  aria-label={`Prose formatting for ${p.label || p.bundleId}: ${chipLabel('Prose', p.smartFormattingOverride)}`}
                   className={`px-2 py-1 rounded-md text-xs font-medium border transition-colors ${chipClass(p.smartFormattingOverride)}`}
                 >
-                  {chipLabel('Smart', p.smartFormattingOverride)}
+                  {chipLabel('Prose', p.smartFormattingOverride)}
                 </button>
                 <button
                   type="button"
                   onClick={() => cycleCliFormatting(p.bundleId)}
-                  aria-label={`CLI formatting for ${p.label || p.bundleId}: ${chipLabel('CLI', p.cliFormattingOverride)}`}
+                  aria-label={`Command formatting for ${p.label || p.bundleId}: ${chipLabel('Commands', p.cliFormattingOverride)}`}
                   className={`px-2 py-1 rounded-md text-xs font-medium border transition-colors ${chipClass(p.cliFormattingOverride)}`}
                 >
-                  {chipLabel('CLI', p.cliFormattingOverride)}
+                  {chipLabel('Commands', p.cliFormattingOverride)}
                 </button>
               </div>
             </li>

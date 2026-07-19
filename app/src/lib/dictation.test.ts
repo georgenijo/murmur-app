@@ -16,6 +16,7 @@ describe('buildConfigureOptions', () => {
           cleanupOverride: null,
           smartFormattingOverride: false,
           cliFormattingOverride: true,
+          writingStyle: 'code_technical',
         },
       ],
     });
@@ -23,5 +24,6 @@ describe('buildConfigureOptions', () => {
     expect(options.smartFormattingEnabled).toBe(true);
     expect(options.smartPunctuation).toBe(false);
     expect(options.appProfiles?.[0].smartFormattingOverride).toBe(false);
+    expect(options.appProfiles?.[0].writingStyle).toBe('code_technical');
   });
 });

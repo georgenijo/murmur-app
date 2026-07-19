@@ -25,6 +25,41 @@ impl Default for DictationStatus {
 /// `bundle_id`, each `*_override` (when `Some`) replaces the corresponding global
 /// setting in the immutable recording-start snapshot. `None` means "no override
 /// — use global".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WritingStyle {
+    Inherit,
+    Conversational,
+    Polished,
+    CodeTechnical,
+    Verbatim,
+    Notes,
+}
+
+impl WritingStyle {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Inherit => "inherit",
+            Self::Conversational => "conversational",
+            Self::Polished => "polished",
+            Self::CodeTechnical => "code_technical",
+            Self::Verbatim => "verbatim",
+            Self::Notes => "notes",
+        }
+    }
+
+    pub fn code(self) -> u64 {
+        match self {
+            Self::Inherit => 0,
+            Self::Conversational => 1,
+            Self::Polished => 2,
+            Self::CodeTechnical => 3,
+            Self::Verbatim => 4,
+            Self::Notes => 5,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppProfile {
     pub bundle_id: String,
@@ -44,6 +79,10 @@ pub struct AppProfile {
     /// inherits the global setting; code/verbatim profiles can force it off.
     #[serde(default)]
     pub smart_formatting_override: Option<bool>,
+    /// Explicit local writing style. `None` is Inherit and preserves the
+    /// pre-style resolver path byte-for-byte.
+    #[serde(default)]
+    pub writing_style: Option<WritingStyle>,
 }
 
 /// A user-defined voice command: when `phrase` is spoken (matched

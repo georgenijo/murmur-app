@@ -41,6 +41,7 @@ describe('loadSettings', () => {
           cleanupOverride: false,
           smartFormattingOverride: true,
           cliFormattingOverride: true,
+          writingStyle: 'polished',
         },
         {
           bundleId: 'com.apple.mail',
@@ -49,6 +50,7 @@ describe('loadSettings', () => {
           cleanupOverride: null,
           smartFormattingOverride: 'yes',
           cliFormattingOverride: 'yes',
+          writingStyle: 'automatic',
         },
         {
           bundleId: 'com.apple.TextEdit',
@@ -62,10 +64,13 @@ describe('loadSettings', () => {
     const [terminal, mail, legacy] = loadSettings().appProfiles;
     expect(terminal.smartFormattingOverride).toBe(true);
     expect(terminal.cliFormattingOverride).toBe(true);
+    expect(terminal.writingStyle).toBe('polished');
     expect(mail.smartFormattingOverride).toBeNull();
     expect(mail.cliFormattingOverride).toBeNull();
+    expect(mail.writingStyle).toBeNull();
     expect(legacy.smartFormattingOverride).toBeNull();
     expect(legacy.cliFormattingOverride).toBeNull();
+    expect(legacy.writingStyle).toBeNull();
   });
 
   it('keeps smart formatting opt-in across settings migrations', () => {

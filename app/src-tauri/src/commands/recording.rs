@@ -698,7 +698,7 @@ async fn run_transcription_pipeline(
                 .built_in_voice_commands,
             smart_correction_enabled: transformations.correction_enabled,
             smart_formatting_enabled: transformations.smart_formatting_enabled,
-            cli_command_enabled: true,
+            cli_command_enabled: transformations.cli_formatting_enabled,
         },
     };
     let cli_lexicon = crate::cli_command::CliLexicon::from_context(
@@ -956,6 +956,19 @@ impl ConfigurationLogMetadata {
     }
 }
 
+fn parse_writing_style(value: Option<&serde_json::Value>) -> Option<crate::state::WritingStyle> {
+    match value.and_then(serde_json::Value::as_str) {
+        Some("conversational") => Some(crate::state::WritingStyle::Conversational),
+        Some("polished") => Some(crate::state::WritingStyle::Polished),
+        Some("code_technical") => Some(crate::state::WritingStyle::CodeTechnical),
+        Some("verbatim") => Some(crate::state::WritingStyle::Verbatim),
+        Some("notes") => Some(crate::state::WritingStyle::Notes),
+        // Missing, null, malformed, and the legacy-facing Inherit spelling all
+        // preserve the existing resolver path.
+        _ => None,
+    }
+}
+
 #[tauri::command]
 pub async fn configure_dictation(
     options: serde_json::Value,
@@ -1101,6 +1114,7 @@ pub async fn configure_dictation(
                 let smart_formatting_override = p
                     .get("smartFormattingOverride")
                     .and_then(|v| v.as_bool());
+                let writing_style = parse_writing_style(p.get("writingStyle"));
                 Some(crate::state::AppProfile {
                     bundle_id,
                     label,
@@ -1108,6 +1122,7 @@ pub async fn configure_dictation(
                     cleanup_override,
                     cli_formatting_override,
                     smart_formatting_override,
+                    writing_style,
                 })
             })
             .collect();
@@ -1610,6 +1625,8 @@ pub async fn start_native_recording(
         recording_id = rid,
         frontmost_app_detected = context.app.bundle_id.is_some(),
         matched_profile = context.matched_profile.is_some(),
+        writing_style = context.writing_style.as_str(),
+        writing_style_code = context.writing_style.code(),
         vocabulary_version = context.vocabulary.version,
         context_reads_enabled = context.context_capture.selected_text
             || context.context_capture.surrounding_screen_text
@@ -2168,6 +2185,39 @@ mod tests {
         ] {
             assert!(!rendered.contains(secret), "telemetry metadata leaked {secret}");
         }
+    }
+
+    #[test]
+    fn writing_style_parser_accepts_only_stable_explicit_enum_values() {
+        let cases = [
+            (
+                serde_json::json!("conversational"),
+                Some(crate::state::WritingStyle::Conversational),
+            ),
+            (
+                serde_json::json!("polished"),
+                Some(crate::state::WritingStyle::Polished),
+            ),
+            (
+                serde_json::json!("code_technical"),
+                Some(crate::state::WritingStyle::CodeTechnical),
+            ),
+            (
+                serde_json::json!("verbatim"),
+                Some(crate::state::WritingStyle::Verbatim),
+            ),
+            (
+                serde_json::json!("notes"),
+                Some(crate::state::WritingStyle::Notes),
+            ),
+            (serde_json::Value::Null, None),
+            (serde_json::json!("terminal"), None),
+            (serde_json::json!(true), None),
+        ];
+        for (value, expected) in cases {
+            assert_eq!(parse_writing_style(Some(&value)), expected);
+        }
+        assert_eq!(parse_writing_style(None), None);
     }
 
     #[test]

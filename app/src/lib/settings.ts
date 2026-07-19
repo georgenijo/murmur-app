@@ -2,6 +2,24 @@ export type RecordingMode = 'hold_down' | 'double_tap' | 'both';
 
 export type DoubleTapKey = 'shift_l' | 'alt_l' | 'ctrl_r';
 
+export type WritingStyle =
+  | 'conversational'
+  | 'polished'
+  | 'code_technical'
+  | 'verbatim'
+  | 'notes';
+
+export type WritingStyleChoice = WritingStyle | 'inherit';
+
+export const WRITING_STYLE_OPTIONS: { value: WritingStyleChoice; label: string }[] = [
+  { value: 'inherit', label: 'Inherit current settings' },
+  { value: 'conversational', label: 'Conversational' },
+  { value: 'polished', label: 'Polished prose' },
+  { value: 'code_technical', label: 'Code / technical' },
+  { value: 'verbatim', label: 'Verbatim' },
+  { value: 'notes', label: 'Notes' },
+];
+
 /**
  * Per-app dictation profile. When the frontmost macOS app's bundle id matches
  * `bundleId`, each `*Override` (when non-null) replaces the corresponding global
@@ -14,6 +32,8 @@ export interface AppProfile {
   cleanupOverride: boolean | null;
   smartFormattingOverride: boolean | null;
   cliFormattingOverride: boolean | null;
+  /** Explicit deterministic writing policy. `null` preserves current behavior. */
+  writingStyle: WritingStyle | null;
 }
 
 /**
@@ -356,6 +376,11 @@ export function loadSettings(): Settings {
               typeof p.smartFormattingOverride === 'boolean' ? p.smartFormattingOverride : null,
             cliFormattingOverride:
               typeof p.cliFormattingOverride === 'boolean' ? p.cliFormattingOverride : null,
+            writingStyle:
+              typeof p.writingStyle === 'string' &&
+              ['conversational', 'polished', 'code_technical', 'verbatim', 'notes'].includes(p.writingStyle)
+                ? p.writingStyle as WritingStyle
+                : null,
           }));
       }
 
