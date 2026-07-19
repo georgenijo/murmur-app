@@ -556,7 +556,13 @@ fn apply_spoken_marker(output: &mut String, marker: SpokenMarker) {
             }
             output.push_str(value);
         }
-        SpokenMarker::Punctuation(value) => output.push_str(value),
+        SpokenMarker::Punctuation(value) => {
+            output.push_str(value);
+            // The scanner consumes the source space after a spoken marker, so
+            // restore word separation. Final trimming removes this at EOF, and
+            // the next marker trims it before inserting a break or symbol.
+            output.push(' ');
+        }
         SpokenMarker::Infix(value) => {
             if !output.is_empty() && !output.ends_with([' ', '\n']) {
                 output.push(' ');
@@ -749,6 +755,7 @@ mod tests {
             format_smart_prose("Set x plus sign y equals sign ten percent sign"),
             "Set x + y = ten %"
         );
+        assert_eq!(format_smart_prose("one period two"), "one. two");
         let unpaired = "Say open quote this stays literal";
         assert_eq!(format_smart_prose(unpaired), unpaired);
     }
