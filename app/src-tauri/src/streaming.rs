@@ -1,5 +1,5 @@
 use crate::state::DictationStatus;
-use crate::{audio, transcriber, vad, MutexExt, State};
+use crate::{audio, partial_transcript, transcriber, vad, MutexExt, State};
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 use tauri::Manager;
@@ -26,6 +26,9 @@ struct StreamingProgress {
     chunk_count: u32,
     vad_ms: u64,
     inference_ms: u64,
+    start_to_first_partial_ms: Option<u64>,
+    partial_update_count: u32,
+    last_partial_at: Option<Instant>,
     reliable: bool,
     fallback_reason: Option<String>,
 }
@@ -48,6 +51,22 @@ pub(crate) struct IncrementalTranscript {
 }
 
 #[derive(Default)]
+pub(crate) struct IncrementalMetrics {
+    pub attempted: bool,
+    pub completed: bool,
+    pub fell_back: bool,
+    pub start_to_first_partial_ms: Option<u64>,
+    pub partial_update_count: u32,
+    pub last_partial_at: Option<Instant>,
+}
+
+#[derive(Default)]
+pub(crate) struct IncrementalFinalization {
+    pub transcript: Option<IncrementalTranscript>,
+    pub metrics: IncrementalMetrics,
+}
+
+#[derive(Default)]
 struct ChunkOutput {
     text: String,
     vad_ms: u64,
@@ -65,8 +84,14 @@ pub(crate) async fn start_session(app_handle: tauri::AppHandle, config: Streamin
 
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
     let recording_id = config.recording_id;
+    let recording_started_at = Instant::now();
     let task_config = config.clone();
-    let join = tokio::spawn(run_session(app_handle.clone(), task_config, stop_rx));
+    let join = tokio::spawn(run_session(
+        app_handle.clone(),
+        task_config,
+        stop_rx,
+        recording_started_at,
+    ));
     let session = StreamingSession {
         recording_id,
         config,
@@ -96,6 +121,7 @@ async fn run_session(
     app_handle: tauri::AppHandle,
     config: StreamingConfig,
     mut stop_rx: tokio::sync::watch::Receiver<bool>,
+    recording_started_at: Instant,
 ) -> StreamingProgress {
     let mut progress = StreamingProgress {
         reliable: true,
@@ -152,11 +178,35 @@ async fn run_session(
                     ));
                     break;
                 }
-                progress.text = reconciled.text;
+                // Inference can outlive cancellation, a model change, or a
+                // newer recording. Revalidate after reconciliation and before
+                // adopting or publishing any provisional text.
+                if !session_config_is_current(&app_handle, &config) {
+                    progress.reliable = false;
+                    progress.fallback_reason =
+                        Some("recording session was superseded after inference".to_string());
+                    break;
+                }
+                let previous_text = std::mem::replace(&mut progress.text, reconciled.text);
                 progress.processed_end = next_end;
                 progress.chunk_count += 1;
                 progress.vad_ms = progress.vad_ms.saturating_add(chunk.vad_ms);
                 progress.inference_ms = progress.inference_ms.saturating_add(chunk.inference_ms);
+                if should_publish_partial(&previous_text, &progress.text) {
+                    let now = Instant::now();
+                    progress
+                        .start_to_first_partial_ms
+                        .get_or_insert_with(|| recording_started_at.elapsed().as_millis() as u64);
+                    progress.partial_update_count += 1;
+                    progress.last_partial_at = Some(now);
+                    partial_transcript::emit_update(
+                        &app_handle,
+                        config.recording_id,
+                        progress.text.clone(),
+                        progress.chunk_count,
+                        (next_end / 16) as u64,
+                    );
+                }
                 tracing::info!(
                     target: "pipeline",
                     recording_id = config.recording_id,
@@ -178,10 +228,20 @@ async fn run_session(
     }
 
     if !progress.reliable {
+        partial_transcript::emit_clear(
+            &app_handle,
+            config.recording_id,
+            partial_transcript::PartialTranscriptClearReason::Fallback,
+        );
         tracing::warn!(
             target: "pipeline",
             recording_id = config.recording_id,
             reason = progress.fallback_reason.as_deref().unwrap_or("unknown"),
+            start_to_first_partial_ms = progress.start_to_first_partial_ms.unwrap_or(0),
+            had_partial = progress.start_to_first_partial_ms.is_some(),
+            partial_update_count = progress.partial_update_count,
+            incremental_completed = false,
+            incremental_fell_back = true,
             "incremental transcription abandoned; batch fallback required"
         );
     }
@@ -194,6 +254,19 @@ fn session_is_current(app_handle: &tauri::AppHandle, recording_id: u64) -> bool 
     let cancelled_id = state.app_state.cancelled_id.load(Ordering::SeqCst);
     let dictation = state.app_state.dictation.lock_or_recover();
     session_generation_is_current(current_id, cancelled_id, recording_id, dictation.status)
+}
+
+fn session_config_is_current(app_handle: &tauri::AppHandle, config: &StreamingConfig) -> bool {
+    let state = app_handle.state::<State>();
+    let current_id = state.app_state.recording_id.load(Ordering::SeqCst);
+    let cancelled_id = state.app_state.cancelled_id.load(Ordering::SeqCst);
+    let dictation = state.app_state.dictation.lock_or_recover();
+    session_generation_is_current(
+        current_id,
+        cancelled_id,
+        config.recording_id,
+        dictation.status,
+    ) && dictation.model_name == config.model_name
 }
 
 fn session_generation_is_current(
@@ -212,6 +285,10 @@ fn session_generation_is_current(
 
 fn worker_fell_behind(available: usize, next_end: usize) -> bool {
     available >= next_end.saturating_add(STEP_SAMPLES)
+}
+
+fn should_publish_partial(previous: &str, cumulative: &str) -> bool {
+    !cumulative.trim().is_empty() && previous != cumulative
 }
 
 async fn transcribe_window(
@@ -324,43 +401,105 @@ pub(crate) async fn finalize(
     app_handle: tauri::AppHandle,
     session: Option<StreamingSession>,
     full_samples: &[f32],
-) -> Option<IncrementalTranscript> {
-    let session = session?;
+) -> IncrementalFinalization {
+    let Some(session) = session else {
+        return IncrementalFinalization::default();
+    };
     let config = session.config.clone();
     let progress = match session.join.await {
         Ok(progress) => progress,
         Err(error) => {
             tracing::warn!(target: "pipeline", recording_id = config.recording_id, error = %error, "incremental join failed; using batch fallback");
-            return None;
+            partial_transcript::emit_clear(
+                &app_handle,
+                config.recording_id,
+                partial_transcript::PartialTranscriptClearReason::Fallback,
+            );
+            return IncrementalFinalization {
+                metrics: IncrementalMetrics {
+                    attempted: true,
+                    fell_back: true,
+                    ..IncrementalMetrics::default()
+                },
+                ..IncrementalFinalization::default()
+            };
         }
     };
-    if !progress.reliable
-        || progress.chunk_count == 0
-        || progress.processed_end > full_samples.len()
-    {
-        return None;
+    let mut metrics = IncrementalMetrics {
+        attempted: true,
+        start_to_first_partial_ms: progress.start_to_first_partial_ms,
+        partial_update_count: progress.partial_update_count,
+        last_partial_at: progress.last_partial_at,
+        ..IncrementalMetrics::default()
+    };
+    if !progress.reliable || progress.processed_end > full_samples.len() {
+        metrics.fell_back = true;
+        partial_transcript::emit_clear(
+            &app_handle,
+            config.recording_id,
+            partial_transcript::PartialTranscriptClearReason::Fallback,
+        );
+        return IncrementalFinalization {
+            transcript: None,
+            metrics,
+        };
+    }
+    if progress.chunk_count == 0 {
+        return IncrementalFinalization {
+            transcript: None,
+            metrics,
+        };
     }
 
     let tail_start = progress.processed_end.saturating_sub(OVERLAP_SAMPLES);
     let tail = full_samples[tail_start..].to_vec();
     let final_started = Instant::now();
-    let final_chunk = match transcribe_window(app_handle, config.clone(), tail).await {
+    let final_chunk = match transcribe_window(app_handle.clone(), config.clone(), tail).await {
         Ok(chunk) => chunk,
         Err(error) => {
             tracing::warn!(target: "pipeline", recording_id = config.recording_id, error, "incremental final chunk failed; using batch fallback");
-            return None;
+            metrics.fell_back = true;
+            partial_transcript::emit_clear(
+                &app_handle,
+                config.recording_id,
+                partial_transcript::PartialTranscriptClearReason::Fallback,
+            );
+            return IncrementalFinalization {
+                transcript: None,
+                metrics,
+            };
         }
     };
     let final_chunk_ms = final_started.elapsed().as_millis() as u64;
     let reconciled = reconcile_overlapping_text(&progress.text, &final_chunk.text);
     if !progress.text.is_empty() && !final_chunk.text.is_empty() && reconciled.overlap_words == 0 {
         tracing::warn!(target: "pipeline", recording_id = config.recording_id, "incremental final chunk had no deterministic overlap; using batch fallback");
-        return None;
+        metrics.fell_back = true;
+        partial_transcript::emit_clear(
+            &app_handle,
+            config.recording_id,
+            partial_transcript::PartialTranscriptClearReason::Fallback,
+        );
+        return IncrementalFinalization {
+            transcript: None,
+            metrics,
+        };
     }
     let text = reconciled.text;
     if text.trim().is_empty() {
-        return None;
+        metrics.fell_back = true;
+        partial_transcript::emit_clear(
+            &app_handle,
+            config.recording_id,
+            partial_transcript::PartialTranscriptClearReason::Fallback,
+        );
+        return IncrementalFinalization {
+            transcript: None,
+            metrics,
+        };
     }
+
+    metrics.completed = true;
 
     tracing::info!(
         target: "pipeline",
@@ -372,20 +511,25 @@ pub(crate) async fn finalize(
         final_chunk_ms,
         "incremental transcription finalized"
     );
-    Some(IncrementalTranscript {
-        text,
-        chunk_count: progress.chunk_count + 1,
-        vad_ms: progress.vad_ms.saturating_add(final_chunk.vad_ms),
-        streaming_inference_ms: progress.inference_ms,
-        final_chunk_ms,
-        rss_before_mb: final_chunk.rss_before_mb,
-        rss_after_mb: final_chunk.rss_after_mb,
-    })
+    IncrementalFinalization {
+        transcript: Some(IncrementalTranscript {
+            text,
+            chunk_count: progress.chunk_count + 1,
+            vad_ms: progress.vad_ms.saturating_add(final_chunk.vad_ms),
+            streaming_inference_ms: progress.inference_ms,
+            final_chunk_ms,
+            rss_before_mb: final_chunk.rss_before_mb,
+            rss_after_mb: final_chunk.rss_after_mb,
+        }),
+        metrics,
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{session_generation_is_current, worker_fell_behind, STEP_SAMPLES};
+    use super::{
+        session_generation_is_current, should_publish_partial, worker_fell_behind, STEP_SAMPLES,
+    };
     use crate::state::DictationStatus;
 
     #[test]
@@ -421,5 +565,16 @@ mod tests {
         let next_end = 160_000;
         assert!(!worker_fell_behind(next_end + STEP_SAMPLES - 1, next_end));
         assert!(worker_fell_behind(next_end + STEP_SAMPLES, next_end));
+    }
+
+    #[test]
+    fn publishes_only_new_non_empty_cumulative_text() {
+        assert!(should_publish_partial("", "first reliable words"));
+        assert!(should_publish_partial(
+            "first reliable words",
+            "first reliable words then more"
+        ));
+        assert!(!should_publish_partial("same words", "same words"));
+        assert!(!should_publish_partial("same words", "  "));
     }
 }

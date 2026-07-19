@@ -9,6 +9,7 @@ import { STORAGE_KEY, DEFAULT_SETTINGS, loadSettings, saveSettings } from '../li
 import type { Settings } from '../lib/settings';
 import { buildConfigureOptions } from '../lib/dictation';
 import type { DictationResponse } from '../lib/dictation';
+import { usePartialTranscript } from '../lib/hooks/usePartialTranscript';
 import {
   HOTKEY_MISS_FLASH_MS,
   isHotkeyTapRejectedPayload,
@@ -27,6 +28,14 @@ function formatElapsed(seconds: number): string {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
   return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function latestPreviewText(text: string, maxCharacters = 96): string {
+  const normalized = text.trim();
+  if (normalized.length <= maxCharacters) return normalized;
+  const suffix = normalized.slice(-maxCharacters);
+  const firstBoundary = suffix.indexOf(' ');
+  return `…${(firstBoundary >= 0 ? suffix.slice(firstBoundary + 1) : suffix).trim()}`;
 }
 
 function PowerIcon({ stroke }: { stroke: string }) {
@@ -72,6 +81,10 @@ export function OverlayWidget() {
   const [expanded, setExpanded] = useState(false);
   const [autoPaste, setAutoPaste] = useState(false);
   const [fileOutputEnabled, setFileOutputEnabled] = useState(false);
+  const [liveTranscriptPreview, setLiveTranscriptPreview] = useState(
+    DEFAULT_SETTINGS.liveTranscriptPreview,
+  );
+  const [previewModel, setPreviewModel] = useState(DEFAULT_SETTINGS.model);
   const [elapsed, setElapsed] = useState(0);
   const notchHeightRef = useRef(0);
   const [notchHeight, setNotchHeight] = useState(0);
@@ -89,6 +102,7 @@ export function OverlayWidget() {
   const audioLevelRef = useRef(0);
   const hotkeyMissFeedbackRef = useRef(false);
   const barRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const partialTranscript = usePartialTranscript(liveTranscriptPreview, previewModel);
 
   useEffect(() => { statusRef.current = status; }, [status]);
   useEffect(() => { lockedRef.current = lockedMode; }, [lockedMode]);
@@ -99,6 +113,8 @@ export function OverlayWidget() {
     setDisabled(settings.disabled);
     setAutoPaste(settings.autoPaste);
     setFileOutputEnabled(settings.saveTranscript || settings.saveAudio);
+    setLiveTranscriptPreview(settings.liveTranscriptPreview);
+    setPreviewModel(settings.model);
     hotkeyMissFeedbackRef.current = settings.hotkeyMissFeedback;
     if (!settings.hotkeyMissFeedback) setShowHotkeyMiss(false);
   }, []);
@@ -613,6 +629,10 @@ export function OverlayWidget() {
   }, []);
 
   const topH = notchHeight || 37;
+  const previewText = liveTranscriptPreview
+    && (status === 'recording' || status === 'processing')
+    ? latestPreviewText(partialTranscript.text)
+    : '';
   const effectiveAutoPaste = autoPaste && !fileOutputEnabled;
   const autoPastePaused = autoPaste && fileOutputEnabled;
   const autoPasteLabel = autoPastePaused
@@ -695,8 +715,21 @@ export function OverlayWidget() {
             </span>
           )}
 
-          {/* Spacer */}
-          <div className="flex-1" />
+          {previewText ? (
+            <div
+              aria-label="Provisional transcript preview"
+              className="min-w-0 flex-1 flex items-center gap-1.5 mx-2 pointer-events-none"
+            >
+              <span className="shrink-0 text-[8px] uppercase tracking-[0.12em] text-amber-300/75">
+                Draft
+              </span>
+              <span className="min-w-0 truncate text-[10px] text-white/70">
+                {previewText}
+              </span>
+            </div>
+          ) : (
+            <div className="flex-1" />
+          )}
 
           {/* Right side — waveform (only when active) */}
           {showHotkeyMiss ? (

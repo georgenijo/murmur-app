@@ -83,10 +83,10 @@ The overlay has three visual states driven by `recording-status-changed` Tauri e
 Small mic SVG icon at 40% white opacity. Compact width.
 
 ### Recording
-Expanded width. Red pulsing dot on the left, animated 7-bar waveform on the right. The waveform responds to real-time audio levels.
+Expanded width. Red pulsing dot on the left, animated 7-bar waveform on the right. The waveform responds to real-time audio levels. During long Whisper recordings, the middle of the existing top bar shows the latest suffix of cumulative incremental text with a `Draft` label after the first reliable chunk. The preview is one line, uses no additional window area, and has pointer events disabled.
 
 ### Processing
-Same expanded width. Spinning circle on the left; the waveform is hidden (visible only while recording).
+Same expanded width. Spinning circle on the left; the waveform is hidden (visible only while recording). A provisional preview may remain visible until the authoritative final result completes, then clears.
 
 ### Hotkey Timing Miss (optional)
 
@@ -154,6 +154,9 @@ The observer is intentionally leaked (`std::mem::forget`) for app-lifetime obser
 | Event | Payload | Description |
 |-------|---------|-------------|
 | `recording-status-changed` | String | Drives visual state transitions |
+| `recording-session-started` | `{ contractVersion, recordingId }` | Selects the active session and clears any older preview |
+| `partial-transcript` | `{ contractVersion, recordingId, text, chunkIndex, processedAudioMs }` | Supplies cumulative in-memory provisional text for the active session only |
+| `partial-transcript-cleared` | `{ contractVersion, recordingId, reason }` | Session-scoped cleanup on cancellation, fallback, error, or finalization |
 | `audio-level` | Number (RMS 0.0-1.0) | Real-time audio level for waveform |
 | `notch-info-changed` | `{ notch_width, notch_height }` or `null` | Display configuration changed |
 | `app-disabled-changed` | Boolean | Global-disable state changed (updates the top-bar mic + speaker-slash) |
@@ -162,6 +165,10 @@ The observer is intentionally leaked (`std::mem::forget`) for app-lifetime obser
 | `open-settings` | (none) | Overlay gear asks the main window to open the Settings panel |
 
 The entire overlay surface is a Tauri drag region (`data-tauri-drag-region`), allowing the user to reposition it. Overlay position save/restore is currently disabled (TODO: re-enable after notch positioning is stable).
+
+## Live transcript preview
+
+`liveTranscriptPreview` is a local Settings boolean and defaults to enabled. Turning it off clears visible provisional text immediately and ignores further partial updates while disabled. The overlay tracks the active `recordingId`, rejects stale or out-of-order chunks, and clears on cancellation, incremental fallback, final completion, model change, idle/error, or a newer recording. The preview stays inside the existing non-focusable, non-activating top-bar bounds, so it neither expands the idle island nor adds a click dead-zone.
 
 ## Transparent window caveat
 

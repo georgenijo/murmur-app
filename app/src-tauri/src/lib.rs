@@ -10,6 +10,7 @@ mod file_output;
 mod frontmost;
 mod injector;
 mod keyboard;
+mod partial_transcript;
 mod platform;
 mod resource_monitor;
 mod state;

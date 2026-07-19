@@ -1,7 +1,7 @@
 use crate::{MutexExt, State};
 use crate::state::{AppState, DictationStatus};
 use crate::transcriber;
-use crate::{audio, audio_decode, injector, keyboard, streaming, vad};
+use crate::{audio, audio_decode, injector, keyboard, partial_transcript, streaming, vad};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
@@ -420,6 +420,12 @@ pub(crate) struct PipelineTimings {
     pub incremental_chunks: u32,
     pub streaming_inference_ms: u64,
     pub final_chunk_ms: u64,
+    pub incremental_attempted: bool,
+    pub incremental_completed: bool,
+    pub incremental_fell_back: bool,
+    pub start_to_first_partial_ms: Option<u64>,
+    pub partial_update_count: u32,
+    pub last_partial_at: Option<std::time::Instant>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -454,7 +460,7 @@ async fn run_transcription_pipeline(
     app_handle: &tauri::AppHandle,
     app_state: &AppState,
     recording_id: u64,
-    incremental: Option<streaming::IncrementalTranscript>,
+    incremental: streaming::IncrementalFinalization,
 ) -> Result<(String, PipelineTimings), String> {
     // Guard resets status to Idle on any return path (error or success),
     // but only if this recording is still the active one
@@ -500,7 +506,21 @@ async fn run_transcription_pipeline(
         return Ok((String::new(), PipelineTimings::default()));
     }
 
-    let (text, mut timings) = if let Some(incremental) = incremental {
+    let streaming::IncrementalFinalization {
+        transcript: incremental_transcript,
+        metrics: incremental_metrics,
+    } = incremental;
+    let partial_metric_timings = || PipelineTimings {
+        incremental_attempted: incremental_metrics.attempted,
+        incremental_completed: incremental_metrics.completed,
+        incremental_fell_back: incremental_metrics.fell_back,
+        start_to_first_partial_ms: incremental_metrics.start_to_first_partial_ms,
+        partial_update_count: incremental_metrics.partial_update_count,
+        last_partial_at: incremental_metrics.last_partial_at,
+        ..PipelineTimings::default()
+    };
+
+    let (text, mut timings) = if let Some(incremental) = incremental_transcript {
         tracing::info!(
             target: "pipeline",
             recording_id,
@@ -520,7 +540,7 @@ async fn run_transcription_pipeline(
                 incremental_chunks: incremental.chunk_count,
                 streaming_inference_ms: incremental.streaming_inference_ms,
                 final_chunk_ms: incremental.final_chunk_ms,
-                ..PipelineTimings::default()
+                ..partial_metric_timings()
             },
         )
     } else {
@@ -544,7 +564,7 @@ async fn run_transcription_pipeline(
                             samples.len(), t_vad.elapsed());
                         return Ok((String::new(), PipelineTimings {
                             vad_ms: t_vad.elapsed().as_millis() as u64,
-                            ..PipelineTimings::default()
+                            ..partial_metric_timings()
                         }));
                     }
                     Ok(vad::VadResult::Speech(trimmed)) => {
@@ -577,7 +597,7 @@ async fn run_transcription_pipeline(
             tracing::info!(target: "pipeline", "cancelled before transcription (recording_id={})", recording_id);
             return Ok((String::new(), PipelineTimings {
                 vad_ms,
-                ..PipelineTimings::default()
+                ..partial_metric_timings()
             }));
         }
 
@@ -611,7 +631,7 @@ async fn run_transcription_pipeline(
                 inference_ms,
                 rss_before_mb,
                 rss_after_mb,
-                ..PipelineTimings::default()
+                ..partial_metric_timings()
             },
         )
     };
@@ -779,7 +799,7 @@ pub async fn process_audio(
         &app_handle,
         &state.app_state,
         rid,
-        None,
+        streaming::IncrementalFinalization::default(),
     )
     .await;
     // Only emit idle if this recording wasn't cancelled/superseded.
@@ -1500,6 +1520,7 @@ pub async fn start_native_recording(
         return Err(e);
     }
     *state.app_state.last_transcription_at.lock_or_recover() = Some(std::time::Instant::now());
+    partial_transcript::emit_session_started(&app_handle, rid);
     let _ = app_handle.emit("recording-status-changed", "recording");
     tracing::info!(target: "pipeline", "start_native_recording: started");
     spawn_model_preparation(app_handle.clone(), model_name.clone(), rid);
@@ -1529,7 +1550,8 @@ pub async fn start_native_recording(
 
     Ok(serde_json::json!({
         "type": "recording_started",
-        "state": "recording"
+        "state": "recording",
+        "recordingId": rid
     }))
 }
 
@@ -1572,6 +1594,11 @@ pub async fn stop_native_recording(
     // Phase: Audio teardown + 16kHz resample
     let t_total = std::time::Instant::now();
     let samples = audio::stop_recording().map_err(|e| {
+        partial_transcript::emit_clear(
+            &app_handle,
+            rid,
+            partial_transcript::PartialTranscriptClearReason::Error,
+        );
         tracing::error!(target: "audio", "stop_native_recording: stop_recording failed: {}", e);
         if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
             let _ = app_handle.emit("recording-status-changed", "idle");
@@ -1585,6 +1612,11 @@ pub async fn stop_native_recording(
 
     if samples.is_empty() {
         streaming::discard(streaming_session);
+        partial_transcript::emit_clear(
+            &app_handle,
+            rid,
+            partial_transcript::PartialTranscriptClearReason::Finalized,
+        );
         tracing::info!(target: "pipeline", "stop_native_recording: no audio captured");
         // guard drops on return, resetting status to Idle
         if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
@@ -1603,6 +1635,11 @@ pub async fn stop_native_recording(
 
     if samples.len() < MIN_RECORDING_SAMPLES {
         streaming::discard(streaming_session);
+        partial_transcript::emit_clear(
+            &app_handle,
+            rid,
+            partial_transcript::PartialTranscriptClearReason::Finalized,
+        );
         tracing::info!(target: "pipeline", "stop_native_recording: recording too short ({}ms), discarding",
             samples.len() / 16); // samples / 16_000 * 1000
         if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
@@ -1637,10 +1674,25 @@ pub async fn stop_native_recording(
             let _ = app_handle.emit("recording-status-changed", "idle");
         }
     }
-    let (text, timings) = pipeline_result.map_err(|e| {
-        tracing::error!(target: "pipeline", "stop_native_recording: pipeline failed: {}", e);
-        e
-    })?;
+    let (text, timings) = match pipeline_result {
+        Ok(result) => {
+            partial_transcript::emit_clear(
+                &app_handle,
+                rid,
+                partial_transcript::PartialTranscriptClearReason::Finalized,
+            );
+            result
+        }
+        Err(error) => {
+            partial_transcript::emit_clear(
+                &app_handle,
+                rid,
+                partial_transcript::PartialTranscriptClearReason::Error,
+            );
+            tracing::error!(target: "pipeline", "stop_native_recording: pipeline failed: {}", error);
+            return Err(error);
+        }
+    };
 
     let total_ms = t_total.elapsed().as_millis() as u64;
     let audio_secs = samples.len() as f64 / 16_000.0;
@@ -1654,6 +1706,10 @@ pub async fn stop_native_recording(
         let b = state.app_state.backend.lock_or_recover();
         b.name().to_string()
     };
+    let last_partial_to_final_ms = timings
+        .last_partial_at
+        .map(|at| at.elapsed().as_millis() as u64)
+        .unwrap_or(0);
 
     tracing::info!(
         target: "pipeline",
@@ -1663,6 +1719,13 @@ pub async fn stop_native_recording(
         decode_ms = timings.decode_ms,
         inference_ms = timings.inference_ms,
         incremental_chunks = timings.incremental_chunks,
+        incremental_attempted = timings.incremental_attempted,
+        incremental_completed = timings.incremental_completed,
+        incremental_fell_back = timings.incremental_fell_back,
+        start_to_first_partial_ms = timings.start_to_first_partial_ms.unwrap_or(0),
+        had_partial = timings.start_to_first_partial_ms.is_some(),
+        partial_update_count = timings.partial_update_count,
+        last_partial_to_final_ms,
         streaming_inference_ms = timings.streaming_inference_ms,
         final_chunk_ms = timings.final_chunk_ms,
         correction_ms = timings.correction_ms,
@@ -1683,6 +1746,7 @@ pub async fn stop_native_recording(
     let recording_secs = samples.len() / 16_000;
     if !text.is_empty() {
         let _ = app_handle.emit("transcription-complete", serde_json::json!({
+            "recordingId": rid,
             "text": text,
             "duration": recording_secs
         }));
@@ -1721,6 +1785,11 @@ pub async fn cancel_native_recording(
         (prev, rid)
     };
     streaming::cancel(&state.app_state, rid).await;
+    partial_transcript::emit_clear(
+        &app_handle,
+        rid,
+        partial_transcript::PartialTranscriptClearReason::Cancelled,
+    );
 
     let stop_err = match prev_status {
         DictationStatus::Recording => {
