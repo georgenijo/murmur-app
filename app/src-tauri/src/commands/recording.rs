@@ -1620,11 +1620,16 @@ fn schedule_ide_scan(
     tauri::async_runtime::spawn(async move {
         let generation = request.generation;
         let roots = request.roots.clone();
+        let cancellation = request.cancellation.clone();
         let result = tokio::task::spawn_blocking(move || {
-            crate::ide_context::build_index(generation, &roots)
+            crate::ide_context::build_index_with_cancellation(
+                generation,
+                &roots,
+                cancellation.as_ref(),
+            )
         })
         .await
-        .unwrap_or(Err("scan_task_failed"));
+        .unwrap_or_else(|_| Err(crate::ide_context::IdeIndexBuildFailure::task_failed()));
 
         let (files, symbols, bytes, capped, ms, outcome_code) = match &result {
             Ok(build) => (
@@ -1635,7 +1640,14 @@ fn schedule_ide_scan(
                 build.stats.ms,
                 1u64,
             ),
-            Err(_) => (0, 0, 0, false, 0, 2u64),
+            Err(failure) => (
+                failure.stats.files as u64,
+                failure.stats.symbols as u64,
+                failure.stats.bytes,
+                failure.stats.capped,
+                failure.stats.ms,
+                failure.outcome_code,
+            ),
         };
         let state = app_handle.state::<State>();
         let adopted = state

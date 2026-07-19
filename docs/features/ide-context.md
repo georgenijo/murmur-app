@@ -12,12 +12,12 @@ The selected root paths are visible locally in Settings and are persisted as pro
 
 Each configured root is canonicalized once per scan. Murmur then performs a bounded, read-only walk under that canonical root:
 
-- At most 4 roots, 1,000 files, 32 MiB total, 512 KiB per file, 10,000 candidate symbols with 500 retained, 512 bytes per root-relative path, and 16 KiB per transformed transcript
+- At most 4 roots (4,096 bytes per configured root), 1,000 files, 32 MiB total, 512 KiB per file, 10,000 candidate symbols with 500 retained, 20,000 visited directory entries, 512 bytes per root-relative path, 10 seconds per scan, and 16 KiB per transformed transcript
 - Only allowlisted source files and `package.json` manifests
 - No symlinks, sockets, devices, hidden files/directories, version-control directories, dependency/vendor directories, build output, or cache directories
 - No path that cannot be represented as a clean descendant of its canonical root
 
-The source text exists only while its file is being parsed. The finished index contains only the bounded correction matcher and relative-file aliases in process memory. A ready generation expires after 60 seconds. Root/profile changes, manual refresh, manual clear, cancellation, or expiry invalidate the prior generation before a new scan can be adopted.
+The source text exists only while its file is being parsed. Files are opened without following symlinks and revalidated against the canonical root before parsing. The finished index contains only the bounded correction matcher and relative-file aliases in process memory. A ready generation expires after 60 seconds. Root/profile changes, manual refresh, manual clear, cancellation, or expiry invalidate the prior generation before a new scan can be adopted. A cancelled, timed-out, or cap-truncated scan publishes no partial index.
 
 Indexing telemetry contains only generation IDs, counts, capped sizes, elapsed time, and outcomes. It never includes roots, basenames, relative or absolute paths, symbols, or source content.
 

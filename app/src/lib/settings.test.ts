@@ -84,6 +84,7 @@ describe('loadSettings', () => {
           ideProjectRoots: [
             ' /project/one ',
             '/project/one',
+            `/${'x'.repeat(4096)}`,
             '/project/two',
             '/project/three',
             '/project/four',

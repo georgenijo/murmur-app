@@ -197,21 +197,15 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
     // prose rewriting is always bypassed there, even if another style or
     // fine-tuning override would otherwise enable it.
     let smart_formatting_enabled = !ide_context_enabled && resolved_smart_formatting;
-    let matched_profile = inputs.bundle_id.and_then(|bundle_id| {
-        global
-            .app_profiles
-            .iter()
-            .find(|profile| profile.bundle_id == bundle_id)
-            .map(|profile| MatchedAppProfile {
-                bundle_id: profile.bundle_id.clone(),
-                label: profile.label.clone(),
-                auto_paste_override: profile.auto_paste_override,
-                cleanup_override: profile.cleanup_override,
-                cli_formatting_override: profile.cli_formatting_override,
-                smart_formatting_override: profile.smart_formatting_override,
-                writing_style: profile.writing_style,
-                ide_context_enabled: profile.ide_context_enabled,
-            })
+    let matched_profile = explicit_profile.map(|profile| MatchedAppProfile {
+        bundle_id: profile.bundle_id.clone(),
+        label: profile.label.clone(),
+        auto_paste_override: profile.auto_paste_override,
+        cleanup_override: profile.cleanup_override,
+        cli_formatting_override: profile.cli_formatting_override,
+        smart_formatting_override: profile.smart_formatting_override,
+        writing_style: profile.writing_style,
+        ide_context_enabled: profile.ide_context_enabled,
     });
     let custom_vocab = !global.custom_vocabulary.trim().is_empty();
     let code_vocab = global.code_vocab_enabled;

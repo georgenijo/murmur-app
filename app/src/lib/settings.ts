@@ -40,6 +40,8 @@ export interface AppProfile {
   ideProjectRoots: string[];
 }
 
+const MAX_IDE_PROJECT_ROOT_BYTES = 4096;
+
 /**
  * A user-defined voice command. When `phrase` is spoken it is replaced by
  * `replacement` (case-insensitive, word-boundary). Applied after the built-in
@@ -390,6 +392,7 @@ export function loadSettings(): Settings {
               ? p.ideProjectRoots
                   .filter((root): root is string => typeof root === 'string' && root.trim().length > 0)
                   .map((root) => root.trim())
+                  .filter((root) => root.length <= MAX_IDE_PROJECT_ROOT_BYTES)
                   .filter((root, index, roots) => roots.indexOf(root) === index)
                   .slice(0, 4)
               : [],

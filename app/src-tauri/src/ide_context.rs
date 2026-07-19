@@ -8,6 +8,8 @@
 use crate::correction::{derive_spoken_form, CorrectionMatcher};
 use crate::state::AppProfile;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::fs::OpenOptions;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -20,8 +22,17 @@ pub(crate) const MAX_IDE_FILE_BYTES: u64 = 512 * 1024;
 pub(crate) const MAX_IDE_SYMBOLS: usize = 500;
 const MAX_IDE_CANDIDATE_SYMBOLS: usize = 10_000;
 const MAX_RELATIVE_PATH_BYTES: usize = 512;
+const MAX_CONFIG_ROOT_BYTES: usize = 4_096;
 const MAX_FORMAT_INPUT_BYTES: usize = 16 * 1024;
+const MAX_IDE_SCAN_ENTRIES: usize = 20_000;
+const MAX_IDE_SCAN_DURATION: Duration = Duration::from_secs(10);
 const INDEX_TTL: Duration = Duration::from_secs(60);
+
+const SCAN_OUTCOME_NO_VALID_ROOTS: u64 = 2;
+const SCAN_OUTCOME_TRUNCATED: u64 = 3;
+const SCAN_OUTCOME_CANCELLED: u64 = 4;
+const SCAN_OUTCOME_DEADLINE: u64 = 5;
+const SCAN_OUTCOME_TASK_FAILED: u64 = 6;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FileAlias {
@@ -85,6 +96,21 @@ pub(crate) struct IdeIndexBuild {
     pub stats: IdeIndexStats,
 }
 
+#[derive(Debug)]
+pub(crate) struct IdeIndexBuildFailure {
+    pub stats: IdeIndexStats,
+    pub outcome_code: u64,
+}
+
+impl IdeIndexBuildFailure {
+    pub(crate) fn task_failed() -> Self {
+        Self {
+            stats: IdeIndexStats::default(),
+            outcome_code: SCAN_OUTCOME_TASK_FAILED,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EntryState {
     Disabled,
@@ -114,6 +140,7 @@ struct ProfileIndexEntry {
     generation: u64,
     state: EntryState,
     index: Option<Arc<IdeContextIndex>>,
+    scan_cancel: Option<Arc<AtomicBool>>,
     stats: IdeIndexStats,
 }
 
@@ -125,6 +152,7 @@ impl ProfileIndexEntry {
             generation,
             state: EntryState::Disabled,
             index: None,
+            scan_cancel: None,
             stats: IdeIndexStats::default(),
         }
     }
@@ -135,6 +163,7 @@ pub(crate) struct IdeScanRequest {
     pub bundle_id: String,
     pub roots: Vec<String>,
     pub generation: u64,
+    pub cancellation: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -164,12 +193,13 @@ impl IdeContextStore {
     }
 
     fn invalidate_current(&self, bundle_id: &str) {
-        if let Some(index) = self
-            .entries
-            .get(bundle_id)
-            .and_then(|entry| entry.index.as_ref())
-        {
-            index.invalidate();
+        if let Some(entry) = self.entries.get(bundle_id) {
+            if let Some(index) = entry.index.as_ref() {
+                index.invalidate();
+            }
+            if let Some(cancellation) = entry.scan_cancel.as_ref() {
+                cancellation.store(true, Ordering::Release);
+            }
         }
     }
 
@@ -216,6 +246,8 @@ impl IdeContextStore {
             } else {
                 EntryState::Scanning
             };
+            let cancellation =
+                (state == EntryState::Scanning).then(|| Arc::new(AtomicBool::new(false)));
             self.entries.insert(
                 bundle_id.clone(),
                 ProfileIndexEntry {
@@ -224,6 +256,7 @@ impl IdeContextStore {
                     generation,
                     state,
                     index: None,
+                    scan_cancel: cancellation.clone(),
                     stats: IdeIndexStats {
                         roots: roots.len(),
                         ..IdeIndexStats::default()
@@ -235,6 +268,7 @@ impl IdeContextStore {
                     bundle_id,
                     roots,
                     generation,
+                    cancellation: cancellation.expect("scanning requests have cancellation"),
                 });
             }
         }
@@ -258,12 +292,14 @@ impl IdeContextStore {
                     generation,
                     state: EntryState::Empty,
                     index: None,
+                    scan_cancel: None,
                     stats: IdeIndexStats::default(),
                 },
             );
             return None;
         }
         let generation = self.next_generation();
+        let cancellation = Arc::new(AtomicBool::new(false));
         self.entries.insert(
             bundle_id.to_string(),
             ProfileIndexEntry {
@@ -272,6 +308,7 @@ impl IdeContextStore {
                 generation,
                 state: EntryState::Scanning,
                 index: None,
+                scan_cancel: Some(cancellation.clone()),
                 stats: IdeIndexStats {
                     roots: roots.len(),
                     ..IdeIndexStats::default()
@@ -282,6 +319,7 @@ impl IdeContextStore {
             bundle_id: bundle_id.to_string(),
             roots,
             generation,
+            cancellation,
         })
     }
 
@@ -315,6 +353,7 @@ impl IdeContextStore {
                 generation,
                 state: EntryState::Cleared,
                 index: None,
+                scan_cancel: None,
                 stats: IdeIndexStats {
                     roots: roots.len(),
                     ..IdeIndexStats::default()
@@ -327,7 +366,7 @@ impl IdeContextStore {
     pub(crate) fn complete(
         &mut self,
         request: &IdeScanRequest,
-        result: Result<IdeIndexBuild, &'static str>,
+        result: Result<IdeIndexBuild, IdeIndexBuildFailure>,
     ) -> bool {
         let Some(entry) = self.entries.get_mut(&request.bundle_id) else {
             return false;
@@ -343,14 +382,18 @@ impl IdeContextStore {
             Ok(build) => {
                 entry.stats = build.stats;
                 entry.index = Some(build.index);
+                entry.scan_cancel = None;
                 entry.state = EntryState::Ready;
+                true
             }
-            Err(_) => {
+            Err(failure) => {
+                entry.stats = failure.stats;
                 entry.index = None;
+                entry.scan_cancel = None;
                 entry.state = EntryState::Error;
+                false
             }
         }
-        true
     }
 
     pub(crate) fn snapshot(
@@ -409,6 +452,7 @@ pub(crate) fn normalize_config_roots(roots: &[String]) -> Vec<String> {
         .iter()
         .map(|root| root.trim())
         .filter(|root| !root.is_empty())
+        .filter(|root| root.len() <= MAX_CONFIG_ROOT_BYTES)
         .filter(|root| seen.insert((*root).to_string()))
         .take(MAX_IDE_ROOTS)
         .map(str::to_string)
@@ -418,10 +462,39 @@ pub(crate) fn normalize_config_roots(roots: &[String]) -> Vec<String> {
 /// Build one generation. Roots are canonicalized exactly once, then the walk
 /// uses lexical descendants returned by `read_dir` and refuses all symlinks and
 /// non-regular files before reading.
+#[cfg(test)]
 pub(crate) fn build_index(
+    generation: u64,
+    configured_roots: &[String],
+) -> Result<IdeIndexBuild, IdeIndexBuildFailure> {
+    let cancellation = AtomicBool::new(false);
+    build_index_controlled(
+        generation,
+        configured_roots,
+        &cancellation,
+        MAX_IDE_SCAN_DURATION,
+    )
+}
+
+pub(crate) fn build_index_with_cancellation(
+    generation: u64,
+    configured_roots: &[String],
+    cancellation: &AtomicBool,
+) -> Result<IdeIndexBuild, IdeIndexBuildFailure> {
+    build_index_controlled(
+        generation,
+        configured_roots,
+        cancellation,
+        MAX_IDE_SCAN_DURATION,
+    )
+}
+
+fn build_index_controlled(
     _generation: u64,
     configured_roots: &[String],
-) -> Result<IdeIndexBuild, &'static str> {
+    cancellation: &AtomicBool,
+    max_duration: Duration,
+) -> Result<IdeIndexBuild, IdeIndexBuildFailure> {
     let started = Instant::now();
     let mut canonical_roots = Vec::new();
     let mut seen = HashSet::new();
@@ -442,7 +515,15 @@ pub(crate) fn build_index(
         canonical_roots.push(canonical);
     }
     if canonical_roots.is_empty() {
-        return Err("no_valid_roots");
+        return Err(scan_failure(
+            &started,
+            0,
+            0,
+            0,
+            0,
+            false,
+            SCAN_OUTCOME_NO_VALID_ROOTS,
+        ));
     }
     canonical_roots.sort();
 
@@ -455,23 +536,104 @@ pub(crate) fn build_index(
     let mut indexed_files = Vec::new();
     let mut files = 0usize;
     let mut bytes = 0u64;
-    let mut capped = false;
+    let mut scanned_entries = 0usize;
 
-    'walk: while let Some((root_index, dir)) = queue.pop_front() {
+    while let Some((root_index, dir)) = queue.pop_front() {
+        if cancellation.load(Ordering::Acquire) {
+            return Err(scan_failure(
+                &started,
+                canonical_roots.len(),
+                files,
+                vocab.len(),
+                bytes,
+                false,
+                SCAN_OUTCOME_CANCELLED,
+            ));
+        }
+        if started.elapsed() >= max_duration {
+            return Err(scan_failure(
+                &started,
+                canonical_roots.len(),
+                files,
+                vocab.len(),
+                bytes,
+                true,
+                SCAN_OUTCOME_DEADLINE,
+            ));
+        }
         if files >= MAX_IDE_FILES || bytes >= MAX_IDE_TOTAL_BYTES {
-            capped = true;
-            break;
+            return Err(scan_failure(
+                &started,
+                canonical_roots.len(),
+                files,
+                vocab.len(),
+                bytes,
+                true,
+                SCAN_OUTCOME_TRUNCATED,
+            ));
         }
         let root = &canonical_roots[root_index];
         if !dir.starts_with(root) {
             continue;
         }
+        let Ok(canonical_dir) = std::fs::canonicalize(&dir) else {
+            continue;
+        };
+        let Ok(dir_metadata) = std::fs::symlink_metadata(&dir) else {
+            continue;
+        };
+        if canonical_dir != dir
+            || !canonical_dir.starts_with(root)
+            || !dir_metadata.file_type().is_dir()
+            || dir_metadata.file_type().is_symlink()
+        {
+            continue;
+        }
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
-        let mut entries = entries.flatten().collect::<Vec<_>>();
-        entries.sort_by_key(|entry| entry.file_name());
+        let mut sorted_entries = Vec::new();
         for entry in entries {
+            scanned_entries = scanned_entries.saturating_add(1);
+            if scanned_entries > MAX_IDE_SCAN_ENTRIES {
+                return Err(scan_failure(
+                    &started,
+                    canonical_roots.len(),
+                    files,
+                    vocab.len(),
+                    bytes,
+                    true,
+                    SCAN_OUTCOME_TRUNCATED,
+                ));
+            }
+            if let Ok(entry) = entry {
+                sorted_entries.push(entry);
+            }
+        }
+        sorted_entries.sort_by_key(|entry| entry.file_name());
+        for entry in sorted_entries {
+            if cancellation.load(Ordering::Acquire) {
+                return Err(scan_failure(
+                    &started,
+                    canonical_roots.len(),
+                    files,
+                    vocab.len(),
+                    bytes,
+                    false,
+                    SCAN_OUTCOME_CANCELLED,
+                ));
+            }
+            if started.elapsed() >= max_duration {
+                return Err(scan_failure(
+                    &started,
+                    canonical_roots.len(),
+                    files,
+                    vocab.len(),
+                    bytes,
+                    true,
+                    SCAN_OUTCOME_DEADLINE,
+                ));
+            }
             let name = entry.file_name();
             let name_lossy = name.to_string_lossy();
             let path = entry.path();
@@ -498,8 +660,15 @@ pub(crate) fn build_index(
                 continue;
             }
             if files >= MAX_IDE_FILES || bytes >= MAX_IDE_TOTAL_BYTES {
-                capped = true;
-                break 'walk;
+                return Err(scan_failure(
+                    &started,
+                    canonical_roots.len(),
+                    files,
+                    vocab.len(),
+                    bytes,
+                    true,
+                    SCAN_OUTCOME_TRUNCATED,
+                ));
             }
             let Ok(metadata) = std::fs::symlink_metadata(&path) else {
                 continue;
@@ -517,8 +686,21 @@ pub(crate) fn build_index(
             let Some(relative) = relative_path_text(relative) else {
                 continue;
             };
-            let Ok(contents) = std::fs::read_to_string(&path) else {
-                continue;
+            let remaining = MAX_IDE_TOTAL_BYTES.saturating_sub(bytes);
+            let contents = match read_source_file(&path, root, remaining) {
+                SourceRead::Contents(contents) => contents,
+                SourceRead::Skip => continue,
+                SourceRead::TotalCap => {
+                    return Err(scan_failure(
+                        &started,
+                        canonical_roots.len(),
+                        files,
+                        vocab.len(),
+                        bytes,
+                        true,
+                        SCAN_OUTCOME_TRUNCATED,
+                    ));
+                }
             };
             files += 1;
             bytes = bytes.saturating_add(contents.len() as u64);
@@ -536,8 +718,15 @@ pub(crate) fn build_index(
                 vocab.add_source_bounded(&contents, MAX_IDE_CANDIDATE_SYMBOLS)
             };
             if symbol_cap_reached {
-                capped = true;
-                break 'walk;
+                return Err(scan_failure(
+                    &started,
+                    canonical_roots.len(),
+                    files,
+                    vocab.len(),
+                    bytes,
+                    true,
+                    SCAN_OUTCOME_TRUNCATED,
+                ));
             }
         }
     }
@@ -557,7 +746,7 @@ pub(crate) fn build_index(
         files,
         symbols: unique_symbols.len(),
         bytes,
-        capped,
+        capped: false,
         ms: started.elapsed().as_millis() as u64,
     };
     Ok(IdeIndexBuild {
@@ -569,6 +758,93 @@ pub(crate) fn build_index(
         }),
         stats,
     })
+}
+
+fn scan_failure(
+    started: &Instant,
+    roots: usize,
+    files: usize,
+    symbols: usize,
+    bytes: u64,
+    capped: bool,
+    outcome_code: u64,
+) -> IdeIndexBuildFailure {
+    IdeIndexBuildFailure {
+        stats: IdeIndexStats {
+            roots,
+            files,
+            symbols: symbols.min(MAX_IDE_SYMBOLS),
+            bytes,
+            capped,
+            ms: started.elapsed().as_millis() as u64,
+        },
+        outcome_code,
+    }
+}
+
+enum SourceRead {
+    Contents(String),
+    Skip,
+    TotalCap,
+}
+
+fn read_source_file(path: &Path, root: &Path, remaining: u64) -> SourceRead {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+    }
+    let Ok(file) = options.open(path) else {
+        return SourceRead::Skip;
+    };
+    let Ok(opened_metadata) = file.metadata() else {
+        return SourceRead::Skip;
+    };
+    if !opened_metadata.file_type().is_file() || opened_metadata.len() > MAX_IDE_FILE_BYTES {
+        return SourceRead::Skip;
+    }
+    let Ok(canonical) = std::fs::canonicalize(path) else {
+        return SourceRead::Skip;
+    };
+    if canonical != path || !canonical.starts_with(root) {
+        return SourceRead::Skip;
+    }
+    let Ok(path_metadata) = std::fs::metadata(&canonical) else {
+        return SourceRead::Skip;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if opened_metadata.dev() != path_metadata.dev()
+            || opened_metadata.ino() != path_metadata.ino()
+        {
+            return SourceRead::Skip;
+        }
+    }
+    if opened_metadata.len() > remaining {
+        return SourceRead::TotalCap;
+    }
+    let read_limit = MAX_IDE_FILE_BYTES.min(remaining);
+    let mut bytes = Vec::with_capacity(opened_metadata.len() as usize);
+    if file
+        .take(read_limit.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .is_err()
+    {
+        return SourceRead::Skip;
+    }
+    if bytes.len() as u64 > MAX_IDE_FILE_BYTES {
+        return SourceRead::Skip;
+    }
+    if bytes.len() as u64 > remaining {
+        return SourceRead::TotalCap;
+    }
+    match String::from_utf8(bytes) {
+        Ok(contents) => SourceRead::Contents(contents),
+        Err(_) => SourceRead::Skip,
+    }
 }
 
 fn relative_path_text(path: &Path) -> Option<String> {
@@ -919,6 +1195,33 @@ mod tests {
     }
 
     #[test]
+    fn symbols_preserve_unicode_line_boundaries_and_are_idempotent() {
+        let root = scratch_dir("symbol-boundaries");
+        std::fs::write(
+            root.join("main.rs"),
+            "fn localProjectSymbol() { localProjectSymbol(); }",
+        )
+        .unwrap();
+        let index = build_index(1, &[root.to_string_lossy().to_string()])
+            .unwrap()
+            .index;
+        assert_eq!(
+            index.apply("café local project symbol naïve"),
+            "café localProjectSymbol naïve"
+        );
+        assert_eq!(
+            index.apply("local project\nsymbol"),
+            "local project\nsymbol"
+        );
+        assert_eq!(index.apply("localProjectSymbol"), "localProjectSymbol");
+        assert_eq!(
+            index.apply(&index.apply("local project symbol")),
+            "localProjectSymbol"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn symbol_ambiguity_is_resolved_before_the_output_cap() {
         let mut ranked = vec![crate::vocab::RankedTerm {
             term: "fooBar".to_string(),
@@ -989,6 +1292,9 @@ mod tests {
         assert_eq!(MAX_IDE_SYMBOLS, 500);
         assert_eq!(MAX_IDE_CANDIDATE_SYMBOLS, 10_000);
         assert_eq!(MAX_RELATIVE_PATH_BYTES, 512);
+        assert_eq!(MAX_CONFIG_ROOT_BYTES, 4_096);
+        assert_eq!(MAX_IDE_SCAN_ENTRIES, 20_000);
+        assert_eq!(MAX_IDE_SCAN_DURATION, Duration::from_secs(10));
         assert_eq!(MAX_FORMAT_INPUT_BYTES, 16 * 1024);
         let mut bounded_vocab = crate::vocab::VocabAccumulator::new();
         assert!(bounded_vocab.add_source_bounded("firstSymbol secondSymbol thirdSymbol", 2));
@@ -1004,5 +1310,50 @@ mod tests {
             ]),
             vec!["/a", "/b", "/c", "/d"]
         );
+        assert!(
+            normalize_config_roots(&[format!("/{}", "a".repeat(MAX_CONFIG_ROOT_BYTES))]).is_empty()
+        );
+    }
+
+    #[test]
+    fn cancelled_deadline_and_truncated_scans_publish_no_generation() {
+        let root = scratch_dir("fail-closed");
+        std::fs::write(root.join("main.rs"), "fn currentProjectSymbol() {}").unwrap();
+        let roots = vec![root.to_string_lossy().to_string()];
+
+        let cancelled = AtomicBool::new(true);
+        let failure = build_index_controlled(1, &roots, &cancelled, MAX_IDE_SCAN_DURATION)
+            .err()
+            .unwrap();
+        assert_eq!(failure.outcome_code, SCAN_OUTCOME_CANCELLED);
+        assert!(!failure.stats.capped);
+
+        let active = AtomicBool::new(false);
+        let failure = build_index_controlled(2, &roots, &active, Duration::ZERO)
+            .err()
+            .unwrap();
+        assert_eq!(failure.outcome_code, SCAN_OUTCOME_DEADLINE);
+        assert!(failure.stats.capped);
+
+        for index in 0..=MAX_IDE_FILES {
+            std::fs::write(
+                root.join(format!("cap-{index:04}.rs")),
+                format!("fn cappedProjectSymbol{index}() {{}}"),
+            )
+            .unwrap();
+        }
+        let mut store = IdeContextStore::default();
+        let request = store
+            .reconcile_profiles(&[profile("com.example.Editor", true, roots.clone())])
+            .remove(0);
+        let failure = build_index(request.generation, &request.roots)
+            .err()
+            .unwrap();
+        assert_eq!(failure.outcome_code, SCAN_OUTCOME_TRUNCATED);
+        assert!(failure.stats.capped);
+        assert!(!store.complete(&request, Err(failure)));
+        assert_eq!(store.status("com.example.Editor").state, "error");
+        assert!(store.snapshot("com.example.Editor", &roots).is_none());
+        let _ = std::fs::remove_dir_all(root);
     }
 }
