@@ -4,7 +4,7 @@ Smart Formatting is an opt-in, local post-recognition stage for live dictation. 
 
 ## Enablement and context
 
-The global **Smart Formatting** switch is off by default. Per-app profiles can independently inherit, enable, or disable it. Murmur resolves that value once at recording start, so focus and setting changes apply only to the next recording.
+The global **Smart Formatting** switch is off by default. Per-app writing styles can select it as part of a transparent local policy, and the profile's Prose control can independently inherit, enable, or disable it. Murmur resolves that value once at recording start, so focus and setting changes apply only to the next recording.
 
 The stage is skipped for imported-file transcription. CLI/code/verbatim contexts can bypass it through the per-app Smart Formatting override, and any utterance activated by the authoritative CLI grammar bypasses prose rules automatically. CLI canonicalization still runs after Smart Formatting.
 
