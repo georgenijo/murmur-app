@@ -45,6 +45,7 @@ Backtracking never reaches an earlier utterance, history entry, clipboard delive
 - URL formatting requires a leading `URL` or `web address` cue, an explicit `dot`, and no more than 20 tokens. `http(s) colon slash slash`, path slashes, dashes, and colons are deterministic.
 - Quotes and parentheses require a matched `open ...` / `close ...` pair containing at most 240 characters.
 - Paragraph, line, punctuation, dash, and symbol tokens are bounded whole phrases such as `new paragraph`, `question mark`, `em dash`, `plus sign`, or `equals sign`.
+- The stage fails closed for utterances larger than 16 KiB, bounding all grammar scans before allocating token lists or transformed output.
 
 No email or URL structure is inferred from ordinary prose without its cue. Unpaired quote/parenthesis markers and over-limit structures remain literal.
 

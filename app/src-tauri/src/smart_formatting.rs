@@ -8,6 +8,7 @@ const MAX_BACKTRACK_REPLACEMENT_CHARS: usize = 64;
 const MAX_LIST_ITEMS: usize = 10;
 const MAX_LIST_ITEM_WORDS: usize = 24;
 const MAX_PAIRED_CONTENT_CHARS: usize = 240;
+const MAX_SMART_FORMATTING_INPUT_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Clone)]
 struct WordSpan {
@@ -18,7 +19,7 @@ struct WordSpan {
 
 /// Apply the complete deterministic prose-formatting grammar.
 pub(crate) fn format_smart_prose(input: &str) -> String {
-    if input.trim().is_empty() {
+    if input.trim().is_empty() || input.len() > MAX_SMART_FORMATTING_INPUT_BYTES {
         return input.to_string();
     }
 
@@ -33,7 +34,10 @@ pub(crate) fn format_smart_prose(input: &str) -> String {
 fn apply_bounded_backtrack(input: &str) -> String {
     const MARKERS: &[(&str, bool)] = &[
         ("actually, make that", false),
-        ("actually make that", false),
+        // Without the spoken comma, require a separator before the cue. This
+        // keeps ordinary prose such as "I can actually make that change" from
+        // being mistaken for a correction.
+        ("actually make that", true),
         ("i mean", true),
         ("or rather", true),
         ("rather", true),
@@ -71,6 +75,7 @@ fn apply_bounded_backtrack(input: &str) -> String {
         || replacement.contains(['\n', '\r'])
         || replacement.to_ascii_lowercase().starts_with("is ")
         || replacement.to_ascii_lowercase().starts_with("that ")
+        || replacement.to_ascii_lowercase().starts_with("than ")
     {
         return input.to_string();
     }
@@ -83,6 +88,21 @@ fn apply_bounded_backtrack(input: &str) -> String {
     let abandoned = &prefix[word_start..word_end];
     if abandoned.eq_ignore_ascii_case(replacement) {
         return input.to_string();
+    }
+
+    // This intentionally replaces only the final abandoned term. If a
+    // multi-word replacement begins with the preceding term, applying it would
+    // duplicate that term ("next Friday" -> "next next Monday"). Fail closed
+    // instead of guessing at a wider abandoned phrase.
+    if replacement_words > 1 {
+        let before_abandoned = prefix[..word_start].trim_end();
+        if let Some((previous_start, previous_end)) = last_word_range(before_abandoned) {
+            let previous = &before_abandoned[previous_start..previous_end];
+            let replacement_first = replacement.split_whitespace().next().unwrap_or_default();
+            if previous.eq_ignore_ascii_case(replacement_first) {
+                return input.to_string();
+            }
+        }
     }
 
     prefix.replace_range(word_start..word_end, replacement);
@@ -650,9 +670,21 @@ mod tests {
             "Actually this is already correct",
             "Ship it Friday, I mean that the whole previous paragraph should be rewritten now",
             "I would rather stay home",
+            "I can actually make that change today",
+            "Meet Friday, rather than Monday",
+            "Send it next Friday—actually, make that next Monday",
         ] {
             assert_eq!(format_smart_prose(prose), prose);
         }
+    }
+
+    #[test]
+    fn formatting_has_an_explicit_whole_utterance_resource_bound() {
+        let over_limit = format!(
+            "Email address {} at example dot com",
+            "a".repeat(MAX_SMART_FORMATTING_INPUT_BYTES)
+        );
+        assert_eq!(format_smart_prose(&over_limit), over_limit);
     }
 
     #[test]
