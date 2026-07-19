@@ -14,15 +14,18 @@ pub fn frontmost_bundle_id() -> Option<String> {
         r#"tell application "System Events" to get bundle identifier of first process whose frontmost is true"#,
     ) {
         Ok(output) => output,
-        Err(error) => {
-            tracing::warn!(target: "pipeline", "frontmost_bundle_id: {error}");
+        Err(_) => {
+            tracing::warn!(target: "pipeline", "frontmost app query failed");
             return None;
         }
     };
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        tracing::warn!(target: "pipeline", "frontmost_bundle_id: osascript failed: {}", stderr.trim());
+        tracing::warn!(
+            target: "pipeline",
+            exit_code = output.status.code(),
+            "frontmost app query returned an error"
+        );
         return None;
     }
 

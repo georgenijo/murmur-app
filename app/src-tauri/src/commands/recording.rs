@@ -39,9 +39,8 @@ fn build_code_vocab_prompt(folder: &str) -> String {
     );
     tracing::info!(
         target: "pipeline",
-        "code vocab: scanned {} -> {} chars",
-        folder,
-        prompt.len()
+        prompt_chars = prompt.len(),
+        "code vocabulary scan completed"
     );
     prompt
 }
@@ -890,13 +889,58 @@ pub async fn get_status(state: tauri::State<'_, State>) -> Result<serde_json::Va
     }))
 }
 
+/// Privacy-safe shape for configuration telemetry. User-entered values (profile
+/// identities, vocabulary, command text, and filesystem paths) must never be
+/// formatted into a tracing message or field because pretty logs retain strings.
+#[derive(Debug, PartialEq, Eq)]
+struct ConfigurationLogMetadata {
+    option_count: u64,
+    app_profile_count: u64,
+    voice_command_count: u64,
+    custom_vocabulary_present: bool,
+    output_directory_present: bool,
+}
+
+impl ConfigurationLogMetadata {
+    fn from_options(options: &serde_json::Value) -> Self {
+        Self {
+            option_count: options.as_object().map_or(0, |object| object.len() as u64),
+            app_profile_count: options
+                .get("appProfiles")
+                .and_then(serde_json::Value::as_array)
+                .map_or(0, |profiles| profiles.len() as u64),
+            voice_command_count: options
+                .get("voiceCommands")
+                .and_then(serde_json::Value::as_array)
+                .map_or(0, |commands| commands.len() as u64),
+            custom_vocabulary_present: options
+                .get("customVocabulary")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|vocabulary| !vocabulary.trim().is_empty()),
+            output_directory_present: options
+                .get("outputDir")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|directory| !directory.trim().is_empty()),
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn configure_dictation(
     options: serde_json::Value,
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, State>,
 ) -> Result<serde_json::Value, String> {
-    tracing::info!(target: "pipeline", "configure_dictation: {}", options);
+    let log_metadata = ConfigurationLogMetadata::from_options(&options);
+    tracing::info!(
+        target: "pipeline",
+        option_count = log_metadata.option_count,
+        app_profile_count = log_metadata.app_profile_count,
+        voice_command_count = log_metadata.voice_command_count,
+        custom_vocabulary_present = log_metadata.custom_vocabulary_present,
+        output_directory_present = log_metadata.output_directory_present,
+        "configure_dictation"
+    );
 
     let model = options.get("model").and_then(|v| v.as_str()).map(String::from);
     let language = options.get("language").and_then(|v| v.as_str()).map(String::from);
@@ -1513,7 +1557,7 @@ pub async fn start_native_recording(
     tracing::info!(
         target: "pipeline",
         recording_id = rid,
-        frontmost_bundle_id = context.app.bundle_id.as_deref().unwrap_or("unknown"),
+        frontmost_app_detected = context.app.bundle_id.is_some(),
         matched_profile = context.matched_profile.is_some(),
         vocabulary_version = context.vocabulary.version,
         context_reads_enabled = context.context_capture.selected_text
@@ -1988,6 +2032,42 @@ mod tests {
         fn model_exists(&self) -> bool { true }
         fn models_dir(&self) -> Result<PathBuf, String> { Ok(std::env::temp_dir()) }
         fn reset(&mut self) {}
+    }
+
+    #[test]
+    fn configuration_log_metadata_never_contains_user_context_values() {
+        let options = serde_json::json!({
+            "appProfiles": [{
+                "bundleId": "com.private.SecretApp",
+                "label": "Secret profile",
+                "autoPasteOverride": true
+            }],
+            "customVocabulary": "private-customer-name",
+            "voiceCommands": [{
+                "phrase": "confidential phrase",
+                "replacement": "confidential replacement"
+            }],
+            "outputDir": "/Users/private/CustomerFiles"
+        });
+
+        let metadata = ConfigurationLogMetadata::from_options(&options);
+        assert_eq!(metadata.option_count, 4);
+        assert_eq!(metadata.app_profile_count, 1);
+        assert_eq!(metadata.voice_command_count, 1);
+        assert!(metadata.custom_vocabulary_present);
+        assert!(metadata.output_directory_present);
+
+        let rendered = format!("{metadata:?}");
+        for secret in [
+            "com.private.SecretApp",
+            "Secret profile",
+            "private-customer-name",
+            "confidential phrase",
+            "confidential replacement",
+            "/Users/private/CustomerFiles",
+        ] {
+            assert!(!rendered.contains(secret), "telemetry metadata leaked {secret}");
+        }
     }
 
     #[test]
