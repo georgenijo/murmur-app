@@ -140,6 +140,9 @@ pub struct AppState {
     pub idle_timeout_minutes: Mutex<u32>,
     /// Monotonically increasing ID assigned to each recording session.
     pub recording_id: AtomicU64,
+    /// Monotonically increasing opaque ID assigned to every post-recognition
+    /// transformation pass (live recordings and imported files).
+    pub transcript_session_id: AtomicU64,
     /// Set to the recording_id of a cancelled recording. Pipeline checks
     /// `cancelled_id >= my_id` at checkpoints to discard cancelled work.
     pub cancelled_id: AtomicU64,
@@ -163,6 +166,10 @@ impl AppState {
         self.recording_id.fetch_add(1, Ordering::SeqCst) + 1
     }
 
+    pub fn next_transcript_session_id(&self) -> u64 {
+        self.transcript_session_id.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
     /// Mark a recording as cancelled by storing its ID.
     pub fn cancel_recording(&self, id: u64) {
         self.cancelled_id.fetch_max(id, Ordering::SeqCst);
@@ -183,6 +190,7 @@ impl Default for AppState {
             last_transcription_at: Mutex::new(None),
             idle_timeout_minutes: Mutex::new(5),
             recording_id: AtomicU64::new(0),
+            transcript_session_id: AtomicU64::new(0),
             cancelled_id: AtomicU64::new(0),
             file_transcribing: AtomicBool::new(false),
             correction_matcher: Mutex::new(None),
@@ -202,5 +210,12 @@ mod tests {
         assert!(state.recording_transition.try_lock().is_err());
         drop(first);
         assert!(state.recording_transition.try_lock().is_ok());
+    }
+
+    #[test]
+    fn transcript_session_ids_are_monotonic() {
+        let state = AppState::default();
+        assert_eq!(state.next_transcript_session_id(), 1);
+        assert_eq!(state.next_transcript_session_id(), 2);
     }
 }

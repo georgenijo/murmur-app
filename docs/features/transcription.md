@@ -3,7 +3,7 @@
 ## Overview
 
 ```
-cpal audio capture → f32 samples in memory → 16kHz windows/full buffer → backend inference → text
+cpal audio capture → f32 samples in memory → 16kHz windows/full buffer → backend inference → ordered text transformations → delivery
 ```
 
 Transcription processing is local. Network access occurs for model setup and may also be used to fetch a missing VAD asset in the background. New installs default to FluidAudio Core ML on the Apple Neural Engine, while Whisper/Metal and sherpa-onnx/CPU remain selectable.
@@ -75,17 +75,32 @@ The worker holds no queued audio. It reads the current buffer length, copies onl
 | Medium | `medium.en` | Whisper | Yes | Slow |
 | Large Turbo | `large-v3-turbo` | Whisper | No (multilingual) | Slow |
 
-## Pipeline Orchestration (`lib.rs`)
+## Pipeline Orchestration (`commands/recording.rs`)
 
 `run_transcription_pipeline()` remains the single authoritative completion entry point:
 
 1. Read model/language/auto_paste from `DictationState` (single lock)
 2. Confirm the recording-start model preparation completed (or load synchronously as a fallback)
 3. Adopt a successfully finalized incremental Whisper transcript, or run the full-buffer backend fallback
-4. Inject text (clipboard + optional paste) on main thread
-5. Reset status to Idle
+4. Run the backend-neutral transcript transformation pipeline
+5. Persist optional file output and inject text (clipboard + optional paste) on the main thread
+6. Reset status to Idle
 
 Uses `IdleGuard` (RAII) to reset status on any early return or error — prevents the app from getting stuck in "processing" state.
+
+### Transcript transformations (`transcript_transform.rs`)
+
+`transform_transcript()` is the authoritative post-recognition entry point for both live and imported-file transcription. It owns a fixed internal sequence:
+
+```text
+raw transcript → cleanup → voice commands → Smart Correction → final text
+```
+
+Each stage receives immutable session/model/language metadata plus privacy-safe enablement flags and produces privacy-safe execution metadata (`duration_us`, changed/not-changed, outcome, and required/optional failure policy). Structured logs never include transcript text, custom replacement values, or correction vocabulary.
+
+Cleanup and voice commands are required deterministic stages when enabled. Smart Correction is optional-fallback: a future recoverable correction failure leaves the preceding text intact. Imported-file transcription invokes the same entry point with all three stages disabled so its existing raw-ASR output remains unchanged.
+
+File persistence, clipboard/paste, history, and stats are intentionally outside the transformation pipeline. The context contains only an opaque optional handle for future resolved app context; app/profile resolution remains owned by the separate context architecture.
 
 ## Model Downloads (`commands/models.rs`)
 
