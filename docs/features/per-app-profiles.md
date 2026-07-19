@@ -13,7 +13,7 @@ Murmur resolves one immutable `DictationContextSnapshot` for every live recordin
 
 One-session overrides are an explicit, typed resolver input but no trigger supplies them yet. This keeps the precedence contract ready for future commands without adding a second app-detection or settings path.
 
-Profiles select an optional `writingStyle` and can fine-tune `autoPaste`, transcript cleanup, Smart Formatting, and CLI formatting. A style is always an explicit user choice; Murmur never infers one from an app name or bundle identifier.
+Profiles select an optional `writingStyle` and can fine-tune `autoPaste`, transcript cleanup, Smart Formatting, CLI formatting, and local IDE project context. A style and IDE-context opt-in are always explicit user choices; Murmur never infers either one from an app name or bundle identifier.
 
 | Writing style | Local deterministic behavior |
 |---|---|
@@ -39,18 +39,19 @@ The snapshot contains only typed values used by the live pipeline:
 - Enabled command groups
 - Stable resolved writing-style enum
 - Context-capture permissions
+- An optional ready, memory-only IDE index for the exact matching opted-in profile
 
 `AppState` stores the snapshot with its `recording_id`. Stop and processing paths can retrieve only the matching generation. Cleanup also checks the generation, so a stale pipeline cannot read or clear a newer recording's snapshot. Focus changes and settings changes after recording starts affect only later recordings.
 
 ## Privacy boundary
 
-Context capture is deny-by-default. The current snapshot never grants reading:
+Context capture is deny-by-default. A profile may explicitly grant only its bounded local project index. The snapshot never grants reading:
 
 - Selected text
 - Nearby or surrounding screen text
 - Clipboard contents as transcription context
 
-This policy is separate from delivery. Murmur remains clipboard-first: the completed transcript is still written to the clipboard, and existing auto-paste behavior is unchanged. A future context feature must add an explicit user setting/profile override and grant the corresponding capture permission in the resolver before any new read path is introduced.
+This policy is separate from delivery. Murmur remains clipboard-first: the completed transcript is still written to the clipboard, and existing auto-paste behavior is unchanged. IDE project context does not change those denials: it reads only user-selected roots through the bounded local index described in [Local IDE Symbols and `@file` Context](ide-context.md). Unmatched profiles and app names that merely look like IDEs remain no-ops.
 
 Writing styles also do not change the ASR model, language, vocabulary inputs, prompt, file-saving behavior, clipboard write, auto-paste timing, or destination. Style telemetry contains only the stable resolved enum plus the existing matched-profile boolean; bundle identifiers, labels, setting values, and transcript content are never logged.
 

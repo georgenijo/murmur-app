@@ -27,6 +27,7 @@ Read these before working on a feature:
 - **[docs/features/auto-updater.md](docs/features/auto-updater.md)** — Auto-update system
 - **[docs/features/models.md](docs/features/models.md)** — Model management and download
 - **[docs/features/per-app-profiles.md](docs/features/per-app-profiles.md)** — Immutable per-recording context, profile precedence, privacy boundaries
+- **[docs/features/ide-context.md](docs/features/ide-context.md)** — Opt-in local IDE index, @file grammar, path/privacy boundaries
 
 ## File Map
 
@@ -47,6 +48,7 @@ Read these before working on a feature:
 | `audio.rs` | cpal capture, mono conversion, 16kHz resampling |
 | `transcriber/` | whisper-rs model loading and inference |
 | `smart_formatting.rs` | Deterministic prose formatting and same-utterance backtracking |
+| `ide_context.rs` | Memory-only bounded IDE symbol and root-relative file index |
 | `injector.rs` | Clipboard (arboard) + auto-paste (osascript) |
 | `state.rs` | `DictationState`, `AppState` with mutex-wrapped state |
 | `telemetry.rs` | Structured event system: TauriEmitterLayer, ring buffer, JSONL, privacy stripping |

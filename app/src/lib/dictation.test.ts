@@ -17,6 +17,8 @@ describe('buildConfigureOptions', () => {
           smartFormattingOverride: false,
           cliFormattingOverride: true,
           writingStyle: 'code_technical',
+          ideContextEnabled: false,
+          ideProjectRoots: [],
         },
       ],
     });

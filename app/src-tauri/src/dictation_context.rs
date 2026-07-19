@@ -7,6 +7,7 @@
 
 use crate::cli_command::CliFormattingMode;
 use crate::correction::CorrectionMatcher;
+use crate::ide_context::IdeContextIndex;
 use crate::state::{AppProfile, DictationState, VoiceCommand, WritingStyle};
 use std::sync::Arc;
 
@@ -24,6 +25,7 @@ pub struct MatchedAppProfile {
     pub cli_formatting_override: Option<bool>,
     pub smart_formatting_override: Option<bool>,
     pub writing_style: Option<WritingStyle>,
+    pub ide_context_enabled: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,6 +59,9 @@ pub struct ContextCapturePermissions {
     pub selected_text: bool,
     pub surrounding_screen_text: bool,
     pub clipboard: bool,
+    /// Permission to use the configured local project roots. This never grants
+    /// screen, selection, or clipboard reads.
+    pub local_project_index: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -79,6 +84,8 @@ pub struct TransformationSettings {
     pub cli_formatting_mode: CliFormattingMode,
     pub cli_formatting_enabled: bool,
     pub smart_formatting_enabled: bool,
+    pub ide_context_enabled: bool,
+    pub ide_context_index: Option<Arc<IdeContextIndex>>,
 }
 
 #[derive(Debug, Clone)]
@@ -119,6 +126,7 @@ pub struct ResolverInputs<'a> {
     pub global: &'a DictationState,
     pub prompt: Option<String>,
     pub correction_matcher: Option<Arc<CorrectionMatcher>>,
+    pub ide_context_index: Option<Arc<IdeContextIndex>>,
     pub vocabulary_version: u64,
     pub session_overrides: SessionOverrides,
 }
@@ -130,6 +138,13 @@ pub struct ResolverInputs<'a> {
 /// matching entry with `None` falls through to the next duplicate entry.
 pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
     let global = inputs.global;
+    let explicit_profile = inputs.bundle_id.and_then(|bundle_id| {
+        global
+            .app_profiles
+            .iter()
+            .find(|profile| profile.bundle_id == bundle_id)
+    });
+    let ide_context_enabled = explicit_profile.is_some_and(|profile| profile.ide_context_enabled);
     let writing_style =
         resolve_profile_optional(inputs.bundle_id, &global.app_profiles, |profile| {
             profile
@@ -165,7 +180,7 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
         None => style.cli_formatting_mode.unwrap_or(CliFormattingMode::Auto),
     };
     let cli_formatting_enabled = cli_override.is_some() || style.cli_formatting_enabled;
-    let smart_formatting_enabled = inputs
+    let resolved_smart_formatting = inputs
         .session_overrides
         .smart_formatting_enabled
         .unwrap_or_else(|| {
@@ -178,20 +193,19 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
                 |profile| profile.smart_formatting_override,
             )
         });
-    let matched_profile = inputs.bundle_id.and_then(|bundle_id| {
-        global
-            .app_profiles
-            .iter()
-            .find(|profile| profile.bundle_id == bundle_id)
-            .map(|profile| MatchedAppProfile {
-                bundle_id: profile.bundle_id.clone(),
-                label: profile.label.clone(),
-                auto_paste_override: profile.auto_paste_override,
-                cleanup_override: profile.cleanup_override,
-                cli_formatting_override: profile.cli_formatting_override,
-                smart_formatting_override: profile.smart_formatting_override,
-                writing_style: profile.writing_style,
-            })
+    // The explicit local-project opt-in defines a code context. Deterministic
+    // prose rewriting is always bypassed there, even if another style or
+    // fine-tuning override would otherwise enable it.
+    let smart_formatting_enabled = !ide_context_enabled && resolved_smart_formatting;
+    let matched_profile = explicit_profile.map(|profile| MatchedAppProfile {
+        bundle_id: profile.bundle_id.clone(),
+        label: profile.label.clone(),
+        auto_paste_override: profile.auto_paste_override,
+        cleanup_override: profile.cleanup_override,
+        cli_formatting_override: profile.cli_formatting_override,
+        smart_formatting_override: profile.smart_formatting_override,
+        writing_style: profile.writing_style,
+        ide_context_enabled: profile.ide_context_enabled,
     });
     let custom_vocab = !global.custom_vocabulary.trim().is_empty();
     let code_vocab = global.code_vocab_enabled;
@@ -233,6 +247,12 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
             cli_formatting_mode,
             cli_formatting_enabled,
             smart_formatting_enabled,
+            ide_context_enabled,
+            ide_context_index: if ide_context_enabled {
+                inputs.ide_context_index
+            } else {
+                None
+            },
         },
         delivery: DeliverySettings {
             auto_paste,
@@ -249,9 +269,12 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
             built_in_voice_commands: voice_commands,
             custom_voice_commands: voice_commands && !global.voice_command_pairs.is_empty(),
         },
-        // No selected-text, screen-text, or clipboard reads exist. Future
-        // features must add an explicit setting/profile override here first.
-        context_capture: ContextCapturePermissions::default(),
+        // No selected-text, screen-text, or clipboard reads exist. The project
+        // index permission is a separate explicit per-profile opt-in.
+        context_capture: ContextCapturePermissions {
+            local_project_index: ide_context_enabled,
+            ..ContextCapturePermissions::default()
+        },
         writing_style,
     }
 }
@@ -374,6 +397,7 @@ mod tests {
                 voice_commands_enabled: snapshot.enabled_command_groups.built_in_voice_commands,
                 smart_correction_enabled: snapshot.transformations.correction_enabled,
                 smart_formatting_enabled: snapshot.transformations.smart_formatting_enabled,
+                ide_context_enabled: snapshot.transformations.ide_context_enabled,
                 cli_command_enabled: snapshot.transformations.cli_formatting_enabled,
             },
         };
@@ -399,6 +423,8 @@ mod tests {
             cli_formatting_override: None,
             smart_formatting_override: None,
             writing_style: None,
+            ide_context_enabled: false,
+            ide_project_roots: Vec::new(),
         }
     }
 
@@ -412,6 +438,7 @@ mod tests {
             global,
             prompt: None,
             correction_matcher: None,
+            ide_context_index: None,
             vocabulary_version: 7,
             session_overrides,
         })
@@ -626,6 +653,42 @@ mod tests {
             ContextCapturePermissions::default()
         );
         assert!(snapshot.delivery.auto_paste);
+    }
+
+    #[test]
+    fn ide_context_requires_explicit_matching_profile_and_bypasses_prose() {
+        let mut global = DictationState {
+            smart_formatting_enabled: true,
+            ..DictationState::default()
+        };
+        let mut editor = profile("com.example.Editor", None, None);
+        editor.ide_context_enabled = true;
+        editor.ide_project_roots = vec!["/explicit/project".to_string()];
+        global.app_profiles = vec![editor];
+
+        let opted_in = resolve_test(
+            &global,
+            Some("com.example.Editor"),
+            SessionOverrides::default(),
+        );
+        assert!(opted_in.transformations.ide_context_enabled);
+        assert!(!opted_in.transformations.smart_formatting_enabled);
+        assert!(opted_in.context_capture.local_project_index);
+        assert!(!opted_in.context_capture.surrounding_screen_text);
+        assert!(!opted_in.context_capture.selected_text);
+        assert!(!opted_in.context_capture.clipboard);
+
+        let ide_named_but_unconfigured = resolve_test(
+            &global,
+            Some("com.apple.dt.Xcode"),
+            SessionOverrides::default(),
+        );
+        assert!(!ide_named_but_unconfigured.transformations.ide_context_enabled);
+        assert!(ide_named_but_unconfigured.transformations.smart_formatting_enabled);
+        assert_eq!(
+            ide_named_but_unconfigured.context_capture,
+            ContextCapturePermissions::default()
+        );
     }
 
     #[test]

@@ -5826,6 +5826,7 @@ dependencies = [
  "fluidaudio-rs",
  "futures-util",
  "hound",
+ "libc",
  "memory-stats",
  "objc2",
  "objc2-app-kit",

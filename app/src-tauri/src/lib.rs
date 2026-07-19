@@ -11,6 +11,7 @@ mod dictation_context;
 mod file_output;
 mod frontmost;
 mod injector;
+mod ide_context;
 mod keyboard;
 mod partial_transcript;
 mod platform;
@@ -141,6 +142,9 @@ pub fn run() {
             commands::recording::transcribe_file,
             commands::recording::scan_code_vocab,
             commands::recording::cancel_code_vocab_scan,
+            commands::recording::get_ide_context_status,
+            commands::recording::refresh_ide_context,
+            commands::recording::clear_ide_context,
             commands::permissions::open_system_preferences,
             commands::permissions::check_accessibility_permission,
             commands::permissions::request_accessibility_permission,

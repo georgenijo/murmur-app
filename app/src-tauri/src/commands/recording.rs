@@ -157,12 +157,26 @@ fn resolve_live_context(
         let sanitized = dictation.custom_vocabulary.replace('\0', "");
         let prompt = combine_prompts(&sanitized, &code_vocab);
         let correction_matcher = app_state.correction_matcher.lock_or_recover().clone();
+        let ide_context_index = bundle_id.and_then(|bundle_id| {
+            dictation
+                .app_profiles
+                .iter()
+                .find(|profile| profile.bundle_id == bundle_id)
+                .filter(|profile| profile.ide_context_enabled)
+                .and_then(|profile| {
+                    app_state
+                        .ide_context
+                        .lock_or_recover()
+                        .snapshot(bundle_id, &profile.ide_project_roots)
+                })
+        });
         let vocabulary_version = app_state.settings_revision.load(Ordering::SeqCst);
         return Arc::new(dictation_context::resolve(ResolverInputs {
             bundle_id,
             global: &dictation,
             prompt,
             correction_matcher,
+            ide_context_index,
             vocabulary_version,
             session_overrides: SessionOverrides::default(),
         }));
@@ -698,6 +712,7 @@ async fn run_transcription_pipeline(
                 .built_in_voice_commands,
             smart_correction_enabled: transformations.correction_enabled,
             smart_formatting_enabled: transformations.smart_formatting_enabled,
+            ide_context_enabled: transformations.ide_context_enabled,
             cli_command_enabled: transformations.cli_formatting_enabled,
         },
     };
@@ -709,6 +724,7 @@ async fn run_transcription_pipeline(
         custom_commands,
         correction_matcher: transformations.correction_matcher.clone(),
         cli_lexicon,
+        ide_context_index: transformations.ide_context_index.clone(),
     };
     let transformed = crate::transcript_transform::transform_transcript(
         text,
@@ -1115,6 +1131,24 @@ pub async fn configure_dictation(
                     .get("smartFormattingOverride")
                     .and_then(|v| v.as_bool());
                 let writing_style = parse_writing_style(p.get("writingStyle"));
+                let ide_context_enabled = p
+                    .get("ideContextEnabled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let ide_project_roots = p
+                    .get("ideProjectRoots")
+                    .and_then(|value| value.as_array())
+                    .map(|roots| {
+                        let roots = roots
+                            .iter()
+                            .filter_map(|root| root.as_str())
+                            .map(str::trim)
+                            .filter(|root| !root.is_empty())
+                            .map(str::to_string)
+                            .collect::<Vec<_>>();
+                        crate::ide_context::normalize_config_roots(&roots)
+                    })
+                    .unwrap_or_default();
                 Some(crate::state::AppProfile {
                     bundle_id,
                     label,
@@ -1123,9 +1157,19 @@ pub async fn configure_dictation(
                     cli_formatting_override,
                     smart_formatting_override,
                     writing_style,
+                    ide_context_enabled,
+                    ide_project_roots,
                 })
             })
             .collect();
+        let requests = state
+            .app_state
+            .ide_context
+            .lock_or_recover()
+            .reconcile_profiles(&dictation.app_profiles);
+        for request in requests {
+            schedule_ide_scan(app_handle.clone(), request);
+        }
     }
 
     if let Some(cleanup_enabled) = options.get("cleanupEnabled").and_then(|v| v.as_bool()) {
@@ -1560,6 +1604,165 @@ pub async fn scan_code_vocab(
     Ok(summary)
 }
 
+/// Run a memory-only IDE project scan off the async runtime. Completion adopts
+/// only the still-current generation; root/profile changes and Clear invalidate
+/// the request before it can publish stale symbols.
+fn schedule_ide_scan(
+    app_handle: tauri::AppHandle,
+    request: crate::ide_context::IdeScanRequest,
+) {
+    tracing::info!(
+        target: "pipeline",
+        generation = request.generation,
+        roots = request.roots.len(),
+        "ide_context_scan: start"
+    );
+    tauri::async_runtime::spawn(async move {
+        let generation = request.generation;
+        let roots = request.roots.clone();
+        let cancellation = request.cancellation.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            crate::ide_context::build_index_with_cancellation(
+                generation,
+                &roots,
+                cancellation.as_ref(),
+            )
+        })
+        .await
+        .unwrap_or_else(|_| Err(crate::ide_context::IdeIndexBuildFailure::task_failed()));
+
+        let (files, symbols, bytes, capped, ms, outcome_code) = match &result {
+            Ok(build) => (
+                build.stats.files as u64,
+                build.stats.symbols as u64,
+                build.stats.bytes,
+                build.stats.capped,
+                build.stats.ms,
+                1u64,
+            ),
+            Err(failure) => (
+                failure.stats.files as u64,
+                failure.stats.symbols as u64,
+                failure.stats.bytes,
+                failure.stats.capped,
+                failure.stats.ms,
+                failure.outcome_code,
+            ),
+        };
+        let state = app_handle.state::<State>();
+        let adopted = state
+            .app_state
+            .ide_context
+            .lock_or_recover()
+            .complete(&request, result);
+        if adopted {
+            state.app_state.bump_settings_revision();
+        }
+        tracing::info!(
+            target: "pipeline",
+            generation,
+            roots = request.roots.len(),
+            files,
+            symbols,
+            bytes,
+            capped,
+            ms,
+            adopted,
+            outcome_code,
+            "ide_context_scan: complete"
+        );
+    });
+}
+
+fn enabled_ide_profile_roots(app_state: &AppState, bundle_id: &str) -> Option<Vec<String>> {
+    app_state
+        .dictation
+        .lock_or_recover()
+        .app_profiles
+        .iter()
+        .find(|profile| profile.bundle_id == bundle_id)
+        .filter(|profile| profile.ide_context_enabled)
+        .map(|profile| profile.ide_project_roots.clone())
+}
+
+fn refresh_expired_ide_context(
+    app_handle: &tauri::AppHandle,
+    app_state: &AppState,
+    bundle_id: Option<&str>,
+) {
+    let Some(bundle_id) = bundle_id else {
+        return;
+    };
+    let Some(roots) = enabled_ide_profile_roots(app_state, bundle_id) else {
+        return;
+    };
+    let request = app_state
+        .ide_context
+        .lock_or_recover()
+        .refresh_if_expired(bundle_id, &roots);
+    if let Some(request) = request {
+        app_state.bump_settings_revision();
+        schedule_ide_scan(app_handle.clone(), request);
+    }
+}
+
+#[tauri::command]
+pub fn get_ide_context_status(
+    state: tauri::State<'_, State>,
+    bundle_id: String,
+) -> crate::ide_context::IdeContextStatus {
+    state
+        .app_state
+        .ide_context
+        .lock_or_recover()
+        .status(bundle_id.trim())
+}
+
+#[tauri::command]
+pub fn refresh_ide_context(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, State>,
+    bundle_id: String,
+) -> Result<crate::ide_context::IdeContextStatus, String> {
+    let bundle_id = bundle_id.trim();
+    let roots = enabled_ide_profile_roots(&state.app_state, bundle_id)
+        .ok_or_else(|| "Enable local project context on this app profile first.".to_string())?;
+    let request = state
+        .app_state
+        .ide_context
+        .lock_or_recover()
+        .begin_refresh(bundle_id, &roots)
+        .ok_or_else(|| "Add at least one project root first.".to_string())?;
+    state.app_state.bump_settings_revision();
+    schedule_ide_scan(app_handle, request);
+    Ok(state
+        .app_state
+        .ide_context
+        .lock_or_recover()
+        .status(bundle_id))
+}
+
+#[tauri::command]
+pub fn clear_ide_context(
+    state: tauri::State<'_, State>,
+    bundle_id: String,
+) -> Result<crate::ide_context::IdeContextStatus, String> {
+    let bundle_id = bundle_id.trim();
+    let roots = enabled_ide_profile_roots(&state.app_state, bundle_id)
+        .ok_or_else(|| "Enable local project context on this app profile first.".to_string())?;
+    state
+        .app_state
+        .ide_context
+        .lock_or_recover()
+        .clear(bundle_id, &roots);
+    state.app_state.bump_settings_revision();
+    Ok(state
+        .app_state
+        .ide_context
+        .lock_or_recover()
+        .status(bundle_id))
+}
+
 #[tauri::command]
 pub async fn start_native_recording(
     app_handle: tauri::AppHandle,
@@ -1618,6 +1821,7 @@ pub async fn start_native_recording(
         }
     };
     let bundle_id = crate::frontmost::frontmost_bundle_id();
+    refresh_expired_ide_context(&app_handle, &state.app_state, bundle_id.as_deref());
     let context = resolve_live_context(&state.app_state, bundle_id.as_deref());
     state.app_state.set_active_context(rid, Arc::clone(&context));
     tracing::info!(
@@ -1630,7 +1834,8 @@ pub async fn start_native_recording(
         vocabulary_version = context.vocabulary.version,
         context_reads_enabled = context.context_capture.selected_text
             || context.context_capture.surrounding_screen_text
-            || context.context_capture.clipboard,
+            || context.context_capture.clipboard
+            || context.context_capture.local_project_index,
         "dictation context resolved"
     );
     tracing::info!(target: "pipeline", "start_native_recording: device={} recording_id={}", device_name.as_deref().unwrap_or("system_default"), rid);
