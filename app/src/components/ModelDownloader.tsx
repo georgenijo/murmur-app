@@ -15,8 +15,12 @@ const MODEL_DESCRIPTIONS: Record<string, string> = {
   'base.en': 'Good balance of speed and accuracy',
 };
 
-/** Subset of models shown on the initial download screen (first = default). */
-const DOWNLOAD_MODEL_KEYS: ModelOption[] = [
+/**
+ * Subset of models shown on the initial download screen (first = default).
+ * Exported so embedders (the onboarding wizard) can probe exactly the rows
+ * the panel renders for on-disk existence.
+ */
+export const DOWNLOAD_MODEL_KEYS: ModelOption[] = [
   'parakeet-tdt-0.6b-v3-coreml',
   'parakeet-tdt-0.6b-v2-fp16',
   'large-v3-turbo',
@@ -33,6 +37,13 @@ interface Props {
   onComplete: (model: ModelOption) => void;
   /** Notifies embedders when a download starts/stops (e.g. to lock navigation). */
   onDownloadingChange?: (downloading: boolean) => void;
+  /**
+   * Per-model on-disk status from the embedder's probe. Installed rows show an
+   * "Installed" chip instead of the size, and selecting one turns the primary
+   * button into Continue (completes without downloading). Omitted = unknown,
+   * every row behaves as before.
+   */
+  installedModels?: Partial<Record<ModelOption, boolean>>;
 }
 
 type DownloadState =
@@ -45,7 +56,7 @@ type DownloadState =
  * Used by the standalone first-launch gate (ModelDownloader) and embedded in
  * the onboarding wizard's model step (OnboardingFlow).
  */
-export function ModelDownloadPanel({ initialModel, onComplete, onDownloadingChange }: Props) {
+export function ModelDownloadPanel({ initialModel, onComplete, onDownloadingChange, installedModels }: Props) {
   const [selected, setSelected] = useState<ModelOption>(
     MODELS.some((model) => model.name === initialModel) ? initialModel : MODELS[0].name
   );
@@ -101,6 +112,7 @@ export function ModelDownloadPanel({ initialModel, onComplete, onDownloadingChan
   const progressPercent = progress ? modelDownloadPercent(progress) : null;
 
   const isDownloading = downloadState.phase === 'downloading';
+  const selectedInstalled = installedModels?.[selected] === true;
 
   return (
     <div>
@@ -120,9 +132,15 @@ export function ModelDownloadPanel({ initialModel, onComplete, onDownloadingChan
                 <span className="text-sm font-medium text-on-surface">
                   {model.label}
                 </span>
-                <span className="text-xs text-on-surface-variant font-mono">
-                  {model.size}
-                </span>
+                {installedModels?.[model.name] ? (
+                  <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[11px] font-medium text-primary">
+                    Installed
+                  </span>
+                ) : (
+                  <span className="text-xs text-on-surface-variant font-mono">
+                    {model.size}
+                  </span>
+                )}
               </div>
               <p className="text-xs text-on-surface-variant mt-0.5">
                 {model.description}
@@ -171,13 +189,17 @@ export function ModelDownloadPanel({ initialModel, onComplete, onDownloadingChan
           </div>
         )}
 
+        {/* An installed selection completes immediately — same path a finished
+            download takes — so nothing on disk is ever re-downloaded. */}
         <button
-          onClick={handleDownload}
+          onClick={selectedInstalled ? () => onComplete(selected) : handleDownload}
           disabled={isDownloading}
           className="w-full rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-on-primary transition-colors hover:bg-primary-dim disabled:cursor-not-allowed disabled:opacity-50"
         >
           {isDownloading
             ? progress ? modelDownloadLabel(progress) : 'Starting...'
+            : selectedInstalled
+            ? 'Continue'
             : downloadState.phase === 'error'
             ? 'Retry Download'
             : 'Download'}

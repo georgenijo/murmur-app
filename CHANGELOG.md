@@ -16,6 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - Successful trusted version-bump builds now automatically create the matching tag and publish their already-verified artifacts; manual builds remain rehearsals and tag pushes remain a recovery path (#239).
 
 ### Fixed
+- The setup assistant's model step now detects every already-downloaded model, badges installed rows, and offers Continue instead of Download for them; the wizard is also skipped entirely when permissions are granted and any model exists on disk (#240).
 - Consecutive Core ML dictations now start with fresh Parakeet decoder state, preventing later one-shot recordings from collapsing to punctuation-only empty transcripts (#236).
 - `murmur-diag` now reads and source-labels both release and dev log streams without duplicate file ingestion, keeps cross-build correlation isolated, and uses one documented user-level MCP registration instead of per-worktree registrations (#191).
 - Code-vocabulary scans now keep the View-all dialog keyboard focus contained and restore the opener on close, correlate live progress by scan ID, and report superseded results when settings change during a walk instead of presenting non-adopted terms as complete (#209).
