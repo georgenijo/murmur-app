@@ -20,7 +20,7 @@ const COLLAPSE_DELAY_MS = 300;
 const SHRINK_DELAY_MS = 380;
 const HOVER_WATCHDOG_MS = 250;
 const HOVER_BOUNDS_PADDING = 8;
-const HOVER_OPEN_DWELL_MS = 400;
+const HOVER_OPEN_DWELL_MS = 150;
 const DROPDOWN_H = 44;
 
 function formatElapsed(seconds: number): string {
