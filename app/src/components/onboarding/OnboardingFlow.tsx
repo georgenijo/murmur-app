@@ -10,7 +10,7 @@ import {
   resetMicrophonePermission,
   type MicPermissionStatus,
 } from '../../lib/dictation';
-import { ModelDownloadPanel } from '../ModelDownloader';
+import { DOWNLOAD_MODEL_KEYS, ModelDownloadPanel } from '../ModelDownloader';
 import type { DoubleTapKey, ModelOption, RecordingMode } from '../../lib/settings';
 
 type Step = 'welcome' | 'microphone' | 'accessibility' | 'model' | 'done';
@@ -56,8 +56,12 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   const [axGranted, setAxGranted] = useState<boolean | null>(null);
   const [axRequested, setAxRequested] = useState(false);
   const [axError, setAxError] = useState<string | null>(null);
-  // null = not checked yet; the model step shows a spinner-less blank until known.
-  const [modelInstalled, setModelInstalled] = useState<boolean | null>(null);
+  // Per-model on-disk status for every option the download panel offers.
+  // null = not probed yet; the model step shows a spinner-less blank until known.
+  const [installedModels, setInstalledModels] = useState<Partial<Record<ModelOption, boolean>> | null>(null);
+  // Whether the model step finished with a model on disk (Continue or download);
+  // drives the done-step summary row.
+  const [modelInstalled, setModelInstalled] = useState(false);
   const [installedModel, setInstalledModel] = useState<ModelOption>(initialModel);
   // Lock Back while a download is in flight: unmounting the panel wouldn't stop
   // the Rust download_model command, and re-entering the step could start a
@@ -96,16 +100,39 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
     };
   }, [refreshPermissions]);
 
-  // Check whether the selected model is already on disk when entering the
-  // model step (re-run of the wizard, or a partially completed first launch).
+  // Probe every offered model when entering the model step (re-run of the
+  // wizard, or a fresh webview data store next to an installed app), so any
+  // already-downloaded model shows as Installed instead of just the settings
+  // default (#240).
   useEffect(() => {
     if (step !== 'model') return;
-    checkModelExists(initialModel)
-      .then(setModelInstalled)
-      // Fail open (skip the download) — matches the standalone gate's behavior;
-      // a genuine fresh install resolves to `false` rather than throwing.
-      .catch(() => setModelInstalled(true));
-  }, [step, initialModel]);
+    let stale = false;
+    Promise.all(
+      DOWNLOAD_MODEL_KEYS.map((model) =>
+        checkModelExists(model).then(
+          (exists) => [model, exists] as const,
+          // Fail open per row (skip the download) — matches the standalone
+          // gate's behavior; a genuine fresh install resolves to `false`
+          // rather than throwing.
+          () => [model, true] as const,
+        ),
+      ),
+    ).then((entries) => {
+      if (!stale) {
+        setInstalledModels(Object.fromEntries(entries) as Partial<Record<ModelOption, boolean>>);
+      }
+    });
+    return () => {
+      stale = true;
+    };
+  }, [step]);
+
+  // If the settings model is missing but another offered model is on disk,
+  // pre-select an installed one so the primary action is Continue, not Download.
+  const preferredModel =
+    installedModels === null || installedModels[initialModel]
+      ? initialModel
+      : DOWNLOAD_MODEL_KEYS.find((model) => installedModels[model]) ?? initialModel;
 
   const stepIndex = STEP_ORDER.indexOf(step);
   const goNext = () => setStep(STEP_ORDER[Math.min(stepIndex + 1, STEP_ORDER.length - 1)]);
@@ -353,17 +380,13 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
               runs offline.
             </p>
 
-            {modelInstalled === null ? (
+            {installedModels === null ? (
               <div className="h-24" />
-            ) : modelInstalled ? (
-              <div>
-                <GrantedCard label="Model already installed" />
-                <WizardFooter onBack={goBack} onNext={goNext} nextEnabled nextLabel="Continue" />
-              </div>
             ) : (
               <div>
                 <ModelDownloadPanel
-                  initialModel={initialModel}
+                  initialModel={preferredModel}
+                  installedModels={installedModels}
                   onDownloadingChange={setModelDownloading}
                   onComplete={(model) => {
                     setInstalledModel(model);

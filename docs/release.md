@@ -1,13 +1,14 @@
 # Release build and promotion
 
-Murmur builds signed release artifacts once on trusted `main`, then promotes
-those exact artifacts when a version tag is pushed. A tag does not compile the
-application and cannot save Cargo or CUDA caches.
+Murmur builds signed release artifacts once on trusted `main`, then automatically
+promotes those exact artifacts after the version-bump build succeeds. Promotion
+creates the matching version tag; neither automatic nor recovery tag runs compile
+the application or save Cargo or CUDA caches.
 
 ## Trust and cache policy
 
 - `Release Build` runs automatically only for a `main` push whose commit starts
-  with `chore: bump version`, or by an explicit `workflow_dispatch` on `main`.
+  with `chore: bump version`, or by an explicit `workflow_dispatch` rehearsal.
 - Frontend validation, macOS build/sign/notarization, and Linux CUDA packaging
   run concurrently. A workflow run is successful only when all three pass.
 - Linux release packaging is limited to the supported updater artifacts (`deb`
@@ -35,8 +36,10 @@ is disabled) so the updater can distinguish the deb and AppImage packages.
 Each artifact contains `provenance.json` with the exact commit SHA, workflow
 run ID, platform/updater names, sizes, and SHA-256 hashes. Promotion accepts one
 unexpired macOS artifact and one unexpired Linux artifact from a successful
-`Release Build` on `main` for the exact tag commit. Any tag, run, filename,
-hash, or updater-signature mismatch fails before a draft release is created.
+`Release Build` on `main` for the exact source commit. Automatic promotion also
+requires a successful `push` event, the version-bump commit prefix, and matching
+semver values in `tauri.conf.json`, `Cargo.toml`, and `Cargo.lock`. Any tag, run,
+filename, version, hash, or updater-signature mismatch fails before publication.
 
 The modern updater manifest is generated from the downloaded `.sig` files.
 After release-asset upload, the workflow downloads the remote `.sig` assets and
@@ -75,7 +78,8 @@ release targets are macOS <= 5 minutes, Linux <= 9 minutes, and total wall time
 
 ## Cold fallback
 
-If the automatic build for a version-bump commit fails, do not push a tag.
+If the automatic build for a version-bump commit fails, no tag or release is
+created. Do not push a tag.
 Correct the infrastructure problem and rerun the original workflow at the same
 commit (`gh run rerun <run-id> --failed`). A rerun preserves the trusted push
 event and exact source SHA. If `main` still points to the version-bump commit, a
@@ -85,12 +89,20 @@ being repaired.
 
 If artifacts expired or `main` has advanced, rerun the original version-bump
 workflow rather than building arbitrary PR or tag code with signing secrets.
-Promotion remains blocked until a successful build and both SHA-named artifacts
-exist for the tag commit.
+Promotion remains blocked until a successful trusted push build and both
+SHA-named artifacts exist for the version-bump commit.
 
-## Final release gate
+## Release authorization and recovery
 
-`prompts/PROMPT_RELEASE.md` requires a separate explicit confirmation after the
-trusted build succeeds and before creating or pushing `vX.Y.Z`. Pushing that
-tag is the real release action: it validates the tag SHA, promotes the stored
-artifacts, creates a draft, verifies remote updater integrity, and publishes.
+`prompts/PROMPT_RELEASE.md` requires explicit confirmation before pushing the
+version-bump commit. That push is the release action: after its exact trusted
+build succeeds, `Release` validates the run and three synchronized version files,
+downloads and verifies the immutable artifacts, creates `vX.Y.Z`, prepares the
+release, verifies remote updater integrity, and publishes.
+
+Manual `Release Build` dispatches remain non-publishing rehearsals, even when
+they succeed. The tag trigger remains an operator recovery path for an automatic
+promotion failure; it applies the same commit, build, version, artifact, and
+signature gates. Re-running promotion for an already-published tag at the same
+commit exits successfully without replacing the release, while a tag that points
+to a different commit fails closed.

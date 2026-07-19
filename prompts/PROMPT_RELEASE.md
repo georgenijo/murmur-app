@@ -1,6 +1,6 @@
 # Agent Startup — Release Mode
 
-You are starting a release session for the Murmur project. Work autonomously through preparation and the trusted release build. Stop for a separate explicit final confirmation before creating or pushing the tag, because the tag promotes and publishes the release.
+You are starting a release session for the Murmur project. Work autonomously through preparation, the trusted release build, and automatic promotion. Treat the version-bump push as the release authorization: after that exact trusted build succeeds, GitHub automatically creates the tag and publishes the release.
 
 ## 1. Load Context
 
@@ -47,12 +47,13 @@ Include the min_version decision in the release summary.
 Present a concise release summary:
 - Current version → New version (and why: major/minor/patch)
 - Bullet list of what's included (one line per meaningful commit, skip chores/docs)
-- Explain that pushing the version-bump commit starts a signed, non-publishing
-  `Release Build`; the tag/publish confirmation comes only after that build is green.
-- Ask: **"Ready to prepare the signed v{new_version} build on main? This will not create a tag or publish a release."**
+- Explain that pushing the version-bump commit starts the signed `Release Build`
+  and that a successful build automatically creates `v{new_version}` and publishes
+  its exact artifacts. A failed build never creates a tag or release.
+- Ask: **"Ready to release v{new_version}? This will push the version bump to main; if the signed build succeeds, GitHub will automatically tag and publish it."**
 
-Stop and wait for confirmation. This confirmation authorizes only the version
-bump, main push, and non-publishing build. Do not create or push a tag yet.
+Stop and wait for confirmation. This is the release confirmation: it authorizes
+the version bump, main push, and automatic tag/publish after all gates pass.
 
 ## 5. Build Trusted Artifacts
 
@@ -60,33 +61,29 @@ Run these steps in order:
 
 1. Bump `"version"` in `app/src-tauri/tauri.conf.json`
 2. Bump `version` (package field only) in `app/src-tauri/Cargo.toml`
-3. Commit: `git add app/src-tauri/tauri.conf.json app/src-tauri/Cargo.toml && git commit -m "chore: bump version to {new_version}"`
-4. Push: `git push origin main`
-5. Wait for the `Release Build` workflow on that exact commit to succeed.
-6. Verify its `typecheck`, `release-macos`, and `release-linux` jobs, signed
+3. Update the `ui` package version in `app/src-tauri/Cargo.lock`
+4. Commit all three version files with: `chore: bump version to {new_version}`
+5. Push: `git push origin main`
+6. Wait for the `Release Build` workflow on that exact commit to succeed.
+7. Verify its `typecheck`, `release-macos`, and `release-linux` jobs, signed
    artifacts named with the exact 40-character commit SHA, package smoke tests,
    and cache summaries. Do not continue if any job or artifact is missing.
 
-If the build fails, use the cold fallback in `docs/release.md`; do not tag.
+If the build fails, use the cold fallback in `docs/release.md`. Automation will
+not create a tag or release for a failed build.
 
-## 6. Final Tag and Publish Confirmation
+## 6. Verify Automatic Promotion
 
-Present the exact commit SHA, successful Release Build run URL/timings, artifact
-names, and proposed tag. Ask:
+Wait for the `Release` workflow started by the completed `Release Build`. Verify
+that it used the exact build run ID and commit SHA, created `v{new_version}` at
+that commit, validated both immutable artifacts and updater signatures, and
+published the GitHub Release.
 
-**"The signed artifacts are ready. Confirm pushing v{new_version}; this will promote and publish the GitHub Release."**
+If automatic promotion fails after the build succeeded, fix or rerun it. The
+tag-triggered workflow remains the recovery path: only push the matching tag
+manually after confirming the exact successful trusted-main build and source SHA.
 
-Stop and wait for explicit confirmation. A prior confirmation to prepare or
-build the release does not authorize the tag.
-
-## 7. Promote Release
-
-Only after the final confirmation:
-
-1. Tag the already-built commit: `git tag v{new_version}`
-2. Push the tag: `git push origin v{new_version}`
-3. Wait for the tag-triggered `Release` workflow to validate and publish the
-   immutable artifacts (normally under two minutes), then update its notes:
+Then update its notes:
    ```
    gh release edit v{new_version} --repo georgenijo/murmur-app --notes "$(cat <<'EOF'
    ## What's New
@@ -105,9 +102,9 @@ Only after the final confirmation:
    ```
    Write the notes yourself from the commit list in Step 3 — use clear, user-facing language (not raw commit messages). Omit any section that has no entries. Skip `chore:`, `docs:`, `test:` commits.
 
-## 8. Hand Off
+## 7. Hand Off
 
 Tell the user:
-- Tag pushed — GitHub Actions is promoting the already-built signed artifacts
-- Where to watch: `https://github.com/georgenijo/murmur-app/actions`
-- Release will publish automatically at: `https://github.com/georgenijo/murmur-app/releases`
+- Exact commit, build run, promotion run, tag, and release URLs
+- The signed build passed and GitHub automatically promoted its exact artifacts
+- The release is published at: `https://github.com/georgenijo/murmur-app/releases`

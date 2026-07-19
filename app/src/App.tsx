@@ -30,6 +30,7 @@ import { ModelDownloader } from './components/ModelDownloader';
 import { OnboardingFlow } from './components/onboarding/OnboardingFlow';
 import { isOnboardingComplete, markOnboardingComplete, resetOnboarding } from './lib/onboarding';
 import { checkAccessibilityPermission, checkMicrophonePermissionStatus, checkModelExists } from './lib/dictation';
+import { AVAILABLE_MODEL_OPTIONS } from './lib/settings';
 
 function App() {
   // --- Diagnostic: track when main window becomes visible/focused ---
@@ -70,8 +71,11 @@ function App() {
   }, []);
 
   // Setup-assistant gate. Runs when the completion flag is absent, but
-  // grandfathers existing installs: if both permissions and the model are
+  // grandfathers existing installs: if both permissions and *any* model are
   // already in place, set the flag silently so upgrades never see the wizard.
+  // Checking every model (not just the settings default) keeps a fresh webview
+  // data store (e.g. tauri dev vs installed app) from re-running the wizard
+  // when models are already on disk (#240).
   const [onboardingState, setOnboardingState] = useState<'unknown' | 'needed' | 'done'>('unknown');
   useEffect(() => {
     if (isOnboardingComplete()) {
@@ -79,17 +83,20 @@ function App() {
       return;
     }
     (async () => {
-      const [micStatus, axGranted, modelExists] = await Promise.all([
+      const [micStatus, axGranted, modelsOnDisk] = await Promise.all([
         checkMicrophonePermissionStatus().catch(() => 'unknown' as const),
         checkAccessibilityPermission().catch(() => false),
-        checkModelExists(settings.model).catch(() => false),
+        Promise.all(
+          AVAILABLE_MODEL_OPTIONS.map((option) => checkModelExists(option.value).catch(() => false)),
+        ),
       ]);
-      if (micStatus === 'granted' && axGranted && modelExists) {
-        flog.info('main', 'Onboarding grandfathered: permissions and model already present');
+      const anyModelExists = modelsOnDisk.some(Boolean);
+      if (micStatus === 'granted' && axGranted && anyModelExists) {
+        flog.info('main', 'Onboarding grandfathered: permissions and a model already present');
         markOnboardingComplete();
         setOnboardingState('done');
       } else {
-        flog.info('main', 'Onboarding needed', { micStatus, axGranted, modelExists });
+        flog.info('main', 'Onboarding needed', { micStatus, axGranted, anyModelExists });
         setOnboardingState('needed');
       }
     })();

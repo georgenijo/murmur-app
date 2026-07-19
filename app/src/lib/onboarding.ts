@@ -3,8 +3,8 @@
  *
  * The setup assistant (OnboardingFlow) runs when this flag is absent. Existing
  * installs are grandfathered at mount: if the mic + accessibility permissions
- * and the selected model are already in place, App sets the flag silently so
- * upgrades never see the wizard. Stored in localStorage alongside settings,
+ * and any model are already in place, App sets the flag silently so upgrades
+ * never see the wizard. Stored in localStorage alongside settings,
  * stats, and history.
  */
 
