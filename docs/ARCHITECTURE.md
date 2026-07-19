@@ -526,10 +526,13 @@ cd app && npx tsc --noEmit         # TypeScript check
    Linux CUDA packaging concurrently, including package launch smoke tests.
 3. The successful build stores macOS and Linux artifacts plus SHA-256
    provenance under names keyed by the exact commit SHA.
-4. After a separate final confirmation, push `vX.Y.Z` at that same commit.
-5. The tag workflow validates the tag/build/artifact/signature chain, promotes
-   the already-built assets, verifies the remote `.sig` files, generates
-   `latest-v2.json` and the legacy-safe `latest.json`, then publishes.
+4. The completed-build event verifies the trusted push, version-bump message,
+   matching versions, exact run ID, source SHA, and immutable artifacts.
+5. Promotion creates `vX.Y.Z` at that commit, verifies the remote `.sig` files,
+   generates `latest-v2.json` and the legacy-safe `latest.json`, then publishes.
+
+Manual build dispatches are rehearsal-only, and the tag trigger remains a
+recovery path protected by the same validation chain.
 
 Tag workflows never build or save Cargo/CUDA caches. See
 [`docs/release.md`](release.md) for trust boundaries, rehearsals, cache policy,

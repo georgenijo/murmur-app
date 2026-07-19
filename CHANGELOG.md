@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ### Changed
 - The main window, settings, transcription history, recording controls, and log viewer now use the Sonic Canvas surface hierarchy and semantic palette in light and dark appearances (#141).
 - Release automation now builds signed macOS and Linux artifacts once on trusted `main`, keeps Cargo/CUDA cache ownership off tags and pull requests, and promotes only commit-SHA-matched artifacts with fail-closed updater-signature checks (#220).
+- Successful trusted version-bump builds now automatically create the matching tag and publish their already-verified artifacts; manual builds remain rehearsals and tag pushes remain a recovery path (#239).
 
 ### Fixed
 - Consecutive Core ML dictations now start with fresh Parakeet decoder state, preventing later one-shot recordings from collapsing to punctuation-only empty transcripts (#236).
