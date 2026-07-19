@@ -48,12 +48,19 @@ describe('loadSettings', () => {
           cleanupOverride: null,
           cliFormattingOverride: 'yes',
         },
+        {
+          bundleId: 'com.apple.TextEdit',
+          label: 'Legacy profile',
+          autoPasteOverride: false,
+          cleanupOverride: null,
+        },
       ],
     }));
 
-    const [terminal, mail] = loadSettings().appProfiles;
+    const [terminal, mail, legacy] = loadSettings().appProfiles;
     expect(terminal.cliFormattingOverride).toBe(true);
     expect(mail.cliFormattingOverride).toBeNull();
+    expect(legacy.cliFormattingOverride).toBeNull();
   });
 
   it('fills missing fields from defaults', () => {

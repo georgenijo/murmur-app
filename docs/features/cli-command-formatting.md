@@ -4,13 +4,15 @@ Murmur formats likely terminal/developer commands as text after recognition. It 
 
 ## Activation boundary
 
-The CLI stage is conservative and bounded to one utterance:
+The CLI stage is conservative and bounded to command-shaped lines at the utterance boundary:
 
 - An explicit leading trigger: `command`, `shell command`, or `terminal command`.
 - A known tool at the start of the utterance plus command-shaped evidence, such as a known subcommand or a spoken symbol.
 - A matching per-app profile with **CLI: On**. This explicit user choice treats a multi-token utterance as command text, including unknown tools.
 
 **CLI: Off** disables implicit detection for that app; an explicit command trigger still works. Text that does not activate is returned byte-for-byte unchanged. Mentions such as “I use git and cargo every day” and “npm is a package manager” are ordinary prose, not commands.
+
+Physical line endings are immutable boundaries. Each line is considered independently, so a command line can be canonicalized without rewriting adjacent prose, and existing LF/CRLF endings remain unchanged.
 
 ## Transformation order
 
@@ -55,4 +57,5 @@ Code-vocabulary scans also read only the package name, script keys, and dependen
 - Activated spans are formatted, copied, and optionally pasted as text only.
 - Canonical commands are idempotent.
 - Non-activated whitespace, punctuation, and Unicode remain byte-for-byte unchanged.
+- Existing LF/CRLF command boundaries remain byte-for-byte unchanged.
 - Imported-file transcription remains raw and does not run CLI formatting.

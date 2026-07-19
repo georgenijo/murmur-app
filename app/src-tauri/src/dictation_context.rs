@@ -333,12 +333,16 @@ mod tests {
             SessionOverrides {
                 auto_paste: Some(false),
                 cleanup_enabled: Some(true),
-                cli_formatting_enabled: None,
+                cli_formatting_enabled: Some(false),
             },
         );
 
         assert!(!snapshot.delivery.auto_paste);
         assert!(snapshot.transformations.cleanup_enabled);
+        assert_eq!(
+            snapshot.transformations.cli_formatting_mode,
+            CliFormattingMode::Disabled
+        );
     }
 
     #[test]
@@ -416,6 +420,20 @@ mod tests {
             resolve_test(&global, Some("com.apple.mail"), SessionOverrides::default(),)
                 .transformations
                 .cli_formatting_mode,
+            CliFormattingMode::Disabled
+        );
+
+        assert_eq!(
+            resolve_test(
+                &global,
+                Some("com.apple.Terminal"),
+                SessionOverrides {
+                    cli_formatting_enabled: Some(false),
+                    ..SessionOverrides::default()
+                },
+            )
+            .transformations
+            .cli_formatting_mode,
             CliFormattingMode::Disabled
         );
     }

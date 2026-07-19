@@ -99,7 +99,7 @@ Uses `IdleGuard` (RAII) to reset status on any early return or error — prevent
 raw transcript → cleanup → voice commands → Smart Correction → CLI formatting → final text
 ```
 
-Each stage receives immutable session/model/language metadata plus privacy-safe enablement flags and produces privacy-safe execution metadata (`duration_us`, changed/not-changed, outcome, and required/optional failure policy). Structured logs never include transcript text, custom replacement values, or correction vocabulary.
+Each stage receives immutable session/source metadata plus privacy-safe enablement flags and produces privacy-safe execution metadata (`duration_us`, changed/not-changed, outcome, and required/optional failure policy). Structured stage logs never include transcript text, model/language settings, app/profile values, custom replacement values, correction vocabulary, package/script names, or project paths.
 
 Cleanup, voice commands, and CLI formatting are required deterministic stages when enabled. Smart Correction is optional-fallback: a future recoverable correction failure leaves the preceding text intact. The CLI stage uses conservative prefix/trigger/profile activation and returns non-command prose byte-for-byte unchanged. Imported-file transcription invokes the same entry point with every stage disabled so its existing raw-ASR output remains unchanged.
 

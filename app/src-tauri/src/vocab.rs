@@ -485,7 +485,11 @@ pub fn collect_source_files<F: FnMut(&Path, usize), G: FnMut(&Path)>(
             Ok(e) => e,
             Err(e) => {
                 #[cfg(not(test))]
-                tracing::warn!(target: "pipeline", "vocab: skipping unreadable dir {}: {}", dir.display(), e);
+                tracing::warn!(
+                    target: "pipeline",
+                    error_kind = ?e.kind(),
+                    "vocab: skipping unreadable directory"
+                );
                 let _ = e;
                 continue;
             }
@@ -553,7 +557,11 @@ pub fn collect_source_files<F: FnMut(&Path, usize), G: FnMut(&Path)>(
                 }
                 Err(e) => {
                     #[cfg(not(test))]
-                    tracing::warn!(target: "pipeline", "vocab: skipping unreadable file {}: {}", path.display(), e);
+                    tracing::warn!(
+                        target: "pipeline",
+                        error_kind = ?e.kind(),
+                        "vocab: skipping unreadable file"
+                    );
                     let _ = e;
                 }
             }
@@ -647,7 +655,7 @@ mod tests {
         let terms = extract_package_json_terms(
             r#"{
                 "name": "@acme/my-app",
-                "scripts": {"tauri:dev": "tauri dev", "test": "vitest"},
+                "scripts": {"tauri:dev": "cd /Users/private/CustomerProject && secret-setting", "test": "vitest"},
                 "dependencies": {"ccusage": "1.0.0"},
                 "devDependencies": {"create-vite": "latest"},
                 "description": "private prose must not become vocabulary"
@@ -658,6 +666,8 @@ mod tests {
             vec!["@acme/my-app", "tauri:dev", "test", "ccusage", "create-vite"]
         );
         assert!(!terms.iter().any(|term| term.contains("private")));
+        assert!(!terms.iter().any(|term| term.contains("CustomerProject")));
+        assert!(!terms.iter().any(|term| term.contains("secret-setting")));
     }
 
     #[test]

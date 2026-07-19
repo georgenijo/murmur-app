@@ -56,8 +56,9 @@ const KNOWN_TOOLS: &[&str] = &[
     "deno", "python", "python3", "pip", "pip3", "go", "make", "cmake", "curl", "wget",
 ];
 
-const PROSE_FOLLOWERS: &[&str] = &[
-    "and", "are", "can", "does", "has", "is", "means", "should", "was", "will",
+const PROSE_MARKERS: &[&str] = &[
+    "and", "are", "can", "does", "has", "helps", "is", "makes", "means", "provides",
+    "should", "then", "uses", "was", "will",
 ];
 
 impl CliLexicon {
@@ -185,6 +186,40 @@ pub(crate) fn canonicalize_cli(
     mode: CliFormattingMode,
     lexicon: &CliLexicon,
 ) -> String {
+    if input.as_bytes().iter().any(|byte| matches!(byte, b'\n' | b'\r')) {
+        return canonicalize_lines(input, mode, lexicon);
+    }
+    canonicalize_line(input, mode, lexicon)
+}
+
+/// Keep physical line endings as immutable command-span boundaries. This also
+/// preserves newlines produced by the earlier voice-command stage and makes an
+/// already-canonical multiline command idempotent.
+fn canonicalize_lines(input: &str, mode: CliFormattingMode, lexicon: &CliLexicon) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut start = 0;
+    let bytes = input.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if !matches!(bytes[index], b'\n' | b'\r') {
+            index += 1;
+            continue;
+        }
+        output.push_str(&canonicalize_line(&input[start..index], mode, lexicon));
+        if bytes[index] == b'\r' && bytes.get(index + 1) == Some(&b'\n') {
+            output.push_str("\r\n");
+            index += 2;
+        } else {
+            output.push(bytes[index] as char);
+            index += 1;
+        }
+        start = index;
+    }
+    output.push_str(&canonicalize_line(&input[start..], mode, lexicon));
+    output
+}
+
+fn canonicalize_line(input: &str, mode: CliFormattingMode, lexicon: &CliLexicon) -> String {
     let mut words = input
         .split_whitespace()
         .map(str::to_string)
@@ -236,7 +271,13 @@ fn automatic_activation(words: &[String], lexicon: &CliLexicon) -> bool {
         return false;
     }
     let next = clean_detection_word(&remainder[0]);
-    if PROSE_FOLLOWERS.contains(&next.as_str()) {
+    if PROSE_MARKERS.contains(&next.as_str())
+        || remainder
+            .iter()
+            .skip(1)
+            .map(|word| clean_detection_word(word))
+            .any(|word| PROSE_MARKERS.contains(&word.as_str()))
+    {
         return false;
     }
     contains_spoken_syntax(remainder)
@@ -694,6 +735,10 @@ mod tests {
         let fixtures = [
             "I use git and cargo every day.",
             "Git is useful, but Docker is not a verb here.",
+            "Git status is useful in scripts.",
+            "cargo test and Docker builds are topics.",
+            "docker run is a common phrase.",
+            "npx makes scaffolding easier.",
             "cargo cults are a historical topic",
             "Please send it at noon — pipe is a noun.",
             "  npm is a package manager, not this sentence.  ",
@@ -769,6 +814,17 @@ mod tests {
         for command in fixtures {
             assert_eq!(auto(command), command, "fixture: {command}");
         }
+    }
+
+    #[test]
+    fn physical_lines_bound_command_spans_and_preserve_line_endings() {
+        let input = "git status\r\nordinary Git prose.\ncargo test -- --test-threads=1";
+        assert_eq!(auto(input).as_bytes(), input.as_bytes());
+
+        assert_eq!(
+            auto("git checkout dash b feature slash streaming\nordinary Git prose."),
+            "git checkout -b feature/streaming\nordinary Git prose."
+        );
     }
 
     #[test]

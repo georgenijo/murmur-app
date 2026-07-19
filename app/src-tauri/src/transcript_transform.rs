@@ -60,7 +60,9 @@ impl TranscriptStageConfig {
     }
 }
 
-/// Immutable metadata and stage selection for one transformation pass.
+/// Immutable privacy-safe metadata and stage selection for one transformation
+/// pass. User-configured model/language values and transcript resources are not
+/// carried here because stage telemetry must not log settings values.
 ///
 /// `context_handle` is deliberately opaque. Issue #245 can populate it with a
 /// resolved per-app snapshot identifier without this module knowing how app
@@ -70,8 +72,6 @@ pub(crate) struct TranscriptContext {
     pub session_id: u64,
     pub source: TranscriptSource,
     pub context_handle: Option<String>,
-    pub model: String,
-    pub language: String,
     pub cli_formatting_mode: CliFormattingMode,
     pub stages: TranscriptStageConfig,
 }
@@ -299,8 +299,6 @@ fn log_stage(context: &TranscriptContext, report: &StageReport) {
         source = context.source.as_str(),
         source_file = context.source == TranscriptSource::File,
         context_handle_present = context.context_handle.is_some(),
-        model = context.model.as_str(),
-        language = context.language.as_str(),
         stage = report.stage,
         duration_us = report.duration_us,
         changed = report.changed,
@@ -458,8 +456,6 @@ mod tests {
             session_id: 7,
             source: TranscriptSource::Live,
             context_handle: None,
-            model: "test-model".to_string(),
-            language: "en".to_string(),
             cli_formatting_mode: CliFormattingMode::Auto,
             stages,
         }
@@ -654,8 +650,6 @@ mod tests {
             session_id: 11,
             source: TranscriptSource::File,
             context_handle: None,
-            model: "test-model".to_string(),
-            language: "auto".to_string(),
             cli_formatting_mode: CliFormattingMode::Auto,
             stages: TranscriptStageConfig::verbatim(),
         };

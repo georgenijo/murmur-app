@@ -688,8 +688,6 @@ async fn run_transcription_pipeline(
         session_id: app_state.next_transcript_session_id(),
         source: crate::transcript_transform::TranscriptSource::Live,
         context_handle: Some(format!("recording:{recording_id}")),
-        model: transcription.model_name.clone(),
-        language: transcription.language.clone(),
         cli_formatting_mode: transformations.cli_formatting_mode,
         stages: crate::transcript_transform::TranscriptStageConfig {
             cleanup_enabled: transformations.cleanup_enabled,
@@ -2057,8 +2055,6 @@ pub async fn transcribe_file(
         session_id: state.app_state.next_transcript_session_id(),
         source: crate::transcript_transform::TranscriptSource::File,
         context_handle: None,
-        model: model_name.clone(),
-        language: language.clone(),
         cli_formatting_mode: crate::cli_command::CliFormattingMode::Auto,
         stages: crate::transcript_transform::TranscriptStageConfig::verbatim(),
     };
@@ -2131,7 +2127,8 @@ mod tests {
             "appProfiles": [{
                 "bundleId": "com.private.SecretApp",
                 "label": "Secret profile",
-                "autoPasteOverride": true
+                "autoPasteOverride": true,
+                "cliFormattingOverride": false
             }],
             "customVocabulary": "private-customer-name",
             "voiceCommands": [{
