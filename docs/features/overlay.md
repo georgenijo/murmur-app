@@ -45,7 +45,7 @@ The visible pill width adjusts based on recording state and hover:
 |-------|-------|-------|
 | Idle (no hover) | `notchWidth + 28` | Compact, shows only the mic icon |
 | Recording / Processing | `notchWidth + 68` | Shows waveform and status indicators |
-| Hover-expanded (after 400ms dwell) | `notchWidth + 68` | Wide enough for the quick-settings dropdown |
+| Hover-expanded (after 150ms dwell) | `notchWidth + 68` | Wide enough for the quick-settings dropdown |
 
 The full overlay window width is `notchWidth + 120` (60px expansion per side), with the visible content area sized within that.
 
@@ -57,7 +57,7 @@ Width transitions over 400ms and height over 360ms, both using the spring curve 
 
 Hovering the pill expands it downward into a quick-settings dropdown. The dropdown is identical regardless of state — only the top bar differs.
 
-- **Expand** requires hover intent: the cursor must dwell on the island for `HOVER_OPEN_DWELL_MS` (400ms) before the card opens — grazing the notch does nothing. **Collapse** 300ms after `mouseLeave`.
+- **Expand** requires hover intent: the cursor must dwell on the island for `HOVER_OPEN_DWELL_MS` (150ms) before the card opens — grazing the notch does nothing. **Collapse** 300ms after `mouseLeave`.
 - Because a transparent overlay with cursor events enabled captures the mouse across its whole frame, the window is **dynamically resized** rather than pre-allocated tall — otherwise the idle overlay would create a click dead-zone below the notch. Expand grows the window first, then the card animates open; collapse animates the card closed, then shrinks the window ~380ms later so the dropdown is never clipped mid-transition.
 - Only the **top bar** is a drag region (`data-tauri-drag-region`); the dropdown buttons are not, so they stay clickable.
 
