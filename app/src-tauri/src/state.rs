@@ -35,6 +35,11 @@ pub struct AppProfile {
     /// verbatim output in a code editor, or force cleanup in an email client).
     #[serde(default)]
     pub cleanup_override: Option<bool>,
+    /// Override spoken CLI canonicalization for this app. `None` keeps bounded
+    /// automatic detection; `Some(true)` enables profile-mode detection and
+    /// `Some(false)` disables implicit formatting (explicit "command" still works).
+    #[serde(default)]
+    pub cli_formatting_override: Option<bool>,
 }
 
 /// A user-defined voice command: when `phrase` is spoken (matched

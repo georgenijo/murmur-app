@@ -690,6 +690,7 @@ async fn run_transcription_pipeline(
         context_handle: Some(format!("recording:{recording_id}")),
         model: transcription.model_name.clone(),
         language: transcription.language.clone(),
+        cli_formatting_mode: transformations.cli_formatting_mode,
         stages: crate::transcript_transform::TranscriptStageConfig {
             cleanup_enabled: transformations.cleanup_enabled,
             cleanup_remove_filler: transformations.cleanup_remove_filler,
@@ -698,11 +699,17 @@ async fn run_transcription_pipeline(
                 .enabled_command_groups
                 .built_in_voice_commands,
             smart_correction_enabled: transformations.correction_enabled,
+            cli_command_enabled: true,
         },
     };
+    let cli_lexicon = crate::cli_command::CliLexicon::from_context(
+        transcription.prompt.as_deref(),
+        &custom_commands,
+    );
     let transform_resources = crate::transcript_transform::TranscriptTransformResources {
         custom_commands,
         correction_matcher: transformations.correction_matcher.clone(),
+        cli_lexicon,
     };
     let transformed = crate::transcript_transform::transform_transcript(
         text,
@@ -710,6 +717,11 @@ async fn run_transcription_pipeline(
         transform_resources,
     )
     .map_err(|error| error.to_string())?;
+    tracing::info!(
+        target: "pipeline",
+        changed = transformed.was_changed(),
+        "transcript_transform_complete"
+    );
     let correction_ms = transformed
         .stage_duration_ms(crate::transcript_transform::SMART_CORRECTION_STAGE);
     let text = transformed.text;
@@ -1065,9 +1077,9 @@ pub async fn configure_dictation(
         dictation.output_dir = output_dir.to_string();
     }
 
-    // Per-app profiles: array of { bundleId, label, autoPasteOverride }. A
-    // missing/null autoPasteOverride means "no override". Entries without a
-    // bundleId are skipped. Replaces the whole list when the key is present.
+    // Per-app profiles carry nullable delivery/transformation overrides. A
+    // missing/null value means "no override". Entries without a bundleId are
+    // skipped. Replaces the whole list when the key is present.
     if let Some(profiles) = options.get("appProfiles").and_then(|v| v.as_array()) {
         dictation.app_profiles = profiles
             .iter()
@@ -1084,7 +1096,16 @@ pub async fn configure_dictation(
                 // null/absent -> None (use global); otherwise the boolean override.
                 let auto_paste_override = p.get("autoPasteOverride").and_then(|v| v.as_bool());
                 let cleanup_override = p.get("cleanupOverride").and_then(|v| v.as_bool());
-                Some(crate::state::AppProfile { bundle_id, label, auto_paste_override, cleanup_override })
+                let cli_formatting_override = p
+                    .get("cliFormattingOverride")
+                    .and_then(|v| v.as_bool());
+                Some(crate::state::AppProfile {
+                    bundle_id,
+                    label,
+                    auto_paste_override,
+                    cleanup_override,
+                    cli_formatting_override,
+                })
             })
             .collect();
     }
@@ -2038,6 +2059,7 @@ pub async fn transcribe_file(
         context_handle: None,
         model: model_name.clone(),
         language: language.clone(),
+        cli_formatting_mode: crate::cli_command::CliFormattingMode::Auto,
         stages: crate::transcript_transform::TranscriptStageConfig::verbatim(),
     };
     let text = crate::transcript_transform::transform_transcript(

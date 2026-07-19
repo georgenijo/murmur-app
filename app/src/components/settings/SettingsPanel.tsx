@@ -154,7 +154,13 @@ function AppProfilesEditor({ profiles, onChange }: {
     }
     onChange([
       ...profiles,
-      { bundleId: trimmedId, label: label.trim(), autoPasteOverride: null, cleanupOverride: null },
+      {
+        bundleId: trimmedId,
+        label: label.trim(),
+        autoPasteOverride: null,
+        cleanupOverride: null,
+        cliFormattingOverride: null,
+      },
     ]);
     setBundleId('');
     setLabel('');
@@ -178,6 +184,11 @@ function AppProfilesEditor({ profiles, onChange }: {
       p.bundleId === id ? { ...p, cleanupOverride: cycle(p.cleanupOverride) } : p));
   };
 
+  const cycleCliFormatting = (id: string) => {
+    onChange(profiles.map((p) =>
+      p.bundleId === id ? { ...p, cliFormattingOverride: cycle(p.cliFormattingOverride) } : p));
+  };
+
   const chipLabel = (kind: string, value: boolean | null) =>
     value === null ? `${kind}: Default` : value ? `${kind}: On` : `${kind}: Off`;
 
@@ -191,9 +202,9 @@ function AppProfilesEditor({ profiles, onChange }: {
   return (
     <div>
       <p className="mb-2 text-xs text-on-surface-variant">
-        Override auto-paste and transcript cleanup for specific apps by bundle id
+        Override auto-paste, transcript cleanup, and command formatting for specific apps by bundle id
         (e.g. <span className="font-mono">com.apple.Terminal</span>). The frontmost
-        app when you finish dictating decides the behavior. Each toggle cycles
+        app when you start dictating decides the behavior. Each toggle cycles
         Default → On → Off.
       </p>
 
@@ -242,6 +253,14 @@ function AppProfilesEditor({ profiles, onChange }: {
                   className={`flex-1 px-2 py-1 rounded-md text-xs font-medium border transition-colors ${chipClass(p.cleanupOverride)}`}
                 >
                   {chipLabel('Clean', p.cleanupOverride)}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => cycleCliFormatting(p.bundleId)}
+                  aria-label={`CLI formatting for ${p.label || p.bundleId}: ${chipLabel('CLI', p.cliFormattingOverride)}`}
+                  className={`flex-1 px-2 py-1 rounded-md text-xs font-medium border transition-colors ${chipClass(p.cliFormattingOverride)}`}
+                >
+                  {chipLabel('CLI', p.cliFormattingOverride)}
                 </button>
               </div>
             </li>
@@ -1266,7 +1285,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
         )}
         </SettingsSection>
 
-        <SettingsSection pageId="profiles" activePage={activeCat} title="Per-App Profiles" subtitle="Auto-paste + cleanup per frontmost app">
+        <SettingsSection pageId="profiles" activePage={activeCat} title="Per-App Profiles" subtitle="Auto-paste, cleanup + CLI per frontmost app">
           <AppProfilesEditor
             profiles={settings.appProfiles}
             onChange={(next) => onUpdateSettings({ appProfiles: next })}

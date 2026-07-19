@@ -30,6 +30,32 @@ describe('loadSettings', () => {
     expect(settings.autoPaste).toBe(true);
   });
 
+  it('migrates and validates per-app CLI formatting overrides', () => {
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      appProfiles: [
+        {
+          bundleId: 'com.apple.Terminal',
+          label: 'Terminal',
+          autoPasteOverride: null,
+          cleanupOverride: false,
+          cliFormattingOverride: true,
+        },
+        {
+          bundleId: 'com.apple.mail',
+          label: 'Mail',
+          autoPasteOverride: null,
+          cleanupOverride: null,
+          cliFormattingOverride: 'yes',
+        },
+      ],
+    }));
+
+    const [terminal, mail] = loadSettings().appProfiles;
+    expect(terminal.cliFormattingOverride).toBe(true);
+    expect(mail.cliFormattingOverride).toBeNull();
+  });
+
   it('fills missing fields from defaults', () => {
     localStorage.setItem('dictation-settings', JSON.stringify({
       model: 'base.en',

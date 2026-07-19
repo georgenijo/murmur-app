@@ -88,6 +88,53 @@ pub fn is_source_file(path: &Path) -> bool {
     }
 }
 
+/// Project manifests are scanned only for their local package/script names.
+/// Their dependency bodies are not treated as source text.
+fn is_package_manifest(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("package.json"))
+}
+
+/// Extract command-relevant names from a package manifest. This is intentionally
+/// narrow: package name, script keys, and dependency keys only. Script bodies
+/// can contain arbitrary user text and are never retained as vocabulary.
+pub fn extract_package_json_terms(source: &str) -> Vec<String> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(source) else {
+        return Vec::new();
+    };
+    let mut terms = Vec::new();
+    if let Some(name) = value.get("name").and_then(|name| name.as_str()) {
+        push_manifest_term(&mut terms, name);
+    }
+    for section in [
+        "scripts",
+        "dependencies",
+        "devDependencies",
+        "peerDependencies",
+        "optionalDependencies",
+    ] {
+        if let Some(entries) = value.get(section).and_then(|entries| entries.as_object()) {
+            for name in entries.keys() {
+                push_manifest_term(&mut terms, name);
+            }
+        }
+    }
+    terms
+}
+
+fn push_manifest_term(terms: &mut Vec<String>, term: &str) {
+    let term = term.trim();
+    if !term.is_empty()
+        && !term.chars().any(char::is_whitespace)
+        && term
+            .chars()
+            .all(|ch| ch.is_alphanumeric() || "_-./:@".contains(ch))
+    {
+        terms.push(term.to_string());
+    }
+}
+
 /// Directory names we never descend into while walking a project. These hold
 /// dependencies, build output, or VCS data — not the user's own identifiers.
 const SKIP_DIRS: &[&str] = &[
@@ -265,6 +312,10 @@ impl VocabAccumulator {
         for ident in extract_identifiers(source) {
             self.add_identifier(&ident);
         }
+    }
+
+    pub fn add_written_term(&mut self, term: &str) {
+        self.add_identifier(term);
     }
 
     /// Fold a single already-extracted identifier into the tallies.
@@ -466,7 +517,7 @@ pub fn collect_source_files<F: FnMut(&Path, usize), G: FnMut(&Path)>(
                 continue;
             }
 
-            if !file_type.is_file() || !is_source_file(&path) {
+            if !file_type.is_file() || (!is_source_file(&path) && !is_package_manifest(&path)) {
                 continue;
             }
 
@@ -491,7 +542,13 @@ pub fn collect_source_files<F: FnMut(&Path, usize), G: FnMut(&Path)>(
                     // iteration. Then hand the callback the running distinct-term
                     // count so it never has to re-extract (which would double the
                     // tokenization CPU on a large walk).
-                    vocab.add_source(&contents);
+                    if is_package_manifest(&path) {
+                        for term in extract_package_json_terms(&contents) {
+                            vocab.add_written_term(&term);
+                        }
+                    } else {
+                        vocab.add_source(&contents);
+                    }
                     on_file(&path, vocab.len());
                 }
                 Err(e) => {
@@ -583,6 +640,29 @@ mod tests {
         // Multi-byte chars must not cause a byte-boundary panic.
         let ids = extract_identifiers("über naïve fooBar café");
         assert!(has(&ids, "fooBar"), "got {:?}", ids);
+    }
+
+    #[test]
+    fn package_manifest_extracts_only_command_relevant_names() {
+        let terms = extract_package_json_terms(
+            r#"{
+                "name": "@acme/my-app",
+                "scripts": {"tauri:dev": "tauri dev", "test": "vitest"},
+                "dependencies": {"ccusage": "1.0.0"},
+                "devDependencies": {"create-vite": "latest"},
+                "description": "private prose must not become vocabulary"
+            }"#,
+        );
+        assert_eq!(
+            terms,
+            vec!["@acme/my-app", "tauri:dev", "test", "ccusage", "create-vite"]
+        );
+        assert!(!terms.iter().any(|term| term.contains("private")));
+    }
+
+    #[test]
+    fn malformed_package_manifest_is_ignored() {
+        assert!(extract_package_json_terms("{not json").is_empty());
     }
 
     #[test]
@@ -840,6 +920,24 @@ mod tests {
         assert!(outcome.total_bytes > 0);
         // The accumulator folded both files' identifiers (fooBar, barBaz, useWidget).
         assert!(outcome.vocab.len() >= 3, "got {} terms", outcome.vocab.len());
+    }
+
+    #[test]
+    fn walk_adds_package_scripts_and_dependencies_to_project_vocabulary() {
+        let dir = scratch_dir("package_json");
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"scripts":{"tauri:dev":"tauri dev"},"dependencies":{"ccusage":"1"}}"#,
+        )
+        .unwrap();
+
+        let outcome = collect_source_files(&dir, |_, _| {}, |_| {});
+        let ranked = outcome.vocab.ranked(10);
+        assert!(ranked.iter().any(|term| term.term == "tauri:dev"));
+        assert!(ranked.iter().any(|term| term.term == "ccusage"));
+        assert_eq!(outcome.files_read, 1);
+
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
