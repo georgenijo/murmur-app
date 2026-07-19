@@ -1,13 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { listen, emit } from '@tauri-apps/api/event';
+import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
-import { cursorPosition, getCurrentWindow } from '@tauri-apps/api/window';
 import { isDictationStatus } from '../lib/types';
 import type { DictationStatus } from '../lib/types';
 import { flog } from '../lib/log';
-import { STORAGE_KEY, DEFAULT_SETTINGS, loadSettings, saveSettings } from '../lib/settings';
+import { STORAGE_KEY, DEFAULT_SETTINGS, loadSettings } from '../lib/settings';
 import type { Settings } from '../lib/settings';
-import { buildConfigureOptions } from '../lib/dictation';
 import type { DictationResponse } from '../lib/dictation';
 import {
   HOTKEY_MISS_FLASH_MS,
@@ -16,52 +14,6 @@ import {
 } from '../lib/hotkeyFeedback';
 
 const BAR_COUNT = 7;
-const COLLAPSE_DELAY_MS = 300;
-const SHRINK_DELAY_MS = 380;
-const HOVER_WATCHDOG_MS = 250;
-const HOVER_BOUNDS_PADDING = 8;
-const HOVER_OPEN_DWELL_MS = 400;
-const DROPDOWN_H = 44;
-
-function formatElapsed(seconds: number): string {
-  const m = Math.floor(seconds / 60);
-  const s = seconds % 60;
-  return `${m}:${String(s).padStart(2, '0')}`;
-}
-
-function PowerIcon({ stroke }: { stroke: string }) {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={stroke} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 2v10" />
-      <path d="M18.4 6.6a9 9 0 1 1-12.8 0" />
-    </svg>
-  );
-}
-
-function ClipboardPasteIcon({ stroke }: { stroke: string }) {
-  return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={stroke} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="8" y="2" width="8" height="4" rx="1" />
-      <path d="M16 4h2a2 2 0 0 1 2 2v4" />
-      <path d="M8 4H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h5" />
-      <path d="M16 14v6" />
-      <path d="M13 17h6" />
-    </svg>
-  );
-}
-
-function SlidersIcon({ stroke }: { stroke: string }) {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={stroke} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M4 7h4" />
-      <path d="M12 7h8" />
-      <circle cx="10" cy="7" r="2" />
-      <path d="M4 17h10" />
-      <path d="M18 17h2" />
-      <circle cx="16" cy="17" r="2" />
-    </svg>
-  );
-}
 
 export function OverlayWidget() {
   const [status, setStatus] = useState<DictationStatus>('idle');
@@ -69,22 +21,13 @@ export function OverlayWidget() {
   const [showHotkeyMiss, setShowHotkeyMiss] = useState(false);
   const [lockedMode, setLockedMode] = useState(false);
   const [disabled, setDisabled] = useState(false);
-  const [expanded, setExpanded] = useState(false);
-  const [autoPaste, setAutoPaste] = useState(false);
-  const [fileOutputEnabled, setFileOutputEnabled] = useState(false);
-  const [elapsed, setElapsed] = useState(0);
   const notchHeightRef = useRef(0);
   const [notchHeight, setNotchHeight] = useState(0);
   const [notchWidth, setNotchWidth] = useState(185);
-  const islandRef = useRef<HTMLDivElement | null>(null);
   const statusRef = useRef(status);
   const lockedRef = useRef(lockedMode);
   const disabledRef = useRef(disabled);
-  const expandedRef = useRef(expanded);
   const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const collapseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const shrinkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const dwellTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hotkeyMissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const audioLevelRef = useRef(0);
   const hotkeyMissFeedbackRef = useRef(false);
@@ -93,12 +36,9 @@ export function OverlayWidget() {
   useEffect(() => { statusRef.current = status; }, [status]);
   useEffect(() => { lockedRef.current = lockedMode; }, [lockedMode]);
   useEffect(() => { disabledRef.current = disabled; }, [disabled]);
-  useEffect(() => { expandedRef.current = expanded; }, [expanded]);
 
   const applySettingsSnapshot = useCallback((settings: Settings) => {
     setDisabled(settings.disabled);
-    setAutoPaste(settings.autoPaste);
-    setFileOutputEnabled(settings.saveTranscript || settings.saveAudio);
     hotkeyMissFeedbackRef.current = settings.hotkeyMissFeedback;
     if (!settings.hotkeyMissFeedback) setShowHotkeyMiss(false);
   }, []);
@@ -124,34 +64,9 @@ export function OverlayWidget() {
     return () => {
       flog.info('overlay', 'unmounted');
       if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
-      if (collapseTimerRef.current) clearTimeout(collapseTimerRef.current);
-      if (shrinkTimerRef.current) clearTimeout(shrinkTimerRef.current);
-      if (dwellTimerRef.current) clearTimeout(dwellTimerRef.current);
       if (hotkeyMissTimerRef.current) clearTimeout(hotkeyMissTimerRef.current);
     };
   }, [applySettingsSnapshot]);
-
-  // Restore saved position (Rust handles default positioning)
-  // TODO: re-enable after notch positioning is stable
-  // useEffect(() => {
-  //   (async () => {
-  //     try {
-  //       const saved = localStorage.getItem(POSITION_KEY);
-  //       if (saved) {
-  //         const { x, y } = JSON.parse(saved) as { x: number; y: number };
-  //         console.log('[overlay] restoring saved position:', { x, y });
-  //         await getCurrentWindow().setPosition(new PhysicalPosition(x, y));
-  //       } else {
-  //         console.log('[overlay] no saved position, using Rust default');
-  //       }
-  //     } catch (e) {
-  //       console.warn('[overlay] position restore failed:', e);
-  //     }
-  //   })();
-  // }, []);
-
-  // TODO: re-enable position persistence after notch positioning is stable.
-  // Both save (onMoved) and restore are disabled to avoid saving programmatic repositions.
 
   // Subscribe to recording status events from Rust
   useEffect(() => {
@@ -239,9 +154,6 @@ export function OverlayWidget() {
     let cancelled = false;
     let unlisten: (() => void) | null = null;
     listen<{ notch_width: number; notch_height: number } | null>('notch-info-changed', (event) => {
-      // Rust resizes the window back to collapsed dimensions on display change,
-      // so reset the expanded UI state to stay in sync.
-      setExpanded(false);
       if (event.payload) {
         flog.info('overlay', 'notch info changed', { notch_width: event.payload.notch_width, notch_height: event.payload.notch_height });
         notchHeightRef.current = event.payload.notch_height;
@@ -284,30 +196,20 @@ export function OverlayWidget() {
     return () => { cancelled = true; unlisten?.(); };
   }, []);
 
-  // Subscribe to settings-changed (emitted by the main window) so the quick
-  // controls reflect changes made there, even while already expanded.
+  // Subscribe to settings-changed (emitted by the main window) so the disabled
+  // dimming and hotkey-miss gate reflect changes made there.
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | null = null;
     listen('settings-changed', () => {
       try {
-        const s = loadSettings();
-        applySettingsSnapshot(s);
+        applySettingsSnapshot(loadSettings());
       } catch { /* ignore */ }
     }).then((fn) => {
       if (cancelled) { fn(); } else { unlisten = fn; }
     });
     return () => { cancelled = true; unlisten?.(); };
   }, [applySettingsSnapshot]);
-
-  // Track recording elapsed time for the inline timer (recording + hover only).
-  useEffect(() => {
-    if (status !== 'recording') { setElapsed(0); return; }
-    const start = Date.now();
-    setElapsed(0);
-    const id = setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 250);
-    return () => clearInterval(id);
-  }, [status]);
 
   // Animate waveform bars via rAF (direct DOM updates, no React reconciliation)
   useEffect(() => {
@@ -350,10 +252,6 @@ export function OverlayWidget() {
     if (clickTimerRef.current) {
       clearTimeout(clickTimerRef.current);
       clickTimerRef.current = null;
-    }
-    if (expandedRef.current) {
-      flog.info('overlay', 'double-click ignored while expanded', { status: currentStatus });
-      return;
     }
     const currentLocked = lockedRef.current;
     if (!currentLocked) {
@@ -436,234 +334,35 @@ export function OverlayWidget() {
     });
   }, []);
 
-  const shrinkOverlayWindow = useCallback(() => {
-    if (shrinkTimerRef.current) clearTimeout(shrinkTimerRef.current);
-    shrinkTimerRef.current = setTimeout(() => {
-      shrinkTimerRef.current = null;
-      invoke('set_overlay_expanded', { expanded: false })
-        .catch((e) => flog.warn('overlay', 'set_overlay_expanded(false) failed', { error: String(e) }));
-    }, SHRINK_DELAY_MS);
-  }, []);
-
-  const collapseOverlay = useCallback((delayMs = COLLAPSE_DELAY_MS) => {
-    if (collapseTimerRef.current) clearTimeout(collapseTimerRef.current);
-    collapseTimerRef.current = setTimeout(() => {
-      collapseTimerRef.current = null;
-      setExpanded(false);
-      shrinkOverlayWindow();
-    }, delayMs);
-  }, [shrinkOverlayWindow]);
-
-  // Hover-expand: grow the window first, then animate the card open.
-  const openOverlay = useCallback(() => {
-    if (dwellTimerRef.current) { clearTimeout(dwellTimerRef.current); dwellTimerRef.current = null; }
-    if (expandedRef.current) return;
-    // Refresh quick-control values from localStorage (overlay has no shared settings context).
-    try {
-      const s = loadSettings();
-      applySettingsSnapshot(s);
-    } catch { /* ignore */ }
-    invoke('set_overlay_expanded', { expanded: true })
-      .catch((e) => flog.warn('overlay', 'set_overlay_expanded(true) failed', { error: String(e) }));
-    setExpanded(true);
-  }, [applySettingsSnapshot]);
-
-  // Opening requires hover intent: the cursor must dwell on the island before
-  // the card expands, so grazing the notch no longer pops the dropdown.
-  const noteHoverStart = useCallback(() => {
-    if (collapseTimerRef.current) { clearTimeout(collapseTimerRef.current); collapseTimerRef.current = null; }
-    if (shrinkTimerRef.current) { clearTimeout(shrinkTimerRef.current); shrinkTimerRef.current = null; }
-    if (expandedRef.current || dwellTimerRef.current) return;
-    dwellTimerRef.current = setTimeout(() => {
-      dwellTimerRef.current = null;
-      openOverlay();
-    }, HOVER_OPEN_DWELL_MS);
-  }, [openOverlay]);
-
-  const cancelHoverDwell = useCallback(() => {
-    if (dwellTimerRef.current) { clearTimeout(dwellTimerRef.current); dwellTimerRef.current = null; }
-  }, []);
-
-  // Collapse after a 300ms hover-intent delay; shrink the window only after the
-  // close animation finishes so the dropdown isn't clipped mid-transition.
-  const handleMouseLeave = useCallback(() => {
-    cancelHoverDwell();
-    collapseOverlay();
-  }, [cancelHoverDwell, collapseOverlay]);
-
-  // Safety net for macOS/Tauri hover edge cases: if the native window is already
-  // expanded but a leave event is missed, collapse once the cursor is outside the
-  // actual visible island card (not merely outside the transparent window frame).
-  useEffect(() => {
-    if (!expanded) return;
-    const currentWindow = getCurrentWindow();
-    const intervalId = setInterval(async () => {
-      const island = islandRef.current;
-      if (!island || !expandedRef.current) return;
-      try {
-        const [windowPosition, cursor] = await Promise.all([
-          currentWindow.outerPosition(),
-          cursorPosition(),
-        ]);
-        const scale = window.devicePixelRatio || 1;
-        const rect = island.getBoundingClientRect();
-        const padding = HOVER_BOUNDS_PADDING * scale;
-        const left = windowPosition.x + rect.left * scale - padding;
-        const right = windowPosition.x + rect.right * scale + padding;
-        const top = windowPosition.y + rect.top * scale - padding;
-        const bottom = windowPosition.y + rect.bottom * scale + padding;
-
-        if (cursor.x < left || cursor.x > right || cursor.y < top || cursor.y > bottom) {
-          collapseOverlay(0);
-        }
-      } catch (err) {
-        flog.warn('overlay', 'hover watchdog failed', { error: String(err) });
-      }
-    }, HOVER_WATCHDOG_MS);
-    return () => clearInterval(intervalId);
-  }, [expanded, collapseOverlay]);
-
-  // The overlay is non-activating and sits above the menu bar, so macOS can miss
-  // normal DOM hover entry events. Polling the cursor against the visible island
-  // bounds keeps hover-expand reliable without widening the clickable window.
-  // Entry bounds are strict (no padding) and only arm the dwell timer — the
-  // card opens after HOVER_OPEN_DWELL_MS of sustained hover, not on a graze.
-  useEffect(() => {
-    const currentWindow = getCurrentWindow();
-    let inFlight = false;
-    const intervalId = setInterval(async () => {
-      const island = islandRef.current;
-      if (!island || expandedRef.current || inFlight) return;
-      inFlight = true;
-      try {
-        const [windowPosition, cursor] = await Promise.all([
-          currentWindow.outerPosition(),
-          cursorPosition(),
-        ]);
-        const scale = window.devicePixelRatio || 1;
-        const rect = island.getBoundingClientRect();
-        const left = windowPosition.x + rect.left * scale;
-        const right = windowPosition.x + rect.right * scale;
-        const top = windowPosition.y + rect.top * scale;
-        const bottom = windowPosition.y + rect.bottom * scale;
-
-        if (cursor.x >= left && cursor.x <= right && cursor.y >= top && cursor.y <= bottom) {
-          noteHoverStart();
-        } else {
-          cancelHoverDwell();
-        }
-      } catch (err) {
-        flog.warn('overlay', 'hover detector failed', { error: String(err) });
-      } finally {
-        inFlight = false;
-      }
-    }, HOVER_WATCHDOG_MS);
-    return () => clearInterval(intervalId);
-  }, [noteHoverStart, cancelHoverDwell]);
-
-  // Quick control: auto-paste. Write localStorage + notify the main window.
-  const handleToggleAutoPaste = useCallback(async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    try {
-      const s = loadSettings();
-      const next = !s.autoPaste;
-      const nextSettings = { ...s, autoPaste: next };
-      saveSettings(nextSettings);
-      applySettingsSnapshot(nextSettings);
-      try {
-        await invoke('configure_dictation', { options: buildConfigureOptions(nextSettings) });
-      } catch (err) {
-        saveSettings(s);
-        applySettingsSnapshot(s);
-        throw err;
-      }
-      emit('settings-changed').catch((err) => flog.warn('overlay', 'emit settings-changed failed', { error: String(err) }));
-    } catch (err) {
-      flog.error('overlay', 'toggle autoPaste failed', { error: String(err) });
-      try {
-        applySettingsSnapshot(loadSettings());
-      } catch { /* ignore */ }
-    }
-  }, [applySettingsSnapshot]);
-
-  // Quick control: global disable. Gate the backend immediately, then notify.
-  const handleToggleDisabled = useCallback(async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    try {
-      const s = loadSettings();
-      const next = !s.disabled;
-      await invoke('set_app_disabled', { disabled: next });
-      saveSettings({ ...s, disabled: next });
-      setDisabled(next);
-      emit('settings-changed').catch((err) => flog.warn('overlay', 'emit settings-changed failed', { error: String(err) }));
-    } catch (err) {
-      flog.error('overlay', 'toggle disabled failed', { error: String(err) });
-    }
-  }, []);
-
-  // Quick control: open the main window's Settings panel.
-  const handleOpenSettings = useCallback(async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    try {
-      await invoke('show_main_window');
-      await emit('open-settings');
-    } catch (err) {
-      flog.error('overlay', 'open settings failed', { error: String(err) });
-    }
-  }, []);
-
   const topH = notchHeight || 37;
-  const effectiveAutoPaste = autoPaste && !fileOutputEnabled;
-  const autoPastePaused = autoPaste && fileOutputEnabled;
-  const autoPasteLabel = autoPastePaused
-    ? 'Auto-paste paused while saving files'
-    : effectiveAutoPaste
-      ? 'Disable auto-paste'
-      : 'Enable auto-paste';
-  const autoPasteColor = effectiveAutoPaste
-    ? '#10b981'
-    : autoPastePaused
-      ? '#f59e0b'
-      : 'rgba(255,255,255,0.85)';
-  const autoPasteBackground = effectiveAutoPaste
-    ? 'rgba(16,185,129,0.16)'
-    : autoPastePaused
-      ? 'rgba(245,158,11,0.14)'
-      : 'rgba(255,255,255,0.06)';
 
   return (
     <div
+      data-tauri-drag-region
       className="w-full h-full flex"
       style={{ background: 'transparent' }}
       onMouseDown={handleMouseDown}
       onDoubleClick={handleDoubleClick}
       onClick={handleClick}
-      onMouseEnter={noteHoverStart}
-      onMouseMove={noteHoverStart}
     >
-      {/* Dynamic Island: top bar matches notch height; hover expands it downward
-          to reveal the quick-settings dropdown. Idle/recording only changes the
-          top bar — the dropdown row is identical. */}
+      {/* Dynamic Island: same height as the notch. Idle = flush with the notch
+          plus a small left tab holding the mic icon. Active = grows to the
+          right to reveal the waveform. */}
       <div
-        ref={islandRef}
         className="cursor-pointer select-none overflow-hidden"
-        onMouseEnter={noteHoverStart}
-        onMouseMove={noteHoverStart}
-        onMouseLeave={handleMouseLeave}
         style={{
           borderRadius: '0 0 12px 12px',
-          width: (expanded || isActive) ? notchWidth + 68 : notchWidth + 28,
-          height: expanded ? topH + DROPDOWN_H : topH,
+          width: isActive ? notchWidth + 68 : notchWidth + 28,
+          height: topH,
           marginLeft: 32,
           background: 'rgba(20, 20, 20, 0.92)',
           boxShadow: showHotkeyMiss ? 'inset 0 -2px 0 rgba(245,158,11,0.9), 0 3px 16px rgba(245,158,11,0.22)' : 'none',
           backdropFilter: 'blur(40px)',
           WebkitBackdropFilter: 'blur(40px)',
-          transition: 'width 400ms cubic-bezier(0.34,1.56,0.64,1), height 360ms cubic-bezier(0.34,1.56,0.64,1)',
+          transition: 'width 400ms cubic-bezier(0.34,1.56,0.64,1)',
         }}
       >
-        {/* Top bar — the only draggable surface (keeps the dropdown buttons clickable) */}
-        <div data-tauri-drag-region className="flex items-center" style={{ height: topH, paddingLeft: 10, paddingRight: 10 }}>
+        <div className="flex items-center h-full" style={{ paddingLeft: 10, paddingRight: 10 }}>
           {/* Left side — mic icon (idle) or red dot (recording) or spinner (processing) or red X (cancelled), all same position */}
           <div className="shrink-0 w-3 h-3 flex items-center justify-center">
             {showCancelled ? (
@@ -688,17 +387,10 @@ export function OverlayWidget() {
             )}
           </div>
 
-          {/* Inline timer — recording + hover only */}
-          {status === 'recording' && expanded && (
-            <span className="shrink-0 text-white/60 tabular-nums" style={{ marginLeft: 7, fontSize: 11 }}>
-              {formatElapsed(elapsed)}
-            </span>
-          )}
-
           {/* Spacer */}
           <div className="flex-1" />
 
-          {/* Right side — waveform (only when active) */}
+          {/* Right side — waveform (recording) or hotkey-miss text */}
           {showHotkeyMiss ? (
             <span className="shrink-0 text-amber-300 text-[10px] font-medium">
               Tap missed
@@ -721,55 +413,6 @@ export function OverlayWidget() {
               ))}
             </div>
           )}
-        </div>
-
-        {/* Quick-settings dropdown — revealed on hover (identical in idle/recording) */}
-        <div
-          className="flex items-center justify-center gap-3"
-          style={{
-            height: DROPDOWN_H,
-            padding: '0 10px 6px',
-            opacity: expanded ? 1 : 0,
-            pointerEvents: expanded ? 'auto' : 'none',
-            transition: 'opacity 200ms ease',
-            transitionDelay: expanded ? '100ms' : '0ms',
-          }}
-        >
-          {/* Global disable */}
-          <button
-            type="button"
-            aria-label={disabled ? 'Enable Murmur' : 'Disable Murmur'}
-            onClick={handleToggleDisabled}
-            className="shrink-0 flex items-center justify-center cursor-pointer rounded-[9px] transition-colors"
-            style={{ width: 26, height: 26, background: disabled ? 'rgba(239,68,68,0.12)' : 'rgba(255,255,255,0.06)' }}
-          >
-            <PowerIcon stroke={disabled ? '#ef4444' : 'rgba(255,255,255,0.85)'} />
-          </button>
-
-          {/* Auto-paste */}
-          <button
-            type="button"
-            role="switch"
-            aria-checked={effectiveAutoPaste}
-            aria-label={autoPasteLabel}
-            title={autoPasteLabel}
-            onClick={handleToggleAutoPaste}
-            className="shrink-0 flex items-center justify-center cursor-pointer rounded-[9px] transition-colors"
-            style={{ width: 26, height: 26, opacity: disabled ? 0.35 : 1, background: autoPasteBackground }}
-          >
-            <ClipboardPasteIcon stroke={autoPasteColor} />
-          </button>
-
-          {/* Open settings */}
-          <button
-            type="button"
-            aria-label="Open settings"
-            onClick={handleOpenSettings}
-            className="shrink-0 flex items-center justify-center cursor-pointer rounded-[9px] transition-colors"
-            style={{ width: 26, height: 26, background: 'rgba(255,255,255,0.06)' }}
-          >
-            <SlidersIcon stroke="rgba(255,255,255,0.85)" />
-          </button>
         </div>
       </div>
     </div>

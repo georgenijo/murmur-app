@@ -11,7 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - Optional **Hotkey Timing Feedback** flashes the overlay amber when a bare-modifier tap times out before its second tap in Double-Tap or Both mode. The setting is off by default, and intentional holds, modifier shortcuts, processing skips, and valid double-taps remain silent (#154).
 
 ### Changed
-- The notch overlay's quick-settings card now opens only after the cursor dwells on the island for 400 ms instead of popping open on a graze, the card itself is more compact (44 px row, smaller buttons), and the waveform renders only while recording — processing shows just the spinner instead of a row of static dots.
+- The notch overlay is minimal again: idle sits flush with the notch showing only the small mic tab on the left, recording expands to the right with the red dot and live waveform, and processing shows just the spinner. The hover-expand quick-settings dropdown (global disable, auto-paste, open settings) is removed along with its window resizing and cursor polling; those controls remain available in the tray menu and main window.
 - The main window, settings, transcription history, recording controls, and log viewer now use the Sonic Canvas surface hierarchy and semantic palette in light and dark appearances (#141).
 - Release automation now builds signed macOS and Linux artifacts once on trusted `main`, keeps Cargo/CUDA cache ownership off tags and pull requests, and promotes only commit-SHA-matched artifacts with fail-closed updater-signature checks (#220).
 

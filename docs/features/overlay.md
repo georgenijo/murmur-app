@@ -39,41 +39,22 @@ Tauri's `focusable: false` configuration disables mouse events on macOS. The `sh
 
 ## Sizing
 
-The visible pill width adjusts based on recording state and hover:
+The visible pill width adjusts based on recording state:
 
 | State | Width | Notes |
 |-------|-------|-------|
-| Idle (no hover) | `notchWidth + 28` | Compact, shows only the mic icon |
-| Recording / Processing | `notchWidth + 68` | Shows waveform and status indicators |
-| Hover (idle or recording) | `notchWidth + 68` | Wide enough for the quick-settings dropdown |
+| Idle | `notchWidth + 28` | Flush with the notch's right edge; a small left tab shows the mic icon |
+| Recording / Processing | `notchWidth + 68` | Grows to the right to reveal the waveform and status indicators |
 
-The full overlay window width is `notchWidth + 120` (60px expansion per side), with the visible content area sized within that.
+The full overlay window width is `notchWidth + 120` (60px expansion per side), with the visible content area sized within that. The window itself never resizes after `show_overlay`.
 
-Height matches the menu bar height from notch detection. On hover the window grows by `EXPANDED_DROP` (56px) downward to reveal the dropdown (see Hover-Expand below). The overlay is horizontally centered at the top of the screen (y=0).
+Height always matches the menu bar height from notch detection. The overlay is horizontally centered at the top of the screen (y=0).
 
-Width transitions over 400ms and height over 360ms, both using the spring curve `cubic-bezier(0.34, 1.56, 0.64, 1)`.
+Width transitions over 400ms using the spring curve `cubic-bezier(0.34, 1.56, 0.64, 1)`.
 
-## Hover-Expand & Quick Settings
+## Global Disable (tray)
 
-Hovering the pill expands it downward into a quick-settings dropdown. The dropdown is identical regardless of state — only the top bar differs.
-
-- **Expand** on `mouseEnter`; **collapse** 300ms after `mouseLeave` (hover-intent delay to avoid flicker during cursor movement).
-- Because a transparent overlay with cursor events enabled captures the mouse across its whole frame, the window is **dynamically resized** rather than pre-allocated tall — otherwise the idle overlay would create a click dead-zone below the notch. Expand grows the window first, then the card animates open; collapse animates the card closed, then shrinks the window ~380ms later so the dropdown is never clipped mid-transition.
-- Only the **top bar** is a drag region (`data-tauri-drag-region`); the dropdown buttons are not, so they stay clickable.
-
-### Dropdown controls
-
-| Control | Action |
-|---------|--------|
-| Speaker-slash | Toggles global disable. Calls `set_app_disabled` directly for an immediate gate. When disabled: red icon (`#ef4444`) on `rgba(239,68,68,0.12)`, auto-paste dims to 35%, top-bar mic fades to 15%. |
-| Auto-paste toggle | Reads/writes the `autoPaste` setting in localStorage. |
-| Gear | Emits `open-settings` and shows/focuses the main window (`WebviewWindow.getByLabel('main')`). |
-
-During recording + hover, an inline `m:ss` timer appears next to the red dot (top bar only; never shown when collapsed).
-
-### Cross-window settings sync
-
-The overlay runs in a separate window with no shared React context. Writes go to localStorage plus an `emit('settings-changed')`; the main window listens and applies the change (`configure` for auto-paste, `set_app_disabled` for disable) with a diff-guard that prevents an echo loop. The main window also emits `settings-changed` on its own auto-paste/disable changes so an already-expanded overlay updates live.
+The tray menu has a **Disable Murmur** check item. Toggling it calls the same `set_app_disabled` command path used by the settings restore on launch; the command flips the backend gate, syncs the tray check state, and emits `app-disabled-changed`. The main window persists the new value to localStorage (equality-guarded so its own changes don't echo), and the overlay dims the mic icon to 15%.
 
 ## Visual States
 
@@ -86,7 +67,7 @@ Small mic SVG icon at 40% white opacity. Compact width.
 Expanded width. Red pulsing dot on the left, animated 7-bar waveform on the right. The waveform responds to real-time audio levels.
 
 ### Processing
-Same expanded width. Spinning circle on the left, dimmed waveform on the right.
+Same expanded width. Spinning circle on the left; the waveform is hidden (visible only while recording).
 
 ### Hotkey Timing Miss (optional)
 
@@ -146,7 +127,6 @@ The observer is intentionally leaked (`std::mem::forget`) for app-lifetime obser
 |---------|-------------|
 | `show_overlay` | Positions, sizes, and shows the overlay window. Re-enables mouse events. |
 | `hide_overlay` | Hides the overlay window. Gracefully handles missing window. |
-| `set_overlay_expanded` | Resizes the overlay height for hover-expand (`base_h + EXPANDED_DROP` when expanded, notch height when collapsed). Width unchanged, top anchored. |
 | `get_notch_info` | Returns cached `{ notch_width, notch_height }` or `null`. |
 
 ## Events
@@ -156,9 +136,8 @@ The observer is intentionally leaked (`std::mem::forget`) for app-lifetime obser
 | `recording-status-changed` | String | Drives visual state transitions |
 | `audio-level` | Number (RMS 0.0-1.0) | Real-time audio level for waveform |
 | `notch-info-changed` | `{ notch_width, notch_height }` or `null` | Display configuration changed |
-| `app-disabled-changed` | Boolean | Global-disable state changed (updates the top-bar mic + speaker-slash) |
+| `app-disabled-changed` | Boolean | Global-disable state changed (dims the mic icon; main window persists it) |
 | `settings-changed` | (none) | Overlay-relevant settings changed in another window; listeners re-read localStorage |
 | `hotkey-tap-rejected` | `{ reason: "second_tap_expired", mode: "double_tap" \| "both" }` | Drives the opt-in amber timing-miss flash |
-| `open-settings` | (none) | Overlay gear asks the main window to open the Settings panel |
 
 The entire overlay surface is a Tauri drag region (`data-tauri-drag-region`), allowing the user to reposition it. Overlay position save/restore is currently disabled (TODO: re-enable after notch positioning is stable).

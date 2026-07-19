@@ -42,7 +42,23 @@ pub fn set_keyboard_recording(recording: bool) {
 pub fn set_app_disabled(app_handle: tauri::AppHandle, disabled: bool) -> Result<(), String> {
     keyboard::set_app_disabled(disabled);
     tracing::info!(target: "keyboard", "set_app_disabled: {}", disabled);
+    sync_tray_disabled_item(disabled);
     app_handle.emit("app-disabled-changed", disabled).map_err(|e| e.to_string())
+}
+
+static DISABLED_MENU_ITEM: std::sync::OnceLock<tauri::menu::CheckMenuItem<tauri::Wry>> =
+    std::sync::OnceLock::new();
+
+/// Called once from setup so the tray's "Disable Murmur" check item can be
+/// kept in sync regardless of which surface flipped the state.
+pub(crate) fn register_tray_disabled_item(item: tauri::menu::CheckMenuItem<tauri::Wry>) {
+    let _ = DISABLED_MENU_ITEM.set(item);
+}
+
+fn sync_tray_disabled_item(disabled: bool) {
+    if let Some(check) = DISABLED_MENU_ITEM.get() {
+        let _ = check.set_checked(disabled);
+    }
 }
 
 #[tauri::command]
