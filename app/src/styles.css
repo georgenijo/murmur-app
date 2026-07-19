@@ -63,6 +63,12 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* The notch overlay is a transparent window — the surface background above
+   would paint the whole window frame as an opaque box around the island. */
+body.overlay-window {
+  background: transparent;
+}
+
 * {
   scrollbar-color: color-mix(in srgb, var(--murmur-outline-variant) 24%, transparent) transparent;
 }
