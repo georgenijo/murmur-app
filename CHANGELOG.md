@@ -6,12 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.17.2] - 2026-07-19
+
 ### Added
 - **True incremental Whisper transcription** — long Whisper dictations now process one bounded overlapping audio window at a time during recording and transcribe only the remaining tail after stop. The existing cached model is reused (no duplicate context), overlap reconciliation is deterministic, and any worker/VAD/session reliability failure falls back to the original authoritative full-buffer path (#129).
 - Optional **Hotkey Timing Feedback** flashes the overlay amber when a bare-modifier tap times out before its second tap in Double-Tap or Both mode. The setting is off by default, and intentional holds, modifier shortcuts, processing skips, and valid double-taps remain silent (#154).
 
 ### Changed
-- The notch overlay is minimal again: idle sits flush with the notch showing only the small mic tab on the left, recording expands to the right with the red dot and live waveform, and processing shows just the spinner instead of a row of static dots. The hover quick-settings card still exists but is now intent-gated — it opens only after the cursor dwells on the island for 400 ms (no more popping open on a graze) and is more compact. A transparent-background regression from the Sonic Canvas reskin that painted the whole overlay window as a dark box is fixed, and global disable is now also available as a "Disable Murmur" check item in the tray menu.
+- The notch overlay is minimal again: idle sits flush with the notch showing only the small mic tab on the left, recording expands to the right with the red dot and live waveform, and processing shows just the spinner instead of a row of static dots. The hover quick-settings card still exists but is now intent-gated — it opens only after the cursor dwells on the island for 150 ms (no more popping open on a graze) and is more compact. A transparent-background regression from the Sonic Canvas reskin that painted the whole overlay window as a dark box is fixed, and global disable is now also available as a "Disable Murmur" check item in the tray menu.
 - The main window, settings, transcription history, recording controls, and log viewer now use the Sonic Canvas surface hierarchy and semantic palette in light and dark appearances (#141).
 - Release automation now builds signed macOS and Linux artifacts once on trusted `main`, keeps Cargo/CUDA cache ownership off tags and pull requests, and promotes only commit-SHA-matched artifacts with fail-closed updater-signature checks (#220).
 - Successful trusted version-bump builds now automatically create the matching tag and publish their already-verified artifacts; manual builds remain rehearsals and tag pushes remain a recovery path (#239).
