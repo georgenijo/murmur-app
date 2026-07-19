@@ -192,6 +192,23 @@ pub(crate) fn canonicalize_cli(
     canonicalize_line(input, mode, lexicon)
 }
 
+/// Return whether any physical line activates the CLI grammar.
+///
+/// This is shared with earlier prose stages so an already-canonical command
+/// (whose formatted output would compare equal) still bypasses prose rules.
+pub(crate) fn is_cli_utterance(input: &str, mode: CliFormattingMode, lexicon: &CliLexicon) -> bool {
+    input
+        .split(['\n', '\r'])
+        .filter(|line| !line.trim().is_empty())
+        .any(|line| {
+            let words = line
+                .split_whitespace()
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            cli_activation(&words, mode, lexicon).is_some()
+        })
+}
+
 /// Keep physical line endings as immutable command-span boundaries. This also
 /// preserves newlines produced by the earlier voice-command stage and makes an
 /// already-canonical multiline command idempotent.
@@ -224,32 +241,36 @@ fn canonicalize_line(input: &str, mode: CliFormattingMode, lexicon: &CliLexicon)
         .split_whitespace()
         .map(str::to_string)
         .collect::<Vec<_>>();
-    if words.is_empty() {
+    let Some(trigger_words) = cli_activation(&words, mode, lexicon) else {
         return input.to_string();
-    }
-
-    let trigger_words = explicit_trigger_len(&words);
-    let explicit = trigger_words > 0;
-    if explicit {
+    };
+    if trigger_words > 0 {
         words.drain(0..trigger_words);
-        if words.is_empty() {
-            return input.to_string();
-        }
-    }
-
-    let activated = explicit
-        || match mode {
-            CliFormattingMode::Disabled => false,
-            CliFormattingMode::Enabled => profile_activation(&words, lexicon),
-            CliFormattingMode::Auto => automatic_activation(&words, lexicon),
-        };
-    if !activated {
-        return input.to_string();
     }
 
     strip_sentence_punctuation(&mut words);
     let formatted = format_words(&words, lexicon);
     apply_command_idioms(formatted)
+}
+
+/// Return the number of explicit trigger words to strip when activated.
+fn cli_activation(
+    words: &[String],
+    mode: CliFormattingMode,
+    lexicon: &CliLexicon,
+) -> Option<usize> {
+    if words.is_empty() {
+        return None;
+    }
+    let trigger_words = explicit_trigger_len(words);
+    if trigger_words > 0 {
+        return (words.len() > trigger_words).then_some(trigger_words);
+    }
+    match mode {
+        CliFormattingMode::Disabled => None,
+        CliFormattingMode::Enabled => profile_activation(words, lexicon).then_some(0),
+        CliFormattingMode::Auto => automatic_activation(words, lexicon).then_some(0),
+    }
 }
 
 fn explicit_trigger_len(words: &[String]) -> usize {
@@ -814,6 +835,26 @@ mod tests {
         for command in fixtures {
             assert_eq!(auto(command), command, "fixture: {command}");
         }
+    }
+
+    #[test]
+    fn activation_predicate_recognizes_canonical_commands_and_rejects_prose() {
+        let lexicon = CliLexicon::builtins();
+        assert!(is_cli_utterance(
+            "git status",
+            CliFormattingMode::Auto,
+            &lexicon
+        ));
+        assert!(is_cli_utterance(
+            "command unknown-tool dash dash help",
+            CliFormattingMode::Disabled,
+            &lexicon
+        ));
+        assert!(!is_cli_utterance(
+            "Git status is useful in scripts.",
+            CliFormattingMode::Auto,
+            &lexicon
+        ));
     }
 
     #[test]

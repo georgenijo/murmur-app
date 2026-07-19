@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ### Added
 - Long Whisper recordings now show a session-scoped provisional transcript in the notch overlay after each reliable incremental chunk. The privacy-safe preview can be disabled in Settings; final clipboard and auto-paste delivery remain unchanged and occur exactly once after stop (#243).
 - **Spoken CLI command formatting** — likely npm/npx, Git, Cargo, Docker, kubectl, and other developer commands now receive deterministic local formatting for versions, flags, paths, operators, quotes, and small canonical aliases. Detection is prefix/trigger/profile bounded, project `package.json` names extend the local lexicon, and ordinary prose remains unchanged (#256).
+- Optional **Smart Formatting** turns clear spoken enumerations into lists, applies explicitly cued email/URL/symbol/quote/paragraph grammar, and handles bounded same-utterance restatements locally. It is independently controllable per app, bypasses CLI/code/verbatim contexts, leaves imported-file transcription raw, and keeps delivery final-only (#252).
 
 ### Changed
 - Post-recognition cleanup, voice commands, and Smart Correction now run through one ordered, backend-neutral transformation pipeline with privacy-safe per-stage timing/change telemetry and explicit failure policy (#244).

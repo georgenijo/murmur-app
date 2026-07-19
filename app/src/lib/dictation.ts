@@ -75,6 +75,7 @@ export interface ConfigureOptions {
   voiceCommandsEnabled?: boolean;
   voiceCommands?: VoiceCommand[];
   cleanupEnabled?: boolean;
+  smartFormattingEnabled?: boolean;
   cleanupRemoveFiller?: boolean;
   cleanupCapitalize?: boolean;
   codeVocabEnabled?: boolean;
@@ -109,6 +110,7 @@ export function buildConfigureOptions(s: Settings): ConfigureOptions {
     voiceCommandsEnabled: s.voiceCommandsEnabled,
     voiceCommands: s.voiceCommands,
     cleanupEnabled: s.cleanupEnabled,
+    smartFormattingEnabled: s.smartFormattingEnabled,
     cleanupRemoveFiller: s.cleanupRemoveFiller,
     cleanupCapitalize: s.cleanupCapitalize,
     codeVocabEnabled: s.codeVocabEnabled,

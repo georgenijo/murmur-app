@@ -697,6 +697,7 @@ async fn run_transcription_pipeline(
                 .enabled_command_groups
                 .built_in_voice_commands,
             smart_correction_enabled: transformations.correction_enabled,
+            smart_formatting_enabled: transformations.smart_formatting_enabled,
             cli_command_enabled: true,
         },
     };
@@ -1097,12 +1098,16 @@ pub async fn configure_dictation(
                 let cli_formatting_override = p
                     .get("cliFormattingOverride")
                     .and_then(|v| v.as_bool());
+                let smart_formatting_override = p
+                    .get("smartFormattingOverride")
+                    .and_then(|v| v.as_bool());
                 Some(crate::state::AppProfile {
                     bundle_id,
                     label,
                     auto_paste_override,
                     cleanup_override,
                     cli_formatting_override,
+                    smart_formatting_override,
                 })
             })
             .collect();
@@ -1110,6 +1115,13 @@ pub async fn configure_dictation(
 
     if let Some(cleanup_enabled) = options.get("cleanupEnabled").and_then(|v| v.as_bool()) {
         dictation.cleanup_enabled = cleanup_enabled;
+    }
+
+    if let Some(enabled) = options
+        .get("smartFormattingEnabled")
+        .and_then(|v| v.as_bool())
+    {
+        dictation.smart_formatting_enabled = enabled;
     }
 
     if let Some(v) = options.get("cleanupRemoveFiller").and_then(|v| v.as_bool()) {

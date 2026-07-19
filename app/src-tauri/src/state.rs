@@ -40,6 +40,10 @@ pub struct AppProfile {
     /// `Some(false)` disables implicit formatting (explicit "command" still works).
     #[serde(default)]
     pub cli_formatting_override: Option<bool>,
+    /// Override deterministic prose smart formatting for this app. `None`
+    /// inherits the global setting; code/verbatim profiles can force it off.
+    #[serde(default)]
+    pub smart_formatting_override: Option<bool>,
 }
 
 /// A user-defined voice command: when `phrase` is spoken (matched
@@ -78,6 +82,9 @@ pub struct DictationState {
     pub cleanup_remove_filler: bool,
     /// When cleanup is enabled, capitalize sentence starts.
     pub cleanup_capitalize: bool,
+    /// Deterministic lists, explicit symbols, and bounded same-utterance
+    /// backtracking. Off by default and independently configurable.
+    pub smart_formatting_enabled: bool,
     /// Code-aware vocabulary: when enabled, identifiers scanned from
     /// `code_vocab_folder` are fed to Whisper as an initial prompt to bias
     /// transcription toward the user's code terms. Whisper backend only.
@@ -124,6 +131,7 @@ impl Default for DictationState {
             cleanup_enabled: false,
             cleanup_remove_filler: true,
             cleanup_capitalize: true,
+            smart_formatting_enabled: false,
             code_vocab_enabled: false,
             code_vocab_folder: String::new(),
             code_vocab_prompt: None,
