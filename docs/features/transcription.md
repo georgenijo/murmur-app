@@ -58,10 +58,13 @@ Long live recordings selected to the Whisper backend use true incremental output
 - A single sequential worker snapshots one bounded 10-second window every 8 seconds (2-second overlap) while capture continues.
 - Every window passes through the same Silero VAD threshold and the existing cached Whisper backend. There is no second model/context and never more than one inference in flight.
 - Chunk text is reconciled by a deterministic word-boundary algorithm. It removes the largest near-equal suffix/prefix overlap within 12 words and retains the earlier surface form.
+- After reconciliation, the worker validates the recording ID, cancellation generation, status, and selected model again before publishing a versioned `partial-transcript` event. Its camelCase payload is `{ contractVersion, recordingId, text, chunkIndex, processedAudioMs }`; the text is cumulative and remains in memory only.
 - On stop, the worker is signalled before audio teardown and only the unprocessed tail plus the 2-second overlap is inferred. The reconciled result becomes the authoritative text used by the unchanged cleanup, voice-command, correction, file-output, clipboard, paste, history, and stats paths.
 - Short recordings (under the first 10-second window), non-Whisper backends, missing/failed VAD, stale sessions, worker lag, panics, or final-tail failures use the original full-buffer pipeline. A model setting change during recording applies to the next session; the active worker keeps its recording-start model snapshot.
 
 The worker holds no queued audio. It reads the current buffer length, copies only one fixed window, awaits that inference, and abandons incremental mode if capture advances by more than one step. Recording IDs and cancellation generations prevent completed work from a stopped/cancelled session from being adopted by a newer recording.
+
+The backend also emits versioned `recording-session-started` and `partial-transcript-cleared` lifecycle events. Clears are recording-ID scoped, so a late cancellation or fallback from an older session cannot erase or update a newer preview. Fallback clears provisional text immediately while the existing full-buffer path remains authoritative. Partial contents are never written to logs, history, stats, settings, files, the clipboard, or auto-paste; telemetry records only first-partial latency, update count, last-partial-to-final latency, and completed/fallback flags.
 
 ## Model Options
 

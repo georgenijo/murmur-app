@@ -74,7 +74,7 @@ export function useSettings() {
       });
     }
 
-    if ('autoPaste' in updates || 'disabled' in updates || 'saveTranscript' in updates || 'saveAudio' in updates || 'hotkeyMissFeedback' in updates) {
+    if ('model' in updates || 'autoPaste' in updates || 'disabled' in updates || 'saveTranscript' in updates || 'saveAudio' in updates || 'hotkeyMissFeedback' in updates || 'liveTranscriptPreview' in updates) {
       // Notify the overlay window (separate React context) so its quick-settings
       // controls reflect changes made here. The diff-guard in applyExternalSettings
       // prevents this window from re-applying its own change.

@@ -928,6 +928,33 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
             value={settings.vadSensitivity}
             onCommit={(value) => onUpdateSettings({ vadSensitivity: value })}
           />
+
+          <div className="flex items-center justify-between gap-6">
+            <div>
+              <label className="block text-sm font-medium text-on-surface">
+                Live Transcript Preview
+              </label>
+              <p className="mt-1 text-xs text-on-surface-variant">
+                Show provisional Whisper text in the overlay during long recordings
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={settings.liveTranscriptPreview}
+              aria-label="Live transcript preview"
+              onClick={() => onUpdateSettings({ liveTranscriptPreview: !settings.liveTranscriptPreview })}
+              className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 ${
+                settings.liveTranscriptPreview ? 'bg-primary' : 'bg-surface-container-highest'
+              }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-on-primary shadow transition-transform ${
+                  settings.liveTranscriptPreview ? 'translate-x-6' : 'translate-x-1'
+                }`}
+              />
+            </button>
+          </div>
         </div>
 
         {/* Recording Trigger */}

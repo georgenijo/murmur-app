@@ -71,6 +71,7 @@ export interface Settings {
   autoPasteDelayMs: number;
   recordingMode: RecordingMode;
   hotkeyMissFeedback: boolean;
+  liveTranscriptPreview: boolean;
   microphone: string;
   launchAtLogin: boolean;
   vadSensitivity: number;
@@ -204,6 +205,7 @@ export const DEFAULT_SETTINGS: Settings = {
   autoPasteDelayMs: 50,
   recordingMode: 'hold_down',
   hotkeyMissFeedback: false,
+  liveTranscriptPreview: true,
   microphone: 'system_default',
   launchAtLogin: false,
   vadSensitivity: 50,
@@ -384,6 +386,9 @@ export function loadSettings(): Settings {
 
       if (typeof parsed.hotkeyMissFeedback !== 'boolean') {
         parsed.hotkeyMissFeedback = DEFAULT_SETTINGS.hotkeyMissFeedback;
+      }
+      if (typeof parsed.liveTranscriptPreview !== 'boolean') {
+        parsed.liveTranscriptPreview = DEFAULT_SETTINGS.liveTranscriptPreview;
       }
 
       // codeVocabEnabled gates the Rust scan — coerce non-booleans (or a missing
