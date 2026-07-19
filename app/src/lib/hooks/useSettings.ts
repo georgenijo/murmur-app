@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { emit } from '@tauri-apps/api/event';
+import { emit, listen } from '@tauri-apps/api/event';
 import { Settings, loadSettings, saveSettings } from '../settings';
 import { configure, buildConfigureOptions } from '../dictation';
 import { enable, disable, isEnabled } from '@tauri-apps/plugin-autostart';
@@ -26,6 +26,25 @@ export function useSettings() {
     }).catch((err) => {
       console.error('Failed to check autostart status:', err);
     });
+  }, []);
+
+  // Persist backend-driven disabled changes (the tray's "Disable Murmur" item).
+  // The equality guard makes this window's own set_app_disabled echo a no-op.
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    listen<boolean>('app-disabled-changed', (event) => {
+      if (typeof event.payload !== 'boolean') return;
+      const prev = settingsRef.current;
+      if (prev.disabled === event.payload) return;
+      const next = { ...prev, disabled: event.payload };
+      settingsRef.current = next;
+      setSettings(next);
+      saveSettings(next);
+    }).then((fn) => {
+      if (cancelled) { fn(); } else { unlisten = fn; }
+    });
+    return () => { cancelled = true; unlisten?.(); };
   }, []);
 
   const updateSettings = (updates: Partial<Settings>) => {

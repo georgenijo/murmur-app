@@ -10,7 +10,7 @@ const FALLBACK_OVERLAY_W: f64 = 200.0;
 #[cfg(target_os = "macos")]
 const FALLBACK_OVERLAY_H: f64 = 37.0;
 #[cfg(target_os = "macos")]
-const EXPANDED_DROP: f64 = 56.0; // extra height for the hover dropdown row
+const EXPANDED_DROP: f64 = 44.0; // extra height for the hover dropdown row
 
 #[derive(serde::Serialize, Clone)]
 pub(crate) struct NotchInfo {

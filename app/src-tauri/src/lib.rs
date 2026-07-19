@@ -229,12 +229,17 @@ pub fn run() {
             // Restore tray icon (removed by PR #63 overlay work).
             let idle_icon_data = commands::tray::make_tray_icon_data();
             let show_item = MenuItemBuilder::with_id("show", "Show Murmur").build(app)?;
+            let disabled_item = tauri::menu::CheckMenuItemBuilder::with_id("toggle_disabled", "Disable Murmur")
+                .checked(false)
+                .build(app)?;
             let quit_item = MenuItemBuilder::with_id("quit", "Quit Murmur").build(app)?;
             let tray_menu = MenuBuilder::new(app)
                 .item(&show_item)
+                .item(&disabled_item)
                 .separator()
                 .item(&quit_item)
                 .build()?;
+            commands::keyboard::register_tray_disabled_item(disabled_item.clone());
             let handle = app.handle().clone();
             TrayIconBuilder::with_id("main-tray")
                 .icon(tauri::image::Image::new(&idle_icon_data, 66, 66))
@@ -248,6 +253,12 @@ pub fn run() {
                             if let Some(win) = app_handle.get_webview_window("main") {
                                 let _ = win.show();
                                 let _ = win.set_focus();
+                            }
+                        }
+                        "toggle_disabled" => {
+                            let new_disabled = !keyboard::is_app_disabled();
+                            if let Err(e) = commands::keyboard::set_app_disabled(app_handle.clone(), new_disabled) {
+                                tracing::warn!(target: "keyboard", "tray disable toggle failed: {}", e);
                             }
                         }
                         "quit" => {

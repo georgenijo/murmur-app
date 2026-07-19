@@ -45,11 +45,11 @@ The visible pill width adjusts based on recording state and hover:
 |-------|-------|-------|
 | Idle (no hover) | `notchWidth + 28` | Compact, shows only the mic icon |
 | Recording / Processing | `notchWidth + 68` | Shows waveform and status indicators |
-| Hover (idle or recording) | `notchWidth + 68` | Wide enough for the quick-settings dropdown |
+| Hover-expanded (after 150ms dwell) | `notchWidth + 68` | Wide enough for the quick-settings dropdown |
 
 The full overlay window width is `notchWidth + 120` (60px expansion per side), with the visible content area sized within that.
 
-Height matches the menu bar height from notch detection. On hover the window grows by `EXPANDED_DROP` (56px) downward to reveal the dropdown (see Hover-Expand below). The overlay is horizontally centered at the top of the screen (y=0).
+Height matches the menu bar height from notch detection. On hover the window grows by `EXPANDED_DROP` (44px) downward to reveal the dropdown (see Hover-Expand below). The overlay is horizontally centered at the top of the screen (y=0).
 
 Width transitions over 400ms and height over 360ms, both using the spring curve `cubic-bezier(0.34, 1.56, 0.64, 1)`.
 
@@ -57,7 +57,7 @@ Width transitions over 400ms and height over 360ms, both using the spring curve 
 
 Hovering the pill expands it downward into a quick-settings dropdown. The dropdown is identical regardless of state — only the top bar differs.
 
-- **Expand** on `mouseEnter`; **collapse** 300ms after `mouseLeave` (hover-intent delay to avoid flicker during cursor movement).
+- **Expand** requires hover intent: the cursor must dwell on the island for `HOVER_OPEN_DWELL_MS` (150ms) before the card opens — grazing the notch does nothing. **Collapse** 300ms after `mouseLeave`.
 - Because a transparent overlay with cursor events enabled captures the mouse across its whole frame, the window is **dynamically resized** rather than pre-allocated tall — otherwise the idle overlay would create a click dead-zone below the notch. Expand grows the window first, then the card animates open; collapse animates the card closed, then shrinks the window ~380ms later so the dropdown is never clipped mid-transition.
 - Only the **top bar** is a drag region (`data-tauri-drag-region`); the dropdown buttons are not, so they stay clickable.
 
@@ -65,7 +65,7 @@ Hovering the pill expands it downward into a quick-settings dropdown. The dropdo
 
 | Control | Action |
 |---------|--------|
-| Speaker-slash | Toggles global disable. Calls `set_app_disabled` directly for an immediate gate. When disabled: red icon (`#ef4444`) on `rgba(239,68,68,0.12)`, auto-paste dims to 35%, top-bar mic fades to 15%. |
+| Power | Toggles global disable. Calls `set_app_disabled` directly for an immediate gate. When disabled: red icon (`#ef4444`) on `rgba(239,68,68,0.12)`, auto-paste dims to 35%, top-bar mic fades to 15%. Global disable is also a "Disable Murmur" check item in the tray menu; the command keeps the tray check state in sync and the main window persists tray-driven changes. |
 | Auto-paste toggle | Reads/writes the `autoPaste` setting in localStorage. |
 | Gear | Emits `open-settings` and shows/focuses the main window (`WebviewWindow.getByLabel('main')`). |
 
@@ -86,7 +86,7 @@ Small mic SVG icon at 40% white opacity. Compact width.
 Expanded width. Red pulsing dot on the left, animated 7-bar waveform on the right. The waveform responds to real-time audio levels.
 
 ### Processing
-Same expanded width. Spinning circle on the left, dimmed waveform on the right.
+Same expanded width. Spinning circle on the left; the waveform is hidden (visible only while recording).
 
 ### Hotkey Timing Miss (optional)
 
@@ -162,3 +162,7 @@ The observer is intentionally leaked (`std::mem::forget`) for app-lifetime obser
 | `open-settings` | (none) | Overlay gear asks the main window to open the Settings panel |
 
 The entire overlay surface is a Tauri drag region (`data-tauri-drag-region`), allowing the user to reposition it. Overlay position save/restore is currently disabled (TODO: re-enable after notch positioning is stable).
+
+## Transparent window caveat
+
+The shared `styles.css` gives `body` an opaque surface background. The overlay's body carries the `overlay-window` class (`overlay.html`), which scopes it back to transparent — without it the whole overlay window frame paints as a dark box around the island.

@@ -18,8 +18,10 @@ import {
 const BAR_COUNT = 7;
 const COLLAPSE_DELAY_MS = 300;
 const SHRINK_DELAY_MS = 380;
-const HOVER_WATCHDOG_MS = 250;
+const HOVER_WATCHDOG_MS = 150;
 const HOVER_BOUNDS_PADDING = 8;
+const HOVER_OPEN_DWELL_MS = 150;
+const DROPDOWN_H = 44;
 
 function formatElapsed(seconds: number): string {
   const m = Math.floor(seconds / 60);
@@ -29,7 +31,7 @@ function formatElapsed(seconds: number): string {
 
 function PowerIcon({ stroke }: { stroke: string }) {
   return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={stroke} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={stroke} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M12 2v10" />
       <path d="M18.4 6.6a9 9 0 1 1-12.8 0" />
     </svg>
@@ -38,7 +40,7 @@ function PowerIcon({ stroke }: { stroke: string }) {
 
 function ClipboardPasteIcon({ stroke }: { stroke: string }) {
   return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={stroke} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={stroke} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <rect x="8" y="2" width="8" height="4" rx="1" />
       <path d="M16 4h2a2 2 0 0 1 2 2v4" />
       <path d="M8 4H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h5" />
@@ -50,7 +52,7 @@ function ClipboardPasteIcon({ stroke }: { stroke: string }) {
 
 function SlidersIcon({ stroke }: { stroke: string }) {
   return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={stroke} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={stroke} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M4 7h4" />
       <path d="M12 7h8" />
       <circle cx="10" cy="7" r="2" />
@@ -82,6 +84,7 @@ export function OverlayWidget() {
   const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const collapseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const shrinkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dwellTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hotkeyMissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const audioLevelRef = useRef(0);
   const hotkeyMissFeedbackRef = useRef(false);
@@ -123,6 +126,7 @@ export function OverlayWidget() {
       if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
       if (collapseTimerRef.current) clearTimeout(collapseTimerRef.current);
       if (shrinkTimerRef.current) clearTimeout(shrinkTimerRef.current);
+      if (dwellTimerRef.current) clearTimeout(dwellTimerRef.current);
       if (hotkeyMissTimerRef.current) clearTimeout(hotkeyMissTimerRef.current);
     };
   }, [applySettingsSnapshot]);
@@ -451,9 +455,8 @@ export function OverlayWidget() {
   }, [shrinkOverlayWindow]);
 
   // Hover-expand: grow the window first, then animate the card open.
-  const handleMouseEnter = useCallback(() => {
-    if (collapseTimerRef.current) { clearTimeout(collapseTimerRef.current); collapseTimerRef.current = null; }
-    if (shrinkTimerRef.current) { clearTimeout(shrinkTimerRef.current); shrinkTimerRef.current = null; }
+  const openOverlay = useCallback(() => {
+    if (dwellTimerRef.current) { clearTimeout(dwellTimerRef.current); dwellTimerRef.current = null; }
     if (expandedRef.current) return;
     // Refresh quick-control values from localStorage (overlay has no shared settings context).
     try {
@@ -465,11 +468,28 @@ export function OverlayWidget() {
     setExpanded(true);
   }, [applySettingsSnapshot]);
 
+  // Opening requires hover intent: the cursor must dwell on the island before
+  // the card expands, so grazing the notch no longer pops the dropdown.
+  const noteHoverStart = useCallback(() => {
+    if (collapseTimerRef.current) { clearTimeout(collapseTimerRef.current); collapseTimerRef.current = null; }
+    if (shrinkTimerRef.current) { clearTimeout(shrinkTimerRef.current); shrinkTimerRef.current = null; }
+    if (expandedRef.current || dwellTimerRef.current) return;
+    dwellTimerRef.current = setTimeout(() => {
+      dwellTimerRef.current = null;
+      openOverlay();
+    }, HOVER_OPEN_DWELL_MS);
+  }, [openOverlay]);
+
+  const cancelHoverDwell = useCallback(() => {
+    if (dwellTimerRef.current) { clearTimeout(dwellTimerRef.current); dwellTimerRef.current = null; }
+  }, []);
+
   // Collapse after a 300ms hover-intent delay; shrink the window only after the
   // close animation finishes so the dropdown isn't clipped mid-transition.
   const handleMouseLeave = useCallback(() => {
+    cancelHoverDwell();
     collapseOverlay();
-  }, [collapseOverlay]);
+  }, [cancelHoverDwell, collapseOverlay]);
 
   // Safety net for macOS/Tauri hover edge cases: if the native window is already
   // expanded but a leave event is missed, collapse once the cursor is outside the
@@ -506,6 +526,8 @@ export function OverlayWidget() {
   // The overlay is non-activating and sits above the menu bar, so macOS can miss
   // normal DOM hover entry events. Polling the cursor against the visible island
   // bounds keeps hover-expand reliable without widening the clickable window.
+  // Entry bounds are strict (no padding) and only arm the dwell timer — the
+  // card opens after HOVER_OPEN_DWELL_MS of sustained hover, not on a graze.
   useEffect(() => {
     const currentWindow = getCurrentWindow();
     let inFlight = false;
@@ -520,14 +542,15 @@ export function OverlayWidget() {
         ]);
         const scale = window.devicePixelRatio || 1;
         const rect = island.getBoundingClientRect();
-        const padding = HOVER_BOUNDS_PADDING * scale;
-        const left = windowPosition.x + rect.left * scale - padding;
-        const right = windowPosition.x + rect.right * scale + padding;
-        const top = windowPosition.y + rect.top * scale - padding;
-        const bottom = windowPosition.y + rect.bottom * scale + padding;
+        const left = windowPosition.x + rect.left * scale;
+        const right = windowPosition.x + rect.right * scale;
+        const top = windowPosition.y + rect.top * scale;
+        const bottom = windowPosition.y + rect.bottom * scale;
 
         if (cursor.x >= left && cursor.x <= right && cursor.y >= top && cursor.y <= bottom) {
-          handleMouseEnter();
+          noteHoverStart();
+        } else {
+          cancelHoverDwell();
         }
       } catch (err) {
         flog.warn('overlay', 'hover detector failed', { error: String(err) });
@@ -536,7 +559,7 @@ export function OverlayWidget() {
       }
     }, HOVER_WATCHDOG_MS);
     return () => clearInterval(intervalId);
-  }, [handleMouseEnter]);
+  }, [noteHoverStart, cancelHoverDwell]);
 
   // Quick control: auto-paste. Write localStorage + notify the main window.
   const handleToggleAutoPaste = useCallback(async (e: React.MouseEvent) => {
@@ -615,9 +638,8 @@ export function OverlayWidget() {
       onMouseDown={handleMouseDown}
       onDoubleClick={handleDoubleClick}
       onClick={handleClick}
-      onMouseEnter={handleMouseEnter}
-      onMouseMove={handleMouseEnter}
-      onMouseOver={handleMouseEnter}
+      onMouseEnter={noteHoverStart}
+      onMouseMove={noteHoverStart}
     >
       {/* Dynamic Island: top bar matches notch height; hover expands it downward
           to reveal the quick-settings dropdown. Idle/recording only changes the
@@ -625,14 +647,13 @@ export function OverlayWidget() {
       <div
         ref={islandRef}
         className="cursor-pointer select-none overflow-hidden"
-        onMouseEnter={handleMouseEnter}
-        onMouseMove={handleMouseEnter}
-        onMouseOver={handleMouseEnter}
+        onMouseEnter={noteHoverStart}
+        onMouseMove={noteHoverStart}
         onMouseLeave={handleMouseLeave}
         style={{
           borderRadius: '0 0 12px 12px',
           width: (expanded || isActive) ? notchWidth + 68 : notchWidth + 28,
-          height: expanded ? topH + 56 : topH,
+          height: expanded ? topH + DROPDOWN_H : topH,
           marginLeft: 32,
           background: 'rgba(20, 20, 20, 0.92)',
           boxShadow: showHotkeyMiss ? 'inset 0 -2px 0 rgba(245,158,11,0.9), 0 3px 16px rgba(245,158,11,0.22)' : 'none',
@@ -685,15 +706,13 @@ export function OverlayWidget() {
           ) : (
             <div
               className="flex items-center gap-[1.5px] h-4 shrink-0 transition-opacity duration-300"
-              style={{ opacity: isActive ? 1 : 0 }}
+              style={{ opacity: status === 'recording' ? 1 : 0 }}
             >
               {Array.from({ length: BAR_COUNT }, (_, i) => (
                 <div
                   key={i}
                   ref={el => { barRefs.current[i] = el; }}
-                  className={`w-[2px] rounded-full ${
-                    status === 'recording' ? 'bg-white/90' : 'bg-white/40'
-                  }`}
+                  className="w-[2px] rounded-full bg-white/90"
                   style={{
                     height: '2px',
                     transition: `height ${status === 'recording' ? '50ms' : '300ms'} ease-out`,
@@ -706,10 +725,10 @@ export function OverlayWidget() {
 
         {/* Quick-settings dropdown — revealed on hover (identical in idle/recording) */}
         <div
-          className="flex items-center justify-center gap-4"
+          className="flex items-center justify-center gap-3"
           style={{
-            height: 56,
-            padding: '0 12px 8px',
+            height: DROPDOWN_H,
+            padding: '0 10px 6px',
             opacity: expanded ? 1 : 0,
             pointerEvents: expanded ? 'auto' : 'none',
             transition: 'opacity 200ms ease',
@@ -722,7 +741,7 @@ export function OverlayWidget() {
             aria-label={disabled ? 'Enable Murmur' : 'Disable Murmur'}
             onClick={handleToggleDisabled}
             className="shrink-0 flex items-center justify-center cursor-pointer rounded-[9px] transition-colors"
-            style={{ width: 30, height: 30, background: disabled ? 'rgba(239,68,68,0.12)' : 'rgba(255,255,255,0.06)' }}
+            style={{ width: 26, height: 26, background: disabled ? 'rgba(239,68,68,0.12)' : 'rgba(255,255,255,0.06)' }}
           >
             <PowerIcon stroke={disabled ? '#ef4444' : 'rgba(255,255,255,0.85)'} />
           </button>
@@ -736,7 +755,7 @@ export function OverlayWidget() {
             title={autoPasteLabel}
             onClick={handleToggleAutoPaste}
             className="shrink-0 flex items-center justify-center cursor-pointer rounded-[9px] transition-colors"
-            style={{ width: 30, height: 30, opacity: disabled ? 0.35 : 1, background: autoPasteBackground }}
+            style={{ width: 26, height: 26, opacity: disabled ? 0.35 : 1, background: autoPasteBackground }}
           >
             <ClipboardPasteIcon stroke={autoPasteColor} />
           </button>
@@ -747,7 +766,7 @@ export function OverlayWidget() {
             aria-label="Open settings"
             onClick={handleOpenSettings}
             className="shrink-0 flex items-center justify-center cursor-pointer rounded-[9px] transition-colors"
-            style={{ width: 30, height: 30, background: 'rgba(255,255,255,0.06)' }}
+            style={{ width: 26, height: 26, background: 'rgba(255,255,255,0.06)' }}
           >
             <SlidersIcon stroke="rgba(255,255,255,0.85)" />
           </button>
