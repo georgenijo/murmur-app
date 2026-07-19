@@ -92,7 +92,7 @@ Uses `IdleGuard` (RAII) to reset status on any early return or error — prevent
 
 `transform_transcript()` is the authoritative post-recognition entry point for both live and imported-file transcription. It owns a fixed internal sequence:
 
-```
+```text
 raw transcript → cleanup → voice commands → Smart Correction → final text
 ```
 
