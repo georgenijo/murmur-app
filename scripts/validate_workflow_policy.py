@@ -28,6 +28,9 @@ RELEASE_BUILD_GUARD = (
 TRUSTED_MAIN_CACHE_DEFAULT = (
     '"${{ github.event_name == \'push\' && github.ref == \'refs/heads/main\' }}\"'
 )
+SEMVER = re.compile(
+    r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"
+)
 
 
 def job_block(workflow: str, job: str) -> str:
@@ -72,6 +75,45 @@ def should_run_release_build(
         event_name == "push"
         and (head_commit_message or "").startswith("chore: bump version")
     )
+
+
+def should_auto_promote(
+    *,
+    event_name: str,
+    workflow_name: str,
+    workflow_path: str,
+    conclusion: str,
+    head_branch: str,
+    source_event: str,
+    head_commit_message: Optional[str],
+) -> bool:
+    return (
+        event_name == "workflow_run"
+        and workflow_name == "Release Build"
+        and workflow_path.split("@", 1)[0] == ".github/workflows/release-build.yml"
+        and conclusion == "success"
+        and head_branch == "main"
+        and source_event == "push"
+        and (head_commit_message or "").startswith("chore: bump version")
+    )
+
+
+def release_tag_for_versions(
+    tauri_version: str, cargo_version: str, lock_version: str
+) -> str:
+    if not SEMVER.fullmatch(tauri_version):
+        raise AssertionError(f"invalid release version: {tauri_version}")
+    if cargo_version != tauri_version or lock_version != tauri_version:
+        raise AssertionError("tauri.conf.json, Cargo.toml, and Cargo.lock differ")
+    return f"v{tauri_version}"
+
+
+def tag_action(existing_sha: Optional[str], source_sha: str) -> str:
+    if existing_sha is None:
+        return "create"
+    if existing_sha != source_sha:
+        raise AssertionError("existing tag points to a different commit")
+    return "reuse"
 
 
 def validate_ci(ci: str) -> int:
@@ -210,20 +252,49 @@ def validate_release_profile(cargo_toml: str) -> None:
 
 def validate_promotion_policy(workflow: str) -> int:
     assert "tags:\n      - 'v*'" in workflow
+    assert "workflow_run:\n    workflows: [Release Build]\n    types: [completed]" in workflow
     assert "\n  workflow_dispatch:" in workflow
     assert "self-hosted" not in workflow
     assert "actions/cache" not in workflow
     assert "swatinem/rust-cache" not in workflow
     assert scalar(job_block(workflow, "promote"), "needs") == "resolve"
+    assert scalar(job_block(workflow, "promote"), "if") == (
+        "needs.resolve.outputs.eligible == 'true' && "
+        "needs.resolve.outputs.already-published != 'true'"
+    )
+    assert "github.event.workflow_run.head_sha || github.sha" in workflow
+    for gate in (
+        'WORKFLOW_RUN_NAME: ${{ github.event.workflow_run.name }}',
+        'WORKFLOW_RUN_PATH: ${{ github.event.workflow_run.path }}',
+        'WORKFLOW_RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}',
+        'WORKFLOW_RUN_EVENT: ${{ github.event.workflow_run.event }}',
+        'WORKFLOW_RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}',
+        '[ "$WORKFLOW_RUN_NAME" != "Release Build" ]',
+        '[ "$WORKFLOW_RUN_CONCLUSION" != "success" ]',
+        '[ "$WORKFLOW_RUN_BRANCH" != "main" ]',
+        '[ "$WORKFLOW_RUN_EVENT" != "push" ]',
+        '[[ "$SUBJECT" != "chore: bump version"* ]]',
+    ):
+        assert gate in workflow
     assert "head_branch == \"main\"" in workflow
     assert ".head_sha == $sha" in workflow
     assert ".event == \"push\"" in workflow
-    assert "release-build.yml" in workflow
+    assert 'split("@")[0]) == ".github/workflows/release-build.yml"' in workflow
     assert "expired == false" in workflow
     assert "scripts/release_artifacts.py validate" in workflow
+    assert 'at("app/src-tauri/tauri.conf.json")' in workflow
+    assert 'at("app/src-tauri/Cargo.toml")' in workflow
+    assert 'at("app/src-tauri/Cargo.lock")' in workflow
+    assert "release versions differ" in workflow
+    assert "already_published=true" in workflow
+    assert "contains unexpected asset" in workflow
+    assert workflow.index("scripts/release_artifacts.py validate") < workflow.index(
+        "Create automatic release tag"
+    )
 
     publish_steps = (
-        "Create draft release",
+        "Create automatic release tag",
+        "Create or reuse draft release",
         "Upload signed release assets",
         "Verify uploaded updater signatures",
         "Generate updater channel manifests from verified signatures",
@@ -237,7 +308,29 @@ def validate_promotion_policy(workflow: str) -> int:
         workflow, "Report non-publishing promotion rehearsal", 6
     )
     assert "if: needs.resolve.outputs.publish != 'true'" in rehearsal
-    return len(publish_steps)
+    trusted = dict(
+        event_name="workflow_run",
+        workflow_name="Release Build",
+        workflow_path=".github/workflows/release-build.yml",
+        conclusion="success",
+        head_branch="main",
+        source_event="push",
+        head_commit_message="chore: bump version to 0.18.0",
+    )
+    auto_cases = (
+        trusted,
+        {**trusted, "source_event": "workflow_dispatch"},
+        {**trusted, "head_branch": "feature"},
+        {**trusted, "conclusion": "failure"},
+        {**trusted, "head_commit_message": "fix: ordinary main commit"},
+    )
+    expected = (True, False, False, False, False)
+    for case, result in zip(auto_cases, expected):
+        assert should_auto_promote(**case) is result
+    assert release_tag_for_versions("0.18.0", "0.18.0", "0.18.0") == "v0.18.0"
+    assert tag_action(None, "a" * 40) == "create"
+    assert tag_action("a" * 40, "a" * 40) == "reuse"
+    return len(publish_steps) + len(auto_cases)
 
 
 def main() -> None:

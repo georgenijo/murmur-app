@@ -4,6 +4,9 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_run:
+    workflows: [Release Build]
+    types: [completed]
   workflow_dispatch:
     inputs:
       source_sha:
@@ -14,7 +17,7 @@ on:
         required: true
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.event.workflow_run.head_sha || github.sha }}
   cancel-in-progress: false
 
 permissions:
@@ -29,6 +32,9 @@ jobs:
       artifact-run-id: ${{ steps.resolve.outputs.artifact_run_id }}
       tag: ${{ steps.resolve.outputs.tag }}
       publish: ${{ steps.resolve.outputs.publish }}
+      eligible: ${{ steps.resolve.outputs.eligible }}
+      create-tag: ${{ steps.resolve.outputs.create_tag }}
+      already-published: ${{ steps.resolve.outputs.already_published }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -40,20 +46,60 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           INPUT_SOURCE_SHA: ${{ inputs.source_sha }}
           INPUT_ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}
+          WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id }}
+          WORKFLOW_RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          WORKFLOW_RUN_NAME: ${{ github.event.workflow_run.name }}
+          WORKFLOW_RUN_PATH: ${{ github.event.workflow_run.path }}
+          WORKFLOW_RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          WORKFLOW_RUN_EVENT: ${{ github.event.workflow_run.event }}
+          WORKFLOW_RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
         run: |
-          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+          ELIGIBLE=true
+          CREATE_TAG=false
+          ALREADY_PUBLISHED=false
+
+          if [ "$GITHUB_EVENT_NAME" = "workflow_run" ]; then
+            SOURCE_SHA="$WORKFLOW_RUN_SHA"
+            ARTIFACT_RUN_ID="$WORKFLOW_RUN_ID"
+            TAG=""
+            PUBLISH=false
+
+            SKIP_REASON=""
+            if [ "$WORKFLOW_RUN_NAME" != "Release Build" ] || \
+               [ "${WORKFLOW_RUN_PATH%%@*}" != ".github/workflows/release-build.yml" ]; then
+              SKIP_REASON="completed workflow is not the exact Release Build workflow"
+            elif [ "$WORKFLOW_RUN_CONCLUSION" != "success" ]; then
+              SKIP_REASON="Release Build did not succeed"
+            elif [ "$WORKFLOW_RUN_BRANCH" != "main" ]; then
+              SKIP_REASON="Release Build did not run on main"
+            elif [ "$WORKFLOW_RUN_EVENT" != "push" ]; then
+              SKIP_REASON="Release Build was not started by a trusted main push"
+            fi
+
+            if [ -n "$SKIP_REASON" ]; then
+              {
+                echo "source_sha=$SOURCE_SHA"
+                echo "artifact_run_id=$ARTIFACT_RUN_ID"
+                echo "tag="
+                echo "publish=false"
+                echo "eligible=false"
+                echo "create_tag=false"
+                echo "already_published=false"
+              } >> "$GITHUB_OUTPUT"
+              {
+                echo "### Automatic promotion skipped"
+                echo "$SKIP_REASON. No tag or release was created."
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            PUBLISH=true
+          elif [ "$GITHUB_EVENT_NAME" = "push" ]; then
             TAG="$GITHUB_REF_NAME"
-            if ! echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$'; then
+            if ! echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'; then
               echo "ERROR: invalid release tag: $TAG"
               exit 1
             fi
             SOURCE_SHA=$(git rev-list -n 1 "$TAG")
-            VERSION=$(jq -r '.version' app/src-tauri/tauri.conf.json)
-            CARGO_VERSION=$(sed -n 's/^version = "\([^"]*\)"/\1/p' app/src-tauri/Cargo.toml | head -1)
-            if [ "v$VERSION" != "$TAG" ] || [ "$CARGO_VERSION" != "$VERSION" ]; then
-              echo "ERROR: tag/config versions differ: tag=$TAG tauri=$VERSION cargo=$CARGO_VERSION"
-              exit 1
-            fi
 
             RUNS=$(gh api --method GET \
               "repos/${GITHUB_REPOSITORY}/actions/workflows/release-build.yml/runs" \
@@ -95,14 +141,137 @@ jobs:
             and (.event == "push" or .event == "workflow_dispatch")
             and .status == "completed"
             and .conclusion == "success"
-            and (.path | startswith(".github/workflows/release-build.yml"))
+            and ((.path | split("@")[0]) == ".github/workflows/release-build.yml")
           ' >/dev/null || {
             echo "ERROR: workflow run $ARTIFACT_RUN_ID is not a successful trusted-main Release Build for $SOURCE_SHA"
             exit 1
           }
           if [ "$PUBLISH" = "true" ] && [ "$(echo "$RUN" | jq -r .event)" != "push" ]; then
-            echo "ERROR: automatic tag publication requires the trusted main push build"
+            echo "ERROR: publication requires the trusted main push build"
             exit 1
+          fi
+
+          if [ "$PUBLISH" = "true" ]; then
+            git fetch --force origin \
+              '+refs/heads/main:refs/remotes/origin/main' \
+              '+refs/tags/*:refs/tags/*'
+            git cat-file -e "${SOURCE_SHA}^{commit}"
+            git merge-base --is-ancestor "$SOURCE_SHA" origin/main || {
+              echo "ERROR: release commit is not on trusted main: $SOURCE_SHA"
+              exit 1
+            }
+
+            SUBJECT=$(git show -s --format=%s "$SOURCE_SHA")
+            if [[ "$SUBJECT" != "chore: bump version"* ]]; then
+              if [ "$GITHUB_EVENT_NAME" = "workflow_run" ]; then
+                {
+                  echo "source_sha=$SOURCE_SHA"
+                  echo "artifact_run_id=$ARTIFACT_RUN_ID"
+                  echo "tag="
+                  echo "publish=false"
+                  echo "eligible=false"
+                  echo "create_tag=false"
+                  echo "already_published=false"
+                } >> "$GITHUB_OUTPUT"
+                {
+                  echo "### Automatic promotion skipped"
+                  echo "The trusted main commit is not a version bump. No tag or release was created."
+                } >> "$GITHUB_STEP_SUMMARY"
+                exit 0
+              fi
+              echo "ERROR: release tags must point to a 'chore: bump version' commit"
+              exit 1
+            fi
+
+            if ! VERSIONS=$(python3 - "$SOURCE_SHA" <<'PY'
+          import json
+          import re
+          import subprocess
+          import sys
+
+          sha = sys.argv[1]
+
+          def at(path: str) -> str:
+              return subprocess.check_output(
+                  ["git", "show", f"{sha}:{path}"], text=True
+              )
+
+          tauri_version = json.loads(at("app/src-tauri/tauri.conf.json"))["version"]
+          cargo = at("app/src-tauri/Cargo.toml")
+          package = re.search(r"^\[package\]\s*(.*?)(?=^\[|\Z)", cargo, re.M | re.S)
+          cargo_version = re.search(
+              r'^version\s*=\s*"([^"]+)"', package.group(1), re.M
+          ).group(1)
+          lock = at("app/src-tauri/Cargo.lock")
+          ui_package = next(
+              block
+              for block in re.split(r"^\[\[package\]\]\s*$", lock, flags=re.M)
+              if re.search(r'^name\s*=\s*"ui"\s*$', block, re.M)
+          )
+          lock_version = re.search(
+              r'^version\s*=\s*"([^"]+)"', ui_package, re.M
+          ).group(1)
+          print(tauri_version, cargo_version, lock_version)
+          PY
+            ); then
+              echo "ERROR: could not read release versions from $SOURCE_SHA"
+              exit 1
+            fi
+            read -r VERSION CARGO_VERSION LOCK_VERSION <<< "$VERSIONS"
+            if ! echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'; then
+              echo "ERROR: invalid release version: $VERSION"
+              exit 1
+            fi
+            if [ "$CARGO_VERSION" != "$VERSION" ] || [ "$LOCK_VERSION" != "$VERSION" ]; then
+              echo "ERROR: release versions differ: tauri=$VERSION cargo=$CARGO_VERSION lock=$LOCK_VERSION"
+              exit 1
+            fi
+            RESOLVED_TAG="v$VERSION"
+            if [ -n "$TAG" ] && [ "$TAG" != "$RESOLVED_TAG" ]; then
+              echo "ERROR: tag/config versions differ: tag=$TAG expected=$RESOLVED_TAG"
+              exit 1
+            fi
+            TAG="$RESOLVED_TAG"
+
+            if git show-ref --verify --quiet "refs/tags/$TAG"; then
+              EXISTING_TAG_SHA=$(git rev-list -n 1 "$TAG")
+              if [ "$EXISTING_TAG_SHA" != "$SOURCE_SHA" ]; then
+                echo "ERROR: $TAG already points to $EXISTING_TAG_SHA, not $SOURCE_SHA"
+                exit 1
+              fi
+            elif [ "$GITHUB_EVENT_NAME" = "workflow_run" ]; then
+              CREATE_TAG=true
+            else
+              echo "ERROR: tag-triggered recovery could not resolve $TAG"
+              exit 1
+            fi
+
+            if RELEASE=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" 2>/dev/null); then
+              echo "$RELEASE" | jq -e --arg tag "$TAG" '.tag_name == $tag' >/dev/null || {
+                echo "ERROR: existing release metadata conflicts with $TAG"
+                exit 1
+              }
+              if [ "$(echo "$RELEASE" | jq -r .draft)" = "false" ]; then
+                ALREADY_PUBLISHED=true
+              fi
+            fi
+          fi
+
+          if [ "$ALREADY_PUBLISHED" = "true" ]; then
+            {
+              echo "source_sha=$SOURCE_SHA"
+              echo "artifact_run_id=$ARTIFACT_RUN_ID"
+              echo "tag=$TAG"
+              echo "publish=true"
+              echo "eligible=true"
+              echo "create_tag=false"
+              echo "already_published=true"
+            } >> "$GITHUB_OUTPUT"
+            {
+              echo "### Release already published"
+              echo "The same tag and source commit are already published; promotion is complete."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
           fi
 
           ARTIFACTS=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${ARTIFACT_RUN_ID}/artifacts")
@@ -119,16 +288,26 @@ jobs:
           echo "artifact_run_id=$ARTIFACT_RUN_ID" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
+          echo "eligible=$ELIGIBLE" >> "$GITHUB_OUTPUT"
+          echo "create_tag=$CREATE_TAG" >> "$GITHUB_OUTPUT"
+          echo "already_published=$ALREADY_PUBLISHED" >> "$GITHUB_OUTPUT"
           {
             echo "### Immutable promotion source"
             echo "- commit: \`$SOURCE_SHA\`"
             echo "- Release Build run: \`$ARTIFACT_RUN_ID\`"
             echo "- tag: \`${TAG:-rehearsal-only}\`"
             echo "- publish authorized: \`$PUBLISH\`"
+            echo "- create tag: \`$CREATE_TAG\`"
+            echo "- already published: \`$ALREADY_PUBLISHED\`"
           } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$ALREADY_PUBLISHED" = "true" ]; then
+            echo "The same tag and source commit are already published; promotion is complete." \
+              >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   promote:
     needs: resolve
+    if: needs.resolve.outputs.eligible == 'true' && needs.resolve.outputs.already-published != 'true'
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -173,17 +352,57 @@ jobs:
             echo "No tag, draft release, release asset, updater manifest, or published release was created."
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Create draft release
+      - name: Create automatic release tag
+        if: needs.resolve.outputs.publish == 'true' && needs.resolve.outputs.create-tag == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source-sha }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          if ! gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref="refs/tags/$TAG" \
+              -f sha="$SOURCE_SHA"; then
+            EXISTING_SHA=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" \
+              --jq .object.sha)
+            if [ "$EXISTING_SHA" != "$SOURCE_SHA" ]; then
+              echo "ERROR: $TAG was created concurrently at $EXISTING_SHA, not $SOURCE_SHA"
+              exit 1
+            fi
+            echo "$TAG was already created at the expected source commit"
+          fi
+
+      - name: Create or reuse draft release
         if: needs.resolve.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.resolve.outputs.tag }}
         run: |
-          gh release create "$TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "$TAG" \
-            --generate-notes \
-            --draft
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            IS_DRAFT=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --json isDraft --jq .isDraft)
+            if [ "$IS_DRAFT" != "true" ]; then
+              echo "ERROR: $TAG became published while promotion was running"
+              exit 1
+            fi
+            while IFS= read -r ASSET; do
+              if [ "$ASSET" = "latest-v2.json" ] || [ "$ASSET" = "latest.json" ]; then
+                continue
+              fi
+              if ! find artifacts/macos artifacts/linux -maxdepth 1 -type f \
+                  ! -name provenance.json -exec basename {} \; | grep -Fqx "$ASSET"; then
+                echo "ERROR: existing draft $TAG contains unexpected asset: $ASSET"
+                exit 1
+              fi
+            done < <(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --json assets --jq '.assets[].name')
+            echo "Reusing existing draft release $TAG"
+          else
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$TAG" \
+              --generate-notes \
+              --draft
+          fi
 
       - name: Upload signed release assets
         if: needs.resolve.outputs.publish == 'true'
@@ -194,7 +413,7 @@ jobs:
           find artifacts/macos artifacts/linux -maxdepth 1 -type f ! -name provenance.json \
             -print0 | while IFS= read -r -d '' FILE; do
               echo "Uploading: $FILE"
-              gh release upload "$TAG" "$FILE" --repo "$GITHUB_REPOSITORY"
+              gh release upload "$TAG" "$FILE" --repo "$GITHUB_REPOSITORY" --clobber
             done
 
       - name: Verify uploaded updater signatures
