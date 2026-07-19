@@ -1,4 +1,5 @@
 use crate::{MutexExt, State};
+use crate::dictation_context::{self, DictationContextSnapshot, ResolverInputs, SessionOverrides};
 use crate::state::{AppState, DictationStatus};
 use crate::transcriber;
 use crate::{audio, audio_decode, injector, keyboard, streaming, vad};
@@ -105,6 +106,7 @@ fn resolve_code_vocab_prompt(app_state: &AppState) -> String {
             // path hits none of the other two). rebuild_correction_matcher writes a
             // separate leaf mutex, so there's no deadlock with the held guard.
             rebuild_correction_matcher(app_state, &dictation);
+            app_state.bump_settings_revision();
         }
         whisper_prefix(&prompt)
     };
@@ -114,6 +116,57 @@ fn resolve_code_vocab_prompt(app_state: &AppState) -> String {
         builtin
     } else {
         format!("{} {}", folder_prompt.trim(), builtin)
+    }
+}
+
+/// Build the code-vocabulary prompt represented by an already-locked settings
+/// generation. `None` means the folder cache is not ready for this generation.
+fn cached_code_vocab_prompt(dictation: &crate::state::DictationState) -> Option<String> {
+    if !dictation.code_vocab_enabled {
+        return Some(String::new());
+    }
+    let builtin = crate::vocab::builtin_terms_prompt();
+    if dictation.code_vocab_folder.trim().is_empty() {
+        return Some(builtin);
+    }
+    dictation.code_vocab_prompt.as_ref().map(|prompt| {
+        let folder_prompt = whisper_prefix(prompt);
+        if folder_prompt.trim().is_empty() {
+            builtin
+        } else {
+            format!("{} {}", folder_prompt.trim(), builtin)
+        }
+    })
+}
+
+/// Resolve one immutable context from a consistent settings/vocabulary
+/// generation. A concurrent settings change causes a retry rather than a mixed
+/// snapshot.
+fn resolve_live_context(
+    app_state: &AppState,
+    bundle_id: Option<&str>,
+) -> Arc<DictationContextSnapshot> {
+    loop {
+        let code_vocab = resolve_code_vocab_prompt(app_state);
+        let dictation = app_state.dictation.lock_or_recover();
+        let Some(current_code_vocab) = cached_code_vocab_prompt(&dictation) else {
+            continue;
+        };
+        if current_code_vocab != code_vocab {
+            continue;
+        }
+        let sanitized = dictation.custom_vocabulary.replace('\0', "");
+        let prompt = combine_prompts(&sanitized, &code_vocab);
+        let correction_matcher = app_state.correction_matcher.lock_or_recover().clone();
+        let vocabulary_version = app_state.settings_revision.load(Ordering::SeqCst);
+        return Arc::new(dictation_context::resolve(ResolverInputs {
+            bundle_id,
+            global: &dictation,
+            prompt,
+            correction_matcher,
+            vocabulary_version,
+            session_overrides: SessionOverrides::default(),
+        }));
     }
 }
 
@@ -225,6 +278,7 @@ impl<'a> IdleGuard<'a> {
 impl Drop for IdleGuard<'_> {
     fn drop(&mut self) {
         if !self.disarmed {
+            self.app_state.clear_active_context(self.recording_id);
             // Lock first, then check recording_id — prevents TOCTOU where
             // a concurrent start advances the ID between our check and the
             // status write.
@@ -281,7 +335,8 @@ fn spawn_model_preparation(
             let dictation = state.app_state.dictation.lock_or_recover();
             state.app_state.recording_id.load(Ordering::SeqCst) == recording_id
                 && dictation.status == DictationStatus::Recording
-                && dictation.model_name == model_name
+                && state.app_state.active_context(recording_id)
+                    .is_some_and(|context| context.transcription.model_name == model_name)
         };
         if !is_active {
             return;
@@ -297,12 +352,17 @@ fn spawn_model_preparation(
             let dictation = state.app_state.dictation.lock_or_recover();
             state.app_state.recording_id.load(Ordering::SeqCst) == recording_id
                 && dictation.status == DictationStatus::Recording
-                && dictation.model_name == model_name
+                && state.app_state.active_context(recording_id)
+                    .is_some_and(|context| context.transcription.model_name == model_name)
         };
         if !is_still_active {
             return;
         }
 
+        if let Err(error) = transcriber::ensure_backend_for_model(&mut backend, &model_name) {
+            tracing::warn!(target: "pipeline", recording_id, error, "model_prepare_failed");
+            return;
+        }
         let cache_hit = backend.is_model_loaded(&model_name);
         let rss_before_mb = crate::resource_monitor::get_process_rss_mb();
         let load_started = std::time::Instant::now();
@@ -454,39 +514,21 @@ async fn run_transcription_pipeline(
     app_handle: &tauri::AppHandle,
     app_state: &AppState,
     recording_id: u64,
+    context: Arc<DictationContextSnapshot>,
     incremental: Option<streaming::IncrementalTranscript>,
 ) -> Result<(String, PipelineTimings), String> {
     // Guard resets status to Idle on any return path (error or success),
     // but only if this recording is still the active one
     let _guard = IdleGuard::new(app_state, recording_id);
 
-    // Read all needed state in one lock
-    let (model_name, language, auto_paste, paste_delay_ms, vad_sensitivity, custom_vocabulary, smart_punctuation, save_transcript, save_audio, output_dir, app_profiles, voice_commands_enabled, voice_command_pairs, cleanup_enabled, cleanup_remove_filler, cleanup_capitalize, correction_enabled) = {
-        let dictation = app_state.dictation.lock_or_recover();
-        (dictation.model_name.clone(), dictation.language.clone(), dictation.auto_paste, dictation.auto_paste_delay_ms, dictation.vad_sensitivity, dictation.custom_vocabulary.clone(), dictation.smart_punctuation, dictation.save_transcript, dictation.save_audio, dictation.output_dir.clone(), dictation.app_profiles.clone(), dictation.voice_commands_enabled, dictation.voice_command_pairs.clone(), dictation.cleanup_enabled, dictation.cleanup_remove_filler, dictation.cleanup_capitalize, dictation.correction_enabled)
-    };
-
-    // Per-app profiles: if the frontmost app has a matching profile, its overrides
-    // replace the global auto-paste / cleanup settings. The frontmost app is
-    // detected once (a single osascript call) and reused for both resolutions. No
-    // profiles (or no detected app) leaves the global values untouched.
-    let (profile_auto_paste, profile_cleanup) = if app_profiles.is_empty() {
-        (auto_paste, cleanup_enabled)
-    } else {
-        let bundle_id = crate::frontmost::frontmost_bundle_id();
-        let resolved_paste = crate::frontmost::resolve_auto_paste(auto_paste, bundle_id.as_deref(), &app_profiles);
-        let resolved_cleanup = crate::frontmost::resolve_cleanup(cleanup_enabled, bundle_id.as_deref(), &app_profiles);
-        if resolved_paste != auto_paste || resolved_cleanup != cleanup_enabled {
-            tracing::info!(target: "pipeline", "app profile override (frontmost={}): auto_paste {}->{}, cleanup {}->{}",
-                bundle_id.as_deref().unwrap_or("unknown"), auto_paste, resolved_paste, cleanup_enabled, resolved_cleanup);
-        }
-        (resolved_paste, resolved_cleanup)
-    };
+    let transcription = &context.transcription;
+    let transformations = &context.transformations;
+    let delivery = &context.delivery;
 
     // When saving to a file, suppress auto-paste into the focused app. The
     // clipboard write inside `inject_text` is unconditional, so text remains
     // copyable regardless of these toggles.
-    let effective_auto_paste = profile_auto_paste && !(save_transcript || save_audio);
+    let effective_auto_paste = delivery.auto_paste && !(delivery.save_transcript || delivery.save_audio);
 
     // Pre-VAD signal level logging for mic diagnosis
     let rms = audio::compute_rms(samples);
@@ -526,7 +568,7 @@ async fn run_transcription_pipeline(
     } else {
         // Batch fallback and all non-Whisper backends retain the pre-existing
         // full-buffer VAD + inference behavior.
-        let vad_threshold = 1.0 - (vad_sensitivity as f32 / 100.0);
+        let vad_threshold = 1.0 - (transcription.vad_sensitivity as f32 / 100.0);
         let t_vad = std::time::Instant::now();
         let (samples_for_transcription, vad_trimmed) = match vad::vad_model_path() {
             Some(vad_path) if vad_path.exists() => {
@@ -583,18 +625,17 @@ async fn run_transcription_pipeline(
 
         let rss_before_mb = crate::resource_monitor::get_process_rss_mb();
         let t_transcribe = std::time::Instant::now();
-        let sanitized = custom_vocabulary.replace('\0', "");
-        let code_vocab = resolve_code_vocab_prompt(app_state);
-        let prompt = combine_prompts(&sanitized, &code_vocab);
         let (text, model_load_ms, decode_ms) = {
             let load_started = std::time::Instant::now();
             let mut backend = app_state.backend.lock_or_recover();
-            backend.load_model(&model_name)?;
+            transcriber::ensure_backend_for_model(&mut backend, &transcription.model_name)?;
+            backend.load_model(&transcription.model_name)?;
             let model_load_ms = load_started.elapsed().as_millis() as u64;
             let decode_started = std::time::Instant::now();
             let text = transcribe_with_coreml_vad_retry(
-                backend.as_mut(), &model_name, &samples_for_transcription, samples,
-                vad_trimmed, &language, prompt.as_deref(), smart_punctuation,
+                backend.as_mut(), &transcription.model_name, &samples_for_transcription, samples,
+                vad_trimmed, &transcription.language, transcription.prompt.as_deref(),
+                transcription.smart_punctuation,
             )?;
             let decode_ms = decode_started.elapsed().as_millis() as u64;
             (text, model_load_ms, decode_ms)
@@ -617,30 +658,32 @@ async fn run_transcription_pipeline(
     };
 
     // Post-recognition transformation is backend-neutral and ordered in one
-    // authoritative entry point. The effective cleanup toggle has already folded
-    // in the existing per-app override; issue #245 will supply an opaque resolved
-    // context handle without moving profile resolution into this module.
-    let custom_commands: Vec<(String, String)> = voice_command_pairs
-        .into_iter()
-        .map(|vc| (vc.phrase, vc.replacement))
+    // authoritative entry point. Its stage config and resources come from the
+    // immutable recording-start snapshot rather than mutable app settings.
+    let custom_commands: Vec<(String, String)> = transformations
+        .voice_command_pairs
+        .iter()
+        .map(|vc| (vc.phrase.clone(), vc.replacement.clone()))
         .collect();
     let transform_context = crate::transcript_transform::TranscriptContext {
         session_id: app_state.next_transcript_session_id(),
         source: crate::transcript_transform::TranscriptSource::Live,
-        context_handle: None,
-        model: model_name.clone(),
-        language: language.clone(),
+        context_handle: Some(format!("recording:{recording_id}")),
+        model: transcription.model_name.clone(),
+        language: transcription.language.clone(),
         stages: crate::transcript_transform::TranscriptStageConfig {
-            cleanup_enabled: profile_cleanup,
-            cleanup_remove_filler,
-            cleanup_capitalize,
-            voice_commands_enabled,
-            smart_correction_enabled: correction_enabled,
+            cleanup_enabled: transformations.cleanup_enabled,
+            cleanup_remove_filler: transformations.cleanup_remove_filler,
+            cleanup_capitalize: transformations.cleanup_capitalize,
+            voice_commands_enabled: context
+                .enabled_command_groups
+                .built_in_voice_commands,
+            smart_correction_enabled: transformations.correction_enabled,
         },
     };
     let transform_resources = crate::transcript_transform::TranscriptTransformResources {
         custom_commands,
-        correction_matcher: app_state.correction_matcher.lock_or_recover().clone(),
+        correction_matcher: transformations.correction_matcher.clone(),
     };
     let transformed = crate::transcript_transform::transform_transcript(
         text,
@@ -664,9 +707,9 @@ async fn run_transcription_pipeline(
     // Phase: File output (optional) -- persist audio/transcript before injection.
     // Non-fatal: a write failure is logged and surfaced to the UI, but the text
     // is already on its way to the clipboard. Uses the original (pre-VAD) samples.
-    if save_audio || save_transcript {
+    if delivery.save_audio || delivery.save_transcript {
         if let Err(e) = crate::file_output::write_dictation_outputs(
-            samples, &text, save_audio, save_transcript, &output_dir,
+            samples, &text, delivery.save_audio, delivery.save_transcript, &delivery.output_dir,
         ) {
             tracing::warn!(target: "pipeline", "file output failed: {}", e);
             let _ = app_handle.emit(
@@ -680,6 +723,7 @@ async fn run_transcription_pipeline(
     let t_inject = std::time::Instant::now();
     if !text.is_empty() {
         let text_to_inject = text.clone();
+        let paste_delay_ms = delivery.paste_delay_ms;
         let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
         app_handle
             .run_on_main_thread(move || {
@@ -744,11 +788,16 @@ pub async fn process_audio(
             tracing::warn!(target: "pipeline", "process_audio: blocked — benchmark in progress");
             return Err("Cannot process audio while a benchmark is in progress.".to_string());
         }
+        if dictation.status != DictationStatus::Idle {
+            return Err("Cannot process audio while live dictation is active.".to_string());
+        }
         dictation.status = DictationStatus::Processing;
-        state.app_state.recording_id.load(Ordering::SeqCst)
+        state.app_state.next_recording_id()
     };
     keyboard::set_processing(true);
     let _ = app_handle.emit("recording-status-changed", "processing");
+    let bundle_id = crate::frontmost::frontmost_bundle_id();
+    let context = resolve_live_context(&state.app_state, bundle_id.as_deref());
 
     // Guard resets status to Idle if decode/parse fails before reaching the pipeline
     let mut guard = IdleGuard::new(&state.app_state, rid);
@@ -779,6 +828,7 @@ pub async fn process_audio(
         &app_handle,
         &state.app_state,
         rid,
+        Arc::clone(&context),
         None,
     )
     .await;
@@ -798,14 +848,8 @@ pub async fn process_audio(
     let audio_secs = samples.len() as f64 / 16_000.0;
     let word_count = if text.trim().is_empty() { 0 } else { text.split_whitespace().count() };
     let char_count = text.len();
-    let model_name = {
-        let d = state.app_state.dictation.lock_or_recover();
-        d.model_name.clone()
-    };
-    let backend_name = {
-        let b = state.app_state.backend.lock_or_recover();
-        b.name().to_string()
-    };
+    let model_name = context.transcription.model_name.clone();
+    let backend_name = transcriber::backend_name_for_model(&model_name).to_string();
     tracing::info!(
         target: "pipeline",
         recording_id = rid,
@@ -869,6 +913,7 @@ pub async fn configure_dictation(
     }
 
     let mut dictation = state.app_state.dictation.lock_or_recover();
+    let backend_change_can_apply_now = dictation.status == DictationStatus::Idle;
 
     let mut model_change_guard = if model
         .as_deref()
@@ -1032,6 +1077,7 @@ pub async fn configure_dictation(
     // Rebuild the correction matcher from the (now-updated) unified vocab +
     // correction settings. Built here on settings-change, never per-utterance.
     rebuild_correction_matcher(&state.app_state, &dictation);
+    state.app_state.bump_settings_revision();
 
     if let Some(idle_timeout) = options.get("idleTimeoutMinutes").and_then(|v| v.as_u64()) {
         let normalized = match idle_timeout {
@@ -1044,46 +1090,23 @@ pub async fn configure_dictation(
     // If model changed, swap/reset the backend so the next transcription loads
     // the right engine for the selected model.
     let mut idle_preparation = None;
-    if model_changed {
+    if model_changed && backend_change_can_apply_now {
         let new_model = dictation.model_name.clone();
         if transcriber::is_coreml_model(&new_model) {
             idle_preparation = Some(new_model.clone());
         }
         drop(dictation); // Release dictation lock first
         let mut backend = state.app_state.backend.lock_or_recover();
-        // Core ML must be classified first because its explicit model value also
-        // starts with "parakeet", which is the sherpa backend's broad sentinel.
-        let want_coreml = transcriber::is_coreml_model(&new_model);
-        let want_parakeet = transcriber::parakeet::is_parakeet_model(&new_model);
-        let desired_backend = if want_coreml {
-            "coreml"
-        } else if want_parakeet {
-            "parakeet"
-        } else {
-            "whisper"
-        };
-        if backend.name() != desired_backend {
-            *backend = if want_coreml {
-                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                {
-                    Box::new(transcriber::CoreMlBackend::new())
-                }
-                #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-                {
-                    return Err(
-                        "Core ML transcription is available only on macOS 14 or newer with Apple Silicon"
-                            .to_string(),
-                    );
-                }
-            } else if want_parakeet {
-                Box::new(transcriber::ParakeetBackend::new())
-            } else {
-                Box::new(transcriber::WhisperBackend::new())
-            };
-            tracing::info!(target: "pipeline", "Switched transcription backend to {}", backend.name());
-        } else {
+        if backend.name() == transcriber::backend_name_for_model(&new_model) {
             backend.reset();
+        } else {
+            transcriber::ensure_backend_for_model(&mut backend, &new_model)?;
         }
+    } else if model_changed {
+        tracing::info!(
+            target: "pipeline",
+            "model backend change deferred until the next recording generation"
+        );
     }
 
     if let Some(model_name) = idle_preparation {
@@ -1169,6 +1192,7 @@ fn begin_code_vocab_scan(app_state: &AppState, scan_id: &str, folder: &str) {
     if folder_changed || was_disabled {
         dictation.code_vocab_prompt = None;
         rebuild_correction_matcher(app_state, &dictation);
+        app_state.bump_settings_revision();
     }
 }
 
@@ -1190,6 +1214,7 @@ fn complete_code_vocab_scan(
         dictation.code_vocab_prompt = Some(prompt);
         dictation.code_vocab_scan_id = None;
         rebuild_correction_matcher(app_state, &dictation);
+        app_state.bump_settings_revision();
     } else if is_active {
         dictation.code_vocab_scan_id = None;
     }
@@ -1441,7 +1466,7 @@ pub async fn start_native_recording(
     }
     // Check and update status in one lock; assign recording ID in the same
     // critical section so no concurrent cancel/start can slip between them.
-    let (rid, model_name, language, vad_sensitivity, custom_vocabulary, smart_punctuation, streaming_prompt_ready) = {
+    let rid = {
         let mut dictation = state.app_state.dictation.lock_or_recover();
         // Refuse if a file transcription holds the shared Whisper backend.
         // Checked under the dictation lock (which `transcribe_file` takes only
@@ -1478,54 +1503,46 @@ pub async fn start_native_recording(
             DictationStatus::Idle => {
                 let rid = state.app_state.next_recording_id();
                 dictation.status = DictationStatus::Recording;
-                (
-                    rid,
-                    dictation.model_name.clone(),
-                    dictation.language.clone(),
-                    dictation.vad_sensitivity,
-                    dictation.custom_vocabulary.clone(),
-                    dictation.smart_punctuation,
-                    !dictation.code_vocab_enabled
-                        || dictation.code_vocab_folder.trim().is_empty()
-                        || dictation.code_vocab_prompt.is_some(),
-                )
+                rid
             }
         }
     };
+    let bundle_id = crate::frontmost::frontmost_bundle_id();
+    let context = resolve_live_context(&state.app_state, bundle_id.as_deref());
+    state.app_state.set_active_context(rid, Arc::clone(&context));
+    tracing::info!(
+        target: "pipeline",
+        recording_id = rid,
+        frontmost_bundle_id = context.app.bundle_id.as_deref().unwrap_or("unknown"),
+        matched_profile = context.matched_profile.is_some(),
+        vocabulary_version = context.vocabulary.version,
+        context_reads_enabled = context.context_capture.selected_text
+            || context.context_capture.surrounding_screen_text
+            || context.context_capture.clipboard,
+        "dictation context resolved"
+    );
     tracing::info!(target: "pipeline", "start_native_recording: device={} recording_id={}", device_name.as_deref().unwrap_or("system_default"), rid);
     if let Err(e) = audio::start_recording(Some(app_handle.clone()), device_name) {
         tracing::error!(target: "audio", "start_native_recording: audio failed: {}", e);
+        state.app_state.clear_active_context(rid);
         let mut dictation = state.app_state.dictation.lock_or_recover();
-        dictation.status = DictationStatus::Idle;
+        if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
+            dictation.status = DictationStatus::Idle;
+        }
         return Err(e);
     }
     *state.app_state.last_transcription_at.lock_or_recover() = Some(std::time::Instant::now());
     let _ = app_handle.emit("recording-status-changed", "recording");
     tracing::info!(target: "pipeline", "start_native_recording: started");
-    spawn_model_preparation(app_handle.clone(), model_name.clone(), rid);
-    if streaming_prompt_ready {
-        let sanitized = custom_vocabulary.replace('\0', "");
-        let code_vocab = resolve_code_vocab_prompt(&state.app_state);
-        let prompt = combine_prompts(&sanitized, &code_vocab);
-        streaming::start_session(
-            app_handle.clone(),
-            streaming::StreamingConfig {
-                recording_id: rid,
-                model_name,
-                language,
-                prompt,
-                smart_punctuation,
-                vad_threshold: 1.0 - (vad_sensitivity as f32 / 100.0),
-            },
-        )
-        .await;
-    } else {
-        tracing::info!(
-            target: "pipeline",
-            recording_id = rid,
-            "incremental transcription skipped until code vocabulary cache is ready"
-        );
-    }
+    spawn_model_preparation(app_handle.clone(), context.transcription.model_name.clone(), rid);
+    streaming::start_session(
+        app_handle.clone(),
+        streaming::StreamingConfig {
+            recording_id: rid,
+            context: Arc::clone(&context),
+        },
+    )
+    .await;
 
     Ok(serde_json::json!({
         "type": "recording_started",
@@ -1558,6 +1575,18 @@ pub async fn stop_native_recording(
                 dictation.status = DictationStatus::Processing;
                 state.app_state.recording_id.load(Ordering::SeqCst)
             }
+        }
+    };
+    let context = match state.app_state.active_context(rid) {
+        Some(context) => context,
+        None => {
+            let mut dictation = state.app_state.dictation.lock_or_recover();
+            if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
+                dictation.status = DictationStatus::Idle;
+            }
+            keyboard::set_processing(false);
+            let _ = app_handle.emit("recording-status-changed", "idle");
+            return Err(format!("Missing dictation context for recording {rid}"));
         }
     };
     keyboard::set_processing(true);
@@ -1624,6 +1653,7 @@ pub async fn stop_native_recording(
         &app_handle,
         &state.app_state,
         rid,
+        Arc::clone(&context),
         incremental,
     )
     .await;
@@ -1646,14 +1676,8 @@ pub async fn stop_native_recording(
     let audio_secs = samples.len() as f64 / 16_000.0;
     let word_count = if text.trim().is_empty() { 0 } else { text.split_whitespace().count() };
     let char_count = text.len();
-    let model_name = {
-        let d = state.app_state.dictation.lock_or_recover();
-        d.model_name.clone()
-    };
-    let backend_name = {
-        let b = state.app_state.backend.lock_or_recover();
-        b.name().to_string()
-    };
+    let model_name = context.transcription.model_name.clone();
+    let backend_name = transcriber::backend_name_for_model(&model_name).to_string();
 
     tracing::info!(
         target: "pipeline",
@@ -1721,6 +1745,7 @@ pub async fn cancel_native_recording(
         (prev, rid)
     };
     streaming::cancel(&state.app_state, rid).await;
+    state.app_state.clear_active_context(rid);
 
     let stop_err = match prev_status {
         DictationStatus::Recording => {

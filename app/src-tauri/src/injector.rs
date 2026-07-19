@@ -167,7 +167,7 @@ fn simulate_paste_osascript() -> Result<(), String> {
 }
 
 #[cfg(target_os = "macos")]
-fn run_osascript_with_timeout(script: &str) -> Result<std::process::Output, String> {
+pub(crate) fn run_osascript_with_timeout(script: &str) -> Result<std::process::Output, String> {
     use std::io::Read;
     use std::process::{Command, Stdio};
     use std::thread;

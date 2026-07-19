@@ -24,6 +24,7 @@ Read these before working on a feature:
 - **[docs/features/log-viewer.md](docs/features/log-viewer.md)** — Structured event system and log viewer
 - **[docs/features/auto-updater.md](docs/features/auto-updater.md)** — Auto-update system
 - **[docs/features/models.md](docs/features/models.md)** — Model management and download
+- **[docs/features/per-app-profiles.md](docs/features/per-app-profiles.md)** — Immutable per-recording context, profile precedence, privacy boundaries
 
 ## File Map
 

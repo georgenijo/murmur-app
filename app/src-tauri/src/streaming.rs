@@ -1,6 +1,7 @@
 use crate::state::DictationStatus;
 use crate::{audio, transcriber, vad, MutexExt, State};
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::Manager;
 
@@ -12,11 +13,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(200);
 #[derive(Clone)]
 pub(crate) struct StreamingConfig {
     pub recording_id: u64,
-    pub model_name: String,
-    pub language: String,
-    pub prompt: Option<String>,
-    pub smart_punctuation: bool,
-    pub vad_threshold: f32,
+    pub context: Arc<crate::dictation_context::DictationContextSnapshot>,
 }
 
 #[derive(Default)]
@@ -59,7 +56,7 @@ struct ChunkOutput {
 /// Start one sequential chunk worker for a Whisper recording. Other backends
 /// deliberately retain the existing batch path.
 pub(crate) async fn start_session(app_handle: tauri::AppHandle, config: StreamingConfig) {
-    if !transcriber::is_whisper_model(&config.model_name) {
+    if !transcriber::is_whisper_model(&config.context.transcription.model_name) {
         return;
     }
 
@@ -230,7 +227,7 @@ async fn transcribe_window(
         let filtered = match vad::filter_speech(
             &vad_path.to_string_lossy(),
             &samples,
-            config.vad_threshold,
+            1.0 - (config.context.transcription.vad_sensitivity as f32 / 100.0),
         )? {
             vad::VadResult::NoSpeech => {
                 return Ok(ChunkOutput {
@@ -248,26 +245,18 @@ async fn transcribe_window(
         {
             return Err("recording session was superseded before inference".to_string());
         }
-        {
-            let dictation = state.app_state.dictation.lock_or_recover();
-            if dictation.model_name != config.model_name {
-                return Err("model changed during recording".to_string());
-            }
-        }
-
         let rss_before_mb = crate::resource_monitor::get_process_rss_mb();
         let inference_started = Instant::now();
         let text = {
             let mut backend = state.app_state.backend.lock_or_recover();
-            if backend.name() != "whisper" {
-                return Err("active backend changed during recording".to_string());
-            }
-            backend.load_model(&config.model_name)?;
+            let transcription = &config.context.transcription;
+            transcriber::ensure_backend_for_model(&mut backend, &transcription.model_name)?;
+            backend.load_model(&transcription.model_name)?;
             backend.transcribe(
                 &filtered,
-                &config.language,
-                config.prompt.as_deref(),
-                config.smart_punctuation,
+                &transcription.language,
+                transcription.prompt.as_deref(),
+                transcription.smart_punctuation,
             )?
         };
         let inference_ms = inference_started.elapsed().as_millis() as u64;
