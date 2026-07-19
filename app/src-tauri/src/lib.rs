@@ -4,6 +4,7 @@ mod audio;
 mod audio_decode;
 mod benchmark;
 mod cleanup;
+mod cli_command;
 mod commands;
 mod correction;
 mod dictation_context;

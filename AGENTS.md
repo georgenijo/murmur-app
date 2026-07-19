@@ -18,6 +18,7 @@ Read these before working on a feature:
 - **[docs/onboarding.md](docs/onboarding.md)** — Setup, permissions, model installation, logs
 - **[docs/features/recording-modes.md](docs/features/recording-modes.md)** — Hold-down and double-tap modes, state machine, rdev threading
 - **[docs/features/transcription.md](docs/features/transcription.md)** — Audio capture, whisper pipeline, status flow
+- **[docs/features/cli-command-formatting.md](docs/features/cli-command-formatting.md)** — Spoken CLI detection, grammar, lexicon, safety
 - **[docs/features/text-injection.md](docs/features/text-injection.md)** — Clipboard, auto-paste, osascript
 - **[docs/features/vad.md](docs/features/vad.md)** — VAD speech filtering
 - **[docs/features/overlay.md](docs/features/overlay.md)** — Dynamic Island overlay

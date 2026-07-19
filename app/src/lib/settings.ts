@@ -12,6 +12,7 @@ export interface AppProfile {
   label: string;
   autoPasteOverride: boolean | null;
   cleanupOverride: boolean | null;
+  cliFormattingOverride: boolean | null;
 }
 
 /**
@@ -331,9 +332,9 @@ export function loadSettings(): Settings {
         parsed.outputDir = DEFAULT_SETTINGS.outputDir;
       }
 
-      // appProfiles drives per-app auto-paste overrides. Drop malformed entries
-      // and coerce a non-array back to the empty default so the Rust side and UI
-      // never see a bad shape.
+      // appProfiles drives per-app delivery and transformation overrides. Drop
+      // malformed entries and coerce a non-array back to the empty default so
+      // the Rust side and UI never see a bad shape.
       if (!Array.isArray(parsed.appProfiles)) {
         parsed.appProfiles = DEFAULT_SETTINGS.appProfiles;
       } else {
@@ -347,6 +348,8 @@ export function loadSettings(): Settings {
               typeof p.autoPasteOverride === 'boolean' ? p.autoPasteOverride : null,
             cleanupOverride:
               typeof p.cleanupOverride === 'boolean' ? p.cleanupOverride : null,
+            cliFormattingOverride:
+              typeof p.cliFormattingOverride === 'boolean' ? p.cliFormattingOverride : null,
           }));
       }
 

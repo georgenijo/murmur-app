@@ -5,6 +5,7 @@
 //! typed values consumed by the live pipeline; later settings or focus changes
 //! cannot alter an in-flight dictation.
 
+use crate::cli_command::CliFormattingMode;
 use crate::correction::CorrectionMatcher;
 use crate::state::{AppProfile, DictationState, VoiceCommand};
 use std::sync::Arc;
@@ -20,6 +21,7 @@ pub struct MatchedAppProfile {
     pub label: String,
     pub auto_paste_override: Option<bool>,
     pub cleanup_override: Option<bool>,
+    pub cli_formatting_override: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,6 +74,7 @@ pub struct TransformationSettings {
     pub voice_command_pairs: Vec<VoiceCommand>,
     pub correction_enabled: bool,
     pub correction_matcher: Option<Arc<CorrectionMatcher>>,
+    pub cli_formatting_mode: CliFormattingMode,
 }
 
 #[derive(Debug, Clone)]
@@ -102,6 +105,7 @@ pub struct DictationContextSnapshot {
 pub struct SessionOverrides {
     pub auto_paste: Option<bool>,
     pub cleanup_enabled: Option<bool>,
+    pub cli_formatting_enabled: Option<bool>,
 }
 
 pub struct ResolverInputs<'a> {
@@ -136,6 +140,15 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
             |profile| profile.cleanup_override,
         )
     });
+    let cli_formatting_mode = match inputs.session_overrides.cli_formatting_enabled.or_else(|| {
+        resolve_profile_optional(inputs.bundle_id, &global.app_profiles, |profile| {
+            profile.cli_formatting_override
+        })
+    }) {
+        Some(true) => CliFormattingMode::Enabled,
+        Some(false) => CliFormattingMode::Disabled,
+        None => CliFormattingMode::Auto,
+    };
     let matched_profile = inputs.bundle_id.and_then(|bundle_id| {
         global
             .app_profiles
@@ -146,6 +159,7 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
                 label: profile.label.clone(),
                 auto_paste_override: profile.auto_paste_override,
                 cleanup_override: profile.cleanup_override,
+                cli_formatting_override: profile.cli_formatting_override,
             })
     });
     let custom_vocab = !global.custom_vocabulary.trim().is_empty();
@@ -177,6 +191,7 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
             voice_command_pairs: global.voice_command_pairs.clone(),
             correction_enabled: global.correction_enabled,
             correction_matcher: inputs.correction_matcher,
+            cli_formatting_mode,
         },
         delivery: DeliverySettings {
             auto_paste,
@@ -197,6 +212,18 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
         // features must add an explicit setting/profile override here first.
         context_capture: ContextCapturePermissions::default(),
     }
+}
+
+fn resolve_profile_optional<T: Copy>(
+    bundle_id: Option<&str>,
+    profiles: &[AppProfile],
+    get_override: impl Fn(&AppProfile) -> Option<T>,
+) -> Option<T> {
+    let bundle_id = bundle_id?;
+    profiles
+        .iter()
+        .filter(|profile| profile.bundle_id == bundle_id)
+        .find_map(get_override)
 }
 
 fn resolve_profile_override<T: Copy>(
@@ -229,6 +256,7 @@ mod tests {
             label: bundle_id.to_string(),
             auto_paste_override,
             cleanup_override,
+            cli_formatting_override: None,
         }
     }
 
@@ -305,11 +333,16 @@ mod tests {
             SessionOverrides {
                 auto_paste: Some(false),
                 cleanup_enabled: Some(true),
+                cli_formatting_enabled: Some(false),
             },
         );
 
         assert!(!snapshot.delivery.auto_paste);
         assert!(snapshot.transformations.cleanup_enabled);
+        assert_eq!(
+            snapshot.transformations.cli_formatting_mode,
+            CliFormattingMode::Disabled
+        );
     }
 
     #[test]
@@ -355,6 +388,54 @@ mod tests {
         assert_eq!(snapshot.transcription.model_name, "base.en");
         assert!(!snapshot.delivery.auto_paste);
         assert!(!snapshot.transformations.cleanup_enabled);
+    }
+
+    #[test]
+    fn cli_profile_override_resolves_auto_enabled_and_disabled_modes() {
+        let mut global = DictationState::default();
+        assert_eq!(
+            resolve_test(&global, None, SessionOverrides::default())
+                .transformations
+                .cli_formatting_mode,
+            CliFormattingMode::Auto
+        );
+
+        let mut enabled = profile("com.apple.Terminal", None, None);
+        enabled.cli_formatting_override = Some(true);
+        let mut disabled = profile("com.apple.mail", None, None);
+        disabled.cli_formatting_override = Some(false);
+        global.app_profiles = vec![enabled, disabled];
+
+        assert_eq!(
+            resolve_test(
+                &global,
+                Some("com.apple.Terminal"),
+                SessionOverrides::default(),
+            )
+            .transformations
+            .cli_formatting_mode,
+            CliFormattingMode::Enabled
+        );
+        assert_eq!(
+            resolve_test(&global, Some("com.apple.mail"), SessionOverrides::default(),)
+                .transformations
+                .cli_formatting_mode,
+            CliFormattingMode::Disabled
+        );
+
+        assert_eq!(
+            resolve_test(
+                &global,
+                Some("com.apple.Terminal"),
+                SessionOverrides {
+                    cli_formatting_enabled: Some(false),
+                    ..SessionOverrides::default()
+                },
+            )
+            .transformations
+            .cli_formatting_mode,
+            CliFormattingMode::Disabled
+        );
     }
 
     #[test]

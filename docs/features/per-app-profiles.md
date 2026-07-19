@@ -12,7 +12,7 @@ Murmur resolves one immutable `DictationContextSnapshot` for every live recordin
 
 One-session overrides are an explicit, typed resolver input but no trigger supplies them yet. This keeps the precedence contract ready for future commands without adding a second app-detection or settings path.
 
-Profiles currently override only `autoPaste` and transcript cleanup. Existing stored profile objects remain valid; missing or `null` overrides still mean "use the global value." The settings UI prevents duplicates, but persisted or programmatic configuration can contain them. To preserve legacy behavior exactly, each field uses the first matching profile that provides that field; a `null` override falls through to the next duplicate.
+Profiles currently override `autoPaste`, transcript cleanup, and CLI formatting. Existing stored profile objects remain valid; missing or `null` overrides still mean "use the global/automatic value." CLI defaults to conservative automatic detection; On enables command-shaped unknown tools for that profile, while Off disables implicit detection but preserves the explicit spoken `command` trigger. The settings UI prevents duplicates, but persisted or programmatic configuration can contain them. To preserve legacy behavior exactly, each field uses the first matching profile that provides that field; a `null` override falls through to the next duplicate.
 
 ## Snapshot contents and lifetime
 

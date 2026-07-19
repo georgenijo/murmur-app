@@ -83,7 +83,9 @@ Both the Rust-side `DictationState::default()` and the frontend default use `bas
 
 ## Per-App Profiles
 
-`appProfiles` is an array of `{ bundleId, label, autoPasteOverride, cleanupOverride }`. Boolean overrides replace the corresponding global value for a matching frontmost bundle identifier; `null` means "use global." Existing persisted entries are migrated by filling missing override fields with `null`.
+`appProfiles` is an array of `{ bundleId, label, autoPasteOverride, cleanupOverride, cliFormattingOverride }`. Boolean overrides replace the corresponding global/automatic value for a matching frontmost bundle identifier; `null` means "use global/automatic." Existing persisted entries are migrated by filling missing override fields with `null`.
+
+`cliFormattingOverride` uses the immutable recording-start context. `true` enables profile-mode CLI recognition, `false` disables implicit CLI formatting for that app, and `null` keeps conservative automatic recognition. An explicit spoken `command` trigger remains available in every mode.
 
 At recording start, the backend resolves one immutable context using global settings → matching profile → one-session overrides. Settings or focus changes during recording apply only to the next session. See [Per-App Dictation Context](../features/per-app-profiles.md).
 

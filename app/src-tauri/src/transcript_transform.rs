@@ -9,11 +9,13 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::cleanup::CleanupOptions;
+use crate::cli_command::{canonicalize_cli, CliFormattingMode, CliLexicon};
 use crate::correction::CorrectionMatcher;
 
 pub(crate) const CLEANUP_STAGE: &str = "cleanup";
 pub(crate) const VOICE_COMMANDS_STAGE: &str = "voice_commands";
 pub(crate) const SMART_CORRECTION_STAGE: &str = "smart_correction";
+pub(crate) const CLI_COMMAND_STAGE: &str = "cli_command";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TranscriptSource {
@@ -42,6 +44,7 @@ pub(crate) struct TranscriptStageConfig {
     pub cleanup_capitalize: bool,
     pub voice_commands_enabled: bool,
     pub smart_correction_enabled: bool,
+    pub cli_command_enabled: bool,
 }
 
 impl TranscriptStageConfig {
@@ -52,11 +55,14 @@ impl TranscriptStageConfig {
             cleanup_capitalize: false,
             voice_commands_enabled: false,
             smart_correction_enabled: false,
+            cli_command_enabled: false,
         }
     }
 }
 
-/// Immutable metadata and stage selection for one transformation pass.
+/// Immutable privacy-safe metadata and stage selection for one transformation
+/// pass. User-configured model/language values and transcript resources are not
+/// carried here because stage telemetry must not log settings values.
 ///
 /// `context_handle` is deliberately opaque. Issue #245 can populate it with a
 /// resolved per-app snapshot identifier without this module knowing how app
@@ -66,8 +72,7 @@ pub(crate) struct TranscriptContext {
     pub session_id: u64,
     pub source: TranscriptSource,
     pub context_handle: Option<String>,
-    pub model: String,
-    pub language: String,
+    pub cli_formatting_mode: CliFormattingMode,
     pub stages: TranscriptStageConfig,
 }
 
@@ -165,11 +170,18 @@ trait TranscriptTransform: Send + Sync {
 }
 
 pub(crate) struct TranscriptPipelineOutput {
+    /// Original ASR text retained only for the lifetime of this pipeline result.
+    /// It is never serialized, persisted, or logged.
+    pub original_text: String,
     pub text: String,
     pub stages: Vec<StageReport>,
 }
 
 impl TranscriptPipelineOutput {
+    pub(crate) fn was_changed(&self) -> bool {
+        self.original_text != self.text
+    }
+
     pub(crate) fn stage_duration_ms(&self, stage: &str) -> u64 {
         self.stages
             .iter()
@@ -188,13 +200,19 @@ impl TranscriptPipeline {
     }
 
     fn standard(resources: TranscriptTransformResources) -> Self {
+        let TranscriptTransformResources {
+            custom_commands,
+            correction_matcher,
+            cli_lexicon,
+        } = resources;
         Self::new(vec![
             Box::new(CleanupStage),
-            Box::new(VoiceCommandsStage {
-                custom_commands: resources.custom_commands,
-            }),
+            Box::new(VoiceCommandsStage { custom_commands }),
             Box::new(SmartCorrectionStage {
-                matcher: resources.correction_matcher,
+                matcher: correction_matcher,
+            }),
+            Box::new(CliCommandStage {
+                lexicon: cli_lexicon,
             }),
         ])
     }
@@ -204,6 +222,7 @@ impl TranscriptPipeline {
         mut text: String,
         context: &TranscriptContext,
     ) -> Result<TranscriptPipelineOutput, TranscriptPipelineError> {
+        let original_text = text.clone();
         let mut reports = Vec::with_capacity(self.stages.len());
 
         for stage in &self.stages {
@@ -266,6 +285,7 @@ impl TranscriptPipeline {
         }
 
         Ok(TranscriptPipelineOutput {
+            original_text,
             text,
             stages: reports,
         })
@@ -279,8 +299,6 @@ fn log_stage(context: &TranscriptContext, report: &StageReport) {
         source = context.source.as_str(),
         source_file = context.source == TranscriptSource::File,
         context_handle_present = context.context_handle.is_some(),
-        model = context.model.as_str(),
-        language = context.language.as_str(),
         stage = report.stage,
         duration_us = report.duration_us,
         changed = report.changed,
@@ -296,6 +314,7 @@ fn log_stage(context: &TranscriptContext, report: &StageReport) {
 pub(crate) struct TranscriptTransformResources {
     pub custom_commands: Vec<(String, String)>,
     pub correction_matcher: Option<Arc<CorrectionMatcher>>,
+    pub cli_lexicon: CliLexicon,
 }
 
 impl TranscriptTransformResources {
@@ -303,6 +322,7 @@ impl TranscriptTransformResources {
         Self {
             custom_commands: Vec::new(),
             correction_matcher: None,
+            cli_lexicon: CliLexicon::from_context(None, &[]),
         }
     }
 }
@@ -375,6 +395,32 @@ struct SmartCorrectionStage {
     matcher: Option<Arc<CorrectionMatcher>>,
 }
 
+struct CliCommandStage {
+    lexicon: CliLexicon,
+}
+
+impl TranscriptTransform for CliCommandStage {
+    fn name(&self) -> &'static str {
+        CLI_COMMAND_STAGE
+    }
+
+    fn failure_policy(&self) -> StageFailurePolicy {
+        StageFailurePolicy::Required
+    }
+
+    fn enabled(&self, context: &TranscriptContext) -> bool {
+        context.source == TranscriptSource::Live && context.stages.cli_command_enabled
+    }
+
+    fn transform(&self, text: &str, context: &TranscriptContext) -> Result<String, StageError> {
+        Ok(canonicalize_cli(
+            text,
+            context.cli_formatting_mode,
+            &self.lexicon,
+        ))
+    }
+}
+
 impl TranscriptTransform for SmartCorrectionStage {
     fn name(&self) -> &'static str {
         SMART_CORRECTION_STAGE
@@ -410,8 +456,7 @@ mod tests {
             session_id: 7,
             source: TranscriptSource::Live,
             context_handle: None,
-            model: "test-model".to_string(),
-            language: "en".to_string(),
+            cli_formatting_mode: CliFormattingMode::Auto,
             stages,
         }
     }
@@ -423,6 +468,7 @@ mod tests {
             cleanup_capitalize: true,
             voice_commands_enabled: true,
             smart_correction_enabled: true,
+            cli_command_enabled: true,
         }
     }
 
@@ -439,6 +485,7 @@ mod tests {
         TranscriptTransformResources {
             custom_commands: vec![("my email".to_string(), "test@example.com".to_string())],
             correction_matcher: with_matcher.then(correction_matcher),
+            cli_lexicon: CliLexicon::from_context(None, &[]),
         }
     }
 
@@ -531,7 +578,12 @@ mod tests {
                 .iter()
                 .map(|report| report.stage)
                 .collect::<Vec<_>>(),
-            vec![CLEANUP_STAGE, VOICE_COMMANDS_STAGE, SMART_CORRECTION_STAGE]
+            vec![
+                CLEANUP_STAGE,
+                VOICE_COMMANDS_STAGE,
+                SMART_CORRECTION_STAGE,
+                CLI_COMMAND_STAGE,
+            ]
         );
     }
 
@@ -543,6 +595,7 @@ mod tests {
             cleanup_capitalize: true,
             voice_commands_enabled: false,
             smart_correction_enabled: false,
+            cli_command_enabled: false,
         };
         let output = transform_transcript(
             "um the the cat , world .".to_string(),
@@ -561,6 +614,7 @@ mod tests {
             cleanup_capitalize: false,
             voice_commands_enabled: true,
             smart_correction_enabled: false,
+            cli_command_enabled: false,
         };
         let output = transform_transcript(
             "hello new line my email".to_string(),
@@ -579,6 +633,7 @@ mod tests {
             cleanup_capitalize: false,
             voice_commands_enabled: false,
             smart_correction_enabled: true,
+            cli_command_enabled: false,
         };
         let output = transform_transcript(
             "use effect".to_string(),
@@ -595,18 +650,41 @@ mod tests {
             session_id: 11,
             source: TranscriptSource::File,
             context_handle: None,
-            model: "test-model".to_string(),
-            language: "auto".to_string(),
+            cli_formatting_mode: CliFormattingMode::Auto,
             stages: TranscriptStageConfig::verbatim(),
         };
         let raw = "um hello new line use effect   ";
         let output = transform_transcript(raw.to_string(), &context, resources(true)).unwrap();
         assert_eq!(output.text.as_bytes(), raw.as_bytes());
-        assert_eq!(output.stages.len(), 3);
+        assert_eq!(output.original_text.as_bytes(), raw.as_bytes());
+        assert_eq!(output.stages.len(), 4);
         assert!(output
             .stages
             .iter()
             .all(|stage| stage.outcome == StageOutcome::Skipped));
+    }
+
+    #[test]
+    fn cli_stage_runs_after_correction_and_keeps_original_in_memory() {
+        let stages = TranscriptStageConfig {
+            cleanup_enabled: false,
+            cleanup_remove_filler: false,
+            cleanup_capitalize: false,
+            voice_commands_enabled: false,
+            smart_correction_enabled: true,
+            cli_command_enabled: true,
+        };
+        let raw = "NPM run Tauri dev";
+        let output = transform_transcript(
+            raw.to_string(),
+            &live_context(stages),
+            TranscriptTransformResources::empty(),
+        )
+        .unwrap();
+        assert_eq!(output.original_text, raw);
+        assert_eq!(output.text, "npm run tauri dev");
+        assert_eq!(output.stages[2].stage, SMART_CORRECTION_STAGE);
+        assert_eq!(output.stages[3].stage, CLI_COMMAND_STAGE);
     }
 
     struct AppendStage {
