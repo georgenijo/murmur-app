@@ -73,6 +73,55 @@ describe('loadSettings', () => {
     expect(legacy.writingStyle).toBeNull();
   });
 
+  it('migrates IDE context as explicit opt-in with bounded persisted roots only', () => {
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      appProfiles: [
+        {
+          bundleId: 'com.example.Editor',
+          label: 'Editor',
+          ideContextEnabled: true,
+          ideProjectRoots: [
+            ' /project/one ',
+            '/project/one',
+            '/project/two',
+            '/project/three',
+            '/project/four',
+            '/project/five',
+            42,
+          ],
+          persistedSymbols: ['must-not-survive'],
+          scanResults: { filename: 'must-not-survive.rs' },
+        },
+        {
+          bundleId: 'com.example.Legacy',
+          label: 'Legacy',
+        },
+        {
+          bundleId: 'com.example.Malformed',
+          label: 'Malformed',
+          ideContextEnabled: 'yes',
+          ideProjectRoots: '/project/not-an-array',
+        },
+      ],
+    }));
+
+    const [editor, legacy, malformed] = loadSettings().appProfiles;
+    expect(editor.ideContextEnabled).toBe(true);
+    expect(editor.ideProjectRoots).toEqual([
+      '/project/one',
+      '/project/two',
+      '/project/three',
+      '/project/four',
+    ]);
+    expect(editor).not.toHaveProperty('persistedSymbols');
+    expect(editor).not.toHaveProperty('scanResults');
+    expect(legacy.ideContextEnabled).toBe(false);
+    expect(legacy.ideProjectRoots).toEqual([]);
+    expect(malformed.ideContextEnabled).toBe(false);
+    expect(malformed.ideProjectRoots).toEqual([]);
+  });
+
   it('keeps smart formatting opt-in across settings migrations', () => {
     localStorage.setItem('dictation-settings', JSON.stringify({
       ...DEFAULT_SETTINGS,

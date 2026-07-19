@@ -34,6 +34,10 @@ export interface AppProfile {
   cliFormattingOverride: boolean | null;
   /** Explicit deterministic writing policy. `null` preserves current behavior. */
   writingStyle: WritingStyle | null;
+  /** Explicit opt-in to a memory-only local project index for this profile. */
+  ideContextEnabled: boolean;
+  /** User-selected local roots. Index contents are never persisted. */
+  ideProjectRoots: string[];
 }
 
 /**
@@ -381,6 +385,14 @@ export function loadSettings(): Settings {
               ['conversational', 'polished', 'code_technical', 'verbatim', 'notes'].includes(p.writingStyle)
                 ? p.writingStyle as WritingStyle
                 : null,
+            ideContextEnabled: typeof p.ideContextEnabled === 'boolean' ? p.ideContextEnabled : false,
+            ideProjectRoots: Array.isArray(p.ideProjectRoots)
+              ? p.ideProjectRoots
+                  .filter((root): root is string => typeof root === 'string' && root.trim().length > 0)
+                  .map((root) => root.trim())
+                  .filter((root, index, roots) => roots.indexOf(root) === index)
+                  .slice(0, 4)
+              : [],
           }));
       }
 

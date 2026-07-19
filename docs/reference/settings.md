@@ -83,13 +83,15 @@ Both the Rust-side `DictationState::default()` and the frontend default use `bas
 
 ## Per-App Profiles
 
-`appProfiles` is an array of `{ bundleId, label, writingStyle, autoPasteOverride, cleanupOverride, smartFormattingOverride, cliFormattingOverride }`. `writingStyle` is `null` (Inherit), `conversational`, `polished`, `code_technical`, `verbatim`, or `notes`. It is an explicit user choice; bundle identifiers and labels never classify apps automatically. Boolean overrides fine-tune the resolved style/global value for a matching frontmost bundle identifier; `null` means "inherit." Existing, missing, and malformed persisted style/override fields migrate to `null`.
+`appProfiles` is an array of `{ bundleId, label, writingStyle, autoPasteOverride, cleanupOverride, smartFormattingOverride, cliFormattingOverride, ideContextEnabled, ideProjectRoots }`. `writingStyle` is `null` (Inherit), `conversational`, `polished`, `code_technical`, `verbatim`, or `notes`. It is an explicit user choice; bundle identifiers and labels never classify apps automatically. Boolean overrides fine-tune the resolved style/global value for a matching frontmost bundle identifier; `null` means "inherit." Existing, missing, and malformed persisted style/override fields migrate to `null`.
+
+`ideContextEnabled` defaults to `false` and must be enabled on the exact matching profile. `ideProjectRoots` persists only the explicit user-selected root strings, trimmed, deduplicated, and capped at four. Filenames, symbols, source snippets, and scan results are memory-only and are not settings fields. The roots therefore remain visible in Settings and in any direct inspection or backup of the existing settings JSON; there is no hidden export path.
 
 `smartFormattingEnabled` is a separate boolean setting, off by default. It enables deterministic list, explicit structured-token, and bounded same-utterance correction rules for live prose. Missing or malformed persisted values migrate safely to `false`; it is independent of `smartPunctuation`. `smartFormattingOverride` gives profiles the same Default/On/Off choice.
 
 `cliFormattingOverride` uses the immutable recording-start context. `true` enables profile-mode CLI recognition, `false` disables implicit CLI formatting for that app, and `null` keeps conservative automatic recognition. An explicit spoken `command` trigger remains available in every mode.
 
-At recording start, the backend resolves one immutable context using global settings → matching style → matching profile fine-tuning → one-session overrides. Settings or focus changes during recording apply only to the next session. See [Per-App Dictation Context](../features/per-app-profiles.md).
+At recording start, the backend resolves one immutable context using global settings → matching style → matching profile fine-tuning → one-session overrides. Settings or focus changes during recording apply only to the next session. Explicit IDE opt-in also disables Smart Formatting for that recording and can capture only the matching profile's fresh local index. See [Per-App Dictation Context](../features/per-app-profiles.md) and [Local IDE Symbols and `@file` Context](../features/ide-context.md).
 
 ---
 

@@ -90,7 +90,7 @@ pub fn is_source_file(path: &Path) -> bool {
 
 /// Project manifests are scanned only for their local package/script names.
 /// Their dependency bodies are not treated as source text.
-fn is_package_manifest(path: &Path) -> bool {
+pub fn is_package_manifest(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|name| name.eq_ignore_ascii_case("package.json"))
@@ -140,12 +140,14 @@ fn push_manifest_term(terms: &mut Vec<String>, term: &str) {
 const SKIP_DIRS: &[&str] = &[
     "node_modules", "target", ".git", "dist", "build", ".next", "vendor",
     "__pycache__", ".venv", "venv", ".svn", ".hg", "Pods", "DerivedData",
-    ".cargo", ".idea", ".vscode", "coverage", "out",
+    ".cargo", ".idea", ".vscode", "coverage", "out", "cache", "caches",
 ];
 
 /// Return true if a directory with this name should not be descended into.
 pub fn is_skipped_dir(name: &str) -> bool {
-    SKIP_DIRS.contains(&name)
+    SKIP_DIRS
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(name))
 }
 
 /// Language keywords and ultra-common English/programming words to exclude from
@@ -314,8 +316,33 @@ impl VocabAccumulator {
         }
     }
 
+    /// Fold identifiers until `max_unique` distinct terms have been retained.
+    /// Returns true when a new term was refused at the cap. Existing terms may
+    /// still increment their frequency without growing memory.
+    pub fn add_source_bounded(&mut self, source: &str, max_unique: usize) -> bool {
+        for ident in extract_identifiers(source) {
+            if self.add_identifier_bounded(&ident, max_unique) {
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn add_written_term(&mut self, term: &str) {
         self.add_identifier(term);
+    }
+
+    pub fn add_written_term_bounded(&mut self, term: &str, max_unique: usize) -> bool {
+        self.add_identifier_bounded(term, max_unique)
+    }
+
+    fn add_identifier_bounded(&mut self, ident: &str, max_unique: usize) -> bool {
+        let key = ident.to_ascii_lowercase();
+        if !self.freq.contains_key(&key) && self.freq.len() >= max_unique {
+            return true;
+        }
+        self.add_identifier(ident);
+        false
     }
 
     /// Fold a single already-extracted identifier into the tallies.

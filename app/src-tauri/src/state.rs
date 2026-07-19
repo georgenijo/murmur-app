@@ -83,6 +83,14 @@ pub struct AppProfile {
     /// pre-style resolver path byte-for-byte.
     #[serde(default)]
     pub writing_style: Option<WritingStyle>,
+    /// Explicit opt-in to the memory-only local project index for this profile.
+    /// Murmur never infers this from the app label or bundle identifier.
+    #[serde(default)]
+    pub ide_context_enabled: bool,
+    /// User-selected project roots. Only this configuration persists; index
+    /// contents remain memory-only and are rebuilt locally.
+    #[serde(default)]
+    pub ide_project_roots: Vec<String>,
 }
 
 /// A user-defined voice command: when `phrase` is spoken (matched
@@ -218,6 +226,9 @@ pub struct AppState {
     /// `configure_dictation`. Lives outside `DictationState` because the compiled
     /// Aho-Corasick automaton isn't serializable.
     pub correction_matcher: Mutex<Option<std::sync::Arc<crate::correction::CorrectionMatcher>>>,
+    /// Short-lived local project indexes for explicitly opted-in app profiles.
+    /// Contents (symbols and root-relative filenames) are never serialized.
+    pub ide_context: Mutex<crate::ide_context::IdeContextStore>,
     /// At most one bounded incremental Whisper worker is attached to the active
     /// recording. The handle owns no audio; it snapshots one fixed-size window
     /// at a time and stores only reconciled text and timing counters.
@@ -301,6 +312,7 @@ impl Default for AppState {
             cancelled_id: AtomicU64::new(0),
             file_transcribing: AtomicBool::new(false),
             correction_matcher: Mutex::new(None),
+            ide_context: Mutex::new(crate::ide_context::IdeContextStore::default()),
             streaming_session: tokio::sync::Mutex::new(None),
         }
     }
@@ -321,6 +333,7 @@ mod tests {
             global: &settings,
             prompt: None,
             correction_matcher: None,
+            ide_context_index: None,
             vocabulary_version: 0,
             session_overrides: SessionOverrides::default(),
         }))

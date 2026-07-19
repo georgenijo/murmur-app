@@ -152,6 +152,30 @@ const WRITING_STYLE_CATEGORIES: Record<WritingStyleChoice, string> = {
   notes: 'Cleanup on · Vocabulary corrections on · Prose structure on · Automatic command formatting off',
 };
 
+interface IdeContextStatus {
+  state: 'disabled' | 'empty' | 'scanning' | 'ready' | 'stale' | 'cleared' | 'error';
+  generation: number;
+  roots: number;
+  files: number;
+  symbols: number;
+  bytes: number;
+  capped: boolean;
+  ms: number;
+}
+
+function ideStatusText(status: IdeContextStatus | undefined, roots: number): string {
+  if (!status) return roots > 0 ? 'Checking the memory-only index…' : 'Add a project root to build an index.';
+  switch (status.state) {
+    case 'scanning': return `Indexing locally… generation ${status.generation}`;
+    case 'ready': return `Ready · ${status.files} files · ${status.symbols} symbols${status.capped ? ' · capped' : ''}`;
+    case 'stale': return 'Expired safely · refresh to use project symbols again.';
+    case 'cleared': return 'Index cleared from memory. Configured roots are still available.';
+    case 'error': return 'Index unavailable. Check the configured roots and refresh.';
+    case 'empty': return 'Add a project root to build an index.';
+    default: return 'Local project context is off.';
+  }
+}
+
 // Per-app profiles map a macOS bundle id to an explicit writing style plus
 // independent delivery/transformation overrides.
 function AppProfilesEditor({ profiles, onChange }: {
@@ -160,6 +184,30 @@ function AppProfilesEditor({ profiles, onChange }: {
 }) {
   const [bundleId, setBundleId] = useState('');
   const [label, setLabel] = useState('');
+  const [ideStatuses, setIdeStatuses] = useState<Record<string, IdeContextStatus>>({});
+
+  const pollIdeStatuses = useCallback(async () => {
+    const enabled = profiles.filter((profile) => profile.ideContextEnabled);
+    if (enabled.length === 0) return;
+    const pairs = await Promise.all(enabled.map(async (profile) => {
+      try {
+        const status = await invoke<IdeContextStatus>('get_ide_context_status', { bundleId: profile.bundleId });
+        return [profile.bundleId, status] as const;
+      } catch {
+        return null;
+      }
+    }));
+    setIdeStatuses((current) => ({
+      ...current,
+      ...Object.fromEntries(pairs.filter((pair): pair is readonly [string, IdeContextStatus] => pair !== null)),
+    }));
+  }, [profiles]);
+
+  useEffect(() => {
+    void pollIdeStatuses();
+    const timer = window.setInterval(() => void pollIdeStatuses(), 1000);
+    return () => window.clearInterval(timer);
+  }, [pollIdeStatuses]);
 
   const handleAdd = () => {
     const trimmedId = bundleId.trim();
@@ -180,6 +228,8 @@ function AppProfilesEditor({ profiles, onChange }: {
         smartFormattingOverride: null,
         cliFormattingOverride: null,
         writingStyle: null,
+        ideContextEnabled: false,
+        ideProjectRoots: [],
       },
     ]);
     setBundleId('');
@@ -219,6 +269,51 @@ function AppProfilesEditor({ profiles, onChange }: {
       p.bundleId === id
         ? { ...p, writingStyle: choice === 'inherit' ? null : choice as WritingStyle }
         : p));
+  };
+
+  const toggleIdeContext = (id: string) => {
+    onChange(profiles.map((profile) => profile.bundleId === id
+      ? { ...profile, ideContextEnabled: !profile.ideContextEnabled }
+      : profile));
+  };
+
+  const addIdeRoot = async (id: string) => {
+    try {
+      const selected = await open({ directory: true, multiple: false });
+      if (typeof selected !== 'string') return;
+      onChange(profiles.map((profile) => {
+        if (profile.bundleId !== id || profile.ideProjectRoots.includes(selected) || profile.ideProjectRoots.length >= 4) {
+          return profile;
+        }
+        return { ...profile, ideProjectRoots: [...profile.ideProjectRoots, selected] };
+      }));
+    } catch {
+      // Dialog cancelled or unavailable — keep the configured roots.
+    }
+  };
+
+  const removeIdeRoot = (id: string, root: string) => {
+    onChange(profiles.map((profile) => profile.bundleId === id
+      ? { ...profile, ideProjectRoots: profile.ideProjectRoots.filter((candidate) => candidate !== root) }
+      : profile));
+  };
+
+  const refreshIdeIndex = async (id: string) => {
+    try {
+      const status = await invoke<IdeContextStatus>('refresh_ide_context', { bundleId: id });
+      setIdeStatuses((current) => ({ ...current, [id]: status }));
+    } catch {
+      // Backend status polling will surface the stable failure state.
+    }
+  };
+
+  const clearIdeIndex = async (id: string) => {
+    try {
+      const status = await invoke<IdeContextStatus>('clear_ide_context', { bundleId: id });
+      setIdeStatuses((current) => ({ ...current, [id]: status }));
+    } catch {
+      // Keep configured roots intact even if the command is unavailable.
+    }
   };
 
   const chipLabel = (kind: string, value: boolean | null) =>
@@ -322,6 +417,80 @@ function AppProfilesEditor({ profiles, onChange }: {
                 >
                   {chipLabel('Commands', p.cliFormattingOverride)}
                 </button>
+              </div>
+              <div className="rounded-lg border border-outline-variant/30 bg-surface-container-lowest p-2.5">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-xs font-medium text-on-surface">Local IDE project context</div>
+                    <p className="mt-1 text-xs text-on-surface-variant">
+                      Explicitly index selected source roots in memory for symbols and <span className="font-mono">@file</span> mentions. Murmur never reads editor text, selections, or the clipboard.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={p.ideContextEnabled}
+                    aria-label={`Local IDE project context for ${p.label || p.bundleId}`}
+                    onClick={() => toggleIdeContext(p.bundleId)}
+                    className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary ${p.ideContextEnabled ? 'bg-primary' : 'bg-surface-container-highest'}`}
+                  >
+                    <span className={`inline-block h-4 w-4 rounded-full bg-on-primary shadow transition-transform ${p.ideContextEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
+                  </button>
+                </div>
+                {p.ideContextEnabled && (
+                  <div className="mt-2.5 space-y-2">
+                    {p.ideProjectRoots.length > 0 ? (
+                      <ul className="space-y-1">
+                        {p.ideProjectRoots.map((root) => (
+                          <li key={root} className="flex items-center gap-2 rounded-md bg-surface-container px-2 py-1.5">
+                            <span className="min-w-0 flex-1 break-all font-mono text-xs text-on-surface">{root}</span>
+                            <button
+                              type="button"
+                              onClick={() => removeIdeRoot(p.bundleId, root)}
+                              className="shrink-0 text-xs text-on-surface-variant underline hover:text-error"
+                            >
+                              Remove root
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="text-xs text-on-surface-variant">No project roots configured.</p>
+                    )}
+                    <div className="flex flex-wrap items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={() => void addIdeRoot(p.bundleId)}
+                        disabled={p.ideProjectRoots.length >= 4}
+                        className="text-xs font-medium text-on-surface-variant underline hover:text-primary disabled:opacity-50"
+                      >
+                        Add project root
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void refreshIdeIndex(p.bundleId)}
+                        disabled={p.ideProjectRoots.length === 0 || ideStatuses[p.bundleId]?.state === 'scanning'}
+                        className="text-xs font-medium text-on-surface-variant underline hover:text-primary disabled:opacity-50"
+                      >
+                        Refresh index
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void clearIdeIndex(p.bundleId)}
+                        disabled={p.ideProjectRoots.length === 0}
+                        className="text-xs font-medium text-on-surface-variant underline hover:text-error disabled:opacity-50"
+                      >
+                        Clear index
+                      </button>
+                    </div>
+                    <p className="text-xs text-on-surface-variant" role="status">
+                      {ideStatusText(ideStatuses[p.bundleId], p.ideProjectRoots.length)}
+                    </p>
+                    <p className="text-xs text-on-surface-variant">
+                      Clear index removes only memory contents; Remove root changes the persisted profile configuration. Paths are shown only here and never written to logs.
+                    </p>
+                  </div>
+                )}
               </div>
             </li>
           ))}

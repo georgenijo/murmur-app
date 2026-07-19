@@ -11,11 +11,13 @@ use std::time::Instant;
 use crate::cleanup::CleanupOptions;
 use crate::cli_command::{canonicalize_cli, is_cli_utterance, CliFormattingMode, CliLexicon};
 use crate::correction::CorrectionMatcher;
+use crate::ide_context::IdeContextIndex;
 
 pub(crate) const CLEANUP_STAGE: &str = "cleanup";
 pub(crate) const VOICE_COMMANDS_STAGE: &str = "voice_commands";
 pub(crate) const SMART_CORRECTION_STAGE: &str = "smart_correction";
 pub(crate) const SMART_FORMATTING_STAGE: &str = "smart_formatting";
+pub(crate) const IDE_CONTEXT_STAGE: &str = "ide_context";
 pub(crate) const CLI_COMMAND_STAGE: &str = "cli_command";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,6 +48,7 @@ pub(crate) struct TranscriptStageConfig {
     pub voice_commands_enabled: bool,
     pub smart_correction_enabled: bool,
     pub smart_formatting_enabled: bool,
+    pub ide_context_enabled: bool,
     pub cli_command_enabled: bool,
 }
 
@@ -58,6 +61,7 @@ impl TranscriptStageConfig {
             voice_commands_enabled: false,
             smart_correction_enabled: false,
             smart_formatting_enabled: false,
+            ide_context_enabled: false,
             cli_command_enabled: false,
         }
     }
@@ -207,6 +211,7 @@ impl TranscriptPipeline {
             custom_commands,
             correction_matcher,
             cli_lexicon,
+            ide_context_index,
         } = resources;
         Self::new(vec![
             Box::new(CleanupStage),
@@ -216,6 +221,9 @@ impl TranscriptPipeline {
             }),
             Box::new(SmartFormattingStage {
                 cli_lexicon: cli_lexicon.clone(),
+            }),
+            Box::new(IdeContextStage {
+                index: ide_context_index,
             }),
             Box::new(CliCommandStage {
                 lexicon: cli_lexicon,
@@ -321,6 +329,7 @@ pub(crate) struct TranscriptTransformResources {
     pub custom_commands: Vec<(String, String)>,
     pub correction_matcher: Option<Arc<CorrectionMatcher>>,
     pub cli_lexicon: CliLexicon,
+    pub ide_context_index: Option<Arc<IdeContextIndex>>,
 }
 
 impl TranscriptTransformResources {
@@ -329,6 +338,7 @@ impl TranscriptTransformResources {
             custom_commands: Vec::new(),
             correction_matcher: None,
             cli_lexicon: CliLexicon::from_context(None, &[]),
+            ide_context_index: None,
         }
     }
 }
@@ -407,6 +417,33 @@ struct CliCommandStage {
 
 struct SmartFormattingStage {
     cli_lexicon: CliLexicon,
+}
+
+struct IdeContextStage {
+    index: Option<Arc<IdeContextIndex>>,
+}
+
+impl TranscriptTransform for IdeContextStage {
+    fn name(&self) -> &'static str {
+        IDE_CONTEXT_STAGE
+    }
+
+    fn failure_policy(&self) -> StageFailurePolicy {
+        StageFailurePolicy::Required
+    }
+
+    fn enabled(&self, context: &TranscriptContext) -> bool {
+        context.source == TranscriptSource::Live
+            && context.stages.ide_context_enabled
+            && self.index.is_some()
+    }
+
+    fn transform(&self, text: &str, _context: &TranscriptContext) -> Result<String, StageError> {
+        Ok(self
+            .index
+            .as_ref()
+            .map_or_else(|| text.to_string(), |index| index.apply(text)))
+    }
 }
 
 impl TranscriptTransform for SmartFormattingStage {
@@ -502,6 +539,7 @@ mod tests {
             voice_commands_enabled: true,
             smart_correction_enabled: true,
             smart_formatting_enabled: false,
+            ide_context_enabled: false,
             cli_command_enabled: true,
         }
     }
@@ -520,6 +558,7 @@ mod tests {
             custom_commands: vec![("my email".to_string(), "test@example.com".to_string())],
             correction_matcher: with_matcher.then(correction_matcher),
             cli_lexicon: CliLexicon::from_context(None, &[]),
+            ide_context_index: None,
         }
     }
 
@@ -617,9 +656,64 @@ mod tests {
                 VOICE_COMMANDS_STAGE,
                 SMART_CORRECTION_STAGE,
                 SMART_FORMATTING_STAGE,
+                IDE_CONTEXT_STAGE,
                 CLI_COMMAND_STAGE,
             ]
         );
+    }
+
+    #[test]
+    fn ide_context_runs_after_generic_resources_and_before_authoritative_cli() {
+        let root = std::env::temp_dir().join(format!(
+            "murmur-transform-ide-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/recording.rs"),
+            "fn localProjectSymbol() { localProjectSymbol(); }",
+        )
+        .unwrap();
+        let ide_index = crate::ide_context::build_index(
+            1,
+            &[root.to_string_lossy().to_string()],
+        )
+        .unwrap()
+        .index;
+        let stages = TranscriptStageConfig {
+            cleanup_enabled: false,
+            cleanup_remove_filler: false,
+            cleanup_capitalize: false,
+            voice_commands_enabled: false,
+            smart_correction_enabled: true,
+            smart_formatting_enabled: false,
+            ide_context_enabled: true,
+            cli_command_enabled: true,
+        };
+        let output = transform_transcript(
+            "use effect mention recording dot rs and local project symbol".to_string(),
+            &live_context(stages),
+            TranscriptTransformResources {
+                correction_matcher: Some(correction_matcher()),
+                ide_context_index: Some(ide_index),
+                ..TranscriptTransformResources::empty()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            output.text,
+            "useEffect @src/recording.rs and localProjectSymbol"
+        );
+        assert!(output.stages[2].changed);
+        assert_eq!(output.stages[3].outcome, StageOutcome::Skipped);
+        assert!(output.stages[4].changed);
+        assert_eq!(output.stages[5].stage, CLI_COMMAND_STAGE);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -631,6 +725,7 @@ mod tests {
             voice_commands_enabled: false,
             smart_correction_enabled: false,
             smart_formatting_enabled: false,
+            ide_context_enabled: false,
             cli_command_enabled: false,
         };
         let output = transform_transcript(
@@ -651,6 +746,7 @@ mod tests {
             voice_commands_enabled: true,
             smart_correction_enabled: false,
             smart_formatting_enabled: false,
+            ide_context_enabled: false,
             cli_command_enabled: false,
         };
         let output = transform_transcript(
@@ -671,6 +767,7 @@ mod tests {
             voice_commands_enabled: false,
             smart_correction_enabled: true,
             smart_formatting_enabled: false,
+            ide_context_enabled: false,
             cli_command_enabled: false,
         };
         let output = transform_transcript(
@@ -695,7 +792,7 @@ mod tests {
         let output = transform_transcript(raw.to_string(), &context, resources(true)).unwrap();
         assert_eq!(output.text.as_bytes(), raw.as_bytes());
         assert_eq!(output.original_text.as_bytes(), raw.as_bytes());
-        assert_eq!(output.stages.len(), 5);
+        assert_eq!(output.stages.len(), 6);
         assert!(output
             .stages
             .iter()
@@ -711,6 +808,7 @@ mod tests {
             voice_commands_enabled: false,
             smart_correction_enabled: true,
             smart_formatting_enabled: false,
+            ide_context_enabled: false,
             cli_command_enabled: true,
         };
         let raw = "NPM run Tauri dev";
@@ -724,7 +822,8 @@ mod tests {
         assert_eq!(output.text, "npm run tauri dev");
         assert_eq!(output.stages[2].stage, SMART_CORRECTION_STAGE);
         assert_eq!(output.stages[3].stage, SMART_FORMATTING_STAGE);
-        assert_eq!(output.stages[4].stage, CLI_COMMAND_STAGE);
+        assert_eq!(output.stages[4].stage, IDE_CONTEXT_STAGE);
+        assert_eq!(output.stages[5].stage, CLI_COMMAND_STAGE);
     }
 
     #[test]
@@ -736,6 +835,7 @@ mod tests {
             voice_commands_enabled: false,
             smart_correction_enabled: false,
             smart_formatting_enabled: true,
+            ide_context_enabled: false,
             cli_command_enabled: true,
         };
         let prose = transform_transcript(
@@ -747,7 +847,8 @@ mod tests {
         assert_eq!(prose.text, "The tasks are:\n1. Review\n2. Ship");
         assert!(prose.stages[3].changed);
         assert_eq!(prose.stages[3].stage, SMART_FORMATTING_STAGE);
-        assert_eq!(prose.stages[4].stage, CLI_COMMAND_STAGE);
+        assert_eq!(prose.stages[4].stage, IDE_CONTEXT_STAGE);
+        assert_eq!(prose.stages[5].stage, CLI_COMMAND_STAGE);
 
         let command = transform_transcript(
             "command echo open quote first second close quote".to_string(),
