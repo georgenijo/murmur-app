@@ -23,12 +23,19 @@ fn transcribes_with_installed_coreml_model() {
     let samples = parse_wav_to_samples(&wav).expect("fixture must be 16 kHz mono 16-bit PCM");
     let mut backend = CoreMlBackend::new();
     backend.load_model(COREML_MODEL_NAME).unwrap();
-    let text = backend
+    let first = backend
         .transcribe(&samples, "auto", None, true)
         .expect("Core ML transcription failed");
+    let second = backend
+        .transcribe(&samples, "auto", None, true)
+        .expect("second Core ML transcription failed");
 
     assert!(
-        !text.trim().is_empty(),
-        "Core ML returned an empty transcript"
+        !first.trim().is_empty(),
+        "first Core ML transcription returned empty"
+    );
+    assert_eq!(
+        first, second,
+        "consecutive one-shot Core ML calls must not leak decoder state"
     );
 }
