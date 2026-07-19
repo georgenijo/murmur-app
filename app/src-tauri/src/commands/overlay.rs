@@ -7,6 +7,10 @@ use tauri::Manager;
 const NOTCH_EXPAND: f64 = 120.0; // 60px expansion room on each side
 #[cfg(target_os = "macos")]
 const FALLBACK_OVERLAY_W: f64 = 200.0;
+#[cfg(target_os = "macos")]
+const FALLBACK_OVERLAY_H: f64 = 37.0;
+#[cfg(target_os = "macos")]
+const EXPANDED_DROP: f64 = 44.0; // extra height for the hover dropdown row
 
 #[derive(serde::Serialize, Clone)]
 pub(crate) struct NotchInfo {
@@ -168,6 +172,43 @@ pub fn show_overlay(app: tauri::AppHandle, state: tauri::State<'_, State>) -> Re
             }
             None => {
                 tracing::warn!(target: "system", "show_overlay: overlay window not found — skipping");
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Resize the overlay window for the hover-expand dropdown.
+///
+/// Grows the window height by `EXPANDED_DROP` when expanded so the dropdown row
+/// has room, and restores it to notch height when collapsed. Width is computed
+/// with the same formula as `position_overlay_default`, so the collapsed size
+/// matches what `show_overlay` set. Only the size changes — the window stays
+/// anchored at y=0, so the extra height grows downward.
+///
+/// We resize on hover rather than pre-allocating a tall window because a
+/// transparent overlay with cursor events enabled captures the mouse across its
+/// whole frame, which would create a click dead-zone below the notch when idle.
+#[tauri::command]
+pub fn set_overlay_expanded(app: tauri::AppHandle, state: tauri::State<'_, State>, expanded: bool) -> Result<(), String> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (&app, &state, expanded);
+        return Ok(());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let notch = *state.notch_info.lock_or_recover();
+        match app.get_webview_window("overlay") {
+            Some(overlay) => {
+                let w = notch.map(|(w, _)| w + NOTCH_EXPAND).unwrap_or(FALLBACK_OVERLAY_W);
+                let base_h = notch.map(|(_, h)| h).unwrap_or(FALLBACK_OVERLAY_H);
+                let h = if expanded { base_h + EXPANDED_DROP } else { base_h };
+                overlay.set_size(tauri::LogicalSize::new(w, h)).map_err(|e| e.to_string())
+            }
+            None => {
+                tracing::warn!(target: "system", "set_overlay_expanded: overlay window not found — skipping");
                 Ok(())
             }
         }
