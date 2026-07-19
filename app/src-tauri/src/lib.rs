@@ -6,6 +6,7 @@ mod benchmark;
 mod cleanup;
 mod commands;
 mod correction;
+mod dictation_context;
 mod file_output;
 mod frontmost;
 mod injector;

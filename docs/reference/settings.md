@@ -81,6 +81,12 @@ Both the Rust-side `DictationState::default()` and the frontend default use `bas
 | `saveAudio` | `boolean` | `false` | `true` / `false` | When enabled, each live dictation's audio is written to a matching `.wav` (16kHz mono, 16-bit PCM) in the output folder. |
 | `outputDir` | `string` | `''` | Any absolute folder path, or `''` for default | Destination for saved transcript/audio files. Empty means the app default (`Documents/Murmur`, created on first write). Set via a folder picker (`dialog:allow-open`). |
 
+## Per-App Profiles
+
+`appProfiles` is an array of `{ bundleId, label, autoPasteOverride, cleanupOverride }`. Boolean overrides replace the corresponding global value for a matching frontmost bundle identifier; `null` means "use global." Existing persisted entries are migrated by filling missing override fields with `null`.
+
+At recording start, the backend resolves one immutable context using global settings → matching profile → one-session overrides. Settings or focus changes during recording apply only to the next session. See [Per-App Dictation Context](../features/per-app-profiles.md).
+
 ---
 
 ## System Settings

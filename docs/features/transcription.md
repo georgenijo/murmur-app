@@ -60,7 +60,7 @@ Long live recordings selected to the Whisper backend use true incremental output
 - Chunk text is reconciled by a deterministic word-boundary algorithm. It removes the largest near-equal suffix/prefix overlap within 12 words and retains the earlier surface form.
 - After reconciliation, the worker validates the recording ID, cancellation generation, status, and selected model again before publishing a versioned `partial-transcript` event. Its camelCase payload is `{ contractVersion, recordingId, text, chunkIndex, processedAudioMs }`; the text is cumulative and remains in memory only.
 - On stop, the worker is signalled before audio teardown and only the unprocessed tail plus the 2-second overlap is inferred. The reconciled result becomes the authoritative text used by the unchanged cleanup, voice-command, correction, file-output, clipboard, paste, history, and stats paths.
-- Short recordings (under the first 10-second window), non-Whisper backends, missing/failed VAD, stale sessions, model changes, worker lag, panics, or final-tail failures use the original full-buffer pipeline.
+- Short recordings (under the first 10-second window), non-Whisper backends, missing/failed VAD, stale sessions, worker lag, panics, or final-tail failures use the original full-buffer pipeline. A model setting change during recording applies to the next session; the active worker keeps its recording-start model snapshot.
 
 The worker holds no queued audio. It reads the current buffer length, copies only one fixed window, awaits that inference, and abandons incremental mode if capture advances by more than one step. Recording IDs and cancellation generations prevent completed work from a stopped/cancelled session from being adopted by a newer recording.
 
@@ -80,14 +80,14 @@ The backend also emits versioned `recording-session-started` and `partial-transc
 
 ## Pipeline Orchestration (`commands/recording.rs`)
 
-`run_transcription_pipeline()` remains the single authoritative completion entry point:
+`run_transcription_pipeline()` remains the single authoritative completion entry point. `start_native_recording` resolves one immutable `DictationContextSnapshot` from the frontmost bundle identifier and current configuration; every live stage receives that snapshot instead of re-reading mutable settings:
 
-1. Read model/language/auto_paste from `DictationState` (single lock)
-2. Confirm the recording-start model preparation completed (or load synchronously as a fallback)
-3. Adopt a successfully finalized incremental Whisper transcript, or run the full-buffer backend fallback
-4. Run the backend-neutral transcript transformation pipeline
-5. Persist optional file output and inject text (clipboard + optional paste) on the main thread
-6. Reset status to Idle
+1. Capture app identity, matched profile, effective settings, vocabulary version, commands, and deny-by-default context permissions at recording start
+2. Confirm the snapshot's model preparation completed (or load synchronously as a fallback)
+3. Adopt a successfully finalized incremental Whisper transcript, or run the full-buffer backend fallback with the same snapshot
+4. Run the backend-neutral transcript transformation pipeline from the snapshot's stage settings and resources
+5. Persist optional file output and inject text (clipboard + optional paste) from the snapshot on the main thread
+6. Reset status to Idle and clear only the matching recording generation's snapshot
 
 Uses `IdleGuard` (RAII) to reset status on any early return or error — prevents the app from getting stuck in "processing" state.
 
@@ -103,7 +103,9 @@ Each stage receives immutable session/model/language metadata plus privacy-safe 
 
 Cleanup and voice commands are required deterministic stages when enabled. Smart Correction is optional-fallback: a future recoverable correction failure leaves the preceding text intact. Imported-file transcription invokes the same entry point with all three stages disabled so its existing raw-ASR output remains unchanged.
 
-File persistence, clipboard/paste, history, and stats are intentionally outside the transformation pipeline. The context contains only an opaque optional handle for future resolved app context; app/profile resolution remains owned by the separate context architecture.
+File persistence, clipboard/paste, history, and stats are intentionally outside the transformation pipeline. Live transformation receives an opaque recording handle plus stage configuration and resources from the same immutable per-app snapshot; app/profile resolution remains owned by the context resolver.
+
+See [Per-App Dictation Context](per-app-profiles.md) for resolver precedence, duplicate-profile compatibility, lifetime, and privacy boundaries.
 
 ## Model Downloads (`commands/models.rs`)
 

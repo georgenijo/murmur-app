@@ -1,8 +1,9 @@
-use std::sync::Mutex;
-use std::time::Instant;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use serde::{Deserialize, Serialize};
 use crate::transcriber::{TranscriptionBackend, WhisperBackend};
+use crate::MutexExt;
+use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 pub use crate::transcriber::WHISPER_SAMPLE_RATE;
 
@@ -22,7 +23,8 @@ impl Default for DictationStatus {
 
 /// Per-app dictation profile. When the frontmost macOS app's bundle id matches
 /// `bundle_id`, each `*_override` (when `Some`) replaces the corresponding global
-/// setting at transcription time. `None` means "no override — use global".
+/// setting in the immutable recording-start snapshot. `None` means "no override
+/// — use global".
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppProfile {
     pub bundle_id: String,
@@ -58,7 +60,7 @@ pub struct DictationState {
     pub save_transcript: bool,
     pub save_audio: bool,
     pub output_dir: String,
-    /// Per-app profiles that override auto-paste based on the frontmost app.
+    /// Per-app profiles resolved once from the frontmost app at recording start.
     pub app_profiles: Vec<AppProfile>,
     pub voice_commands_enabled: bool,
     /// User-defined voice commands applied after the built-in set.
@@ -129,6 +131,11 @@ impl Default for DictationState {
     }
 }
 
+struct ActiveDictationContext {
+    recording_id: u64,
+    snapshot: Arc<crate::dictation_context::DictationContextSnapshot>,
+}
+
 pub struct AppState {
     pub dictation: Mutex<DictationState>,
     /// Serializes recorder start/stop/cancel transitions. Audio startup waits
@@ -143,6 +150,11 @@ pub struct AppState {
     /// Monotonically increasing opaque ID assigned to every post-recognition
     /// transformation pass (live recordings and imported files).
     pub transcript_session_id: AtomicU64,
+    /// Monotonic revision for settings and vocabulary inputs captured by each
+    /// immutable dictation context snapshot.
+    pub settings_revision: AtomicU64,
+    /// The immutable context owned by the active recording generation.
+    active_context: Mutex<Option<ActiveDictationContext>>,
     /// Set to the recording_id of a cancelled recording. Pipeline checks
     /// `cancelled_id >= my_id` at checkpoints to discard cancelled work.
     pub cancelled_id: AtomicU64,
@@ -170,6 +182,47 @@ impl AppState {
         self.transcript_session_id.fetch_add(1, Ordering::SeqCst) + 1
     }
 
+    pub fn bump_settings_revision(&self) -> u64 {
+        self.settings_revision.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    pub fn set_active_context(
+        &self,
+        recording_id: u64,
+        snapshot: Arc<crate::dictation_context::DictationContextSnapshot>,
+    ) {
+        *self.active_context.lock_or_recover() = Some(ActiveDictationContext {
+            recording_id,
+            snapshot,
+        });
+    }
+
+    pub fn active_context(
+        &self,
+        recording_id: u64,
+    ) -> Option<Arc<crate::dictation_context::DictationContextSnapshot>> {
+        self.active_context
+            .lock_or_recover()
+            .as_ref()
+            .filter(|active| active.recording_id == recording_id)
+            .map(|active| Arc::clone(&active.snapshot))
+    }
+
+    /// Clear only the snapshot owned by `recording_id`. A stale guard must not
+    /// erase the context installed by a newer recording generation.
+    pub fn clear_active_context(&self, recording_id: u64) -> bool {
+        let mut active = self.active_context.lock_or_recover();
+        if active
+            .as_ref()
+            .is_some_and(|context| context.recording_id == recording_id)
+        {
+            *active = None;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Mark a recording as cancelled by storing its ID.
     pub fn cancel_recording(&self, id: u64) {
         self.cancelled_id.fetch_max(id, Ordering::SeqCst);
@@ -191,6 +244,8 @@ impl Default for AppState {
             idle_timeout_minutes: Mutex::new(5),
             recording_id: AtomicU64::new(0),
             transcript_session_id: AtomicU64::new(0),
+            settings_revision: AtomicU64::new(0),
+            active_context: Mutex::new(None),
             cancelled_id: AtomicU64::new(0),
             file_transcribing: AtomicBool::new(false),
             correction_matcher: Mutex::new(None),
@@ -202,6 +257,22 @@ impl Default for AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dictation_context::{resolve, ResolverInputs, SessionOverrides};
+
+    fn snapshot(model_name: &str) -> Arc<crate::dictation_context::DictationContextSnapshot> {
+        let settings = DictationState {
+            model_name: model_name.to_string(),
+            ..DictationState::default()
+        };
+        Arc::new(resolve(ResolverInputs {
+            bundle_id: None,
+            global: &settings,
+            prompt: None,
+            correction_matcher: None,
+            vocabulary_version: 0,
+            session_overrides: SessionOverrides::default(),
+        }))
+    }
 
     #[test]
     fn recording_transition_allows_only_one_audio_operation() {
@@ -217,5 +288,32 @@ mod tests {
         let state = AppState::default();
         assert_eq!(state.next_transcript_session_id(), 1);
         assert_eq!(state.next_transcript_session_id(), 2);
+    }
+
+    #[test]
+    fn stale_generation_cannot_read_or_clear_newer_context() {
+        let state = AppState::default();
+        state.set_active_context(2, snapshot("small.en"));
+
+        assert!(state.active_context(1).is_none());
+        assert!(!state.clear_active_context(1));
+        assert_eq!(
+            state.active_context(2).unwrap().transcription.model_name,
+            "small.en"
+        );
+        assert!(state.clear_active_context(2));
+        assert!(state.active_context(2).is_none());
+    }
+
+    #[test]
+    fn active_context_ignores_settings_changes_during_recording() {
+        let state = AppState::default();
+        state.set_active_context(1, snapshot("base.en"));
+        state.dictation.lock_or_recover().model_name = "small.en".to_string();
+
+        assert_eq!(
+            state.active_context(1).unwrap().transcription.model_name,
+            "base.en"
+        );
     }
 }
