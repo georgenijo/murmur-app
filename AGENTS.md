@@ -18,6 +18,7 @@ Read these before working on a feature:
 - **[docs/onboarding.md](docs/onboarding.md)** — Setup, permissions, model installation, logs
 - **[docs/features/recording-modes.md](docs/features/recording-modes.md)** — Hold-down and double-tap modes, state machine, rdev threading
 - **[docs/features/transcription.md](docs/features/transcription.md)** — Audio capture, whisper pipeline, status flow
+- **[docs/features/smart-formatting.md](docs/features/smart-formatting.md)** — Deterministic prose grammar, backtracking, bounds, privacy
 - **[docs/features/cli-command-formatting.md](docs/features/cli-command-formatting.md)** — Spoken CLI detection, grammar, lexicon, safety
 - **[docs/features/text-injection.md](docs/features/text-injection.md)** — Clipboard, auto-paste, osascript
 - **[docs/features/vad.md](docs/features/vad.md)** — VAD speech filtering
@@ -45,6 +46,7 @@ Read these before working on a feature:
 | `keyboard.rs` | Hold-down and double-tap detectors, shared rdev listener thread |
 | `audio.rs` | cpal capture, mono conversion, 16kHz resampling |
 | `transcriber/` | whisper-rs model loading and inference |
+| `smart_formatting.rs` | Deterministic prose formatting and same-utterance backtracking |
 | `injector.rs` | Clipboard (arboard) + auto-paste (osascript) |
 | `state.rs` | `DictationState`, `AppState` with mutex-wrapped state |
 | `telemetry.rs` | Structured event system: TauriEmitterLayer, ring buffer, JSONL, privacy stripping |

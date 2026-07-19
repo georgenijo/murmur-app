@@ -19,10 +19,10 @@ Physical line endings are immutable boundaries. Each line is considered independ
 CLI canonicalization is the final deterministic transformation:
 
 ```text
-raw transcript → cleanup → voice commands → Smart Correction → CLI formatting → final text
+raw transcript → cleanup → voice commands → Smart Correction → Smart Formatting → CLI formatting → final text
 ```
 
-Running after Smart Correction lets vocabulary resolve technical names first. The CLI stage then owns final separators, flags, paths, versions, and command-family casing. The pipeline keeps the original and final text together only in memory for reporting and tests; neither value is added to structured logs by this stage.
+Running after Smart Correction lets vocabulary resolve technical names first. Smart Formatting bypasses utterances activated by the CLI grammar, including already-canonical commands, and the final CLI stage then owns separators, flags, paths, versions, and command-family casing. The pipeline keeps the original and final text together only in memory for reporting and tests; neither value is added to structured logs by this stage.
 
 ## Grammar and lexicon
 

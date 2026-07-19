@@ -9,12 +9,13 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::cleanup::CleanupOptions;
-use crate::cli_command::{canonicalize_cli, CliFormattingMode, CliLexicon};
+use crate::cli_command::{canonicalize_cli, is_cli_utterance, CliFormattingMode, CliLexicon};
 use crate::correction::CorrectionMatcher;
 
 pub(crate) const CLEANUP_STAGE: &str = "cleanup";
 pub(crate) const VOICE_COMMANDS_STAGE: &str = "voice_commands";
 pub(crate) const SMART_CORRECTION_STAGE: &str = "smart_correction";
+pub(crate) const SMART_FORMATTING_STAGE: &str = "smart_formatting";
 pub(crate) const CLI_COMMAND_STAGE: &str = "cli_command";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +45,7 @@ pub(crate) struct TranscriptStageConfig {
     pub cleanup_capitalize: bool,
     pub voice_commands_enabled: bool,
     pub smart_correction_enabled: bool,
+    pub smart_formatting_enabled: bool,
     pub cli_command_enabled: bool,
 }
 
@@ -55,6 +57,7 @@ impl TranscriptStageConfig {
             cleanup_capitalize: false,
             voice_commands_enabled: false,
             smart_correction_enabled: false,
+            smart_formatting_enabled: false,
             cli_command_enabled: false,
         }
     }
@@ -210,6 +213,9 @@ impl TranscriptPipeline {
             Box::new(VoiceCommandsStage { custom_commands }),
             Box::new(SmartCorrectionStage {
                 matcher: correction_matcher,
+            }),
+            Box::new(SmartFormattingStage {
+                cli_lexicon: cli_lexicon.clone(),
             }),
             Box::new(CliCommandStage {
                 lexicon: cli_lexicon,
@@ -399,6 +405,33 @@ struct CliCommandStage {
     lexicon: CliLexicon,
 }
 
+struct SmartFormattingStage {
+    cli_lexicon: CliLexicon,
+}
+
+impl TranscriptTransform for SmartFormattingStage {
+    fn name(&self) -> &'static str {
+        SMART_FORMATTING_STAGE
+    }
+
+    fn failure_policy(&self) -> StageFailurePolicy {
+        StageFailurePolicy::Required
+    }
+
+    fn enabled(&self, context: &TranscriptContext) -> bool {
+        context.source == TranscriptSource::Live && context.stages.smart_formatting_enabled
+    }
+
+    fn transform(&self, text: &str, context: &TranscriptContext) -> Result<String, StageError> {
+        // CLI activation, including an already-canonical command, is
+        // authoritative. Prose formatting must never modify that command span.
+        if is_cli_utterance(text, context.cli_formatting_mode, &self.cli_lexicon) {
+            return Ok(text.to_string());
+        }
+        Ok(crate::smart_formatting::format_smart_prose(text))
+    }
+}
+
 impl TranscriptTransform for CliCommandStage {
     fn name(&self) -> &'static str {
         CLI_COMMAND_STAGE
@@ -468,6 +501,7 @@ mod tests {
             cleanup_capitalize: true,
             voice_commands_enabled: true,
             smart_correction_enabled: true,
+            smart_formatting_enabled: false,
             cli_command_enabled: true,
         }
     }
@@ -565,7 +599,7 @@ mod tests {
     }
 
     #[test]
-    fn standard_pipeline_reports_cleanup_then_commands_then_correction() {
+    fn standard_pipeline_reports_smart_formatting_before_final_cli_stage() {
         let output = transform_transcript(
             "raw".to_string(),
             &live_context(all_stages()),
@@ -582,6 +616,7 @@ mod tests {
                 CLEANUP_STAGE,
                 VOICE_COMMANDS_STAGE,
                 SMART_CORRECTION_STAGE,
+                SMART_FORMATTING_STAGE,
                 CLI_COMMAND_STAGE,
             ]
         );
@@ -595,6 +630,7 @@ mod tests {
             cleanup_capitalize: true,
             voice_commands_enabled: false,
             smart_correction_enabled: false,
+            smart_formatting_enabled: false,
             cli_command_enabled: false,
         };
         let output = transform_transcript(
@@ -614,6 +650,7 @@ mod tests {
             cleanup_capitalize: false,
             voice_commands_enabled: true,
             smart_correction_enabled: false,
+            smart_formatting_enabled: false,
             cli_command_enabled: false,
         };
         let output = transform_transcript(
@@ -633,6 +670,7 @@ mod tests {
             cleanup_capitalize: false,
             voice_commands_enabled: false,
             smart_correction_enabled: true,
+            smart_formatting_enabled: false,
             cli_command_enabled: false,
         };
         let output = transform_transcript(
@@ -657,7 +695,7 @@ mod tests {
         let output = transform_transcript(raw.to_string(), &context, resources(true)).unwrap();
         assert_eq!(output.text.as_bytes(), raw.as_bytes());
         assert_eq!(output.original_text.as_bytes(), raw.as_bytes());
-        assert_eq!(output.stages.len(), 4);
+        assert_eq!(output.stages.len(), 5);
         assert!(output
             .stages
             .iter()
@@ -672,6 +710,7 @@ mod tests {
             cleanup_capitalize: false,
             voice_commands_enabled: false,
             smart_correction_enabled: true,
+            smart_formatting_enabled: false,
             cli_command_enabled: true,
         };
         let raw = "NPM run Tauri dev";
@@ -684,7 +723,67 @@ mod tests {
         assert_eq!(output.original_text, raw);
         assert_eq!(output.text, "npm run tauri dev");
         assert_eq!(output.stages[2].stage, SMART_CORRECTION_STAGE);
-        assert_eq!(output.stages[3].stage, CLI_COMMAND_STAGE);
+        assert_eq!(output.stages[3].stage, SMART_FORMATTING_STAGE);
+        assert_eq!(output.stages[4].stage, CLI_COMMAND_STAGE);
+    }
+
+    #[test]
+    fn smart_formatting_is_live_opt_in_and_keeps_cli_authoritative() {
+        let stages = TranscriptStageConfig {
+            cleanup_enabled: false,
+            cleanup_remove_filler: false,
+            cleanup_capitalize: false,
+            voice_commands_enabled: false,
+            smart_correction_enabled: false,
+            smart_formatting_enabled: true,
+            cli_command_enabled: true,
+        };
+        let prose = transform_transcript(
+            "The tasks are first review second ship".to_string(),
+            &live_context(stages),
+            TranscriptTransformResources::empty(),
+        )
+        .unwrap();
+        assert_eq!(prose.text, "The tasks are:\n1. Review\n2. Ship");
+        assert!(prose.stages[3].changed);
+        assert_eq!(prose.stages[3].stage, SMART_FORMATTING_STAGE);
+        assert_eq!(prose.stages[4].stage, CLI_COMMAND_STAGE);
+
+        let command = transform_transcript(
+            "command echo open quote first second close quote".to_string(),
+            &live_context(stages),
+            TranscriptTransformResources::empty(),
+        )
+        .unwrap();
+        assert!(!command.stages[3].changed);
+        assert_eq!(command.text, "echo \"first second\"");
+
+        let mut cli_profile_context = live_context(stages);
+        cli_profile_context.cli_formatting_mode = CliFormattingMode::Enabled;
+        let profile_command = transform_transcript(
+            "The tasks are first review second ship".to_string(),
+            &cli_profile_context,
+            TranscriptTransformResources::empty(),
+        )
+        .unwrap();
+        assert!(!profile_command.stages[3].changed);
+        assert_eq!(
+            profile_command.text,
+            "The tasks are first review second ship"
+        );
+    }
+
+    #[test]
+    fn disabled_smart_formatting_preserves_live_prose_byte_for_byte() {
+        let raw = "The tasks are first review second ship";
+        let output = transform_transcript(
+            raw.to_string(),
+            &live_context(TranscriptStageConfig::verbatim()),
+            TranscriptTransformResources::empty(),
+        )
+        .unwrap();
+        assert_eq!(output.text.as_bytes(), raw.as_bytes());
+        assert_eq!(output.stages[3].outcome, StageOutcome::Skipped);
     }
 
     struct AppendStage {

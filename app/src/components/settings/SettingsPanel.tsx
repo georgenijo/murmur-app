@@ -159,6 +159,7 @@ function AppProfilesEditor({ profiles, onChange }: {
         label: label.trim(),
         autoPasteOverride: null,
         cleanupOverride: null,
+        smartFormattingOverride: null,
         cliFormattingOverride: null,
       },
     ]);
@@ -189,6 +190,11 @@ function AppProfilesEditor({ profiles, onChange }: {
       p.bundleId === id ? { ...p, cliFormattingOverride: cycle(p.cliFormattingOverride) } : p));
   };
 
+  const cycleSmartFormatting = (id: string) => {
+    onChange(profiles.map((p) =>
+      p.bundleId === id ? { ...p, smartFormattingOverride: cycle(p.smartFormattingOverride) } : p));
+  };
+
   const chipLabel = (kind: string, value: boolean | null) =>
     value === null ? `${kind}: Default` : value ? `${kind}: On` : `${kind}: Off`;
 
@@ -202,7 +208,7 @@ function AppProfilesEditor({ profiles, onChange }: {
   return (
     <div>
       <p className="mb-2 text-xs text-on-surface-variant">
-        Override auto-paste, transcript cleanup, and command formatting for specific apps by bundle id
+        Override auto-paste, transcript cleanup, smart prose formatting, and command formatting for specific apps by bundle id
         (e.g. <span className="font-mono">com.apple.Terminal</span>). The frontmost
         app when you start dictating decides the behavior. Each toggle cycles
         Default → On → Off.
@@ -237,7 +243,7 @@ function AppProfilesEditor({ profiles, onChange }: {
                   </svg>
                 </button>
               </div>
-              <div className="flex gap-1.5">
+              <div className="grid grid-cols-2 gap-1.5">
                 <button
                   type="button"
                   onClick={() => cyclePaste(p.bundleId)}
@@ -256,9 +262,17 @@ function AppProfilesEditor({ profiles, onChange }: {
                 </button>
                 <button
                   type="button"
+                  onClick={() => cycleSmartFormatting(p.bundleId)}
+                  aria-label={`Smart formatting for ${p.label || p.bundleId}: ${chipLabel('Smart', p.smartFormattingOverride)}`}
+                  className={`px-2 py-1 rounded-md text-xs font-medium border transition-colors ${chipClass(p.smartFormattingOverride)}`}
+                >
+                  {chipLabel('Smart', p.smartFormattingOverride)}
+                </button>
+                <button
+                  type="button"
                   onClick={() => cycleCliFormatting(p.bundleId)}
                   aria-label={`CLI formatting for ${p.label || p.bundleId}: ${chipLabel('CLI', p.cliFormattingOverride)}`}
-                  className={`flex-1 px-2 py-1 rounded-md text-xs font-medium border transition-colors ${chipClass(p.cliFormattingOverride)}`}
+                  className={`px-2 py-1 rounded-md text-xs font-medium border transition-colors ${chipClass(p.cliFormattingOverride)}`}
                 >
                   {chipLabel('CLI', p.cliFormattingOverride)}
                 </button>
@@ -935,6 +949,34 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
             </div>
           </div>
         )}
+
+        {/* Smart Formatting Toggle */}
+        <div className="flex items-center justify-between">
+          <div>
+            <label className="block text-sm font-medium text-on-surface">
+              Smart Formatting
+            </label>
+            <p className="mt-1 text-xs text-on-surface-variant">
+              Format explicit spoken lists, email/URL/symbol cues, and same-utterance corrections locally.
+            </p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={settings.smartFormattingEnabled}
+            aria-label="Smart formatting"
+            onClick={() => onUpdateSettings({ smartFormattingEnabled: !settings.smartFormattingEnabled })}
+            className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 ${
+              settings.smartFormattingEnabled ? 'bg-primary' : 'bg-surface-container-highest'
+            }`}
+          >
+            <span
+              className={`inline-block h-4 w-4 transform rounded-full bg-on-primary shadow transition-transform ${
+                settings.smartFormattingEnabled ? 'translate-x-6' : 'translate-x-1'
+              }`}
+            />
+          </button>
+        </div>
         </SettingsSection>
 
         <SettingsSection pageId="recording" activePage={activeCat} title="Recording" subtitle="Trigger mode, shortcut key">
@@ -1285,7 +1327,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
         )}
         </SettingsSection>
 
-        <SettingsSection pageId="profiles" activePage={activeCat} title="Per-App Profiles" subtitle="Auto-paste, cleanup + CLI per frontmost app">
+        <SettingsSection pageId="profiles" activePage={activeCat} title="Per-App Profiles" subtitle="Paste and formatting per frontmost app">
           <AppProfilesEditor
             profiles={settings.appProfiles}
             onChange={(next) => onUpdateSettings({ appProfiles: next })}

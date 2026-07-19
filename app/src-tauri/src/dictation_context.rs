@@ -22,6 +22,7 @@ pub struct MatchedAppProfile {
     pub auto_paste_override: Option<bool>,
     pub cleanup_override: Option<bool>,
     pub cli_formatting_override: Option<bool>,
+    pub smart_formatting_override: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +76,7 @@ pub struct TransformationSettings {
     pub correction_enabled: bool,
     pub correction_matcher: Option<Arc<CorrectionMatcher>>,
     pub cli_formatting_mode: CliFormattingMode,
+    pub smart_formatting_enabled: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -106,6 +108,7 @@ pub struct SessionOverrides {
     pub auto_paste: Option<bool>,
     pub cleanup_enabled: Option<bool>,
     pub cli_formatting_enabled: Option<bool>,
+    pub smart_formatting_enabled: Option<bool>,
 }
 
 pub struct ResolverInputs<'a> {
@@ -149,6 +152,17 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
         Some(false) => CliFormattingMode::Disabled,
         None => CliFormattingMode::Auto,
     };
+    let smart_formatting_enabled = inputs
+        .session_overrides
+        .smart_formatting_enabled
+        .unwrap_or_else(|| {
+            resolve_profile_override(
+                global.smart_formatting_enabled,
+                inputs.bundle_id,
+                &global.app_profiles,
+                |profile| profile.smart_formatting_override,
+            )
+        });
     let matched_profile = inputs.bundle_id.and_then(|bundle_id| {
         global
             .app_profiles
@@ -160,6 +174,7 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
                 auto_paste_override: profile.auto_paste_override,
                 cleanup_override: profile.cleanup_override,
                 cli_formatting_override: profile.cli_formatting_override,
+                smart_formatting_override: profile.smart_formatting_override,
             })
     });
     let custom_vocab = !global.custom_vocabulary.trim().is_empty();
@@ -192,6 +207,7 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
             correction_enabled: global.correction_enabled,
             correction_matcher: inputs.correction_matcher,
             cli_formatting_mode,
+            smart_formatting_enabled,
         },
         delivery: DeliverySettings {
             auto_paste,
@@ -257,6 +273,7 @@ mod tests {
             auto_paste_override,
             cleanup_override,
             cli_formatting_override: None,
+            smart_formatting_override: None,
         }
     }
 
@@ -334,6 +351,7 @@ mod tests {
                 auto_paste: Some(false),
                 cleanup_enabled: Some(true),
                 cli_formatting_enabled: Some(false),
+                ..SessionOverrides::default()
             },
         );
 
@@ -436,6 +454,38 @@ mod tests {
             .cli_formatting_mode,
             CliFormattingMode::Disabled
         );
+    }
+
+    #[test]
+    fn smart_formatting_resolves_global_profile_and_session_precedence() {
+        let mut global = DictationState {
+            smart_formatting_enabled: false,
+            ..DictationState::default()
+        };
+        let mut terminal = profile("com.apple.Terminal", None, None);
+        terminal.smart_formatting_override = Some(true);
+        global.app_profiles = vec![terminal];
+
+        let profile_snapshot = resolve_test(
+            &global,
+            Some("com.apple.Terminal"),
+            SessionOverrides::default(),
+        );
+        assert!(profile_snapshot.transformations.smart_formatting_enabled);
+
+        let session_snapshot = resolve_test(
+            &global,
+            Some("com.apple.Terminal"),
+            SessionOverrides {
+                smart_formatting_enabled: Some(false),
+                ..SessionOverrides::default()
+            },
+        );
+        assert!(!session_snapshot.transformations.smart_formatting_enabled);
+
+        global.smart_formatting_enabled = true;
+        assert!(profile_snapshot.transformations.smart_formatting_enabled);
+        assert!(!session_snapshot.transformations.smart_formatting_enabled);
     }
 
     #[test]

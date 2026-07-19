@@ -12,6 +12,7 @@ export interface AppProfile {
   label: string;
   autoPasteOverride: boolean | null;
   cleanupOverride: boolean | null;
+  smartFormattingOverride: boolean | null;
   cliFormattingOverride: boolean | null;
 }
 
@@ -88,6 +89,8 @@ export interface Settings {
   /** User-defined voice commands applied after the built-in set. */
   voiceCommands: VoiceCommand[];
   cleanupEnabled: boolean;
+  /** Deterministic live prose formatting and bounded same-utterance correction. */
+  smartFormattingEnabled: boolean;
   /** When cleanup is on, remove filler tokens ("um", "uh"). */
   cleanupRemoveFiller: boolean;
   /** When cleanup is on, capitalize sentence starts. */
@@ -221,6 +224,7 @@ export const DEFAULT_SETTINGS: Settings = {
   voiceCommandsEnabled: false,
   voiceCommands: [],
   cleanupEnabled: false,
+  smartFormattingEnabled: false,
   cleanupRemoveFiller: true,
   cleanupCapitalize: true,
   codeVocabEnabled: false,
@@ -348,6 +352,8 @@ export function loadSettings(): Settings {
               typeof p.autoPasteOverride === 'boolean' ? p.autoPasteOverride : null,
             cleanupOverride:
               typeof p.cleanupOverride === 'boolean' ? p.cleanupOverride : null,
+            smartFormattingOverride:
+              typeof p.smartFormattingOverride === 'boolean' ? p.smartFormattingOverride : null,
             cliFormattingOverride:
               typeof p.cliFormattingOverride === 'boolean' ? p.cliFormattingOverride : null,
           }));
@@ -385,6 +391,12 @@ export function loadSettings(): Settings {
       // (including absent on older settings blobs) back to the default.
       if (typeof parsed.cleanupEnabled !== 'boolean') {
         parsed.cleanupEnabled = DEFAULT_SETTINGS.cleanupEnabled;
+      }
+
+      // Smart formatting is an explicit opt-in. Older or malformed settings
+      // stay off rather than silently enabling broad prose transformations.
+      if (typeof parsed.smartFormattingEnabled !== 'boolean') {
+        parsed.smartFormattingEnabled = DEFAULT_SETTINGS.smartFormattingEnabled;
       }
 
       if (typeof parsed.hotkeyMissFeedback !== 'boolean') {

@@ -15,6 +15,7 @@ mod keyboard;
 mod partial_transcript;
 mod platform;
 mod resource_monitor;
+mod smart_formatting;
 mod state;
 mod streaming;
 mod transcript_transform;

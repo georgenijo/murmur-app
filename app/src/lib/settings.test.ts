@@ -30,7 +30,7 @@ describe('loadSettings', () => {
     expect(settings.autoPaste).toBe(true);
   });
 
-  it('migrates and validates per-app CLI formatting overrides', () => {
+  it('migrates and validates per-app smart and CLI formatting overrides', () => {
     localStorage.setItem('dictation-settings', JSON.stringify({
       ...DEFAULT_SETTINGS,
       appProfiles: [
@@ -39,6 +39,7 @@ describe('loadSettings', () => {
           label: 'Terminal',
           autoPasteOverride: null,
           cleanupOverride: false,
+          smartFormattingOverride: true,
           cliFormattingOverride: true,
         },
         {
@@ -46,6 +47,7 @@ describe('loadSettings', () => {
           label: 'Mail',
           autoPasteOverride: null,
           cleanupOverride: null,
+          smartFormattingOverride: 'yes',
           cliFormattingOverride: 'yes',
         },
         {
@@ -58,9 +60,31 @@ describe('loadSettings', () => {
     }));
 
     const [terminal, mail, legacy] = loadSettings().appProfiles;
+    expect(terminal.smartFormattingOverride).toBe(true);
     expect(terminal.cliFormattingOverride).toBe(true);
+    expect(mail.smartFormattingOverride).toBeNull();
     expect(mail.cliFormattingOverride).toBeNull();
+    expect(legacy.smartFormattingOverride).toBeNull();
     expect(legacy.cliFormattingOverride).toBeNull();
+  });
+
+  it('keeps smart formatting opt-in across settings migrations', () => {
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      smartFormattingEnabled: true,
+    }));
+    expect(loadSettings().smartFormattingEnabled).toBe(true);
+
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      smartFormattingEnabled: 'yes',
+    }));
+    expect(loadSettings().smartFormattingEnabled).toBe(false);
+
+    const legacy = { ...DEFAULT_SETTINGS } as Record<string, unknown>;
+    delete legacy.smartFormattingEnabled;
+    localStorage.setItem('dictation-settings', JSON.stringify(legacy));
+    expect(loadSettings().smartFormattingEnabled).toBe(false);
   });
 
   it('fills missing fields from defaults', () => {
