@@ -1960,6 +1960,41 @@ pub async fn start_native_recording(
     }))
 }
 
+#[derive(Clone, Copy, Debug, serde::Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveRecordingSession {
+    recording_id: u64,
+    status: DictationStatus,
+}
+
+fn active_recording_session(
+    status: DictationStatus,
+    recording_id: u64,
+) -> Option<ActiveRecordingSession> {
+    matches!(
+        status,
+        DictationStatus::Recording | DictationStatus::Processing
+    )
+    .then_some(ActiveRecordingSession {
+        recording_id,
+        status,
+    })
+}
+
+/// Privacy-safe listener-readiness snapshot for the overlay WebView. This lets
+/// a newly mounted listener recover the current session ID without replaying or
+/// exposing any provisional text.
+#[tauri::command]
+pub fn get_active_recording_session(
+    state: tauri::State<'_, State>,
+) -> Option<ActiveRecordingSession> {
+    let dictation = state.app_state.dictation.lock_or_recover();
+    active_recording_session(
+        dictation.status,
+        state.app_state.recording_id.load(Ordering::SeqCst),
+    )
+}
+
 #[tauri::command]
 pub async fn stop_native_recording(
     app_handle: tauri::AppHandle,
@@ -1995,6 +2030,11 @@ pub async fn stop_native_recording(
                 dictation.status = DictationStatus::Idle;
             }
             keyboard::set_processing(false);
+            partial_transcript::emit_clear(
+                &app_handle,
+                rid,
+                partial_transcript::PartialTranscriptClearReason::Error,
+            );
             let _ = app_handle.emit("recording-status-changed", "idle");
             return Err(format!("Missing dictation context for recording {rid}"));
         }
@@ -2227,7 +2267,10 @@ pub async fn cancel_native_recording(
     // Always emit feedback so the UI resets, even if stop_recording failed
     keyboard::set_processing(false);
     let _ = app_handle.emit("recording-status-changed", "idle");
-    let _ = app_handle.emit("recording-cancelled", ());
+    let _ = app_handle.emit(
+        "recording-cancelled",
+        serde_json::json!({ "recordingId": rid }),
+    );
 
     match stop_err {
         Some(e) => Err(e),
@@ -2941,5 +2984,15 @@ mod tests {
         assert_eq!(id1, 1);
         assert_eq!(id2, 2);
         assert_eq!(id3, 3);
+    }
+
+    #[test]
+    fn active_recording_session_snapshot_contains_no_transcript_data() {
+        let snapshot = active_recording_session(DictationStatus::Recording, 17).unwrap();
+        let value = serde_json::to_value(snapshot).unwrap();
+        assert_eq!(value["recordingId"], 17);
+        assert_eq!(value["status"], "recording");
+        assert!(value.get("text").is_none());
+        assert!(active_recording_session(DictationStatus::Idle, 17).is_none());
     }
 }

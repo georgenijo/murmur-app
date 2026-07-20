@@ -11,6 +11,15 @@ const FALLBACK_OVERLAY_W: f64 = 200.0;
 const FALLBACK_OVERLAY_H: f64 = 37.0;
 #[cfg(target_os = "macos")]
 const EXPANDED_DROP: f64 = 44.0; // extra height for the hover dropdown row
+#[cfg(target_os = "macos")]
+const PREVIEW_DROP: f64 = 30.0; // visible row below the physical notch
+
+#[cfg(target_os = "macos")]
+fn overlay_surface_height(base_height: f64, expanded: bool, preview_visible: bool) -> f64 {
+    base_height
+        + if preview_visible { PREVIEW_DROP } else { 0.0 }
+        + if expanded { EXPANDED_DROP } else { 0.0 }
+}
 
 #[derive(serde::Serialize, Clone)]
 pub(crate) struct NotchInfo {
@@ -215,6 +224,44 @@ pub fn set_overlay_expanded(app: tauri::AppHandle, state: tauri::State<'_, State
     }
 }
 
+/// Resize the overlay for independently composed preview and hover rows. The
+/// preview sits below the physical notch; the quick-settings row follows it.
+/// Keeping both dimensions explicit prevents either row from clipping the other.
+#[tauri::command]
+pub fn set_overlay_surface(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, State>,
+    expanded: bool,
+    preview_visible: bool,
+) -> Result<(), String> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (&app, &state, expanded, preview_visible);
+        return Ok(());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let notch = *state.notch_info.lock_or_recover();
+        match app.get_webview_window("overlay") {
+            Some(overlay) => {
+                let w = notch
+                    .map(|(w, _)| w + NOTCH_EXPAND)
+                    .unwrap_or(FALLBACK_OVERLAY_W);
+                let base_h = notch.map(|(_, h)| h).unwrap_or(FALLBACK_OVERLAY_H);
+                let h = overlay_surface_height(base_h, expanded, preview_visible);
+                overlay
+                    .set_size(tauri::LogicalSize::new(w, h))
+                    .map_err(|e| e.to_string())
+            }
+            None => {
+                tracing::warn!(target: "system", "set_overlay_surface: overlay window not found — skipping");
+                Ok(())
+            }
+        }
+    }
+}
+
 /// Show and focus the main app window.
 ///
 /// The overlay uses this instead of frontend window APIs so it does not need
@@ -242,5 +289,18 @@ pub fn hide_overlay(app: tauri::AppHandle) -> Result<(), String> {
             tracing::warn!(target: "system", "hide_overlay: overlay window not found — skipping");
             Ok(())
         }
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn overlay_surface_height_composes_preview_and_settings_rows() {
+        assert_eq!(overlay_surface_height(37.0, false, false), 37.0);
+        assert_eq!(overlay_surface_height(37.0, false, true), 67.0);
+        assert_eq!(overlay_surface_height(37.0, true, false), 81.0);
+        assert_eq!(overlay_surface_height(37.0, true, true), 111.0);
     }
 }
