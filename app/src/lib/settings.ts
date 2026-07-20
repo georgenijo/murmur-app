@@ -52,6 +52,98 @@ export interface VoiceCommand {
   replacement: string;
 }
 
+export type VocabularyScope =
+  | { kind: 'global' }
+  | { kind: 'app'; bundleId: string }
+  | { kind: 'project'; bundleId: string; root: string };
+
+/** One canonical written term plus exact spoken variants recognized locally. */
+export interface VocabularyEntry {
+  id: string;
+  written: string;
+  aliases: string[];
+  enabled: boolean;
+  scope: VocabularyScope;
+}
+
+const MAX_VOCABULARY_ENTRIES = 500;
+const MAX_VOCABULARY_ALIASES = 16;
+const MAX_VOCABULARY_VALUE_CHARS = 256;
+
+function truncateVocabularyValue(value: string): string {
+  return Array.from(value).slice(0, MAX_VOCABULARY_VALUE_CHARS).join('');
+}
+
+export function vocabularyPrompt(entries: VocabularyEntry[]): string {
+  return entries
+    .filter((entry) => entry.enabled && entry.scope.kind === 'global')
+    .map((entry) => entry.written.trim())
+    .filter(Boolean)
+    .join(', ');
+}
+
+function legacyVocabularyEntries(value: unknown): VocabularyEntry[] {
+  if (typeof value !== 'string') return [];
+  return value
+    .split(/[,\r\n]/)
+    .map((written) => written.trim())
+    .filter(Boolean)
+    .slice(0, MAX_VOCABULARY_ENTRIES)
+    .map((written, index) => ({
+      id: `legacy-${index}`,
+      written: truncateVocabularyValue(written),
+      aliases: [],
+      enabled: true,
+      scope: { kind: 'global' },
+    }));
+}
+
+function sanitizeVocabularyEntries(raw: unknown, legacy: unknown): VocabularyEntry[] {
+  if (!Array.isArray(raw)) return legacyVocabularyEntries(legacy);
+  return raw
+    .filter((entry): entry is Record<string, unknown> => !!entry && typeof entry === 'object')
+    .map((entry, index): VocabularyEntry | null => {
+      if (typeof entry.written !== 'string' || !entry.written.trim()) return null;
+      const scopeValue = entry.scope && typeof entry.scope === 'object'
+        ? entry.scope as Record<string, unknown>
+        : { kind: 'global' };
+      let scope: VocabularyScope = { kind: 'global' };
+      if (scopeValue.kind === 'app' && typeof scopeValue.bundleId === 'string' && scopeValue.bundleId.trim()) {
+        scope = { kind: 'app', bundleId: scopeValue.bundleId.trim() };
+      } else if (
+        scopeValue.kind === 'project'
+        && typeof scopeValue.bundleId === 'string'
+        && scopeValue.bundleId.trim()
+        && typeof scopeValue.root === 'string'
+        && scopeValue.root.trim()
+      ) {
+        scope = {
+          kind: 'project',
+          bundleId: scopeValue.bundleId.trim(),
+          root: scopeValue.root.trim(),
+        };
+      }
+      const aliases = Array.isArray(entry.aliases)
+        ? entry.aliases
+            .filter((alias): alias is string => typeof alias === 'string')
+            .map((alias) => truncateVocabularyValue(alias.trim()))
+            .filter(Boolean)
+            .filter((alias, aliasIndex, values) =>
+              values.findIndex((value) => value.toLocaleLowerCase() === alias.toLocaleLowerCase()) === aliasIndex)
+            .slice(0, MAX_VOCABULARY_ALIASES)
+        : [];
+      return {
+        id: typeof entry.id === 'string' && entry.id.trim() ? entry.id : `vocabulary-${index}`,
+        written: truncateVocabularyValue(entry.written.trim()),
+        aliases,
+        enabled: typeof entry.enabled === 'boolean' ? entry.enabled : true,
+        scope,
+      };
+    })
+    .filter((entry): entry is VocabularyEntry => entry !== null)
+    .slice(0, MAX_VOCABULARY_ENTRIES);
+}
+
 /**
  * Result of a code-vocabulary scan. Shape matches the Rust `scan_code_vocab`
  * command return value exactly (serde camelCase). Persisted so the settings
@@ -104,7 +196,9 @@ export interface Settings {
   launchAtLogin: boolean;
   vadSensitivity: number;
   idleTimeoutMinutes: number;
+  /** @deprecated Migration-only mirror; structured entries are authoritative. */
   customVocabulary: string;
+  vocabularyEntries: VocabularyEntry[];
   disabled: boolean;
   smartPunctuation: boolean;
   saveTranscript: boolean;
@@ -241,6 +335,7 @@ export const DEFAULT_SETTINGS: Settings = {
   vadSensitivity: 50,
   idleTimeoutMinutes: 5,
   customVocabulary: '',
+  vocabularyEntries: [],
   disabled: false,
   smartPunctuation: true,
   saveTranscript: false,
@@ -361,6 +456,14 @@ export function loadSettings(): Settings {
       if (typeof parsed.outputDir !== 'string') {
         parsed.outputDir = DEFAULT_SETTINGS.outputDir;
       }
+
+      parsed.vocabularyEntries = sanitizeVocabularyEntries(
+        parsed.vocabularyEntries,
+        parsed.customVocabulary,
+      );
+      // Keep the legacy field as a derived compatibility mirror. It is never an
+      // independently editable source after migration.
+      parsed.customVocabulary = vocabularyPrompt(parsed.vocabularyEntries);
 
       // appProfiles drives per-app delivery and transformation overrides. Drop
       // malformed entries and coerce a non-array back to the empty default so

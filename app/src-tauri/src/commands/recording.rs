@@ -154,9 +154,18 @@ fn resolve_live_context(
         if current_code_vocab != code_vocab {
             continue;
         }
-        let sanitized = dictation.custom_vocabulary.replace('\0', "");
+        let sanitized = crate::vocabulary_alias::prompt_terms(
+            &dictation.vocabulary_entries,
+            bundle_id,
+            &dictation.app_profiles,
+        )
+        .replace('\0', "");
         let prompt = combine_prompts(&sanitized, &code_vocab);
-        let correction_matcher = app_state.correction_matcher.lock_or_recover().clone();
+        let correction_matcher = app_state
+            .correction_matcher
+            .lock_or_recover()
+            .as_ref()
+            .map(|matchers| matchers.select(bundle_id));
         let ide_context_index = bundle_id.and_then(|bundle_id| {
             dictation
                 .app_profiles
@@ -239,7 +248,7 @@ fn rebuild_correction_matcher(
     dictation: &crate::state::DictationState,
 ) {
     let code_enabled = dictation.code_vocab_enabled;
-    let mut terms = parse_vocab_terms(&dictation.custom_vocabulary);
+    let mut terms = Vec::new();
     if code_enabled {
         // Built-in dev dictionary + any cached project scan become correction
         // terms (their spoken forms are auto-derived: "useEffect" -> "use effect").
@@ -256,9 +265,10 @@ fn rebuild_correction_matcher(
             }
         }
     }
-    let matcher = crate::correction::CorrectionMatcher::build(
+    let matcher = crate::vocabulary_alias::CorrectionMatcherSet::build(
         &terms,
-        &[],
+        &dictation.vocabulary_entries,
+        &dictation.app_profiles,
         dictation.correction_fuzzy,
         // Gate the std* abbrev builtins on the dev-context (code-vocab) signal.
         code_enabled,
@@ -945,6 +955,7 @@ struct ConfigurationLogMetadata {
     app_profile_count: u64,
     voice_command_count: u64,
     custom_vocabulary_present: bool,
+    vocabulary_entry_count: u64,
     output_directory_present: bool,
 }
 
@@ -963,7 +974,15 @@ impl ConfigurationLogMetadata {
             custom_vocabulary_present: options
                 .get("customVocabulary")
                 .and_then(serde_json::Value::as_str)
-                .is_some_and(|vocabulary| !vocabulary.trim().is_empty()),
+                .is_some_and(|vocabulary| !vocabulary.trim().is_empty())
+                || options
+                    .get("vocabularyEntries")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|entries| !entries.is_empty()),
+            vocabulary_entry_count: options
+                .get("vocabularyEntries")
+                .and_then(serde_json::Value::as_array)
+                .map_or(0, |entries| entries.len() as u64),
             output_directory_present: options
                 .get("outputDir")
                 .and_then(serde_json::Value::as_str)
@@ -998,12 +1017,20 @@ pub async fn configure_dictation(
         app_profile_count = log_metadata.app_profile_count,
         voice_command_count = log_metadata.voice_command_count,
         custom_vocabulary_present = log_metadata.custom_vocabulary_present,
+        vocabulary_entry_count = log_metadata.vocabulary_entry_count,
         output_directory_present = log_metadata.output_directory_present,
         "configure_dictation"
     );
 
     let model = options.get("model").and_then(|v| v.as_str()).map(String::from);
     let language = options.get("language").and_then(|v| v.as_str()).map(String::from);
+    let requested_vocabulary_entries = options
+        .get("vocabularyEntries")
+        .map(|value| {
+            serde_json::from_value::<Vec<crate::state::VocabularyEntry>>(value.clone())
+                .map_err(|_| "Vocabulary entries have an invalid shape.".to_string())
+        })
+        .transpose()?;
 
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
     if model
@@ -1061,10 +1088,6 @@ pub async fn configure_dictation(
         dictation.vad_sensitivity = (sensitivity as u32).clamp(0, 100);
     }
 
-    if let Some(vocab) = options.get("customVocabulary").and_then(|v| v.as_str()) {
-        dictation.custom_vocabulary = vocab.to_string();
-    }
-
     if let Some(sp) = options.get("smartPunctuation").and_then(|v| v.as_bool()) {
         dictation.smart_punctuation = sp;
     }
@@ -1088,7 +1111,32 @@ pub async fn configure_dictation(
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                Some(crate::state::VoiceCommand { phrase, replacement })
+                Some(crate::state::VoiceCommand {
+                    phrase,
+                    replacement,
+                })
+            })
+            .collect();
+    }
+
+    if let Some(entries) = requested_vocabulary_entries {
+        crate::vocabulary_alias::validate_entries(&entries, &dictation.voice_command_pairs)?;
+        dictation.custom_vocabulary =
+            crate::vocabulary_alias::prompt_terms(&entries, None, &dictation.app_profiles);
+        dictation.vocabulary_entries = entries;
+    } else if let Some(vocab) = options.get("customVocabulary").and_then(|v| v.as_str()) {
+        // Compatibility for a pre-#268 frontend payload. The structured client
+        // migrates this field before normal configuration.
+        dictation.custom_vocabulary = vocab.to_string();
+        dictation.vocabulary_entries = parse_vocab_terms(vocab)
+            .into_iter()
+            .enumerate()
+            .map(|(index, written)| crate::state::VocabularyEntry {
+                id: format!("legacy-{index}"),
+                written,
+                aliases: Vec::new(),
+                enabled: true,
+                scope: crate::state::VocabularyScope::Global,
             })
             .collect();
     }
@@ -2153,6 +2201,30 @@ pub async fn count_vocab_tokens(
     Ok(backend.token_count(&text))
 }
 
+/// Apply the same local alias matcher used by live dictation without recording,
+/// persisting, copying, or logging any user text.
+#[tauri::command]
+pub async fn preview_vocabulary_aliases(
+    entries: Vec<crate::state::VocabularyEntry>,
+    voice_commands: Vec<crate::state::VoiceCommand>,
+    text: String,
+    cli_formatting: bool,
+) -> Result<String, String> {
+    crate::vocabulary_alias::validate_entries(&entries, &voice_commands)?;
+    let matchers =
+        crate::vocabulary_alias::CorrectionMatcherSet::build(&[], &entries, &[], false, false);
+    let corrected = matchers.select(None).apply(&text);
+    if cli_formatting {
+        Ok(crate::cli_command::canonicalize_cli(
+            &corrected,
+            crate::cli_command::CliFormattingMode::Auto,
+            &crate::cli_command::CliLexicon::from_context(None, &[]),
+        ))
+    } else {
+        Ok(corrected)
+    }
+}
+
 /// Transcribe an existing audio file (WAV/MP3/M4A) through the same Whisper
 /// backend and settings as live dictation.
 ///
@@ -2365,6 +2437,13 @@ mod tests {
                 "cliFormattingOverride": false
             }],
             "customVocabulary": "private-customer-name",
+            "vocabularyEntries": [{
+                "id": "private-id",
+                "written": "PrivateCanonical",
+                "aliases": ["private spoken alias"],
+                "enabled": true,
+                "scope": { "kind": "global" }
+            }],
             "voiceCommands": [{
                 "phrase": "confidential phrase",
                 "replacement": "confidential replacement"
@@ -2373,10 +2452,11 @@ mod tests {
         });
 
         let metadata = ConfigurationLogMetadata::from_options(&options);
-        assert_eq!(metadata.option_count, 4);
+        assert_eq!(metadata.option_count, 5);
         assert_eq!(metadata.app_profile_count, 1);
         assert_eq!(metadata.voice_command_count, 1);
         assert!(metadata.custom_vocabulary_present);
+        assert_eq!(metadata.vocabulary_entry_count, 1);
         assert!(metadata.output_directory_present);
 
         let rendered = format!("{metadata:?}");
@@ -2384,6 +2464,9 @@ mod tests {
             "com.private.SecretApp",
             "Secret profile",
             "private-customer-name",
+            "private-id",
+            "PrivateCanonical",
+            "private spoken alias",
             "confidential phrase",
             "confidential replacement",
             "/Users/private/CustomerFiles",

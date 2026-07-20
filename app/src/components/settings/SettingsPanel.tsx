@@ -7,14 +7,14 @@ import {
   Settings, RecordingMode, DEFAULT_SETTINGS,
   AVAILABLE_MODEL_OPTIONS, DOUBLE_TAP_KEY_OPTIONS, RECORDING_MODE_OPTIONS,
   IDLE_TIMEOUT_OPTIONS, LANGUAGE_OPTIONS, WRITING_STYLE_OPTIONS,
-  AppProfile, VoiceCommand, WritingStyle, WritingStyleChoice,
+  AppProfile, VoiceCommand, WritingStyle, WritingStyleChoice, vocabularyPrompt,
 } from '../../lib/settings';
 import { Select } from '../ui/Select';
 import { SettingsSection } from './SettingsSection';
 import { VocabScanStrip } from './VocabScanStrip';
 import { PerformanceLab } from './PerformanceLab';
+import { VocabularyAliasesEditor } from './VocabularyAliasesEditor';
 import { useVocabScan } from '../../lib/hooks/useVocabScan';
-import { countVocabTokens } from '../../lib/dictation';
 import {
   modelDownloadLabel,
   modelDownloadPercent,
@@ -50,55 +50,6 @@ function PasteDelaySlider({ value, onCommit }: { value: number; onCommit: (v: nu
       <p className="mt-1 text-xs text-on-surface-variant">
         Delay before paste. Increase if paste lands in the wrong window.
       </p>
-    </div>
-  );
-}
-
-function CustomVocabularyTextarea({ value, onCommit }: { value: string; onCommit: (v: string) => void }) {
-  const [draft, setDraft] = useState(value);
-  const [tokenCount, setTokenCount] = useState<number | null>(null);
-  useEffect(() => { setDraft(value); }, [value]);
-
-  useEffect(() => {
-    if (!draft.trim()) { setTokenCount(null); return; }
-    let stale = false;
-    countVocabTokens(draft)
-      .then((count) => { if (!stale) setTokenCount(count); })
-      .catch(() => { if (!stale) setTokenCount(null); });
-    return () => { stale = true; };
-  }, [draft]);
-
-  return (
-    <div>
-      <label className="block text-sm font-medium text-on-surface mb-2">
-        Custom Vocabulary
-      </label>
-      <textarea
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={() => { if (draft !== value) onCommit(draft); }}
-        placeholder="e.g. Tauri, Claude, whisper-rs, macOS"
-        rows={3}
-        autoComplete="off"
-        autoCorrect="off"
-        autoCapitalize="off"
-        spellCheck={false}
-        className="w-full resize-y rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface placeholder:text-on-surface-variant focus:outline-none focus:ring-2 focus:ring-primary"
-      />
-      <div className="mt-1.5 flex items-start justify-between gap-2">
-        <p className="text-xs text-on-surface-variant">
-          Comma-separated. Whisper models only.
-        </p>
-        {draft.trim().length > 0 && (() => {
-          const displayCount = tokenCount ?? Math.ceil(draft.trim().length / 4);
-          const isEstimate = tokenCount === null;
-          return (
-            <span className={`whitespace-nowrap text-xs tabular-nums ${displayCount > 200 ? 'text-amber-600 dark:text-amber-400' : 'text-on-surface-variant'}`}>
-              {isEstimate ? `~${displayCount}` : displayCount} tokens
-            </span>
-          );
-        })()}
-      </div>
     </div>
   );
 }
@@ -1550,10 +1501,13 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
         </SettingsSection>
 
         <SettingsSection pageId="vocab" activePage={activeCat} title="Vocabulary" subtitle="Bias transcription toward your terms">
-        {/* Manual custom vocabulary — feeds the same initial prompt as code-aware. */}
-        <CustomVocabularyTextarea
-          value={settings.customVocabulary}
-          onCommit={(value) => onUpdateSettings({ customVocabulary: value })}
+        <VocabularyAliasesEditor
+          entries={settings.vocabularyEntries}
+          voiceCommands={settings.voiceCommands}
+          onChange={(vocabularyEntries) => onUpdateSettings({
+            vocabularyEntries,
+            customVocabulary: vocabularyPrompt(vocabularyEntries),
+          })}
         />
 
         {/* Code-Aware Vocabulary Toggle */}

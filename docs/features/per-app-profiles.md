@@ -55,6 +55,8 @@ This policy is separate from delivery. Murmur remains clipboard-first: the compl
 
 Writing styles also do not change the ASR model, language, vocabulary inputs, prompt, file-saving behavior, clipboard write, auto-paste timing, or destination. Style telemetry contains only the stable resolved enum plus the existing matched-profile boolean; bundle identifiers, labels, setting values, and transcript content are never logged.
 
+Vocabulary aliases use this same immutable context. Global aliases always apply. Typed app aliases require the matching snapshot bundle identifier; typed project aliases additionally require the matching profile's enabled local project context and configured root. Settings currently creates global aliases first. No alias path re-detects the frontmost app.
+
 ## Extension points
 
 Future app-specific model, language, vocabulary, command, formatting, or context-policy fields should be added to the profile schema and folded into `DictationContextSnapshot` by the single resolver. Pipeline stages should consume the snapshot rather than re-reading `DictationState` or detecting the frontmost app again.

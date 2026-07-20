@@ -60,9 +60,18 @@ struct Term {
     fuzzy_eligible: bool,
 }
 
+#[derive(Debug, Clone)]
+struct ExplicitAlias {
+    spoken: Vec<char>,
+    written: String,
+}
+
 /// A compiled, reusable correction matcher. Build once on settings-change, then
 /// call [`apply`](Self::apply) per transcription.
 pub struct CorrectionMatcher {
+    /// User-authored exact aliases. Kept separate from generic fuzzy terms so
+    /// an explicit alias never broadens correction beyond the entered phrase.
+    explicit_aliases: Vec<ExplicitAlias>,
     /// Tier-1 automaton over spoken phrases (case-insensitive, leftmost-longest).
     ac: Option<AhoCorasick>,
     /// Written replacement for each Tier-1 pattern, parallel to the automaton's
@@ -96,8 +105,7 @@ impl CorrectionMatcher {
         fuzzy: bool,
         include_builtins: bool,
     ) -> Self {
-        // spoken(lowercased) -> written. Later inserts win, so ordering is:
-        // builtin abbrevs < derived-from-terms < explicit pairs (most specific).
+        // spoken(lowercased) -> written for derived/built-in vocabulary.
         let mut map: HashMap<String, String> = HashMap::new();
 
         if include_builtins {
@@ -117,21 +125,43 @@ impl CorrectionMatcher {
                 map.entry(spoken).or_insert_with(|| written.to_string());
             }
         }
-        for (spoken, written) in pairs {
-            let spoken = spoken.trim().to_lowercase();
-            let written = written.trim();
-            if spoken.is_empty() || written.is_empty() {
-                continue;
-            }
-            map.insert(spoken, written.to_string());
-        }
+        let mut explicit_aliases = pairs
+            .iter()
+            .filter_map(|(spoken, written)| {
+                let spoken = normalize_alias(spoken);
+                let written = written.trim();
+                (!spoken.is_empty() && !written.is_empty()).then(|| ExplicitAlias {
+                    spoken: spoken.chars().collect(),
+                    written: written.to_string(),
+                })
+            })
+            .collect::<Vec<_>>();
+        explicit_aliases.sort_by(|left, right| {
+            right
+                .spoken
+                .len()
+                .cmp(&left.spoken.len())
+                .then_with(|| left.spoken.cmp(&right.spoken))
+                .then_with(|| left.written.cmp(&right.written))
+        });
+        explicit_aliases.dedup_by(|left, right| left.spoken == right.spoken);
 
         // Tier-1 automaton: patterns are spoken forms that actually rewrite to
         // something different. Identical spoken==written pairs are skipped here
         // (nothing to replace) but kept for Tier-2 below.
         let mut patterns: Vec<String> = Vec::new();
         let mut replacements: Vec<String> = Vec::new();
-        for (spoken, written) in &map {
+        let mut derived_patterns = map.iter().collect::<Vec<_>>();
+        derived_patterns.sort_by(
+            |(left_spoken, left_written), (right_spoken, right_written)| {
+                right_spoken
+                    .len()
+                    .cmp(&left_spoken.len())
+                    .then_with(|| left_spoken.cmp(right_spoken))
+                    .then_with(|| left_written.cmp(right_written))
+            },
+        );
+        for (spoken, written) in derived_patterns {
             if !spoken.eq_ignore_ascii_case(written) {
                 patterns.push(spoken.clone());
                 replacements.push(written.clone());
@@ -162,6 +192,7 @@ impl CorrectionMatcher {
         }
 
         CorrectionMatcher {
+            explicit_aliases,
             ac,
             replacements,
             fuzzy,
@@ -173,18 +204,56 @@ impl CorrectionMatcher {
     /// True when this matcher has no patterns and no fuzzy terms — the pipeline can
     /// skip the stage entirely.
     pub fn is_empty(&self) -> bool {
-        self.ac.is_none() && (!self.fuzzy || self.terms.is_empty())
+        self.explicit_aliases.is_empty()
+            && self.ac.is_none()
+            && (!self.fuzzy || self.terms.is_empty())
     }
 
     /// Apply Tier 1 then (if enabled) Tier 2 to `text`, returning the corrected
     /// string. Hot path: two linear scans over a short transcript.
     pub fn apply(&self, text: &str) -> String {
-        let t1 = self.apply_tier1(text);
+        let explicit = self.apply_explicit_aliases(text);
+        let t1 = self.apply_tier1(&explicit);
         if self.fuzzy {
             self.apply_tier2(&t1)
         } else {
             t1
         }
+    }
+
+    fn apply_explicit_aliases(&self, text: &str) -> String {
+        if self.explicit_aliases.is_empty() {
+            return text.to_string();
+        }
+        let chars = text.chars().collect::<Vec<_>>();
+        let lower = text.to_lowercase().chars().collect::<Vec<_>>();
+        // Some Unicode case folds expand to multiple scalar values. Fail closed
+        // for those unusual inputs rather than risk corrupting byte/char offsets.
+        if chars.len() != lower.len() {
+            return text.to_string();
+        }
+
+        let mut output = String::with_capacity(text.len());
+        let mut index = 0usize;
+        while index < chars.len() {
+            let matched = self.explicit_aliases.iter().find(|alias| {
+                let end = index + alias.spoken.len();
+                if end > lower.len() {
+                    return false;
+                }
+                let before_ok = index == 0 || !lower[index - 1].is_alphanumeric();
+                let after_ok = end == lower.len() || !lower[end].is_alphanumeric();
+                before_ok && after_ok && lower[index..end] == alias.spoken
+            });
+            if let Some(alias) = matched {
+                output.push_str(&alias.written);
+                index += alias.spoken.len();
+            } else {
+                output.push(chars[index]);
+                index += 1;
+            }
+        }
+        output
     }
 
     /// Tier 1: single Aho-Corasick pass, replacing only word-boundary matches.
@@ -316,6 +385,14 @@ fn phonetic_key_phrase(phrase: &str) -> String {
         .map(phonetic_key)
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+pub(crate) fn normalize_alias(value: &str) -> String {
+    value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
 /// Split a written identifier into its likely spoken form: lowercase words joined
@@ -640,6 +717,35 @@ mod tests {
         let pairs = vec![("the thing".to_string(), "TheThing".to_string())];
         let m = CorrectionMatcher::build(&[], &pairs, true, false);
         assert_eq!(m.apply("use the thing today"), "use TheThing today");
+    }
+
+    #[test]
+    fn explicit_aliases_cover_casing_punctuation_unicode_and_multiword() {
+        let pairs = vec![
+            ("Tori".to_string(), "Tauri".to_string()),
+            ("Tory command".to_string(), "Tauri CLI".to_string()),
+            ("munchen".to_string(), "München".to_string()),
+        ];
+        let m = CorrectionMatcher::build(&[], &pairs, true, false);
+        assert_eq!(m.apply("TORI, tori!"), "Tauri, Tauri!");
+        assert_eq!(m.apply("use tory command now"), "use Tauri CLI now");
+        assert_eq!(m.apply("visit MUNCHEN."), "visit München.");
+        assert_eq!(
+            m.apply("editorial and territory"),
+            "editorial and territory"
+        );
+        assert_eq!(m.apply("Tauri"), "Tauri");
+        assert_eq!(m.apply(&m.apply("Tori")), "Tauri");
+    }
+
+    #[test]
+    fn explicit_alias_longest_match_is_stable() {
+        let pairs = vec![
+            ("tory".to_string(), "Tauri".to_string()),
+            ("tory command".to_string(), "Tauri CLI".to_string()),
+        ];
+        let m = CorrectionMatcher::build(&[], &pairs, false, false);
+        assert_eq!(m.apply("tory command"), "Tauri CLI");
     }
 
     #[test]

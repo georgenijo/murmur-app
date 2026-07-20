@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { DEFAULT_SETTINGS, Settings, AppProfile, VoiceCommand } from './settings';
+import { DEFAULT_SETTINGS, Settings, AppProfile, VoiceCommand, VocabularyEntry } from './settings';
 
 export interface DictationResponse {
   type: string;
@@ -67,6 +67,7 @@ export interface ConfigureOptions {
   vadSensitivity?: number;
   idleTimeoutMinutes?: number;
   customVocabulary?: string;
+  vocabularyEntries?: VocabularyEntry[];
   smartPunctuation?: boolean;
   saveTranscript?: boolean;
   saveAudio?: boolean;
@@ -102,6 +103,7 @@ export function buildConfigureOptions(s: Settings): ConfigureOptions {
     vadSensitivity: s.vadSensitivity,
     idleTimeoutMinutes: s.idleTimeoutMinutes,
     customVocabulary: s.customVocabulary,
+    vocabularyEntries: s.vocabularyEntries,
     smartPunctuation: s.smartPunctuation,
     saveTranscript: s.saveTranscript,
     saveAudio: s.saveAudio,
@@ -122,6 +124,20 @@ export function buildConfigureOptions(s: Settings): ConfigureOptions {
 
 export async function countVocabTokens(text: string): Promise<number | null> {
   return await invoke('count_vocab_tokens', { text });
+}
+
+export async function previewVocabularyAliases(
+  entries: VocabularyEntry[],
+  voiceCommands: VoiceCommand[],
+  text: string,
+  cliFormatting: boolean,
+): Promise<string> {
+  return await invoke('preview_vocabulary_aliases', {
+    entries,
+    voiceCommands,
+    text,
+    cliFormatting,
+  });
 }
 
 /** Download a local transcription model by its catalog name. */

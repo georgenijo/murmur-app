@@ -24,6 +24,8 @@ raw transcript → cleanup → voice commands → Smart Correction → Smart For
 
 Running after Smart Correction lets vocabulary resolve technical names first. Smart Formatting bypasses utterances activated by the CLI grammar, including already-canonical commands, and the final CLI stage then owns separators, flags, paths, versions, and command-family casing. The pipeline keeps the original and final text together only in memory for reporting and tests; neither value is added to structured logs by this stage.
 
+Explicit spoken vocabulary aliases are part of Smart Correction, not the CLI grammar. They can recover a recognizer error such as `Tori` -> `Tauri`; this final stage can then apply command-family casing (`npm run tauri dev`).
+
 ## Grammar and lexicon
 
 The generic spoken-symbol grammar is separate from alias data. It recognizes bounded forms including:

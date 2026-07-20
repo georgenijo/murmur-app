@@ -1,0 +1,32 @@
+[
+  {
+    "name": "Tori npm command",
+    "input": "npm run Tori dev",
+    "output": "npm run tauri dev",
+    "cli": true
+  },
+  {
+    "name": "Tory npm command",
+    "input": "NPM run Tory dev",
+    "output": "npm run tauri dev",
+    "cli": true
+  },
+  {
+    "name": "punctuation and casing",
+    "input": "Try TORI, then Tori.",
+    "output": "Try Tauri, then Tauri.",
+    "cli": false
+  },
+  {
+    "name": "ordinary prose false positive",
+    "input": "The territorial story was editorial.",
+    "output": "The territorial story was editorial.",
+    "cli": false
+  },
+  {
+    "name": "canonical idempotence",
+    "input": "Tauri",
+    "output": "Tauri",
+    "cli": false
+  }
+]

@@ -57,6 +57,17 @@ longest technical fixture include `Tauri` to `Tori`, `Parakeet` to `Para Key`,
 and `sherpa-onnx` to `Sherpa Onx`; Murmur's post-model vocabulary correction may
 repair some domain terms in normal app use, but the benchmark does not apply it.
 
+## Vocabulary alias text evaluation
+
+`vocabulary-aliases.json` is a backend-neutral deterministic transform corpus. It exercises the production Smart Correction and CLI composition path without loading an audio model:
+
+```bash
+cd app/src-tauri
+cargo test transcript_transform::tests::vocabulary_alias_eval -- --exact
+```
+
+The corpus includes `Tori`/`Tory` -> `Tauri`, command casing, punctuation, ordinary-prose false positives, and idempotence. Backend independence is guaranteed by running after recognition; raw audio WER remains separately reported above.
+
 ## Full pipeline observation
 
 A separate native dev-app smoke recorded 4.47 seconds and pasted the exact

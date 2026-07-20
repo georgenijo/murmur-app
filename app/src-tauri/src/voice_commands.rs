@@ -5,6 +5,17 @@
 //! a pure string transform after transcription and is gated behind the
 //! `voiceCommandsEnabled` setting.
 
+pub(crate) const BUILTIN_COMMAND_PHRASES: &[&str] = &[
+    "new paragraph",
+    "new line",
+    "scratch that",
+    "open paren",
+    "close paren",
+    "question mark",
+    "period",
+    "comma",
+];
+
 /// Apply the default voice-command map to `text`.
 ///
 /// When `enabled` is false the text is returned unchanged. Matching is
