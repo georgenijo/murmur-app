@@ -23,6 +23,7 @@ import {
 } from '../../lib/modelDownload';
 import type { DictationStatus } from '../../lib/types';
 import type { UpdateStatus } from '../../lib/updater';
+import { useModelRuntimeCatalog } from '../../lib/modelRuntime';
 
 function PasteDelaySlider({ value, onCommit }: { value: number; onCommit: (v: number) => void }) {
   const [draft, setDraft] = useState(value);
@@ -618,6 +619,7 @@ const SETTINGS_CATEGORIES = [
 ] as const;
 
 export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, status, onResetStats, onViewLogs, onRerunSetup, accessibilityGranted, onCheckForUpdate, updateStatus, configureError }: SettingsPanelProps) {
+  const { models: runtimeModels, byName: runtimeByName } = useModelRuntimeCatalog(isOpen);
   const [confirmReset, setConfirmReset] = useState(false);
   const [activeCat, setActiveCat] = useState<string>('transcription');
   const [version, setVersion] = useState('');
@@ -696,7 +698,10 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
   const saveToFile = settings.saveTranscript || settings.saveAudio;
 
   // Model availability check and inline download
-  const [modelAvailable, setModelAvailable] = useState<boolean | null>(null);
+  const selectedRuntime = runtimeByName.get(settings.model);
+  const modelAvailable = selectedRuntime
+    ? selectedRuntime.installState === 'installed'
+    : null;
   const [modelDownload, setModelDownload] = useState<
     | { phase: 'idle' }
     | { phase: 'downloading'; progress: ModelDownloadProgress }
@@ -706,14 +711,8 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
   const downloadModelRef = useRef<string | null>(null);
 
   useEffect(() => {
-    let stale = false;
-    setModelAvailable(null);
     setModelDownload({ phase: 'idle' });
     downloadModelRef.current = null;
-    invoke<boolean>('check_specific_model_exists', { modelName: settings.model })
-      .then((v) => { if (!stale) setModelAvailable(v); })
-      .catch(() => { if (!stale) setModelAvailable(null); });
-    return () => { stale = true; };
   }, [settings.model]);
 
   useEffect(() => {
@@ -749,7 +748,6 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
       if (downloadModelRef.current === modelName) {
         downloadModelRef.current = null;
         setModelDownload({ phase: 'idle' });
-        setModelAvailable(true);
       }
     } catch (err) {
       unlisten?.();
@@ -785,10 +783,11 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
       : 'Hold to start recording, release to stop';
   const isRecording = status !== 'idle';
   const selectedModel = AVAILABLE_MODEL_OPTIONS.find(m => m.value === settings.model);
-  const supportsCoreMl = AVAILABLE_MODEL_OPTIONS.some(m => m.backend === 'coreml');
-  const useNeuralEngine = selectedModel?.backend === 'coreml';
-  // The sherpa Parakeet bundle is English-only; FluidAudio Parakeet v3 is multilingual.
-  const isEnglishOnlyModel = settings.model.endsWith('.en') || selectedModel?.backend === 'parakeet';
+  const supportsCoreMl = runtimeModels.some(model => model.backend === 'coreml' && model.supported);
+  const useNeuralEngine = selectedRuntime?.backend === 'coreml';
+  const isEnglishOnlyModel = selectedRuntime
+    ? !selectedRuntime.capabilities.multilingual
+    : true;
   const activeModelDownload = modelDownload.phase === 'downloading'
     ? modelDownload.progress
     : null;
@@ -889,6 +888,11 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
           <p className="mt-1 text-xs text-on-surface-variant">
             Larger models are more accurate but slower.
           </p>
+          {selectedRuntime && (
+            <p className="mt-1 text-xs text-on-surface-variant" data-testid="model-runtime-status">
+              {selectedRuntime.label}: {selectedRuntime.installState} · {selectedRuntime.lifecycleState}
+            </p>
+          )}
           {isRecording && (
             <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
               Stop recording before changing model
@@ -1636,7 +1640,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
         <div>
           <div className="text-sm text-on-surface-variant">
             <p><strong>Model:</strong> {selectedModel?.label}</p>
-            <p><strong>Backend:</strong> {selectedModel?.backend === 'coreml' ? 'FluidAudio (Apple Neural Engine)' : selectedModel?.backend === 'parakeet' ? 'sherpa-onnx (CPU)' : 'Whisper (Metal GPU)'}</p>
+            <p><strong>Backend:</strong> {selectedRuntime ? `${selectedRuntime.backend} (${selectedRuntime.accelerator})` : selectedModel?.backend}</p>
             <p><strong>Size:</strong> {selectedModel?.size}</p>
           </div>
         </div>

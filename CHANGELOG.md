@@ -7,6 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+
+- A single transcription model catalog and runtime manager now expose backend capabilities, platform/install state, serialized load/warm/readiness/unload lifecycle, and privacy-safe generation-ordered status events for all seven shipped models (#247).
 - **Persistent personal knowledge store** keeps replacement rules, vocabulary terms, and snippets in a versioned local SQLite database with deterministic migration/backup recovery. Settings provides bounded search, scoped inspection, create/edit/enable-disable/delete, atomic export/import, visible recovery state, and confirmed delete-all; transcription, Correct and Teach, and command execution remain separate future integrations (#246).
 - **Explicit spoken vocabulary aliases** let users map exact recognized variants such as `Tori` and `Tory` to a canonical written term such as `Tauri`. Structured entries migrate existing vocabulary, validate ambiguity/cycles/command conflicts, run locally across every backend before fuzzy and CLI formatting, and include an in-memory Settings preview (#268).
 - Opt-in per-app **Local IDE symbols and `@file` context** builds a bounded memory-only index from user-selected roots, corrects unique project symbols, and canonicalizes explicitly triggered file mentions to root-relative text. It never reads screen, selection, or clipboard context; ambiguous or stale references stay unchanged, and reviewed CLI formatting remains authoritative (#253).
@@ -15,6 +17,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - Optional **Smart Formatting** turns clear spoken enumerations into lists, applies explicitly cued email/URL/symbol/quote/paragraph grammar, and handles bounded same-utterance restatements locally. It is independently controllable per app, bypasses CLI/code/verbatim contexts, leaves imported-file transcription raw, and keeps delivery final-only (#252).
 
 ### Changed
+
+- Onboarding, Settings, recording preparation, model downloads, and Performance Lab now consume the shared catalog/runtime contract. Unknown model identifiers fail closed, and model failures never trigger automatic cross-model fallback (#247).
 - All supported backends now use one final-after-stop transcription path. The Whisper-only incremental worker, provisional overlay preview, preview setting, lifecycle events, reconciliation code, and incremental telemetry were removed; final clipboard, paste, file output, history, and stats delivery remains exactly once (#279).
 - Post-recognition cleanup, voice commands, and Smart Correction now run through one ordered, backend-neutral transformation pipeline with privacy-safe per-stage timing/change telemetry and explicit failure policy (#244).
 

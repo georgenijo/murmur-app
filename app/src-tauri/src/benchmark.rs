@@ -1,18 +1,12 @@
-use crate::commands::models::check_specific_model_exists;
+use crate::model_runtime;
 use crate::resource_monitor::get_process_rss_mb;
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-use crate::transcriber::CoreMlBackend;
-use crate::transcriber::{
-    ParakeetBackend, TranscriptionBackend, WhisperBackend, COREML_MODEL_NAME, WHISPER_SAMPLE_RATE,
-};
+use crate::transcriber::{TranscriptionBackend, WHISPER_SAMPLE_RATE};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 use tauri::Emitter;
-
-const PARAKEET_CPU_MODEL: &str = "parakeet-tdt-0.6b-v2-fp16";
 
 struct Fixture {
     id: &'static str,
@@ -249,105 +243,25 @@ impl Default for BenchmarkCoordinator {
 }
 
 pub fn benchmark_models() -> Vec<BenchmarkModel> {
-    let coreml_supported = cfg!(all(target_os = "macos", target_arch = "aarch64"));
-    let whisper_accelerator = if cfg!(target_os = "macos") {
-        "Metal GPU"
-    } else {
-        "GPU / CPU"
-    };
-    let definitions = [
-        (
-            COREML_MODEL_NAME,
-            "Parakeet v3",
-            "Core ML",
-            "Apple Neural Engine",
-            "~470 MB",
-            coreml_supported,
-        ),
-        (
-            PARAKEET_CPU_MODEL,
-            "Parakeet v2",
-            "sherpa-onnx",
-            "CPU",
-            "~1.2 GB",
-            true,
-        ),
-        (
-            "tiny.en",
-            "Whisper Tiny",
-            "whisper.cpp",
-            whisper_accelerator,
-            "~75 MB",
-            true,
-        ),
-        (
-            "base.en",
-            "Whisper Base",
-            "whisper.cpp",
-            whisper_accelerator,
-            "~150 MB",
-            true,
-        ),
-        (
-            "small.en",
-            "Whisper Small",
-            "whisper.cpp",
-            whisper_accelerator,
-            "~500 MB",
-            true,
-        ),
-        (
-            "medium.en",
-            "Whisper Medium",
-            "whisper.cpp",
-            whisper_accelerator,
-            "~1.5 GB",
-            true,
-        ),
-        (
-            "large-v3-turbo",
-            "Whisper Large Turbo",
-            "whisper.cpp",
-            whisper_accelerator,
-            "~3 GB",
-            true,
-        ),
-    ];
-
-    definitions
-        .into_iter()
-        .map(
-            |(model_name, label, backend, accelerator, size, supported)| BenchmarkModel {
-                model_name: model_name.to_string(),
-                label: label.to_string(),
-                backend: backend.to_string(),
-                accelerator: accelerator.to_string(),
-                size: size.to_string(),
+    model_runtime::MODEL_DEFINITIONS
+        .iter()
+        .map(|definition| {
+            let supported = model_runtime::model_supported(definition);
+            BenchmarkModel {
+                model_name: definition.model_name.to_string(),
+                label: definition.label.to_string(),
+                backend: definition.backend.as_str().to_string(),
+                accelerator: model_runtime::model_accelerator(definition).to_string(),
+                size: definition.size.to_string(),
                 supported,
-                installed: supported && check_specific_model_exists(model_name.to_string()),
-            },
-        )
+                installed: supported && model_runtime::model_installed(definition.model_name),
+            }
+        })
         .collect()
 }
 
 fn backend_for(model_name: &str) -> Result<Box<dyn TranscriptionBackend>, String> {
-    match model_name {
-        COREML_MODEL_NAME => {
-            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-            {
-                Ok(Box::new(CoreMlBackend::new()))
-            }
-            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-            {
-                Err("Core ML requires an Apple Silicon Mac".to_string())
-            }
-        }
-        PARAKEET_CPU_MODEL => Ok(Box::new(ParakeetBackend::new())),
-        "tiny.en" | "base.en" | "small.en" | "medium.en" | "large-v3-turbo" => {
-            Ok(Box::new(WhisperBackend::new()))
-        }
-        _ => Err(format!("Unknown benchmark model '{model_name}'")),
-    }
+    model_runtime::create_backend(model_name)
 }
 
 fn words(text: &str) -> Vec<String> {

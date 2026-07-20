@@ -18,7 +18,8 @@ partially function without the grant:
    triggers `request_accessibility_permission` (system dialog + opens the pane).
    Skippable.
 4. **Model** — embeds `ModelDownloadPanel` (shared with the standalone
-   `ModelDownloader` gate); shows "already installed" on re-runs.
+   `ModelDownloader` gate); reads every offered model's install state from the
+   shared runtime catalog and shows "already installed" on re-runs.
 5. **Done** — live summary of the three checks plus a "hold Left Shift and
    speak" quick-start card.
 
@@ -42,7 +43,7 @@ step live. The wishy-washy TCC states are handled explicitly:
 - Flag present → straight to the main UI (the existing `PermissionsBanner`
   still catches later permission drift, and the standalone `ModelDownloader`
   gate still catches a deleted model file).
-- Flag absent → probe mic + accessibility + model. **All three already in
+- Flag absent → probe mic + accessibility + the runtime model catalog. **All three already in
   place → set the flag silently** so existing installs never see the wizard on
   upgrade. Anything missing → show `OnboardingFlow`.
 

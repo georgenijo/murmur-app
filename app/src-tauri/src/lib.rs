@@ -14,6 +14,7 @@ mod ide_context;
 mod injector;
 mod keyboard;
 mod knowledge_store;
+mod model_runtime;
 mod platform;
 mod resource_monitor;
 mod smart_formatting;
@@ -182,6 +183,8 @@ pub fn run() {
             commands::logging::open_log_viewer,
             commands::models::check_model_exists,
             commands::models::check_specific_model_exists,
+            commands::models::get_model_runtime_catalog,
+            commands::models::get_model_runtime_status,
             commands::models::download_model,
             commands::benchmark::get_benchmark_models,
             commands::benchmark::get_benchmark_activity,

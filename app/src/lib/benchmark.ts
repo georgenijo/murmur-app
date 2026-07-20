@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { getModelRuntimeCatalog } from './modelRuntime';
 
 export type BenchmarkPreset = 'quick' | 'standard' | 'thorough';
 
@@ -182,8 +183,17 @@ export function clearBenchmarkReports(): void {
   localStorage.removeItem(REPORT_KEY);
 }
 
-export function getBenchmarkModels(): Promise<BenchmarkModel[]> {
-  return invoke('get_benchmark_models');
+export async function getBenchmarkModels(): Promise<BenchmarkModel[]> {
+  const catalog = await getModelRuntimeCatalog();
+  return catalog.map((model) => ({
+    modelName: model.modelName,
+    label: model.label,
+    backend: model.backend,
+    accelerator: model.accelerator,
+    size: model.size,
+    supported: model.supported,
+    installed: model.installState === 'installed',
+  }));
 }
 
 export function getBenchmarkActivity(): Promise<BenchmarkActivity> {

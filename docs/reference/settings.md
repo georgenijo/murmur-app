@@ -35,20 +35,25 @@ interface Settings {
 
 | Setting | Type | Default | Valid Options/Range | Description |
 |---------|------|---------|-------------------|-------------|
-| `model` | `ModelOption` | `'base.en'` | `'tiny.en'`, `'base.en'`, `'small.en'`, `'medium.en'`, `'large-v3-turbo'` | The transcription model to use. All models use the Whisper backend with Metal GPU acceleration. See the model options table below. |
-| `language` | `string` | `'en'` | Any language code string | Transcription language. Passed to the Whisper backend. No validation on the frontend. |
+| `model` | `ModelOption` | Platform default | Seven catalog identifiers listed below | The exact transcription model to use. Unknown identifiers fail closed; Murmur does not automatically choose another model. |
+| `language` | `string` | `'en'` | Any language code string | Transcription language. The runtime capability catalog disables language selection for English-only models. |
 
 ### Model Options
 
 | Value | Label | Size | Backend |
 |-------|-------|------|---------|
+| `parakeet-tdt-0.6b-v3-coreml` | Parakeet Core ML | ~470 MB | FluidAudio (Apple Neural Engine) |
+| `parakeet-tdt-0.6b-v2-fp16` | Parakeet TDT 0.6B (English, fast) | ~1.2 GB | sherpa-onnx (CPU) |
 | `tiny.en` | Whisper Tiny (English) | ~75 MB | Whisper (Metal GPU) |
 | `base.en` | Whisper Base (English) | ~150 MB | Whisper (Metal GPU) |
 | `small.en` | Whisper Small (English) | ~500 MB | Whisper (Metal GPU) |
 | `medium.en` | Whisper Medium (English) | ~1.5 GB | Whisper (Metal GPU) |
 | `large-v3-turbo` | Whisper Large Turbo | ~3 GB | Whisper (Metal GPU) |
 
-Both the Rust-side `DictationState::default()` and the frontend default use `base.en`.
+New Apple Silicon macOS installs default to Core ML; other frontend builds
+default to CPU Parakeet. Rust initializes `base.en` until the frontend applies
+the persisted/platform default. Runtime capabilities, install state, and
+lifecycle state are not settings and are never persisted to localStorage.
 
 ---
 
