@@ -3,7 +3,6 @@ import type { OverlayGeometry } from '../../lib/overlayGeometry';
 import type { DictationStatus } from '../../lib/types';
 import { BAR_COUNT } from '../../lib/hooks/useWaveform';
 import type { OverlayVisual } from './deriveVisual';
-import type { OverlayPreviewPresentation } from './previewPresentation';
 
 function formatElapsed(seconds: number): string {
   const m = Math.floor(seconds / 60);
@@ -15,15 +14,12 @@ interface OverlayPillProps {
   geometry: OverlayGeometry;
   visual: OverlayVisual;
   status: DictationStatus;
-  previewPresentation: OverlayPreviewPresentation;
-  previewRowVisible: boolean;
   barRefs: React.MutableRefObject<(HTMLDivElement | null)[]>;
 }
 
 /**
- * Top-bar content (status indicator + inline timer + waveform) plus the
- * below-notch preview row. Purely presentational — driven by the `visual`
- * descriptor from `deriveVisual` and the pre-computed preview presentation.
+ * Top-bar content: status indicator + inline timer + waveform. Purely
+ * presentational — driven by the `visual` descriptor from `deriveVisual`.
  * Does not own the island container (sizing/hover/islandRef stay in
  * OverlayWidget.tsx, since they also govern the sibling dropdown).
  */
@@ -31,8 +27,6 @@ export function OverlayPill({
   geometry,
   visual,
   status,
-  previewPresentation,
-  previewRowVisible,
   barRefs,
 }: OverlayPillProps) {
   const [elapsed, setElapsed] = useState(0);
@@ -111,37 +105,6 @@ export function OverlayPill({
           </div>
         )}
       </div>
-
-      {/* The physical notch hides the top-bar center. Put preview/status below it. */}
-      {previewRowVisible && (
-        <div
-          aria-label={previewPresentation.unavailable
-            ? 'Live transcript preview unavailable'
-            : 'Provisional transcript preview'}
-          className="flex items-center gap-2 px-3 pointer-events-none"
-          style={{ height: geometry.previewRowH }}
-        >
-          {previewPresentation.unavailable ? (
-            <>
-              <span className="shrink-0 text-[8px] uppercase tracking-[0.12em] text-white/45">
-                Final only
-              </span>
-              <span className="min-w-0 truncate text-[10px] text-white/65">
-                Live preview unavailable for Parakeet
-              </span>
-            </>
-          ) : (
-            <>
-              <span className="shrink-0 text-[8px] uppercase tracking-[0.12em] text-amber-300/85">
-                Provisional
-              </span>
-              <span className="min-w-0 truncate text-[10px] text-white/80">
-                {previewPresentation.previewText}
-              </span>
-            </>
-          )}
-        </div>
-      )}
     </>
   );
 }

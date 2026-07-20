@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
+import { listen } from '@tauri-apps/api/event';
 import { flog } from '../lib/log';
+import { isDictationStatus } from '../lib/types';
 import type { DictationStatus } from '../lib/types';
-import { usePartialTranscript } from '../lib/hooks/usePartialTranscript';
 import { useOverlayGeometry } from '../lib/hooks/useOverlayGeometry';
 import { useOverlayExpansion } from '../lib/hooks/useOverlayExpansion';
 import { useOverlayRuntime } from '../lib/hooks/useOverlayRuntime';
@@ -10,7 +11,6 @@ import { useRecordingControls } from '../lib/hooks/useRecordingControls';
 import { useWaveform } from '../lib/hooks/useWaveform';
 import { OVERLAY_ISLAND_TRANSITION } from '../lib/overlayMotion';
 import { deriveVisual } from './overlay/deriveVisual';
-import { getOverlayPreviewPresentation, supportsLiveTranscriptPreview } from './overlay/previewPresentation';
 import { OverlayPill } from './overlay/OverlayPill';
 import { OverlayDropdown } from './overlay/OverlayDropdown';
 
@@ -25,35 +25,21 @@ export function OverlayWidget() {
   // on useOverlayRuntime / useOverlaySettingsMirror.
   const [disabled, setDisabled] = useState(false);
   const [showHotkeyMiss, setShowHotkeyMiss] = useState(false);
+  const [status, setStatus] = useState<DictationStatus>('idle');
   const hotkeyMissFeedbackRef = useRef(false);
   const statusRef = useRef<DictationStatus>('idle');
 
   const settingsMirror = useOverlaySettingsMirror({ setDisabled, setShowHotkeyMiss, hotkeyMissFeedbackRef });
-
-  const previewSupported = supportsLiveTranscriptPreview(settingsMirror.previewModel);
-  const partialTranscript = usePartialTranscript(
-    settingsMirror.liveTranscriptPreview && previewSupported,
-    settingsMirror.previewModel,
-  );
-  const status = partialTranscript.status;
-
-  const previewPresentation = getOverlayPreviewPresentation(
-    status,
-    settingsMirror.liveTranscriptPreview,
-    settingsMirror.previewModel,
-    partialTranscript.text,
-  );
-  const previewRowVisible = previewPresentation.visible;
 
   const runtime = useOverlayRuntime({
     status, statusRef, disabled, setDisabled, showHotkeyMiss, setShowHotkeyMiss, hotkeyMissFeedbackRef,
   });
 
   // The expansion controller owns the entire expand/collapse + surface lifecycle:
-  // dwell/collapse/shrink timers, the serialized set_overlay_surface writer, and
+  // dwell/collapse/shrink timers, the serialized set_overlay_expanded writer, and
   // the single cursor poller. It is the only writer to the native resize path.
   const { phase, expanded, expandedRef, islandRef, onHoverStart, onHoverEnd } =
-    useOverlayExpansion({ previewRowVisible, disabled: runtime.disabled });
+    useOverlayExpansion({ disabled: runtime.disabled });
 
   const waveform = useWaveform(status);
 
@@ -67,6 +53,21 @@ export function OverlayWidget() {
   useEffect(() => {
     flog.info('overlay', 'mounted');
     return () => { flog.info('overlay', 'unmounted'); };
+  }, []);
+
+  // Subscribe to recording status events from Rust. This is the overlay's only
+  // status source now that the live-preview hook (which used to carry it) is gone.
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    listen<unknown>('recording-status-changed', (event) => {
+      if (isDictationStatus(event.payload)) {
+        setStatus(event.payload);
+      }
+    }).then((fn) => {
+      if (cancelled) { fn(); } else { unlisten = fn; }
+    });
+    return () => { cancelled = true; unlisten?.(); };
   }, []);
 
   // Keep statusRef in sync for the hooks that need synchronous reads (click
@@ -119,9 +120,7 @@ export function OverlayWidget() {
           width: (expanded || visual.isActive)
             ? geometry.pillActiveW
             : geometry.pillIdleW,
-          height: topH
-            + (previewRowVisible ? geometry.previewRowH : 0)
-            + (expanded ? geometry.dropdownH : 0),
+          height: topH + (expanded ? geometry.dropdownH : 0),
           marginLeft: (expanded || visual.isActive)
             ? geometry.pillMarginActive
             : geometry.pillMarginIdle,
@@ -136,8 +135,6 @@ export function OverlayWidget() {
           geometry={geometry}
           visual={visual}
           status={status}
-          previewPresentation={previewPresentation}
-          previewRowVisible={previewRowVisible}
           barRefs={waveform.barRefs}
         />
         <OverlayDropdown

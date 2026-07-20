@@ -47,18 +47,18 @@ Tauri's `focusable: false` configuration disables mouse events on macOS. The `sh
 
 ## Geometry Contract
 
-Every overlay dimension comes from one source: `geometry_for(notch)` in `commands/overlay.rs`, which returns an `OverlayGeometry` (`windowW`, `collapsedH`, `expandedH`, `pillIdleW`, `pillActiveW`, `pillMarginIdle`, `pillMarginActive`, `dropdownH`, `previewRowH`). Rust owns every geometry number; the frontend only reads the struct — via `get_overlay_geometry` (`useOverlayGeometry`, with retry-with-backoff on the initial fetch) and the `overlay-geometry-changed` event — and never hardcodes pixels. No overlay component holds a geometry literal.
+Every overlay dimension comes from one source: `geometry_for(notch)` in `commands/overlay.rs`, which returns an `OverlayGeometry` (`windowW`, `collapsedH`, `expandedH`, `pillIdleW`, `pillActiveW`, `pillMarginIdle`, `pillMarginActive`, `dropdownH`). Rust owns every geometry number; the frontend only reads the struct — via `get_overlay_geometry` (`useOverlayGeometry`, with retry-with-backoff on the initial fetch) and the `overlay-geometry-changed` event — and never hardcodes pixels. No overlay component holds a geometry literal.
 
 - **Pill width** adjusts based on recording state and hover: `pillIdleW` (centered by a `pillMarginIdle` left margin) when idle-and-collapsed, or `pillActiveW` (fills the window, `pillMarginActive = 0`) when recording, processing, cancelled-flash, hotkey-miss-flash, or hover-expanded.
 - **Window width** (`windowW`) is fixed and horizontally centers the overlay at the top of the screen (y=0).
-- **Height** composes as `collapsedH + preview + expanded`: the below-notch preview row (`previewRowH`) and the hover dropdown (`dropdownH`) add independently, so neither clips the other.
+- **Height** is `collapsedH` at rest and grows to `expandedH` (`= collapsedH + dropdownH`) while the hover dropdown is open; the window stays top-anchored so the extra height grows downward.
 - **Motion tokens** — durations and easing for the width/height transition — live in `app/src/lib/overlayMotion.ts` as the single source; see [Motion tokens](#motion-tokens) below rather than restating numbers here.
 
 ## Expansion Controller
 
 Hovering the pill expands it downward into a quick-settings dropdown. The dropdown is identical regardless of state — only the top bar differs.
 
-The entire expand/collapse and native-resize lifecycle is owned by one controller hook, `useOverlayExpansion` (`app/src/lib/hooks/useOverlayExpansion.ts`). Nothing else in the overlay calls `set_overlay_surface` or owns the dwell/collapse/shrink timers — the controller is the single writer to the native resize path. It exposes `{ phase, expanded, expandedRef, islandRef, onHoverStart, onHoverEnd }`; the composition shell attaches `islandRef` to the outer island `<div>` (the poller measures its bounds) and reads `expandedRef` wherever a synchronous "is the card up" check is needed (e.g. the double-click guard in `useRecordingControls`).
+The entire expand/collapse and native-resize lifecycle is owned by one controller hook, `useOverlayExpansion` (`app/src/lib/hooks/useOverlayExpansion.ts`). Nothing else in the overlay calls `set_overlay_expanded` or owns the dwell/collapse/shrink timers — the controller is the single writer to the native resize path. It exposes `{ phase, expanded, expandedRef, islandRef, onHoverStart, onHoverEnd }`; the composition shell attaches `islandRef` to the outer island `<div>` (the poller measures its bounds) and reads `expandedRef` wherever a synchronous "is the card up" check is needed (e.g. the double-click guard in `useRecordingControls`).
 
 ### Phase model
 
@@ -72,12 +72,12 @@ The controller runs a four-phase state machine:
 | `closing` | Dropdown hidden immediately; the window stays tall until the close animation finishes, then shrinks. |
 
 - **Expand** requires hover intent: the cursor must dwell on the island before opening — grazing the notch does nothing. **Collapse** begins some time after the cursor leaves.
-- **Acknowledged ordering:** because a transparent overlay with cursor events enabled captures the mouse across its whole frame, the window is **dynamically resized** rather than pre-allocated tall — otherwise the idle overlay would create a click dead-zone below the notch. Expand enqueues the grow, **awaits the ack from `set_overlay_surface`** (which returns the applied frame), and only then reveals the card, so CSS can never animate the dropdown into a window that has not yet grown. If the resize is rejected, the controller reverts to `collapsed` without revealing. Collapse hides the card immediately, then shrinks the window one guarded interval later so the dropdown is never clipped mid-transition.
-- **Serialized surface writer:** all `set_overlay_surface` calls — hover grow/shrink *and* the below-notch preview-row sync — flow through one async queue with a generation counter. A newer request supersedes any queued or in-flight older one, and stale acks are dropped, so rapid enter/leave/enter can never apply an out-of-date resize. Re-entry while `closing` cancels the pending shrink and reopens cleanly.
+- **Acknowledged ordering:** because a transparent overlay with cursor events enabled captures the mouse across its whole frame, the window is **dynamically resized** rather than pre-allocated tall — otherwise the idle overlay would create a click dead-zone below the notch. Expand enqueues the grow, **awaits the ack from `set_overlay_expanded`** (which returns the applied frame), and only then reveals the card, so CSS can never animate the dropdown into a window that has not yet grown. If the resize is rejected, the controller reverts to `collapsed` without revealing. Collapse hides the card immediately, then shrinks the window one guarded interval later so the dropdown is never clipped mid-transition.
+- **Serialized surface writer:** all `set_overlay_expanded` calls flow through one async queue with a generation counter. A newer request supersedes any queued or in-flight older one, and stale acks are dropped, so rapid enter/leave/enter can never apply an out-of-date resize. Re-entry while `closing` cancels the pending shrink and reopens cleanly.
 - **Motion tokens** — see [Motion tokens](#motion-tokens).
 - **Single gated poller:** the overlay is non-activating and sits above the menu bar, so macOS can miss DOM hover events. One interval branches on phase — strict entry bounds arm the dwell while `collapsed`/`closing`; padded exit bounds collapse the card while `open`. Gating: ticks do **no IPC** (no `outerPosition`/`cursorPosition`) while the overlay is **hidden**; while **disabled**, only the `collapsed` entry detector is skipped (battery) — the exit watchdog stays alive for `open`/`closing`, so clicking the dropdown's own Disable control can never strand the card open on a missed mouseleave. Visibility is tracked via `overlay-visible-changed`, defaulting to visible on mount. A display change (`overlay-geometry-changed`) is authoritative: it cancels timers, forces `collapsed`, and enqueues one corrective collapse resize through the writer (which supersedes any straggler grow and repairs the window).
   - **Note:** `overlay-visible-changed` is emitted by the `show_overlay`/`hide_overlay` commands, which are **not currently invoked in production** — the overlay is shown once at setup (`overlay_win.show()` in `lib.rs`) and stays visible. The visibility ref therefore defaults to `true` so first-hover works from mount, and the `disabled`-phase gate is the active battery saver today; the visibility gate is plumbing that activates if/when show/hide get wired to dynamic callers.
-- Only the **top bar** is a drag region (`data-tauri-drag-region`, set in `OverlayPill.tsx`); the dropdown buttons and the preview row are not, so they stay clickable/inert as appropriate. (Overlay position save/restore itself is currently disabled — TODO: re-enable after notch positioning is stable.)
+- Only the **top bar** is a drag region (`data-tauri-drag-region`, set in `OverlayPill.tsx`); the dropdown buttons are not, so they stay clickable. (Overlay position save/restore itself is currently disabled — TODO: re-enable after notch positioning is stable.)
 
 ### Motion tokens
 
@@ -85,13 +85,12 @@ The transition durations/easings live in `app/src/lib/overlayMotion.ts` as the s
 
 ## Frontend Hooks
 
-`OverlayWidget.tsx` composes the following, in roughly this order (later hooks depend on earlier ones' output):
+`OverlayWidget.tsx` owns the shared `status` state (subscribing to `recording-status-changed` directly) plus `disabled`/`showHotkeyMiss`, and composes the following, in roughly this order (later hooks depend on earlier ones' output):
 
 | Hook | Owns |
 |------|------|
 | `useOverlayGeometry` | Fetches/subscribes to `OverlayGeometry` (see [Geometry Contract](#geometry-contract)). |
-| `useOverlaySettingsMirror` | The localStorage settings snapshot the overlay needs (`autoPaste`, `fileOutputEnabled`, `liveTranscriptPreview`, `previewModel`), `applySettingsSnapshot`/`refresh`, the `settings-changed` listener, and the three quick-control actions (toggle auto-paste with rollback-on-failure, toggle global disable, open Settings). |
-| `usePartialTranscript` (pre-existing) | The live-transcript session state machine (`recording-status-changed` among other events); the shell derives `status` from it. |
+| `useOverlaySettingsMirror` | The localStorage settings snapshot the overlay needs (`autoPaste`, `fileOutputEnabled`), `applySettingsSnapshot`/`refresh`, the `settings-changed` listener, and the three quick-control actions (toggle auto-paste with rollback-on-failure, toggle global disable, open Settings). |
 | `useOverlayRuntime` | The `recording-cancelled` (red-X flash), `hotkey-tap-rejected` (amber flash), and `app-disabled-changed` listeners, plus the transient flash timers. `disabled`/`showHotkeyMiss`/`hotkeyMissFeedbackRef` are created in the composition shell (not inside this hook or the settings mirror) because both hooks write into them synchronously and neither can be constructed from the other's return value without an artificial call-order dependency; this hook attaches behavior and re-exposes them. |
 | `useOverlayExpansion` (pre-existing, see [Expansion Controller](#expansion-controller)) | The hover-expand lifecycle. |
 | `useWaveform` | The `audio-level` listener and the rAF bar-height animation (see [Waveform Animation](#waveform-animation)). |
@@ -100,11 +99,10 @@ The transition durations/easings live in `app/src/lib/overlayMotion.ts` as the s
 Pure, React-free logic lives alongside the presentational components in `app/src/components/overlay/`:
 
 - **`deriveVisual.ts`** — `(status, showCancelled, showHotkeyMiss, disabled) → OverlayVisual`. Encodes the top-bar indicator priority (cancelled > hotkey-miss > recording > processing > idle-with-disabled-dimming) exactly once; locked by an exhaustive matrix test (`deriveVisual.test.ts`) over every status × flag combination.
-- **`previewPresentation.ts`** — `latestPreviewText`, `supportsLiveTranscriptPreview`, `getOverlayPreviewPresentation`: the below-notch provisional-preview row's content, independent of the top-bar indicator.
 
 Presentational components, both driven entirely by props (no hooks beyond `OverlayPill`'s own local elapsed-timer state):
 
-- **`OverlayPill.tsx`** — the top bar (status indicator slot, inline `m:ss` timer, waveform bars) and the preview row. Owns the elapsed-timer effect (keyed on the `status` prop it already needs for rendering — the smallest-plumbing home for it).
+- **`OverlayPill.tsx`** — the top bar (status indicator slot, inline `m:ss` timer, waveform bars). Owns the elapsed-timer effect (keyed on the `status` prop it already needs for rendering — the smallest-plumbing home for it).
 - **`OverlayDropdown.tsx`** — the three quick-settings buttons (Power, auto-paste toggle, gear). Icons (`PowerIcon`, `ClipboardPasteIcon`, `SlidersIcon`) are colocated in this file rather than split one-per-file.
 
 The island **container** (sizing, hover handlers, `islandRef`) stays in `OverlayWidget.tsx` itself, since it wraps both `OverlayPill` and `OverlayDropdown` as siblings.
@@ -125,16 +123,16 @@ The overlay runs in a separate window with no shared React context. Writes go th
 
 ## Visual States
 
-The overlay's top-bar indicator is a pure function of status + two transient flags + global-disable (`deriveVisual()`); `status` itself is driven by `recording-status-changed` (via `usePartialTranscript`).
+The overlay's top-bar indicator is a pure function of status + two transient flags + global-disable (`deriveVisual()`); `status` itself is driven by the `recording-status-changed` event.
 
 ### Idle
 Small mic SVG icon at 40% white opacity (dimmed further to 15% when globally disabled). Compact width.
 
 ### Recording
-Expanded width. The red pulsing dot and elapsed timer occupy the visible left wing, while the animated 7-bar waveform occupies the right. The physical notch obscures the center of the top bar, so long Whisper recordings render the latest suffix of cumulative incremental text in a clearly labeled `Provisional` row immediately below it. The preview is one line and has pointer events disabled.
+Expanded width. The red pulsing dot and elapsed timer occupy the visible left wing, while the animated 7-bar waveform occupies the right. No transcript text is displayed while recording.
 
 ### Processing
-Same expanded width. Spinning circle on the left; the waveform is hidden (visible only while recording). A provisional preview may remain visible until the authoritative final result completes, then clears.
+Same expanded width. Spinning circle on the left; the waveform is hidden (visible only while recording). No transcript text is displayed while processing.
 
 ### Cancelled (transient)
 An 800ms red-X flash, triggered by `recording-cancelled`. Takes priority over every other indicator.
@@ -195,14 +193,10 @@ The observer is intentionally leaked (`std::mem::forget`) for app-lifetime obser
 
 See [docs/reference/commands.md](../reference/commands.md) (Overlay section) and [docs/reference/events.md](../reference/events.md) (Overlay Events section) for the authoritative, up-to-date list. Summary of what the overlay itself calls/listens to:
 
-- Calls: `get_overlay_geometry`, `set_overlay_surface`, `show_main_window`, `start_native_recording`, `stop_native_recording`, `set_app_disabled`, `configure_dictation`.
-- Listens: `overlay-geometry-changed`, `overlay-visible-changed`, `recording-status-changed` (via `usePartialTranscript`), `recording-session-started`, `partial-transcript`, `partial-transcript-cleared`, `recording-cancelled`, `hotkey-tap-rejected`, `app-disabled-changed`, `audio-level`, `settings-changed`.
+- Calls: `get_overlay_geometry`, `set_overlay_expanded`, `show_main_window`, `start_native_recording`, `stop_native_recording`, `set_app_disabled`, `configure_dictation`.
+- Listens: `overlay-geometry-changed`, `overlay-visible-changed`, `recording-status-changed`, `recording-cancelled`, `hotkey-tap-rejected`, `app-disabled-changed`, `audio-level`, `settings-changed`.
 
-## Live transcript preview
-
-`liveTranscriptPreview` is a local Settings boolean and defaults to enabled. Turning it off clears visible provisional text immediately and ignores further partial updates while disabled. The overlay tracks the active `recordingId`, rejects stale or out-of-order chunks, and clears on cancellation, incremental fallback, final completion, model change, error, or a newer recording. Status and transcript listeners register together before a privacy-safe active-session snapshot reconciles both the session ID and active status, so a WebView mounting during recording cannot remain visually idle after missing startup events. A monotonic lifecycle generation discards the snapshot if a status, session, clear/cancel, completion, or settings event arrives while the command is in flight, preventing stale recovery from reactivating a finished session. Diagnostics contain only listener readiness, event counts, IDs, match decisions, chunk indexes, and clear reasons—never provisional text.
-
-Live preview is available only for Whisper models. When Parakeet or Core ML is selected, Settings disables the preview control with an unavailable explanation, and an active recording shows a `Final only` status instead of silently waiting for updates that backend cannot produce.
+`set_overlay_expanded` **returns the applied frame** as `AppliedSurface { windowW, windowH }`; the expansion controller awaits this value as the resize ack before revealing the dropdown. `show_overlay`/`hide_overlay` emit `overlay-visible-changed(true|false)`, which gates the controller's cursor poller so it does no IPC while the overlay is hidden.
 
 ## Transparent window caveat
 

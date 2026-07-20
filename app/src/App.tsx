@@ -30,7 +30,7 @@ import { ModelDownloader } from './components/ModelDownloader';
 import { OnboardingFlow } from './components/onboarding/OnboardingFlow';
 import { isOnboardingComplete, markOnboardingComplete, resetOnboarding } from './lib/onboarding';
 import { checkAccessibilityPermission, checkMicrophonePermissionStatus, checkModelExists } from './lib/dictation';
-import { AVAILABLE_MODEL_OPTIONS } from './lib/settings';
+import { getModelRuntimeCatalog } from './lib/modelRuntime';
 
 function App() {
   // --- Diagnostic: track when main window becomes visible/focused ---
@@ -83,14 +83,12 @@ function App() {
       return;
     }
     (async () => {
-      const [micStatus, axGranted, modelsOnDisk] = await Promise.all([
+      const [micStatus, axGranted, modelCatalog] = await Promise.all([
         checkMicrophonePermissionStatus().catch(() => 'unknown' as const),
         checkAccessibilityPermission().catch(() => false),
-        Promise.all(
-          AVAILABLE_MODEL_OPTIONS.map((option) => checkModelExists(option.value).catch(() => false)),
-        ),
+        getModelRuntimeCatalog().catch(() => []),
       ]);
-      const anyModelExists = modelsOnDisk.some(Boolean);
+      const anyModelExists = modelCatalog.some((model) => model.installState === 'installed');
       if (micStatus === 'granted' && axGranted && anyModelExists) {
         flog.info('main', 'Onboarding grandfathered: permissions and a model already present');
         markOnboardingComplete();
@@ -126,7 +124,7 @@ function App() {
     window.addEventListener('focus', check);
     return () => window.removeEventListener('focus', check);
   }, []);
-  const { historyEntries, addEntry, clearHistory } = useHistoryManagement();
+  const { historyEntries, addEntry, updateEntry, clearHistory } = useHistoryManagement();
   const {
     status, recordingDuration, error: recordingError,
     handleStart, handleStop, toggleRecording, statsVersion,
@@ -248,6 +246,7 @@ function App() {
               <TranscriptionView
                 historyEntries={historyEntries}
                 onClearHistory={clearHistory}
+                onUpdateHistoryEntry={updateEntry}
               />
 
               {error && (

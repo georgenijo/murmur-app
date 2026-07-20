@@ -3,7 +3,7 @@
 ## Overview
 
 ```
-cpal audio capture → f32 samples in memory → 16kHz windows/full buffer → backend inference → ordered text transformations → delivery
+cpal audio capture → f32 samples in memory → 16kHz full buffer → backend inference → ordered text transformations → delivery
 ```
 
 Transcription processing is local. Network access occurs for model setup and may also be used to fetch a missing VAD asset in the background. New installs default to FluidAudio Core ML on the Apple Neural Engine, while Whisper/Metal and sherpa-onnx/CPU remain selectable.
@@ -31,7 +31,12 @@ pub trait TranscriptionBackend: Send + Sync {
 }
 ```
 
-The active backend is stored as `Mutex<Box<dyn TranscriptionBackend>>` in `AppState`. `configure_dictation` dispatches the explicit Core ML model before the broad `parakeet*` sherpa classifier.
+`AppState` owns a `ModelRuntimeManager`. Its catalog maps each exact model
+identifier to a backend and capability set, and its single serialized backend
+owner coordinates preparation, inference, model changes, and unload. Unknown
+models fail closed instead of defaulting to Whisper. `configure_dictation`
+selects through this catalog; recording preparation and final inference use the
+same manager.
 
 ### FluidAudio Core ML Backend (`transcriber/coreml.rs`)
 
@@ -46,27 +51,18 @@ The active backend is stored as `Mutex<Box<dyn TranscriptionBackend>>` in `AppSt
 
 - Uses `whisper-rs` with Metal GPU acceleration
 - Enables flash attention; Murmur consumes segment text and does not use the incompatible DTW token timestamps
+- Keeps single-segment decoding for short audio up to 12 seconds, while longer batch decodes retain timestamp-based continuation so an early end-of-text token cannot silently skip the remaining audio
 - **Recording-start preparation**: model initialization begins after capture starts, overlapping cold load with speech rather than post-release latency
 - If the user changes models in settings, the context is dropped and re-created on next transcription
 - Model files are single `.bin` files (e.g., `ggml-base.en.bin`)
 - Model search paths are documented in `docs/onboarding.md`
+- `single_segment` decoding is duration-conditional (`should_use_single_segment`, 12s threshold): short audio stays single-segment, but longer batch/file transcriptions use multi-segment decoding so an early end-of-text token from the model can't force-skip the rest of the audio and silently truncate the tail
 
-### Incremental Whisper path (`streaming.rs`, `transcriber/chunking.rs`)
+All supported backends follow the same final-after-stop interaction: recording only captures audio; stopping runs one authoritative full-buffer transcription; the transformed final result is then delivered exactly once. Murmur does not display or emit provisional transcript text while recording or processing.
 
-Long live recordings selected to the Whisper backend use true incremental output:
-
-- A single sequential worker snapshots one bounded 10-second window every 8 seconds (2-second overlap) while capture continues.
-- Every window passes through the same Silero VAD threshold and the existing cached Whisper backend. There is no second model/context and never more than one inference in flight.
-- Chunk text is reconciled by a deterministic word-boundary algorithm. It removes the largest near-equal suffix/prefix overlap within 12 words and retains the earlier surface form.
-- After reconciliation, the worker validates the recording ID, cancellation generation, status, and selected model again before publishing a versioned `partial-transcript` event. Its camelCase payload is `{ contractVersion, recordingId, text, chunkIndex, processedAudioMs }`; the text is cumulative and remains in memory only.
-- On stop, the worker is signalled before audio teardown and only the unprocessed tail plus the 2-second overlap is inferred. The reconciled result becomes the authoritative text used by the unchanged cleanup, voice-command, correction, file-output, clipboard, paste, history, and stats paths.
-- Short recordings (under the first 10-second window), non-Whisper backends, missing/failed VAD, stale sessions, worker lag, panics, or final-tail failures use the original full-buffer pipeline. A model setting change during recording applies to the next session; the active worker keeps its recording-start model snapshot.
-
-The worker holds no queued audio. It reads the current buffer length, copies only one fixed window, awaits that inference, and abandons incremental mode if capture advances by more than one step. Recording IDs and cancellation generations prevent completed work from a stopped/cancelled session from being adopted by a newer recording.
-
-The backend also emits versioned `recording-session-started` and `partial-transcript-cleared` lifecycle events. Clears are recording-ID scoped, so a late cancellation or fallback from an older session cannot erase or update a newer preview. Fallback clears provisional text immediately while the existing full-buffer path remains authoritative. Partial contents are never written to logs, history, stats, settings, files, the clipboard, or auto-paste; telemetry records only first-partial latency, update count, last-partial-to-final latency, and completed/fallback flags.
-
-The overlay registers status and transcript lifecycle listeners as one set before reconciling a privacy-safe active-session snapshot from Rust. The snapshot restores both the active recording ID and recording/processing status, closing the WebView-startup ordering gap without replaying provisional content. It carries the lifecycle generation captured immediately before invocation and is discarded if any status, session, clear/cancel, completion, or settings event advances that generation before the response arrives. Frontend diagnostics record listener readiness, accepted/rejected counts, recording-ID match, chunk index, and clear reason only. The native overlay renders accepted Whisper updates below the physical notch; Parakeet/Core ML remain final-only and say so explicitly.
+The catalog may describe partial-result support as a backend capability for a
+future product contract. There is currently no streaming worker, provisional
+transcript event, live-preview setting, or model-specific preview behavior.
 
 ## Model Options
 
@@ -84,9 +80,9 @@ The overlay registers status and transcript lifecycle listeners as one set befor
 
 `run_transcription_pipeline()` remains the single authoritative completion entry point. `start_native_recording` resolves one immutable `DictationContextSnapshot` from the frontmost bundle identifier and current configuration; every live stage receives that snapshot instead of re-reading mutable settings:
 
-1. Capture app identity, matched profile, effective settings, vocabulary version, commands, and deny-by-default context permissions at recording start
+1. Capture app identity, matched profile, effective settings, vocabulary version, repository-backed commands, and deny-by-default context permissions at recording start
 2. Confirm the snapshot's model preparation completed (or load synchronously as a fallback)
-3. Adopt a successfully finalized incremental Whisper transcript, or run the full-buffer backend fallback with the same snapshot
+3. Run one full-buffer VAD and backend transcription pass with the same snapshot
 4. Run the backend-neutral transcript transformation pipeline from the snapshot's stage settings and resources
 5. Persist optional file output and inject text (clipboard + optional paste) from the snapshot on the main thread
 6. Reset status to Idle and clear only the matching recording generation's snapshot
@@ -98,12 +94,12 @@ Uses `IdleGuard` (RAII) to reset status on any early return or error — prevent
 `transform_transcript()` is the authoritative post-recognition entry point for both live and imported-file transcription. It owns a fixed internal sequence:
 
 ```text
-raw transcript → cleanup → voice commands → Smart Correction (explicit aliases, exact/derived terms, then fuzzy) → Smart Formatting → IDE context → CLI formatting → final text
+raw transcript → cleanup → voice commands → Smart Correction (explicit aliases, scoped replacement knowledge, exact/derived terms, then fuzzy) → Smart Formatting → IDE context → CLI formatting → final text
 ```
 
 Each stage receives immutable session/source metadata plus privacy-safe enablement flags and produces privacy-safe execution metadata (`duration_us`, changed/not-changed, outcome, and required/optional failure policy). Structured stage logs never include transcript text, model/language settings, app/profile values, custom replacement values, correction vocabulary, package/script names, or project paths.
 
-Cleanup, voice commands, Smart Formatting, IDE context, and CLI formatting are required deterministic stages when enabled. Smart Correction is optional-fallback: a future recoverable correction failure leaves the preceding text intact. Smart Formatting is live-only and opt-in, fails closed outside its bounded prose grammar, and skips any utterance owned by the CLI grammar. Explicit IDE opt-in bypasses Smart Formatting, then applies only the matching profile's fresh memory-only project index. The final CLI stage remains authoritative, uses conservative prefix/trigger/profile activation, and returns non-command prose byte-for-byte unchanged. Imported-file transcription invokes the same entry point with every stage disabled so its existing raw-ASR output remains unchanged.
+Cleanup, voice commands, Smart Formatting, IDE context, and CLI formatting are required deterministic stages when enabled. Smart Correction is optional-fallback: a future recoverable correction failure leaves the preceding text intact. Explicit vocabulary aliases outrank enabled replacement knowledge; knowledge then uses project/app/global scope and repository provenance precedence before derived and fuzzy vocabulary. The compiled matcher is captured at recording start and never queries SQLite in the stage. Smart Formatting is live-only and opt-in, fails closed outside its bounded prose grammar, and skips any utterance owned by the CLI grammar. Explicit IDE opt-in bypasses Smart Formatting, then applies only the matching profile's fresh memory-only project index. The final CLI stage remains authoritative, uses conservative prefix/trigger/profile activation, and returns non-command prose byte-for-byte unchanged. Imported-file transcription invokes the same entry point with every stage disabled so its existing raw-ASR output remains unchanged.
 
 The pipeline result can compare its original and final strings in memory for tests and diagnostics, but only privacy-safe stage metadata is logged. Only the final string reaches optional file output, clipboard/paste, history, and stats; delivery remains final-only and happens once.
 
@@ -112,6 +108,7 @@ File persistence, clipboard/paste, history, and stats are intentionally outside 
 See [Per-App Dictation Context](per-app-profiles.md) for resolver precedence, duplicate-profile compatibility, lifetime, and privacy boundaries.
 See [Spoken CLI Command Formatting](cli-command-formatting.md) for activation, grammar, local lexicon layering, and safety guarantees.
 See [Explicit Spoken Vocabulary Aliases](vocabulary-aliases.md) for migration, precedence, scope, validation, and privacy guarantees.
+See [Voice Commands 2.0](voice-commands.md) for typed replacements, multiline snippets, variables, app scopes, conflicts, and clipboard permission boundaries.
 See [Smart Formatting and Same-Utterance Backtracking](smart-formatting.md) for its explicit prose grammar, bounds, bypass rules, and privacy contract.
 See [Local IDE Symbols and `@file` Context](ide-context.md) for opt-in, scan boundaries, ambiguity, expiry, and privacy guarantees.
 
@@ -129,6 +126,12 @@ Status is managed in `DictationState` behind a `Mutex` with poison recovery (`Mu
 Recorder start, stop, and cancel also share an async transition mutex. The lock
 is held until cpal confirms startup or audio teardown completes, preventing a
 fast hotkey release from stopping a recorder that is still starting.
+
+Model state is separate from recording status. `get_model_runtime_catalog` and
+`get_model_runtime_status` expose catalog metadata plus install/lifecycle state.
+Transitions emit generation-ordered `model-runtime-status-changed` snapshots;
+their telemetry is privacy-safe bounded metadata and never contains transcript
+text, model paths, or raw backend errors.
 
 ## Frontend Integration
 

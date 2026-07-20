@@ -27,9 +27,9 @@ vi.mock('../log', () => ({
 
 import { useOverlayExpansion, type OverlayExpansion } from './useOverlayExpansion';
 
-// A pending set_overlay_surface invocation the test controls.
+// A pending set_overlay_expanded invocation the test controls.
 interface SurfaceCall {
-  args: { expanded: boolean; previewVisible: boolean };
+  args: { expanded: boolean };
   resolve: (v: { windowW: number; windowH: number }) => void;
   reject: (e: unknown) => void;
 }
@@ -41,18 +41,17 @@ describe('useOverlayExpansion', () => {
   let root: Root | null = null;
   let current: OverlayExpansion;
   let surfaceCalls: SurfaceCall[];
-  let lastProps: { previewRowVisible?: boolean; disabled?: boolean; withIsland?: boolean } = {};
+  let lastProps: { disabled?: boolean; withIsland?: boolean } = {};
   const listeners = new Map<string, (e: { payload: unknown }) => void>();
 
-  function Harness(props: { previewRowVisible?: boolean; disabled?: boolean; withIsland?: boolean }) {
+  function Harness(props: { disabled?: boolean; withIsland?: boolean }) {
     current = useOverlayExpansion({
-      previewRowVisible: props.previewRowVisible ?? false,
       disabled: props.disabled ?? false,
     });
     return props.withIsland ? <div ref={current.islandRef} /> : null;
   }
 
-  async function rerender(props: { previewRowVisible?: boolean; disabled?: boolean; withIsland?: boolean }) {
+  async function rerender(props: { disabled?: boolean; withIsland?: boolean }) {
     lastProps = { ...lastProps, ...props };
     await act(async () => { root!.render(<Harness {...lastProps} />); });
   }
@@ -62,14 +61,14 @@ describe('useOverlayExpansion', () => {
   }
 
   function surfaceCallCount() {
-    return mocks.invoke.mock.calls.filter((c) => c[0] === 'set_overlay_surface').length;
+    return mocks.invoke.mock.calls.filter((c) => c[0] === 'set_overlay_expanded').length;
   }
 
   async function flush() {
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });
   }
 
-  async function mount(props: { previewRowVisible?: boolean; disabled?: boolean; withIsland?: boolean } = {}) {
+  async function mount(props: { disabled?: boolean; withIsland?: boolean } = {}) {
     // mount owns the root's whole lifecycle so beforeEach never leaks an empty
     // container. A prior mount (a test that re-mounts) is torn down first.
     if (root) { await act(async () => { root!.unmount(); }); }
@@ -79,8 +78,9 @@ describe('useOverlayExpansion', () => {
     document.body.appendChild(container);
     root = createRoot(container);
     await act(async () => { root!.render(<Harness {...props} />); });
-    // Resolve the mount-time preview-sync resize so the serial writer is idle, then
-    // reset the tracking array so each test's first surface call starts at index 0.
+    // The controller does not resize on mount (show_overlay set the collapsed
+    // size), but drain any pending writer call and reset the tracking array so
+    // each test's first surface call starts at index 0.
     await act(async () => {
       surfaceCalls.forEach((c) => c.resolve(APPLIED));
       await Promise.resolve();
@@ -95,7 +95,7 @@ describe('useOverlayExpansion', () => {
 
     mocks.invoke.mockReset();
     mocks.invoke.mockImplementation((cmd: string, args: unknown) => {
-      if (cmd === 'set_overlay_surface') {
+      if (cmd === 'set_overlay_expanded') {
         return new Promise((resolve, reject) => {
           surfaceCalls.push({ args: args as SurfaceCall['args'], resolve, reject });
         });
@@ -370,37 +370,6 @@ describe('useOverlayExpansion', () => {
     await flush();
     await act(async () => { vi.advanceTimersByTime(1); }); // fire the immediate close timer
     expect(current.phase).toBe('closing');
-  });
-
-  it('reveals via the superseding expanded write when the preview row toggles during opening', async () => {
-    await mount();
-
-    await act(async () => { current.onHoverStart(); });
-    await act(async () => { vi.advanceTimersByTime(HOVER_OPEN_DWELL_MS); });
-    await flush();
-    expect(current.phase).toBe('opening');
-    const growA = surfaceCalls.find((c) => c.args.expanded);
-    expect(growA).toBeTruthy();
-
-    // Preview row appears mid-opening → the writer enqueues a superseding grow
-    // that also carries previewVisible, queued behind the still-pending grow.
-    await rerender({ previewRowVisible: true });
-
-    // Resolving the ORIGINAL (now stale) grow must NOT reveal — an ack that is not
-    // the latest generation cannot flip to `open`.
-    await act(async () => { growA!.resolve(APPLIED); });
-    await flush();
-    expect(current.phase).toBe('opening');
-
-    // The superseding expanded write is now in flight and carries the preview flag.
-    const expandedWrites = surfaceCalls.filter((c) => c.args.expanded);
-    const growB = expandedWrites[expandedWrites.length - 1];
-    expect(growB.args.previewVisible).toBe(true);
-    // Reveal only ever happens on an expanded ack (reconcile gates on expanded),
-    // so a collapsed-surface ack could never have revealed here.
-    await act(async () => { growB.resolve(APPLIED); });
-    await flush();
-    expect(current.phase).toBe('open');
   });
 
   it('settles collapsed when the shrink resize is rejected during closing', async () => {

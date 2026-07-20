@@ -29,6 +29,7 @@ Read these before working on a feature:
 - **[docs/features/models.md](docs/features/models.md)** — Model management and download
 - **[docs/features/per-app-profiles.md](docs/features/per-app-profiles.md)** — Immutable per-recording context, profile precedence, privacy boundaries
 - **[docs/features/ide-context.md](docs/features/ide-context.md)** — Opt-in local IDE index, @file grammar, path/privacy boundaries
+- **[docs/features/voice-commands.md](docs/features/voice-commands.md)** — Typed replacements, multiline snippets, safe variables, scopes, and clipboard permission
 - **[docs/decisions/DECISIONS.md](docs/decisions/DECISIONS.md)** — Running log of architectural/scope decisions (newest first)
 
 ## File Map
@@ -45,7 +46,7 @@ Read these before working on a feature:
 | `commands/logging.rs` | 4 logging commands, delegates to telemetry.rs |
 | `commands/models.rs` | Model download pipeline and existence checks |
 | `commands/tray.rs` | Tray icon rendering (`make_tray_icon_data`, `update_tray_icon`) |
-| `commands/overlay.rs` | Notch detection, `OverlayGeometry` contract (`geometry_for()`), `set_overlay_surface`, show/hide/show-main-window commands |
+| `commands/overlay.rs` | Notch detection, `OverlayGeometry` contract (`geometry_for()`), `set_overlay_expanded`, show/hide/show-main-window commands |
 | `keyboard.rs` | Hold-down and double-tap detectors, shared rdev listener thread |
 | `audio.rs` | cpal capture, mono conversion, 16kHz resampling |
 | `transcriber/` | whisper-rs model loading and inference |
@@ -90,8 +91,7 @@ Read these before working on a feature:
 | `components/settings/SettingsPanel.tsx` | Settings UI with mode switching |
 | `components/log-viewer/LogViewerApp.tsx` | Structured event viewer with Events + Metrics tabs |
 | `components/overlay/deriveVisual.ts` | Pure: overlay top-bar indicator + flash-priority derivation |
-| `components/overlay/previewPresentation.ts` | Pure: overlay below-notch preview-row derivation |
-| `components/overlay/OverlayPill.tsx` | Overlay top bar + preview row (presentational) |
+| `components/overlay/OverlayPill.tsx` | Overlay top bar (presentational) |
 | `components/overlay/OverlayDropdown.tsx` | Overlay quick-settings dropdown (presentational) |
 | `components/OverlayWidget.tsx` | Dynamic Island overlay composition shell (~150 lines) |
 

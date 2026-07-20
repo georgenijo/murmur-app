@@ -1,5 +1,7 @@
 pub mod benchmark;
+pub mod correct_and_teach;
 pub mod keyboard;
+pub mod knowledge;
 pub mod logging;
 pub mod models;
 pub mod overlay;

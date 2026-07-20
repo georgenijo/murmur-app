@@ -92,7 +92,7 @@ fn data_models_dir() -> Option<PathBuf> {
 /// Returns true if `model_name` should be served by the Parakeet backend.
 /// This is the dispatch sentinel used by `configure_dictation`.
 pub fn is_parakeet_model(model_name: &str) -> bool {
-    model_name.starts_with("parakeet")
+    variant_for(model_name).is_some()
 }
 
 /// Returns true if the specific Parakeet variant's bundle is present on disk.
@@ -302,8 +302,9 @@ mod tests {
 
     #[test]
     fn is_parakeet_model_classification() {
-        assert!(is_parakeet_model("parakeet-tdt-0.6b-v2"));
-        assert!(is_parakeet_model("parakeet-tdt-0.6b-v2-fp16-beam"));
+        assert!(is_parakeet_model("parakeet-tdt-0.6b-v2-fp16"));
+        assert!(!is_parakeet_model("parakeet-tdt-0.6b-v2"));
+        assert!(!is_parakeet_model("parakeet-tdt-0.6b-v2-fp16-beam"));
         assert!(!is_parakeet_model("base.en"));
         assert!(!is_parakeet_model("large-v3-turbo"));
     }

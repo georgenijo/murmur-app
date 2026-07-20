@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
 import { flog } from '../log';
-import { DEFAULT_SETTINGS, loadSettings, saveSettings } from '../settings';
+import { loadSettings, saveSettings } from '../settings';
 import type { Settings } from '../settings';
 import { buildConfigureOptions } from '../dictation';
 
@@ -16,8 +16,6 @@ export interface UseOverlaySettingsMirrorArgs {
 export interface OverlaySettingsMirror {
   autoPaste: boolean;
   fileOutputEnabled: boolean;
-  liveTranscriptPreview: boolean;
-  previewModel: string;
   /** Re-reads localStorage and applies the snapshot. Stable identity. */
   refresh: () => void;
   handleToggleAutoPaste: (e: React.MouseEvent) => Promise<void>;
@@ -26,15 +24,12 @@ export interface OverlaySettingsMirror {
 }
 
 /**
- * Mirrors the subset of localStorage Settings the overlay's quick controls and
- * preview row need, since the overlay is a separate webview with no shared
- * React settings context. Applies on mount, on `settings-changed`, and (via
- * the exposed `refresh`) whenever the composition shell decides the dropdown
- * is about to become visible (`phase === 'opening'`) — wiring that stays in
- * OverlayWidget.tsx because `phase` comes from the expansion controller,
- * which itself depends on this hook's `liveTranscriptPreview`/`previewModel`
- * output, so this hook cannot take `phase` as a constructor argument without
- * an artificial call-order dependency.
+ * Mirrors the subset of localStorage Settings the overlay's quick controls
+ * need, since the overlay is a separate webview with no shared React settings
+ * context. Applies on mount, on `settings-changed`, and (via the exposed
+ * `refresh`) whenever the composition shell decides the dropdown is about to
+ * become visible (`phase === 'opening'`) — wiring that stays in
+ * OverlayWidget.tsx because `phase` comes from the expansion controller.
  */
 export function useOverlaySettingsMirror({
   setDisabled,
@@ -43,17 +38,11 @@ export function useOverlaySettingsMirror({
 }: UseOverlaySettingsMirrorArgs): OverlaySettingsMirror {
   const [autoPaste, setAutoPaste] = useState(false);
   const [fileOutputEnabled, setFileOutputEnabled] = useState(false);
-  const [liveTranscriptPreview, setLiveTranscriptPreview] = useState(
-    DEFAULT_SETTINGS.liveTranscriptPreview,
-  );
-  const [previewModel, setPreviewModel] = useState(DEFAULT_SETTINGS.model);
 
   const applySettingsSnapshot = useCallback((settings: Settings) => {
     setDisabled(settings.disabled);
     setAutoPaste(settings.autoPaste);
     setFileOutputEnabled(settings.saveTranscript || settings.saveAudio);
-    setLiveTranscriptPreview(settings.liveTranscriptPreview);
-    setPreviewModel(settings.model);
     hotkeyMissFeedbackRef.current = settings.hotkeyMissFeedback;
     if (!settings.hotkeyMissFeedback) setShowHotkeyMiss(false);
   }, [setDisabled, setShowHotkeyMiss, hotkeyMissFeedbackRef]);
@@ -136,8 +125,6 @@ export function useOverlaySettingsMirror({
   return {
     autoPaste,
     fileOutputEnabled,
-    liveTranscriptPreview,
-    previewModel,
     refresh,
     handleToggleAutoPaste,
     handleToggleDisabled,

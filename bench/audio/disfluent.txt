@@ -1,0 +1,1 @@
+So the handler should, um, return early when the cache is warm. Actually, no, wait, delete that last part and just log the error instead, I think that is cleaner.

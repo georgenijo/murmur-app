@@ -35,20 +35,25 @@ interface Settings {
 
 | Setting | Type | Default | Valid Options/Range | Description |
 |---------|------|---------|-------------------|-------------|
-| `model` | `ModelOption` | `'base.en'` | `'tiny.en'`, `'base.en'`, `'small.en'`, `'medium.en'`, `'large-v3-turbo'` | The transcription model to use. All models use the Whisper backend with Metal GPU acceleration. See the model options table below. |
-| `language` | `string` | `'en'` | Any language code string | Transcription language. Passed to the Whisper backend. No validation on the frontend. |
+| `model` | `ModelOption` | Platform default | Seven catalog identifiers listed below | The exact transcription model to use. Unknown identifiers fail closed; Murmur does not automatically choose another model. |
+| `language` | `string` | `'en'` | Any language code string | Transcription language. The runtime capability catalog disables language selection for English-only models. |
 
 ### Model Options
 
 | Value | Label | Size | Backend |
 |-------|-------|------|---------|
+| `parakeet-tdt-0.6b-v3-coreml` | Parakeet Core ML | ~470 MB | FluidAudio (Apple Neural Engine) |
+| `parakeet-tdt-0.6b-v2-fp16` | Parakeet TDT 0.6B (English, fast) | ~1.2 GB | sherpa-onnx (CPU) |
 | `tiny.en` | Whisper Tiny (English) | ~75 MB | Whisper (Metal GPU) |
 | `base.en` | Whisper Base (English) | ~150 MB | Whisper (Metal GPU) |
 | `small.en` | Whisper Small (English) | ~500 MB | Whisper (Metal GPU) |
 | `medium.en` | Whisper Medium (English) | ~1.5 GB | Whisper (Metal GPU) |
 | `large-v3-turbo` | Whisper Large Turbo | ~3 GB | Whisper (Metal GPU) |
 
-Both the Rust-side `DictationState::default()` and the frontend default use `base.en`.
+New Apple Silicon macOS installs default to Core ML; other frontend builds
+default to CPU Parakeet. Rust initializes `base.en` until the frontend applies
+the persisted/platform default. Runtime capabilities, install state, and
+lifecycle state are not settings and are never persisted to localStorage.
 
 ---
 
@@ -59,7 +64,6 @@ Both the Rust-side `DictationState::default()` and the frontend default use `bas
 | `recordingMode` | `RecordingMode` | `'hold_down'` | `'hold_down'`, `'double_tap'`, `'both'` | How recording is triggered via keyboard. Hold-down: press-and-hold to record. Double-tap: double-tap to start, single-tap to stop. Both: combined mode with deferred hold promotion. |
 | `doubleTapKey` | `DoubleTapKey` | `'shift_l'` | `'shift_l'` (Shift), `'alt_l'` (Option), `'ctrl_r'` (Control) | The modifier key used for recording triggers. Used by all three recording modes as the trigger key. Label in the settings UI changes based on `recordingMode`. |
 | `hotkeyMissFeedback` | `boolean` | `false` | `true` / `false` | In Double-Tap or Both mode, briefly flashes the overlay amber when the 400ms second-tap window expires. It does not fire for holds, modifier shortcuts, processing skips, or successful gestures. Frontend/overlay only. |
-| `liveTranscriptPreview` | `boolean` | `true` | `true` / `false` | Shows session-scoped provisional Whisper text below the physical notch during long recordings. Parakeet/Core ML are final-only and surface that limitation explicitly. Provisional text remains memory-only and never enters delivery, history, files, stats, or logs. |
 | `vadSensitivity` | `number` | `50` | 0-100, step 5 in UI | Voice Activity Detection sensitivity. Higher values keep more audio; lower values trim silence more aggressively. The backend converts this to a threshold: `1.0 - (sensitivity / 100.0)`. Clamped to 0-100 by the backend. |
 
 ### Recording Mode Details
@@ -88,6 +92,12 @@ Both the Rust-side `DictationState::default()` and the frontend default use `bas
 
 Aliases are limited to 16 per entry and values to 256 characters. Ambiguous aliases, canonical collisions, Voice Command collisions, and direct or indirect cycles are rejected atomically.
 
+## Personal Knowledge
+
+Settings → Knowledge manages a separate local SQLite store for replacement rules, vocabulary terms, and snippets. It is not part of the `Settings` object or `localStorage`. Users can search and filter bounded pages, inspect scope/provenance, create and edit records, enable/disable them, export/import a versioned JSON file, delete individual records, and delete all records with typed confirmation.
+
+The store reports recovered, reinitialized, and unavailable states visibly. Enabled replacement rules apply through Smart Correction; snippet triggers remain inert until their separate Voice Commands integration. See [Personal Knowledge Store](../features/personal-knowledge-store.md) and [Correct and Teach](../features/correct-and-teach.md).
+
 ## Per-App Profiles
 
 `appProfiles` is an array of `{ bundleId, label, writingStyle, autoPasteOverride, cleanupOverride, smartFormattingOverride, cliFormattingOverride, ideContextEnabled, ideProjectRoots }`. `writingStyle` is `null` (Inherit), `conversational`, `polished`, `code_technical`, `verbatim`, or `notes`. It is an explicit user choice; bundle identifiers and labels never classify apps automatically. Boolean overrides fine-tune the resolved style/global value for a matching frontmost bundle identifier; `null` means "inherit." Existing, missing, and malformed persisted style/override fields migrate to `null`.
@@ -99,6 +109,12 @@ Aliases are limited to 16 per entry and values to 256 characters. Ambiguous alia
 `cliFormattingOverride` uses the immutable recording-start context. `true` enables profile-mode CLI recognition, `false` disables implicit CLI formatting for that app, and `null` keeps conservative automatic recognition. An explicit spoken `command` trigger remains available in every mode.
 
 At recording start, the backend resolves one immutable context using global settings → matching style → matching profile fine-tuning → one-session overrides. Settings or focus changes during recording apply only to the next session. Explicit IDE opt-in also disables Smart Formatting for that recording and can capture only the matching profile's fresh local index. See [Per-App Dictation Context](../features/per-app-profiles.md) and [Local IDE Symbols and `@file` Context](../features/ide-context.md).
+
+## Voice Commands
+
+`voiceCommandsEnabled` remains the global execution switch. Legacy `voiceCommands` pairs in `dictation-settings` are migration-only compatibility input: Rust imports them once into the personal knowledge store as global `text_replacement` commands, while retaining the old in-memory path if the store is unavailable.
+
+New text replacements and snippets are Rust-owned knowledge records rather than localStorage settings. They support global/app scope, enabled state, multiline snippet bodies, deterministic `{{date}}` / `{{time}}`, and explicitly granted `{{clipboard}}`. See [Voice Commands 2.0](../features/voice-commands.md).
 
 ---
 

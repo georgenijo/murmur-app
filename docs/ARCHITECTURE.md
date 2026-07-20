@@ -458,7 +458,7 @@ Rendered in the overlay window, always-on-top, transparent, no decorations. `Ove
 | overlay | `show_overlay` | Positions and shows the overlay window |
 | overlay | `hide_overlay` | Hides the overlay window |
 | overlay | `get_overlay_geometry` | Returns the current `OverlayGeometry` contract (never null) |
-| overlay | `set_overlay_surface` | Resizes for hover/preview state; returns the applied frame as a resize ack |
+| overlay | `set_overlay_expanded` | Resizes between the collapsed and expanded frames; returns the applied frame as a resize ack |
 | overlay | `show_main_window` | Shows and focuses the main window (used by the overlay's gear button) |
 | telemetry | `get_event_history` | Returns ring buffer (up to 500 events) |
 | telemetry | `clear_event_history` | Clears the event ring buffer |
