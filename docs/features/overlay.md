@@ -44,12 +44,12 @@ The visible pill width adjusts based on recording state and hover:
 | State | Width | Notes |
 |-------|-------|-------|
 | Idle (no hover) | `notchWidth + 28` | Compact, shows only the mic icon |
-| Recording / Processing | `notchWidth + 68` | Shows waveform and status indicators |
-| Hover-expanded (after 150ms dwell) | `notchWidth + 68` | Wide enough for the quick-settings dropdown |
+| Recording / Processing | `notchWidth + 120` | Uses both visible wings around the physical notch |
+| Hover-expanded (after 150ms dwell) | `notchWidth + 120` | Wide enough for the quick-settings dropdown |
 
 The full overlay window width is `notchWidth + 120` (60px expansion per side), with the visible content area sized within that.
 
-Height matches the menu bar height from notch detection. On hover the window grows by `EXPANDED_DROP` (44px) downward to reveal the dropdown (see Hover-Expand below). The overlay is horizontally centered at the top of the screen (y=0).
+Height matches the menu bar height from notch detection. A provisional preview adds a 30px row below the physical notch, and hover independently adds `EXPANDED_DROP` (44px) for the dropdown. These rows compose, so neither clips the other. The overlay is horizontally centered at the top of the screen (y=0).
 
 Width transitions over 400ms and height over 360ms, both using the spring curve `cubic-bezier(0.34, 1.56, 0.64, 1)`.
 
@@ -69,7 +69,7 @@ Hovering the pill expands it downward into a quick-settings dropdown. The dropdo
 | Auto-paste toggle | Reads/writes the `autoPaste` setting in localStorage. |
 | Gear | Emits `open-settings` and shows/focuses the main window (`WebviewWindow.getByLabel('main')`). |
 
-During recording + hover, an inline `m:ss` timer appears next to the red dot (top bar only; never shown when collapsed).
+During recording, an inline `m:ss` timer remains visible next to the red dot in the left wing without requiring hover.
 
 ### Cross-window settings sync
 
@@ -83,7 +83,7 @@ The overlay has three visual states driven by `recording-status-changed` Tauri e
 Small mic SVG icon at 40% white opacity. Compact width.
 
 ### Recording
-Expanded width. Red pulsing dot on the left, animated 7-bar waveform on the right. The waveform responds to real-time audio levels. During long Whisper recordings, the middle of the existing top bar shows the latest suffix of cumulative incremental text with a `Draft` label after the first reliable chunk. The preview is one line, uses no additional window area, and has pointer events disabled.
+Expanded width. The red pulsing dot and elapsed timer occupy the visible left wing, while the animated 7-bar waveform occupies the right. The physical notch obscures the center of the top bar, so long Whisper recordings render the latest suffix of cumulative incremental text in a clearly labeled `Provisional` row immediately below it. The preview is one line and has pointer events disabled.
 
 ### Processing
 Same expanded width. Spinning circle on the left; the waveform is hidden (visible only while recording). A provisional preview may remain visible until the authoritative final result completes, then clears.
@@ -146,7 +146,7 @@ The observer is intentionally leaked (`std::mem::forget`) for app-lifetime obser
 |---------|-------------|
 | `show_overlay` | Positions, sizes, and shows the overlay window. Re-enables mouse events. |
 | `hide_overlay` | Hides the overlay window. Gracefully handles missing window. |
-| `set_overlay_expanded` | Resizes the overlay height for hover-expand (`base_h + EXPANDED_DROP` when expanded, notch height when collapsed). Width unchanged, top anchored. |
+| `set_overlay_surface` | Composes the below-notch preview row and hover dropdown height independently. Width remains fixed and top anchored. |
 | `get_notch_info` | Returns cached `{ notch_width, notch_height }` or `null`. |
 
 ## Events
@@ -168,7 +168,9 @@ The entire overlay surface is a Tauri drag region (`data-tauri-drag-region`), al
 
 ## Live transcript preview
 
-`liveTranscriptPreview` is a local Settings boolean and defaults to enabled. Turning it off clears visible provisional text immediately and ignores further partial updates while disabled. The overlay tracks the active `recordingId`, rejects stale or out-of-order chunks, and clears on cancellation, incremental fallback, final completion, model change, idle/error, or a newer recording. The preview stays inside the existing non-focusable, non-activating top-bar bounds, so it neither expands the idle island nor adds a click dead-zone.
+`liveTranscriptPreview` is a local Settings boolean and defaults to enabled. Turning it off clears visible provisional text immediately and ignores further partial updates while disabled. The overlay tracks the active `recordingId`, rejects stale or out-of-order chunks, and clears on cancellation, incremental fallback, final completion, model change, error, or a newer recording. Listener startup reconciles a privacy-safe active-session snapshot so a WebView mounting during recording cannot miss the session ID. Diagnostics contain only listener readiness, event counts, IDs, match decisions, chunk indexes, and clear reasons—never provisional text.
+
+Live preview is available only for Whisper models. When Parakeet or Core ML is selected, Settings disables the preview control with an unavailable explanation, and an active recording shows a `Final only` status instead of silently waiting for updates that backend cannot produce.
 
 ## Transparent window caveat
 

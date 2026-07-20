@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   PARTIAL_TRANSCRIPT_CONTRACT_VERSION,
+  classifyPartialTranscriptEvent,
   createPartialTranscriptState,
+  isActiveRecordingSessionSnapshot,
+  isRecordingIdPayload,
   partialTranscriptReducer,
   type PartialTranscriptClearReason,
   type PartialTranscriptState,
@@ -45,6 +48,8 @@ describe('partialTranscriptReducer', () => {
     expect(second.text).toBe('one reliable chunk followed by another');
     expect(second.chunkIndex).toBe(2);
     expect(second.processedAudioMs).toBe(18_000);
+    expect(second.acceptedEventCount).toBe(2);
+    expect(second.rejectedEventCount).toBe(0);
   });
 
   it('rejects stale recording IDs and out-of-order chunks', () => {
@@ -52,8 +57,12 @@ describe('partialTranscriptReducer', () => {
     const staleSession = withPartial(current, 7, 'stale words', 3);
     const staleChunk = withPartial(current, 8, 'older chunk', 1);
 
-    expect(staleSession).toBe(current);
-    expect(staleChunk).toBe(current);
+    expect(staleSession.text).toBe(current.text);
+    expect(staleSession.lastEventDecision).toBe('recording_id_mismatch');
+    expect(staleSession.rejectedEventCount).toBe(1);
+    expect(staleChunk.text).toBe(current.text);
+    expect(staleChunk.lastEventDecision).toBe('out_of_order');
+    expect(staleChunk.rejectedEventCount).toBe(1);
   });
 
   it.each<PartialTranscriptClearReason>([
@@ -87,12 +96,36 @@ describe('partialTranscriptReducer', () => {
     expect(staleClear).toBe(newer);
   });
 
-  it('clears on the generic final/cancel status fallback', () => {
-    const current = withPartial(started(), 7, 'provisional words', 1);
-    const cleared = partialTranscriptReducer(current, { type: 'clearActive' });
+  it('ignores duplicate or stale session-start events', () => {
+    const current = withPartial(started(8), 8, 'current words', 1);
+    const duplicate = partialTranscriptReducer(current, {
+      type: 'sessionStarted',
+      payload: session(8),
+    });
+    const stale = partialTranscriptReducer(current, {
+      type: 'sessionStarted',
+      payload: session(7),
+    });
+
+    expect(duplicate).toBe(current);
+    expect(stale).toBe(current);
+    expect(stale.text).toBe('current words');
+  });
+
+  it('remembers the latest generation after clear and rejects a late start', () => {
+    const current = withPartial(started(8), 8, 'current words', 1);
+    const cleared = partialTranscriptReducer(current, {
+      type: 'sessionCleared',
+      payload: { ...session(8), reason: 'finalized' },
+    });
+    const lateStart = partialTranscriptReducer(cleared, {
+      type: 'sessionStarted',
+      payload: session(7),
+    });
 
     expect(cleared.activeRecordingId).toBeNull();
-    expect(cleared.text).toBe('');
+    expect(cleared.latestRecordingId).toBe(8);
+    expect(lateStart).toBe(cleared);
   });
 
   it('clears and rejects updates while disabled', () => {
@@ -106,7 +139,9 @@ describe('partialTranscriptReducer', () => {
 
     expect(disabled.text).toBe('');
     expect(disabled.activeRecordingId).toBe(7);
-    expect(ignored).toBe(disabled);
+    expect(ignored.text).toBe('');
+    expect(ignored.lastEventDecision).toBe('disabled');
+    expect(ignored.rejectedEventCount).toBe(1);
   });
 
   it('clears and invalidates the session when the model changes', () => {
@@ -120,5 +155,35 @@ describe('partialTranscriptReducer', () => {
     expect(changed.activeRecordingId).toBeNull();
     expect(changed.text).toBe('');
     expect(changed.model).toBe('small.en');
+  });
+
+  it('distinguishes an update received before any active session', () => {
+    const state = createPartialTranscriptState(true, 'base.en');
+    const payload = {
+      ...session(7),
+      text: 'not adopted',
+      chunkIndex: 1,
+      processedAudioMs: 10_000,
+    };
+
+    expect(classifyPartialTranscriptEvent(state, payload)).toBe('no_active_session');
+    const rejected = partialTranscriptReducer(state, { type: 'partialReceived', payload });
+    expect(rejected.text).toBe('');
+    expect(rejected.rejectedEventCount).toBe(1);
+  });
+});
+
+describe('active session readiness snapshot', () => {
+  it('accepts only active recording or processing snapshots', () => {
+    expect(isActiveRecordingSessionSnapshot({ recordingId: 12, status: 'recording' })).toBe(true);
+    expect(isActiveRecordingSessionSnapshot({ recordingId: 12, status: 'processing' })).toBe(true);
+    expect(isActiveRecordingSessionSnapshot({ recordingId: 12, status: 'idle' })).toBe(false);
+    expect(isActiveRecordingSessionSnapshot({ recordingId: 0, status: 'recording' })).toBe(false);
+  });
+
+  it('validates session-scoped fallback lifecycle payloads', () => {
+    expect(isRecordingIdPayload({ recordingId: 9 })).toBe(true);
+    expect(isRecordingIdPayload({ recordingId: 0 })).toBe(false);
+    expect(isRecordingIdPayload(undefined)).toBe(false);
   });
 });

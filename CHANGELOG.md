@@ -16,6 +16,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ### Changed
 - Post-recognition cleanup, voice commands, and Smart Correction now run through one ordered, backend-neutral transformation pipeline with privacy-safe per-stage timing/change telemetry and explicit failure policy (#244).
 
+### Fixed
+- Whisper live-preview updates now render in a clearly labeled row below the physical MacBook notch instead of behind it, with an always-visible recording timer, privacy-safe listener diagnostics, startup session reconciliation, and an explicit final-only state for Parakeet/Core ML (#266).
+
 ## [0.17.2] - 2026-07-19
 
 ### Added
