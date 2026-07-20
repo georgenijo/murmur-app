@@ -37,6 +37,24 @@ struct PreparedFixture<'a> {
     audio_seconds: f64,
 }
 
+// Fixture ordering is load-bearing: presets select a *prefix* of this slice
+// (see `BenchmarkPreset::fixtures`), so the four original clips come first (for
+// continuity with earlier reports), then the Standard-tier stress fixtures, and
+// finally the two Thorough-only fixtures. Do not reorder without updating the
+// prefix lengths in `fixtures()`.
+//
+// The stress fixtures (jargon, numbers, disfluent, xxlong, fast) exist because
+// every model scored ~0% WER on the original four clips, so the ranking
+// saturated (issue #273). They are synthesized with macOS `say` (Samantha) via
+// bench/make_audio.sh. IMPORTANT HONESTY NOTE: TTS speech is clean and
+// unnaturally fluent — these fixtures stress vocabulary, camelCase identifiers,
+// and inverse-text-normalization (ITN: numbers/units/versions), NOT the natural
+// mumble/hesitation acoustics of real human disfluency. The "disfluent" and
+// "fast" clips reproduce the *words* of those failure modes, not their acoustic
+// difficulty. Recording real human versions is tracked as follow-up work.
+//
+// Fixtures are compiled into the binary via include_bytes!; the five added WAVs
+// are ~3.3 MB total (xxlong alone is ~2 MB of 64s audio).
 const FIXTURES: &[Fixture] = &[
     Fixture {
         id: "short",
@@ -62,7 +80,43 @@ const FIXTURES: &[Fixture] = &[
         wav: include_bytes!("../../../bench/audio/xlong.wav"),
         reference: include_str!("../../../bench/audio/xlong.txt"),
     },
+    // --- Standard-tier stress fixtures (issue #273) ---
+    Fixture {
+        id: "jargon",
+        label: "Jargon",
+        wav: include_bytes!("../../../bench/audio/jargon.wav"),
+        reference: include_str!("../../../bench/audio/jargon.txt"),
+    },
+    Fixture {
+        id: "numbers",
+        label: "Numbers",
+        wav: include_bytes!("../../../bench/audio/numbers.wav"),
+        reference: include_str!("../../../bench/audio/numbers.txt"),
+    },
+    Fixture {
+        id: "disfluent",
+        label: "Disfluent",
+        wav: include_bytes!("../../../bench/audio/disfluent.wav"),
+        reference: include_str!("../../../bench/audio/disfluent.txt"),
+    },
+    // --- Thorough-only stress fixtures (issue #273) ---
+    Fixture {
+        id: "xxlong",
+        label: "Extra extra long",
+        wav: include_bytes!("../../../bench/audio/xxlong.wav"),
+        reference: include_str!("../../../bench/audio/xxlong.txt"),
+    },
+    Fixture {
+        id: "fast",
+        label: "Fast",
+        wav: include_bytes!("../../../bench/audio/fast.wav"),
+        reference: include_str!("../../../bench/audio/fast.txt"),
+    },
 ];
+
+/// Number of Standard-tier fixtures (a prefix of `FIXTURES`): the four original
+/// clips plus jargon/numbers/disfluent. Thorough adds the remaining entries.
+const STANDARD_FIXTURE_COUNT: usize = 7;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -93,10 +147,18 @@ impl BenchmarkPreset {
         }
     }
 
+    // Preset membership is deliberate (issue #273):
+    //   Quick     — the two shortest clips, a fast smoke test (unchanged).
+    //   Standard  — the four original clips plus the jargon/numbers/disfluent
+    //               stress fixtures, so everyday ranking no longer saturates.
+    //   Thorough  — everything, adding the 64s xxlong (long-window handling,
+    //               post-#269 multi-segment decoding) and the fast clip.
+    // Each returns a prefix of FIXTURES; see the FIXTURES ordering comment.
     fn fixtures(self) -> &'static [Fixture] {
         match self {
             Self::Quick => &FIXTURES[..2],
-            Self::Standard | Self::Thorough => FIXTURES,
+            Self::Standard => &FIXTURES[..STANDARD_FIXTURE_COUNT],
+            Self::Thorough => FIXTURES,
         }
     }
 }
@@ -1379,10 +1441,53 @@ mod tests {
 
     #[test]
     fn presets_have_bounded_workloads() {
+        // Quick keeps its two-clip smoke test; Standard covers the original
+        // four plus the jargon/numbers/disfluent stress clips; Thorough adds
+        // xxlong + fast on top (issue #273).
         assert_eq!(BenchmarkPreset::Quick.fixtures().len(), 2);
         assert_eq!(BenchmarkPreset::Quick.iterations(), 3);
-        assert_eq!(BenchmarkPreset::Standard.fixtures().len(), 4);
+        assert_eq!(BenchmarkPreset::Standard.fixtures().len(), STANDARD_FIXTURE_COUNT);
+        assert_eq!(BenchmarkPreset::Standard.fixtures().len(), 7);
+        assert_eq!(BenchmarkPreset::Thorough.fixtures().len(), FIXTURES.len());
+        assert_eq!(BenchmarkPreset::Thorough.fixtures().len(), 9);
         assert_eq!(BenchmarkPreset::Thorough.iterations(), 10);
+        // Presets select prefixes, so each tier must be a superset of the
+        // previous one — otherwise a fixture would silently vanish at a tier.
+        assert!(
+            BenchmarkPreset::Standard.fixtures().len() > BenchmarkPreset::Quick.fixtures().len()
+        );
+        assert!(
+            BenchmarkPreset::Thorough.fixtures().len()
+                > BenchmarkPreset::Standard.fixtures().len()
+        );
+    }
+
+    #[test]
+    fn fixture_table_ids_are_unique_and_references_non_empty() {
+        let mut ids = HashSet::new();
+        for fixture in FIXTURES {
+            assert!(
+                ids.insert(fixture.id),
+                "duplicate fixture id '{}'",
+                fixture.id
+            );
+            assert!(
+                !fixture.label.trim().is_empty(),
+                "fixture '{}' has an empty label",
+                fixture.id
+            );
+            assert!(
+                !fixture.reference.trim().is_empty(),
+                "fixture '{}' has an empty reference transcript",
+                fixture.id
+            );
+            assert!(
+                !fixture.wav.is_empty(),
+                "fixture '{}' has empty audio bytes",
+                fixture.id
+            );
+        }
+        assert_eq!(ids.len(), FIXTURES.len());
     }
 
     #[test]
@@ -1395,6 +1500,104 @@ mod tests {
         assert!(prepared
             .iter()
             .all(|fixture| !fixture.samples.is_empty() && fixture.audio_seconds > 0.0));
+    }
+
+    /// The stress fixtures added in issue #273. Kept as a list so the
+    /// model-backed tests below iterate exactly the new clips.
+    const NEW_FIXTURE_IDS: &[&str] = &["jargon", "numbers", "disfluent", "xxlong", "fast"];
+
+    fn fixture_by_id(id: &str) -> &'static Fixture {
+        FIXTURES
+            .iter()
+            .find(|fixture| fixture.id == id)
+            .unwrap_or_else(|| panic!("fixture '{id}' missing from table"))
+    }
+
+    /// Model-backed: prove every new fixture survives VAD and decodes to
+    /// non-empty text on a real whisper model. Ignored by default (needs the
+    /// Silero VAD model + an installed whisper model). Run on the mac:
+    ///   cargo test new_fixtures_decode_and_survive_vad -- --ignored --nocapture --test-threads=1
+    #[test]
+    #[ignore = "requires installed VAD + whisper models; run on the mac"]
+    fn new_fixtures_decode_and_survive_vad() {
+        let new_fixtures: Vec<Fixture> = NEW_FIXTURE_IDS
+            .iter()
+            .map(|id| {
+                let fixture = fixture_by_id(id);
+                Fixture {
+                    id: fixture.id,
+                    label: fixture.label,
+                    wav: fixture.wav,
+                    reference: fixture.reference,
+                }
+            })
+            .collect();
+        let prepared = prepare_fixtures(&new_fixtures, 0.5)
+            .expect("new fixtures should decode and pass VAD");
+        assert_eq!(prepared.len(), NEW_FIXTURE_IDS.len());
+
+        let mut backend = backend_for("tiny.en").expect("whisper backend");
+        backend.load_model("tiny.en").expect("load tiny.en");
+        for fixture in &prepared {
+            assert!(
+                fixture.audio_seconds > 0.0,
+                "{} produced no post-VAD audio",
+                fixture.fixture.id
+            );
+            let transcript = backend
+                .transcribe(&fixture.samples, "en", None, true)
+                .expect("transcribe new fixture");
+            println!(
+                "[{:>9} {:>5.1}s] {}",
+                fixture.fixture.id, fixture.audio_seconds, transcript.trim()
+            );
+            assert!(
+                !words(&transcript).is_empty(),
+                "{} decoded to empty text",
+                fixture.fixture.id
+            );
+        }
+        backend.reset();
+    }
+
+    /// Model-backed spot-check: transcribe every new fixture with the most
+    /// accurate model (large-v3-turbo) and print reference vs output vs both
+    /// WERs so a human can eyeball whether `say`'s pronunciation makes any
+    /// reference untestable. Ignored by default. Run on the mac:
+    ///   cargo test large_v3_turbo_spot_check_new_fixtures -- --ignored --nocapture --test-threads=1
+    #[test]
+    #[ignore = "requires installed VAD + large-v3-turbo; run on the mac"]
+    fn large_v3_turbo_spot_check_new_fixtures() {
+        let mut backend = backend_for("large-v3-turbo").expect("whisper backend");
+        backend.load_model("large-v3-turbo").expect("load large-v3-turbo");
+        let vad_path = crate::vad::vad_model_path()
+            .filter(|path| path.exists())
+            .expect("VAD model installed");
+        let vad_path = vad_path.to_string_lossy();
+        for id in NEW_FIXTURE_IDS {
+            let fixture = fixture_by_id(id);
+            let samples =
+                crate::transcriber::parse_wav_to_samples(fixture.wav).expect("decode wav");
+            let samples = match crate::vad::filter_speech(&vad_path, &samples, 0.5)
+                .expect("VAD run")
+            {
+                crate::vad::VadResult::Speech(samples) => samples,
+                crate::vad::VadResult::NoSpeech => panic!("{id} VAD found no speech"),
+            };
+            let transcript = backend
+                .transcribe(&samples, "en", None, true)
+                .expect("transcribe");
+            let (errors, reference_words) = word_errors(fixture.reference, &transcript);
+            let (normalized_errors, normalized_reference_words) =
+                normalized_word_errors(fixture.reference, &transcript);
+            println!("=== {id} ===");
+            println!("  reference: {}", fixture.reference.trim());
+            println!("  output   : {}", transcript.trim());
+            println!(
+                "  raw WER  : {errors}/{reference_words}  normalized WER: {normalized_errors}/{normalized_reference_words}"
+            );
+        }
+        backend.reset();
     }
 
     #[test]
