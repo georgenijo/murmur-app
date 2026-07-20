@@ -1,3 +1,4 @@
+use crate::model_runtime::UnloadReason;
 use serde::Serialize;
 use std::sync::Mutex;
 
@@ -71,7 +72,6 @@ fn check_idle_timeout() {
         should_release_model(timeout_min, status, last.map(|t| t.elapsed()))
     };
     if should_release {
-        let mut backend = state.app_state.backend.lock_or_recover();
         // Hold the status lock through reset so a racing recording either makes
         // us skip release or starts after reset and prepares the model normally.
         let dictation = state.app_state.dictation.lock_or_recover();
@@ -80,13 +80,17 @@ fn check_idle_timeout() {
             should_release_model(timeout_min, dictation.status, last.map(|t| t.elapsed()))
         };
         if still_idle && !state.benchmark.is_running() {
-            let backend_name = backend.name().to_string();
-            backend.reset();
+            let backend_name = state
+                .app_state
+                .model_runtime
+                .unload(Some(&handle), UnloadReason::IdleTimeout)
+                .ok()
+                .flatten();
             *state.app_state.last_transcription_at.lock_or_recover() = None;
             let rss = get_process_rss_mb();
             let heap = crate::rust_heap_mb();
             let ffi = crate::ffi_heap_mb();
-            tracing::info!(target: "pipeline", backend = backend_name, rss_mb = rss, rust_heap_mb = heap, ffi_heap_mb = ffi, "model_idle_release");
+            tracing::info!(target: "pipeline", backend_released = backend_name.is_some(), rss_mb = rss, rust_heap_mb = heap, ffi_heap_mb = ffi, "model_idle_release");
         }
     }
 }

@@ -17,27 +17,42 @@ export function useOverlayGeometry(): OverlayGeometry | null {
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | null = null;
+    let eventGeneration = 0;
 
-    invoke<unknown>('get_overlay_geometry')
-      .then((value) => {
+    const initialize = async () => {
+      const stopListening = await listen<unknown>('overlay-geometry-changed', (event) => {
         if (cancelled) return;
+        if (isOverlayGeometry(event.payload)) {
+          eventGeneration += 1;
+          setGeometry(event.payload);
+        } else {
+          flog.warn('overlay', 'overlay-geometry-changed had invalid payload');
+        }
+      });
+
+      if (cancelled) {
+        stopListening();
+        return;
+      }
+      unlisten = stopListening;
+
+      const fetchGeneration = eventGeneration;
+      try {
+        const value = await invoke<unknown>('get_overlay_geometry');
+        if (cancelled || eventGeneration !== fetchGeneration) return;
         if (isOverlayGeometry(value)) {
           flog.info('overlay', 'geometry loaded', { windowW: value.windowW, collapsedH: value.collapsedH });
           setGeometry(value);
         } else {
           flog.warn('overlay', 'get_overlay_geometry returned invalid payload');
         }
-      })
-      .catch((e) => flog.warn('overlay', 'get_overlay_geometry failed', { error: String(e) }));
-
-    listen<unknown>('overlay-geometry-changed', (event) => {
-      if (isOverlayGeometry(event.payload)) {
-        setGeometry(event.payload);
-      } else {
-        flog.warn('overlay', 'overlay-geometry-changed had invalid payload');
+      } catch (e) {
+        flog.warn('overlay', 'get_overlay_geometry failed', { error: String(e) });
       }
-    }).then((fn) => {
-      if (cancelled) { fn(); } else { unlisten = fn; }
+    };
+
+    initialize().catch((e) => {
+      flog.warn('overlay', 'overlay geometry listener setup failed', { error: String(e) });
     });
 
     return () => {

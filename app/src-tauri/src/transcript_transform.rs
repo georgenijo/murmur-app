@@ -209,13 +209,34 @@ impl TranscriptPipeline {
     fn standard(resources: TranscriptTransformResources) -> Self {
         let TranscriptTransformResources {
             custom_commands,
+            voice_commands,
             correction_matcher,
             cli_lexicon,
             ide_context_index,
         } = resources;
         Self::new(vec![
             Box::new(CleanupStage),
-            Box::new(VoiceCommandsStage { custom_commands }),
+            Box::new(VoiceCommandsStage {
+                voice_commands: if voice_commands.is_empty() {
+                    custom_commands
+                        .iter()
+                        .enumerate()
+                        .map(|(index, (phrase, replacement))| {
+                            crate::voice_commands::ResolvedVoiceCommand {
+                                id: format!("legacy-resource-{index:08}"),
+                                phrase: phrase.clone(),
+                                command_type:
+                                    crate::knowledge_store::VoiceCommandKind::TextReplacement,
+                                content: replacement.clone(),
+                                allow_clipboard_read: false,
+                                app_scoped: false,
+                            }
+                        })
+                        .collect()
+                } else {
+                    voice_commands
+                },
+            }),
             Box::new(SmartCorrectionStage {
                 matcher: correction_matcher,
             }),
@@ -327,6 +348,7 @@ fn log_stage(context: &TranscriptContext, report: &StageReport) {
 
 pub(crate) struct TranscriptTransformResources {
     pub custom_commands: Vec<(String, String)>,
+    pub voice_commands: Vec<crate::voice_commands::ResolvedVoiceCommand>,
     pub correction_matcher: Option<Arc<CorrectionMatcher>>,
     pub cli_lexicon: CliLexicon,
     pub ide_context_index: Option<Arc<IdeContextIndex>>,
@@ -336,6 +358,7 @@ impl TranscriptTransformResources {
     pub(crate) fn empty() -> Self {
         Self {
             custom_commands: Vec::new(),
+            voice_commands: Vec::new(),
             correction_matcher: None,
             cli_lexicon: CliLexicon::from_context(None, &[]),
             ide_context_index: None,
@@ -382,7 +405,7 @@ impl TranscriptTransform for CleanupStage {
 }
 
 struct VoiceCommandsStage {
-    custom_commands: Vec<(String, String)>,
+    voice_commands: Vec<crate::voice_commands::ResolvedVoiceCommand>,
 }
 
 impl TranscriptTransform for VoiceCommandsStage {
@@ -399,11 +422,13 @@ impl TranscriptTransform for VoiceCommandsStage {
     }
 
     fn transform(&self, text: &str, _context: &TranscriptContext) -> Result<String, StageError> {
-        Ok(crate::voice_commands::apply_voice_commands_with_custom(
+        Ok(crate::voice_commands::apply_voice_commands_with_resolved(
             text,
             true,
-            &self.custom_commands,
-        ))
+            &self.voice_commands,
+            &crate::voice_commands::SystemVoiceCommandRuntime,
+        )
+        .text)
     }
 }
 
@@ -565,6 +590,7 @@ mod tests {
     fn resources(with_matcher: bool) -> TranscriptTransformResources {
         TranscriptTransformResources {
             custom_commands: vec![("my email".to_string(), "test@example.com".to_string())],
+            voice_commands: Vec::new(),
             correction_matcher: with_matcher.then(correction_matcher),
             cli_lexicon: CliLexicon::from_context(None, &[]),
             ide_context_index: None,
@@ -687,10 +713,7 @@ mod tests {
             "fn localProjectSymbol() { localProjectSymbol(); }",
         )
         .unwrap();
-        let ide_index = crate::ide_context::build_index(
-            1,
-            &[root.to_string_lossy().to_string()],
-        )
+        let ide_index = crate::ide_context::build_index(1, &[root.to_string_lossy().to_string()])
         .unwrap()
         .index;
         let stages = TranscriptStageConfig {

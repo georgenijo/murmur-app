@@ -26,13 +26,17 @@ describe('overlay geometry contract fixture', () => {
       windowW: 305, collapsedH: 32, expandedH: 76,
       pillIdleW: 213, pillActiveW: 305,
       pillMarginIdle: 46, pillMarginActive: 0,
-      dropdownH: 44, previewRowH: 30,
+      dropdownH: 44,
     });
     expect(fixture.fallback).toEqual({
       windowW: 200, collapsedH: 37, expandedH: 81,
       pillIdleW: 108, pillActiveW: 200,
       pillMarginIdle: 46, pillMarginActive: 0,
-      dropdownH: 44, previewRowH: 30,
+      dropdownH: 44,
     });
+  });
+
+  it('rejects unilateral shape drift', () => {
+    expect(isOverlayGeometry({ ...fixture.notched, extraField: 1 })).toBe(false);
   });
 });

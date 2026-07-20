@@ -64,6 +64,7 @@ struct Term {
 struct ExplicitAlias {
     spoken: Vec<char>,
     written: String,
+    priority: u8,
 }
 
 enum CorrectionSegment {
@@ -129,6 +130,19 @@ impl CorrectionMatcher {
         fuzzy: bool,
         include_builtins: bool,
     ) -> Self {
+        Self::build_with_learned(terms, pairs, &[], fuzzy, include_builtins)
+    }
+
+    /// Build the same matcher while inserting reviewed learned replacements
+    /// between explicit vocabulary aliases and lower-priority derived/fuzzy
+    /// vocabulary. Explicit aliases retain priority for identical phrases.
+    pub fn build_with_learned(
+        terms: &[String],
+        pairs: &[(String, String)],
+        learned_pairs: &[(String, String)],
+        fuzzy: bool,
+        include_builtins: bool,
+    ) -> Self {
         // spoken(lowercased) -> written for derived/built-in vocabulary.
         let mut map: HashMap<String, String> = HashMap::new();
 
@@ -151,12 +165,15 @@ impl CorrectionMatcher {
         }
         let mut explicit_aliases = pairs
             .iter()
-            .filter_map(|(spoken, written)| {
+            .map(|pair| (pair, 2_u8))
+            .chain(learned_pairs.iter().map(|pair| (pair, 1_u8)))
+            .filter_map(|((spoken, written), priority)| {
                 let spoken = normalize_alias(spoken);
                 let written = written.trim();
                 (!spoken.is_empty() && !written.is_empty()).then(|| ExplicitAlias {
                     spoken: spoken.chars().collect(),
                     written: written.to_string(),
+                    priority,
                 })
             })
             .collect::<Vec<_>>();
@@ -164,20 +181,28 @@ impl CorrectionMatcher {
         // explicit precedence idempotent: a second application cannot feed a
         // canonical such as "standard error" into the lower-priority builtin
         // that would otherwise rewrite it to "stderr".
-        explicit_aliases.extend(pairs.iter().filter_map(|(_, written)| {
-            let spoken = normalize_alias(written);
-            let written = written.trim();
-            (!spoken.is_empty() && !written.is_empty()).then(|| ExplicitAlias {
-                spoken: spoken.chars().collect(),
-                written: written.to_string(),
-            })
-        }));
+        explicit_aliases.extend(
+            pairs
+                .iter()
+                .map(|pair| (pair, 2_u8))
+                .chain(learned_pairs.iter().map(|pair| (pair, 1_u8)))
+                .filter_map(|((_, written), priority)| {
+                    let spoken = normalize_alias(written);
+                    let written = written.trim();
+                    (!spoken.is_empty() && !written.is_empty()).then(|| ExplicitAlias {
+                        spoken: spoken.chars().collect(),
+                        written: written.to_string(),
+                        priority,
+                    })
+                }),
+        );
         explicit_aliases.sort_by(|left, right| {
             right
                 .spoken
                 .len()
                 .cmp(&left.spoken.len())
                 .then_with(|| left.spoken.cmp(&right.spoken))
+                .then_with(|| right.priority.cmp(&left.priority))
                 .then_with(|| left.written.cmp(&right.written))
         });
         explicit_aliases.dedup_by(|left, right| left.spoken == right.spoken);

@@ -2,26 +2,30 @@
 mod alloc;
 mod audio;
 mod audio_decode;
-mod benchmark;
+// `pub` so the headless benchmark runner (tests/headless_benchmark.rs) can
+// call `benchmark::run` directly with a mock AppHandle; not part of any
+// stable external API.
+pub mod benchmark;
 mod cleanup;
 mod cli_command;
 mod commands;
+mod correct_and_teach;
 mod correction;
 mod dictation_context;
 mod file_output;
 mod frontmost;
-mod injector;
 mod ide_context;
+mod injector;
 mod keyboard;
-mod partial_transcript;
+mod knowledge_store;
+mod model_runtime;
 mod platform;
 mod resource_monitor;
 mod smart_formatting;
 mod state;
-mod streaming;
-mod transcript_transform;
 pub mod telemetry;
 pub mod transcriber;
+mod transcript_transform;
 mod vad;
 mod vocab;
 mod vocabulary_alias;
@@ -44,19 +48,22 @@ pub fn ffi_heap_mb() -> u64 {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn rust_heap_mb() -> u64 { 0 }
+pub fn rust_heap_mb() -> u64 {
+    0
+}
 
 #[cfg(not(target_os = "macos"))]
-pub fn ffi_heap_mb() -> u64 { 0 }
+pub fn ffi_heap_mb() -> u64 {
+    0
+}
 
 use state::AppState;
 use std::sync::{Mutex, MutexGuard};
+use tauri::menu::{MenuBuilder, MenuItemBuilder};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::Manager;
 #[cfg(target_os = "macos")]
 use tauri::RunEvent;
-use tauri::menu::{MenuBuilder, MenuItemBuilder};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-
 
 /// Helper trait to recover from poisoned mutexes
 pub(crate) trait MutexExt<T> {
@@ -75,6 +82,8 @@ impl<T> MutexExt<T> for Mutex<T> {
 pub(crate) struct State {
     pub(crate) app_state: AppState,
     pub(crate) benchmark: std::sync::Arc<benchmark::BenchmarkCoordinator>,
+    pub(crate) knowledge: knowledge_store::KnowledgeStore,
+    pub(crate) correct_and_teach: correct_and_teach::CorrectAndTeachState,
     /// Cached notch dimensions (notch_width, menu_bar_height) from setup (main thread).
     pub(crate) notch_info: Mutex<Option<(f64, f64)>>,
 }
@@ -111,10 +120,7 @@ where
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "linux")]
-    apply_linux_webkit_env_defaults(
-        |k| std::env::var_os(k),
-        |k, v| std::env::set_var(k, v),
-    );
+    apply_linux_webkit_env_defaults(|k| std::env::var_os(k), |k, v| std::env::set_var(k, v));
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -129,6 +135,8 @@ pub fn run() {
         .manage(State {
             app_state: AppState::default(),
             benchmark: std::sync::Arc::new(benchmark::BenchmarkCoordinator::new()),
+            knowledge: knowledge_store::KnowledgeStore::default(),
+            correct_and_teach: correct_and_teach::CorrectAndTeachState::default(),
             notch_info: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
@@ -137,7 +145,6 @@ pub fn run() {
             commands::recording::get_status,
             commands::recording::configure_dictation,
             commands::recording::start_native_recording,
-            commands::recording::get_active_recording_session,
             commands::recording::stop_native_recording,
             commands::recording::cancel_native_recording,
             commands::recording::count_vocab_tokens,
@@ -148,6 +155,9 @@ pub fn run() {
             commands::recording::get_ide_context_status,
             commands::recording::refresh_ide_context,
             commands::recording::clear_ide_context,
+            commands::correct_and_teach::propose_learned_correction,
+            commands::correct_and_teach::confirm_learned_correction,
+            commands::correct_and_teach::discard_learned_correction_proposal,
             commands::permissions::open_system_preferences,
             commands::permissions::check_accessibility_permission,
             commands::permissions::request_accessibility_permission,
@@ -164,12 +174,27 @@ pub fn run() {
             commands::keyboard::set_keyboard_recording,
             commands::keyboard::set_app_disabled,
             commands::keyboard::get_app_disabled,
+            commands::knowledge::get_knowledge_store_status,
+            commands::knowledge::retry_knowledge_store,
+            commands::knowledge::list_knowledge,
+            commands::knowledge::get_knowledge,
+            commands::knowledge::upsert_knowledge,
+            commands::knowledge::preview_voice_command,
+            commands::knowledge::set_knowledge_enabled,
+            commands::knowledge::delete_knowledge,
+            commands::knowledge::resolve_knowledge,
+            commands::knowledge::export_knowledge_to_file,
+            commands::knowledge::inspect_knowledge_import,
+            commands::knowledge::import_knowledge_from_file,
+            commands::knowledge::delete_all_knowledge,
             commands::logging::get_log_contents,
             commands::logging::clear_logs,
             commands::logging::log_frontend,
             commands::logging::open_log_viewer,
             commands::models::check_model_exists,
             commands::models::check_specific_model_exists,
+            commands::models::get_model_runtime_catalog,
+            commands::models::get_model_runtime_status,
             commands::models::download_model,
             commands::benchmark::get_benchmark_models,
             commands::benchmark::get_benchmark_activity,
@@ -179,7 +204,6 @@ pub fn run() {
             commands::overlay::show_overlay,
             commands::overlay::hide_overlay,
             commands::overlay::set_overlay_expanded,
-            commands::overlay::set_overlay_surface,
             commands::overlay::show_main_window,
             commands::overlay::get_overlay_geometry,
             telemetry::get_event_history,
@@ -198,6 +222,21 @@ pub fn run() {
         })
         .setup(|app| {
             telemetry::init(app.handle().clone());
+
+            let knowledge_root = app.path().app_data_dir()?.join("knowledge");
+            let knowledge_status = app.state::<State>().knowledge.initialize(knowledge_root);
+            if knowledge_status.availability != knowledge_store::StoreAvailability::Unavailable {
+                if let Err(error) = commands::knowledge::refresh_correction_rules(&app.state::<State>()) {
+                    tracing::warn!(target: "system", error, "initial knowledge correction matcher refresh failed");
+                }
+            }
+            tracing::info!(
+                target: "system",
+                availability = ?knowledge_status.availability,
+                schema_version = knowledge_status.schema_version,
+                record_count = knowledge_status.record_count,
+                "personal knowledge store initialized"
+            );
 
             tracing::info!(target: "system", "app setup — Murmur v{}", env!("CARGO_PKG_VERSION"));
 
@@ -306,7 +345,11 @@ pub fn run() {
         // when there are truly no visible windows (e.g. dock-icon click
         // after the user closed everything).
         #[cfg(target_os = "macos")]
-        if let RunEvent::Reopen { has_visible_windows, .. } = &_event {
+        if let RunEvent::Reopen {
+            has_visible_windows,
+            ..
+        } = &_event
+        {
             if !has_visible_windows {
                 if let Some(win) = _app_handle.get_webview_window("main") {
                     let _ = win.show();
@@ -335,16 +378,26 @@ mod tests {
             },
         );
         let map = env.borrow();
-        assert_eq!(map.get("WEBKIT_DISABLE_DMABUF_RENDERER"), Some(&OsString::from("1")));
-        assert_eq!(map.get("WEBKIT_DISABLE_COMPOSITING_MODE"), Some(&OsString::from("1")));
+        assert_eq!(
+            map.get("WEBKIT_DISABLE_DMABUF_RENDERER"),
+            Some(&OsString::from("1"))
+        );
+        assert_eq!(
+            map.get("WEBKIT_DISABLE_COMPOSITING_MODE"),
+            Some(&OsString::from("1"))
+        );
     }
 
     /// User-provided values must be preserved (including explicit "0" opt-outs).
     #[test]
     fn preserves_user_overrides() {
         let env: RefCell<HashMap<String, OsString>> = RefCell::new(HashMap::new());
-        env.borrow_mut().insert("WEBKIT_DISABLE_DMABUF_RENDERER".into(), OsString::from("0"));
-        env.borrow_mut().insert("WEBKIT_DISABLE_COMPOSITING_MODE".into(), OsString::from("custom"));
+        env.borrow_mut()
+            .insert("WEBKIT_DISABLE_DMABUF_RENDERER".into(), OsString::from("0"));
+        env.borrow_mut().insert(
+            "WEBKIT_DISABLE_COMPOSITING_MODE".into(),
+            OsString::from("custom"),
+        );
 
         apply_linux_webkit_env_defaults(
             |k| env.borrow().get(k).cloned(),
@@ -354,15 +407,22 @@ mod tests {
         );
 
         let map = env.borrow();
-        assert_eq!(map.get("WEBKIT_DISABLE_DMABUF_RENDERER"), Some(&OsString::from("0")));
-        assert_eq!(map.get("WEBKIT_DISABLE_COMPOSITING_MODE"), Some(&OsString::from("custom")));
+        assert_eq!(
+            map.get("WEBKIT_DISABLE_DMABUF_RENDERER"),
+            Some(&OsString::from("0"))
+        );
+        assert_eq!(
+            map.get("WEBKIT_DISABLE_COMPOSITING_MODE"),
+            Some(&OsString::from("custom"))
+        );
     }
 
     /// Partial user override: only the unset default should be applied.
     #[test]
     fn applies_only_missing_defaults() {
         let env: RefCell<HashMap<String, OsString>> = RefCell::new(HashMap::new());
-        env.borrow_mut().insert("WEBKIT_DISABLE_DMABUF_RENDERER".into(), OsString::from("0"));
+        env.borrow_mut()
+            .insert("WEBKIT_DISABLE_DMABUF_RENDERER".into(), OsString::from("0"));
         let writes: RefCell<Vec<(String, String)>> = RefCell::new(Vec::new());
 
         apply_linux_webkit_env_defaults(
@@ -375,7 +435,10 @@ mod tests {
 
         assert_eq!(
             *writes.borrow(),
-            vec![("WEBKIT_DISABLE_COMPOSITING_MODE".to_string(), "1".to_string())],
+            vec![(
+                "WEBKIT_DISABLE_COMPOSITING_MODE".to_string(),
+                "1".to_string()
+            )],
         );
         assert_eq!(
             env.borrow().get("WEBKIT_DISABLE_DMABUF_RENDERER"),
@@ -387,7 +450,8 @@ mod tests {
     #[test]
     fn treats_empty_string_as_set() {
         let env: RefCell<HashMap<String, OsString>> = RefCell::new(HashMap::new());
-        env.borrow_mut().insert("WEBKIT_DISABLE_DMABUF_RENDERER".into(), OsString::from(""));
+        env.borrow_mut()
+            .insert("WEBKIT_DISABLE_DMABUF_RENDERER".into(), OsString::from(""));
         let writes: RefCell<Vec<String>> = RefCell::new(Vec::new());
 
         apply_linux_webkit_env_defaults(
