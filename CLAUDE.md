@@ -30,6 +30,7 @@ Read these before working on a feature:
 - **[docs/features/per-app-profiles.md](docs/features/per-app-profiles.md)** — Immutable per-recording context, profile precedence, privacy boundaries
 - **[docs/features/ide-context.md](docs/features/ide-context.md)** — Opt-in local IDE index, @file grammar, path/privacy boundaries
 - **[docs/features/voice-commands.md](docs/features/voice-commands.md)** — Typed replacements, multiline snippets, safe variables, scopes, and clipboard permission
+- **[docs/features/evaluation-harness.md](docs/features/evaluation-harness.md)** — Versioned local fixtures, deterministic CI, opt-in hardware evaluation, reports, and deletion
 - **[docs/decisions/DECISIONS.md](docs/decisions/DECISIONS.md)** — Running log of architectural/scope decisions (newest first)
 
 ## File Map

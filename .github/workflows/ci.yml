@@ -107,6 +107,17 @@ jobs:
           CMAKE_CXX_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
         run: cd app/src-tauri && cargo test --lib -- --test-threads=1
 
+      - name: Run deterministic dictation evaluation
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "14.0"
+          CMAKE_OSX_DEPLOYMENT_TARGET: "14.0"
+          CMAKE_C_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
+          CMAKE_CXX_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
+        run: >-
+          cd app/src-tauri &&
+          cargo run --bin murmur-eval -- deterministic
+          --output target/murmur-eval/ci-report.json
+
   linux:
     needs: changes
     if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.github == 'true'

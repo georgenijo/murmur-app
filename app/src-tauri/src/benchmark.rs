@@ -662,7 +662,7 @@ fn edit_distance(reference: &[String], hypothesis: &[String]) -> usize {
 }
 
 /// Raw WER: lowercase + punctuation split only. Returns (errors, reference words).
-fn word_errors(reference: &str, hypothesis: &str) -> (usize, usize) {
+pub(crate) fn word_errors(reference: &str, hypothesis: &str) -> (usize, usize) {
     let reference = words(reference);
     let hypothesis = words(hypothesis);
     (edit_distance(&reference, &hypothesis), reference.len())
@@ -670,7 +670,7 @@ fn word_errors(reference: &str, hypothesis: &str) -> (usize, usize) {
 
 /// Normalized WER: applies `normalized_words` before scoring so formatting/ITN
 /// differences do not count. Returns (errors, normalized reference words).
-fn normalized_word_errors(reference: &str, hypothesis: &str) -> (usize, usize) {
+pub(crate) fn normalized_word_errors(reference: &str, hypothesis: &str) -> (usize, usize) {
     let reference = normalized_words(reference);
     let hypothesis = normalized_words(hypothesis);
     (edit_distance(&reference, &hypothesis), reference.len())

@@ -1,0 +1,161 @@
+[
+  {
+    "fixtureVersion": 1,
+    "id": "backtracking-standalone",
+    "tier": "deterministic",
+    "provenance": {"kind": "curatedSynthetic", "source": "Issue #267 dogfooding example", "containsRealUserData": false, "deletion": "Delete this JSON entry and any generated local reports."},
+    "input": {"rawAsr": "Ship it Friday, actually, make that Monday", "expectedRawAsr": ["Ship it Friday, actually, make that Monday"]},
+    "context": {"stages": {"smartFormatting": true}},
+    "expected": {"finalText": "Ship it Monday.", "deliveredText": "Ship it Monday.", "stages": [{"name": "smart_formatting", "outcome": "applied", "changed": true, "text": "Ship it Monday."}]},
+    "timing": {"rawAsrMs": 18, "transformMs": 2, "deliveryMs": 1}
+  },
+  {
+    "fixtureVersion": 1,
+    "id": "backtracking-long-natural-sentence",
+    "tier": "deterministic",
+    "provenance": {"kind": "curatedSynthetic", "source": "Issue #267 long-sentence regression", "containsRealUserData": false, "deletion": "Delete this JSON entry and any generated local reports."},
+    "input": {"rawAsr": "Please tell the release team to ship it Friday, actually, make that Monday before lunch", "expectedRawAsr": ["Please tell the release team to ship it Friday, actually, make that Monday before lunch"]},
+    "context": {"stages": {"smartFormatting": true}},
+    "expected": {"finalText": "Please tell the release team to ship it Monday before lunch.", "deliveredText": "Please tell the release team to ship it Monday before lunch.", "stages": [{"name": "smart_formatting", "outcome": "applied", "changed": true}]},
+    "timing": {"rawAsrMs": 27, "transformMs": 3, "deliveryMs": 1}
+  },
+  {
+    "fixtureVersion": 1,
+    "id": "numbered-list",
+    "tier": "deterministic",
+    "provenance": {"kind": "curatedSynthetic", "source": "Smart Formatting documented example", "containsRealUserData": false, "deletion": "Delete this JSON entry and any generated local reports."},
+    "input": {"rawAsr": "The three priorities are first reliability, second latency, third accuracy", "expectedRawAsr": ["The three priorities are first reliability, second latency, third accuracy"]},
+    "context": {"stages": {"smartFormatting": true}},
+    "expected": {"finalText": "The three priorities are:\n1. Reliability\n2. Latency\n3. Accuracy", "deliveredText": "The three priorities are:\n1. Reliability\n2. Latency\n3. Accuracy", "stages": [{"name": "smart_formatting", "outcome": "applied", "changed": true}]},
+    "timing": {"rawAsrMs": 24, "transformMs": 2, "deliveryMs": 1}
+  },
+  {
+    "fixtureVersion": 1,
+    "id": "bulleted-list-custom-command",
+    "tier": "deterministic",
+    "provenance": {"kind": "curatedSynthetic", "source": "Issue #267 list corpus", "containsRealUserData": false, "deletion": "Delete this JSON entry and any generated local reports."},
+    "input": {"rawAsr": "Packing list new line bullet charger new line bullet cable", "expectedRawAsr": ["Packing list new line bullet charger new line bullet cable"]},
+    "context": {"stages": {"voiceCommands": true}, "resources": {"voiceCommands": [{"id": "bullet", "phrase": "bullet", "commandType": "text_replacement", "content": "-", "allowClipboardRead": false, "appScoped": false}]}},
+    "expected": {"finalText": "Packing list\n- charger\n- cable", "deliveredText": "Packing list\n- charger\n- cable", "stages": [{"name": "voice_commands", "outcome": "applied", "changed": true}]},
+    "timing": {"rawAsrMs": 20, "transformMs": 1, "deliveryMs": 1}
+  },
+  {
+    "fixtureVersion": 1,
+    "id": "spoken-punctuation-and-paragraph",
+    "tier": "deterministic",
+    "provenance": {"kind": "curatedSynthetic", "source": "Issue #267 punctuation corpus", "containsRealUserData": false, "deletion": "Delete this JSON entry and any generated local reports."},
+    "input": {"rawAsr": "Hello comma world period new paragraph Next line question mark", "expectedRawAsr": ["Hello comma world period new paragraph Next line question mark"]},
+    "context": {"stages": {"voiceCommands": true}},
+    "expected": {"finalText": "Hello, world.\n\nNext line?", "deliveredText": "Hello, world.\n\nNext line?", "stages": [{"name": "voice_commands", "outcome": "applied", "changed": true}]},
+    "timing": {"rawAsrMs": 21, "transformMs": 1, "deliveryMs": 1}
+  },
+  {
+    "fixtureVersion": 1,
+    "id": "npm-tauri-asr-variants",
+    "tier": "deterministic",
+    "provenance": {"kind": "curatedSynthetic", "source": "Issue #267 Tauri/Tori/Tory failure", "containsRealUserData": false, "deletion": "Delete this JSON entry and any generated local reports."},
+    "input": {"rawAsr": "npm run Tory dev", "expectedRawAsr": ["npm run Tauri dev", "npm run Tori dev", "npm run Tory dev"]},
+    "context": {"stages": {"smartCorrection": true, "cliCommand": true}, "resources": {"vocabularyAliases": [{"spoken": "Tori", "written": "Tauri"}, {"spoken": "Tory", "written": "Tauri"}]}},
+    "expected": {"finalText": "npm run tauri dev", "deliveredText": "npm run tauri dev", "commandCase": true, "stages": [{"name": "smart_correction", "outcome": "applied", "changed": true}, {"name": "cli_command", "outcome": "applied", "changed": true}]},
+    "timing": {"rawAsrMs": 16, "transformMs": 2, "deliveryMs": 1}
+  },
+  {
+    "fixtureVersion": 1,
+    "id": "npx-ccusage-latest",
+    "tier": "deterministic",
+    "provenance": {"kind": "curatedSynthetic", "source": "CLI formatter documented example", "containsRealUserData": false, "deletion": "Delete this JSON entry and any generated local reports."},
+    "input": {"rawAsr": "npx cc usage at latest", "expectedRawAsr": ["npx cc usage at latest"]},
+    "context": {"stages": {"cliCommand": true}},
+    "expected": {"finalText": "npx ccusage@latest", "deliveredText": "npx ccusage@latest", "commandCase": true, "stages": [{"name": "cli_command", "outcome": "applied", "changed": true}]},
+    "timing": {"rawAsrMs": 15, "transformMs": 1, "deliveryMs": 1}
+  },
+  {
+    "fixtureVersion": 1,
+    "id": "git-checkout-branch",
+    "tier": "deterministic",
+    "provenance": {"kind": "curatedSynthetic", "source": "CLI formatter documented example", "containsRealUserData": false, "deletion": "Delete this JSON entry and any generated local reports."},
+    "input": {"rawAsr": "git checkout dash b feature slash evaluation", "expectedRawAsr": ["git checkout dash b feature slash evaluation"]},
+    "context": {"stages": {"cliCommand": true}},
+    "expected": {"finalText": "git checkout -b feature/evaluation", "deliveredText": "git checkout -b feature/evaluation", "commandCase": true, "stages": [{"name": "cli_command", "outcome": "applied", "changed": true}]},
+    "timing": {"rawAsrMs": 14, "transformMs": 1, "deliveryMs": 1}
+  },
+  {
+    "fixtureVersion": 1,
+    "id": "cargo-test-threads",
+    "tier": "deterministic",
+    "provenance": {"kind": "curatedSynthetic", "source": "CLI formatter documented example", "containsRealUserData": false, "deletion": "Delete this JSON entry and any generated local reports."},
+    "input": {"rawAsr": "cargo test dash dash dash test threads equals one", "expectedRawAsr": ["cargo test dash dash dash test threads equals one"]},
+    "context": {"stages": {"cliCommand": true}},
+    "expected": {"finalText": "cargo test -- --test-threads=1", "deliveredText": "cargo test -- --test-threads=1", "commandCase": true, "stages": [{"name": "cli_command", "outcome": "applied", "changed": true}]},
+    "timing": {"rawAsrMs": 18, "transformMs": 1, "deliveryMs": 1}
+  },
+  {
+    "fixtureVersion": 1,
+    "id": "docker-remove",
+    "tier": "deterministic",
+    "provenance": {"kind": "curatedSynthetic", "source": "Issue #267 common Docker corpus", "containsRealUserData": false, "deletion": "Delete this JSON entry and any generated local reports."},
+    "input": {"rawAsr": "docker run dash dash rm hello world", "expectedRawAsr": ["docker run dash dash rm hello world"]},
+    "context": {"stages": {"cliCommand": true}},
+    "expected": {"finalText": "docker run --rm hello world", "deliveredText": "docker run --rm hello world", "commandCase": true, "stages": [{"name": "cli_command", "outcome": "applied", "changed": true}]},
+    "timing": {"rawAsrMs": 17, "transformMs": 1, "deliveryMs": 1}
+  },
+  {
+    "fixtureVersion": 1,
+    "id": "kubectl-namespace",
+    "tier": "deterministic",
+    "provenance": {"kind": "curatedSynthetic", "source": "Issue #267 common kubectl corpus", "containsRealUserData": false, "deletion": "Delete this JSON entry and any generated local reports."},
+    "input": {"rawAsr": "kubectl get pods dash n murmur", "expectedRawAsr": ["kubectl get pods dash n murmur"]},
+    "context": {"stages": {"cliCommand": true}},
+    "expected": {"finalText": "kubectl get pods -n murmur", "deliveredText": "kubectl get pods -n murmur", "commandCase": true, "stages": [{"name": "cli_command", "outcome": "applied", "changed": true}]},
+    "timing": {"rawAsrMs": 16, "transformMs": 1, "deliveryMs": 1}
+  },
+  {
+    "fixtureVersion": 1,
+    "id": "cursor-profile-project-context",
+    "tier": "deterministic",
+    "provenance": {"kind": "curatedSynthetic", "source": "Issue #267 Cursor/project context example", "containsRealUserData": false, "deletion": "Delete this JSON entry and any generated local reports."},
+    "input": {"rawAsr": "mention recording dot rs and overlay widget", "expectedRawAsr": ["mention recording dot rs and overlay widget"]},
+    "context": {"bundleId": "com.todesktop.230313mzl4w4u92", "matchedProfile": "cursor", "stages": {"ideContext": true}, "resources": {"ideSymbols": ["OverlayWidget"], "ideFiles": ["src/recording.rs"]}},
+    "expected": {"finalText": "@src/recording.rs and OverlayWidget", "deliveredText": "@src/recording.rs and OverlayWidget", "stages": [{"name": "ide_context", "outcome": "applied", "changed": true}]},
+    "timing": {"rawAsrMs": 19, "transformMs": 2, "deliveryMs": 1}
+  },
+  {
+    "fixtureVersion": 1,
+    "id": "fixed-clock-and-fake-clipboard",
+    "tier": "deterministic",
+    "provenance": {"kind": "curatedSynthetic", "source": "Voice Commands 2.0 deterministic runtime seam", "containsRealUserData": false, "deletion": "Delete this JSON entry and any generated local reports."},
+    "input": {"rawAsr": "insert standup", "expectedRawAsr": ["insert standup"]},
+    "context": {"fixedNow": "2026-07-20T09:07:00-04:00", "clipboardText": "fixture-only note", "stages": {"voiceCommands": true}, "resources": {"voiceCommands": [{"id": "standup", "phrase": "insert standup", "commandType": "snippet", "content": "Standup {{date}} {{time}}: {{clipboard}}", "allowClipboardRead": true, "appScoped": false}]}},
+    "expected": {"finalText": "Standup 2026-07-20 09:07: fixture-only note", "deliveredText": "Standup 2026-07-20 09:07: fixture-only note", "stages": [{"name": "voice_commands", "outcome": "applied", "changed": true}]},
+    "timing": {"rawAsrMs": 12, "transformMs": 1, "deliveryMs": 1}
+  },
+  {
+    "fixtureVersion": 1,
+    "id": "negative-git-and-cargo-prose",
+    "tier": "deterministic",
+    "provenance": {"kind": "curatedSynthetic", "source": "CLI false-positive regression", "containsRealUserData": false, "deletion": "Delete this JSON entry and any generated local reports."},
+    "input": {"rawAsr": "I use git and cargo every day", "expectedRawAsr": ["I use git and cargo every day"]},
+    "context": {"stages": {"smartFormatting": true, "cliCommand": true}},
+    "expected": {"finalText": "I use git and cargo every day", "deliveredText": "I use git and cargo every day", "noChangePreservation": true, "stages": [{"name": "smart_formatting", "outcome": "applied", "changed": false}, {"name": "cli_command", "outcome": "applied", "changed": false}]},
+    "timing": {"rawAsrMs": 13, "transformMs": 1, "deliveryMs": 1}
+  },
+  {
+    "fixtureVersion": 1,
+    "id": "negative-npm-prose",
+    "tier": "deterministic",
+    "provenance": {"kind": "curatedSynthetic", "source": "CLI false-positive regression", "containsRealUserData": false, "deletion": "Delete this JSON entry and any generated local reports."},
+    "input": {"rawAsr": "npm is a package manager", "expectedRawAsr": ["npm is a package manager"]},
+    "context": {"stages": {"cliCommand": true}},
+    "expected": {"finalText": "npm is a package manager", "deliveredText": "npm is a package manager", "noChangePreservation": true, "stages": [{"name": "cli_command", "outcome": "applied", "changed": false}]},
+    "timing": {"rawAsrMs": 12, "transformMs": 1, "deliveryMs": 1}
+  },
+  {
+    "fixtureVersion": 1,
+    "id": "final-only-long-recording",
+    "tier": "deterministic",
+    "provenance": {"kind": "curatedSynthetic", "source": "Final-only replacement for removed incremental/live-preview behavior", "containsRealUserData": false, "deletion": "Delete this JSON entry and any generated local reports."},
+    "input": {"rawAsr": "This long fixture represents one authoritative transcript produced only after recording stops, with no provisional chunks, overlap reconciliation, or incremental fallback.", "expectedRawAsr": ["This long fixture represents one authoritative transcript produced only after recording stops, with no provisional chunks, overlap reconciliation, or incremental fallback."]},
+    "expected": {"finalText": "This long fixture represents one authoritative transcript produced only after recording stops, with no provisional chunks, overlap reconciliation, or incremental fallback.", "deliveredText": "This long fixture represents one authoritative transcript produced only after recording stops, with no provisional chunks, overlap reconciliation, or incremental fallback.", "noChangePreservation": true, "delivery": {"attempts": 1, "partialCount": 0, "firstPartialMs": null, "finalOnly": true}},
+    "timing": {"rawAsrMs": 4200, "transformMs": 1, "deliveryMs": 1}
+  }
+]

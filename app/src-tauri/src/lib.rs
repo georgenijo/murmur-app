@@ -12,6 +12,7 @@ mod commands;
 mod correct_and_teach;
 mod correction;
 mod dictation_context;
+pub mod evaluation;
 mod file_output;
 mod frontmost;
 mod ide_context;

@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+- **Local dictation evaluation harness** adds strict versioned fixtures, a deterministic no-hardware CI tier, an opt-in installed-model/audio tier, and machine-readable recognition/transformation/delivery reports through `murmur-eval` (#267).
+
 ## [0.19.0] - 2026-07-20
 
 ### Added

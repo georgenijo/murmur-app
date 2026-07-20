@@ -1,0 +1,26 @@
+{
+  "fixtureVersion": 1,
+  "id": "hardware-xlong-whisper-final-only",
+  "tier": "hardware",
+  "provenance": {
+    "kind": "projectTestAudio",
+    "source": "Repository-owned synthetic bench/audio/xlong.wav",
+    "containsRealUserData": false,
+    "deletion": "Delete this manifest, bench/audio/xlong.wav, and generated local reports."
+  },
+  "requirements": {
+    "audio": {"path": "bench/audio/xlong.wav", "sampleRateHz": 16000, "channels": 1},
+    "model": {"name": "base.en", "backend": "whisper", "installedOnly": true, "language": "en", "smartPunctuation": true}
+  },
+  "input": {
+    "rawAsr": null,
+    "referenceTranscript": "Murmur is a privacy first macOS voice to text application built with Tauri, combining a Rust backend with a React frontend for a fast and lightweight experience. Local transcription runs entirely on device using either the Parakeet transducer model through sherpa onnx or the whisper backend accelerated with Metal on Apple silicon, so no audio ever leaves the machine. The recording pipeline supports both a hold down mode and a double tap mode for dictating code comments and chat messages throughout the day.",
+    "expectedRawAsr": ["Mermer is a privacy-first Mac OS voice to text application built with Tori, combining a rust back-end with the React front-end for a fast-end lightweight experience. Local transcription runs entirely on device using either the Parakeet Transducer model through Sherpa Onyx or the Whisper back-end accelerated with metal on Apple Silicon, so no audio ever leaves the machine. The recording pipeline supports both a hold-down mode and a double-tap mode for dictating code comments and chat messages throughout the day."]
+  },
+  "expected": {
+    "finalText": "Mermer is a privacy-first Mac OS voice to text application built with Tori, combining a rust back-end with the React front-end for a fast-end lightweight experience. Local transcription runs entirely on device using either the Parakeet Transducer model through Sherpa Onyx or the Whisper back-end accelerated with metal on Apple Silicon, so no audio ever leaves the machine. The recording pipeline supports both a hold-down mode and a double-tap mode for dictating code comments and chat messages throughout the day.",
+    "deliveredText": "Mermer is a privacy-first Mac OS voice to text application built with Tori, combining a rust back-end with the React front-end for a fast-end lightweight experience. Local transcription runs entirely on device using either the Parakeet Transducer model through Sherpa Onyx or the Whisper back-end accelerated with metal on Apple Silicon, so no audio ever leaves the machine. The recording pipeline supports both a hold-down mode and a double-tap mode for dictating code comments and chat messages throughout the day.",
+    "delivery": {"attempts": 1, "partialCount": 0, "firstPartialMs": null, "finalOnly": true}
+  },
+  "timing": {"rawAsrMs": 0, "transformMs": 0, "deliveryMs": 0}
+}
