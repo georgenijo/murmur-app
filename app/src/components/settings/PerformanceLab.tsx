@@ -25,8 +25,8 @@ import type { DictationStatus } from '../../lib/types';
 
 const PRESETS: { id: BenchmarkPreset; label: string; detail: string }[] = [
   { id: 'quick', label: 'Quick', detail: '2 clips x 3 runs' },
-  { id: 'standard', label: 'Standard', detail: '4 clips x 5 runs' },
-  { id: 'thorough', label: 'Thorough', detail: '4 clips x 10 runs' },
+  { id: 'standard', label: 'Standard', detail: '7 clips x 5 runs' },
+  { id: 'thorough', label: 'Thorough', detail: '9 clips x 10 runs' },
 ];
 
 function milliseconds(value: number | null): string {
@@ -539,7 +539,17 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
                   {result.fixtures.map((fixture) => (
                     <div key={fixture.fixtureId} className="text-[11px] leading-relaxed">
                       <div className="flex justify-between gap-3 font-medium text-stone-700 dark:text-stone-300">
-                        <span>{fixture.label} / {fixture.audioSeconds.toFixed(1)}s</span>
+                        <span>
+                          {fixture.label} / {fixture.audioSeconds.toFixed(1)}s
+                          {fixture.normalizedWordErrors === 0 && (
+                            <span
+                              className="ml-1 text-emerald-500 dark:text-emerald-400"
+                              title="This model scored a perfect normalized transcript on this clip — the clip does not distinguish it from other top models."
+                            >
+                              (saturated)
+                            </span>
+                          )}
+                        </span>
                         <span>
                           {fixture.normalizedWordErrors}/{fixture.normalizedReferenceWords} errors
                           <span className="text-stone-400 dark:text-stone-500"> ({fixture.wordErrors}/{fixture.referenceWords} raw)</span>

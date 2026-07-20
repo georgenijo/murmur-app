@@ -1,0 +1,1 @@
+The scheduler batches every pending request into a single transaction, flushes the write buffer to disk, and then retries the failed connection twice before it finally gives up, logs a warning, and returns a timeout error to the caller so the user interface can show a retry prompt without freezing the whole application.
