@@ -33,6 +33,7 @@ const HOVER_POLL_MS = 150;
 const HOVER_BOUNDS_PADDING = 8;
 const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)';
 const COLLAPSE_RETRY_DELAYS_MS = [100, 300] as const;
+const SURFACE_ACK_TIMEOUT_MS = 2_000;
 
 function prefersReducedMotion(): boolean {
   return typeof window !== 'undefined'
@@ -43,6 +44,18 @@ function prefersReducedMotion(): boolean {
 interface AppliedSurface {
   windowW: number;
   windowH: number;
+}
+
+function withSurfaceAckTimeout<T>(request: Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`set_overlay_expanded timed out after ${SURFACE_ACK_TIMEOUT_MS}ms`));
+    }, SURFACE_ACK_TIMEOUT_MS);
+    request.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error) => { clearTimeout(timer); reject(error); },
+    );
+  });
 }
 
 interface UseOverlayExpansionArgs {
@@ -140,14 +153,14 @@ export function useOverlayExpansion({ disabled }: UseOverlayExpansionArgs): Over
     if (gen !== genRef.current) return SUPERSEDED; // superseded while queued — skip resize
     const desiredExpanded = desiredRef.current;
     try {
-      const applied = await invoke<AppliedSurface>('set_overlay_expanded', {
-        expanded: desiredExpanded,
-      });
+      const applied = await withSurfaceAckTimeout(
+        invoke<AppliedSurface>('set_overlay_expanded', { expanded: desiredExpanded }),
+      );
       if (gen !== genRef.current) return SUPERSEDED; // a newer request will reconcile
       reconcileOnSuccess(desiredExpanded);
       return applied;
     } catch (err) {
-      if (gen !== genRef.current) return SUPERSEDED; // stale failure — ignore
+      if (!mountedRef.current || gen !== genRef.current) return SUPERSEDED; // stale failure — ignore
       if (!desiredExpanded && collapseAttempt < COLLAPSE_RETRY_DELAYS_MS.length) {
         const delay = COLLAPSE_RETRY_DELAYS_MS[collapseAttempt];
         flog.warn('overlay', 'set_overlay_expanded collapse failed; retrying', {

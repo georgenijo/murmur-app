@@ -295,6 +295,36 @@ describe('useOverlayExpansion', () => {
     expect(current.expanded).toBe(false);
   });
 
+  it('times out a hung grow so the serialized writer can process a later request', async () => {
+    await mount();
+
+    await act(async () => { current.onHoverStart(); });
+    await act(async () => { vi.advanceTimersByTime(HOVER_OPEN_DWELL_MS); });
+    await flush();
+    const hungGrow = surfaceCalls.find((c) => c.args.expanded)!;
+    expect(current.phase).toBe('opening');
+
+    await act(async () => { vi.advanceTimersByTime(2_000); });
+    await flush();
+    expect(current.phase).toBe('collapsed');
+    expect(current.expanded).toBe(false);
+
+    await act(async () => { current.onHoverStart(); });
+    await act(async () => { vi.advanceTimersByTime(HOVER_OPEN_DWELL_MS); });
+    await flush();
+    const grows = surfaceCalls.filter((c) => c.args.expanded);
+    expect(grows).toHaveLength(2);
+    await act(async () => { grows[1].resolve(APPLIED); });
+    await flush();
+    expect(current.phase).toBe('open');
+
+    // The timed-out request can settle later, but its wrapper is already rejected
+    // and therefore cannot reconcile over the newer successful generation.
+    await act(async () => { hungGrow.resolve(APPLIED); });
+    await flush();
+    expect(current.phase).toBe('open');
+  });
+
   it('display change mid-open cancels timers, forces collapsed, and issues one corrective collapse', async () => {
     await mount();
     // Open fully.
