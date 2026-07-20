@@ -160,6 +160,10 @@ def validate_release_build(workflow: str) -> int:
     assert "linux-release-${{ needs.context.outputs.source-sha }}" in workflow
     assert "shared-key: macos-release-v1" in workflow
     assert "shared-key: linux-cuda-release-v1" in workflow
+    assert "Print :CFBundleExecutable" in workflow
+    assert '$(ls "$APP/Contents/MacOS/" | head -1)' not in workflow
+    assert "DEB_BINARY=/tmp/murmur-deb-root/usr/bin/ui" in workflow
+    assert "find /tmp/murmur-deb-root/usr/bin -maxdepth 1" not in workflow
     linux_build = named_step_block(workflow, "Build signed packages", 6)
     assert "args: --bundles deb,appimage --verbose" in linux_build
     assert "rpm" not in linux_build

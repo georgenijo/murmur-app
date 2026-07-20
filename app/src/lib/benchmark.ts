@@ -61,6 +61,8 @@ export interface BenchmarkModelResult {
   label: string;
   backend: string;
   accelerator: string;
+  /** Catalog download size, separate from observed process memory. */
+  downloadSize?: string;
   modelLoadMs: number | null;
   firstInferenceMs: number | null;
   warmMedianMs: number | null;
@@ -83,6 +85,8 @@ export interface BenchmarkModelResult {
 }
 
 export interface BenchmarkReport {
+  /** Version 2 adds explicit environment, corpus, and execution metadata. */
+  reportVersion?: number;
   createdAt: string;
   appVersion: string;
   platform: string;
@@ -93,6 +97,30 @@ export interface BenchmarkReport {
    * compilation, ANE compile cache, etc). Represents real first-launch
    * latency but is not a per-model attribute. */
   sharedInitMs: number;
+  environment?: {
+    os: string;
+    osVersion: string | null;
+    architecture: string;
+    hardwareModel: string | null;
+    chip: string | null;
+    memoryMb: number | null;
+  };
+  corpus?: {
+    language: string;
+    fixtureIds: string[];
+    fixtureCount: number;
+    referenceWords: number;
+    provenance: string;
+    limitation: string;
+  };
+  configuration?: {
+    vadThreshold: number;
+    executionPath: string;
+    transcriptTransformProfile: string;
+    percentileMethod: string;
+    modelRunOrder: string[];
+    sharedInitOrder: string[];
+  };
   results: BenchmarkModelResult[];
   recommendations: {
     fastest: string | null;
@@ -151,6 +179,7 @@ function isModelResult(value: unknown): value is BenchmarkModelResult {
     && typeof value.label === 'string'
     && typeof value.backend === 'string'
     && typeof value.accelerator === 'string'
+    && (value.downloadSize === undefined || typeof value.downloadSize === 'string')
     && isNullableNumber(value.modelLoadMs)
     && isNullableNumber(value.firstInferenceMs)
     && isNullableNumber(value.warmMedianMs)
@@ -166,8 +195,47 @@ function isModelResult(value: unknown): value is BenchmarkModelResult {
     && isNullableString(value.error);
 }
 
+function isEnvironment(value: unknown): boolean {
+  return isRecord(value)
+    && typeof value.os === 'string'
+    && isNullableString(value.osVersion)
+    && typeof value.architecture === 'string'
+    && isNullableString(value.hardwareModel)
+    && isNullableString(value.chip)
+    && isNullableNumber(value.memoryMb);
+}
+
+function isCorpus(value: unknown): boolean {
+  return isRecord(value)
+    && typeof value.language === 'string'
+    && Array.isArray(value.fixtureIds)
+    && value.fixtureIds.every((fixture) => typeof fixture === 'string')
+    && isNumber(value.fixtureCount)
+    && isNumber(value.referenceWords)
+    && typeof value.provenance === 'string'
+    && typeof value.limitation === 'string';
+}
+
+function isConfiguration(value: unknown): boolean {
+  return isRecord(value)
+    && isNumber(value.vadThreshold)
+    && typeof value.executionPath === 'string'
+    && typeof value.transcriptTransformProfile === 'string'
+    && typeof value.percentileMethod === 'string'
+    && Array.isArray(value.modelRunOrder)
+    && value.modelRunOrder.every((model) => typeof model === 'string')
+    && Array.isArray(value.sharedInitOrder)
+    && value.sharedInitOrder.every((model) => typeof model === 'string');
+}
+
 function isBenchmarkReport(value: unknown): value is BenchmarkReport {
   if (!isRecord(value) || !isRecord(value.recommendations)) return false;
+  const metadataIsCompatible = value.reportVersion === undefined
+    ? value.environment === undefined && value.corpus === undefined && value.configuration === undefined
+    : value.reportVersion === 2
+      && isEnvironment(value.environment)
+      && isCorpus(value.corpus)
+      && isConfiguration(value.configuration);
   return typeof value.createdAt === 'string'
     && Number.isFinite(Date.parse(value.createdAt))
     && typeof value.appVersion === 'string'
@@ -175,6 +243,7 @@ function isBenchmarkReport(value: unknown): value is BenchmarkReport {
     && (value.preset === 'quick' || value.preset === 'standard' || value.preset === 'thorough')
     && isNumber(value.iterations)
     && isNumber(value.sharedInitMs)
+    && metadataIsCompatible
     && Array.isArray(value.results)
     && value.results.every(isModelResult)
     && isNullableString(value.recommendations.fastest)
@@ -241,6 +310,44 @@ export async function getBenchmarkModels(): Promise<BenchmarkModel[]> {
 
 export function getBenchmarkActivity(): Promise<BenchmarkActivity> {
   return invoke('get_benchmark_activity');
+}
+
+/** Reduce a report field to a filesystem-safe filename segment. */
+function sanitizeNameSegment(value: string): string {
+  return value.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'unknown';
+}
+
+/**
+ * Build a self-identifying report filename:
+ * `benchmark-<appVersion>-<machine-or-platform>-<createdAt>.json`. The machine
+ * label prefers the chip, then the hardware model, then the platform, so files
+ * from different machines (#303 cross-machine comparison) sort and self-identify.
+ */
+export function benchmarkReportFileName(report: BenchmarkReport): string {
+  const version = sanitizeNameSegment(report.appVersion);
+  const machine = sanitizeNameSegment(
+    report.environment?.chip ?? report.environment?.hardwareModel ?? report.platform,
+  );
+  // ISO timestamps contain `:` and `.`, which are unsafe or awkward in filenames.
+  const stamp = report.createdAt.replace(/[:.]/g, '-');
+  return `benchmark-${version}-${machine}-${stamp}.json`;
+}
+
+/**
+ * Write the full report JSON to `outputDir` (empty → `Documents/Murmur`) under
+ * the {@link benchmarkReportFileName} name. Returns the absolute path written.
+ */
+export function saveBenchmarkReport(report: BenchmarkReport, outputDir: string): Promise<string> {
+  return invoke('save_benchmark_report', {
+    reportJson: JSON.stringify(report, null, 2),
+    outputDir,
+    fileName: benchmarkReportFileName(report),
+  });
+}
+
+/** Open the benchmark output folder in the system file manager. */
+export function openBenchmarkOutputFolder(outputDir: string): Promise<void> {
+  return invoke('open_benchmark_output_folder', { outputDir });
 }
 
 export function runBenchmark(modelNames: string[], preset: BenchmarkPreset): Promise<BenchmarkReport> {

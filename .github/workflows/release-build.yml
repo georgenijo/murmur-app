@@ -148,8 +148,13 @@ jobs:
       - name: Smoke test signed application
         run: |
           APP=$(find app/src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)
-          BINARY="$APP/Contents/MacOS/$(ls "$APP/Contents/MacOS/" | head -1)"
-          if [ -z "$APP" ] || [ ! -x "$BINARY" ]; then
+          if [ -z "$APP" ]; then
+            echo "ERROR: signed application bundle is missing"
+            exit 1
+          fi
+          EXECUTABLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")
+          BINARY="$APP/Contents/MacOS/$EXECUTABLE"
+          if [ -z "$EXECUTABLE" ] || [ ! -x "$BINARY" ]; then
             echo "ERROR: signed application bundle or binary is missing"
             exit 1
           fi
@@ -264,9 +269,9 @@ jobs:
           rm -rf /tmp/murmur-deb-root
           mkdir -p /tmp/murmur-deb-root
           dpkg-deb -x "$DEB" /tmp/murmur-deb-root
-          DEB_BINARY=$(find /tmp/murmur-deb-root/usr/bin -maxdepth 1 -type f -perm -111 -print -quit)
-          if [ -z "$DEB_BINARY" ]; then
-            echo "ERROR: deb package has no executable in /usr/bin"
+          DEB_BINARY=/tmp/murmur-deb-root/usr/bin/ui
+          if [ ! -x "$DEB_BINARY" ]; then
+            echo "ERROR: deb package is missing the ui application executable"
             exit 1
           fi
           rm -f "$LOG"

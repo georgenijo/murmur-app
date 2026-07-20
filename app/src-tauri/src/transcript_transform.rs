@@ -90,7 +90,7 @@ pub(crate) enum StageFailurePolicy {
 }
 
 impl StageFailurePolicy {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Required => "required",
             Self::OptionalFallback => "optional_fallback",
@@ -107,7 +107,7 @@ pub(crate) enum StageOutcome {
 }
 
 impl StageOutcome {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Applied => "applied",
             Self::Skipped => "skipped",
@@ -184,6 +184,13 @@ pub(crate) struct TranscriptPipelineOutput {
     pub stages: Vec<StageReport>,
 }
 
+/// Evaluation-only observation seam. Production callers use
+/// [`transform_transcript`], which installs no observer. Implementations must
+/// keep observed text in memory and must never log it.
+pub(crate) trait StageTextObserver {
+    fn observe(&mut self, report: &StageReport, text: &str);
+}
+
 impl TranscriptPipelineOutput {
     pub(crate) fn was_changed(&self) -> bool {
         self.original_text != self.text
@@ -213,6 +220,7 @@ impl TranscriptPipeline {
             correction_matcher,
             cli_lexicon,
             ide_context_index,
+            voice_command_runtime,
         } = resources;
         Self::new(vec![
             Box::new(CleanupStage),
@@ -236,6 +244,8 @@ impl TranscriptPipeline {
                 } else {
                     voice_commands
                 },
+                runtime: voice_command_runtime
+                    .unwrap_or_else(|| Arc::new(crate::voice_commands::SystemVoiceCommandRuntime)),
             }),
             Box::new(SmartCorrectionStage {
                 matcher: correction_matcher,
@@ -256,6 +266,7 @@ impl TranscriptPipeline {
         &self,
         mut text: String,
         context: &TranscriptContext,
+        mut observer: Option<&mut dyn StageTextObserver>,
     ) -> Result<TranscriptPipelineOutput, TranscriptPipelineError> {
         let original_text = text.clone();
         let mut reports = Vec::with_capacity(self.stages.len());
@@ -273,6 +284,9 @@ impl TranscriptPipeline {
                     failure_policy: policy,
                 };
                 log_stage(context, &report);
+                if let Some(observer) = observer.as_deref_mut() {
+                    observer.observe(&report, &text);
+                }
                 reports.push(report);
                 continue;
             }
@@ -289,6 +303,9 @@ impl TranscriptPipeline {
                         failure_policy: policy,
                     };
                     log_stage(context, &report);
+                    if let Some(observer) = observer.as_deref_mut() {
+                        observer.observe(&report, &text);
+                    }
                     reports.push(report);
                 }
                 Err(_error) if policy == StageFailurePolicy::OptionalFallback => {
@@ -300,6 +317,9 @@ impl TranscriptPipeline {
                         failure_policy: policy,
                     };
                     log_stage(context, &report);
+                    if let Some(observer) = observer.as_deref_mut() {
+                        observer.observe(&report, &text);
+                    }
                     reports.push(report);
                 }
                 Err(error) => {
@@ -311,6 +331,9 @@ impl TranscriptPipeline {
                         failure_policy: policy,
                     };
                     log_stage(context, &report);
+                    if let Some(observer) = observer.as_deref_mut() {
+                        observer.observe(&report, &text);
+                    }
                     return Err(TranscriptPipelineError {
                         stage: stage.name(),
                         code: error.code,
@@ -352,6 +375,7 @@ pub(crate) struct TranscriptTransformResources {
     pub correction_matcher: Option<Arc<CorrectionMatcher>>,
     pub cli_lexicon: CliLexicon,
     pub ide_context_index: Option<Arc<IdeContextIndex>>,
+    pub voice_command_runtime: Option<Arc<dyn crate::voice_commands::VoiceCommandRuntime>>,
 }
 
 impl TranscriptTransformResources {
@@ -362,6 +386,7 @@ impl TranscriptTransformResources {
             correction_matcher: None,
             cli_lexicon: CliLexicon::from_context(None, &[]),
             ide_context_index: None,
+            voice_command_runtime: None,
         }
     }
 }
@@ -372,7 +397,19 @@ pub(crate) fn transform_transcript(
     context: &TranscriptContext,
     resources: TranscriptTransformResources,
 ) -> Result<TranscriptPipelineOutput, TranscriptPipelineError> {
-    TranscriptPipeline::standard(resources).run(text, context)
+    TranscriptPipeline::standard(resources).run(text, context, None)
+}
+
+/// Runs the production pipeline while exposing each stage's in-memory output
+/// to the local evaluator. This is intentionally crate-private and is never
+/// used by the live dictation path.
+pub(crate) fn transform_transcript_observed(
+    text: String,
+    context: &TranscriptContext,
+    resources: TranscriptTransformResources,
+    observer: &mut dyn StageTextObserver,
+) -> Result<TranscriptPipelineOutput, TranscriptPipelineError> {
+    TranscriptPipeline::standard(resources).run(text, context, Some(observer))
 }
 
 struct CleanupStage;
@@ -406,6 +443,7 @@ impl TranscriptTransform for CleanupStage {
 
 struct VoiceCommandsStage {
     voice_commands: Vec<crate::voice_commands::ResolvedVoiceCommand>,
+    runtime: Arc<dyn crate::voice_commands::VoiceCommandRuntime>,
 }
 
 impl TranscriptTransform for VoiceCommandsStage {
@@ -426,7 +464,7 @@ impl TranscriptTransform for VoiceCommandsStage {
             text,
             true,
             &self.voice_commands,
-            &crate::voice_commands::SystemVoiceCommandRuntime,
+            self.runtime.as_ref(),
         )
         .text)
     }
@@ -594,6 +632,7 @@ mod tests {
             correction_matcher: with_matcher.then(correction_matcher),
             cli_lexicon: CliLexicon::from_context(None, &[]),
             ide_context_index: None,
+            voice_command_runtime: None,
         }
     }
 
@@ -996,7 +1035,7 @@ mod tests {
             }),
         ]);
         let output = pipeline
-            .run("raw".to_string(), &live_context(all_stages()))
+            .run("raw".to_string(), &live_context(all_stages()), None)
             .unwrap();
         assert_eq!(output.text, "raw-a-b");
         assert_eq!(
@@ -1036,7 +1075,7 @@ mod tests {
         let pipeline = TranscriptPipeline::new(vec![Box::new(FailingStage {
             policy: StageFailurePolicy::Required,
         })]);
-        let error = match pipeline.run("raw".to_string(), &live_context(all_stages())) {
+        let error = match pipeline.run("raw".to_string(), &live_context(all_stages()), None) {
             Ok(_) => panic!("required stage failure unexpectedly succeeded"),
             Err(error) => error,
         };
@@ -1056,7 +1095,7 @@ mod tests {
             }),
         ]);
         let output = pipeline
-            .run("raw".to_string(), &live_context(all_stages()))
+            .run("raw".to_string(), &live_context(all_stages()), None)
             .unwrap();
         assert_eq!(output.text, "raw-kept");
         assert_eq!(output.stages[0].outcome, StageOutcome::Fallback);

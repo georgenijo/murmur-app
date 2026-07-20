@@ -39,7 +39,7 @@ export function OverlayWidget() {
   // dwell/collapse/shrink timers, the serialized set_overlay_expanded writer, and
   // the single cursor poller. It is the only writer to the native resize path.
   const { phase, expanded, expandedRef, islandRef, onHoverStart, onHoverEnd } =
-    useOverlayExpansion({ disabled: runtime.disabled });
+    useOverlayExpansion();
 
   const waveform = useWaveform(status);
 

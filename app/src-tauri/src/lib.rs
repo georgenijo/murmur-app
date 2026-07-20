@@ -12,6 +12,7 @@ mod commands;
 mod correct_and_teach;
 mod correction;
 mod dictation_context;
+pub mod evaluation;
 mod file_output;
 mod frontmost;
 mod ide_context;
@@ -196,10 +197,13 @@ pub fn run() {
             commands::models::get_model_runtime_catalog,
             commands::models::get_model_runtime_status,
             commands::models::download_model,
+            frontmost::list_running_applications,
             commands::benchmark::get_benchmark_models,
             commands::benchmark::get_benchmark_activity,
             commands::benchmark::run_benchmark,
             commands::benchmark::cancel_benchmark,
+            commands::benchmark::save_benchmark_report,
+            commands::benchmark::open_benchmark_output_folder,
             commands::tray::update_tray_icon,
             commands::overlay::show_overlay,
             commands::overlay::hide_overlay,

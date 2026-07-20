@@ -1,22 +1,21 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
-import { getVersion } from '@tauri-apps/api/app';
 import {
-  Settings, RecordingMode, DEFAULT_SETTINGS,
-  AVAILABLE_MODEL_OPTIONS, DOUBLE_TAP_KEY_OPTIONS, RECORDING_MODE_OPTIONS,
-  IDLE_TIMEOUT_OPTIONS, LANGUAGE_OPTIONS, WRITING_STYLE_OPTIONS,
-  AppProfile, WritingStyle, WritingStyleChoice, vocabularyPrompt,
+  AVAILABLE_MODEL_OPTIONS,
+  DEFAULT_SETTINGS,
+  DOUBLE_TAP_KEY_OPTIONS,
+  IDLE_TIMEOUT_OPTIONS,
+  LANGUAGE_OPTIONS,
+  RECORDING_MODE_OPTIONS,
+  type RecordingMode,
+  type Settings,
+  vocabularyPrompt,
 } from '../../lib/settings';
-import { Select } from '../ui/Select';
-import { SettingsSection } from './SettingsSection';
-import { VocabScanStrip } from './VocabScanStrip';
-import { PerformanceLab } from './PerformanceLab';
-import { VocabularyAliasesEditor } from './VocabularyAliasesEditor';
-import { KnowledgeManager } from './KnowledgeManager';
-import { VoiceCommandsManager } from './VoiceCommandsManager';
 import { useVocabScan } from '../../lib/hooks/useVocabScan';
+import { useModelRuntimeCatalog } from '../../lib/modelRuntime';
 import {
   modelDownloadLabel,
   modelDownloadPercent,
@@ -24,21 +23,63 @@ import {
 } from '../../lib/modelDownload';
 import type { DictationStatus } from '../../lib/types';
 import type { UpdateStatus } from '../../lib/updater';
-import { useModelRuntimeCatalog } from '../../lib/modelRuntime';
+import { Select } from '../ui/Select';
+import { AppOverridesEditor } from './AppOverridesEditor';
+import { KnowledgeManager } from './KnowledgeManager';
+import { PerformanceLab } from './PerformanceLab';
+import { SettingsSection } from './SettingsSection';
+import { VocabScanStrip } from './VocabScanStrip';
+import { VocabularyAliasesEditor } from './VocabularyAliasesEditor';
+import { VoiceCommandsManager } from './VoiceCommandsManager';
 
-function PasteDelaySlider({ value, onCommit }: { value: number; onCommit: (v: number) => void }) {
-  const [draft, setDraft] = useState(value);
-  useEffect(() => { setDraft(value); }, [value]);
-
+function Toggle({ label, checked, onChange, disabled = false }: {
+  label: string;
+  checked: boolean;
+  onChange: () => void;
+  disabled?: boolean;
+}) {
   return (
-    <div className="mt-3">
-      <div className="flex items-center justify-between mb-1">
-        <label className="text-xs text-on-surface-variant">
-          Paste Delay
-        </label>
-        <span className="text-xs font-medium text-on-surface">
-          {draft}ms
-        </span>
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      disabled={disabled}
+      onClick={onChange}
+      className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 ${checked ? 'bg-primary' : 'bg-surface-container-highest'}`}
+    >
+      <span className={`inline-block h-4 w-4 rounded-full bg-on-primary shadow transition-transform ${checked ? 'translate-x-6' : 'translate-x-1'}`} />
+    </button>
+  );
+}
+
+function SettingToggle({ title, description, label = title, checked, onChange, disabled = false }: {
+  title: string;
+  description: string;
+  label?: string;
+  checked: boolean;
+  onChange: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="flex items-start justify-between gap-6">
+      <div>
+        <p className="text-sm font-medium text-on-surface">{title}</p>
+        <p className="mt-1 text-xs text-on-surface-variant">{description}</p>
+      </div>
+      <Toggle label={label} checked={checked} onChange={onChange} disabled={disabled} />
+    </div>
+  );
+}
+
+function PasteDelaySlider({ value, onCommit }: { value: number; onCommit: (value: number) => void }) {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => setDraft(value), [value]);
+  return (
+    <div>
+      <div className="mb-1 flex items-center justify-between">
+        <label className="text-xs text-on-surface-variant">Paste Delay</label>
+        <span className="text-xs font-medium text-on-surface">{draft}ms</span>
       </div>
       <input
         type="range"
@@ -46,30 +87,23 @@ function PasteDelaySlider({ value, onCommit }: { value: number; onCommit: (v: nu
         max={500}
         step={10}
         value={draft}
-        onChange={(e) => setDraft(Number(e.target.value))}
+        onChange={(event) => setDraft(Number(event.target.value))}
         onPointerUp={() => onCommit(draft)}
-        className="w-full h-1.5 bg-surface-container-highest rounded-full appearance-none cursor-pointer accent-primary"
+        className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-surface-container-highest accent-primary"
       />
-      <p className="mt-1 text-xs text-on-surface-variant">
-        Delay before paste. Increase if paste lands in the wrong window.
-      </p>
+      <p className="mt-1 text-xs text-on-surface-variant">Increase this if paste lands in the wrong window.</p>
     </div>
   );
 }
 
-function VadSensitivitySlider({ value, onCommit }: { value: number; onCommit: (v: number) => void }) {
+function VadSensitivitySlider({ value, onCommit }: { value: number; onCommit: (value: number) => void }) {
   const [draft, setDraft] = useState(value);
-  useEffect(() => { setDraft(value); }, [value]);
-
+  useEffect(() => setDraft(value), [value]);
   return (
     <div>
-      <div className="flex items-center justify-between mb-1">
-        <label className="text-xs text-on-surface-variant">
-          Sensitivity
-        </label>
-        <span className="text-xs font-medium text-on-surface">
-          {draft}%
-        </span>
+      <div className="mb-1 flex items-center justify-between">
+        <label className="text-xs text-on-surface-variant">Sensitivity</label>
+        <span className="text-xs font-medium text-on-surface">{draft}%</span>
       </div>
       <input
         type="range"
@@ -77,415 +111,11 @@ function VadSensitivitySlider({ value, onCommit }: { value: number; onCommit: (v
         max={100}
         step={5}
         value={draft}
-        onChange={(e) => setDraft(Number(e.target.value))}
+        onChange={(event) => setDraft(Number(event.target.value))}
         onPointerUp={() => onCommit(draft)}
-        className="w-full h-1.5 bg-surface-container-highest rounded-full appearance-none cursor-pointer accent-primary"
+        className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-surface-container-highest accent-primary"
       />
-      <p className="mt-1 text-xs text-on-surface-variant">
-        Higher = keeps more audio. Lower = trims silence more aggressively.
-      </p>
-    </div>
-  );
-}
-
-const WRITING_STYLE_SUMMARIES: Record<WritingStyleChoice, string> = {
-  inherit: 'Uses your current global behavior and the fine-tuning controls below.',
-  conversational: 'Removes filler and repeated words, tidies capitalization, and keeps your wording.',
-  polished: 'Cleans speech and applies explicitly spoken lists, punctuation, symbols, and corrections.',
-  code_technical: 'Preserves technical wording and enables deterministic command formatting.',
-  verbatim: 'Leaves recognized text unchanged, including filler, spacing, and spoken command words.',
-  notes: 'Removes filler, keeps note-like capitalization, and turns explicit list, paragraph, and line cues into structure.',
-};
-
-const WRITING_STYLE_CATEGORIES: Record<WritingStyleChoice, string> = {
-  inherit: 'Cleanup, corrections, prose structure, and command formatting all inherit.',
-  conversational: 'Cleanup on · Prose structure off · Automatic command formatting off',
-  polished: 'Cleanup on · Vocabulary corrections on · Prose structure on · Automatic command formatting off',
-  code_technical: 'Cleanup off · Vocabulary corrections on · Prose structure off · Command formatting on',
-  verbatim: 'Cleanup, corrections, prose structure, and command formatting all off',
-  notes: 'Cleanup on · Vocabulary corrections on · Prose structure on · Automatic command formatting off',
-};
-
-interface IdeContextStatus {
-  state: 'disabled' | 'empty' | 'scanning' | 'ready' | 'stale' | 'cleared' | 'error';
-  generation: number;
-  roots: number;
-  files: number;
-  symbols: number;
-  bytes: number;
-  capped: boolean;
-  ms: number;
-}
-
-function ideStatusText(status: IdeContextStatus | undefined, roots: number): string {
-  if (!status) return roots > 0 ? 'Checking the memory-only index…' : 'Add a project root to build an index.';
-  switch (status.state) {
-    case 'scanning': return `Indexing locally… generation ${status.generation}`;
-    case 'ready': return `Ready · ${status.files} files · ${status.symbols} symbols${status.capped ? ' · capped' : ''}`;
-    case 'stale': return 'Expired safely · refresh to use project symbols again.';
-    case 'cleared': return 'Index cleared from memory. Configured roots are still available.';
-    case 'error': return 'Index unavailable. Check the configured roots and refresh.';
-    case 'empty': return 'Add a project root to build an index.';
-    default: return 'Local project context is off.';
-  }
-}
-
-// Per-app profiles map a macOS bundle id to an explicit writing style plus
-// independent delivery/transformation overrides.
-function AppProfilesEditor({ profiles, onChange }: {
-  profiles: AppProfile[];
-  onChange: (next: AppProfile[]) => void;
-}) {
-  const [bundleId, setBundleId] = useState('');
-  const [label, setLabel] = useState('');
-  const [ideStatuses, setIdeStatuses] = useState<Record<string, IdeContextStatus>>({});
-
-  const pollIdeStatuses = useCallback(async () => {
-    const enabled = profiles.filter((profile) => profile.ideContextEnabled);
-    if (enabled.length === 0) return;
-    const pairs = await Promise.all(enabled.map(async (profile) => {
-      try {
-        const status = await invoke<IdeContextStatus>('get_ide_context_status', { bundleId: profile.bundleId });
-        return [profile.bundleId, status] as const;
-      } catch {
-        return null;
-      }
-    }));
-    setIdeStatuses((current) => ({
-      ...current,
-      ...Object.fromEntries(pairs.filter((pair): pair is readonly [string, IdeContextStatus] => pair !== null)),
-    }));
-  }, [profiles]);
-
-  useEffect(() => {
-    void pollIdeStatuses();
-    const timer = window.setInterval(() => void pollIdeStatuses(), 1000);
-    return () => window.clearInterval(timer);
-  }, [pollIdeStatuses]);
-
-  const handleAdd = () => {
-    const trimmedId = bundleId.trim();
-    if (!trimmedId) return;
-    if (profiles.some((p) => p.bundleId === trimmedId)) {
-      // Already have a profile for this app — clear the inputs and bail.
-      setBundleId('');
-      setLabel('');
-      return;
-    }
-    onChange([
-      ...profiles,
-      {
-        bundleId: trimmedId,
-        label: label.trim(),
-        autoPasteOverride: null,
-        cleanupOverride: null,
-        smartFormattingOverride: null,
-        cliFormattingOverride: null,
-        writingStyle: null,
-        ideContextEnabled: false,
-        ideProjectRoots: [],
-      },
-    ]);
-    setBundleId('');
-    setLabel('');
-  };
-
-  const handleRemove = (id: string) => {
-    onChange(profiles.filter((p) => p.bundleId !== id));
-  };
-
-  // Cycle a tri-state override: Default (null) -> On (true) -> Off (false) -> Default.
-  const cycle = (value: boolean | null): boolean | null =>
-    value === null ? true : value === true ? false : null;
-
-  const cyclePaste = (id: string) => {
-    onChange(profiles.map((p) =>
-      p.bundleId === id ? { ...p, autoPasteOverride: cycle(p.autoPasteOverride) } : p));
-  };
-
-  const cycleCleanup = (id: string) => {
-    onChange(profiles.map((p) =>
-      p.bundleId === id ? { ...p, cleanupOverride: cycle(p.cleanupOverride) } : p));
-  };
-
-  const cycleCliFormatting = (id: string) => {
-    onChange(profiles.map((p) =>
-      p.bundleId === id ? { ...p, cliFormattingOverride: cycle(p.cliFormattingOverride) } : p));
-  };
-
-  const cycleSmartFormatting = (id: string) => {
-    onChange(profiles.map((p) =>
-      p.bundleId === id ? { ...p, smartFormattingOverride: cycle(p.smartFormattingOverride) } : p));
-  };
-
-  const changeWritingStyle = (id: string, choice: WritingStyleChoice) => {
-    onChange(profiles.map((p) =>
-      p.bundleId === id
-        ? { ...p, writingStyle: choice === 'inherit' ? null : choice as WritingStyle }
-        : p));
-  };
-
-  const toggleIdeContext = (id: string) => {
-    onChange(profiles.map((profile) => profile.bundleId === id
-      ? { ...profile, ideContextEnabled: !profile.ideContextEnabled }
-      : profile));
-  };
-
-  const addIdeRoot = async (id: string) => {
-    try {
-      const selected = await open({ directory: true, multiple: false });
-      if (typeof selected !== 'string') return;
-      onChange(profiles.map((profile) => {
-        if (profile.bundleId !== id || profile.ideProjectRoots.includes(selected) || profile.ideProjectRoots.length >= 4) {
-          return profile;
-        }
-        return { ...profile, ideProjectRoots: [...profile.ideProjectRoots, selected] };
-      }));
-    } catch {
-      // Dialog cancelled or unavailable — keep the configured roots.
-    }
-  };
-
-  const removeIdeRoot = (id: string, root: string) => {
-    onChange(profiles.map((profile) => profile.bundleId === id
-      ? { ...profile, ideProjectRoots: profile.ideProjectRoots.filter((candidate) => candidate !== root) }
-      : profile));
-  };
-
-  const refreshIdeIndex = async (id: string) => {
-    try {
-      const status = await invoke<IdeContextStatus>('refresh_ide_context', { bundleId: id });
-      setIdeStatuses((current) => ({ ...current, [id]: status }));
-    } catch {
-      // Backend status polling will surface the stable failure state.
-    }
-  };
-
-  const clearIdeIndex = async (id: string) => {
-    try {
-      const status = await invoke<IdeContextStatus>('clear_ide_context', { bundleId: id });
-      setIdeStatuses((current) => ({ ...current, [id]: status }));
-    } catch {
-      // Keep configured roots intact even if the command is unavailable.
-    }
-  };
-
-  const chipLabel = (kind: string, value: boolean | null) =>
-    value === null ? `${kind}: Default` : value ? `${kind}: On` : `${kind}: Off`;
-
-  const chipClass = (value: boolean | null) =>
-    value === null
-      ? 'border-outline-variant/30 bg-surface-container-lowest text-on-surface-variant'
-      : value
-        ? 'border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400'
-        : 'border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400';
-
-  return (
-    <div>
-      <p className="mb-2 text-xs text-on-surface-variant">
-        Choose a local writing style and optional fine-tuning for specific apps by bundle id
-        (e.g. <span className="font-mono">com.apple.Terminal</span>). The frontmost
-        app when you start dictating selects the profile. Murmur never classifies
-        apps automatically or reads their screen, selection, or clipboard content.
-      </p>
-
-      {profiles.length > 0 && (
-        <ul className="mb-3 space-y-1.5">
-          {profiles.map((p) => (
-            <li
-              key={p.bundleId}
-              className="flex flex-col gap-2 rounded-lg bg-surface-container-lowest px-2.5 py-2 shadow-sm"
-            >
-              <div className="flex items-center gap-2">
-                <div className="min-w-0 flex-1">
-                  {p.label && (
-                    <div className="text-xs font-medium text-on-surface truncate">
-                      {p.label}
-                    </div>
-                  )}
-                  <div className="text-xs font-mono text-on-surface-variant truncate">
-                    {p.bundleId}
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => handleRemove(p.bundleId)}
-                  aria-label={`Remove profile for ${p.label || p.bundleId}`}
-                  className="shrink-0 rounded-md p-1 text-on-surface-variant transition-colors hover:bg-surface-container hover:text-error focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                >
-                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
-              <div>
-                <label className="mb-1 block text-xs font-medium text-on-surface">
-                  Writing style
-                </label>
-                <Select
-                  value={p.writingStyle ?? 'inherit'}
-                  onChange={(choice) => changeWritingStyle(p.bundleId, choice)}
-                  items={WRITING_STYLE_OPTIONS}
-                  aria-label={`Writing style for ${p.label || p.bundleId}`}
-                />
-                <p className="mt-1 text-xs text-on-surface-variant">
-                  {WRITING_STYLE_SUMMARIES[p.writingStyle ?? 'inherit']}
-                </p>
-                <p className="mt-1 text-xs font-medium text-on-surface-variant">
-                  {WRITING_STYLE_CATEGORIES[p.writingStyle ?? 'inherit']}
-                </p>
-              </div>
-              <p className="text-xs text-on-surface-variant">
-                Fine-tune this profile below. Each control cycles Inherit → On → Off.
-              </p>
-              <div className="grid grid-cols-2 gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => cyclePaste(p.bundleId)}
-                  aria-label={`Auto-paste for ${p.label || p.bundleId}: ${chipLabel('Paste', p.autoPasteOverride)}`}
-                  className={`flex-1 px-2 py-1 rounded-md text-xs font-medium border transition-colors ${chipClass(p.autoPasteOverride)}`}
-                >
-                  {chipLabel('Paste', p.autoPasteOverride)}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => cycleCleanup(p.bundleId)}
-                  aria-label={`Cleanup for ${p.label || p.bundleId}: ${chipLabel('Clean', p.cleanupOverride)}`}
-                  className={`flex-1 px-2 py-1 rounded-md text-xs font-medium border transition-colors ${chipClass(p.cleanupOverride)}`}
-                >
-                  {chipLabel('Clean', p.cleanupOverride)}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => cycleSmartFormatting(p.bundleId)}
-                  aria-label={`Prose formatting for ${p.label || p.bundleId}: ${chipLabel('Prose', p.smartFormattingOverride)}`}
-                  className={`px-2 py-1 rounded-md text-xs font-medium border transition-colors ${chipClass(p.smartFormattingOverride)}`}
-                >
-                  {chipLabel('Prose', p.smartFormattingOverride)}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => cycleCliFormatting(p.bundleId)}
-                  aria-label={`Command formatting for ${p.label || p.bundleId}: ${chipLabel('Commands', p.cliFormattingOverride)}`}
-                  className={`px-2 py-1 rounded-md text-xs font-medium border transition-colors ${chipClass(p.cliFormattingOverride)}`}
-                >
-                  {chipLabel('Commands', p.cliFormattingOverride)}
-                </button>
-              </div>
-              <div className="rounded-lg border border-outline-variant/30 bg-surface-container-lowest p-2.5">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <div className="text-xs font-medium text-on-surface">Local IDE project context</div>
-                    <p className="mt-1 text-xs text-on-surface-variant">
-                      Explicitly index selected source roots in memory for symbols and <span className="font-mono">@file</span> mentions. Murmur never reads editor text, selections, or the clipboard.
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={p.ideContextEnabled}
-                    aria-label={`Local IDE project context for ${p.label || p.bundleId}`}
-                    onClick={() => toggleIdeContext(p.bundleId)}
-                    className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary ${p.ideContextEnabled ? 'bg-primary' : 'bg-surface-container-highest'}`}
-                  >
-                    <span className={`inline-block h-4 w-4 rounded-full bg-on-primary shadow transition-transform ${p.ideContextEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
-                  </button>
-                </div>
-                {p.ideContextEnabled && (
-                  <div className="mt-2.5 space-y-2">
-                    {p.ideProjectRoots.length > 0 ? (
-                      <ul className="space-y-1">
-                        {p.ideProjectRoots.map((root) => (
-                          <li key={root} className="flex items-center gap-2 rounded-md bg-surface-container px-2 py-1.5">
-                            <span className="min-w-0 flex-1 break-all font-mono text-xs text-on-surface">{root}</span>
-                            <button
-                              type="button"
-                              onClick={() => removeIdeRoot(p.bundleId, root)}
-                              className="shrink-0 text-xs text-on-surface-variant underline hover:text-error"
-                            >
-                              Remove root
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p className="text-xs text-on-surface-variant">No project roots configured.</p>
-                    )}
-                    <div className="flex flex-wrap items-center gap-3">
-                      <button
-                        type="button"
-                        onClick={() => void addIdeRoot(p.bundleId)}
-                        disabled={p.ideProjectRoots.length >= 4}
-                        className="text-xs font-medium text-on-surface-variant underline hover:text-primary disabled:opacity-50"
-                      >
-                        Add project root
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void refreshIdeIndex(p.bundleId)}
-                        disabled={p.ideProjectRoots.length === 0 || ideStatuses[p.bundleId]?.state === 'scanning'}
-                        className="text-xs font-medium text-on-surface-variant underline hover:text-primary disabled:opacity-50"
-                      >
-                        Refresh index
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void clearIdeIndex(p.bundleId)}
-                        disabled={p.ideProjectRoots.length === 0}
-                        className="text-xs font-medium text-on-surface-variant underline hover:text-error disabled:opacity-50"
-                      >
-                        Clear index
-                      </button>
-                    </div>
-                    <p className="text-xs text-on-surface-variant" role="status">
-                      {ideStatusText(ideStatuses[p.bundleId], p.ideProjectRoots.length)}
-                    </p>
-                    <p className="text-xs text-on-surface-variant">
-                      Clear index removes only memory contents; Remove root changes the persisted profile configuration. Paths are shown only here and never written to logs.
-                    </p>
-                  </div>
-                )}
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
-
-      <div className="space-y-2">
-        <input
-          type="text"
-          value={label}
-          onChange={(e) => setLabel(e.target.value)}
-          placeholder="Label (optional, e.g. Terminal)"
-          autoComplete="off"
-          autoCorrect="off"
-          autoCapitalize="off"
-          spellCheck={false}
-          className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface placeholder:text-on-surface-variant focus:outline-none focus:ring-2 focus:ring-primary"
-        />
-        <div className="flex gap-2">
-          <input
-            type="text"
-            value={bundleId}
-            onChange={(e) => setBundleId(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') handleAdd(); }}
-            placeholder="com.apple.Terminal"
-            autoComplete="off"
-            autoCorrect="off"
-            autoCapitalize="off"
-            spellCheck={false}
-            className="min-w-0 flex-1 rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 font-mono text-xs text-on-surface placeholder:text-on-surface-variant focus:outline-none focus:ring-2 focus:ring-primary"
-          />
-          <button
-            type="button"
-            onClick={handleAdd}
-            disabled={!bundleId.trim()}
-            className="shrink-0 px-3 py-2 rounded-lg text-xs font-medium border border-outline-variant/20 bg-surface-container-lowest text-on-surface-variant hover:bg-surface-container hover:text-primary transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            Add
-          </button>
-        </div>
-      </div>
+      <p className="mt-1 text-xs text-on-surface-variant">Higher keeps more audio; lower trims silence more aggressively.</p>
     </div>
   );
 }
@@ -498,7 +128,6 @@ interface SettingsPanelProps {
   status: DictationStatus;
   onResetStats: () => void;
   onViewLogs: () => void;
-  /** Relaunch the first-run setup assistant (permission troubleshooting). */
   onRerunSetup: () => void;
   accessibilityGranted: boolean | null;
   onCheckForUpdate: () => Promise<void>;
@@ -506,101 +135,96 @@ interface SettingsPanelProps {
   configureError: string | null;
 }
 
-const SETTINGS_CATEGORIES = [
-  { id: 'transcription', label: 'Transcription' },
+export const SETTINGS_CATEGORIES = [
   { id: 'recording', label: 'Recording' },
-  { id: 'output', label: 'Output & Paste' },
-  { id: 'profiles', label: 'Per-App Profiles' },
-  { id: 'vocab', label: 'Vocabulary' },
-  { id: 'knowledge', label: 'Knowledge' },
+  { id: 'transcription', label: 'Transcription' },
+  { id: 'text-vocabulary', label: 'Text & Vocabulary' },
+  { id: 'delivery', label: 'Delivery' },
   { id: 'performance', label: 'Performance' },
-  { id: 'about', label: 'About' },
+  { id: 'general', label: 'General' },
 ] as const;
 
-export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, status, onResetStats, onViewLogs, onRerunSetup, accessibilityGranted, onCheckForUpdate, updateStatus, configureError }: SettingsPanelProps) {
-  const { models: runtimeModels, byName: runtimeByName } = useModelRuntimeCatalog(isOpen);
-  const [confirmReset, setConfirmReset] = useState(false);
-  const [activeCat, setActiveCat] = useState<string>('transcription');
-  const [version, setVersion] = useState('');
+export function effectiveAutoPaste(settings: Pick<Settings, 'autoPaste' | 'saveTranscript' | 'saveAudio'>): boolean {
+  return settings.autoPaste && !settings.saveTranscript && !settings.saveAudio;
+}
 
-  useEffect(() => { getVersion().then(setVersion); }, []);
+export function autoPasteDeliveryDescription(settings: Pick<Settings, 'autoPaste' | 'saveTranscript' | 'saveAudio'>): string {
+  if (!settings.saveTranscript && !settings.saveAudio) {
+    return 'Paste the clipboard result into the active app (Accessibility permission required).';
+  }
+  return settings.autoPaste
+    ? 'Paused while file output is on. Your saved preference will resume when file output is off.'
+    : 'Unavailable while file output is on. Turn off file output to enable auto-paste.';
+}
+
+export function fileOutputDeliveryDescription(settings: Pick<Settings, 'autoPaste'>): string {
+  return settings.autoPaste
+    ? 'Clipboard copying stays on; only automatic paste is paused.'
+    : 'Clipboard copying stays on; auto-paste remains off.';
+}
+
+export function SettingsPanel({
+  isOpen,
+  onClose,
+  settings,
+  onUpdateSettings,
+  status,
+  onResetStats,
+  onViewLogs,
+  onRerunSetup,
+  accessibilityGranted,
+  onCheckForUpdate,
+  updateStatus,
+  configureError,
+}: SettingsPanelProps) {
+  const { byName: runtimeByName } = useModelRuntimeCatalog(isOpen);
+  const [activeCat, setActiveCat] = useState<string>('recording');
+  const [version, setVersion] = useState('');
+  const [confirmReset, setConfirmReset] = useState(false);
+  const contentRef = useRef<HTMLDivElement>(null);
   const confirmResetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const handleResetClick = () => {
-    if (confirmReset) {
-      if (confirmResetTimeoutRef.current) clearTimeout(confirmResetTimeoutRef.current);
-      confirmResetTimeoutRef.current = null;
-      setConfirmReset(false);
-      onResetStats();
-    } else {
-      setConfirmReset(true);
-      confirmResetTimeoutRef.current = setTimeout(() => {
-        setConfirmReset(false);
-        confirmResetTimeoutRef.current = null;
-      }, 3000);
-    }
-  };
+  useEffect(() => { void getVersion().then(setVersion); }, []);
+  useEffect(() => { contentRef.current?.scrollTo({ top: 0 }); }, [activeCat]);
+  useEffect(() => () => {
+    if (confirmResetTimeoutRef.current) clearTimeout(confirmResetTimeoutRef.current);
+  }, []);
 
-  const handleRequestPermission = () => invoke('request_accessibility_permission');
-
-  const handleChooseFolder = async () => {
+  const requestAccessibility = () => { void invoke('request_accessibility_permission'); };
+  const chooseOutputFolder = async () => {
     try {
       const selected = await open({ directory: true, multiple: false });
-      if (typeof selected === 'string') {
-        onUpdateSettings({ outputDir: selected });
-      }
+      if (typeof selected === 'string') onUpdateSettings({ outputDir: selected });
     } catch {
-      // Dialog cancelled or unavailable — keep the current folder.
+      // Cancellation leaves the stored folder untouched.
     }
   };
 
-  // Code-vocab scan: live walker + ticking counts + done-state. Seeded from the
-  // persisted last-scan summary so reopening settings shows the prior result.
   const vocabScan = useVocabScan(settings.codeVocabLastScan);
-  // useVocabScan returns a fresh object literal each render, but scan/cancel are
-  // stable useCallbacks — depend on the function, not the whole object, so
-  // runVocabScan (and the closures built from it) keep a stable identity.
   const { scan: doScan } = vocabScan;
-
-  // Run a scan against a folder and persist its summary so the done-state
-  // survives a settings reopen. Persisting via onUpdateSettings keeps the hook
-  // and localStorage in sync (the hook also resolves to the summary).
-  const runVocabScan = useCallback(
-    async (folder: string) => {
-      if (!folder) return;
-      const summary = await doScan(folder);
-      if (summary?.adopted) onUpdateSettings({ codeVocabLastScan: summary });
-      else if (summary) onUpdateSettings({ codeVocabLastScan: null });
-    },
-    [doScan, onUpdateSettings],
-  );
-
-  const handleChooseCodeVocabFolder = async () => {
+  const runVocabScan = useCallback(async (folder: string) => {
+    if (!folder) return;
+    const summary = await doScan(folder);
+    if (summary?.adopted) onUpdateSettings({ codeVocabLastScan: summary });
+    else if (summary) onUpdateSettings({ codeVocabLastScan: null });
+  }, [doScan, onUpdateSettings]);
+  const chooseCodeFolder = async () => {
     try {
       const selected = await open({ directory: true, multiple: false });
-      if (typeof selected === 'string') {
-        onUpdateSettings({ codeVocabFolder: selected, codeVocabLastScan: null });
-        // Auto-scan the freshly chosen folder.
-        void runVocabScan(selected);
-      }
+      if (typeof selected !== 'string') return;
+      onUpdateSettings({ codeVocabFolder: selected, codeVocabLastScan: null });
+      void runVocabScan(selected);
     } catch {
-      // Dialog cancelled or unavailable — keep the current folder.
+      // Cancellation leaves the stored folder untouched.
     }
   };
-
-  // Clear the folder: also drop the persisted scan and reset the strip to idle.
-  const handleClearCodeVocabFolder = () => {
+  const clearCodeFolder = () => {
     vocabScan.cancel();
     onUpdateSettings({ codeVocabFolder: '', codeVocabLastScan: null });
   };
 
-  const saveToFile = settings.saveTranscript || settings.saveAudio;
-
-  // Model availability check and inline download
   const selectedRuntime = runtimeByName.get(settings.model);
-  const modelAvailable = selectedRuntime
-    ? selectedRuntime.installState === 'installed'
-    : null;
+  const modelAvailable = selectedRuntime ? selectedRuntime.installState === 'installed' : null;
   const [modelDownload, setModelDownload] = useState<
     | { phase: 'idle' }
     | { phase: 'downloading'; progress: ModelDownloadProgress }
@@ -613,1008 +237,255 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
     setModelDownload({ phase: 'idle' });
     downloadModelRef.current = null;
   }, [settings.model]);
-
-  useEffect(() => {
-    return () => {
-      downloadUnlistenRef.current?.();
-      downloadUnlistenRef.current = null;
-    };
+  useEffect(() => () => {
+    downloadUnlistenRef.current?.();
+    downloadUnlistenRef.current = null;
   }, []);
 
-  const handleModelDownload = useCallback(async () => {
+  const downloadModel = useCallback(async () => {
     const modelName = settings.model;
     downloadModelRef.current = modelName;
-    setModelDownload({
-      phase: 'downloading',
-      progress: { received: 0, total: 0, phase: 'downloading' },
-    });
+    setModelDownload({ phase: 'downloading', progress: { received: 0, total: 0, phase: 'downloading' } });
     let unlisten: (() => void) | null = null;
     try {
-      unlisten = await listen<ModelDownloadProgress>(
-        'download-progress',
-        (event) => {
-          if (downloadModelRef.current !== modelName) return;
-          setModelDownload({
-            phase: 'downloading',
-            progress: event.payload,
-          });
-        }
-      );
+      unlisten = await listen<ModelDownloadProgress>('download-progress', (event) => {
+        if (downloadModelRef.current === modelName) setModelDownload({ phase: 'downloading', progress: event.payload });
+      });
       downloadUnlistenRef.current = unlisten;
       await invoke('download_model', { modelName });
       unlisten();
       downloadUnlistenRef.current = null;
-      if (downloadModelRef.current === modelName) {
-        downloadModelRef.current = null;
-        setModelDownload({ phase: 'idle' });
-      }
-    } catch (err) {
+      if (downloadModelRef.current === modelName) setModelDownload({ phase: 'idle' });
+    } catch (error) {
       unlisten?.();
       downloadUnlistenRef.current = null;
-      if (downloadModelRef.current === modelName) {
-        downloadModelRef.current = null;
-        setModelDownload({ phase: 'error', message: String(err) });
-      }
+      if (downloadModelRef.current === modelName) setModelDownload({ phase: 'error', message: String(error) });
+    } finally {
+      if (downloadModelRef.current === modelName) downloadModelRef.current = null;
     }
   }, [settings.model]);
 
-  // Audio device enumeration
   const [audioDevices, setAudioDevices] = useState<string[]>([]);
   useEffect(() => {
     if (!isOpen) return;
-    invoke<string[]>('list_audio_devices')
-      .then(setAudioDevices)
-      .catch(() => setAudioDevices([]));
+    invoke<string[]>('list_audio_devices').then(setAudioDevices).catch(() => setAudioDevices([]));
   }, [isOpen]);
 
-  const savedDeviceMissing =
-    settings.microphone !== DEFAULT_SETTINGS.microphone &&
-    audioDevices.length > 0 &&
-    !audioDevices.includes(settings.microphone);
-
+  const isRecording = status !== 'idle';
   const isDoubleTap = settings.recordingMode === 'double_tap';
   const isBoth = settings.recordingMode === 'both';
   const keyLabel = isBoth ? 'Trigger Key' : isDoubleTap ? 'Double-Tap Key' : 'Hold Key';
-  const keyHelpText = isBoth
-    ? 'Hold to record, or double-tap to start and single tap to stop'
-    : isDoubleTap
-      ? 'Double-tap to start recording, single tap to stop'
-      : 'Hold to start recording, release to stop';
-  const isRecording = status !== 'idle';
-  const selectedModel = AVAILABLE_MODEL_OPTIONS.find(m => m.value === settings.model);
-  const supportsCoreMl = runtimeModels.some(model => model.backend === 'coreml' && model.supported);
-  const useNeuralEngine = selectedRuntime?.backend === 'coreml';
-  const isEnglishOnlyModel = selectedRuntime
-    ? !selectedRuntime.capabilities.multilingual
-    : true;
-  const activeModelDownload = modelDownload.phase === 'downloading'
-    ? modelDownload.progress
+  const keyHelp = isBoth
+    ? 'Hold to record, or double-tap to start and single-tap to stop.'
+    : isDoubleTap ? 'Double-tap to start and single-tap to stop.' : 'Hold to start and release to stop.';
+  const missingDevice = settings.microphone !== DEFAULT_SETTINGS.microphone
+    && audioDevices.length > 0
+    && !audioDevices.includes(settings.microphone);
+  const englishOnly = selectedRuntime ? !selectedRuntime.capabilities.multilingual : true;
+  const downloadProgress = modelDownload.phase === 'downloading'
+    ? modelDownloadPercent(modelDownload.progress)
     : null;
-  const downloadProgressPercent = activeModelDownload
-    ? modelDownloadPercent(activeModelDownload)
-    : null;
+  const saveToFile = settings.saveTranscript || settings.saveAudio;
+  const autoPasteOn = effectiveAutoPaste(settings);
+
+  const resetStats = () => {
+    if (confirmReset) {
+      if (confirmResetTimeoutRef.current) clearTimeout(confirmResetTimeoutRef.current);
+      confirmResetTimeoutRef.current = null;
+      setConfirmReset(false);
+      onResetStats();
+      return;
+    }
+    setConfirmReset(true);
+    confirmResetTimeoutRef.current = setTimeout(() => {
+      setConfirmReset(false);
+      confirmResetTimeoutRef.current = null;
+    }, 3000);
+  };
 
   return (
-    <div className="flex-1 flex overflow-hidden bg-surface text-on-surface">
-      {/* Left: category nav rail */}
-      <nav className="w-48 shrink-0 flex flex-col bg-surface-container-low overflow-y-auto">
-        <div className="flex items-center justify-between h-12 shrink-0 px-3">
+    <div className="flex flex-1 overflow-hidden bg-surface text-on-surface">
+      <nav aria-label="Settings pages" className="flex w-48 shrink-0 flex-col overflow-y-auto bg-surface-container-low">
+        <div className="flex h-12 shrink-0 items-center justify-between px-3">
           <h2 className="text-sm font-semibold text-on-surface">Settings</h2>
-          <button
-            onClick={onClose}
-            aria-label="Close settings"
-            className="p-1 rounded-md text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
+          <button onClick={onClose} aria-label="Close settings" className="rounded-md p-1 text-on-surface-variant transition-colors hover:bg-surface-container-high hover:text-on-surface">
+            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
           </button>
         </div>
-        <div className="px-2 pb-3 space-y-0.5">
-          {SETTINGS_CATEGORIES.map((c) => (
+        <div className="space-y-0.5 px-2 pb-3">
+          {SETTINGS_CATEGORIES.map((category) => (
             <button
-              key={c.id}
+              key={category.id}
               type="button"
-              onClick={() => setActiveCat(c.id)}
-              className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${
-                activeCat === c.id
-                  ? 'bg-surface-container-high text-primary font-medium'
-                  : 'text-on-surface-variant hover:bg-surface-container'
-              }`}
+              aria-current={activeCat === category.id ? 'page' : undefined}
+              onClick={() => setActiveCat(category.id)}
+              className={`w-full rounded-lg px-3 py-2 text-left text-sm transition-colors ${activeCat === category.id ? 'bg-surface-container-high font-medium text-primary' : 'text-on-surface-variant hover:bg-surface-container'}`}
             >
-              {c.label}
+              {category.label}
             </button>
           ))}
         </div>
       </nav>
 
-      {/* Right: active category content */}
-      <div className="flex-1 overflow-y-auto">
+      <div ref={contentRef} data-testid="settings-content" className="flex-1 overflow-y-auto">
         <div className="max-w-2xl px-6 py-5">
-        {configureError && (
-          <p role="alert" className="mb-4 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-700 dark:text-red-300">
-            {configureError}
-          </p>
-        )}
-        <SettingsSection pageId="transcription" activePage={activeCat} title="Transcription" subtitle="Model, language, microphone">
-        {supportsCoreMl && (
-          <div className="flex items-center justify-between gap-6">
+          {configureError && <p role="alert" className="mb-4 rounded-lg bg-error/10 px-3 py-2 text-xs text-error">{configureError}</p>}
+
+          <SettingsSection pageId="recording" activePage={activeCat} title="Recording" subtitle="Microphone, voice detection, and shortcuts">
             <div>
-              <label className="block text-sm font-medium text-on-surface">
-                Apple Neural Engine
-              </label>
-              <p className="mt-1 text-xs text-on-surface-variant">
-                {useNeuralEngine
-                  ? 'Parakeet v3 via Core ML (fastest)'
-                  : 'Enable to switch to the Core ML transcription path'}
-              </p>
+              <label className="mb-2 block text-sm font-medium text-on-surface">Microphone</label>
+              <Select value={settings.microphone} onChange={(microphone) => onUpdateSettings({ microphone })} disabled={isRecording} items={[{ value: 'system_default', label: 'System Default' }, ...audioDevices.map((name) => ({ value: name, label: name }))]} />
+              {missingDevice && <p className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">Selected device not found — Murmur will use System Default.</p>}
             </div>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={useNeuralEngine}
-              aria-label="Use Apple Neural Engine"
-              disabled={isRecording}
-              onClick={() => onUpdateSettings({
-                model: useNeuralEngine
-                  ? 'parakeet-tdt-0.6b-v2-fp16'
-                  : 'parakeet-tdt-0.6b-v3-coreml',
-              })}
-              className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 ${
-                useNeuralEngine ? 'bg-primary' : 'bg-surface-container-highest'
-              }`}
-            >
-              <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-on-primary shadow transition-transform ${
-                  useNeuralEngine ? 'translate-x-6' : 'translate-x-1'
-                }`}
-              />
-            </button>
-          </div>
-        )}
-
-        {/* Model Selector */}
-        <div>
-          <label className="block text-sm font-medium text-on-surface mb-2">
-            Transcription Model
-          </label>
-          <Select
-            value={settings.model}
-            onChange={(value) => onUpdateSettings({ model: value })}
-            disabled={isRecording}
-            items={AVAILABLE_MODEL_OPTIONS.map((m) => ({ value: m.value, label: `${m.label} (${m.size})` }))}
-          />
-          <p className="mt-1 text-xs text-on-surface-variant">
-            Larger models are more accurate but slower.
-          </p>
-          {selectedRuntime && (
-            <p className="mt-1 text-xs text-on-surface-variant" data-testid="model-runtime-status">
-              {selectedRuntime.label}: {selectedRuntime.installState} · {selectedRuntime.lifecycleState}
-            </p>
-          )}
-          {isRecording && (
-            <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
-              Stop recording before changing model
-            </p>
-          )}
-
-          {/* Model not downloaded — inline download prompt */}
-          {modelAvailable === false && modelDownload.phase === 'idle' && (
-            <div className="mt-2 flex items-center gap-2 px-3 py-2 text-xs bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg text-amber-700 dark:text-amber-400">
-              <span className="w-2 h-2 rounded-full bg-amber-500 flex-shrink-0" />
-              <span>Model not downloaded</span>
-              <button
-                onClick={handleModelDownload}
-                className="underline hover:no-underline ml-auto flex-shrink-0"
-              >
-                Download
-              </button>
+            <div>
+              <p className="mb-2 text-sm font-medium text-on-surface">Voice Detection</p>
+              <VadSensitivitySlider value={settings.vadSensitivity} onCommit={(vadSensitivity) => onUpdateSettings({ vadSensitivity })} />
             </div>
-          )}
-
-          {/* Download in progress */}
-          {modelDownload.phase === 'downloading' && (
-            <div className="mt-2">
-              <div className="flex justify-between text-xs text-on-surface-variant mb-1">
-                <span>{activeModelDownload ? modelDownloadLabel(activeModelDownload) : 'Starting...'}</span>
-                {downloadProgressPercent !== null ? (
-                  <span>{downloadProgressPercent}%</span>
-                ) : (
-                  <span>Working...</span>
-                )}
+            <div>
+              <p className="mb-2 text-sm font-medium text-on-surface">Recording Trigger</p>
+              <div className="flex gap-2">
+                {RECORDING_MODE_OPTIONS.map((option) => (
+                  <button key={option.value} type="button" disabled={isRecording} onClick={() => onUpdateSettings({ recordingMode: option.value as RecordingMode })} className={`flex-1 rounded-lg border px-3 py-2 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${settings.recordingMode === option.value ? 'border-primary bg-primary text-on-primary' : 'border-outline-variant/30 bg-surface-container-lowest text-on-surface hover:bg-surface-container'}`}>{option.label}</button>
+                ))}
               </div>
-              <div className="w-full h-1.5 bg-surface-container-highest rounded-full overflow-hidden">
-                <div
-                  role="progressbar"
-                  aria-valuenow={downloadProgressPercent ?? undefined}
-                  aria-valuemin={0}
-                  aria-valuemax={100}
-                  aria-valuetext={downloadProgressPercent === null
-                    ? 'Model installation in progress'
-                    : `Download progress: ${downloadProgressPercent} percent`}
-                  className={`h-full rounded-full bg-primary ${
-                    downloadProgressPercent === null
-                      ? 'model-download-indeterminate'
-                      : 'transition-all duration-200'
-                  }`}
-                  style={downloadProgressPercent === null
-                    ? undefined
-                    : { width: `${downloadProgressPercent}%` }}
-                />
+              {isRecording && <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">Stop recording before changing mode.</p>}
+            </div>
+            {accessibilityGranted === false && (
+              <div className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+                <span>Accessibility permission is required for keyboard detection.</span>
+                <button type="button" onClick={requestAccessibility} className="ml-auto underline">Grant</button>
               </div>
+            )}
+            <div>
+              <label className="mb-2 block text-sm font-medium text-on-surface">{keyLabel}</label>
+              <Select value={settings.doubleTapKey} onChange={(doubleTapKey) => onUpdateSettings({ doubleTapKey })} disabled={isRecording} items={DOUBLE_TAP_KEY_OPTIONS} />
+              <p className="mt-1 text-xs text-on-surface-variant">{keyHelp}</p>
             </div>
-          )}
+            {(isDoubleTap || isBoth) && <SettingToggle title="Hotkey Timing Feedback" description="Flash the overlay when a tap misses the double-tap window." checked={settings.hotkeyMissFeedback} onChange={() => onUpdateSettings({ hotkeyMissFeedback: !settings.hotkeyMissFeedback })} />}
+          </SettingsSection>
 
-          {/* Download error */}
-          {modelDownload.phase === 'error' && (
-            <div className="mt-2 flex items-center gap-2 px-3 py-2 text-xs bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg text-red-600 dark:text-red-400">
-              <span>{modelDownload.message}</span>
-              <button
-                onClick={handleModelDownload}
-                className="underline hover:no-underline ml-auto flex-shrink-0"
-              >
-                Retry
-              </button>
-            </div>
-          )}
-        </div>
-
-        {/* Language Selector */}
-        <div>
-          <label className="block text-sm font-medium text-on-surface mb-2">
-            Language
-          </label>
-          <Select
-            value={settings.language}
-            onChange={(value) => onUpdateSettings({ language: value })}
-            disabled={isRecording || isEnglishOnlyModel}
-            items={LANGUAGE_OPTIONS}
-          />
-          {isEnglishOnlyModel ? (
-            <p className="mt-1 text-xs text-on-surface-variant">
-              English only model — switch to Whisper Large Turbo for other languages.
-            </p>
-          ) : isRecording ? (
-            <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
-              Stop recording before changing language
-            </p>
-          ) : (
-            <p className="mt-1 text-xs text-on-surface-variant">
-              Auto Detect lets Whisper identify the language each recording.
-            </p>
-          )}
-        </div>
-
-        {/* Smart Punctuation Toggle */}
-        <div className="flex items-center justify-between">
-          <div>
-            <label className="block text-sm font-medium text-on-surface">
-              Smart Punctuation
-            </label>
-            <p className="mt-1 text-xs text-on-surface-variant">
-              Add periods, commas, and capitalization to transcriptions.
-            </p>
-          </div>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={settings.smartPunctuation}
-            aria-label="Smart punctuation"
-            onClick={() => onUpdateSettings({ smartPunctuation: !settings.smartPunctuation })}
-            className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 ${
-              settings.smartPunctuation ? 'bg-primary' : 'bg-surface-container-highest'
-            }`}
-          >
-            <span
-              className={`inline-block h-4 w-4 transform rounded-full bg-on-primary shadow transition-transform ${
-                settings.smartPunctuation ? 'translate-x-6' : 'translate-x-1'
-              }`}
-            />
-          </button>
-        </div>
-
-        {/* Microphone Selector */}
-        <div>
-          <label className="block text-sm font-medium text-on-surface mb-2">
-            Microphone
-          </label>
-          <Select
-            value={settings.microphone}
-            onChange={(value) => onUpdateSettings({ microphone: value })}
-            disabled={isRecording}
-            items={[
-              { value: 'system_default', label: 'System Default' },
-              ...audioDevices.map((name) => ({ value: name, label: name })),
-            ]}
-          />
-          {savedDeviceMissing && (
-            <div className="mt-2 flex items-center gap-2 px-3 py-2 text-xs bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg text-amber-700 dark:text-amber-400">
-              <span className="w-2 h-2 rounded-full bg-amber-500 flex-shrink-0" />
-              <span>Selected device not found — will use System Default</span>
-            </div>
-          )}
-        </div>
-
-        {/* Idle Timeout */}
-        <div>
-          <label className="block text-sm font-medium text-on-surface mb-2">
-            Release Model After Inactivity
-          </label>
-          <Select
-            value={String(settings.idleTimeoutMinutes)}
-            onChange={(value) => onUpdateSettings({ idleTimeoutMinutes: Number(value) })}
-            disabled={isRecording}
-            items={IDLE_TIMEOUT_OPTIONS.map((o) => ({ value: String(o.value), label: o.label }))}
-          />
-          <p className="mt-1 text-xs text-on-surface-variant">
-            Free memory by unloading the model when idle. Set to Never to keep it loaded.
-          </p>
-        </div>
-
-        {/* Transcript Cleanup Toggle */}
-        <div className="flex items-center justify-between">
-          <div>
-            <label className="block text-sm font-medium text-on-surface">
-              Transcript Cleanup
-            </label>
-            <p className="mt-1 text-xs text-on-surface-variant">
-              Strip filler words (um, uh) and tidy spacing before pasting.
-            </p>
-          </div>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={settings.cleanupEnabled}
-            aria-label="Transcript cleanup"
-            onClick={() => onUpdateSettings({ cleanupEnabled: !settings.cleanupEnabled })}
-            className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 ${
-              settings.cleanupEnabled ? 'bg-primary' : 'bg-surface-container-highest'
-            }`}
-          >
-            <span
-              className={`inline-block h-4 w-4 transform rounded-full bg-on-primary shadow transition-transform ${
-                settings.cleanupEnabled ? 'translate-x-6' : 'translate-x-1'
-              }`}
-            />
-          </button>
-        </div>
-
-        {/* Cleanup sub-options — only meaningful while cleanup is enabled. */}
-        {settings.cleanupEnabled && (
-          <div className="ml-3 pl-3 space-y-3">
-            <div className="flex items-center justify-between">
-              <label className="text-xs text-on-surface-variant">
-                Remove filler words (um, uh)
-              </label>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={settings.cleanupRemoveFiller}
-                aria-label="Remove filler words"
-                onClick={() => onUpdateSettings({ cleanupRemoveFiller: !settings.cleanupRemoveFiller })}
-                className={`relative inline-flex shrink-0 h-5 w-9 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 ${
-                  settings.cleanupRemoveFiller ? 'bg-primary' : 'bg-surface-container-highest'
-                }`}
-              >
-                <span
-                  className={`inline-block h-3.5 w-3.5 transform rounded-full bg-on-primary shadow transition-transform ${
-                    settings.cleanupRemoveFiller ? 'translate-x-4' : 'translate-x-1'
-                  }`}
-                />
-              </button>
-            </div>
-            <div className="flex items-center justify-between">
-              <label className="text-xs text-on-surface-variant">
-                Capitalize sentences
-              </label>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={settings.cleanupCapitalize}
-                aria-label="Capitalize sentences"
-                onClick={() => onUpdateSettings({ cleanupCapitalize: !settings.cleanupCapitalize })}
-                className={`relative inline-flex shrink-0 h-5 w-9 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 ${
-                  settings.cleanupCapitalize ? 'bg-primary' : 'bg-surface-container-highest'
-                }`}
-              >
-                <span
-                  className={`inline-block h-3.5 w-3.5 transform rounded-full bg-on-primary shadow transition-transform ${
-                    settings.cleanupCapitalize ? 'translate-x-4' : 'translate-x-1'
-                  }`}
-                />
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Smart Formatting Toggle */}
-        <div className="flex items-center justify-between">
-          <div>
-            <label className="block text-sm font-medium text-on-surface">
-              Smart Formatting
-            </label>
-            <p className="mt-1 text-xs text-on-surface-variant">
-              Format explicit spoken lists, email/URL/symbol cues, and same-utterance corrections locally.
-            </p>
-          </div>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={settings.smartFormattingEnabled}
-            aria-label="Smart formatting"
-            onClick={() => onUpdateSettings({ smartFormattingEnabled: !settings.smartFormattingEnabled })}
-            className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 ${
-              settings.smartFormattingEnabled ? 'bg-primary' : 'bg-surface-container-highest'
-            }`}
-          >
-            <span
-              className={`inline-block h-4 w-4 transform rounded-full bg-on-primary shadow transition-transform ${
-                settings.smartFormattingEnabled ? 'translate-x-6' : 'translate-x-1'
-              }`}
-            />
-          </button>
-        </div>
-        </SettingsSection>
-
-        <SettingsSection pageId="recording" activePage={activeCat} title="Recording" subtitle="Trigger mode, shortcut key">
-        {/* Voice Detection */}
-        <div>
-          <label className="block text-sm font-medium text-on-surface mb-2">
-            Voice Detection
-          </label>
-          <VadSensitivitySlider
-            value={settings.vadSensitivity}
-            onCommit={(value) => onUpdateSettings({ vadSensitivity: value })}
-          />
-
-        </div>
-
-        {/* Recording Trigger */}
-        <div>
-          <label className="block text-sm font-medium text-on-surface mb-2">
-            Recording Trigger
-          </label>
-          <div className="flex gap-2">
-            {RECORDING_MODE_OPTIONS.map((option) => (
-              <button
-                key={option.value}
+          <SettingsSection pageId="transcription" activePage={activeCat} title="Transcription" subtitle="Model, language, and runtime lifecycle">
+            <div>
+              <label className="mb-2 block text-sm font-medium text-on-surface">Transcription Model</label>
+              <Select
+                value={settings.model}
+                onChange={(model) => onUpdateSettings({ model })}
                 disabled={isRecording}
-                onClick={() => onUpdateSettings({ recordingMode: option.value as RecordingMode })}
-                className={`flex-1 px-3 py-2 rounded-lg text-xs font-medium border transition-colors ${
-                  settings.recordingMode === option.value
-                    ? 'bg-primary text-on-primary border-primary'
-                    : 'bg-surface-container-lowest text-on-surface border-outline-variant/20 hover:bg-surface-container'
-                } ${isRecording ? 'opacity-50 cursor-not-allowed' : ''}`}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
-          {isRecording && (
-            <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
-              Stop recording before changing mode
-            </p>
-          )}
-        </div>
-
-        {/* Accessibility notice — both modes use rdev which requires it */}
-        {accessibilityGranted === false && (
-          <div className="flex items-center gap-2 px-3 py-2 text-xs bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg text-amber-700 dark:text-amber-400">
-            <span className="w-2 h-2 rounded-full bg-amber-500 flex-shrink-0" />
-            <span>Accessibility permission required for keyboard detection</span>
-            <button
-              onClick={handleRequestPermission}
-              className="underline hover:no-underline ml-auto flex-shrink-0"
-            >
-              Grant
-            </button>
-          </div>
-        )}
-
-        {/* Trigger Key Selector */}
-        <div>
-          <label className="block text-sm font-medium text-on-surface mb-2">
-            {keyLabel}
-          </label>
-          <Select
-            value={settings.doubleTapKey}
-            onChange={(value) => onUpdateSettings({ doubleTapKey: value })}
-            disabled={isRecording}
-            items={DOUBLE_TAP_KEY_OPTIONS}
-          />
-          <p className="mt-1 text-xs text-on-surface-variant">
-            {keyHelpText}
-          </p>
-        </div>
-
-        {(isDoubleTap || isBoth) && (
-          <div className="flex items-center justify-between gap-6">
-            <div>
-              <label className="block text-sm font-medium text-on-surface">
-                Hotkey Timing Feedback
-              </label>
-              <p className="mt-1 text-xs text-on-surface-variant">
-                Flash the overlay when a tap misses the double-tap window
-              </p>
-            </div>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={settings.hotkeyMissFeedback}
-              aria-label="Hotkey timing feedback"
-              onClick={() => onUpdateSettings({ hotkeyMissFeedback: !settings.hotkeyMissFeedback })}
-              className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 ${
-                settings.hotkeyMissFeedback ? 'bg-primary' : 'bg-surface-container-highest'
-              }`}
-            >
-              <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-on-primary shadow transition-transform ${
-                  settings.hotkeyMissFeedback ? 'translate-x-6' : 'translate-x-1'
-                }`}
+                items={AVAILABLE_MODEL_OPTIONS.map((model) => ({ value: model.value, label: `${model.label}${model.backend === 'coreml' ? ' — Recommended' : ''} (${model.size})` }))}
               />
-            </button>
-          </div>
-        )}
-        </SettingsSection>
-
-        <SettingsSection pageId="output" activePage={activeCat} title="Output" subtitle="Auto-paste, launch at login">
-        {/* Auto-Paste Toggle */}
-        <div>
-          <div className="flex items-center justify-between">
-            <div>
-              <label className="block text-sm font-medium text-on-surface">
-                Auto-Paste
-              </label>
-              <p className="mt-1 text-xs text-on-surface-variant">
-                Automatically paste transcription (requires Accessibility permission)
-              </p>
-            </div>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={settings.autoPaste}
-              aria-label="Auto paste"
-              onClick={() => onUpdateSettings({ autoPaste: !settings.autoPaste })}
-              className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 ${
-                settings.autoPaste ? 'bg-primary' : 'bg-surface-container-highest'
-              }`}
-            >
-              <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-on-primary shadow transition-transform ${
-                  settings.autoPaste ? 'translate-x-6' : 'translate-x-1'
-                }`}
-              />
-            </button>
-          </div>
-          {settings.autoPaste && accessibilityGranted !== null && (
-            <div className={`mt-2 flex items-center gap-2 text-xs ${
-              accessibilityGranted
-                ? 'text-emerald-600 dark:text-emerald-400'
-                : 'text-amber-600 dark:text-amber-400'
-            }`}>
-              <span className={`w-2 h-2 rounded-full ${
-                accessibilityGranted ? 'bg-emerald-500' : 'bg-amber-500'
-              }`} />
-              <span>
-                {accessibilityGranted
-                  ? 'Accessibility permission granted'
-                  : 'Accessibility permission required'}
-              </span>
-              {accessibilityGranted === false && (
-                <button
-                  onClick={handleRequestPermission}
-                  className="underline hover:no-underline"
-                >
-                  Grant
-                </button>
+              <p className="mt-1 text-xs text-on-surface-variant">Parakeet Core ML is recommended on supported Macs. Larger models can be more accurate but use more storage and memory.</p>
+              {selectedRuntime && <p className="mt-1 text-xs text-on-surface-variant" data-testid="model-runtime-status">{selectedRuntime.label}: {selectedRuntime.backend} / {selectedRuntime.accelerator} / {selectedRuntime.size} · {selectedRuntime.installState} · {selectedRuntime.lifecycleState}</p>}
+              {isRecording && <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">Stop recording before changing model.</p>}
+              {modelAvailable === false && modelDownload.phase === 'idle' && (
+                <div className="mt-2 flex items-center rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+                  <span>Model not downloaded</span><button type="button" onClick={() => void downloadModel()} className="ml-auto underline">Download</button>
+                </div>
               )}
+              {modelDownload.phase === 'downloading' && (
+                <div className="mt-2">
+                  <div className="mb-1 flex justify-between text-xs text-on-surface-variant"><span>{modelDownloadLabel(modelDownload.progress)}</span><span>{downloadProgress === null ? 'Working…' : `${downloadProgress}%`}</span></div>
+                  <div className="h-1.5 overflow-hidden rounded-full bg-surface-container-highest"><div role="progressbar" aria-valuenow={downloadProgress ?? undefined} aria-valuemin={0} aria-valuemax={100} aria-valuetext={downloadProgress === null ? 'Model installation in progress' : `Download progress: ${downloadProgress} percent`} className={`h-full rounded-full bg-primary ${downloadProgress === null ? 'model-download-indeterminate' : 'transition-all duration-200'}`} style={downloadProgress === null ? undefined : { width: `${downloadProgress}%` }} /></div>
+                </div>
+              )}
+              {modelDownload.phase === 'error' && <div className="mt-2 flex items-center rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-xs text-error"><span>{modelDownload.message}</span><button type="button" onClick={() => void downloadModel()} className="ml-auto underline">Retry</button></div>}
             </div>
-          )}
-          {settings.autoPaste && saveToFile && (
-            <div className="mt-2 flex items-center gap-2 px-3 py-2 text-xs bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg text-amber-700 dark:text-amber-400">
-              <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0" />
-              <span>Paused while saving audio or transcripts to file</span>
-            </div>
-          )}
-          {settings.autoPaste && (
-            <PasteDelaySlider
-              value={settings.autoPasteDelayMs}
-              onCommit={(value) => onUpdateSettings({ autoPasteDelayMs: value })}
-            />
-          )}
-        </div>
-
-        {/* Save Transcript to File Toggle */}
-        <div className="flex items-center justify-between">
-          <div>
-            <label className="block text-sm font-medium text-on-surface">
-              Save Transcript to File
-            </label>
-            <p className="mt-1 text-xs text-on-surface-variant">
-              Write each transcription to a .txt file
-            </p>
-          </div>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={settings.saveTranscript}
-            aria-label="Save transcript to file"
-            onClick={() => onUpdateSettings({ saveTranscript: !settings.saveTranscript })}
-            className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 ${
-              settings.saveTranscript ? 'bg-primary' : 'bg-surface-container-highest'
-            }`}
-          >
-            <span
-              className={`inline-block h-4 w-4 transform rounded-full bg-on-primary shadow transition-transform ${
-                settings.saveTranscript ? 'translate-x-6' : 'translate-x-1'
-              }`}
-            />
-          </button>
-        </div>
-
-        {/* Save Audio to File Toggle */}
-        <div>
-          <div className="flex items-center justify-between">
             <div>
-              <label className="block text-sm font-medium text-on-surface">
-                Save Audio to File
-              </label>
-              <p className="mt-1 text-xs text-on-surface-variant">
-                Write each recording to a .wav file
-              </p>
+              <label className="mb-2 block text-sm font-medium text-on-surface">Language</label>
+              <Select value={settings.language} onChange={(language) => onUpdateSettings({ language })} disabled={isRecording || englishOnly} items={LANGUAGE_OPTIONS} />
+              <p className="mt-1 text-xs text-on-surface-variant">{englishOnly ? 'This model is English-only. Choose Whisper Large Turbo for other languages.' : 'Auto Detect lets Whisper identify the language for each recording.'}</p>
             </div>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={settings.saveAudio}
-              aria-label="Save audio to file"
-              onClick={() => onUpdateSettings({ saveAudio: !settings.saveAudio })}
-              className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 ${
-                settings.saveAudio ? 'bg-primary' : 'bg-surface-container-highest'
-              }`}
-            >
-              <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-on-primary shadow transition-transform ${
-                  settings.saveAudio ? 'translate-x-6' : 'translate-x-1'
-                }`}
-              />
-            </button>
-          </div>
-
-          {saveToFile && (
-            <div className="mt-3">
-              <label className="block text-xs text-on-surface-variant mb-1">
-                Output Folder
-              </label>
-              <div className="break-all rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface">
-                {settings.outputDir || 'Documents/Murmur (default)'}
-              </div>
-              <div className="mt-2 flex items-center gap-3">
-                <button
-                  onClick={handleChooseFolder}
-                  className="text-xs font-medium text-on-surface-variant underline transition-colors hover:text-primary hover:no-underline"
-                >
-                  Choose Folder
-                </button>
-                {settings.outputDir && (
-                  <button
-                    onClick={() => onUpdateSettings({ outputDir: '' })}
-                    className="text-xs font-medium text-on-surface-variant underline transition-colors hover:text-primary hover:no-underline"
-                  >
-                    Reset to default
-                  </button>
-                )}
-              </div>
-              <p className="mt-2 text-xs text-on-surface-variant">
-                Text is still copied to the clipboard, but auto-paste is paused while saving to file.
-              </p>
-            </div>
-          )}
-        </div>
-
-        {/* Launch at Login Toggle */}
-        <div>
-          <div className="flex items-center justify-between">
             <div>
-              <label className="block text-sm font-medium text-on-surface">
-                Launch at Login
-              </label>
-              <p className="mt-1 text-xs text-on-surface-variant">
-                Automatically start when you log in
-              </p>
+              <label className="mb-2 block text-sm font-medium text-on-surface">Release Model After Inactivity</label>
+              <Select value={String(settings.idleTimeoutMinutes)} onChange={(value) => onUpdateSettings({ idleTimeoutMinutes: Number(value) })} disabled={isRecording} items={IDLE_TIMEOUT_OPTIONS.map((option) => ({ value: String(option.value), label: option.label }))} />
+              <p className="mt-1 text-xs text-on-surface-variant">Free memory by unloading an idle model; choose Never to keep it ready.</p>
             </div>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={settings.launchAtLogin}
-              aria-label="Launch at login"
-              onClick={() => onUpdateSettings({ launchAtLogin: !settings.launchAtLogin })}
-              className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 ${
-                settings.launchAtLogin ? 'bg-primary' : 'bg-surface-container-highest'
-              }`}
-            >
-              <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-on-primary shadow transition-transform ${
-                  settings.launchAtLogin ? 'translate-x-6' : 'translate-x-1'
-                }`}
-              />
-            </button>
-          </div>
-        </div>
+          </SettingsSection>
 
-        {/* Voice Commands Toggle */}
-        <div className="flex items-center justify-between">
-          <div>
-            <label className="block text-sm font-medium text-on-surface">
-              Voice Commands
-            </label>
-            <p className="mt-1 text-xs text-on-surface-variant">
-              Spoken tokens like "new line", "period", or "scratch that" transform the text before pasting.
-            </p>
-          </div>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={settings.voiceCommandsEnabled}
-            aria-label="Voice commands"
-            onClick={() => onUpdateSettings({ voiceCommandsEnabled: !settings.voiceCommandsEnabled })}
-            className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 ${
-              settings.voiceCommandsEnabled ? 'bg-primary' : 'bg-surface-container-highest'
-            }`}
-          >
-            <span
-              className={`inline-block h-4 w-4 transform rounded-full bg-on-primary shadow transition-transform ${
-                settings.voiceCommandsEnabled ? 'translate-x-6' : 'translate-x-1'
-              }`}
-            />
-          </button>
-        </div>
-
-        <VoiceCommandsManager
-          active={isOpen && activeCat === 'output'}
-          globallyEnabled={settings.voiceCommandsEnabled}
-          profiles={settings.appProfiles}
-        />
-        </SettingsSection>
-
-        <SettingsSection pageId="profiles" activePage={activeCat} title="Per-App Profiles" subtitle="Paste and formatting per frontmost app">
-          <AppProfilesEditor
-            profiles={settings.appProfiles}
-            onChange={(next) => onUpdateSettings({ appProfiles: next })}
-          />
-        </SettingsSection>
-
-        <SettingsSection pageId="vocab" activePage={activeCat} title="Vocabulary" subtitle="Bias transcription toward your terms">
-        <VocabularyAliasesEditor
-          entries={settings.vocabularyEntries}
-          voiceCommands={settings.voiceCommands}
-          onChange={(vocabularyEntries) => onUpdateSettings({
-            vocabularyEntries,
-            customVocabulary: vocabularyPrompt(vocabularyEntries),
-          })}
-        />
-
-        {/* Code-Aware Vocabulary Toggle */}
-        <div>
-          <div className="flex items-center justify-between">
-            <div>
-              <label className="block text-sm font-medium text-on-surface">
-                Code-Aware Vocabulary
-              </label>
-              <p className="mt-1 text-xs text-on-surface-variant">
-                Bias transcription toward common dev terms (useEffect, kubectl, stderr) — works out of the box, no folder needed. Optionally add a project folder for your own identifiers. With Smart Correction on (below), these terms are also fixed in the transcript on every model, including Parakeet.
-              </p>
-            </div>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={settings.codeVocabEnabled}
-              aria-label="Code-aware vocabulary"
-              onClick={() => onUpdateSettings({ codeVocabEnabled: !settings.codeVocabEnabled })}
-              className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 ${
-                settings.codeVocabEnabled ? 'bg-primary' : 'bg-surface-container-highest'
-              }`}
-            >
-              <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-on-primary shadow transition-transform ${
-                  settings.codeVocabEnabled ? 'translate-x-6' : 'translate-x-1'
-                }`}
-              />
-            </button>
-          </div>
-
-          {settings.codeVocabEnabled && (
-            <div className="mt-3">
-              <label className="block text-xs text-on-surface-variant mb-1">
-                Project Folder (optional)
-              </label>
-              <div className="break-all rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface">
-                {settings.codeVocabFolder || 'No folder — built-in dev terms only'}
+          <SettingsSection pageId="text-vocabulary" activePage={activeCat} title="Text & Vocabulary" subtitle="Cleanup, preferred terms, structured writing, and knowledge">
+            <SettingToggle title="Automatic Punctuation" label="Smart punctuation" description="Add periods, commas, and capitalization to transcriptions." checked={settings.smartPunctuation} onChange={() => onUpdateSettings({ smartPunctuation: !settings.smartPunctuation })} />
+            <SettingToggle title="Transcript Cleanup" description="Remove filler and tidy spacing before delivery." checked={settings.cleanupEnabled} onChange={() => onUpdateSettings({ cleanupEnabled: !settings.cleanupEnabled })} />
+            {settings.cleanupEnabled && (
+              <div className="ml-3 space-y-3 border-l border-outline-variant/30 pl-3">
+                <SettingToggle title="Remove filler words" description="Remove filler tokens such as um and uh." checked={settings.cleanupRemoveFiller} onChange={() => onUpdateSettings({ cleanupRemoveFiller: !settings.cleanupRemoveFiller })} />
+                <SettingToggle title="Capitalize sentences" description="Capitalize detected sentence starts." checked={settings.cleanupCapitalize} onChange={() => onUpdateSettings({ cleanupCapitalize: !settings.cleanupCapitalize })} />
               </div>
-              <div className="mt-2 flex items-center gap-3">
-                <button
-                  onClick={handleChooseCodeVocabFolder}
-                  className="text-xs font-medium text-on-surface-variant underline transition-colors hover:text-primary hover:no-underline"
-                >
-                  Choose Folder
-                </button>
-                {settings.codeVocabFolder && (
-                  <button
-                    onClick={handleClearCodeVocabFolder}
-                    className="text-xs font-medium text-on-surface-variant underline transition-colors hover:text-primary hover:no-underline"
-                  >
-                    Clear
-                  </button>
-                )}
+            )}
+            <div className="border-t border-outline-variant/20 pt-4">
+              <h2 className="text-sm font-medium text-on-surface">Names & Terms</h2>
+              <p className="mt-1 mb-3 text-xs text-on-surface-variant">Teach Murmur preferred spellings and exact spoken variants.</p>
+              <VocabularyAliasesEditor entries={settings.vocabularyEntries} voiceCommands={settings.voiceCommands} onChange={(vocabularyEntries) => onUpdateSettings({ vocabularyEntries, customVocabulary: vocabularyPrompt(vocabularyEntries) })} />
+            </div>
+            <SettingToggle title="Developer Terms" description="Bias recognition toward built-in development terms and, optionally, identifiers from one project folder." checked={settings.codeVocabEnabled} onChange={() => onUpdateSettings({ codeVocabEnabled: !settings.codeVocabEnabled })} />
+            {settings.codeVocabEnabled && (
+              <div className="ml-3 space-y-2 border-l border-outline-variant/30 pl-3">
+                <p className="break-all rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface">{settings.codeVocabFolder || 'No folder — built-in developer terms only'}</p>
+                <div className="flex gap-3">
+                  <button type="button" onClick={() => void chooseCodeFolder()} className="text-xs font-medium text-on-surface-variant underline hover:text-primary">Choose Folder</button>
+                  {settings.codeVocabFolder && <button type="button" onClick={clearCodeFolder} className="text-xs font-medium text-on-surface-variant underline hover:text-primary">Clear</button>}
+                </div>
+                <VocabScanStrip status={vocabScan.status} walker={vocabScan.walker} stats={vocabScan.stats} folder={settings.codeVocabFolder} onScan={() => void runVocabScan(settings.codeVocabFolder)} onCancel={vocabScan.cancel} />
+                <p className="text-xs text-on-surface-variant">The selected folder is scanned locally; dependency and build folders are skipped.</p>
               </div>
-
-              {/* Live scan feedback strip: idle / scanning / done+empty. */}
-              <VocabScanStrip
-                status={vocabScan.status}
-                walker={vocabScan.walker}
-                stats={vocabScan.stats}
-                folder={settings.codeVocabFolder}
-                onScan={() => void runVocabScan(settings.codeVocabFolder)}
-                onCancel={vocabScan.cancel}
-              />
-
-              <p className="mt-2 text-xs text-on-surface-variant">
-                Optional. When set, the folder is scanned once for your identifiers (dependency and build directories are skipped) and layered on top of the built-in terms. Re-select to rescan after big code changes.
-              </p>
+            )}
+            <SettingToggle title="Apply Preferred Spellings" label="Smart correction" description="Apply names, terms, and developer vocabulary after recognition on every model." checked={settings.correctionEnabled} onChange={() => onUpdateSettings({ correctionEnabled: !settings.correctionEnabled })} />
+            {settings.correctionEnabled && <div className="ml-3 border-l border-outline-variant/30 pl-3"><SettingToggle title="Correct Close Mishearings" label="Sounds-like matching" description="Recover close mishearings near your vocabulary; disable if you see unwanted swaps." checked={settings.correctionFuzzy} onChange={() => onUpdateSettings({ correctionFuzzy: !settings.correctionFuzzy })} /></div>}
+            <SettingToggle title="Structured Writing" label="Smart formatting" description="Apply explicitly spoken lists, symbols, punctuation, and same-utterance corrections locally." checked={settings.smartFormattingEnabled} onChange={() => onUpdateSettings({ smartFormattingEnabled: !settings.smartFormattingEnabled })} />
+            <SettingToggle title="Spoken Formatting" label="Voice commands" description="Use spoken tokens such as “new line,” “period,” or “scratch that” before delivery." checked={settings.voiceCommandsEnabled} onChange={() => onUpdateSettings({ voiceCommandsEnabled: !settings.voiceCommandsEnabled })} />
+            <div className="border-t border-outline-variant/20 pt-4">
+              <h2 className="text-sm font-medium text-on-surface">Phrase Replacements & Snippets</h2>
+              <p className="mt-1 mb-3 text-xs text-on-surface-variant">Create exact spoken phrases that insert replacement text or a multiline snippet.</p>
+              <VoiceCommandsManager active={isOpen && activeCat === 'text-vocabulary'} globallyEnabled={settings.voiceCommandsEnabled} profiles={settings.appProfiles} />
             </div>
-          )}
-        </div>
-
-        {/* Smart Correction — post-model, applies vocab on every backend (Tiers 1-2). */}
-        <div>
-          <div className="flex items-center justify-between">
-            <div>
-              <label className="block text-sm font-medium text-on-surface">
-                Smart Correction
-              </label>
-              <p className="mt-1 text-xs text-on-surface-variant">
-                Fix vocabulary in the transcript after recognition, on every model. Turns "use effect" into useEffect and, with Code-Aware on, "standard error" into stderr.
-              </p>
+            <div className="border-t border-outline-variant/20 pt-4">
+              <h2 className="mb-3 text-sm font-medium text-on-surface">Knowledge</h2>
+              <KnowledgeManager active={isOpen && activeCat === 'text-vocabulary'} profiles={settings.appProfiles} />
             </div>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={settings.correctionEnabled}
-              aria-label="Smart correction"
-              onClick={() => onUpdateSettings({ correctionEnabled: !settings.correctionEnabled })}
-              className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 ${
-                settings.correctionEnabled ? 'bg-primary' : 'bg-surface-container-highest'
-              }`}
-            >
-              <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-on-primary shadow transition-transform ${
-                  settings.correctionEnabled ? 'translate-x-6' : 'translate-x-1'
-                }`}
-              />
-            </button>
-          </div>
+          </SettingsSection>
 
-          {settings.correctionEnabled && (
-            <div className="mt-3 flex items-center justify-between gap-4">
+          <SettingsSection pageId="delivery" activePage={activeCat} title="Delivery" subtitle="Clipboard, paste, file output, and app-specific overrides">
+            <div className="rounded-xl border border-primary/20 bg-primary/5 p-3">
+              <h2 className="text-sm font-medium text-on-surface">Always copied to clipboard</h2>
+              <p className="mt-1 text-xs text-on-surface-variant">Every completed transcription is copied first. Auto-paste and file output only change what happens next.</p>
+            </div>
+            <SettingToggle title="Auto-Paste" label="Auto paste" description={autoPasteDeliveryDescription(settings)} checked={autoPasteOn} disabled={saveToFile} onChange={() => onUpdateSettings({ autoPaste: !settings.autoPaste })} />
+            {settings.autoPaste && saveToFile && <p role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">Auto-paste is paused; the stored preference remains on.</p>}
+            {autoPasteOn && accessibilityGranted !== null && <div className={`flex items-center gap-2 text-xs ${accessibilityGranted ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}`}><span>{accessibilityGranted ? 'Accessibility permission granted' : 'Accessibility permission required'}</span>{accessibilityGranted === false && <button type="button" onClick={requestAccessibility} className="underline">Grant</button>}</div>}
+            {autoPasteOn && <PasteDelaySlider value={settings.autoPasteDelayMs} onCommit={(autoPasteDelayMs) => onUpdateSettings({ autoPasteDelayMs })} />}
+            <SettingToggle title="Save Transcript to File" description="Write each completed transcription to a .txt file." checked={settings.saveTranscript} onChange={() => onUpdateSettings({ saveTranscript: !settings.saveTranscript })} />
+            <SettingToggle title="Save Audio to File" description="Write each recording to a .wav file." checked={settings.saveAudio} onChange={() => onUpdateSettings({ saveAudio: !settings.saveAudio })} />
+            {saveToFile && (
               <div>
-                <label className="block text-xs font-medium text-on-surface">
-                  Sounds-like matching
-                </label>
-                <p className="mt-1 text-xs text-on-surface-variant">
-                  Also recover close mishearings near your vocabulary (e.g. "red pivot" → "rePivot"). Turn off if you see unwanted swaps.
-                </p>
+                <p className="mb-1 text-xs text-on-surface-variant">Output Folder</p>
+                <p className="break-all rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface">{settings.outputDir || 'Documents/Murmur (default)'}</p>
+                <div className="mt-2 flex gap-3"><button type="button" onClick={() => void chooseOutputFolder()} className="text-xs font-medium text-on-surface-variant underline hover:text-primary">Choose Folder</button>{settings.outputDir && <button type="button" onClick={() => onUpdateSettings({ outputDir: '' })} className="text-xs font-medium text-on-surface-variant underline hover:text-primary">Reset to default</button>}</div>
+                <p className="mt-2 text-xs text-on-surface-variant">{fileOutputDeliveryDescription(settings)}</p>
               </div>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={settings.correctionFuzzy}
-                aria-label="Sounds-like matching"
-                onClick={() => onUpdateSettings({ correctionFuzzy: !settings.correctionFuzzy })}
-                className={`relative inline-flex shrink-0 h-5 w-9 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 ${
-                  settings.correctionFuzzy ? 'bg-primary' : 'bg-surface-container-highest'
-                }`}
-              >
-                <span
-                  className={`inline-block h-3.5 w-3.5 transform rounded-full bg-on-primary shadow transition-transform ${
-                    settings.correctionFuzzy ? 'translate-x-4' : 'translate-x-1'
-                  }`}
-                />
-              </button>
+            )}
+            <div className="border-t border-outline-variant/20 pt-4">
+              <h2 className="text-sm font-medium text-on-surface">App Overrides</h2>
+              <p className="mt-1 mb-3 text-xs text-on-surface-variant">Override delivery and writing behavior for the frontmost macOS app.</p>
+              <AppOverridesEditor profiles={settings.appProfiles} onChange={(appProfiles) => onUpdateSettings({ appProfiles })} />
             </div>
-          )}
-        </div>
-        </SettingsSection>
+          </SettingsSection>
 
-        <SettingsSection pageId="knowledge" activePage={activeCat} title="Knowledge" subtitle="Inspect and manage personal knowledge stored on this Mac">
-          <KnowledgeManager active={isOpen && activeCat === 'knowledge'} profiles={settings.appProfiles} />
-        </SettingsSection>
+          <SettingsSection pageId="performance" activePage={activeCat} title="Performance" subtitle="Directional local model comparisons">
+            <PerformanceLab status={status} settings={settings} onUpdateSettings={onUpdateSettings} />
+          </SettingsSection>
 
-        <SettingsSection pageId="performance" activePage={activeCat} title="Performance Lab" subtitle="Compare local transcription engines">
-          <PerformanceLab status={status} />
-        </SettingsSection>
-
-        <SettingsSection pageId="about" activePage={activeCat} title="About" subtitle="Stats, logs, updates">
-        {/* Model Info */}
-        <div>
-          <div className="text-sm text-on-surface-variant">
-            <p><strong>Model:</strong> {selectedModel?.label}</p>
-            <p><strong>Backend:</strong> {selectedRuntime ? `${selectedRuntime.backend} (${selectedRuntime.accelerator})` : selectedModel?.backend}</p>
-            <p><strong>Size:</strong> {selectedModel?.size}</p>
-          </div>
-        </div>
-
-        {/* Reset Stats */}
-        <div>
-          <button
-            onClick={handleResetClick}
-            aria-label={confirmReset ? 'Confirm reset statistics' : 'Reset statistics'}
-            className={`w-full px-3 py-2 rounded-lg text-xs font-medium border transition-colors ${
-              confirmReset
-                ? 'border-red-400 dark:border-red-600 bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/40'
-                : 'border-outline-variant/20 bg-surface-container-lowest text-on-surface-variant hover:bg-surface-container hover:text-primary'
-            }`}
-          >
-            {confirmReset ? 'Confirm Reset' : 'Reset Stats'}
-          </button>
-        </div>
-
-        {/* Logs */}
-        <div>
-          <button
-            onClick={onViewLogs}
-            className="w-full px-3 py-2 rounded-lg text-xs font-medium border border-outline-variant/20 bg-surface-container-lowest text-on-surface-variant hover:bg-surface-container hover:text-primary transition-colors"
-          >
-            View Logs
-          </button>
-        </div>
-
-        {/* Setup assistant */}
-        <div>
-          <button
-            onClick={onRerunSetup}
-            className="w-full px-3 py-2 rounded-lg text-xs font-medium border border-outline-variant/20 bg-surface-container-lowest text-on-surface-variant hover:bg-surface-container hover:text-primary transition-colors"
-          >
-            Run Setup Assistant
-          </button>
-          <p className="mt-1.5 text-xs text-on-surface-variant">
-            Re-check permissions and the model step by step — useful if a
-            permission was revoked or stopped working.
-          </p>
-        </div>
-
-        {/* Updates */}
-        <div>
-          <button
-            onClick={onCheckForUpdate}
-            disabled={updateStatus.phase === 'checking' || updateStatus.phase === 'downloading'}
-            className="w-full px-3 py-2 rounded-lg text-xs font-medium border border-outline-variant/20 bg-surface-container-lowest text-on-surface-variant hover:bg-surface-container hover:text-primary transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {updateStatus.phase === 'checking' ? 'Checking...' : 'Check for Updates'}
-          </button>
-          {updateStatus.phase === 'up-to-date' && (
-            <p className="mt-1.5 text-xs text-emerald-600 dark:text-emerald-400">
-              You're up to date
-            </p>
-          )}
-          {updateStatus.phase === 'available' && (
-            <p className="mt-1.5 text-xs text-primary">
-              v{updateStatus.version} available
-            </p>
-          )}
-          {updateStatus.phase === 'error' && (
-            <p className="mt-1.5 text-xs text-red-600 dark:text-red-400">
-              Update check failed
-            </p>
-          )}
-        </div>
-
-        {/* Version */}
-        {version && (
-          <div className="text-center">
-            <span className="text-xs text-on-surface-variant">v{version}</span>
-          </div>
-        )}
-        </SettingsSection>
+          <SettingsSection pageId="general" activePage={activeCat} title="General" subtitle="Startup, support, updates, and app information">
+            <SettingToggle title="Launch at Login" description="Start Murmur automatically when you log in." checked={settings.launchAtLogin} onChange={() => onUpdateSettings({ launchAtLogin: !settings.launchAtLogin })} />
+            <button type="button" onClick={onRerunSetup} className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs font-medium text-on-surface-variant transition-colors hover:bg-surface-container hover:text-primary">Run Setup Assistant</button>
+            <p className="-mt-3 text-xs text-on-surface-variant">Re-check permissions and model setup after a permission is revoked or stops working.</p>
+            <button type="button" onClick={onViewLogs} className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs font-medium text-on-surface-variant transition-colors hover:bg-surface-container hover:text-primary">View Logs</button>
+            <button type="button" aria-label={confirmReset ? 'Confirm reset statistics' : 'Reset statistics'} onClick={resetStats} className={`w-full rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${confirmReset ? 'border-error/40 bg-error/10 text-error' : 'border-outline-variant/30 bg-surface-container-lowest text-on-surface-variant hover:bg-surface-container hover:text-primary'}`}>{confirmReset ? 'Confirm Reset' : 'Reset Stats'}</button>
+            <div>
+              <button type="button" onClick={() => void onCheckForUpdate()} disabled={updateStatus.phase === 'checking' || updateStatus.phase === 'downloading'} className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs font-medium text-on-surface-variant transition-colors hover:bg-surface-container hover:text-primary disabled:cursor-not-allowed disabled:opacity-50">{updateStatus.phase === 'checking' ? 'Checking…' : 'Check for Updates'}</button>
+              {updateStatus.phase === 'up-to-date' && <p className="mt-1.5 text-xs text-emerald-600 dark:text-emerald-400">You’re up to date.</p>}
+              {updateStatus.phase === 'available' && <p className="mt-1.5 text-xs text-primary">v{updateStatus.version} available</p>}
+              {updateStatus.phase === 'error' && <p className="mt-1.5 text-xs text-error">Update check failed.</p>}
+            </div>
+            {version && <p className="text-center text-xs text-on-surface-variant">Murmur v{version}</p>}
+          </SettingsSection>
         </div>
       </div>
     </div>

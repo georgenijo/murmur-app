@@ -15,6 +15,18 @@ One-session overrides are an explicit, typed resolver input but no trigger suppl
 
 Profiles select an optional `writingStyle` and can fine-tune `autoPaste`, transcript cleanup, Smart Formatting, CLI formatting, and local IDE project context. A style and IDE-context opt-in are always explicit user choices; Murmur never infers either one from an app name or bundle identifier.
 
+Settings > Delivery > App Overrides can add a profile from currently running
+regular macOS apps or through advanced manual bundle-ID entry. The picker returns
+only display name and bundle ID, excludes Murmur and helper/accessory processes,
+deduplicates and sorts entries, and caps the list at 64. It is fetched on demand,
+kept only in React memory, and never logged or persisted unless the user chooses
+an app. Non-macOS builds expose the same command as an empty list, so Linux
+compilation and manual bundle-ID compatibility remain intact.
+
+Each boolean override is an explicit **Use global setting / Always / Never**
+choice mapped to the existing `null / true / false` storage contract. Existing
+profiles and every stored field retain their values across the Settings redesign.
+
 | Writing style | Local deterministic behavior |
 |---|---|
 | Inherit | Preserves the current global/profile behavior byte-for-byte. |

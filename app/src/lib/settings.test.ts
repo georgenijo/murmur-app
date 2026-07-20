@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   loadSettings,
+  saveSettings,
   DEFAULT_SETTINGS,
   defaultModelForPlatform,
   modelOptionsForPlatform,
@@ -11,6 +12,62 @@ beforeEach(() => {
 });
 
 describe('loadSettings', () => {
+  it('round-trips every stored field and value through the unified Settings UI schema', () => {
+    const stored = {
+      ...DEFAULT_SETTINGS,
+      model: 'tiny.en' as const,
+      doubleTapKey: 'alt_l' as const,
+      language: 'es',
+      autoPaste: true,
+      autoPasteDelayMs: 230,
+      recordingMode: 'both' as const,
+      hotkeyMissFeedback: true,
+      microphone: 'Studio Mic',
+      launchAtLogin: true,
+      vadSensitivity: 75,
+      idleTimeoutMinutes: 15,
+      customVocabulary: 'Murmur',
+      vocabularyEntries: [{ id: 'murmur', written: 'Murmur', aliases: ['murmur app'], enabled: true, scope: { kind: 'global' as const } }],
+      disabled: true,
+      smartPunctuation: false,
+      saveTranscript: true,
+      saveAudio: true,
+      outputDir: '/tmp/murmur-output',
+      appProfiles: [{
+        bundleId: 'com.apple.Terminal',
+        label: 'Terminal',
+        autoPasteOverride: false,
+        cleanupOverride: true,
+        smartFormattingOverride: false,
+        cliFormattingOverride: true,
+        writingStyle: 'code_technical' as const,
+        ideContextEnabled: true,
+        ideProjectRoots: ['/tmp/project'],
+      }],
+      voiceCommandsEnabled: true,
+      voiceCommands: [{ phrase: 'standup', replacement: 'Yesterday:\nToday:' }],
+      cleanupEnabled: true,
+      smartFormattingEnabled: true,
+      cleanupRemoveFiller: false,
+      cleanupCapitalize: false,
+      codeVocabEnabled: true,
+      codeVocabFolder: '/tmp/project',
+      codeVocabLastScan: {
+        files: 2, skipped: 1, terms: 3, bytes: 44, capped: false, ms: 5,
+        sampleTerms: ['useEffect'], rankedTerms: [{ term: 'useEffect', freq: 2 }],
+        whisperCount: 1, adopted: true,
+      },
+      correctionEnabled: false,
+      correctionFuzzy: false,
+    };
+
+    saveSettings(stored);
+    const loaded = loadSettings();
+
+    expect(Object.keys(loaded).sort()).toEqual(Object.keys(DEFAULT_SETTINGS).sort());
+    expect(loaded).toEqual(stored);
+  });
+
   it('returns defaults when localStorage is empty', () => {
     const settings = loadSettings();
     expect(settings).toEqual(DEFAULT_SETTINGS);

@@ -1,18 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
+import { open } from '@tauri-apps/plugin-dialog';
 import {
   BenchmarkModel,
   BenchmarkModelResult,
   BenchmarkPreset,
   BenchmarkProgress,
   BenchmarkReport,
+  MAX_SAVED_BENCHMARK_REPORTS,
   addBenchmarkReport,
   cancelBenchmark,
   clearBenchmarkReports,
   getBenchmarkActivity,
   getBenchmarkModels,
   loadBenchmarkReports,
+  openBenchmarkOutputFolder,
   runBenchmark,
+  saveBenchmarkReport,
   saveBenchmarkReports,
 } from '../../lib/benchmark';
 import { downloadModel } from '../../lib/dictation';
@@ -21,6 +25,7 @@ import {
   modelDownloadPercent,
   type ModelDownloadProgress,
 } from '../../lib/modelDownload';
+import type { Settings } from '../../lib/settings';
 import type { DictationStatus } from '../../lib/types';
 
 const PRESETS: { id: BenchmarkPreset; label: string; detail: string }[] = [
@@ -67,19 +72,19 @@ function LatencyChart({ report }: { report: BenchmarkReport }) {
   return (
     <div>
       <div className="mb-2 flex items-center justify-between gap-3">
-        <h4 className="text-xs font-semibold text-stone-700 dark:text-stone-300">Inference latency</h4>
-        <div className="flex gap-3 text-[10px] text-stone-400 dark:text-stone-500">
+        <h4 className="text-xs font-semibold text-on-surface dark:text-on-surface-variant">Inference latency</h4>
+        <div className="flex gap-3 text-[10px] text-on-surface-variant dark:text-on-surface-variant">
           <span><i className="inline-block h-1.5 w-3 rounded-sm bg-emerald-500 mr-1" />Median</span>
-          <span><i className="inline-block h-1.5 w-3 rounded-sm bg-stone-300 dark:bg-stone-600 mr-1" />P95</span>
+          <span><i className="inline-block h-1.5 w-3 rounded-sm bg-surface-container-high dark:bg-surface-container-high mr-1" />P95</span>
         </div>
       </div>
       <div className="space-y-2">
         {results.map((result) => (
           <div key={result.modelName} className="grid grid-cols-[6.5rem_1fr_4.5rem] items-center gap-2">
-            <span className="truncate text-[11px] font-medium text-stone-600 dark:text-stone-300" title={result.label}>{result.label}</span>
-            <div className="relative h-4 rounded-sm bg-stone-100 dark:bg-stone-800 overflow-hidden">
+            <span className="truncate text-[11px] font-medium text-on-surface dark:text-on-surface-variant" title={result.label}>{result.label}</span>
+            <div className="relative h-4 rounded-sm bg-surface-container-low dark:bg-surface-container-high overflow-hidden">
               <div
-                className="absolute inset-y-0 left-0 bg-stone-300 dark:bg-stone-600"
+                className="absolute inset-y-0 left-0 bg-surface-container-high dark:bg-surface-container-high"
                 style={{ width: `${(result.warmP95Ms / maximum) * 100}%` }}
               />
               <div
@@ -87,7 +92,7 @@ function LatencyChart({ report }: { report: BenchmarkReport }) {
                 style={{ width: `${(result.warmMedianMs / maximum) * 100}%` }}
               />
             </div>
-            <span className="text-right text-[10px] tabular-nums text-stone-500 dark:text-stone-400">
+            <span className="text-right text-[10px] tabular-nums text-on-surface-variant dark:text-on-surface-variant">
               {Math.round(result.warmMedianMs)} / {Math.round(result.warmP95Ms)}
             </span>
           </div>
@@ -102,19 +107,19 @@ function AccuracyChart({ report }: { report: BenchmarkReport }) {
   return (
     <div>
       <div className="mb-2 flex items-center justify-between gap-3">
-        <h4 className="text-xs font-semibold text-stone-700 dark:text-stone-300">Word accuracy</h4>
-        <span className="text-[10px] text-stone-400 dark:text-stone-500">Normalized / higher is better</span>
+        <h4 className="text-xs font-semibold text-on-surface dark:text-on-surface-variant">Word accuracy</h4>
+        <span className="text-[10px] text-on-surface-variant dark:text-on-surface-variant">Normalized / higher is better</span>
       </div>
       <div className="space-y-2">
         {results.map((result) => {
           const accuracy = Math.max(0, 1 - result.normalizedWordErrorRate);
           return (
             <div key={result.modelName} className="grid grid-cols-[6.5rem_1fr_3rem] items-center gap-2">
-              <span className="truncate text-[11px] font-medium text-stone-600 dark:text-stone-300" title={result.label}>{result.label}</span>
-              <div className="h-2.5 rounded-sm bg-stone-100 dark:bg-stone-800 overflow-hidden">
+              <span className="truncate text-[11px] font-medium text-on-surface dark:text-on-surface-variant" title={result.label}>{result.label}</span>
+              <div className="h-2.5 rounded-sm bg-surface-container-low dark:bg-surface-container-high overflow-hidden">
                 <div className="h-full bg-amber-400 dark:bg-amber-500" style={{ width: `${accuracy * 100}%` }} />
               </div>
-              <span className="text-right text-[10px] tabular-nums text-stone-500 dark:text-stone-400">
+              <span className="text-right text-[10px] tabular-nums text-on-surface-variant dark:text-on-surface-variant">
                 {(accuracy * 100).toFixed(1)}%
               </span>
             </div>
@@ -125,7 +130,11 @@ function AccuracyChart({ report }: { report: BenchmarkReport }) {
   );
 }
 
-export function PerformanceLab({ status }: { status: DictationStatus }) {
+export function PerformanceLab({ status, settings, onUpdateSettings }: {
+  status: DictationStatus;
+  settings: Settings;
+  onUpdateSettings: (updates: Partial<Settings>) => void;
+}) {
   const [models, setModels] = useState<BenchmarkModel[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
   const [preset, setPreset] = useState<BenchmarkPreset>('standard');
@@ -140,6 +149,7 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved'>('idle');
   const [downloading, setDownloading] = useState<string | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<ModelDownloadProgress | null>(null);
   const [fileTranscribing, setFileTranscribing] = useState(false);
@@ -237,6 +247,14 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
         const reports = saveBenchmarkReports(addBenchmarkReport(current.reports, next));
         return { reports, selectedAt: next.createdAt };
       });
+      if (settings.benchmarkAutoSave) {
+        // Best-effort: a write failure must not fail the completed run.
+        try {
+          await saveBenchmarkReport(next, settings.benchmarkOutputDir);
+        } catch (reason) {
+          if (mounted.current) setError(`Could not auto-save report: ${String(reason)}`);
+        }
+      }
     } catch (reason) {
       if (mounted.current && String(reason) !== 'Benchmark cancelled') setError(String(reason));
     } finally {
@@ -281,13 +299,53 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
     }
   };
 
+  const saveReport = async () => {
+    if (!report) return;
+    setError(null);
+    setSaveState('saving');
+    try {
+      await saveBenchmarkReport(report, settings.benchmarkOutputDir);
+      if (!mounted.current) return;
+      setSaveState('saved');
+      window.setTimeout(() => {
+        if (mounted.current) setSaveState('idle');
+      }, 1600);
+    } catch (reason) {
+      if (mounted.current) {
+        setSaveState('idle');
+        setError(`Could not save report: ${String(reason)}`);
+      }
+    }
+  };
+
+  const revealFolder = async () => {
+    try {
+      await openBenchmarkOutputFolder(settings.benchmarkOutputDir);
+    } catch (reason) {
+      setError(`Could not open output folder: ${String(reason)}`);
+    }
+  };
+
+  const chooseFolder = async () => {
+    try {
+      const selected = await open({ directory: true, multiple: false });
+      if (typeof selected === 'string') onUpdateSettings({ benchmarkOutputDir: selected });
+    } catch {
+      // Cancellation leaves the stored folder untouched.
+    }
+  };
+
   return (
     <div className="space-y-6">
+      <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-on-surface-variant">
+        <p className="font-medium text-on-surface">Directional results, not a universal model ranking</p>
+        <p className="mt-1">This lab compares installed models on this Mac with a small, clean synthetic English corpus. It does not represent your voice, microphone, accent, room, or every dictation workload.</p>
+      </div>
       <section>
         <div className="flex items-end justify-between gap-4 mb-3">
           <div>
-            <h3 className="text-sm font-semibold text-stone-800 dark:text-stone-200">Configurations</h3>
-            <p className="mt-0.5 text-xs text-stone-500 dark:text-stone-400">
+            <h3 className="text-sm font-semibold text-on-surface">Models</h3>
+            <p className="mt-0.5 text-xs text-on-surface-variant dark:text-on-surface-variant">
               {installedCount} installed. All tests run locally.
             </p>
           </div>
@@ -296,14 +354,14 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
               type="button"
               disabled={running}
               onClick={() => setSelected(models.filter((model) => model.installed).map((model) => model.modelName))}
-              className="text-xs text-stone-600 dark:text-stone-300 hover:text-stone-900 dark:hover:text-white disabled:opacity-50"
+              className="text-xs text-on-surface dark:text-on-surface-variant hover:text-on-surface dark:hover:text-white disabled:opacity-50"
             >
               Select installed
             </button>
           )}
         </div>
 
-        <div className="border-y border-stone-200 dark:border-stone-700 divide-y divide-stone-200 dark:divide-stone-700">
+        <div className="border-y border-outline-variant/30 dark:border-outline-variant/30 divide-y divide-outline-variant/30 dark:divide-outline-variant/30">
           {models.filter((model) => model.supported).map((model) => (
             <div key={model.modelName} className="min-h-14 flex items-center gap-3 py-2.5">
               <input
@@ -312,14 +370,14 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
                 checked={selectedSet.has(model.modelName)}
                 disabled={!model.installed || running}
                 onChange={() => toggleModel(model.modelName)}
-                className="h-4 w-4 accent-stone-800 dark:accent-stone-200"
+                className="h-4 w-4 accent-primary dark:accent-primary"
               />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium text-stone-800 dark:text-stone-200">{model.label}</span>
-                  <span className="text-[11px] text-stone-400 dark:text-stone-500">{model.size}</span>
+                  <span className="text-sm font-medium text-on-surface dark:text-on-surface">{model.label}</span>
+                  <span className="text-[11px] text-on-surface-variant dark:text-on-surface-variant">{model.size}</span>
                 </div>
-                <p className="text-xs text-stone-500 dark:text-stone-400 truncate">
+                <p className="text-xs text-on-surface-variant dark:text-on-surface-variant truncate">
                   {model.backend} / {model.accelerator}
                 </p>
               </div>
@@ -328,7 +386,7 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
                   type="button"
                   disabled={downloading !== null || running}
                   onClick={() => handleDownload(model.modelName)}
-                  className="shrink-0 px-2.5 py-1.5 text-xs font-medium border border-stone-300 dark:border-stone-600 rounded-md text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-700 disabled:opacity-50"
+                  className="shrink-0 px-2.5 py-1.5 text-xs font-medium border border-outline-variant/30 dark:border-outline-variant/30 rounded-md text-on-surface dark:text-on-surface-variant hover:bg-surface-container-low dark:hover:bg-primary/80 disabled:opacity-50"
                 >
                   {downloading === model.modelName
                     ? downloadProgress === null
@@ -345,8 +403,8 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
       </section>
 
       <section>
-        <h3 className="mb-2 text-sm font-semibold text-stone-800 dark:text-stone-200">Workload</h3>
-        <div className="grid grid-cols-3 gap-1 p-1 bg-stone-100 dark:bg-stone-800 rounded-lg">
+        <h3 className="mb-2 text-sm font-semibold text-on-surface">Test Length</h3>
+        <div className="grid grid-cols-3 gap-1 p-1 bg-surface-container-low dark:bg-surface-container-high rounded-lg">
           {PRESETS.map((option) => (
             <button
               type="button"
@@ -355,8 +413,8 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
               onClick={() => setPreset(option.id)}
               className={`min-w-0 px-2 py-2 rounded-md transition-colors disabled:opacity-50 ${
                 preset === option.id
-                  ? 'bg-white dark:bg-stone-700 shadow-sm text-stone-900 dark:text-stone-100'
-                  : 'text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200'
+                  ? 'bg-surface-container-lowest dark:bg-surface-container-high shadow-sm text-on-surface dark:text-on-surface'
+                  : 'text-on-surface-variant hover:text-on-surface'
               }`}
             >
               <span className="block text-xs font-semibold">{option.label}</span>
@@ -370,18 +428,18 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
         {running ? (
           <div className="space-y-2">
             <div className="flex items-center justify-between gap-3 text-xs">
-              <span className="min-w-0 truncate text-stone-700 dark:text-stone-300">
+              <span className="min-w-0 truncate text-on-surface dark:text-on-surface-variant">
                 {progress ? `${progress.modelLabel}${progress.fixture ? ` / ${progress.fixture}` : ''} / ${progress.phase}` : 'Starting benchmark'}
               </span>
-              <span className="shrink-0 tabular-nums text-stone-500">{progressPercent}%</span>
+              <span className="shrink-0 tabular-nums text-on-surface-variant">{progressPercent}%</span>
             </div>
-            <div className="h-1.5 overflow-hidden rounded-full bg-stone-200 dark:bg-stone-700">
+            <div className="h-1.5 overflow-hidden rounded-full bg-surface-container-high dark:bg-surface-container-high">
               <div className="h-full bg-emerald-500 transition-all duration-200" style={{ width: `${progressPercent}%` }} />
             </div>
             <button
               type="button"
               onClick={handleCancel}
-              className="w-full px-3 py-2 text-xs font-medium border border-stone-300 dark:border-stone-600 rounded-lg text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-800"
+              className="w-full rounded-lg border border-outline-variant/30 px-3 py-2 text-xs font-medium text-on-surface hover:bg-surface-container-low"
             >
               Cancel
             </button>
@@ -391,7 +449,7 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
             type="button"
             onClick={handleRun}
             disabled={!canRun}
-            className="w-full px-4 py-2.5 text-sm font-semibold rounded-lg bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 hover:bg-stone-700 dark:hover:bg-white disabled:opacity-40 disabled:cursor-not-allowed"
+            className="w-full px-4 py-2.5 text-sm font-semibold rounded-lg bg-primary dark:bg-surface-container-low text-white dark:text-on-surface hover:bg-primary/80 dark:hover:bg-surface-container-lowest disabled:opacity-40 disabled:cursor-not-allowed"
           >
             Run Benchmark
           </button>
@@ -407,37 +465,89 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
         )}
       </section>
 
+      <section className="border-t border-outline-variant/30 dark:border-outline-variant/30 pt-5">
+        <h3 className="text-sm font-semibold text-on-surface">Report export</h3>
+        <p className="mt-0.5 text-xs text-on-surface-variant dark:text-on-surface-variant">
+          Where saved reports are written, and whether every run is saved automatically. Configure before running.
+        </p>
+        <div className="mt-3 rounded-lg border border-outline-variant/30 bg-surface-container-low p-3 text-[11px] leading-relaxed text-on-surface-variant">
+          <p className="font-medium text-on-surface">Output folder</p>
+          <p className="mt-1 break-all rounded-md border border-outline-variant/30 bg-surface-container-lowest px-2.5 py-1.5 text-on-surface">
+            {settings.benchmarkOutputDir || 'Documents/Murmur (default)'}
+          </p>
+          <div className="mt-2 flex flex-wrap gap-3">
+            <button type="button" onClick={() => void chooseFolder()} className="font-medium text-on-surface-variant underline hover:text-primary">Choose Folder</button>
+            {settings.benchmarkOutputDir && <button type="button" onClick={() => onUpdateSettings({ benchmarkOutputDir: '' })} className="font-medium text-on-surface-variant underline hover:text-primary">Reset to default</button>}
+            <button type="button" onClick={() => void revealFolder()} className="font-medium text-on-surface-variant underline hover:text-primary">Reveal in Finder</button>
+          </div>
+          <label className="mt-3 flex items-center gap-2 text-on-surface">
+            <input
+              type="checkbox"
+              checked={settings.benchmarkAutoSave}
+              onChange={() => onUpdateSettings({ benchmarkAutoSave: !settings.benchmarkAutoSave })}
+              className="h-3.5 w-3.5 accent-primary"
+            />
+            <span>Auto-save every run to this folder (survives the {MAX_SAVED_BENCHMARK_REPORTS}-run in-app limit)</span>
+          </label>
+        </div>
+      </section>
+
       {report && !running && (
-        <section className="space-y-4 border-t border-stone-200 dark:border-stone-700 pt-5">
+        <section className="space-y-4 border-t border-outline-variant/30 dark:border-outline-variant/30 pt-5">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <h3 className="text-sm font-semibold text-stone-800 dark:text-stone-200">Benchmark Dashboard</h3>
-              <p className="mt-0.5 text-[11px] text-stone-500 dark:text-stone-400">
-                {report.platform} / Murmur v{report.appVersion} / {report.preset}
+              <h3 className="text-sm font-semibold text-on-surface">Results</h3>
+              <p className="mt-0.5 text-[11px] text-on-surface-variant dark:text-on-surface-variant">
+                {report.environment
+                  ? `${report.environment.os}${report.environment.osVersion ? ` ${report.environment.osVersion}` : ''} / ${report.environment.chip ?? report.environment.hardwareModel ?? report.environment.architecture}${report.environment.memoryMb ? ` / ${Math.round(report.environment.memoryMb / 1024)} GB RAM` : ''}`
+                  : report.platform}
+                {' / '}Murmur v{report.appVersion} / {report.preset}
               </p>
               <p
-                className="mt-0.5 text-[11px] text-stone-500 dark:text-stone-400"
+                className="mt-0.5 text-[11px] text-on-surface-variant dark:text-on-surface-variant"
                 title="One-time shared backend init (Metal shader compilation, ANE compile cache, etc.) measured once before per-model timing, so it doesn't skew any single model's cold-load number."
               >
                 Shared init (one-time): {milliseconds(report.sharedInitMs)}
               </p>
             </div>
-            <button
-              type="button"
-              onClick={copyReport}
-              className="shrink-0 px-2.5 py-1.5 text-xs font-medium border border-stone-300 dark:border-stone-600 rounded-md text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-700"
-            >
-              {copied ? 'Copied' : 'Copy JSON'}
-            </button>
+            <div className="flex shrink-0 items-center gap-2">
+              <button
+                type="button"
+                onClick={copyReport}
+                className="px-2.5 py-1.5 text-xs font-medium border border-outline-variant/30 dark:border-outline-variant/30 rounded-md text-on-surface dark:text-on-surface-variant hover:bg-surface-container-low dark:hover:bg-primary/80"
+              >
+                {copied ? 'Copied' : 'Copy JSON'}
+              </button>
+              <button
+                type="button"
+                onClick={saveReport}
+                disabled={saveState === 'saving'}
+                className="px-2.5 py-1.5 text-xs font-medium border border-outline-variant/30 dark:border-outline-variant/30 rounded-md text-on-surface dark:text-on-surface-variant hover:bg-surface-container-low dark:hover:bg-primary/80 disabled:opacity-50"
+              >
+                {saveState === 'saved' ? 'Saved' : saveState === 'saving' ? 'Saving…' : 'Save to file'}
+              </button>
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-outline-variant/30 bg-surface-container-low p-3 text-[11px] leading-relaxed text-on-surface-variant">
+            <p className="font-medium text-on-surface">What this run measured</p>
+            <p className="mt-1">
+              {report.corpus
+                ? `${report.corpus.fixtureCount} ${report.corpus.language.toUpperCase()} synthetic clips / ${report.corpus.referenceWords} reference words / ${report.iterations} measured runs per clip.`
+                : `${report.results.find((result) => !result.error)?.fixtures.length ?? 0} synthetic clips / ${report.iterations} measured runs per clip (legacy saved report).`}
+            </p>
+            <p className="mt-1">{report.configuration?.executionPath ?? 'Full-buffer final transcription after recording stops'}; VAD threshold {report.configuration?.vadThreshold ?? 0.5}; {report.configuration?.transcriptTransformProfile ?? 'default local delivery pipeline'}.</p>
+            {report.configuration && <p className="mt-1">Model run order: {report.configuration.modelRunOrder.join(' → ') || 'none'}. Shared-init order: {report.configuration.sharedInitOrder.join(' → ') || 'none'}.</p>}
+            <p className="mt-1">{report.corpus?.limitation ?? 'Directional local comparison only; the synthetic corpus is not representative of natural speakers or recording environments.'}</p>
           </div>
 
           <div className="flex items-center gap-2">
-            <label htmlFor="benchmark-run" className="shrink-0 text-[11px] text-stone-500 dark:text-stone-400">Saved run</label>
+            <label htmlFor="benchmark-run" className="shrink-0 text-[11px] text-on-surface-variant dark:text-on-surface-variant">Saved run</label>
             <select
               id="benchmark-run"
               value={dashboard.selectedAt ?? ''}
               onChange={(event) => setDashboard((current) => ({ ...current, selectedAt: event.target.value }))}
-              className="min-w-0 flex-1 px-2 py-1.5 text-xs rounded-md border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-800 text-stone-700 dark:text-stone-300 focus:outline-none focus:ring-2 focus:ring-stone-500"
+              className="min-w-0 flex-1 px-2 py-1.5 text-xs rounded-md border border-outline-variant/30 dark:border-outline-variant/30 bg-surface-container-lowest dark:bg-surface-container-high text-on-surface dark:text-on-surface-variant focus:outline-none focus:ring-2 focus:ring-primary"
             >
               {dashboard.reports.map((item) => (
                 <option key={item.createdAt} value={item.createdAt}>
@@ -451,32 +561,32 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
                 clearBenchmarkReports();
                 setDashboard({ reports: [], selectedAt: null });
               }}
-              className="shrink-0 px-2 py-1.5 text-xs text-stone-500 dark:text-stone-400 hover:text-red-600 dark:hover:text-red-400"
+              className="shrink-0 px-2 py-1.5 text-xs text-on-surface-variant dark:text-on-surface-variant hover:text-red-600 dark:hover:text-red-400"
             >
               Clear
             </button>
           </div>
 
-          <div className="grid grid-cols-3 border-y border-stone-200 dark:border-stone-700 divide-x divide-stone-200 dark:divide-stone-700">
+          <div className="grid grid-cols-3 border-y border-outline-variant/30 dark:border-outline-variant/30 divide-x divide-outline-variant/30 dark:divide-outline-variant/30">
             {[
               ['Fastest', modelLabel(report, report.recommendations.fastest)],
               ['Accurate', modelLabel(report, report.recommendations.mostAccurate)],
               ['Balanced', modelLabel(report, report.recommendations.balanced)],
             ].map(([label, value]) => (
               <div key={label} className="min-w-0 px-2 py-2.5 text-center">
-                <div className="text-[10px] uppercase text-stone-400 dark:text-stone-500">{label}</div>
-                <div className="mt-1 text-xs font-semibold text-stone-800 dark:text-stone-200 truncate" title={value}>{value}</div>
+                <div className="text-[10px] uppercase text-on-surface-variant dark:text-on-surface-variant">{label}</div>
+                <div className="mt-1 text-xs font-semibold text-on-surface dark:text-on-surface truncate" title={value}>{value}</div>
               </div>
             ))}
           </div>
 
-          <div className="space-y-4 border-b border-stone-200 dark:border-stone-700 pb-4">
+          <div className="space-y-4 border-b border-outline-variant/30 dark:border-outline-variant/30 pb-4">
             <LatencyChart report={report} />
             <AccuracyChart report={report} />
           </div>
 
           <div>
-            <h4 className="mb-1 text-xs font-semibold text-stone-700 dark:text-stone-300">Metrics</h4>
+            <h4 className="mb-1 text-xs font-semibold text-on-surface dark:text-on-surface-variant">Metrics</h4>
             <table className="w-full table-fixed text-[11px]">
               <colgroup>
                 <col className="w-[28%]" />
@@ -486,8 +596,8 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
                 <col className="w-[16%]" />
                 <col className="w-[16%]" />
               </colgroup>
-              <thead className="text-left text-stone-400 dark:text-stone-500">
-                <tr className="border-b border-stone-200 dark:border-stone-700">
+              <thead className="text-left text-on-surface-variant dark:text-on-surface-variant">
+                <tr className="border-b border-outline-variant/30 dark:border-outline-variant/30">
                   <th className="py-2 pr-3 font-medium">Model</th>
                   <th className="px-2 py-2 font-medium text-right">Median</th>
                   <th className="px-2 py-2 font-medium text-right">P95</th>
@@ -496,12 +606,12 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
                   <th className="pl-2 py-2 font-medium text-right">Delivered (raw)</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-stone-200 dark:divide-stone-700 text-stone-700 dark:text-stone-300">
+              <tbody className="divide-y divide-outline-variant/30 dark:divide-outline-variant/30 text-on-surface dark:text-on-surface-variant">
                 {report.results.map((result) => (
                   <tr key={result.modelName}>
                     <td className="py-2.5 pr-3">
-                      <span className="font-medium text-stone-900 dark:text-stone-100">{result.label}</span>
-                      <span className="block text-[10px] text-stone-400">{result.accelerator}</span>
+                      <span className="font-medium text-on-surface dark:text-on-surface">{result.label}</span>
+                      <span className="block text-[10px] text-on-surface-variant">{result.accelerator}</span>
                     </td>
                     {result.error ? (
                       <td colSpan={5} className="px-2 py-2.5 text-red-600 dark:text-red-400">{result.error}</td>
@@ -512,11 +622,11 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
                         <td className="px-2 py-2.5 text-right tabular-nums">{speed(result.realtimeFactor)}</td>
                         <td className="px-2 py-2.5 text-right tabular-nums">
                           {percentage(result.normalizedWordErrorRate)}
-                          <span className="text-stone-400 dark:text-stone-500"> ({percentage(result.wordErrorRate)})</span>
+                          <span className="text-on-surface-variant dark:text-on-surface-variant"> ({percentage(result.wordErrorRate)})</span>
                         </td>
                         <td className="pl-2 py-2.5 text-right tabular-nums">
                           {percentage(result.deliveredNormalizedWordErrorRate)}
-                          <span className="text-stone-400 dark:text-stone-500"> ({percentage(result.deliveredWordErrorRate)})</span>
+                          <span className="text-on-surface-variant dark:text-on-surface-variant"> ({percentage(result.deliveredWordErrorRate)})</span>
                         </td>
                       </>
                     )}
@@ -526,25 +636,26 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
             </table>
           </div>
 
-          <p className="text-[11px] leading-relaxed text-stone-500 dark:text-stone-400">
-            WER counts changed, missing, and extra words against the known transcript. Normalized WER first ignores formatting and number/unit spelling (16 kHz = sixteen kilohertz, front end = frontend) so it reflects recognition, not formatting; raw WER is shown in parentheses. Delivered WER scores the text after the production transform pipeline (dev-vocab prompt for Whisper, then cleanup / correction / formatting) — what actually reaches the clipboard — again shown normalized with raw in parentheses. Accuracy ranking and the Accurate/Balanced picks use the normalized recognition number. Fastest is the strict minimum duration-weighted speed. Balanced favors lower memory among models within 2 accuracy points and an inclusive 10% band of the fastest eligible speed.
+          <p className="text-[11px] leading-relaxed text-on-surface-variant dark:text-on-surface-variant">
+            WER counts changed, missing, and extra words against the known transcript. Normalized WER first ignores formatting and number/unit spelling (16 kHz = sixteen kilohertz, front end = frontend) so it reflects recognition, not formatting; raw WER is shown in parentheses. Delivered WER scores the text after the production transform pipeline (dev-vocab prompt for Whisper, then cleanup / correction / formatting) — what actually reaches the clipboard — again shown normalized with raw in parentheses. P95 uses nearest-rank selection over the measured warm runs; with only 3, 5, or 10 samples it is a coarse tail-latency signal. Accuracy ranking and the Accurate/Balanced picks use the normalized recognition number. Fastest is the strict minimum duration-weighted speed. Balanced favors lower memory among models within 2 accuracy points and an inclusive 10% band of the fastest eligible speed.
           </p>
 
           <div className="space-y-2">
             {report.results.filter((result) => !result.error).map((result) => (
-              <details key={result.modelName} className="border-t border-stone-200 dark:border-stone-700 pt-2">
-                <summary className="cursor-pointer text-xs font-medium text-stone-700 dark:text-stone-300">
+              <details key={result.modelName} className="border-t border-outline-variant/30 dark:border-outline-variant/30 pt-2">
+                <summary className="cursor-pointer text-xs font-medium text-on-surface dark:text-on-surface-variant">
                   {result.label} details
                 </summary>
                 <div className="mt-2 space-y-3">
-                  <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] text-stone-500 dark:text-stone-400">
-                    <span>Cold load</span><span className="text-right tabular-nums">{milliseconds(result.modelLoadMs)}</span>
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] text-on-surface-variant dark:text-on-surface-variant">
+                    <span title="Per-model load measured after the separate one-time shared backend initialization shown above.">Model load after shared init</span><span className="text-right tabular-nums">{milliseconds(result.modelLoadMs)}</span>
                     <span>First inference</span><span className="text-right tabular-nums">{milliseconds(result.firstInferenceMs)}</span>
-                    <span title="Process RSS delta. Models run sequentially in one process, so allocator retention from an earlier model can inflate a later model's baseline — treat as a rough signal, not an isolated measurement.">Memory increase</span><span className="text-right tabular-nums">{result.memoryDeltaMb} MB</span>
+                    <span>Download size</span><span className="text-right tabular-nums">{result.downloadSize ?? 'Not recorded'}</span>
+                    <span title="Observed process RSS delta. Models run sequentially in one process, so allocator retention from an earlier model can inflate a later model's baseline. This is not download size or isolated peak memory.">Observed memory increase</span><span className="text-right tabular-nums">{result.memoryDeltaMb} MB (rough)</span>
                   </div>
                   {result.fixtures.map((fixture) => (
                     <div key={fixture.fixtureId} className="text-[11px] leading-relaxed">
-                      <div className="flex justify-between gap-3 font-medium text-stone-700 dark:text-stone-300">
+                      <div className="flex justify-between gap-3 font-medium text-on-surface dark:text-on-surface-variant">
                         <span>
                           {fixture.label} / {fixture.audioSeconds.toFixed(1)}s
                           {fixture.normalizedWordErrors === 0 && (
@@ -558,15 +669,15 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
                         </span>
                         <span>
                           {fixture.normalizedWordErrors}/{fixture.normalizedReferenceWords} errors
-                          <span className="text-stone-400 dark:text-stone-500"> ({fixture.wordErrors}/{fixture.referenceWords} raw)</span>
+                          <span className="text-on-surface-variant dark:text-on-surface-variant"> ({fixture.wordErrors}/{fixture.referenceWords} raw)</span>
                         </span>
                       </div>
-                      <div className="mt-1 grid gap-1 text-stone-500 dark:text-stone-400">
+                      <div className="mt-1 grid gap-1 text-on-surface-variant dark:text-on-surface-variant">
                         <p><span className="font-medium">Reference:</span> {fixture.reference}</p>
                         <p><span className="font-medium">Output:</span> {fixture.transcript || '(empty)'}</p>
                         <p>
                           <span className="font-medium">Delivered:</span> {fixture.deliveredTranscript || '(empty)'}
-                          <span className="text-stone-400 dark:text-stone-500"> — {fixture.deliveredNormalizedWordErrors}/{fixture.normalizedReferenceWords} errors ({fixture.deliveredWordErrors}/{fixture.referenceWords} raw)</span>
+                          <span className="text-on-surface-variant dark:text-on-surface-variant"> — {fixture.deliveredNormalizedWordErrors}/{fixture.normalizedReferenceWords} errors ({fixture.deliveredWordErrors}/{fixture.referenceWords} raw)</span>
                           {fixture.deliveredTransformFailed && (
                             <span className="text-amber-600 dark:text-amber-400"> — transform failed, showing raw</span>
                           )}

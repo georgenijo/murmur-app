@@ -203,6 +203,13 @@ export interface Settings {
   saveTranscript: boolean;
   saveAudio: boolean;
   outputDir: string;
+  /** Destination for saved Performance Lab benchmark reports. Empty = default
+   * `Documents/Murmur`. Kept separate from `outputDir` so benchmark JSON doesn't
+   * mix with saved dictation transcripts/audio. */
+  benchmarkOutputDir: string;
+  /** Write each benchmark report to `benchmarkOutputDir` automatically as it
+   * completes, so reports survive the 10-slot localStorage cap. */
+  benchmarkAutoSave: boolean;
   appProfiles: AppProfile[];
   voiceCommandsEnabled: boolean;
   /** User-defined voice commands applied after the built-in set. */
@@ -339,6 +346,8 @@ export const DEFAULT_SETTINGS: Settings = {
   saveTranscript: false,
   saveAudio: false,
   outputDir: '',
+  benchmarkOutputDir: '',
+  benchmarkAutoSave: false,
   appProfiles: [],
   voiceCommandsEnabled: false,
   voiceCommands: [],
@@ -459,6 +468,14 @@ export function loadSettings(): Settings {
       // non-string back to the default (empty = app-chosen Documents/Murmur).
       if (typeof parsed.outputDir !== 'string') {
         parsed.outputDir = DEFAULT_SETTINGS.outputDir;
+      }
+
+      // benchmarkOutputDir also feeds a filesystem path on the Rust side.
+      if (typeof parsed.benchmarkOutputDir !== 'string') {
+        parsed.benchmarkOutputDir = DEFAULT_SETTINGS.benchmarkOutputDir;
+      }
+      if (typeof parsed.benchmarkAutoSave !== 'boolean') {
+        parsed.benchmarkAutoSave = DEFAULT_SETTINGS.benchmarkAutoSave;
       }
 
       parsed.vocabularyEntries = sanitizeVocabularyEntries(
