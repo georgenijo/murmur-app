@@ -462,6 +462,9 @@ mod tests {
         assert!(propose_rule("alpha", "alpha beta")
             .unwrap_err()
             .contains("Insertions"));
+        assert!(propose_rule("alpha beta", "alpha")
+            .unwrap_err()
+            .contains("deletions"));
         assert!(propose_rule("hello!", "hello?")
             .unwrap_err()
             .contains("Punctuation"));

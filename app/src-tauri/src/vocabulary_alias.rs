@@ -126,8 +126,8 @@ fn unambiguous_project_root<'a>(
 ) -> Option<&'a str> {
     app_profiles
         .iter()
-        .find(|profile| profile.bundle_id == bundle_id && profile.ide_context_enabled)
-        .filter(|profile| profile.ide_project_roots.len() == 1)
+        .find(|profile| profile.bundle_id == bundle_id)
+        .filter(|profile| profile.ide_context_enabled && profile.ide_project_roots.len() == 1)
         .and_then(|profile| profile.ide_project_roots.first())
         .map(String::as_str)
 }
@@ -172,7 +172,8 @@ fn applicable_entries<'a>(
         .and_then(|bundle_id| {
             app_profiles
                 .iter()
-                .find(|profile| profile.bundle_id == bundle_id && profile.ide_context_enabled)
+                .find(|profile| profile.bundle_id == bundle_id)
+                .filter(|profile| profile.ide_context_enabled)
         })
         .map(|profile| profile.ide_project_roots.as_slice())
         .unwrap_or(&[]);
@@ -548,6 +549,99 @@ mod tests {
             false,
         );
         assert_eq!(set.select(Some("com.editor")).apply("use hook"), "appHook");
+    }
+
+    #[test]
+    fn project_knowledge_uses_the_first_matching_profile_snapshot() {
+        let mut disabled_profile = AppProfile {
+            bundle_id: "com.editor".to_string(),
+            label: "Editor".to_string(),
+            auto_paste_override: None,
+            cleanup_override: None,
+            cli_formatting_override: None,
+            smart_formatting_override: None,
+            writing_style: None,
+            ide_context_enabled: false,
+            ide_project_roots: vec!["/project".to_string()],
+        };
+        let mut later_enabled_profile = disabled_profile.clone();
+        later_enabled_profile.ide_context_enabled = true;
+        let knowledge = vec![
+            learned(
+                "project",
+                "use hook",
+                "projectHook",
+                KnowledgeScope::Project {
+                    bundle_id: "com.editor".to_string(),
+                    root: "/project".to_string(),
+                },
+                crate::knowledge_store::KnowledgeProvenance::LearnedCorrection,
+                2,
+            ),
+            learned(
+                "app",
+                "use hook",
+                "appHook",
+                KnowledgeScope::App {
+                    bundle_id: "com.editor".to_string(),
+                },
+                crate::knowledge_store::KnowledgeProvenance::LearnedCorrection,
+                1,
+            ),
+        ];
+
+        let set = CorrectionMatcherSet::build_with_knowledge(
+            &[],
+            &[],
+            &[disabled_profile.clone(), later_enabled_profile],
+            &knowledge,
+            false,
+            false,
+        );
+        assert_eq!(set.select(Some("com.editor")).apply("use hook"), "appHook");
+
+        disabled_profile.ide_context_enabled = true;
+        let set = CorrectionMatcherSet::build_with_knowledge(
+            &[],
+            &[],
+            &[disabled_profile],
+            &knowledge,
+            false,
+            false,
+        );
+        assert_eq!(
+            set.select(Some("com.editor")).apply("use hook"),
+            "projectHook"
+        );
+    }
+
+    #[test]
+    fn selected_matchers_are_immutable_across_knowledge_generations() {
+        let original = learned(
+            "original",
+            "use hook",
+            "originalHook",
+            KnowledgeScope::Global,
+            crate::knowledge_store::KnowledgeProvenance::LearnedCorrection,
+            1,
+        );
+        let initial_set =
+            CorrectionMatcherSet::build_with_knowledge(&[], &[], &[], &[original], false, false);
+        let captured = initial_set.select(None);
+
+        let updated = learned(
+            "updated",
+            "use hook",
+            "updatedHook",
+            KnowledgeScope::Global,
+            crate::knowledge_store::KnowledgeProvenance::LearnedCorrection,
+            2,
+        );
+        let updated_set =
+            CorrectionMatcherSet::build_with_knowledge(&[], &[], &[], &[updated], false, false);
+
+        assert_eq!(captured.apply("use hook"), "originalHook");
+        assert_eq!(updated_set.select(None).apply("use hook"), "updatedHook");
     }
 
     #[test]

@@ -92,4 +92,21 @@ describe('CorrectAndTeachDialog', () => {
     expect(mocks.discard).toHaveBeenCalledWith(7);
     expect(mocks.confirm).not.toHaveBeenCalled();
   });
+
+  it('discards a proposal that resolves after cancellation', async () => {
+    let resolveProposal!: (value: Awaited<ReturnType<typeof mocks.propose>>) => void;
+    mocks.propose.mockImplementationOnce(() => new Promise((resolve) => { resolveProposal = resolve; }));
+    await act(async () => setValue(container.querySelector('[aria-label="Corrected transcript"]') as HTMLTextAreaElement, 'useRecordingState'));
+    await act(async () => button(container, 'Review correction').click());
+    await act(async () => button(container, 'Cancel').click());
+
+    await act(async () => resolveProposal({
+      kind: 'proposal', proposalId: 19, source: 'use recording state', replacement: 'useRecordingState',
+      occurrenceCount: 1, originalText: 'use recording state', correctedText: 'useRecordingState',
+      scopeOptions: [{ scope: { kind: 'global' }, label: 'All apps' }],
+    }));
+
+    expect(mocks.discard).toHaveBeenCalledWith(19);
+    expect(mocks.confirm).not.toHaveBeenCalled();
+  });
 });

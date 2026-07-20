@@ -24,11 +24,13 @@ export function CorrectAndTeachDialog({ entry, onClose, onSaveCorrection }: Prop
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const proposalId = outcome?.kind === 'proposal' ? outcome.proposalId : null;
   const proposalIdRef = useRef<number | null>(proposalId);
+  const closedRef = useRef(false);
   const onCloseRef = useRef(onClose);
   proposalIdRef.current = proposalId;
   onCloseRef.current = onClose;
 
   const close = () => {
+    closedRef.current = true;
     if (proposalIdRef.current !== null) void discardLearnedCorrectionProposal(proposalIdRef.current).catch(() => {});
     onCloseRef.current();
   };
@@ -57,6 +59,7 @@ export function CorrectAndTeachDialog({ entry, onClose, onSaveCorrection }: Prop
     document.addEventListener('keydown', onKey);
     const timer = window.setTimeout(() => textareaRef.current?.focus(), 40);
     return () => {
+      closedRef.current = true;
       document.removeEventListener('keydown', onKey);
       window.clearTimeout(timer);
       previous?.focus();
@@ -72,12 +75,16 @@ export function CorrectAndTeachDialog({ entry, onClose, onSaveCorrection }: Prop
     setError(null);
     try {
       const next = await proposeLearnedCorrection(entry.text, correctedText, entry.teachingContext);
+      if (closedRef.current) {
+        if (next.kind === 'proposal') await discardLearnedCorrectionProposal(next.proposalId).catch(() => {});
+        return;
+      }
       setOutcome(next);
       if (next.kind === 'proposal') setScope(next.scopeOptions[0].scope);
     } catch (cause) {
-      setError(String(cause));
+      if (!closedRef.current) setError(String(cause));
     } finally {
-      setBusy(false);
+      if (!closedRef.current) setBusy(false);
     }
   };
 
