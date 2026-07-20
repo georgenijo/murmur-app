@@ -9,6 +9,7 @@ import type { Settings } from '../lib/settings';
 import { buildConfigureOptions } from '../lib/dictation';
 import type { DictationResponse } from '../lib/dictation';
 import { usePartialTranscript } from '../lib/hooks/usePartialTranscript';
+import { useOverlayGeometry } from '../lib/hooks/useOverlayGeometry';
 import {
   HOTKEY_MISS_FLASH_MS,
   isHotkeyTapRejectedPayload,
@@ -21,10 +22,6 @@ const SHRINK_DELAY_MS = 380;
 const HOVER_WATCHDOG_MS = 150;
 const HOVER_BOUNDS_PADDING = 8;
 const HOVER_OPEN_DWELL_MS = 150;
-const DROPDOWN_H = 44;
-const PREVIEW_ROW_H = 30;
-const OVERLAY_HORIZONTAL_EXPANSION = 120;
-const FALLBACK_NOTCH_WIDTH = 80;
 
 function formatElapsed(seconds: number): string {
   const m = Math.floor(seconds / 60);
@@ -108,9 +105,7 @@ export function OverlayWidget() {
   );
   const [previewModel, setPreviewModel] = useState(DEFAULT_SETTINGS.model);
   const [elapsed, setElapsed] = useState(0);
-  const notchHeightRef = useRef(0);
-  const [notchHeight, setNotchHeight] = useState(0);
-  const [notchWidth, setNotchWidth] = useState(185);
+  const geometry = useOverlayGeometry();
   const islandRef = useRef<HTMLDivElement | null>(null);
   const lockedRef = useRef(lockedMode);
   const disabledRef = useRef(disabled);
@@ -147,22 +142,9 @@ export function OverlayWidget() {
     if (!settings.hotkeyMissFeedback) setShowHotkeyMiss(false);
   }, []);
 
-  // Log mount + fetch notch dimensions + read initial disabled state
+  // Log mount + read initial disabled state (geometry is owned by useOverlayGeometry)
   useEffect(() => {
     flog.info('overlay', 'mounted');
-    invoke<{ notch_width: number; notch_height: number } | null>('get_notch_info')
-      .then((info) => {
-        if (info) {
-          flog.info('overlay', 'notch info', { notch_width: info.notch_width, notch_height: info.notch_height });
-          notchHeightRef.current = info.notch_height;
-          setNotchHeight(info.notch_height);
-          setNotchWidth(info.notch_width);
-        } else {
-          flog.info('overlay', 'no notch detected');
-          setNotchWidth(FALLBACK_NOTCH_WIDTH);
-        }
-      })
-      .catch((e) => flog.warn('overlay', 'get_notch_info failed', { error: String(e) }));
     try {
       applySettingsSnapshot(loadSettings());
     } catch { /* ignore */ }
@@ -270,25 +252,16 @@ export function OverlayWidget() {
     };
   }, []);
 
-  // Subscribe to notch info changes (display config change: monitor plug/unplug, lid)
+  // Subscribe to overlay-geometry-changed for its display-change side effects only.
+  // useOverlayGeometry owns the geometry state; this listener keeps the expanded UI
+  // in sync because Rust resizes the window back to collapsed dimensions on change.
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | null = null;
-    listen<{ notch_width: number; notch_height: number } | null>('notch-info-changed', (event) => {
+    listen('overlay-geometry-changed', () => {
       // Rust resizes the window back to collapsed dimensions on display change,
       // so reset the expanded UI state to stay in sync.
       setExpanded(false);
-      if (event.payload) {
-        flog.info('overlay', 'notch info changed', { notch_width: event.payload.notch_width, notch_height: event.payload.notch_height });
-        notchHeightRef.current = event.payload.notch_height;
-        setNotchHeight(event.payload.notch_height);
-        setNotchWidth(event.payload.notch_width);
-      } else {
-        flog.info('overlay', 'notch removed (no notch on new display)');
-        notchHeightRef.current = 0;
-        setNotchHeight(0);
-        setNotchWidth(FALLBACK_NOTCH_WIDTH);
-      }
       invoke('set_overlay_surface', {
         expanded: false,
         previewVisible: previewRowVisibleRef.current,
@@ -656,7 +629,6 @@ export function OverlayWidget() {
     }
   }, []);
 
-  const topH = notchHeight || 37;
   const previewPresentation = getOverlayPreviewPresentation(
     status,
     liveTranscriptPreview,
@@ -672,6 +644,12 @@ export function OverlayWidget() {
       previewVisible: previewRowVisible,
     }).catch((e) => flog.warn('overlay', 'set_overlay_surface preview sync failed', { error: String(e) }));
   }, [previewRowVisible]);
+
+  // All hooks are above this line. The overlay window starts hidden, so returning
+  // null before geometry loads shows nothing rather than TS fallback pixels.
+  if (!geometry) return null;
+  const topH = geometry.collapsedH;
+
   const effectiveAutoPaste = autoPaste && !fileOutputEnabled;
   const autoPastePaused = autoPaste && fileOutputEnabled;
   const autoPasteLabel = autoPastePaused
@@ -712,14 +690,14 @@ export function OverlayWidget() {
         style={{
           borderRadius: '0 0 12px 12px',
           width: (expanded || isActive)
-            ? notchWidth + OVERLAY_HORIZONTAL_EXPANSION
-            : notchWidth + 28,
+            ? geometry.pillActiveW
+            : geometry.pillIdleW,
           height: topH
-            + (previewRowVisible ? PREVIEW_ROW_H : 0)
-            + (expanded ? DROPDOWN_H : 0),
+            + (previewRowVisible ? geometry.previewRowH : 0)
+            + (expanded ? geometry.dropdownH : 0),
           marginLeft: (expanded || isActive)
-            ? 0
-            : (OVERLAY_HORIZONTAL_EXPANSION - 28) / 2,
+            ? geometry.pillMarginActive
+            : geometry.pillMarginIdle,
           background: 'rgba(20, 20, 20, 0.92)',
           boxShadow: showHotkeyMiss ? 'inset 0 -2px 0 rgba(245,158,11,0.9), 0 3px 16px rgba(245,158,11,0.22)' : 'none',
           backdropFilter: 'blur(40px)',
@@ -795,7 +773,7 @@ export function OverlayWidget() {
               ? 'Live transcript preview unavailable'
               : 'Provisional transcript preview'}
             className="flex items-center gap-2 px-3 pointer-events-none"
-            style={{ height: PREVIEW_ROW_H }}
+            style={{ height: geometry.previewRowH }}
           >
             {previewPresentation.unavailable ? (
               <>
@@ -823,7 +801,7 @@ export function OverlayWidget() {
         <div
           className="flex items-center justify-center gap-3"
           style={{
-            height: DROPDOWN_H,
+            height: geometry.dropdownH,
             padding: '0 10px 6px',
             opacity: expanded ? 1 : 0,
             pointerEvents: expanded ? 'auto' : 'none',
