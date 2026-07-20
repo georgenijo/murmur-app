@@ -1,4 +1,4 @@
-use crate::transcriber::{TranscriptionBackend, WhisperBackend};
+use crate::model_runtime::ModelRuntimeManager;
 use crate::MutexExt;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -243,7 +243,7 @@ pub struct AppState {
     /// for the cpal stream to become ready, so a fast key release must not tear
     /// the recorder down until that startup has fully completed.
     pub recording_transition: tokio::sync::Mutex<()>,
-    pub backend: Mutex<Box<dyn TranscriptionBackend>>,
+    pub model_runtime: ModelRuntimeManager,
     pub last_transcription_at: Mutex<Option<Instant>>,
     pub idle_timeout_minutes: Mutex<u32>,
     /// Monotonically increasing ID assigned to each recording session.
@@ -340,7 +340,7 @@ impl Default for AppState {
         Self {
             dictation: Mutex::new(DictationState::default()),
             recording_transition: tokio::sync::Mutex::new(()),
-            backend: Mutex::new(Box::new(WhisperBackend::new())),
+            model_runtime: ModelRuntimeManager::default(),
             last_transcription_at: Mutex::new(None),
             idle_timeout_minutes: Mutex::new(5),
             recording_id: AtomicU64::new(0),

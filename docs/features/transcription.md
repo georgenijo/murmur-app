@@ -31,7 +31,12 @@ pub trait TranscriptionBackend: Send + Sync {
 }
 ```
 
-The active backend is stored as `Mutex<Box<dyn TranscriptionBackend>>` in `AppState`. `configure_dictation` dispatches the explicit Core ML model before the broad `parakeet*` sherpa classifier.
+`AppState` owns a `ModelRuntimeManager`. Its catalog maps each exact model
+identifier to a backend and capability set, and its single serialized backend
+owner coordinates preparation, inference, model changes, and unload. Unknown
+models fail closed instead of defaulting to Whisper. `configure_dictation`
+selects through this catalog; recording preparation and final inference use the
+same manager.
 
 ### FluidAudio Core ML Backend (`transcriber/coreml.rs`)
 
@@ -54,6 +59,10 @@ The active backend is stored as `Mutex<Box<dyn TranscriptionBackend>>` in `AppSt
 - `single_segment` decoding is duration-conditional (`should_use_single_segment`, 12s threshold): short audio stays single-segment, but longer batch/file transcriptions use multi-segment decoding so an early end-of-text token from the model can't force-skip the rest of the audio and silently truncate the tail
 
 All supported backends follow the same final-after-stop interaction: recording only captures audio; stopping runs one authoritative full-buffer transcription; the transformed final result is then delivered exactly once. Murmur does not display or emit provisional transcript text while recording or processing.
+
+The catalog may describe partial-result support as a backend capability for a
+future product contract. There is currently no streaming worker, provisional
+transcript event, live-preview setting, or model-specific preview behavior.
 
 ## Model Options
 
@@ -117,6 +126,12 @@ Status is managed in `DictationState` behind a `Mutex` with poison recovery (`Mu
 Recorder start, stop, and cancel also share an async transition mutex. The lock
 is held until cpal confirms startup or audio teardown completes, preventing a
 fast hotkey release from stopping a recorder that is still starting.
+
+Model state is separate from recording status. `get_model_runtime_catalog` and
+`get_model_runtime_status` expose catalog metadata plus install/lifecycle state.
+Transitions emit generation-ordered `model-runtime-status-changed` snapshots;
+their telemetry is privacy-safe bounded metadata and never contains transcript
+text, model paths, or raw backend errors.
 
 ## Frontend Integration
 

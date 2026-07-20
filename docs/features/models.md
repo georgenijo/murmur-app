@@ -4,6 +4,13 @@
 
 The app supports three transcription backends: FluidAudio Core ML on the Apple Neural Engine, Whisper on Metal, and Parakeet through sherpa-onnx on CPU. Models are downloaded on demand, prepared when recording starts, and cached for reuse.
 
+`model_runtime.rs` is the authoritative shipped-model catalog and runtime
+manager. Each entry carries its backend, accelerator, install strategy,
+platform support, warm-up policy, and capability facts (partial results,
+initial prompts, multilingual transcription, translation, timestamps,
+confidence, and punctuation control). Unknown identifiers are rejected; they
+never fall through to Whisper or another backend.
+
 ## Available Models
 
 | Model | Setting Value | Backend | Size | Speed | Language |
@@ -62,7 +69,23 @@ Whisper, sherpa Parakeet, and Silero VAD models are stored in `~/Library/Applica
 
 ## Recording-Start Preparation
 
-Models are not loaded at app startup. Once audio capture is active, a blocking worker calls the backend's `load_model()` so cold initialization overlaps the user's speech. The transcription pipeline calls `load_model()` again as a safe fallback; that call is a no-op when preparation finished, or waits on the same backend lock for a very short recording. Idle release never resets a model while the app is recording or processing.
+Core ML may warm after startup configuration. Other models begin preparation
+once audio capture is active so cold initialization overlaps the user's speech.
+`ModelRuntimeManager` serializes backend selection, load/warm, inference, model
+changes, and unload behind one lock. The transcription pipeline confirms the
+same selected model is ready; that preparation is a no-op on a cache hit. Idle
+release never resets a model while the app is recording or processing.
+
+Runtime snapshots use explicit install states (`notInstalled`, `installing`,
+`validating`, `installed`, `invalid`) and lifecycle states (`unloaded`,
+`loading`, `warming`, `ready`, `unloading`, `failed`). A monotonic generation
+orders the `model-runtime-status-changed` events consumed by the frontend.
+Events contain only bounded catalog metadata, state enums, a failure-present
+boolean, and transition reason; they do not contain transcripts, paths, or raw
+backend errors.
+
+Memory-pressure unload is an explicit manager operation and does not select or
+load another model. Murmur has no automatic cross-model fallback.
 
 ### WhisperState Caching
 
@@ -86,7 +109,7 @@ On first launch (the selected model is not present), a full-screen download view
 | `large-v3-turbo` | "Highest accuracy, slower (1-2 seconds)" |
 | `base.en` | "Good balance of speed and accuracy" |
 
-Default selection: `parakeet-tdt-0.6b-v3-coreml`. The gate (`App.tsx`) checks the currently selected model via `check_specific_model_exists`. The downloader starts on that model when it is one of the curated choices and persists whichever model the user actually downloads. Selection is disabled during setup. Byte progress is shown for Murmur-managed downloads; FluidAudio setup is indeterminate because its Rust bridge does not expose progress. On error, a "Retry Download" button appears.
+Default selection: `parakeet-tdt-0.6b-v3-coreml`. The gate (`App.tsx`) checks the currently selected model through the runtime manager. The downloader starts on that model when it is one of the curated choices and persists whichever model the user actually downloads. Selection is disabled during setup. Byte progress is shown for Murmur-managed downloads; FluidAudio setup is indeterminate because its Rust bridge does not expose progress. On error, a "Retry Download" button appears.
 
 The main app controls are gated on `initialized` (which requires a model to exist), so the download screen blocks all other interaction.
 
@@ -112,7 +135,7 @@ The model bundle ships as a `.tar.bz2` from the sherpa-onnx `asr-models` GitHub 
 
 ### FluidAudio Core ML Setup
 
-`download_model` dispatches the explicit Core ML model value before the broad `parakeet*` sherpa classifier. It calls FluidAudio's synchronous setup through `spawn_blocking`; an existing cache that fails Murmur's completeness check is first removed at the exact v3 cache path, then FluidAudio downloads, compiles, and caches the model. Murmur validates the completed external cache again. The first setup can take tens of seconds; later initialization is normally around a tenth of a second. A newly linked app can also trigger one-time ANE specialization, so an installed model warms on a blocking worker immediately after startup configuration instead of deferring that cost to the first dictation.
+`download_model` dispatches from the catalog's explicit install strategy. It calls FluidAudio's synchronous setup through `spawn_blocking`; an existing cache that fails Murmur's completeness check is first removed at the exact v3 cache path, then FluidAudio downloads, compiles, and caches the model. Murmur validates the completed external cache again. The first setup can take tens of seconds; later initialization is normally around a tenth of a second. A newly linked app can also trigger one-time ANE specialization, so an installed model warms on a blocking worker immediately after startup configuration instead of deferring that cost to the first dictation.
 
 ### VAD Co-Download
 
@@ -120,25 +143,30 @@ Every transcription model download also triggers a co-download of the Silero VAD
 
 ## Allowed Models
 
-The `download_model` command accepts only models from a hardcoded allow-list:
+The `download_model` command accepts only the seven entries in the shared model
+catalog:
 
 ```
-large-v3-turbo, small.en, base.en, tiny.en, medium.en
+parakeet-tdt-0.6b-v3-coreml, parakeet-tdt-0.6b-v2-fp16,
+large-v3-turbo, medium.en, small.en, base.en, tiny.en
 ```
 
-The single Core ML model value is matched exactly before Parakeet model names are validated against the sherpa `download_spec` registry. Any other model name is rejected. The `check_specific_model_exists` command also includes path traversal protection, rejecting names containing `..`, `/`, or `\`.
+Any other model name is rejected rather than assigned a default backend. The
+`check_specific_model_exists` command also includes path traversal protection,
+rejecting names containing `..`, `/`, or `\`.
 
 ## Model Switching
 
-When the user changes models in settings, `configure_dictation` selects the FluidAudio, sherpa, or Whisper backend and resets it so the next transcription loads the requested model.
-
-The active backend is stored as `Mutex<Box<dyn TranscriptionBackend>>` in `AppState`.
+When the user changes models in settings, `configure_dictation` asks the runtime
+manager to unload the active model and select the catalog-declared backend. The
+next preparation loads that exact model. `AppState` owns one
+`ModelRuntimeManager`; callers no longer inspect or replace a raw backend mutex.
 
 ## Inline Download in Settings
 
 The settings panel supports downloading models without leaving the settings view:
 
-1. On model selection change, `check_specific_model_exists` verifies the model is on disk
+1. On model selection change, the shared runtime snapshot reports install state
 2. If not downloaded, an amber warning appears with a "Download" link
 3. During download: progress bar with percentage and "Downloading..." text
 4. On error: red error banner with message and "Retry" link
@@ -162,3 +190,7 @@ Model selection is disabled while recording is active.
 - `model: ModelOption` — Selected model name. Persisted to localStorage. Sent to Rust via `configure_dictation`.
 
 Model options are defined in `settings.ts` with the `MODEL_OPTIONS` array. Each option includes the setting value, display label, size string, and backend type.
+
+The Rust catalog remains authoritative for runtime behavior. The persisted
+setting stores only the selected identifier; install/lifecycle state and
+capabilities are runtime data and are not written to localStorage.

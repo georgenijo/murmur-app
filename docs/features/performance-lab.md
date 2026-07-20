@@ -17,6 +17,11 @@ Supported configurations are compatible model/backend pairs:
 Missing models can be downloaded from the lab before a run. Benchmarking does
 not change the model selected for normal dictation.
 
+The lab gets labels, backend/accelerator metadata, platform support, and install
+state from the same model-runtime catalog used by onboarding and Settings. Its
+benchmark runner also creates backends through the catalog factory, so adding a
+model does not require a second backend-name classifier.
+
 ## Accuracy
 
 Each bundled 16 kHz mono WAV fixture has an adjacent reference transcript.
@@ -85,3 +90,8 @@ transcription are blocked while a benchmark owns the benchmark coordinator, and
 a benchmark cannot start while either transcription path is active. Cancellation
 is checked between inference calls; an inference already inside a native backend
 finishes before cancellation returns.
+
+These isolated benchmark instances do not replace the selected dictation model
+or publish shared-runtime lifecycle changes. There is no automatic fallback if
+a selected benchmark model cannot load; that model receives an explicit error
+result and the run proceeds to the next user-selected entry.

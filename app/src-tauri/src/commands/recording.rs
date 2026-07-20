@@ -1,4 +1,5 @@
 use crate::dictation_context::{self, DictationContextSnapshot, ResolverInputs, SessionOverrides};
+use crate::model_runtime::{self, PreparationReason};
 use crate::state::{AppState, DictationStatus};
 use crate::transcriber;
 use crate::{audio, audio_decode, injector, keyboard, vad};
@@ -377,10 +378,6 @@ fn spawn_model_preparation(app_handle: tauri::AppHandle, model_name: String, rec
             return;
         }
 
-        let lock_started = std::time::Instant::now();
-        let mut backend = state.app_state.backend.lock_or_recover();
-        let lock_wait_ms = lock_started.elapsed().as_millis() as u64;
-
         // The recording may have been cancelled while this worker waited for a
         // previous inference or model switch to release the backend.
         let is_still_active = {
@@ -396,42 +393,35 @@ fn spawn_model_preparation(app_handle: tauri::AppHandle, model_name: String, rec
             return;
         }
 
-        if let Err(error) = transcriber::ensure_backend_for_model(&mut backend, &model_name) {
-            tracing::warn!(target: "pipeline", recording_id, error, "model_prepare_failed");
-            return;
-        }
-        let cache_hit = backend.is_model_loaded(&model_name);
         let rss_before_mb = crate::resource_monitor::get_process_rss_mb();
-        let load_started = std::time::Instant::now();
-        let result = backend.load_model(&model_name);
-        let load_ms = load_started.elapsed().as_millis() as u64;
+        let result = state.app_state.model_runtime.prepare(
+            Some(&app_handle),
+            &model_name,
+            PreparationReason::Recording,
+        );
         let rss_after_mb = crate::resource_monitor::get_process_rss_mb();
         let total_ms = queued_at.elapsed().as_millis() as u64;
         match result {
-            Ok(()) => tracing::info!(
+            Ok(report) => tracing::info!(
                 target: "pipeline",
                 recording_id,
                 model = model_name.as_str(),
-                backend = backend.name(),
-                cache_hit,
+                backend = model_runtime::model_definition(&model_name).map(|model| model.backend.as_str()).unwrap_or("unknown"),
+                cache_hit = report.cache_hit,
                 queue_ms,
-                lock_wait_ms,
-                load_ms,
+                lock_wait_ms = report.lock_wait_ms,
+                load_ms = report.load_ms,
                 total_ms,
                 rss_before_mb,
                 rss_after_mb,
                 "model_prepare_complete"
             ),
-            Err(error) => tracing::warn!(
+            Err(_error) => tracing::warn!(
                 target: "pipeline",
                 recording_id,
                 model = model_name.as_str(),
-                backend = backend.name(),
-                cache_hit,
-                lock_wait_ms,
-                load_ms,
                 total_ms,
-                error = error.as_str(),
+                failed = true,
                 "model_prepare_failed"
             ),
         }
@@ -460,9 +450,6 @@ fn spawn_idle_model_preparation(
             return;
         }
 
-        let lock_started = std::time::Instant::now();
-        let mut backend = state.app_state.backend.lock_or_recover();
-        let lock_wait_ms = lock_started.elapsed().as_millis() as u64;
         let is_still_current = {
             let dictation = state.app_state.dictation.lock_or_recover();
             dictation.status == DictationStatus::Idle && dictation.model_name == model_name
@@ -471,33 +458,30 @@ fn spawn_idle_model_preparation(
             return;
         }
 
-        let cache_hit = backend.is_model_loaded(&model_name);
-        let load_started = std::time::Instant::now();
-        let result = backend.load_model(&model_name);
-        let load_ms = load_started.elapsed().as_millis() as u64;
+        let result = state.app_state.model_runtime.prepare(
+            Some(&app_handle),
+            &model_name,
+            PreparationReason::StartupWarm,
+        );
         let total_ms = queued_at.elapsed().as_millis() as u64;
         match result {
-            Ok(()) => tracing::info!(
+            Ok(report) => tracing::info!(
                 target: "pipeline",
                 model = model_name.as_str(),
-                backend = backend.name(),
-                cache_hit,
-                lock_wait_ms,
-                load_ms,
+                backend = model_runtime::model_definition(&model_name).map(|model| model.backend.as_str()).unwrap_or("unknown"),
+                cache_hit = report.cache_hit,
+                lock_wait_ms = report.lock_wait_ms,
+                load_ms = report.load_ms,
                 total_ms,
                 reason = "startup_configuration",
                 "model_prepare_complete"
             ),
-            Err(error) => tracing::info!(
+            Err(_error) => tracing::info!(
                 target: "pipeline",
                 model = model_name.as_str(),
-                backend = backend.name(),
-                cache_hit,
-                lock_wait_ms,
-                load_ms,
                 total_ms,
                 reason = "startup_configuration",
-                error = error.as_str(),
+                failed = true,
                 "model_prepare_skipped"
             ),
         }
@@ -533,7 +517,10 @@ fn transcribe_with_coreml_vad_retry(
         prompt,
         smart_punctuation,
     )?;
-    if transcriber::is_coreml_model(model_name) && vad_trimmed && text.trim().is_empty() {
+    if model_runtime::model_definition(model_name)?.retry_unfiltered_on_empty
+        && vad_trimmed
+        && text.trim().is_empty()
+    {
         tracing::warn!(
             target: "pipeline",
             filtered_sample_count = samples_for_transcription.len(),
@@ -646,26 +633,28 @@ async fn run_transcription_pipeline(
 
     let rss_before_mb = crate::resource_monitor::get_process_rss_mb();
     let t_transcribe = std::time::Instant::now();
-    let (text, model_load_ms, decode_ms) = {
-        let load_started = std::time::Instant::now();
-        let mut backend = app_state.backend.lock_or_recover();
-        transcriber::ensure_backend_for_model(&mut backend, &transcription.model_name)?;
-        backend.load_model(&transcription.model_name)?;
-        let model_load_ms = load_started.elapsed().as_millis() as u64;
-        let decode_started = std::time::Instant::now();
-        let text = transcribe_with_coreml_vad_retry(
-            backend.as_mut(),
-            &transcription.model_name,
-            &samples_for_transcription,
-            samples,
-            vad_trimmed,
-            &transcription.language,
-            transcription.prompt.as_deref(),
-            transcription.smart_punctuation,
-        )?;
-        let decode_ms = decode_started.elapsed().as_millis() as u64;
-        (text, model_load_ms, decode_ms)
-    };
+    let mut decode_ms = 0;
+    let (text, load_report) = app_state.model_runtime.with_ready_backend(
+        Some(app_handle),
+        &transcription.model_name,
+        PreparationReason::Pipeline,
+        |backend| {
+            let decode_started = std::time::Instant::now();
+            let result = transcribe_with_coreml_vad_retry(
+                backend,
+                &transcription.model_name,
+                &samples_for_transcription,
+                samples,
+                vad_trimmed,
+                &transcription.language,
+                transcription.prompt.as_deref(),
+                transcription.smart_punctuation,
+            );
+            decode_ms = decode_started.elapsed().as_millis() as u64;
+            result
+        },
+    )?;
+    let model_load_ms = load_report.load_ms;
     let inference_ms = t_transcribe.elapsed().as_millis() as u64;
     let rss_after_mb = crate::resource_monitor::get_process_rss_mb();
     tracing::info!(target: "pipeline", "transcription ({} samples): {:?}", samples_for_transcription.len(), t_transcribe.elapsed());
@@ -896,7 +885,10 @@ pub async fn process_audio(
     };
     let char_count = text.len();
     let model_name = context.transcription.model_name.clone();
-    let backend_name = transcriber::backend_name_for_model(&model_name).to_string();
+    let backend_name = model_runtime::model_definition(&model_name)?
+        .backend
+        .as_str()
+        .to_string();
     tracing::info!(
         target: "pipeline",
         recording_id = rid,
@@ -1154,12 +1146,11 @@ pub async fn configure_dictation(
         .get("language")
         .and_then(|v| v.as_str())
         .map(String::from);
-    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-    if model.as_deref().is_some_and(transcriber::is_coreml_model) {
-        return Err(
-            "Core ML transcription is available only on macOS 14 or newer with Apple Silicon"
-                .to_string(),
-        );
+    if let Some(requested) = model.as_deref() {
+        let definition = model_runtime::model_definition(requested)?;
+        if !model_runtime::model_supported(definition) {
+            return Err("This model is not supported on the current platform".to_string());
+        }
     }
 
     let repository_commands = state
@@ -1392,16 +1383,14 @@ pub async fn configure_dictation(
     let mut idle_preparation = None;
     if model_changed && backend_change_can_apply_now {
         let new_model = dictation.model_name.clone();
-        if transcriber::is_coreml_model(&new_model) {
+        if model_runtime::model_definition(&new_model)?.warm_on_startup {
             idle_preparation = Some(new_model.clone());
         }
         drop(dictation); // Release dictation lock first
-        let mut backend = state.app_state.backend.lock_or_recover();
-        if backend.name() == transcriber::backend_name_for_model(&new_model) {
-            backend.reset();
-        } else {
-            transcriber::ensure_backend_for_model(&mut backend, &new_model)?;
-        }
+        state
+            .app_state
+            .model_runtime
+            .select_model(Some(&app_handle), &new_model)?;
     } else if model_changed {
         tracing::info!(
             target: "pipeline",
@@ -2133,7 +2122,10 @@ pub async fn stop_native_recording(
     };
     let char_count = text.len();
     let model_name = context.transcription.model_name.clone();
-    let backend_name = transcriber::backend_name_for_model(&model_name).to_string();
+    let backend_name = model_runtime::model_definition(&model_name)?
+        .backend
+        .as_str()
+        .to_string();
 
     tracing::info!(
         target: "pipeline",
@@ -2242,8 +2234,7 @@ pub async fn count_vocab_tokens(
     text: String,
     state: tauri::State<'_, State>,
 ) -> Result<Option<usize>, String> {
-    let backend = state.app_state.backend.lock_or_recover();
-    Ok(backend.token_count(&text))
+    Ok(state.app_state.model_runtime.token_count(&text))
 }
 
 /// Apply the same local alias matcher used by live dictation without recording,
@@ -2393,28 +2384,31 @@ pub async fn transcribe_file(
 
     // Phase: transcription (lazy model load), mirroring run_transcription_pipeline.
     let t_transcribe = std::time::Instant::now();
-    let (text, model_load_ms, decode_ms) = {
-        let sanitized = custom_vocabulary.replace('\0', "");
-        let code_vocab = resolve_code_vocab_prompt(&state.app_state);
-        let prompt = combine_prompts(&sanitized, &code_vocab);
-        let load_started = std::time::Instant::now();
-        let mut backend = state.app_state.backend.lock_or_recover();
-        backend.load_model(&model_name)?;
-        let model_load_ms = load_started.elapsed().as_millis() as u64;
-        let decode_started = std::time::Instant::now();
-        let text = transcribe_with_coreml_vad_retry(
-            backend.as_mut(),
-            &model_name,
-            &samples_for_transcription,
-            &samples,
-            vad_trimmed,
-            &language,
-            prompt.as_deref(),
-            smart_punctuation,
-        )?;
-        let decode_ms = decode_started.elapsed().as_millis() as u64;
-        (text, model_load_ms, decode_ms)
-    };
+    let sanitized = custom_vocabulary.replace('\0', "");
+    let code_vocab = resolve_code_vocab_prompt(&state.app_state);
+    let prompt = combine_prompts(&sanitized, &code_vocab);
+    let mut decode_ms = 0;
+    let (text, load_report) = state.app_state.model_runtime.with_ready_backend(
+        Some(&app_handle),
+        &model_name,
+        PreparationReason::FileTranscription,
+        |backend| {
+            let decode_started = std::time::Instant::now();
+            let result = transcribe_with_coreml_vad_retry(
+                backend,
+                &model_name,
+                &samples_for_transcription,
+                &samples,
+                vad_trimmed,
+                &language,
+                prompt.as_deref(),
+                smart_punctuation,
+            );
+            decode_ms = decode_started.elapsed().as_millis() as u64;
+            result
+        },
+    )?;
+    let model_load_ms = load_report.load_ms;
     // Imported files retain their existing raw-ASR output. They still pass through
     // the same authoritative transformation entry point with every stage disabled,
     // leaving delivery/UI behavior byte-for-byte unchanged.
