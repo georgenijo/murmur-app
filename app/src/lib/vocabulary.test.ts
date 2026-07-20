@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { VocabularyEntry } from './settings';
-import { validateVocabularyEntries } from './vocabulary';
+import { normalizeVocabularyValue, validateVocabularyEntries } from './vocabulary';
 
 function entry(written: string, aliases: string[]): VocabularyEntry {
   return {
@@ -40,5 +40,12 @@ describe('validateVocabularyEntries', () => {
       .toBe("Spoken alias 'tori' is duplicated for 'Tauri'.");
     expect(validateVocabularyEntries([entry('Tauri', ['x'.repeat(257)])]))
       .toBe("The spoken alias for 'Tauri' is too long.");
+  });
+
+  it('normalizes Turkish and Azeri casing without the host locale', () => {
+    expect(normalizeVocabularyValue(' I ')).toBe('i');
+    expect(normalizeVocabularyValue('İ')).toBe('i\u0307');
+    expect(validateVocabularyEntries([entry('Tauri', ['I', 'i'])]))
+      .toBe("Spoken alias 'i' is duplicated for 'Tauri'.");
   });
 });

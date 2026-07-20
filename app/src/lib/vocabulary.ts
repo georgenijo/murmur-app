@@ -6,7 +6,7 @@ const BUILTIN_COMMAND_PHRASES = [
 ];
 
 export function normalizeVocabularyValue(value: string): string {
-  return value.trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+  return value.trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
 function scopesOverlap(left: VocabularyScope, right: VocabularyScope): boolean {

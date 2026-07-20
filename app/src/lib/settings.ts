@@ -129,7 +129,7 @@ function sanitizeVocabularyEntries(raw: unknown, legacy: unknown): VocabularyEnt
             .map((alias) => truncateVocabularyValue(alias.trim()))
             .filter(Boolean)
             .filter((alias, aliasIndex, values) =>
-              values.findIndex((value) => value.toLocaleLowerCase() === alias.toLocaleLowerCase()) === aliasIndex)
+              values.findIndex((value) => value.toLowerCase() === alias.toLowerCase()) === aliasIndex)
             .slice(0, MAX_VOCABULARY_ALIASES)
         : [];
       return {

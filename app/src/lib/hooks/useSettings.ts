@@ -9,6 +9,7 @@ let lastAutostartOp: Promise<void> = Promise.resolve();
 
 export function useSettings() {
   const [settings, setSettings] = useState<Settings>(() => loadSettings());
+  const [configureError, setConfigureError] = useState<string | null>(null);
   const settingsRef = useRef(settings);
   const configureVersionRef = useRef(0);
 
@@ -48,6 +49,7 @@ export function useSettings() {
   }, []);
 
   const updateSettings = (updates: Partial<Settings>) => {
+    setConfigureError(null);
     const previousSettings = settingsRef.current;
     const newSettings = { ...previousSettings, ...updates };
     settingsRef.current = newSettings;
@@ -84,8 +86,8 @@ export function useSettings() {
     if ('model' in updates || 'language' in updates || 'autoPaste' in updates || 'autoPasteDelayMs' in updates || 'vadSensitivity' in updates || 'idleTimeoutMinutes' in updates || 'customVocabulary' in updates || 'vocabularyEntries' in updates || 'smartPunctuation' in updates || 'saveTranscript' in updates || 'saveAudio' in updates || 'outputDir' in updates || 'appProfiles' in updates || 'voiceCommandsEnabled' in updates || 'voiceCommands' in updates || 'cleanupEnabled' in updates || 'smartFormattingEnabled' in updates || 'cleanupRemoveFiller' in updates || 'cleanupCapitalize' in updates || 'codeVocabEnabled' in updates || 'codeVocabFolder' in updates || 'correctionEnabled' in updates || 'correctionFuzzy' in updates) {
       const version = ++configureVersionRef.current;
       configure(buildConfigureOptions(newSettings))
-        .catch((err) => {
-          console.error('Failed to configure:', err);
+        .catch(() => {
+          console.error('Failed to configure settings; previous values restored.');
           if (configureVersionRef.current === version) {
             const reverted = {
               ...settingsRef.current,
@@ -116,6 +118,9 @@ export function useSettings() {
             settingsRef.current = reverted;
             setSettings(reverted);
             saveSettings(reverted);
+            setConfigureError(
+              'Settings could not be saved. Previous settings were restored. Check vocabulary aliases and Voice Commands for conflicts, then try again.',
+            );
           }
         });
     }
@@ -141,11 +146,12 @@ export function useSettings() {
       });
     }
     if (autoPasteChanged) {
-      configure(buildConfigureOptions(fresh)).catch((err) => {
-        console.error('Failed to configure:', err);
+      configure(buildConfigureOptions(fresh)).catch(() => {
+        console.error('Failed to configure externally changed settings.');
+        setConfigureError('Settings could not be synchronized. Reopen Settings and try again.');
       });
     }
   }, []);
 
-  return { settings, updateSettings, applyExternalSettings };
+  return { settings, updateSettings, applyExternalSettings, configureError };
 }

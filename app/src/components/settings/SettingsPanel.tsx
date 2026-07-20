@@ -602,6 +602,7 @@ interface SettingsPanelProps {
   accessibilityGranted: boolean | null;
   onCheckForUpdate: () => Promise<void>;
   updateStatus: UpdateStatus;
+  configureError: string | null;
 }
 
 const SETTINGS_CATEGORIES = [
@@ -614,7 +615,7 @@ const SETTINGS_CATEGORIES = [
   { id: 'about', label: 'About' },
 ] as const;
 
-export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, status, onResetStats, onViewLogs, onRerunSetup, accessibilityGranted, onCheckForUpdate, updateStatus }: SettingsPanelProps) {
+export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, status, onResetStats, onViewLogs, onRerunSetup, accessibilityGranted, onCheckForUpdate, updateStatus, configureError }: SettingsPanelProps) {
   const [confirmReset, setConfirmReset] = useState(false);
   const [activeCat, setActiveCat] = useState<string>('transcription');
   const [version, setVersion] = useState('');
@@ -830,6 +831,11 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
       {/* Right: active category content */}
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-2xl px-6 py-5">
+        {configureError && (
+          <p role="alert" className="mb-4 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-700 dark:text-red-300">
+            {configureError}
+          </p>
+        )}
         <SettingsSection pageId="transcription" activePage={activeCat} title="Transcription" subtitle="Model, language, microphone">
         {supportsCoreMl && (
           <div className="flex items-center justify-between gap-6">

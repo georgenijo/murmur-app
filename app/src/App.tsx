@@ -51,7 +51,7 @@ function App() {
 
   const [modelReady, setModelReady] = useState<boolean | null>(null);
 
-  const { settings, updateSettings, applyExternalSettings } = useSettings();
+  const { settings, updateSettings, applyExternalSettings, configureError } = useSettings();
   const markModelReady = useCallback((downloadedModel: typeof settings.model) => {
     if (downloadedModel !== settings.model) {
       updateSettings({ model: downloadedModel });
@@ -284,6 +284,7 @@ function App() {
           accessibilityGranted={accessibilityGranted}
           onCheckForUpdate={checkForUpdate}
           updateStatus={updateStatus}
+          configureError={configureError}
         />
         )}
       </div>

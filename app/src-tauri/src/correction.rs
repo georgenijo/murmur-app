@@ -66,6 +66,30 @@ struct ExplicitAlias {
     written: String,
 }
 
+enum CorrectionSegment {
+    Mutable(String),
+    Protected(String),
+}
+
+/// Match one normalized lowercase alias at an original UTF-8 byte boundary.
+/// Lowercase expansion (for example `İ` -> `i` + combining dot) is consumed per
+/// source scalar, so the returned end always remains a valid source byte offset.
+fn explicit_alias_match_end(text: &str, start: usize, spoken: &[char]) -> Option<usize> {
+    let mut expected = 0usize;
+    for (offset, character) in text[start..].char_indices() {
+        for lowercase in character.to_lowercase() {
+            if spoken.get(expected) != Some(&lowercase) {
+                return None;
+            }
+            expected += 1;
+        }
+        if expected == spoken.len() {
+            return Some(start + offset + character.len_utf8());
+        }
+    }
+    None
+}
+
 /// A compiled, reusable correction matcher. Build once on settings-change, then
 /// call [`apply`](Self::apply) per transcription.
 pub struct CorrectionMatcher {
@@ -136,6 +160,18 @@ impl CorrectionMatcher {
                 })
             })
             .collect::<Vec<_>>();
+        // Canonical written forms share the protected rule set. This makes
+        // explicit precedence idempotent: a second application cannot feed a
+        // canonical such as "standard error" into the lower-priority builtin
+        // that would otherwise rewrite it to "stderr".
+        explicit_aliases.extend(pairs.iter().filter_map(|(_, written)| {
+            let spoken = normalize_alias(written);
+            let written = written.trim();
+            (!spoken.is_empty() && !written.is_empty()).then(|| ExplicitAlias {
+                spoken: spoken.chars().collect(),
+                written: written.to_string(),
+            })
+        }));
         explicit_aliases.sort_by(|left, right| {
             right
                 .spoken
@@ -212,48 +248,70 @@ impl CorrectionMatcher {
     /// Apply Tier 1 then (if enabled) Tier 2 to `text`, returning the corrected
     /// string. Hot path: two linear scans over a short transcript.
     pub fn apply(&self, text: &str) -> String {
-        let explicit = self.apply_explicit_aliases(text);
-        let t1 = self.apply_tier1(&explicit);
-        if self.fuzzy {
-            self.apply_tier2(&t1)
-        } else {
-            t1
-        }
-    }
-
-    fn apply_explicit_aliases(&self, text: &str) -> String {
-        if self.explicit_aliases.is_empty() {
-            return text.to_string();
-        }
-        let chars = text.chars().collect::<Vec<_>>();
-        let lower = text.to_lowercase().chars().collect::<Vec<_>>();
-        // Some Unicode case folds expand to multiple scalar values. Fail closed
-        // for those unusual inputs rather than risk corrupting byte/char offsets.
-        if chars.len() != lower.len() {
-            return text.to_string();
-        }
-
         let mut output = String::with_capacity(text.len());
-        let mut index = 0usize;
-        while index < chars.len() {
-            let matched = self.explicit_aliases.iter().find(|alias| {
-                let end = index + alias.spoken.len();
-                if end > lower.len() {
-                    return false;
+        for segment in self.apply_explicit_aliases(text) {
+            match segment {
+                CorrectionSegment::Protected(written) => output.push_str(&written),
+                CorrectionSegment::Mutable(text) => {
+                    let exact = self.apply_tier1(&text);
+                    if self.fuzzy {
+                        output.push_str(&self.apply_tier2(&exact));
+                    } else {
+                        output.push_str(&exact);
+                    }
                 }
-                let before_ok = index == 0 || !lower[index - 1].is_alphanumeric();
-                let after_ok = end == lower.len() || !lower[end].is_alphanumeric();
-                before_ok && after_ok && lower[index..end] == alias.spoken
-            });
-            if let Some(alias) = matched {
-                output.push_str(&alias.written);
-                index += alias.spoken.len();
-            } else {
-                output.push(chars[index]);
-                index += 1;
             }
         }
         output
+    }
+
+    fn apply_explicit_aliases(&self, text: &str) -> Vec<CorrectionSegment> {
+        if self.explicit_aliases.is_empty() {
+            return vec![CorrectionSegment::Mutable(text.to_string())];
+        }
+
+        let mut segments = Vec::new();
+        let mut mutable_start = 0usize;
+        let mut scan = 0usize;
+        while scan < text.len() {
+            let matched = self.explicit_aliases.iter().find_map(|alias| {
+                let before_ok = text[..scan]
+                    .chars()
+                    .next_back()
+                    .is_none_or(|character| !character.is_alphanumeric());
+                if !before_ok {
+                    return None;
+                }
+                let end = explicit_alias_match_end(text, scan, &alias.spoken)?;
+                let after_ok = text[end..]
+                    .chars()
+                    .next()
+                    .is_none_or(|character| !character.is_alphanumeric());
+                after_ok.then_some((alias, end))
+            });
+            if let Some((alias, end)) = matched {
+                if mutable_start < scan {
+                    segments.push(CorrectionSegment::Mutable(
+                        text[mutable_start..scan].to_string(),
+                    ));
+                }
+                segments.push(CorrectionSegment::Protected(alias.written.clone()));
+                scan = end;
+                mutable_start = end;
+            } else {
+                scan += text[scan..]
+                    .chars()
+                    .next()
+                    .expect("scan always points at a character boundary")
+                    .len_utf8();
+            }
+        }
+        if mutable_start < text.len() {
+            segments.push(CorrectionSegment::Mutable(
+                text[mutable_start..].to_string(),
+            ));
+        }
+        segments
     }
 
     /// Tier 1: single Aho-Corasick pass, replacing only word-boundary matches.
@@ -730,12 +788,28 @@ mod tests {
         assert_eq!(m.apply("TORI, tori!"), "Tauri, Tauri!");
         assert_eq!(m.apply("use tory command now"), "use Tauri CLI now");
         assert_eq!(m.apply("visit MUNCHEN."), "visit München.");
+        assert_eq!(m.apply("İstanbul and Tori"), "İstanbul and Tauri");
         assert_eq!(
             m.apply("editorial and territory"),
             "editorial and territory"
         );
         assert_eq!(m.apply("Tauri"), "Tauri");
         assert_eq!(m.apply(&m.apply("Tori")), "Tauri");
+    }
+
+    #[test]
+    fn explicit_alias_output_is_protected_from_lower_precedence_tiers() {
+        let pairs = vec![
+            ("std spoken".to_string(), "standard error".to_string()),
+            ("hook spoken".to_string(), "use effect".to_string()),
+        ];
+        let m = CorrectionMatcher::build(&["useEffect".to_string()], &pairs, true, true);
+        assert_eq!(
+            m.apply("std spoken then standard out"),
+            "standard error then stdout"
+        );
+        assert_eq!(m.apply("hook spoken then use effect"), "use effect then use effect");
+        assert_eq!(m.apply(&m.apply("std spoken")), "standard error");
     }
 
     #[test]

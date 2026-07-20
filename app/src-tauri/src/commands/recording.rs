@@ -1004,6 +1004,97 @@ fn parse_writing_style(value: Option<&serde_json::Value>) -> Option<crate::state
     }
 }
 
+struct StagedVocabularyConfiguration {
+    voice_commands: Option<Vec<crate::state::VoiceCommand>>,
+    entries: Option<Vec<crate::state::VocabularyEntry>>,
+}
+
+impl StagedVocabularyConfiguration {
+    fn commit(self, dictation: &mut crate::state::DictationState) {
+        if let Some(voice_commands) = self.voice_commands {
+            dictation.voice_command_pairs = voice_commands;
+        }
+        if let Some(entries) = self.entries {
+            dictation.custom_vocabulary =
+                crate::vocabulary_alias::prompt_terms(&entries, None, &dictation.app_profiles);
+            dictation.vocabulary_entries = entries;
+        }
+    }
+}
+
+fn legacy_vocabulary_entries(value: &str) -> Vec<crate::state::VocabularyEntry> {
+    parse_vocab_terms(value)
+        .into_iter()
+        .enumerate()
+        .map(|(index, written)| crate::state::VocabularyEntry {
+            id: format!("legacy-{index}"),
+            written,
+            aliases: Vec::new(),
+            enabled: true,
+            scope: crate::state::VocabularyScope::Global,
+        })
+        .collect()
+}
+
+fn stage_vocabulary_configuration(
+    options: &serde_json::Value,
+    dictation: &crate::state::DictationState,
+) -> Result<StagedVocabularyConfiguration, String> {
+    let voice_commands = options
+        .get("voiceCommands")
+        .and_then(serde_json::Value::as_array)
+        .map(|pairs| {
+            pairs
+                .iter()
+                .filter_map(|pair| {
+                    let phrase = pair
+                        .get("phrase")
+                        .and_then(serde_json::Value::as_str)?
+                        .trim()
+                        .to_string();
+                    if phrase.is_empty() {
+                        return None;
+                    }
+                    let replacement = pair
+                        .get("replacement")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    Some(crate::state::VoiceCommand {
+                        phrase,
+                        replacement,
+                    })
+                })
+                .collect::<Vec<_>>()
+        });
+    let entries = options
+        .get("vocabularyEntries")
+        .map(|value| {
+            serde_json::from_value::<Vec<crate::state::VocabularyEntry>>(value.clone())
+                .map_err(|_| "Vocabulary entries have an invalid shape.".to_string())
+        })
+        .transpose()?
+        .or_else(|| {
+            options
+                .get("customVocabulary")
+                .and_then(serde_json::Value::as_str)
+                .map(legacy_vocabulary_entries)
+        });
+
+    let effective_commands = voice_commands
+        .as_deref()
+        .unwrap_or(&dictation.voice_command_pairs);
+    let effective_entries = entries
+        .as_deref()
+        .unwrap_or(&dictation.vocabulary_entries);
+    crate::vocabulary_alias::validate_entries(effective_entries, effective_commands)?;
+
+    Ok(StagedVocabularyConfiguration {
+        voice_commands,
+        entries,
+    })
+}
+
 #[tauri::command]
 pub async fn configure_dictation(
     options: serde_json::Value,
@@ -1024,14 +1115,6 @@ pub async fn configure_dictation(
 
     let model = options.get("model").and_then(|v| v.as_str()).map(String::from);
     let language = options.get("language").and_then(|v| v.as_str()).map(String::from);
-    let requested_vocabulary_entries = options
-        .get("vocabularyEntries")
-        .map(|value| {
-            serde_json::from_value::<Vec<crate::state::VocabularyEntry>>(value.clone())
-                .map_err(|_| "Vocabulary entries have an invalid shape.".to_string())
-        })
-        .transpose()?;
-
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
     if model
         .as_deref()
@@ -1045,6 +1128,7 @@ pub async fn configure_dictation(
 
     let mut dictation = state.app_state.dictation.lock_or_recover();
     let backend_change_can_apply_now = dictation.status == DictationStatus::Idle;
+    let staged_vocabulary = stage_vocabulary_configuration(&options, &dictation)?;
 
     let mut model_change_guard = if model
         .as_deref()
@@ -1060,6 +1144,10 @@ pub async fn configure_dictation(
     } else {
         None
     };
+
+    // Command phrases and vocabulary aliases form one conflict domain. Commit
+    // them together only after the combined requested state has validated.
+    staged_vocabulary.commit(&mut dictation);
 
     let model_changed = if let Some(m) = model {
         if m != dictation.model_name {
@@ -1094,51 +1182,6 @@ pub async fn configure_dictation(
 
     if let Some(vc) = options.get("voiceCommandsEnabled").and_then(|v| v.as_bool()) {
         dictation.voice_commands_enabled = vc;
-    }
-
-    // User-defined voice commands: array of { phrase, replacement }. Entries with
-    // a blank phrase are skipped. Replaces the whole list when the key is present.
-    if let Some(pairs) = options.get("voiceCommands").and_then(|v| v.as_array()) {
-        dictation.voice_command_pairs = pairs
-            .iter()
-            .filter_map(|p| {
-                let phrase = p.get("phrase").and_then(|v| v.as_str())?.trim().to_string();
-                if phrase.is_empty() {
-                    return None;
-                }
-                let replacement = p
-                    .get("replacement")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                Some(crate::state::VoiceCommand {
-                    phrase,
-                    replacement,
-                })
-            })
-            .collect();
-    }
-
-    if let Some(entries) = requested_vocabulary_entries {
-        crate::vocabulary_alias::validate_entries(&entries, &dictation.voice_command_pairs)?;
-        dictation.custom_vocabulary =
-            crate::vocabulary_alias::prompt_terms(&entries, None, &dictation.app_profiles);
-        dictation.vocabulary_entries = entries;
-    } else if let Some(vocab) = options.get("customVocabulary").and_then(|v| v.as_str()) {
-        // Compatibility for a pre-#268 frontend payload. The structured client
-        // migrates this field before normal configuration.
-        dictation.custom_vocabulary = vocab.to_string();
-        dictation.vocabulary_entries = parse_vocab_terms(vocab)
-            .into_iter()
-            .enumerate()
-            .map(|(index, written)| crate::state::VocabularyEntry {
-                id: format!("legacy-{index}"),
-                written,
-                aliases: Vec::new(),
-                enabled: true,
-                scope: crate::state::VocabularyScope::Global,
-            })
-            .collect();
     }
 
     if let Some(save_transcript) = options.get("saveTranscript").and_then(|v| v.as_bool()) {
@@ -2473,6 +2516,44 @@ mod tests {
         ] {
             assert!(!rendered.contains(secret), "telemetry metadata leaked {secret}");
         }
+    }
+
+    #[test]
+    fn rejected_command_alias_conflict_leaves_prior_backend_state_unchanged() {
+        let mut dictation = crate::state::DictationState::default();
+        dictation.custom_vocabulary = "Tauri".to_string();
+        dictation.vocabulary_entries = vec![crate::state::VocabularyEntry {
+            id: "tauri".to_string(),
+            written: "Tauri".to_string(),
+            aliases: vec!["Tori".to_string()],
+            enabled: true,
+            scope: crate::state::VocabularyScope::Global,
+        }];
+        dictation.voice_command_pairs = vec![crate::state::VoiceCommand {
+            phrase: "ship it".to_string(),
+            replacement: "deploy".to_string(),
+        }];
+        let before = dictation.clone();
+        let options = serde_json::json!({
+            "voiceCommands": [{ "phrase": "Tori", "replacement": "override" }],
+            "vocabularyEntries": dictation.vocabulary_entries.clone(),
+        });
+
+        let result = stage_vocabulary_configuration(&options, &dictation)
+            .map(|staged| staged.commit(&mut dictation));
+
+        assert!(result.unwrap_err().contains("Voice Command"));
+        assert_eq!(dictation.custom_vocabulary, before.custom_vocabulary);
+        assert_eq!(dictation.vocabulary_entries, before.vocabulary_entries);
+        assert_eq!(dictation.voice_command_pairs.len(), 1);
+        assert_eq!(
+            dictation.voice_command_pairs[0].phrase,
+            before.voice_command_pairs[0].phrase
+        );
+        assert_eq!(
+            dictation.voice_command_pairs[0].replacement,
+            before.voice_command_pairs[0].replacement
+        );
     }
 
     #[test]
