@@ -13,9 +13,9 @@ Notch dimensions are detected via NSScreen APIs on macOS:
 
 Notch width is calculated as: `screen width - left auxiliary area - right auxiliary area`.
 
-Results are cached in `State.notch_info` (a `Mutex<Option<(f64, f64)>>`). The `get_notch_info` command returns the cached dimensions to the frontend.
+Results are cached in `State.notch_info` (a `Mutex<Option<(f64, f64)>>`). The `get_overlay_geometry` command derives an `OverlayGeometry` from the cached notch via `geometry_for()` and returns it to the frontend.
 
-**Fallback:** When no notch is detected (external monitor, older Mac), the overlay uses 200px wide by 37px tall as default dimensions.
+**Fallback:** When no notch is detected (external monitor, older Mac), `geometry_for()` substitutes a synthetic notch of `80×37`, producing a `200×37` overlay window.
 
 ## Window Configuration
 
@@ -39,17 +39,16 @@ Tauri's `focusable: false` configuration disables mouse events on macOS. The `sh
 
 ## Sizing
 
+Every overlay dimension comes from one source: `geometry_for(notch)` in `commands/overlay.rs`, which returns an `OverlayGeometry`. Rust owns all geometry numbers; the frontend only reads the struct (via `get_overlay_geometry` and the `overlay-geometry-changed` event) and never hardcodes pixels.
+
 The visible pill width adjusts based on recording state and hover:
 
-| State | Width | Notes |
-|-------|-------|-------|
-| Idle (no hover) | `notchWidth + 28` | Compact, shows only the mic icon |
-| Recording / Processing | `notchWidth + 120` | Uses both visible wings around the physical notch |
-| Hover-expanded (after 150ms dwell) | `notchWidth + 120` | Wide enough for the quick-settings dropdown |
+- **Idle (no hover):** `pillIdleW`, centered in the window by a `pillMarginIdle` left margin.
+- **Recording / Processing / hover-expanded:** `pillActiveW`, which fills the window (`pillMarginActive = 0`).
 
-The full overlay window width is `notchWidth + 120` (60px expansion per side), with the visible content area sized within that.
+The full overlay window is `windowW` wide and is horizontally centered at the top of the screen (y=0).
 
-Height matches the menu bar height from notch detection. Hover is the only dynamic height change and adds `EXPANDED_DROP` (44px) for the dropdown. The overlay is horizontally centered at the top of the screen (y=0).
+Height is `collapsedH` at rest. Hover is the only dynamic height change: the window grows to `expandedH`, where `expandedH = collapsedH + dropdownH`.
 
 Width transitions over 400ms and height over 360ms, both using the spring curve `cubic-bezier(0.34, 1.56, 0.64, 1)`.
 
@@ -134,9 +133,9 @@ When triggered, the observer:
 1. Re-detects notch dimensions via NSScreen APIs
 2. Updates the cached `State.notch_info`
 3. Repositions the overlay window
-4. Emits `notch-info-changed` event to the frontend with updated dimensions (or `null` if no notch)
+4. Emits `overlay-geometry-changed` to the frontend carrying a full `OverlayGeometry` (never null — `geometry_for()` always resolves, using the synthetic fallback notch when none is present)
 
-The frontend overlay listens for `notch-info-changed` and updates its internal `notchWidth` state accordingly.
+The frontend `useOverlayGeometry` hook listens for `overlay-geometry-changed` and updates its geometry state accordingly.
 
 The observer is intentionally leaked (`std::mem::forget`) for app-lifetime observation.
 
@@ -146,8 +145,10 @@ The observer is intentionally leaked (`std::mem::forget`) for app-lifetime obser
 |---------|-------------|
 | `show_overlay` | Positions, sizes, and shows the overlay window. Re-enables mouse events. |
 | `hide_overlay` | Hides the overlay window. Gracefully handles missing window. |
-| `set_overlay_expanded` | Adds or removes the hover dropdown height while keeping the window top anchored. |
-| `get_notch_info` | Returns cached `{ notch_width, notch_height }` or `null`. |
+| `set_overlay_expanded` | Switches between the collapsed and expanded frames while keeping the window top anchored. Sizes are derived from `geometry_for()`. |
+| `get_overlay_geometry` | Returns the current `OverlayGeometry` (never null) derived from the cached notch via `geometry_for()`. |
+
+`set_overlay_expanded` and `position_overlay_default` both size the window from `geometry_for()`, so they stay consistent.
 
 ## Events
 
@@ -155,13 +156,13 @@ The observer is intentionally leaked (`std::mem::forget`) for app-lifetime obser
 |-------|---------|-------------|
 | `recording-status-changed` | String | Drives visual state transitions |
 | `audio-level` | Number (RMS 0.0-1.0) | Real-time audio level for waveform |
-| `notch-info-changed` | `{ notch_width, notch_height }` or `null` | Display configuration changed |
+| `overlay-geometry-changed` | `OverlayGeometry` | Display configuration changed; carries the recomputed geometry (never null) |
 | `app-disabled-changed` | Boolean | Global-disable state changed (updates the top-bar mic + speaker-slash) |
 | `settings-changed` | (none) | Overlay-relevant settings changed in another window; listeners re-read localStorage |
 | `hotkey-tap-rejected` | `{ reason: "second_tap_expired", mode: "double_tap" \| "both" }` | Drives the opt-in amber timing-miss flash |
 | `open-settings` | (none) | Overlay gear asks the main window to open the Settings panel |
 
-The entire overlay surface is a Tauri drag region (`data-tauri-drag-region`), allowing the user to reposition it. Overlay position save/restore is currently disabled (TODO: re-enable after notch positioning is stable).
+Only the top bar is a Tauri drag region (`data-tauri-drag-region`); the dropdown controls remain clickable. Overlay position save/restore is currently disabled (TODO: re-enable after notch positioning is stable).
 
 ## Transparent window caveat
 

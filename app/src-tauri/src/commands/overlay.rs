@@ -3,18 +3,41 @@ use crate::{MutexExt, State};
 use tauri::Emitter;
 use tauri::Manager;
 
-#[cfg(target_os = "macos")]
-const NOTCH_EXPAND: f64 = 120.0; // 60px expansion room on each side
-#[cfg(target_os = "macos")]
-const FALLBACK_OVERLAY_W: f64 = 200.0;
-#[cfg(target_os = "macos")]
-const FALLBACK_OVERLAY_H: f64 = 37.0;
-#[cfg(target_os = "macos")]
-const EXPANDED_DROP: f64 = 44.0; // extra height for the hover dropdown row
-#[derive(serde::Serialize, Clone)]
-pub(crate) struct NotchInfo {
-    notch_width: f64,
-    notch_height: f64,
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct OverlayGeometry {
+    pub window_w: f64,
+    pub collapsed_h: f64,
+    pub expanded_h: f64,
+    pub pill_idle_w: f64,
+    pub pill_active_w: f64,
+    pub pill_margin_idle: f64,
+    pub pill_margin_active: f64,
+    pub dropdown_h: f64,
+}
+
+// Private geometry constants — the ONLY place these magic numbers live.
+const PILL_IDLE_PAD: f64 = 28.0;
+const WINDOW_EXPAND: f64 = 120.0; // active pill pad too (fills window)
+const DROPDOWN_H: f64 = 44.0;
+const FALLBACK_NOTCH_W: f64 = 80.0;
+const FALLBACK_NOTCH_H: f64 = 37.0;
+
+fn geometry_for(notch: Option<(f64, f64)>) -> OverlayGeometry {
+    let (notch_w, notch_h) = notch.unwrap_or((FALLBACK_NOTCH_W, FALLBACK_NOTCH_H));
+    let window_w = notch_w + WINDOW_EXPAND;
+    let pill_idle_w = notch_w + PILL_IDLE_PAD;
+    OverlayGeometry {
+        window_w,
+        collapsed_h: notch_h,
+        expanded_h: notch_h + DROPDOWN_H,
+        pill_idle_w,
+        pill_active_w: window_w,
+        pill_margin_idle: (window_w - pill_idle_w) / 2.0,
+        pill_margin_active: 0.0,
+        dropdown_h: DROPDOWN_H,
+    }
 }
 
 /// Detect notch width and configure the overlay as a notch-level window.
@@ -72,13 +95,7 @@ pub(crate) fn register_screen_change_observer(app_handle: tauri::AppHandle) {
             position_overlay_default(&overlay, notch);
         }
         // Notify frontend
-        let _ = handle.emit(
-            "notch-info-changed",
-            notch.map(|(w, h)| NotchInfo {
-                notch_width: w,
-                notch_height: h,
-            }),
-        );
+        let _ = handle.emit("overlay-geometry-changed", geometry_for(notch));
     });
 
     unsafe {
@@ -129,10 +146,9 @@ pub(crate) fn position_overlay_default(
     overlay: &tauri::WebviewWindow,
     notch_info: Option<(f64, f64)>,
 ) {
-    let overlay_w = notch_info
-        .map(|(w, _)| w + NOTCH_EXPAND)
-        .unwrap_or(FALLBACK_OVERLAY_W);
-    let overlay_h = notch_info.map(|(_, h)| h).unwrap_or(37.0);
+    let g = geometry_for(notch_info);
+    let overlay_w = g.window_w;
+    let overlay_h = g.collapsed_h;
     tracing::info!(target: "system", "position_overlay_default: notch_info={:?}, overlay_w={}, overlay_h={}", notch_info, overlay_w, overlay_h);
 
     // Resize window to match notch area
@@ -157,13 +173,10 @@ pub(crate) fn position_overlay_default(
     }
 }
 
-/// Return cached notch dimensions so the frontend can position content precisely.
+/// Return the current overlay geometry so the frontend can size the island.
 #[tauri::command]
-pub fn get_notch_info(state: tauri::State<'_, State>) -> Option<NotchInfo> {
-    state.notch_info.lock_or_recover().map(|(w, h)| NotchInfo {
-        notch_width: w,
-        notch_height: h,
-    })
+pub fn get_overlay_geometry(state: tauri::State<'_, State>) -> OverlayGeometry {
+    geometry_for(*state.notch_info.lock_or_recover())
 }
 
 /// Show the always-on-top overlay window (macOS notch overlay; no-op on Linux).
@@ -195,11 +208,11 @@ pub fn show_overlay(app: tauri::AppHandle, state: tauri::State<'_, State>) -> Re
 
 /// Resize the overlay window for the hover-expand dropdown.
 ///
-/// Grows the window height by `EXPANDED_DROP` when expanded so the dropdown row
-/// has room, and restores it to notch height when collapsed. Width is computed
-/// with the same formula as `position_overlay_default`, so the collapsed size
-/// matches what `show_overlay` set. Only the size changes — the window stays
-/// anchored at y=0, so the extra height grows downward.
+/// Grows the window height to `expanded_h` when expanded so the dropdown row
+/// has room, and restores it to `collapsed_h` when collapsed. All dimensions come
+/// from `geometry_for()`, the same source as `position_overlay_default`, so the
+/// collapsed size matches what `show_overlay` set. Only the size changes — the
+/// window stays anchored at y=0, so the extra height grows downward.
 ///
 /// We resize on hover rather than pre-allocating a tall window because a
 /// transparent overlay with cursor events enabled captures the mouse across its
@@ -221,14 +234,12 @@ pub fn set_overlay_expanded(
         let notch = *state.notch_info.lock_or_recover();
         match app.get_webview_window("overlay") {
             Some(overlay) => {
-                let w = notch
-                    .map(|(w, _)| w + NOTCH_EXPAND)
-                    .unwrap_or(FALLBACK_OVERLAY_W);
-                let base_h = notch.map(|(_, h)| h).unwrap_or(FALLBACK_OVERLAY_H);
+                let g = geometry_for(notch);
+                let w = g.window_w;
                 let h = if expanded {
-                    base_h + EXPANDED_DROP
+                    g.expanded_h
                 } else {
-                    base_h
+                    g.collapsed_h
                 };
                 overlay
                     .set_size(tauri::LogicalSize::new(w, h))
@@ -269,5 +280,62 @@ pub fn hide_overlay(app: tauri::AppHandle) -> Result<(), String> {
             tracing::warn!(target: "system", "hide_overlay: overlay window not found — skipping");
             Ok(())
         }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invariants() {
+        for g in [geometry_for(Some((185.0, 32.0))), geometry_for(None)] {
+            assert!(g.window_w >= g.pill_active_w + g.pill_margin_active);
+            assert!(g.window_w >= g.pill_idle_w + g.pill_margin_idle);
+            assert_eq!(g.expanded_h, g.collapsed_h + g.dropdown_h);
+            assert!(g.pill_active_w >= g.pill_idle_w);
+        }
+    }
+
+    #[test]
+    fn characterization() {
+        let g = geometry_for(Some((185.0, 32.0)));
+        assert_eq!(
+            (
+                g.window_w,
+                g.collapsed_h,
+                g.expanded_h,
+                g.pill_idle_w,
+                g.pill_active_w,
+                g.pill_margin_idle,
+                g.pill_margin_active,
+                g.dropdown_h,
+            ),
+            (305.0, 32.0, 76.0, 213.0, 305.0, 46.0, 0.0, 44.0)
+        );
+    }
+
+    #[test]
+    fn matches_fixture() {
+        #[derive(serde::Deserialize)]
+        struct F {
+            notched: OverlayGeometry,
+            fallback: OverlayGeometry,
+        }
+        let f: F = serde_json::from_str(include_str!(
+            "../../../src/components/overlay/overlay-geometry.fixture.json"
+        ))
+        .unwrap();
+        assert_eq!(geometry_for(Some((185.0, 32.0))), f.notched);
+        assert_eq!(geometry_for(None), f.fallback);
+    }
+
+    #[test]
+    fn rejects_unilateral_shape_drift() {
+        let mut value = serde_json::to_value(geometry_for(None)).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .insert("extraField".into(), serde_json::json!(1));
+        assert!(serde_json::from_value::<OverlayGeometry>(value).is_err());
     }
 }
