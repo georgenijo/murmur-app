@@ -10,6 +10,20 @@ For the hook that manages settings, see [hooks.md](hooks.md). For the backend co
 
 All settings are stored in `localStorage` under the key `dictation-settings` as a single JSON object.
 
+The native Settings window has six pages in this order:
+
+1. **Recording** — microphone, voice detection, recording trigger, and shortcut feedback
+2. **Transcription** — one model selector, language, model lifecycle/download state, and idle release
+3. **Text & Vocabulary** — punctuation, cleanup, names and terms, developer terms, corrections, structured writing, spoken commands, and personal knowledge
+4. **Delivery** — clipboard-first behavior, auto-paste, file output, and app overrides
+5. **Performance** — the directional local Performance Lab
+6. **General** — launch at login, setup, logs, statistics, updates, and version
+
+Changing pages only changes presentation. It does not rename, discard, or
+reinterpret persisted fields. A round-trip compatibility test serializes and
+reloads every current `Settings` field, including tri-state app overrides and
+IDE roots.
+
 **Source file:** `app/src/lib/settings.ts`
 
 **TypeScript interface:**
@@ -54,6 +68,9 @@ New Apple Silicon macOS installs default to Core ML; other frontend builds
 default to CPU Parakeet. Rust initializes `base.en` until the frontend applies
 the persisted/platform default. Runtime capabilities, install state, and
 lifecycle state are not settings and are never persisted to localStorage.
+Settings exposes this through the single model selector and marks the supported
+Core ML entry Recommended; there is no second accelerator switch with hidden
+model-selection side effects.
 
 ---
 
@@ -80,7 +97,7 @@ lifecycle state are not settings and are never persisted to localStorage.
 
 | Setting | Type | Default | Valid Options/Range | Description |
 |---------|------|---------|-------------------|-------------|
-| `autoPaste` | `boolean` | `false` | `true` / `false` | Whether to automatically paste transcribed text after copying it to the clipboard. Requires macOS Accessibility permission. Text is always copied to the clipboard regardless of this setting. |
+| `autoPaste` | `boolean` | `false` | `true` / `false` | Stored preference for automatically pasting transcribed text after clipboard copy. Requires macOS Accessibility permission. Text is always copied. When either file-output toggle is on, the UI shows auto-paste off/paused without overwriting this preference; it resumes when file output is off. |
 | `autoPasteDelayMs` | `number` | `50` | 10-500 ms, step 10 in UI | Delay in milliseconds before auto-paste fires, to allow window focus to settle. The backend clamps this value to the 10-500 range. The UI slider only appears when `autoPaste` is enabled. |
 | `saveTranscript` | `boolean` | `false` | `true` / `false` | When enabled, each live dictation's transcript is written to a sequentially numbered `.txt` (`murmur-0001`, `murmur-0002`, …) in the output folder. When `saveTranscript` or `saveAudio` is on, auto-paste is suppressed (clipboard copy still happens). |
 | `saveAudio` | `boolean` | `false` | `true` / `false` | When enabled, each live dictation's audio is written to a matching `.wav` (16kHz mono, 16-bit PCM) in the output folder. |

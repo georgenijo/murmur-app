@@ -90,7 +90,8 @@ Non-`NotFound` errors (process ran but exited non-zero, permission denied, etc.)
 | Clipboard copy | None |
 | Auto-paste | Accessibility |
 
-The settings panel shows accessibility permission status when auto-paste is enabled, with a "Grant" button that opens System Settings.
+Settings > Delivery shows accessibility permission status when effective
+auto-paste is enabled, with a "Grant" button that opens System Settings.
 
 ## Settings
 
@@ -101,7 +102,7 @@ Both are sent to the Rust backend via `configure_dictation` command.
 
 ## Save to File
 
-Live hotkey dictation can optionally persist its output to disk via two independent toggles in the Output settings section:
+Live hotkey dictation can optionally persist its output to disk via two independent toggles in Settings > Delivery:
 
 - `saveTranscript: boolean` — write each transcription to a sequentially numbered `.txt`.
 - `saveAudio: boolean` — write each recording to a matching `.wav` (16kHz mono, 16-bit PCM).
@@ -110,5 +111,9 @@ Live hotkey dictation can optionally persist its output to disk via two independ
 Writing happens in `file_output.rs`, called from `run_transcription_pipeline` after the cancellation checkpoints and before injection. The WAV is written from the original (pre-VAD) 16kHz samples; the `.txt` is only written when the transcript is non-empty. A short sequential base name (`murmur-0001`, `murmur-0002`, …) is shared by the pair. The next number is the highest existing `murmur-NNNN` in the folder plus one (older timestamped names are ignored when numbering).
 
 **Interaction with auto-paste:** when either toggle is on, the recording is treated as a "capture to file" action — the clipboard write still happens (clipboard-first is unconditional), but auto-paste is suppressed (`effective_auto_paste = auto_paste && !(save_transcript || save_audio)`). With both toggles off, behavior is unchanged. Write failures are non-fatal: they are logged and surfaced to the UI via the `file-output-failed` event (text remains in the clipboard).
+
+The UI mirrors this effective state without mutating the stored `autoPaste`
+preference: the switch appears off and paused while file output is active, and
+the saved preference resumes when both file toggles are off.
 
 **Known limitation:** recordings the VAD classifies as no-speech return early before the write step, so they save neither file.

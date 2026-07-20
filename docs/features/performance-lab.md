@@ -6,6 +6,11 @@ The Performance Lab compares installed transcription configurations on the
 current machine. It is available under **Settings > Performance** and runs
 entirely on device.
 
+The UI deliberately labels every run as a **directional local comparison**, not
+a universal model ranking. The bundled corpus is clean synthetic English speech
+and does not represent a user's voice, accent, microphone, room, or every
+dictation workload.
+
 Supported configurations are compatible model/backend pairs:
 
 | Model | Backend | Accelerator |
@@ -47,8 +52,8 @@ accuracy score.
 | Preset | Corpus | Measured runs per clip |
 | --- | --- | ---: |
 | Quick | Short and medium | 3 |
-| Standard | All four clips | 5 |
-| Thorough | All four clips | 10 |
+| Standard | Four original clips plus jargon, numbers, and disfluent stress fixtures (7 clips) | 5 |
+| Thorough | Standard plus extra-extra-long and fast fixtures (9 clips) | 10 |
 
 The bundled clips first pass through the same Silero VAD speech filter used by
 normal dictation at a fixed threshold, keeping runs comparable even when the
@@ -68,6 +73,16 @@ The report separates:
 - Duration-weighted corpus speed from each clip's median latency
 - Raw, normalized, and delivered WER across the corpus
 - Process memory increase observed at benchmark checkpoints
+- Catalog download size, kept separate from observed process memory
+
+New reports use report schema version 2 and record the environment (OS/version,
+architecture, hardware model/chip, and RAM when available), corpus fixture IDs
+and reference-word count, fixed VAD threshold, full-buffer final-after-stop
+execution path, default delivery transform profile, nearest-rank percentile
+method, model run order, and shared-initialization order. The metadata excludes
+hostname, serial number, paths, window titles, and other user content. Reports
+saved before this additive metadata remain readable and are identified in the UI
+as legacy saved reports.
 
 Recommendations remain explainable: **Fastest** has the strict lowest
 duration-weighted realtime factor, and **Accurate** has the lowest normalized
@@ -82,6 +97,12 @@ the complete metric table and transcript-level details. The latest ten reports
 stay in local storage and can be selected from the saved-run menu or copied as
 JSON. Benchmark audio and transcripts are bundled with Murmur; no audio or
 result is uploaded.
+
+P95 is nearest-rank over only 3, 5, or 10 measured warm samples per clip, so it
+is a coarse tail-latency signal. Cold model load excludes the one-time shared
+backend priming shown separately. Memory is a sequential process-RSS delta and
+can be affected by allocator retention from an earlier model; it is neither the
+catalog download size nor an isolated peak-memory measurement.
 
 ## Concurrency
 

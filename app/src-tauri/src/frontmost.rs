@@ -6,6 +6,97 @@
 //! is returned to the caller and becomes part of its immutable recording
 //! context; failures remain global-only and deny app-specific context reads.
 
+use serde::Serialize;
+
+const MAX_RUNNING_APPLICATIONS: usize = 64;
+
+/// Privacy-bounded data exposed to the Settings picker. Process identifiers,
+/// paths, launch arguments, window titles, and document state never cross the
+/// command boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunningApplication {
+    pub bundle_id: String,
+    pub name: String,
+}
+
+#[derive(Debug)]
+struct RunningApplicationCandidate {
+    bundle_id: Option<String>,
+    name: Option<String>,
+    regular: bool,
+    current_process: bool,
+}
+
+fn bounded_running_applications(
+    candidates: impl IntoIterator<Item = RunningApplicationCandidate>,
+) -> Vec<RunningApplication> {
+    let mut applications = candidates
+        .into_iter()
+        .filter(|candidate| candidate.regular && !candidate.current_process)
+        .filter_map(|candidate| {
+            let bundle_id = candidate.bundle_id?.trim().to_string();
+            if bundle_id.is_empty() {
+                return None;
+            }
+            let name = candidate.name.unwrap_or_default().trim().to_string();
+            Some(RunningApplication {
+                name: if name.is_empty() {
+                    bundle_id.clone()
+                } else {
+                    name
+                },
+                bundle_id,
+            })
+        })
+        .collect::<Vec<_>>();
+    applications.sort_by(|left, right| {
+        left.name
+            .to_lowercase()
+            .cmp(&right.name.to_lowercase())
+            .then_with(|| {
+                left.bundle_id
+                    .to_lowercase()
+                    .cmp(&right.bundle_id.to_lowercase())
+            })
+    });
+    let mut seen = std::collections::HashSet::new();
+    applications.retain(|application| seen.insert(application.bundle_id.to_lowercase()));
+    applications.truncate(MAX_RUNNING_APPLICATIONS);
+    applications
+}
+
+/// Return a bounded, ephemeral list for Settings. The caller owns the only
+/// copy; this module does not cache or log app names or bundle identifiers.
+#[tauri::command]
+#[cfg(target_os = "macos")]
+pub fn list_running_applications() -> Vec<RunningApplication> {
+    use objc2_app_kit::{NSApplicationActivationPolicy, NSWorkspace};
+
+    let current_pid = std::process::id() as i32;
+    let candidates = NSWorkspace::sharedWorkspace()
+        .runningApplications()
+        .iter()
+        .map(|application| RunningApplicationCandidate {
+            bundle_id: application
+                .bundleIdentifier()
+                .map(|value| value.to_string()),
+            name: application.localizedName().map(|value| value.to_string()),
+            regular: application.activationPolicy() == NSApplicationActivationPolicy::Regular,
+            current_process: application.processIdentifier() == current_pid,
+        })
+        .collect::<Vec<_>>();
+    bounded_running_applications(candidates)
+}
+
+/// Linux and other non-macOS builds retain the same command surface without
+/// probing platform process state.
+#[tauri::command]
+#[cfg(not(target_os = "macos"))]
+pub fn list_running_applications() -> Vec<RunningApplication> {
+    Vec::new()
+}
+
 #[cfg(any(target_os = "macos", test))]
 use std::time::Duration;
 
@@ -153,6 +244,84 @@ mod tests {
     use super::*;
     use std::cell::Cell;
     use std::collections::VecDeque;
+
+    fn candidate(id: &str, name: &str) -> RunningApplicationCandidate {
+        RunningApplicationCandidate {
+            bundle_id: Some(id.to_string()),
+            name: Some(name.to_string()),
+            regular: true,
+            current_process: false,
+        }
+    }
+
+    #[test]
+    fn running_app_picker_is_sorted_deduplicated_and_private_by_default() {
+        let mut candidates = vec![
+            candidate("com.example.zulu", "Zulu"),
+            candidate("com.example.alpha", "Alpha"),
+        ];
+        candidates.push(candidate("COM.EXAMPLE.03", "Duplicate"));
+        candidates.push(candidate("com.example.03", "Elsewhere in sort order"));
+        candidates.push(RunningApplicationCandidate {
+            bundle_id: Some("com.example.menu".into()),
+            name: Some("Menu helper".into()),
+            regular: false,
+            current_process: false,
+        });
+        candidates.push(RunningApplicationCandidate {
+            bundle_id: Some("com.example.murmur".into()),
+            name: Some("Murmur".into()),
+            regular: true,
+            current_process: true,
+        });
+
+        let applications = bounded_running_applications(candidates);
+
+        assert_eq!(applications.len(), 3);
+        assert_eq!(applications[0].name, "Alpha");
+        assert_eq!(
+            applications
+                .iter()
+                .filter(|app| app.bundle_id.eq_ignore_ascii_case("com.example.03"))
+                .count(),
+            1
+        );
+        assert!(applications
+            .iter()
+            .all(|app| app.bundle_id != "com.example.menu"));
+        assert!(applications
+            .iter()
+            .all(|app| app.bundle_id != "com.example.murmur"));
+    }
+
+    #[test]
+    fn running_app_picker_is_bounded() {
+        let candidates = (0..80)
+            .map(|index| {
+                candidate(
+                    &format!("com.example.{index:02}"),
+                    &format!("App {index:02}"),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            bounded_running_applications(candidates).len(),
+            MAX_RUNNING_APPLICATIONS
+        );
+    }
+
+    #[test]
+    fn running_app_payload_contains_only_picker_fields() {
+        let payload = serde_json::to_value(RunningApplication {
+            bundle_id: "com.apple.Terminal".into(),
+            name: "Terminal".into(),
+        })
+        .expect("serialize picker payload");
+
+        assert_eq!(payload.as_object().expect("object").len(), 2);
+        assert_eq!(payload["bundleId"], "com.apple.Terminal");
+        assert_eq!(payload["name"], "Terminal");
+    }
 
     #[test]
     fn immediate_native_success_skips_retry_and_fallback() {
