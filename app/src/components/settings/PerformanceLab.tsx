@@ -465,6 +465,33 @@ export function PerformanceLab({ status, settings, onUpdateSettings }: {
         )}
       </section>
 
+      <section className="border-t border-outline-variant/30 dark:border-outline-variant/30 pt-5">
+        <h3 className="text-sm font-semibold text-on-surface">Report export</h3>
+        <p className="mt-0.5 text-xs text-on-surface-variant dark:text-on-surface-variant">
+          Where saved reports are written, and whether every run is saved automatically. Configure before running.
+        </p>
+        <div className="mt-3 rounded-lg border border-outline-variant/30 bg-surface-container-low p-3 text-[11px] leading-relaxed text-on-surface-variant">
+          <p className="font-medium text-on-surface">Output folder</p>
+          <p className="mt-1 break-all rounded-md border border-outline-variant/30 bg-surface-container-lowest px-2.5 py-1.5 text-on-surface">
+            {settings.benchmarkOutputDir || 'Documents/Murmur (default)'}
+          </p>
+          <div className="mt-2 flex flex-wrap gap-3">
+            <button type="button" onClick={() => void chooseFolder()} className="font-medium text-on-surface-variant underline hover:text-primary">Choose Folder</button>
+            {settings.benchmarkOutputDir && <button type="button" onClick={() => onUpdateSettings({ benchmarkOutputDir: '' })} className="font-medium text-on-surface-variant underline hover:text-primary">Reset to default</button>}
+            <button type="button" onClick={() => void revealFolder()} className="font-medium text-on-surface-variant underline hover:text-primary">Reveal in Finder</button>
+          </div>
+          <label className="mt-3 flex items-center gap-2 text-on-surface">
+            <input
+              type="checkbox"
+              checked={settings.benchmarkAutoSave}
+              onChange={() => onUpdateSettings({ benchmarkAutoSave: !settings.benchmarkAutoSave })}
+              className="h-3.5 w-3.5 accent-primary"
+            />
+            <span>Auto-save every run to this folder (survives the {MAX_SAVED_BENCHMARK_REPORTS}-run in-app limit)</span>
+          </label>
+        </div>
+      </section>
+
       {report && !running && (
         <section className="space-y-4 border-t border-outline-variant/30 dark:border-outline-variant/30 pt-5">
           <div className="flex items-center justify-between gap-3">
@@ -499,17 +526,6 @@ export function PerformanceLab({ status, settings, onUpdateSettings }: {
               >
                 {saveState === 'saved' ? 'Saved' : saveState === 'saving' ? 'Saving…' : 'Save to file'}
               </button>
-              <button
-                type="button"
-                onClick={revealFolder}
-                title="Open output folder"
-                aria-label="Open output folder"
-                className="p-1.5 border border-outline-variant/30 dark:border-outline-variant/30 rounded-md text-on-surface-variant hover:bg-surface-container-low dark:hover:bg-primary/80"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
-                  <path d="M3.75 3A1.75 1.75 0 0 0 2 4.75v10.5c0 .966.784 1.75 1.75 1.75h12.5A1.75 1.75 0 0 0 18 15.25v-8.5A1.75 1.75 0 0 0 16.25 5h-6.19l-1.2-1.44A1.75 1.75 0 0 0 7.52 3H3.75Z" />
-                </svg>
-              </button>
             </div>
           </div>
 
@@ -523,26 +539,6 @@ export function PerformanceLab({ status, settings, onUpdateSettings }: {
             <p className="mt-1">{report.configuration?.executionPath ?? 'Full-buffer final transcription after recording stops'}; VAD threshold {report.configuration?.vadThreshold ?? 0.5}; {report.configuration?.transcriptTransformProfile ?? 'default local delivery pipeline'}.</p>
             {report.configuration && <p className="mt-1">Model run order: {report.configuration.modelRunOrder.join(' → ') || 'none'}. Shared-init order: {report.configuration.sharedInitOrder.join(' → ') || 'none'}.</p>}
             <p className="mt-1">{report.corpus?.limitation ?? 'Directional local comparison only; the synthetic corpus is not representative of natural speakers or recording environments.'}</p>
-          </div>
-
-          <div className="rounded-lg border border-outline-variant/30 bg-surface-container-low p-3 text-[11px] leading-relaxed text-on-surface-variant">
-            <p className="font-medium text-on-surface">Report export folder</p>
-            <p className="mt-1 break-all rounded-md border border-outline-variant/30 bg-surface-container-lowest px-2.5 py-1.5 text-on-surface">
-              {settings.benchmarkOutputDir || 'Documents/Murmur (default)'}
-            </p>
-            <div className="mt-2 flex gap-3">
-              <button type="button" onClick={() => void chooseFolder()} className="font-medium text-on-surface-variant underline hover:text-primary">Choose Folder</button>
-              {settings.benchmarkOutputDir && <button type="button" onClick={() => onUpdateSettings({ benchmarkOutputDir: '' })} className="font-medium text-on-surface-variant underline hover:text-primary">Reset to default</button>}
-            </div>
-            <label className="mt-3 flex items-center gap-2 text-on-surface">
-              <input
-                type="checkbox"
-                checked={settings.benchmarkAutoSave}
-                onChange={() => onUpdateSettings({ benchmarkAutoSave: !settings.benchmarkAutoSave })}
-                className="h-3.5 w-3.5 accent-primary"
-              />
-              <span>Auto-save every run to this folder (survives the {MAX_SAVED_BENCHMARK_REPORTS}-run in-app limit)</span>
-            </label>
           </div>
 
           <div className="flex items-center gap-2">
