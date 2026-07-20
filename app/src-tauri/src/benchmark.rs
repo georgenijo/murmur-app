@@ -1309,6 +1309,7 @@ mod tests {
             warm_p95_ms: Some(warm_median_ms),
             realtime_factor: Some(realtime_factor),
             word_error_rate: Some(wer),
+            normalized_word_error_rate: Some(wer),
             memory_delta_mb,
             fixtures: Vec::new(),
             error: None,
