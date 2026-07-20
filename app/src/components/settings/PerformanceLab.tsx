@@ -512,7 +512,7 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
           </div>
 
           <p className="text-[11px] leading-relaxed text-stone-500 dark:text-stone-400">
-            WER counts changed, missing, and extra words against the known transcript. Balanced means the fastest model within 2 accuracy points of the best result.
+            WER counts changed, missing, and extra words against the known transcript. Fastest uses duration-weighted speed. Balanced favors lower memory among models within 2 accuracy points and 10% of the fastest eligible speed.
           </p>
 
           <div className="space-y-2">

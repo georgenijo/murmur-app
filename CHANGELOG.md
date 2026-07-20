@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+- Performance Lab recommendations now rank Fastest by duration-weighted corpus speed and keep Balanced from favoring a memory-heavy model when lower-memory alternatives have comparable speed and accuracy (#272).
+
 ## [0.18.1] - 2026-07-20
 
 ### Changed

@@ -59,9 +59,11 @@ The report separates:
 - Weighted WER across the corpus
 - Process memory increase observed at benchmark checkpoints
 
-Recommendations remain explainable: **Fastest** has the lowest warm median,
-**Accurate** has the lowest WER, and **Balanced** is the fastest model within two
-percentage points of the best WER.
+Recommendations remain explainable: **Fastest** has the lowest duration-weighted
+realtime factor, and **Accurate** has the lowest WER. **Balanced** first keeps
+models within two percentage points of the best WER, treats realtime factors
+within 10% of the fastest eligible model as equivalent, and prefers the lowest
+observed memory increase within that speed band.
 
 The dashboard plots median/p95 latency and word accuracy separately, followed by
 the complete metric table and transcript-level details. The latest ten reports

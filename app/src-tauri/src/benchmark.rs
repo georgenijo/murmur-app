@@ -13,6 +13,8 @@ use std::time::Instant;
 use tauri::Emitter;
 
 const PARAKEET_CPU_MODEL: &str = "parakeet-tdt-0.6b-v2-fp16";
+const BALANCED_ACCURACY_WINDOW: f64 = 0.02;
+const BALANCED_SPEED_TIE_RATIO: f64 = 1.10;
 
 struct Fixture {
     id: &'static str,
@@ -467,8 +469,12 @@ fn recommendations(results: &[ModelResult]) -> Recommendations {
         .collect::<Vec<_>>();
     let fastest = successful
         .iter()
-        .filter_map(|result| result.warm_median_ms.map(|value| (*result, value)))
-        .min_by(|left, right| left.1.total_cmp(&right.1))
+        .filter_map(|result| result.realtime_factor.map(|value| (*result, value)))
+        .min_by(|left, right| {
+            left.1
+                .total_cmp(&right.1)
+                .then_with(|| left.0.model_name.cmp(&right.0.model_name))
+        })
         .map(|(result, _)| result.model_name.clone());
     let most_accurate = successful
         .iter()
@@ -480,11 +486,31 @@ fn recommendations(results: &[ModelResult]) -> Recommendations {
         .filter_map(|result| result.word_error_rate)
         .min_by(f64::total_cmp);
     let balanced = best_wer.and_then(|best| {
-        successful
+        let candidates = successful
             .iter()
-            .filter(|result| result.word_error_rate.is_some_and(|wer| wer <= best + 0.02))
-            .filter_map(|result| result.warm_median_ms.map(|value| (*result, value)))
-            .min_by(|left, right| left.1.total_cmp(&right.1))
+            .filter(|result| {
+                result
+                    .word_error_rate
+                    .is_some_and(|wer| wer <= best + BALANCED_ACCURACY_WINDOW)
+            })
+            .filter_map(|result| result.realtime_factor.map(|value| (*result, value)))
+            .collect::<Vec<_>>();
+        let fastest_realtime_factor = candidates
+            .iter()
+            .map(|(_, realtime_factor)| *realtime_factor)
+            .min_by(f64::total_cmp)?;
+        candidates
+            .into_iter()
+            .filter(|(_, realtime_factor)| {
+                *realtime_factor <= fastest_realtime_factor * BALANCED_SPEED_TIE_RATIO
+            })
+            .min_by(|left, right| {
+                left.0
+                    .memory_delta_mb
+                    .cmp(&right.0.memory_delta_mb)
+                    .then_with(|| left.1.total_cmp(&right.1))
+                    .then_with(|| left.0.model_name.cmp(&right.0.model_name))
+            })
             .map(|(result, _)| result.model_name.clone())
     });
     Recommendations {
@@ -718,6 +744,30 @@ pub fn run(
 mod tests {
     use super::*;
 
+    fn model_result(
+        name: &str,
+        warm_median_ms: f64,
+        realtime_factor: f64,
+        word_error_rate: f64,
+        memory_delta_mb: u64,
+    ) -> ModelResult {
+        ModelResult {
+            model_name: name.to_string(),
+            label: name.to_string(),
+            backend: String::new(),
+            accelerator: String::new(),
+            model_load_ms: Some(1.0),
+            first_inference_ms: Some(1.0),
+            warm_median_ms: Some(warm_median_ms),
+            warm_p95_ms: Some(warm_median_ms),
+            realtime_factor: Some(realtime_factor),
+            word_error_rate: Some(word_error_rate),
+            memory_delta_mb,
+            fixtures: Vec::new(),
+            error: None,
+        }
+    }
+
     #[test]
     fn word_error_rate_counts_substitutions_insertions_and_deletions() {
         assert_eq!(word_errors("one two three", "one four three"), (1, 3));
@@ -766,29 +816,70 @@ mod tests {
     }
 
     #[test]
-    fn balanced_prefers_fastest_model_within_two_accuracy_points() {
-        let result = |name: &str, latency: f64, wer: f64| ModelResult {
-            model_name: name.to_string(),
-            label: name.to_string(),
-            backend: String::new(),
-            accelerator: String::new(),
-            model_load_ms: Some(1.0),
-            first_inference_ms: Some(1.0),
-            warm_median_ms: Some(latency),
-            warm_p95_ms: Some(latency),
-            realtime_factor: Some(latency / 1000.0),
-            word_error_rate: Some(wer),
-            memory_delta_mb: 0,
-            fixtures: Vec::new(),
-            error: None,
-        };
+    fn fastest_uses_realtime_factor_instead_of_pooled_latency() {
         let recommendations = recommendations(&[
-            result("accurate", 300.0, 0.05),
-            result("balanced", 100.0, 0.06),
-            result("fast", 50.0, 0.10),
+            model_result("tiny.en", 79.1, 0.0086, 0.08, 46),
+            model_result("parakeet-v3", 108.6, 0.0080, 0.05, 545),
         ]);
-        assert_eq!(recommendations.fastest.as_deref(), Some("fast"));
+
+        assert_eq!(recommendations.fastest.as_deref(), Some("parakeet-v3"));
+    }
+
+    #[test]
+    fn balanced_prefers_lower_memory_within_ten_percent_speed_band() {
+        let recommendations = recommendations(&[
+            model_result("accurate", 200.0, 0.0120, 0.05, 500),
+            model_result("high-memory", 80.0, 0.0080, 0.06, 2_925),
+            model_result("balanced", 87.0, 0.0087, 0.07, 545),
+            model_result("fast-outside-window", 50.0, 0.0050, 0.10, 46),
+        ]);
+
+        assert_eq!(
+            recommendations.fastest.as_deref(),
+            Some("fast-outside-window")
+        );
         assert_eq!(recommendations.most_accurate.as_deref(), Some("accurate"));
         assert_eq!(recommendations.balanced.as_deref(), Some("balanced"));
+    }
+
+    #[test]
+    fn balanced_keeps_a_clear_speed_winner_despite_higher_memory() {
+        let recommendations = recommendations(&[
+            model_result("accurate", 200.0, 0.0200, 0.05, 500),
+            model_result("clear-speed-winner", 80.0, 0.0080, 0.06, 2_925),
+            model_result("low-memory", 90.0, 0.0090, 0.06, 46),
+        ]);
+
+        assert_eq!(
+            recommendations.balanced.as_deref(),
+            Some("clear-speed-winner")
+        );
+    }
+
+    #[test]
+    fn recommendations_ignore_failed_and_incomplete_results() {
+        let valid = model_result("valid", 100.0, 0.0100, 0.05, 100);
+        let mut failed = model_result("failed", 10.0, 0.0010, 0.01, 1);
+        failed.error = Some("inference failed".to_string());
+        let mut incomplete = model_result("incomplete", 20.0, 0.0020, 0.02, 2);
+        incomplete.realtime_factor = None;
+        incomplete.word_error_rate = None;
+
+        let recommendations = recommendations(&[failed, incomplete, valid]);
+
+        assert_eq!(recommendations.fastest.as_deref(), Some("valid"));
+        assert_eq!(recommendations.most_accurate.as_deref(), Some("valid"));
+        assert_eq!(recommendations.balanced.as_deref(), Some("valid"));
+    }
+
+    #[test]
+    fn speed_and_memory_ties_use_model_name_deterministically() {
+        let recommendations = recommendations(&[
+            model_result("zeta", 100.0, 0.0100, 0.05, 100),
+            model_result("alpha", 100.0, 0.0100, 0.05, 100),
+        ]);
+
+        assert_eq!(recommendations.fastest.as_deref(), Some("alpha"));
+        assert_eq!(recommendations.balanced.as_deref(), Some("alpha"));
     }
 }
