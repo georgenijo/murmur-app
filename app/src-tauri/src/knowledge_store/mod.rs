@@ -433,6 +433,45 @@ mod tests {
     }
 
     #[test]
+    fn legacy_voice_command_migration_never_silently_drops_existing_pairs() {
+        let (temp, store) = store();
+        store
+            .upsert_manual(replacement("seed", "record", KnowledgeScope::Global))
+            .unwrap();
+        let export = temp.path().join("collision.json");
+        store.export_to_file(&export).unwrap();
+        let mut bundle: KnowledgeExport =
+            serde_json::from_slice(&std::fs::read(&export).unwrap()).unwrap();
+        bundle.entries[0].id = "legacy-voice-command-00000000".to_string();
+        std::fs::write(&export, serde_json::to_vec_pretty(&bundle).unwrap()).unwrap();
+        let revision = store.status().store_revision;
+        store.delete_all(revision).unwrap();
+        store.import_from_file(&export).unwrap();
+
+        let long_replacement = "r".repeat(4_097);
+        let long_phrase = "p".repeat(257);
+        let legacy = vec![
+            ("collision command".to_string(), long_replacement.clone()),
+            (long_phrase.clone(), "still migrated".to_string()),
+        ];
+        assert_eq!(store.migrate_legacy_voice_commands(&legacy).unwrap(), 2);
+        let entries = store.all_voice_commands().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_ne!(entries[0].id, "legacy-voice-command-00000000");
+        assert!(matches!(
+            &entries[0].payload,
+            KnowledgePayload::ReplacementRule { source, replacement }
+                if source == "collision command" && replacement == &long_replacement
+        ));
+        assert!(matches!(
+            &entries[1].payload,
+            KnowledgePayload::ReplacementRule { source, replacement }
+                if source == &long_phrase && replacement == "still migrated"
+        ));
+        assert_eq!(store.status().record_count, 3);
+    }
+
+    #[test]
     fn migrates_v1_with_backup_and_recovers_only_inside_store_root() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("knowledge");

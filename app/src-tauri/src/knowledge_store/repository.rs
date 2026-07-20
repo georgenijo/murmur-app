@@ -391,35 +391,34 @@ impl KnowledgeRepository {
         if migrated != 0 {
             return Ok(0);
         }
-        if record_count_tx(&transaction)?.saturating_add(commands.len() as u64) > MAX_ENTRIES {
-            return Err(
-                "Migrating Voice Commands would exceed the 10,000-record knowledge limit."
-                    .to_string(),
-            );
-        }
         let timestamp = now_ms();
         let mut inserted = 0_u64;
         for (index, (phrase, replacement)) in commands.iter().enumerate() {
             let phrase = phrase.trim();
-            if phrase.is_empty() || phrase.chars().count() > MAX_TRIGGER_CHARS {
+            if phrase.is_empty() {
                 continue;
             }
-            if replacement.chars().count() > MAX_REPLACEMENT_CHARS {
-                continue;
+            // Legacy settings never imposed the repository editor's newer
+            // trigger/content limits. Grandfather those local pairs so an
+            // upgrade cannot silently change behavior, while keeping the
+            // stricter bounds for every newly created or imported command.
+            let base_id = format!("legacy-voice-command-{index:08}");
+            let mut id = base_id.clone();
+            let mut collision = 0_u32;
+            while entry_by_id_tx(&transaction, &id)?.is_some() {
+                collision = collision.saturating_add(1);
+                id = format!("{base_id}-migrated-{collision:04}");
             }
-            let id = format!("legacy-voice-command-{index:08}");
             let enabled = !crate::voice_commands::is_builtin_phrase(&normalize_key(phrase));
-            let changed = transaction
+            transaction
                 .execute(
-                    "INSERT OR IGNORE INTO knowledge_entries(id, kind, trigger_text, normalized_trigger, content_text, aliases_json, enabled, scope_kind, app_bundle_id, project_root, provenance, created_at_ms, updated_at_ms, revision, voice_command_kind, voice_command_clipboard) \
+                    "INSERT INTO knowledge_entries(id, kind, trigger_text, normalized_trigger, content_text, aliases_json, enabled, scope_kind, app_bundle_id, project_root, provenance, created_at_ms, updated_at_ms, revision, voice_command_kind, voice_command_clipboard) \
                      VALUES (?, 'replacement_rule', ?, ?, ?, '[]', ?, 'global', NULL, NULL, 'manual', ?, ?, 1, 'text_replacement', 0)",
                     params![id, phrase, normalize_key(phrase), replacement, enabled, timestamp, timestamp],
                 )
                 .map_err(db_error)?;
-            if changed > 0 {
-                refresh_fts(&transaction, &id)?;
-                inserted += 1;
-            }
+            refresh_fts(&transaction, &id)?;
+            inserted += 1;
         }
         transaction
             .execute(

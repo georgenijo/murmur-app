@@ -71,12 +71,23 @@ pub(crate) fn validate_snippet_template(
     allow_clipboard_read: bool,
 ) -> Result<(), String> {
     let mut remaining = template;
-    while let Some(start) = remaining.find("{{") {
+    loop {
+        let Some(start) = remaining.find("{{") else {
+            if remaining.contains("}}") {
+                return Err(
+                    "Snippet variable has closing braces without an opening pair.".to_string(),
+                );
+            }
+            break;
+        };
+        if remaining[..start].contains("}}") {
+            return Err("Snippet variable has closing braces without an opening pair.".to_string());
+        }
         let after = &remaining[start + 2..];
         let end = after
             .find("}}")
             .ok_or_else(|| "Snippet variable is missing its closing braces.".to_string())?;
-        let variable = after[..end].trim();
+        let variable = &after[..end];
         if !matches!(variable, "date" | "time" | "clipboard") {
             return Err(format!(
                 "Unsupported snippet variable '{{{{{variable}}}}}'. Use date, time, or clipboard."
@@ -89,9 +100,6 @@ pub(crate) fn validate_snippet_template(
             );
         }
         remaining = &after[end + 2..];
-    }
-    if remaining.contains("}}") {
-        return Err("Snippet variable has closing braces without an opening pair.".to_string());
     }
     Ok(())
 }
@@ -855,5 +863,8 @@ mod tests {
         assert!(validate_snippet_template("{{clipboard}}", false).is_err());
         assert!(validate_snippet_template("{{clipboard}}", true).is_ok());
         assert!(validate_snippet_template("{{date", false).is_err());
+        assert!(validate_snippet_template("before }} {{date}}", false).is_err());
+        assert!(validate_snippet_template("{{date}} after }}", false).is_err());
+        assert!(validate_snippet_template("{{ date }}", false).is_err());
     }
 }

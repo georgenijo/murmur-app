@@ -818,6 +818,7 @@ fn default_delivery_context() -> TranscriptContext {
         correction_matcher: None,
         ide_context_index: None,
         vocabulary_version: 0,
+        voice_commands: None,
         session_overrides: crate::dictation_context::SessionOverrides::default(),
     });
     TranscriptContext {
