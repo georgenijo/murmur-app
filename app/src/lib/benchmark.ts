@@ -18,7 +18,7 @@ export interface BenchmarkProgress {
   modelName: string;
   modelLabel: string;
   fixture: string | null;
-  phase: 'loading' | 'warming' | 'measuring' | 'complete';
+  phase: 'priming' | 'loading' | 'warming' | 'measuring' | 'complete';
 }
 
 export interface BenchmarkActivity {
@@ -55,6 +55,10 @@ export interface BenchmarkModelResult {
   realtimeFactor: number | null;
   wordErrorRate: number | null;
   normalizedWordErrorRate: number | null;
+  /** Process-RSS delta for this model's run. Models are benchmarked
+   * sequentially in one process, so allocator retention from an earlier
+   * model can inflate a later model's baseline — treat as a rough signal,
+   * not an isolated per-model measurement. */
   memoryDeltaMb: number;
   fixtures: BenchmarkFixtureResult[];
   error: string | null;
@@ -66,6 +70,11 @@ export interface BenchmarkReport {
   platform: string;
   preset: BenchmarkPreset;
   iterations: number;
+  /** Duration (ms) of the untimed warm-up pass run once before any
+   * per-model timing, absorbing one-time shared backend init (Metal shader
+   * compilation, ANE compile cache, etc). Represents real first-launch
+   * latency but is not a per-model attribute. */
+  sharedInitMs: number;
   results: BenchmarkModelResult[];
   recommendations: {
     fastest: string | null;
@@ -139,6 +148,7 @@ function isBenchmarkReport(value: unknown): value is BenchmarkReport {
     && typeof value.platform === 'string'
     && (value.preset === 'quick' || value.preset === 'standard' || value.preset === 'thorough')
     && isNumber(value.iterations)
+    && isNumber(value.sharedInitMs)
     && Array.isArray(value.results)
     && value.results.every(isModelResult)
     && isNullableString(value.recommendations.fastest)

@@ -415,6 +415,12 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
               <p className="mt-0.5 text-[11px] text-stone-500 dark:text-stone-400">
                 {report.platform} / Murmur v{report.appVersion} / {report.preset}
               </p>
+              <p
+                className="mt-0.5 text-[11px] text-stone-500 dark:text-stone-400"
+                title="One-time shared backend init (Metal shader compilation, ANE compile cache, etc.) measured once before per-model timing, so it doesn't skew any single model's cold-load number."
+              >
+                Shared init (one-time): {milliseconds(report.sharedInitMs)}
+              </p>
             </div>
             <button
               type="button"
@@ -528,7 +534,7 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
                   <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] text-stone-500 dark:text-stone-400">
                     <span>Cold load</span><span className="text-right tabular-nums">{milliseconds(result.modelLoadMs)}</span>
                     <span>First inference</span><span className="text-right tabular-nums">{milliseconds(result.firstInferenceMs)}</span>
-                    <span>Memory increase</span><span className="text-right tabular-nums">{result.memoryDeltaMb} MB</span>
+                    <span title="Process RSS delta. Models run sequentially in one process, so allocator retention from an earlier model can inflate a later model's baseline — treat as a rough signal, not an isolated measurement.">Memory increase</span><span className="text-right tabular-nums">{result.memoryDeltaMb} MB</span>
                   </div>
                   {result.fixtures.map((fixture) => (
                     <div key={fixture.fixtureId} className="text-[11px] leading-relaxed">
