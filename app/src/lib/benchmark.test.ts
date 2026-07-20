@@ -3,6 +3,7 @@ import {
   BenchmarkReport,
   MAX_SAVED_BENCHMARK_REPORTS,
   addBenchmarkReport,
+  benchmarkReportFileName,
   clearBenchmarkReports,
   loadBenchmarkReports,
   saveBenchmarkReports,
@@ -64,6 +65,18 @@ describe('addBenchmarkReport', () => {
     expect(result).toHaveLength(MAX_SAVED_BENCHMARK_REPORTS);
     expect(result[0]).toBe(newest);
     expect(result).not.toContain(existing[0]);
+  });
+});
+
+describe('benchmarkReportFileName', () => {
+  it('uses the chip label and sanitizes the timestamp for versioned reports', () => {
+    const name = benchmarkReportFileName(versionedReport('2026-07-20T14:30:00.000Z'));
+    expect(name).toBe('benchmark-0-16-0-Apple-M2-2026-07-20T14-30-00-000Z.json');
+  });
+
+  it('falls back to the platform for legacy reports without environment', () => {
+    expect(benchmarkReportFileName(report('2026-07-16T09:00:00Z')))
+      .toBe('benchmark-0-16-0-macos-aarch64-2026-07-16T09-00-00Z.json');
   });
 });
 

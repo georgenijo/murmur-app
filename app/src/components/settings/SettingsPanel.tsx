@@ -469,7 +469,7 @@ export function SettingsPanel({
           </SettingsSection>
 
           <SettingsSection pageId="performance" activePage={activeCat} title="Performance" subtitle="Directional local model comparisons">
-            <PerformanceLab status={status} />
+            <PerformanceLab status={status} settings={settings} onUpdateSettings={onUpdateSettings} />
           </SettingsSection>
 
           <SettingsSection pageId="general" activePage={activeCat} title="General" subtitle="Startup, support, updates, and app information">

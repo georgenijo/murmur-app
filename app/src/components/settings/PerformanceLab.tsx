@@ -1,18 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
+import { open } from '@tauri-apps/plugin-dialog';
 import {
   BenchmarkModel,
   BenchmarkModelResult,
   BenchmarkPreset,
   BenchmarkProgress,
   BenchmarkReport,
+  MAX_SAVED_BENCHMARK_REPORTS,
   addBenchmarkReport,
   cancelBenchmark,
   clearBenchmarkReports,
   getBenchmarkActivity,
   getBenchmarkModels,
   loadBenchmarkReports,
+  openBenchmarkOutputFolder,
   runBenchmark,
+  saveBenchmarkReport,
   saveBenchmarkReports,
 } from '../../lib/benchmark';
 import { downloadModel } from '../../lib/dictation';
@@ -21,6 +25,7 @@ import {
   modelDownloadPercent,
   type ModelDownloadProgress,
 } from '../../lib/modelDownload';
+import type { Settings } from '../../lib/settings';
 import type { DictationStatus } from '../../lib/types';
 
 const PRESETS: { id: BenchmarkPreset; label: string; detail: string }[] = [
@@ -125,7 +130,11 @@ function AccuracyChart({ report }: { report: BenchmarkReport }) {
   );
 }
 
-export function PerformanceLab({ status }: { status: DictationStatus }) {
+export function PerformanceLab({ status, settings, onUpdateSettings }: {
+  status: DictationStatus;
+  settings: Settings;
+  onUpdateSettings: (updates: Partial<Settings>) => void;
+}) {
   const [models, setModels] = useState<BenchmarkModel[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
   const [preset, setPreset] = useState<BenchmarkPreset>('standard');
@@ -140,6 +149,7 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved'>('idle');
   const [downloading, setDownloading] = useState<string | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<ModelDownloadProgress | null>(null);
   const [fileTranscribing, setFileTranscribing] = useState(false);
@@ -237,6 +247,14 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
         const reports = saveBenchmarkReports(addBenchmarkReport(current.reports, next));
         return { reports, selectedAt: next.createdAt };
       });
+      if (settings.benchmarkAutoSave) {
+        // Best-effort: a write failure must not fail the completed run.
+        try {
+          await saveBenchmarkReport(next, settings.benchmarkOutputDir);
+        } catch (reason) {
+          if (mounted.current) setError(`Could not auto-save report: ${String(reason)}`);
+        }
+      }
     } catch (reason) {
       if (mounted.current && String(reason) !== 'Benchmark cancelled') setError(String(reason));
     } finally {
@@ -278,6 +296,42 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
       window.setTimeout(() => setCopied(false), 1600);
     } catch (reason) {
       setError(`Could not copy report: ${String(reason)}`);
+    }
+  };
+
+  const saveReport = async () => {
+    if (!report) return;
+    setError(null);
+    setSaveState('saving');
+    try {
+      await saveBenchmarkReport(report, settings.benchmarkOutputDir);
+      if (!mounted.current) return;
+      setSaveState('saved');
+      window.setTimeout(() => {
+        if (mounted.current) setSaveState('idle');
+      }, 1600);
+    } catch (reason) {
+      if (mounted.current) {
+        setSaveState('idle');
+        setError(`Could not save report: ${String(reason)}`);
+      }
+    }
+  };
+
+  const revealFolder = async () => {
+    try {
+      await openBenchmarkOutputFolder(settings.benchmarkOutputDir);
+    } catch (reason) {
+      setError(`Could not open output folder: ${String(reason)}`);
+    }
+  };
+
+  const chooseFolder = async () => {
+    try {
+      const selected = await open({ directory: true, multiple: false });
+      if (typeof selected === 'string') onUpdateSettings({ benchmarkOutputDir: selected });
+    } catch {
+      // Cancellation leaves the stored folder untouched.
     }
   };
 
@@ -411,6 +465,33 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
         )}
       </section>
 
+      <section className="border-t border-outline-variant/30 dark:border-outline-variant/30 pt-5">
+        <h3 className="text-sm font-semibold text-on-surface">Report export</h3>
+        <p className="mt-0.5 text-xs text-on-surface-variant dark:text-on-surface-variant">
+          Where saved reports are written, and whether every run is saved automatically. Configure before running.
+        </p>
+        <div className="mt-3 rounded-lg border border-outline-variant/30 bg-surface-container-low p-3 text-[11px] leading-relaxed text-on-surface-variant">
+          <p className="font-medium text-on-surface">Output folder</p>
+          <p className="mt-1 break-all rounded-md border border-outline-variant/30 bg-surface-container-lowest px-2.5 py-1.5 text-on-surface">
+            {settings.benchmarkOutputDir || 'Documents/Murmur (default)'}
+          </p>
+          <div className="mt-2 flex flex-wrap gap-3">
+            <button type="button" onClick={() => void chooseFolder()} className="font-medium text-on-surface-variant underline hover:text-primary">Choose Folder</button>
+            {settings.benchmarkOutputDir && <button type="button" onClick={() => onUpdateSettings({ benchmarkOutputDir: '' })} className="font-medium text-on-surface-variant underline hover:text-primary">Reset to default</button>}
+            <button type="button" onClick={() => void revealFolder()} className="font-medium text-on-surface-variant underline hover:text-primary">Reveal in Finder</button>
+          </div>
+          <label className="mt-3 flex items-center gap-2 text-on-surface">
+            <input
+              type="checkbox"
+              checked={settings.benchmarkAutoSave}
+              onChange={() => onUpdateSettings({ benchmarkAutoSave: !settings.benchmarkAutoSave })}
+              className="h-3.5 w-3.5 accent-primary"
+            />
+            <span>Auto-save every run to this folder (survives the {MAX_SAVED_BENCHMARK_REPORTS}-run in-app limit)</span>
+          </label>
+        </div>
+      </section>
+
       {report && !running && (
         <section className="space-y-4 border-t border-outline-variant/30 dark:border-outline-variant/30 pt-5">
           <div className="flex items-center justify-between gap-3">
@@ -429,13 +510,23 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
                 Shared init (one-time): {milliseconds(report.sharedInitMs)}
               </p>
             </div>
-            <button
-              type="button"
-              onClick={copyReport}
-              className="shrink-0 px-2.5 py-1.5 text-xs font-medium border border-outline-variant/30 dark:border-outline-variant/30 rounded-md text-on-surface dark:text-on-surface-variant hover:bg-surface-container-low dark:hover:bg-primary/80"
-            >
-              {copied ? 'Copied' : 'Copy JSON'}
-            </button>
+            <div className="flex shrink-0 items-center gap-2">
+              <button
+                type="button"
+                onClick={copyReport}
+                className="px-2.5 py-1.5 text-xs font-medium border border-outline-variant/30 dark:border-outline-variant/30 rounded-md text-on-surface dark:text-on-surface-variant hover:bg-surface-container-low dark:hover:bg-primary/80"
+              >
+                {copied ? 'Copied' : 'Copy JSON'}
+              </button>
+              <button
+                type="button"
+                onClick={saveReport}
+                disabled={saveState === 'saving'}
+                className="px-2.5 py-1.5 text-xs font-medium border border-outline-variant/30 dark:border-outline-variant/30 rounded-md text-on-surface dark:text-on-surface-variant hover:bg-surface-container-low dark:hover:bg-primary/80 disabled:opacity-50"
+              >
+                {saveState === 'saved' ? 'Saved' : saveState === 'saving' ? 'Saving…' : 'Save to file'}
+              </button>
+            </div>
           </div>
 
           <div className="rounded-lg border border-outline-variant/30 bg-surface-container-low p-3 text-[11px] leading-relaxed text-on-surface-variant">
