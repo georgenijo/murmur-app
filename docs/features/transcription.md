@@ -51,6 +51,7 @@ The active backend is stored as `Mutex<Box<dyn TranscriptionBackend>>` in `AppSt
 - If the user changes models in settings, the context is dropped and re-created on next transcription
 - Model files are single `.bin` files (e.g., `ggml-base.en.bin`)
 - Model search paths are documented in `docs/onboarding.md`
+- `single_segment` decoding is duration-conditional (`should_use_single_segment`, 12s threshold): short audio stays single-segment, but longer batch/file transcriptions use multi-segment decoding so an early end-of-text token from the model can't force-skip the rest of the audio and silently truncate the tail
 
 All supported backends follow the same final-after-stop interaction: recording only captures audio; stopping runs one authoritative full-buffer transcription; the transformed final result is then delivered exactly once. Murmur does not display or emit provisional transcript text while recording or processing.
 
