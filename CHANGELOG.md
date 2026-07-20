@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Long Whisper batch and file transcriptions now retain timestamp-based continuation, preventing an early end-of-text token from silently dropping the remaining audio while preserving single-segment decoding for short streaming windows (#269).
+
 ## [0.18.1] - 2026-07-20
 
 ### Changed
