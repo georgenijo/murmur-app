@@ -14,6 +14,11 @@ use tauri::Emitter;
 
 const PARAKEET_CPU_MODEL: &str = "parakeet-tdt-0.6b-v2-fp16";
 
+/// Whisper model names ordered smallest-to-largest. Used to pick the
+/// cheapest selected whisper model for the untimed shared-init warm-up.
+const WHISPER_SIZE_ORDER: &[&str] =
+    &["tiny.en", "base.en", "small.en", "medium.en", "large-v3-turbo"];
+
 struct Fixture {
     id: &'static str,
     label: &'static str,
@@ -127,6 +132,10 @@ pub struct ModelResult {
     pub warm_p95_ms: Option<f64>,
     pub realtime_factor: Option<f64>,
     pub word_error_rate: Option<f64>,
+    /// Process-RSS delta measured around this model's run. Models are
+    /// benchmarked sequentially in one process, so allocator retention from
+    /// an earlier model can inflate a later model's baseline; treat this as
+    /// a rough signal, not an isolated per-model measurement.
     pub memory_delta_mb: u64,
     pub fixtures: Vec<FixtureResult>,
     pub error: Option<String>,
@@ -148,6 +157,13 @@ pub struct BenchmarkReport {
     pub platform: String,
     pub preset: BenchmarkPreset,
     pub iterations: usize,
+    /// Duration of the untimed warm-up pass run once before any per-model
+    /// timing, in milliseconds. This absorbs one-time shared backend init
+    /// (Metal shader compilation, ANE compile cache, etc.) that would
+    /// otherwise be misattributed to whichever model happens to load first.
+    /// It IS representative of real first-launch latency, just not a
+    /// per-model attribute.
+    pub shared_init_ms: f64,
     pub results: Vec<ModelResult>,
     pub recommendations: Recommendations,
 }
@@ -460,6 +476,34 @@ fn prepare_fixtures(
         .collect()
 }
 
+/// Decide which model(s) to load-and-drop during the untimed shared-init
+/// warm-up pass. Picks the smallest selected whisper model (whisper models
+/// share one Metal/shader init cost, so only one needs warming) plus one
+/// entry per non-whisper backend family that is selected, since each of
+/// those (Core ML ANE compile cache, sherpa-onnx) has its own separate
+/// shared init cost. Returns an empty plan when nothing is selected.
+fn warmup_plan(selected: &[BenchmarkModel]) -> Vec<String> {
+    let mut plan = Vec::new();
+
+    let whisper_pick = WHISPER_SIZE_ORDER.iter().find_map(|candidate| {
+        selected
+            .iter()
+            .find(|model| model.model_name == *candidate)
+            .map(|model| model.model_name.clone())
+    });
+    if let Some(model_name) = whisper_pick {
+        plan.push(model_name);
+    }
+
+    for model_name in [COREML_MODEL_NAME, PARAKEET_CPU_MODEL] {
+        if selected.iter().any(|model| model.model_name == model_name) {
+            plan.push(model_name.to_string());
+        }
+    }
+
+    plan
+}
+
 fn recommendations(results: &[ModelResult]) -> Recommendations {
     let successful = results
         .iter()
@@ -529,9 +573,35 @@ pub fn run(
     let fixtures = prepare_fixtures(request.preset.fixtures(), 0.5)?;
     let iterations = request.preset.iterations();
     let steps_per_model = 1 + fixtures.len() * (1 + iterations);
-    let total_steps = selected.len() * steps_per_model;
+    let warmup_targets = warmup_plan(&selected);
+    let total_steps = selected.len() * steps_per_model + warmup_targets.len();
     let mut completed = 0;
     let mut results = Vec::with_capacity(selected.len());
+
+    // Untimed warm-up pass: absorb one-time shared backend init (Metal
+    // shader compilation, ANE compile cache, ...) before any per-model
+    // timing starts, so it isn't misattributed to whichever model happens
+    // to load first. See BenchmarkReport::shared_init_ms.
+    let mut shared_init_ms = 0.0;
+    for target in &warmup_targets {
+        if coordinator.is_cancelled() {
+            return Err("Benchmark cancelled".to_string());
+        }
+        if let Some(model) = selected
+            .iter()
+            .find(|candidate| candidate.model_name == *target)
+        {
+            emit_progress(app, completed, total_steps, model, None, "priming");
+        }
+        if let Ok(mut backend) = backend_for(target) {
+            let warmup_started = Instant::now();
+            if backend.load_model(target).is_ok() {
+                shared_init_ms += warmup_started.elapsed().as_secs_f64() * 1000.0;
+            }
+            backend.reset();
+        }
+        completed += 1;
+    }
 
     for model in selected {
         let model_start = completed;
@@ -709,6 +779,7 @@ pub fn run(
         platform: format!("{} {}", std::env::consts::OS, std::env::consts::ARCH),
         preset: request.preset,
         iterations,
+        shared_init_ms,
         results,
         recommendations,
     })
@@ -763,6 +834,48 @@ mod tests {
         assert!(!coordinator.try_start_shared_backend_change());
         coordinator.finish();
         assert!(coordinator.try_start_shared_backend_change());
+    }
+
+    fn model(name: &'static str) -> BenchmarkModel {
+        benchmark_models()
+            .into_iter()
+            .find(|model| model.model_name == name)
+            .unwrap_or_else(|| panic!("{name} missing from benchmark catalog"))
+    }
+
+    #[test]
+    fn warmup_plan_is_empty_when_nothing_is_selected() {
+        assert!(warmup_plan(&[]).is_empty());
+    }
+
+    #[test]
+    fn warmup_plan_picks_the_smallest_selected_whisper_model() {
+        let selected = [model("medium.en"), model("tiny.en"), model("base.en")];
+        assert_eq!(warmup_plan(&selected), vec!["tiny.en".to_string()]);
+    }
+
+    #[test]
+    fn warmup_plan_skips_whisper_when_no_whisper_model_is_selected() {
+        let selected = [model(PARAKEET_CPU_MODEL)];
+        assert_eq!(warmup_plan(&selected), vec![PARAKEET_CPU_MODEL.to_string()]);
+    }
+
+    #[test]
+    fn warmup_plan_warms_each_selected_backend_family_once() {
+        let selected = [
+            model("base.en"),
+            model("large-v3-turbo"),
+            model(PARAKEET_CPU_MODEL),
+            model(COREML_MODEL_NAME),
+        ];
+        assert_eq!(
+            warmup_plan(&selected),
+            vec![
+                "base.en".to_string(),
+                COREML_MODEL_NAME.to_string(),
+                PARAKEET_CPU_MODEL.to_string(),
+            ]
+        );
     }
 
     #[test]
