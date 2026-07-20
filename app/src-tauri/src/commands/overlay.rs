@@ -28,23 +28,34 @@ pub struct AppliedSurface {
 }
 
 // Private geometry constants — the ONLY place these magic numbers live.
-const PILL_IDLE_PAD: f64 = 28.0;
-const WINDOW_EXPAND: f64 = 120.0; // active pill pad too (fills window)
+//
+// The island is ONE constant width in every state: `window_w == pill_idle_w ==
+// pill_active_w == notch_w + 2*WING`, with both margins 0. Window and island are
+// the same box, so there is no horizontal hit-area mismatch and nothing animates
+// its width — expansion is height-only.
+//
+// WING is the visible strip on each side of the physical notch and must fit its
+// content clear of the notch:
+//   - left wing: 10px pill padding + 12px status icon = 22px used
+//   - right wing: 10px pill padding + 23px 7-bar waveform (7*2px + 6*1.5px) = 33px used
+// WING = 36 covers the wider (right) side with 3px of slack; anything wider than a
+// wing (recording timer, "Tap missed" label) renders below notch height instead.
+const WING: f64 = 36.0;
 const DROPDOWN_H: f64 = 44.0;
 const FALLBACK_NOTCH_W: f64 = 80.0;
 const FALLBACK_NOTCH_H: f64 = 37.0;
 
 fn geometry_for(notch: Option<(f64, f64)>) -> OverlayGeometry {
     let (notch_w, notch_h) = notch.unwrap_or((FALLBACK_NOTCH_W, FALLBACK_NOTCH_H));
-    let window_w = notch_w + WINDOW_EXPAND;
-    let pill_idle_w = notch_w + PILL_IDLE_PAD;
+    let window_w = notch_w + 2.0 * WING;
     OverlayGeometry {
         window_w,
         collapsed_h: notch_h,
         expanded_h: notch_h + DROPDOWN_H,
-        pill_idle_w,
+        // Idle and active widths are identical: the island never changes width.
+        pill_idle_w: window_w,
         pill_active_w: window_w,
-        pill_margin_idle: (window_w - pill_idle_w) / 2.0,
+        pill_margin_idle: 0.0,
         pill_margin_active: 0.0,
         dropdown_h: DROPDOWN_H,
     }
@@ -339,7 +350,7 @@ mod tests {
                 g.pill_margin_active,
                 g.dropdown_h,
             ),
-            (305.0, 32.0, 76.0, 213.0, 305.0, 46.0, 0.0, 44.0)
+            (257.0, 32.0, 76.0, 257.0, 257.0, 0.0, 0.0, 44.0)
         );
     }
 
@@ -374,14 +385,14 @@ mod tests {
         assert_eq!(
             applied_surface_for(&notched, false),
             AppliedSurface {
-                window_w: 305.0,
+                window_w: 257.0,
                 window_h: 32.0,
             }
         );
         assert_eq!(
             applied_surface_for(&notched, true),
             AppliedSurface {
-                window_w: 305.0,
+                window_w: 257.0,
                 window_h: 76.0,
             }
         );
@@ -390,14 +401,14 @@ mod tests {
         assert_eq!(
             applied_surface_for(&fallback, false),
             AppliedSurface {
-                window_w: 200.0,
+                window_w: 152.0,
                 window_h: 37.0,
             }
         );
         assert_eq!(
             applied_surface_for(&fallback, true),
             AppliedSurface {
-                window_w: 200.0,
+                window_w: 152.0,
                 window_h: 81.0,
             }
         );

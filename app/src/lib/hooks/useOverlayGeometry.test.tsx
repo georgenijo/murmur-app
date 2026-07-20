@@ -25,23 +25,23 @@ vi.mock('../log', () => ({
 import { useOverlayGeometry } from './useOverlayGeometry';
 
 const notched: OverlayGeometry = {
-  windowW: 305,
+  windowW: 257,
   collapsedH: 32,
   expandedH: 76,
-  pillIdleW: 213,
-  pillActiveW: 305,
-  pillMarginIdle: 46,
+  pillIdleW: 257,
+  pillActiveW: 257,
+  pillMarginIdle: 0,
   pillMarginActive: 0,
   dropdownH: 44,
 };
 
 const fallback: OverlayGeometry = {
-  windowW: 200,
+  windowW: 152,
   collapsedH: 37,
   expandedH: 81,
-  pillIdleW: 108,
-  pillActiveW: 200,
-  pillMarginIdle: 46,
+  pillIdleW: 152,
+  pillActiveW: 152,
+  pillMarginIdle: 0,
   pillMarginActive: 0,
   dropdownH: 44,
 };

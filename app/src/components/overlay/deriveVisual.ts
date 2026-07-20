@@ -16,12 +16,14 @@ export type OverlayIndicator =
 export interface OverlayVisual {
   /** Which icon/badge the top-bar left slot renders. */
   indicator: OverlayIndicator;
-  /** Right side shows the "Tap missed" label instead of the waveform. */
+  /**
+   * Hotkey-miss flash is active: the amber border glow lights up and the
+   * "Tap missed" label shows in the dropdown row (below notch height — it is
+   * too wide for a wing). The `!` badge itself is carried by `indicator`.
+   */
   showTapMissedLabel: boolean;
   /** Waveform bars are visible (opacity 1) vs. hidden (opacity 0). */
   waveformVisible: boolean;
-  /** Pill is at its active (expanded) width/margin rather than idle. */
-  isActive: boolean;
 }
 
 /**
@@ -58,6 +60,5 @@ export function deriveVisual(
     indicator,
     showTapMissedLabel: showHotkeyMiss,
     waveformVisible: status === 'recording',
-    isActive: status === 'recording' || status === 'processing' || showCancelled || showHotkeyMiss,
   };
 }
