@@ -16,6 +16,7 @@ mod frontmost;
 mod injector;
 mod ide_context;
 mod keyboard;
+mod knowledge_store;
 mod partial_transcript;
 mod platform;
 mod resource_monitor;
@@ -78,6 +79,7 @@ impl<T> MutexExt<T> for Mutex<T> {
 pub(crate) struct State {
     pub(crate) app_state: AppState,
     pub(crate) benchmark: std::sync::Arc<benchmark::BenchmarkCoordinator>,
+    pub(crate) knowledge: knowledge_store::KnowledgeStore,
     /// Cached notch dimensions (notch_width, menu_bar_height) from setup (main thread).
     pub(crate) notch_info: Mutex<Option<(f64, f64)>>,
 }
@@ -132,6 +134,7 @@ pub fn run() {
         .manage(State {
             app_state: AppState::default(),
             benchmark: std::sync::Arc::new(benchmark::BenchmarkCoordinator::new()),
+            knowledge: knowledge_store::KnowledgeStore::default(),
             notch_info: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
@@ -167,6 +170,18 @@ pub fn run() {
             commands::keyboard::set_keyboard_recording,
             commands::keyboard::set_app_disabled,
             commands::keyboard::get_app_disabled,
+            commands::knowledge::get_knowledge_store_status,
+            commands::knowledge::retry_knowledge_store,
+            commands::knowledge::list_knowledge,
+            commands::knowledge::get_knowledge,
+            commands::knowledge::upsert_knowledge,
+            commands::knowledge::set_knowledge_enabled,
+            commands::knowledge::delete_knowledge,
+            commands::knowledge::resolve_knowledge,
+            commands::knowledge::export_knowledge_to_file,
+            commands::knowledge::inspect_knowledge_import,
+            commands::knowledge::import_knowledge_from_file,
+            commands::knowledge::delete_all_knowledge,
             commands::logging::get_log_contents,
             commands::logging::clear_logs,
             commands::logging::log_frontend,
@@ -201,6 +216,16 @@ pub fn run() {
         })
         .setup(|app| {
             telemetry::init(app.handle().clone());
+
+            let knowledge_root = app.path().app_data_dir()?.join("knowledge");
+            let knowledge_status = app.state::<State>().knowledge.initialize(knowledge_root);
+            tracing::info!(
+                target: "system",
+                availability = ?knowledge_status.availability,
+                schema_version = knowledge_status.schema_version,
+                record_count = knowledge_status.record_count,
+                "personal knowledge store initialized"
+            );
 
             tracing::info!(target: "system", "app setup — Murmur v{}", env!("CARGO_PKG_VERSION"));
 

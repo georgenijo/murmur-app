@@ -8,31 +8,13 @@ use whisper_rs::{
 
 static INIT_LOGGING: Once = Once::new();
 
+/// Short streaming windows benefit from a single untimestamped segment, while
+/// longer batch decodes need Whisper's timestamp-based continuation after an
+/// early end-of-text token.
+const SINGLE_SEGMENT_MAX_SAMPLES: usize = 12 * super::WHISPER_SAMPLE_RATE as usize;
+
 /// Relative path under the platform data directory for app models.
 const APP_MODELS_REL: &[&str] = &["local-dictation", "models"];
-
-/// Above this many samples, whisper.cpp's `single_segment` mode is unsafe:
-/// small models can emit an early end-of-text token roughly 24s into a 28s
-/// window, and `single_segment` force-skips the *entire* 30s decode window
-/// on early EOT (discarding the unread tail) instead of resuming decode from
-/// the last emitted timestamp. 12s gives comfortable headroom under the
-/// ~24s failure point observed in production while covering every
-/// streaming window (10s) with margin to spare.
-///
-/// Streaming's incremental windows ([`super::chunking::WINDOW_SAMPLES`], 10s)
-/// stay under this threshold and keep `single_segment = true`, which is
-/// correct and desired there: each window is short enough that early EOT
-/// isn't observed in practice, and single-segment output avoids spurious
-/// segment splits within a short utterance. Longer batch/file transcriptions
-/// cross the threshold and get multi-segment decoding so the tail isn't
-/// silently dropped.
-const SINGLE_SEGMENT_MAX_SECONDS: usize = 12;
-
-/// Decide whether whisper should be constrained to a single output segment
-/// for a given sample count. See [`SINGLE_SEGMENT_MAX_SECONDS`] for why.
-fn should_use_single_segment(sample_count: usize) -> bool {
-    sample_count <= SINGLE_SEGMENT_MAX_SECONDS * super::WHISPER_SAMPLE_RATE as usize
-}
 
 /// Suppress whisper.cpp verbose logging by installing a trampoline that routes to Rust's log crate
 /// (which we don't configure, so logs go nowhere).
@@ -107,6 +89,80 @@ impl WhisperBackend {
     pub fn new() -> Self {
         Self::default()
     }
+
+    fn transcribe_with_single_segment(
+        &mut self,
+        samples: &[f32],
+        language: &str,
+        initial_prompt: Option<&str>,
+        smart_punctuation: bool,
+        single_segment: bool,
+    ) -> Result<String, String> {
+        let state = self
+            .state
+            .as_mut()
+            .ok_or_else(|| "Whisper state not initialized. Call load_model() first.".to_string())?;
+        tracing::info!(target: "pipeline", "whisper: reusing cached state for transcription");
+
+        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+        params.set_language(whisper_language_param(language));
+        params.set_print_special(false);
+        params.set_print_progress(false);
+        params.set_print_realtime(false);
+        params.set_print_timestamps(false);
+        params.set_suppress_blank(true);
+        params.set_single_segment(single_segment);
+        if let Some(prompt) = initial_prompt {
+            params.set_initial_prompt(prompt);
+        }
+        params.set_debug_mode(false);
+
+        state
+            .full(params, samples)
+            .map_err(|e| format!("Transcription failed: {}", e))?;
+
+        let num_segments = state.full_n_segments();
+
+        let mut text = String::new();
+        for i in 0..num_segments {
+            let segment = state
+                .get_segment(i)
+                .ok_or_else(|| format!("Failed to get segment {}", i))?;
+            let segment_text = segment
+                .to_str()
+                .map_err(|e| format!("Failed to get text for segment {}: {}", i, e))?;
+            append_segment(&mut text, segment_text);
+        }
+
+        let trimmed = text.trim().to_string();
+        if smart_punctuation {
+            Ok(trimmed)
+        } else {
+            Ok(strip_punctuation(&trimmed))
+        }
+    }
+}
+
+fn should_use_single_segment(sample_count: usize) -> bool {
+    sample_count <= SINGLE_SEGMENT_MAX_SAMPLES
+}
+
+/// Append a whisper segment's text to the accumulated transcript, inserting a
+/// separating space only when neither side already has whitespace at the
+/// join. Whisper.cpp segments *usually* carry their own leading space (it's
+/// part of the BPE token), which is why the single-segment path historically
+/// got away with a bare `push_str`. Multi-segment decoding (see
+/// [`should_use_single_segment`]) makes the join point observable more often,
+/// so this guards against words gluing together across a segment boundary
+/// (e.g. "...dictating" + "The next..." => "...dictatingThe next...").
+fn append_segment(text: &mut String, segment_text: &str) {
+    let needs_space = !text.is_empty()
+        && !text.ends_with(char::is_whitespace)
+        && !segment_text.starts_with(char::is_whitespace);
+    if needs_space {
+        text.push(' ');
+    }
+    text.push_str(segment_text);
 }
 
 impl Default for WhisperBackend {
@@ -173,49 +229,20 @@ impl TranscriptionBackend for WhisperBackend {
     fn is_model_loaded(&self, model_name: &str) -> bool {
         self.loaded_model_name.as_deref() == Some(model_name)
     }
-    fn transcribe(&mut self, samples: &[f32], language: &str, initial_prompt: Option<&str>, smart_punctuation: bool) -> Result<String, String> {
-        let state = self
-            .state
-            .as_mut()
-            .ok_or_else(|| "Whisper state not initialized. Call load_model() first.".to_string())?;
-        tracing::info!(target: "pipeline", "whisper: reusing cached state for transcription");
-
-        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-        params.set_language(whisper_language_param(language));
-        params.set_print_special(false);
-        params.set_print_progress(false);
-        params.set_print_realtime(false);
-        params.set_print_timestamps(false);
-        params.set_suppress_blank(true);
-        params.set_single_segment(should_use_single_segment(samples.len()));
-        if let Some(prompt) = initial_prompt {
-            params.set_initial_prompt(prompt);
-        }
-        params.set_debug_mode(false);
-
-        state
-            .full(params, samples)
-            .map_err(|e| format!("Transcription failed: {}", e))?;
-
-        let num_segments = state.full_n_segments();
-
-        let mut text = String::new();
-        for i in 0..num_segments {
-            let segment = state
-                .get_segment(i)
-                .ok_or_else(|| format!("Failed to get segment {}", i))?;
-            let segment_text = segment
-                .to_str()
-                .map_err(|e| format!("Failed to get text for segment {}: {}", i, e))?;
-            append_segment(&mut text, segment_text);
-        }
-
-        let trimmed = text.trim().to_string();
-        if smart_punctuation {
-            Ok(trimmed)
-        } else {
-            Ok(strip_punctuation(&trimmed))
-        }
+    fn transcribe(
+        &mut self,
+        samples: &[f32],
+        language: &str,
+        initial_prompt: Option<&str>,
+        smart_punctuation: bool,
+    ) -> Result<String, String> {
+        self.transcribe_with_single_segment(
+            samples,
+            language,
+            initial_prompt,
+            smart_punctuation,
+            should_use_single_segment(samples.len()),
+        )
     }
 
     fn token_count(&self, text: &str) -> Option<usize> {
@@ -263,24 +290,6 @@ fn whisper_language_param(language: &str) -> Option<&str> {
     }
 }
 
-/// Append a whisper segment's text to the accumulated transcript, inserting a
-/// separating space only when neither side already has whitespace at the
-/// join. Whisper.cpp segments *usually* carry their own leading space (it's
-/// part of the BPE token), which is why the single-segment path historically
-/// got away with a bare `push_str`. Multi-segment decoding (see
-/// [`should_use_single_segment`]) makes the join point observable more often,
-/// so this guards against words gluing together across a segment boundary
-/// (e.g. "...dictating" + "The next..." => "...dictatingThe next...").
-fn append_segment(text: &mut String, segment_text: &str) {
-    let needs_space = !text.is_empty()
-        && !text.ends_with(char::is_whitespace)
-        && !segment_text.starts_with(char::is_whitespace);
-    if needs_space {
-        text.push(' ');
-    }
-    text.push_str(segment_text);
-}
-
 fn strip_punctuation(input: &str) -> String {
     let chars: Vec<char> = input.chars().collect();
     let mut result = String::with_capacity(input.len());
@@ -319,9 +328,155 @@ fn strip_punctuation(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        append_segment, get_model_path, should_use_single_segment, specific_model_exists,
-        strip_punctuation, whisper_language_param, TranscriptionBackend, WhisperBackend,
+        append_segment, should_use_single_segment, specific_model_exists, strip_punctuation,
+        whisper_language_param, WhisperBackend, SINGLE_SEGMENT_MAX_SAMPLES,
     };
+    use crate::transcriber::{
+        chunking::WINDOW_SAMPLES, parse_wav_to_samples, TranscriptionBackend,
+    };
+
+    // --- append_segment ----------------------------------------------------
+
+    #[test]
+    fn append_segment_first_segment_starts_text() {
+        let mut text = String::new();
+        append_segment(&mut text, " Hello");
+        assert_eq!(text, " Hello");
+    }
+
+    #[test]
+    fn append_segment_preserves_existing_leading_space() {
+        // Mirrors whisper.cpp's normal behavior: each segment's text already
+        // carries its own leading space as part of the BPE token, so no
+        // extra separator should be inserted.
+        let mut text = String::new();
+        append_segment(&mut text, " Hello");
+        append_segment(&mut text, " world.");
+        assert_eq!(text.trim(), "Hello world.");
+    }
+
+    #[test]
+    fn append_segment_inserts_space_when_both_sides_lack_one() {
+        // Defensive case: if a segment boundary ever lacks whitespace on
+        // both sides, words must not glue together.
+        let mut text = String::new();
+        append_segment(&mut text, "Hello");
+        append_segment(&mut text, "world");
+        assert_eq!(text, "Hello world");
+    }
+
+    /// Proves the fix on the public path: `transcribe()` (which picks
+    /// `single_segment` via [`should_use_single_segment`]) recovers the xlong
+    /// fixture's final clause ("...throughout the day") instead of truncating
+    /// at "...for dictating" as it did before the issue #269 fix.
+    #[test]
+    #[ignore = "requires installed tiny.en/base.en models and runs Whisper inference"]
+    fn xlong_batch_transcription_recovers_full_tail_after_fix() {
+        let wav = include_bytes!("../../../../bench/audio/xlong.wav");
+        let samples = parse_wav_to_samples(wav).expect("decode xlong fixture");
+
+        let mut ran_any = false;
+        for model_name in ["tiny.en", "base.en"] {
+            if !specific_model_exists(model_name) {
+                eprintln!("skipping {model_name}: model not installed");
+                continue;
+            }
+            ran_any = true;
+
+            let mut backend = WhisperBackend::new();
+            backend.load_model(model_name).expect("load model");
+            let text = backend
+                .transcribe(&samples, "en", None, true)
+                .expect("transcribe xlong fixture");
+
+            eprintln!(
+                "{model_name}: {} words: {text:?}",
+                text.split_whitespace().count()
+            );
+
+            let lower = text.to_lowercase();
+            assert!(
+                lower.contains("throughout the day"),
+                "{model_name}: expected the fixed batch transcribe() to recover the fixture's \
+                 final clause ('...throughout the day'), but got: {text:?}"
+            );
+            assert!(
+                !lower.trim_end().ends_with("for dictating"),
+                "{model_name}: transcribe() still truncates at 'for dictating', got: {text:?}"
+            );
+        }
+
+        if !ran_any {
+            eprintln!("skipping xlong fix proof: no whisper .en models installed");
+        }
+    }
+
+    #[test]
+    fn streaming_windows_keep_single_segment_mode() {
+        assert!(should_use_single_segment(WINDOW_SAMPLES));
+    }
+
+    #[test]
+    fn single_segment_duration_boundary_is_inclusive() {
+        assert!(should_use_single_segment(SINGLE_SEGMENT_MAX_SAMPLES));
+        assert!(!should_use_single_segment(SINGLE_SEGMENT_MAX_SAMPLES + 1));
+    }
+
+    #[test]
+    #[ignore = "requires an installed base.en model and runs Whisper inference"]
+    fn xlong_truncation_repro_single_segment() {
+        if !specific_model_exists("base.en") {
+            eprintln!("skipping xlong regression: base.en is not installed");
+            return;
+        }
+
+        let samples = parse_wav_to_samples(include_bytes!("../../../../bench/audio/xlong.wav"))
+            .expect("xlong fixture should decode");
+        assert!(!should_use_single_segment(samples.len()));
+
+        let mut backend = WhisperBackend::new();
+        backend.load_model("base.en").expect("base.en should load");
+        let single_segment = backend
+            .transcribe_with_single_segment(&samples, "en", None, true, true)
+            .expect("single-segment transcription should succeed");
+        let continued = backend
+            .transcribe_with_single_segment(&samples, "en", None, true, false)
+            .expect("timestamp-based continuation should succeed");
+
+        eprintln!("single_segment=true: {single_segment}");
+        eprintln!("single_segment=false: {continued}");
+
+        let single_words = single_segment.split_whitespace().count();
+        let continued_words = continued.split_whitespace().count();
+        assert!(
+            continued_words >= single_words + 4,
+            "continuation should recover a meaningful tail: single={single_words}, continued={continued_words}"
+        );
+
+        let tail_terms = ["code", "comments", "chat", "messages", "throughout", "day"];
+        let normalized_single = single_segment.to_ascii_lowercase();
+        let normalized_continued = continued.to_ascii_lowercase();
+        let single_tail_hits = tail_terms
+            .iter()
+            .filter(|term| {
+                normalized_single
+                    .split(|c: char| !c.is_alphanumeric())
+                    .any(|word| word == **term)
+            })
+            .count();
+        let continued_tail_hits = tail_terms
+            .iter()
+            .filter(|term| {
+                normalized_continued
+                    .split(|c: char| !c.is_alphanumeric())
+                    .any(|word| word == **term)
+            })
+            .count();
+        assert!(
+            continued_tail_hits >= 4 && continued_tail_hits > single_tail_hits,
+            "continued transcript should recover the reference tail: single_hits={single_tail_hits}, continued_hits={continued_tail_hits}"
+        );
+    }
 
     #[test]
     fn language_auto_maps_to_none() {
@@ -375,223 +530,5 @@ mod tests {
     #[test]
     fn strip_preserves_french_contraction() {
         assert_eq!(strip_punctuation("c'est la vie!"), "c'est la vie");
-    }
-
-    // --- should_use_single_segment ---------------------------------------
-
-    #[test]
-    fn streaming_windows_stay_single_segment() {
-        // Streaming's incremental decode window (see transcriber::chunking::
-        // WINDOW_SAMPLES) is 10s of 16kHz audio. That must remain
-        // single-segment: streaming behavior is correct today and this issue
-        // must not change it.
-        let window_samples = 10 * super::super::WHISPER_SAMPLE_RATE as usize;
-        assert!(should_use_single_segment(window_samples));
-    }
-
-    #[test]
-    fn streaming_step_size_stays_single_segment() {
-        // STEP_SAMPLES (8s) is smaller than WINDOW_SAMPLES but exercise it
-        // too since some call sites may transcribe partial windows.
-        let step_samples = 8 * super::super::WHISPER_SAMPLE_RATE as usize;
-        assert!(should_use_single_segment(step_samples));
-    }
-
-    #[test]
-    fn xlong_batch_audio_disables_single_segment() {
-        // The production repro: a 28s batch/file transcription must not be
-        // constrained to a single segment, or whisper.cpp's early-EOT
-        // force-skip silently drops the tail.
-        let xlong_samples = 28 * super::super::WHISPER_SAMPLE_RATE as usize;
-        assert!(!should_use_single_segment(xlong_samples));
-    }
-
-    #[test]
-    fn boundary_exactly_at_threshold_is_single_segment() {
-        let boundary = 12 * super::super::WHISPER_SAMPLE_RATE as usize;
-        assert!(should_use_single_segment(boundary));
-    }
-
-    #[test]
-    fn boundary_one_sample_over_threshold_is_multi_segment() {
-        let boundary = 12 * super::super::WHISPER_SAMPLE_RATE as usize + 1;
-        assert!(!should_use_single_segment(boundary));
-    }
-
-    #[test]
-    fn zero_samples_is_single_segment() {
-        assert!(should_use_single_segment(0));
-    }
-
-    // --- append_segment ----------------------------------------------------
-
-    #[test]
-    fn append_segment_first_segment_starts_text() {
-        let mut text = String::new();
-        append_segment(&mut text, " Hello");
-        assert_eq!(text, " Hello");
-    }
-
-    #[test]
-    fn append_segment_preserves_existing_leading_space() {
-        // Mirrors whisper.cpp's normal behavior: each segment's text already
-        // carries its own leading space as part of the BPE token, so no
-        // extra separator should be inserted.
-        let mut text = String::new();
-        append_segment(&mut text, " Hello");
-        append_segment(&mut text, " world.");
-        assert_eq!(text.trim(), "Hello world.");
-    }
-
-    #[test]
-    fn append_segment_inserts_space_when_both_sides_lack_one() {
-        // Defensive case: if a segment boundary ever lacks whitespace on
-        // both sides, words must not glue together.
-        let mut text = String::new();
-        append_segment(&mut text, "Hello");
-        append_segment(&mut text, "world");
-        assert_eq!(text, "Hello world");
-    }
-
-    #[test]
-    fn append_segment_does_not_double_space() {
-        let mut text = String::new();
-        append_segment(&mut text, "Hello ");
-        append_segment(&mut text, " world");
-        assert_eq!(text, "Hello  world");
-    }
-
-    // --- model-backed repro + fix proof (require installed .en models) ----
-    //
-    // Run on a machine with the models installed:
-    //   cargo test -- --ignored --nocapture --test-threads=1 xlong
-
-    /// Reproduces the bug directly: same model, same audio, only the
-    /// `single_segment` flag flipped. `single_segment = true` must truncate
-    /// the 28s xlong fixture (fewer words recovered) relative to
-    /// `single_segment = false`, matching the production repro in issue #269.
-    #[test]
-    #[ignore]
-    fn xlong_truncation_repro_single_segment() {
-        use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
-
-        let wav = include_bytes!("../../../../bench/audio/xlong.wav");
-        let samples =
-            crate::transcriber::parse_wav_to_samples(wav).expect("decode xlong fixture");
-
-        let mut ran_any = false;
-        for model_name in ["tiny.en", "base.en"] {
-            let model_path = match get_model_path(model_name) {
-                Ok(path) => path,
-                Err(_) => {
-                    eprintln!("skipping {model_name}: model not installed");
-                    continue;
-                }
-            };
-            ran_any = true;
-            let path_str = model_path.to_str().expect("model path is valid UTF-8");
-
-            let run = |single_segment: bool| -> String {
-                let ctx = WhisperContext::new_with_params(
-                    path_str,
-                    WhisperContextParameters::default(),
-                )
-                .expect("load whisper model");
-                let mut state = ctx.create_state().expect("create whisper state");
-                let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-                params.set_language(Some("en"));
-                params.set_print_special(false);
-                params.set_print_progress(false);
-                params.set_print_realtime(false);
-                params.set_print_timestamps(false);
-                params.set_suppress_blank(true);
-                params.set_single_segment(single_segment);
-                state.full(params, &samples).expect("transcribe xlong fixture");
-
-                let mut text = String::new();
-                for i in 0..state.full_n_segments() {
-                    let segment = state.get_segment(i).expect("segment");
-                    let segment_text = segment.to_str().expect("segment text");
-                    append_segment(&mut text, segment_text);
-                }
-                text.trim().to_string()
-            };
-
-            let truncated = run(true);
-            let complete = run(false);
-            let truncated_words = truncated.split_whitespace().count();
-            let complete_words = complete.split_whitespace().count();
-
-            eprintln!(
-                "{model_name}: single_segment=true -> {truncated_words} words: {truncated:?}"
-            );
-            eprintln!(
-                "{model_name}: single_segment=false -> {complete_words} words: {complete:?}"
-            );
-
-            assert!(
-                complete_words > truncated_words,
-                "{model_name}: expected single_segment=false to recover more words than \
-                 single_segment=true (got {complete_words} vs {truncated_words}); this was \
-                 supposed to reproduce the issue #269 truncation"
-            );
-        }
-
-        if !ran_any {
-            panic!(
-                "no whisper .en models installed to run this repro (need at least one of \
-                 tiny.en, base.en)"
-            );
-        }
-    }
-
-    /// Proves the fix: the normal, public `transcribe()` path (which now
-    /// picks `single_segment` via [`should_use_single_segment`]) recovers the
-    /// xlong fixture's final clause ("...throughout the day") instead of
-    /// truncating at "...for dictating" as it did before this issue's fix.
-    #[test]
-    #[ignore]
-    fn xlong_batch_transcription_recovers_full_tail_after_fix() {
-        let wav = include_bytes!("../../../../bench/audio/xlong.wav");
-        let samples =
-            crate::transcriber::parse_wav_to_samples(wav).expect("decode xlong fixture");
-
-        let mut ran_any = false;
-        for model_name in ["tiny.en", "base.en"] {
-            if !specific_model_exists(model_name) {
-                eprintln!("skipping {model_name}: model not installed");
-                continue;
-            }
-            ran_any = true;
-
-            let mut backend = WhisperBackend::new();
-            backend.load_model(model_name).expect("load model");
-            let text = backend
-                .transcribe(&samples, "en", None, true)
-                .expect("transcribe xlong fixture");
-
-            eprintln!(
-                "{model_name}: {} words: {text:?}",
-                text.split_whitespace().count()
-            );
-
-            let lower = text.to_lowercase();
-            assert!(
-                lower.contains("throughout the day"),
-                "{model_name}: expected the fixed batch transcribe() to recover the fixture's \
-                 final clause ('...throughout the day'), but truncated output was: {text:?}"
-            );
-            assert!(
-                !lower.trim_end().ends_with("for dictating"),
-                "{model_name}: transcribe() still truncates at 'for dictating', got: {text:?}"
-            );
-        }
-
-        if !ran_any {
-            panic!(
-                "no whisper .en models installed to run this fix proof (need at least one of \
-                 tiny.en, base.en)"
-            );
-        }
     }
 }

@@ -8,18 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 - **Performance Lab trust overhaul** — benchmark scoring now reports three tiers per model and fixture: raw decoder WER, normalized WER (digit/word, unit, and compound formatting differences no longer count as errors, #270), and delivered WER measuring the text after the production transform pipeline with the whisper dev-vocab prompt applied (#271). Five new stress fixtures (jargon, numbers, disfluent, 64s extra-long, fast speech) de-saturate model ranking (#273), one-time shared Metal/ANE init is measured separately instead of being charged to the first model loaded (#274), and a headless runner (`tests/headless_benchmark.rs`) produces full benchmark reports from the command line. Validation data and remaining caveats: `docs/investigations/benchmark-validation-2026-07-20.md`.
-
-### Fixed
-- Whisper batch transcription no longer silently truncates long audio: `single_segment` decoding is now duration-conditional, so >12s batch and file transcriptions decode multi-segment and keep their tail, while streaming's short windows are unchanged (#269).
-- The Performance Lab's `fastest`/`balanced` recommendations no longer flip between identical runs: ranking uses per-audio-second realtime factor with a 10% noise tie band, and `balanced` prefers lower-memory models among speed ties (#272).
-
-## [0.18.1] - 2026-07-20
-
-### Changed
-- Release builds compile without fat LTO (parallel codegen) and skip expensive free-disk docker prune when the runner already has headroom; AppImage tooling is pre-seeded to cut packaging network time.
-- About dialog now states explicitly that audio never leaves this Mac.
-
-### Added
+- **Persistent personal knowledge store** keeps replacement rules, vocabulary terms, and snippets in a versioned local SQLite database with deterministic migration/backup recovery. Settings provides bounded search, scoped inspection, create/edit/enable-disable/delete, atomic export/import, visible recovery state, and confirmed delete-all; transcription, Correct and Teach, and command execution remain separate future integrations (#246).
 - **Explicit spoken vocabulary aliases** let users map exact recognized variants such as `Tori` and `Tory` to a canonical written term such as `Tauri`. Structured entries migrate existing vocabulary, validate ambiguity/cycles/command conflicts, run locally across every backend before fuzzy and CLI formatting, and include an in-memory Settings preview (#268).
 - Opt-in per-app **Local IDE symbols and `@file` context** builds a bounded memory-only index from user-selected roots, corrects unique project symbols, and canonicalizes explicitly triggered file mentions to root-relative text. It never reads screen, selection, or clipboard context; ambiguous or stale references stay unchanged, and reviewed CLI formatting remains authoritative (#253).
 - Per-app **Writing Styles** add explicit Inherit, Conversational, Polished prose, Code / technical, Verbatim, and Notes policies using only local deterministic transforms. Styles resolve once in the immutable recording context, never infer app type or capture app content, and preserve existing delivery behavior (#250).
@@ -31,6 +20,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - Post-recognition cleanup, voice commands, and Smart Correction now run through one ordered, backend-neutral transformation pipeline with privacy-safe per-stage timing/change telemetry and explicit failure policy (#244).
 
 ### Fixed
+- Long Whisper batch and file transcriptions now retain timestamp-based continuation, preventing an early end-of-text token from silently dropping the remaining audio while preserving single-segment decoding for short streaming windows (#269). Multi-segment output is additionally guarded against words gluing together at segment joins.
+- The Performance Lab's `fastest`/`balanced` recommendations no longer flip between identical runs: ranking uses per-audio-second realtime factor with a 10% noise tie band, and `balanced` prefers lower-memory models among speed ties (#272).
 - Whisper live-preview updates now render in a clearly labeled row below the physical MacBook notch instead of behind it, with an always-visible recording timer, privacy-safe listener diagnostics, generation-guarded startup session/status reconciliation, and an explicit final-only state for Parakeet/Core ML (#266).
 - Per-app profile matching now uses the native macOS frontmost-application query with bounded retries and a timeout-bounded compatibility fallback, while preserving one immutable recording-start snapshot and privacy-safe detection telemetry (#265).
 
