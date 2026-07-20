@@ -26,50 +26,15 @@ export function useOverlayGeometry(): OverlayGeometry | null {
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let eventGeneration = 0;
 
-    const scheduleRetry = (attempt: number) => {
-      const delay = FETCH_RETRY_DELAYS_MS[attempt];
-      if (delay === undefined) {
-        flog.warn('overlay', 'get_overlay_geometry exhausted retries', { attempts: attempt + 1 });
-        return;
-      }
-      retryTimer = setTimeout(() => {
-        retryTimer = null;
-        if (!cancelled) attemptFetch(attempt + 1);
-      }, delay);
-    };
-
-    // Attempt the initial fetch, retrying with backoff so a transient failure
-    // (or a not-yet-ready backend) does not leave the overlay blank forever. A
-    // display-change event arriving mid-fetch bumps eventGeneration and voids the
-    // stale fetch result so it cannot clobber the fresher event payload — and,
-    // since geometry already arrived, no retry is scheduled either.
-    const attemptFetch = (attempt: number) => {
-      const fetchGeneration = eventGeneration;
-      invoke<unknown>('get_overlay_geometry')
-        .then((value) => {
-          if (cancelled || eventGeneration !== fetchGeneration) return;
-          if (isOverlayGeometry(value)) {
-            flog.info('overlay', 'geometry loaded', { windowW: value.windowW, collapsedH: value.collapsedH });
-            setGeometry(value);
-          } else {
-            flog.warn('overlay', 'get_overlay_geometry returned invalid payload', { attempt });
-            scheduleRetry(attempt);
-          }
-        })
-        .catch((e) => {
-          if (cancelled || eventGeneration !== fetchGeneration) return;
-          flog.warn('overlay', 'get_overlay_geometry failed', { attempt, error: String(e) });
-          scheduleRetry(attempt);
-        });
-    };
-
     const initialize = async () => {
-      // Register the display-change listener before fetching so an event that
-      // fires during the fetch is never missed.
       const stopListening = await listen<unknown>('overlay-geometry-changed', (event) => {
         if (cancelled) return;
         if (isOverlayGeometry(event.payload)) {
           eventGeneration += 1;
+          if (retryTimer) {
+            clearTimeout(retryTimer);
+            retryTimer = null;
+          }
           setGeometry(event.payload);
         } else {
           flog.warn('overlay', 'overlay-geometry-changed had invalid payload');
@@ -82,7 +47,44 @@ export function useOverlayGeometry(): OverlayGeometry | null {
       }
       unlisten = stopListening;
 
-      attemptFetch(0);
+      const scheduleRetry = (attempt: number, fetchGeneration: number) => {
+        if (cancelled || eventGeneration !== fetchGeneration) return;
+        const delay = FETCH_RETRY_DELAYS_MS[attempt];
+        if (delay === undefined) {
+          flog.warn('overlay', 'get_overlay_geometry exhausted retries', { attempts: attempt + 1 });
+          return;
+        }
+        retryTimer = setTimeout(() => {
+          retryTimer = null;
+          if (!cancelled && eventGeneration === fetchGeneration) {
+            void attemptFetch(attempt + 1);
+          }
+        }, delay);
+      };
+
+      // Register the display-change listener before the first request, then guard
+      // every retry with the event generation. No fetch response can overwrite a
+      // newer authoritative geometry event.
+      const attemptFetch = async (attempt: number): Promise<void> => {
+        const fetchGeneration = eventGeneration;
+        try {
+          const value = await invoke<unknown>('get_overlay_geometry');
+          if (cancelled || eventGeneration !== fetchGeneration) return;
+          if (isOverlayGeometry(value)) {
+            flog.info('overlay', 'geometry loaded', { windowW: value.windowW, collapsedH: value.collapsedH });
+            setGeometry(value);
+          } else {
+            flog.warn('overlay', 'get_overlay_geometry returned invalid payload', { attempt });
+            scheduleRetry(attempt, fetchGeneration);
+          }
+        } catch (e) {
+          if (cancelled || eventGeneration !== fetchGeneration) return;
+          flog.warn('overlay', 'get_overlay_geometry failed', { attempt, error: String(e) });
+          scheduleRetry(attempt, fetchGeneration);
+        }
+      };
+
+      await attemptFetch(0);
     };
 
     initialize().catch((e) => {

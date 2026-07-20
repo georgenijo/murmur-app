@@ -76,7 +76,10 @@ export function OverlayDropdown({
 
   return (
     <div
-      className="flex items-center justify-center gap-3"
+      className="overlay-dropdown flex items-center justify-center gap-3"
+      role="group"
+      aria-label="Quick settings"
+      aria-hidden={!expanded}
       style={{
         height: geometry.dropdownH,
         padding: '0 10px 6px',

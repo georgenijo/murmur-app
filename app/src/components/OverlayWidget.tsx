@@ -111,7 +111,7 @@ export function OverlayWidget() {
           top bar — the dropdown row is identical. */}
       <div
         ref={islandRef}
-        className="cursor-pointer select-none overflow-hidden"
+        className="overlay-island cursor-pointer select-none overflow-hidden"
         onMouseEnter={onHoverStart}
         onMouseMove={onHoverStart}
         onMouseLeave={onHoverEnd}

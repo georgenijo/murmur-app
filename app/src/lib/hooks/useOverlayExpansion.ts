@@ -12,11 +12,11 @@ import {
 /**
  * The overlay expand/collapse lifecycle, owned end to end by this controller.
  *
- * After this hook, nothing else in the overlay may call `set_overlay_expanded`
- * or own the dwell / collapse / shrink timers. The controller is the single
- * writer to the native resize path, so the CSS reveal and the window resize can
- * never race (problem the PR fixes): opening enqueues the grow, waits for the
- * Rust ack, and only then reveals the dropdown.
+ * After this hook, nothing else in the overlay may call `set_overlay_expanded` or
+ * own the dwell / collapse / shrink timers. The controller is the single writer
+ * to the native resize path, so the CSS reveal and the window resize can never
+ * race (problem the PR fixes): opening enqueues the grow, waits for the Rust ack,
+ * and only then reveals the dropdown.
  *
  * Phase model:
  *  - `collapsed` — pill only, window at collapsed height.
@@ -31,6 +31,14 @@ export type OverlayPhase = 'collapsed' | 'opening' | 'open' | 'closing';
 // native cursor-tracking safety net, not any visible transition.
 const HOVER_POLL_MS = 150;
 const HOVER_BOUNDS_PADDING = 8;
+const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)';
+const COLLAPSE_RETRY_DELAYS_MS = [100, 300] as const;
+
+function prefersReducedMotion(): boolean {
+  return typeof window !== 'undefined'
+    && typeof window.matchMedia === 'function'
+    && window.matchMedia(REDUCED_MOTION_QUERY).matches;
+}
 
 interface AppliedSurface {
   windowW: number;
@@ -65,9 +73,7 @@ export interface OverlayExpansion {
 // distinguish "the newer request won" from a real applied frame.
 const SUPERSEDED = Symbol('overlay-surface-superseded');
 
-export function useOverlayExpansion({
-  disabled,
-}: UseOverlayExpansionArgs): OverlayExpansion {
+export function useOverlayExpansion({ disabled }: UseOverlayExpansionArgs): OverlayExpansion {
   const [phase, setPhase] = useState<OverlayPhase>('collapsed');
 
   const phaseRef = useRef<OverlayPhase>('collapsed');
@@ -83,11 +89,13 @@ export function useOverlayExpansion({
   // Serialized surface writer state.
   const genRef = useRef(0);
   const chainRef = useRef<Promise<unknown>>(Promise.resolve());
-  const desiredRef = useRef<{ expanded: boolean }>({ expanded: false });
+  const desiredRef = useRef(false);
 
   // Inputs mirrored into refs for the always-on poller / async callbacks.
   const disabledRef = useRef(disabled);
   const visibleRef = useRef(true); // default visible on mount, matches show_overlay ordering
+  const reducedMotionRef = useRef(prefersReducedMotion());
+  const interactionGenerationRef = useRef(0);
   const pollInFlightRef = useRef(false);
 
   useEffect(() => { disabledRef.current = disabled; }, [disabled]);
@@ -112,8 +120,9 @@ export function useOverlayExpansion({
 
   const reconcileOnFailure = useCallback((appliedExpanded: boolean) => {
     if (!mountedRef.current) return;
-    // A failed grow must not reveal; a failed shrink still settles collapsed since
-    // the CSS has already hidden the dropdown.
+    // A failed grow must not reveal. A failed shrink reaches this reconciliation
+    // only after the bounded retries below are exhausted; settle the CSS state so
+    // the controller can recover on the next visibility/display/hover transition.
     if (appliedExpanded && phaseRef.current === 'opening') {
       setPhaseSync('collapsed');
     } else if (!appliedExpanded && phaseRef.current === 'closing') {
@@ -123,24 +132,38 @@ export function useOverlayExpansion({
 
   // --- Serialized surface writer --------------------------------------------
 
-  const applyIfLatest = useCallback(async (gen: number): Promise<AppliedSurface | typeof SUPERSEDED> => {
+  const applyIfLatest = useCallback(async (
+    gen: number,
+    collapseAttempt = 0,
+  ): Promise<AppliedSurface | typeof SUPERSEDED> => {
     if (!mountedRef.current) return SUPERSEDED; // no post-unmount IPC
     if (gen !== genRef.current) return SUPERSEDED; // superseded while queued — skip resize
-    const desired = desiredRef.current;
+    const desiredExpanded = desiredRef.current;
     try {
       const applied = await invoke<AppliedSurface>('set_overlay_expanded', {
-        expanded: desired.expanded,
+        expanded: desiredExpanded,
       });
       if (gen !== genRef.current) return SUPERSEDED; // a newer request will reconcile
-      reconcileOnSuccess(desired.expanded);
+      reconcileOnSuccess(desiredExpanded);
       return applied;
     } catch (err) {
       if (gen !== genRef.current) return SUPERSEDED; // stale failure — ignore
+      if (!desiredExpanded && collapseAttempt < COLLAPSE_RETRY_DELAYS_MS.length) {
+        const delay = COLLAPSE_RETRY_DELAYS_MS[collapseAttempt];
+        flog.warn('overlay', 'set_overlay_expanded collapse failed; retrying', {
+          attempt: collapseAttempt + 1,
+          delayMs: delay,
+          error: String(err),
+        });
+        await new Promise<void>((resolve) => { setTimeout(resolve, delay); });
+        return applyIfLatest(gen, collapseAttempt + 1);
+      }
       flog.warn('overlay', 'set_overlay_expanded failed', {
-        expanded: desired.expanded,
+        expanded: desiredExpanded,
+        attempts: desiredExpanded ? 1 : collapseAttempt + 1,
         error: String(err),
       });
-      reconcileOnFailure(desired.expanded);
+      reconcileOnFailure(desiredExpanded);
       return SUPERSEDED;
     }
   }, [reconcileOnSuccess, reconcileOnFailure]);
@@ -148,7 +171,7 @@ export function useOverlayExpansion({
   // Enqueue a resize to the latest desired surface. A newer request supersedes any
   // queued or in-flight older one; stale acks are dropped by the generation guard.
   const pushSurface = useCallback((expanded: boolean) => {
-    desiredRef.current = { expanded };
+    desiredRef.current = expanded;
     const gen = ++genRef.current;
     chainRef.current = chainRef.current.then(
       () => applyIfLatest(gen),
@@ -176,6 +199,7 @@ export function useOverlayExpansion({
 
   // Grow the window first, then reveal the card once the resize is acknowledged.
   const open = useCallback(() => {
+    if (!visibleRef.current || disabledRef.current) return;
     const ph = phaseRef.current;
     if (ph === 'opening' || ph === 'open') return;
     clearCloseTimers();
@@ -189,10 +213,11 @@ export function useOverlayExpansion({
     if (phaseRef.current === 'collapsed') return; // nothing to close
     if (phaseRef.current !== 'closing') setPhaseSync('closing');
     if (shrinkTimerRef.current) clearTimeout(shrinkTimerRef.current);
+    const shrinkDelay = reducedMotionRef.current ? 0 : SHRINK_DELAY_MS;
     shrinkTimerRef.current = setTimeout(() => {
       shrinkTimerRef.current = null;
       pushSurface(false); // collapse; reconcileOnSuccess settles to `collapsed`
-    }, SHRINK_DELAY_MS);
+    }, shrinkDelay);
   }, [setPhaseSync, pushSurface]);
 
   const beginClose = useCallback((delayMs: number) => {
@@ -210,6 +235,7 @@ export function useOverlayExpansion({
   // so grazing the notch no longer pops the dropdown. Also cancels any pending
   // close/shrink so re-entry keeps the card up (or reopens cleanly while closing).
   const onHoverStart = useCallback(() => {
+    if (!visibleRef.current || disabledRef.current) return;
     if (collapseTimerRef.current) { clearTimeout(collapseTimerRef.current); collapseTimerRef.current = null; }
     if (shrinkTimerRef.current) { clearTimeout(shrinkTimerRef.current); shrinkTimerRef.current = null; }
     const ph = phaseRef.current;
@@ -223,20 +249,49 @@ export function useOverlayExpansion({
 
   const onHoverEnd = useCallback(() => {
     clearOpenDwell();
+    if (phaseRef.current === 'opening') {
+      // Content has not been revealed yet, so there is no animation to preserve.
+      // Supersede the pending grow immediately; its late ack cannot reveal, and the
+      // serialized collapse repairs the native frame if the grow already applied.
+      clearCloseTimers();
+      setPhaseSync('closing');
+      pushSurface(false);
+      return;
+    }
     beginClose(COLLAPSE_DELAY_MS);
-  }, [clearOpenDwell, beginClose]);
+  }, [clearOpenDwell, clearCloseTimers, setPhaseSync, pushSurface, beginClose]);
+
+  // Reduced-motion is an accessibility input to the close choreography. CSS
+  // removes the transitions under this query, so the native frame can shrink
+  // immediately instead of retaining a transparent hit area for 380ms.
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return;
+    const media = window.matchMedia(REDUCED_MOTION_QUERY);
+    const update = () => { reducedMotionRef.current = media.matches; };
+    update();
+    media.addEventListener?.('change', update);
+    return () => media.removeEventListener?.('change', update);
+  }, []);
 
   // --- Visibility gating for the poller -------------------------------------
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | null = null;
     listen<boolean>('overlay-visible-changed', (event) => {
-      visibleRef.current = Boolean(event.payload);
+      const visible = Boolean(event.payload);
+      if (visibleRef.current === visible) return;
+      visibleRef.current = visible;
+      interactionGenerationRef.current += 1;
+      if (!visible) {
+        clearAllTimers();
+        setPhaseSync('collapsed');
+        pushSurface(false);
+      }
     }).then((fn) => {
       if (cancelled) { fn(); } else { unlisten = fn; }
     });
     return () => { cancelled = true; unlisten?.(); };
-  }, []);
+  }, [clearAllTimers, setPhaseSync, pushSurface]);
 
   // --- Display-change reset -------------------------------------------------
   // Rust repositions and resizes the overlay to collapsed on a display change, so
@@ -251,6 +306,7 @@ export function useOverlayExpansion({
     let cancelled = false;
     let unlisten: (() => void) | null = null;
     listen('overlay-geometry-changed', () => {
+      interactionGenerationRef.current += 1;
       clearAllTimers();
       setPhaseSync('collapsed');
       pushSurface(false);
@@ -271,6 +327,7 @@ export function useOverlayExpansion({
       if (!mountedRef.current) return;
       if (!visibleRef.current) return; // hidden: no IPC
       const ph = phaseRef.current;
+      const pollGeneration = interactionGenerationRef.current;
       // Disabled gates ONLY the collapsed entry detector (battery). The exit
       // watchdog must stay alive during an active interaction: with the dropdown
       // open, a missed DOM mouseleave — the exact failure this poller exists for —
@@ -286,6 +343,11 @@ export function useOverlayExpansion({
           currentWindow.outerPosition(),
           cursorPosition(),
         ]);
+        if (!mountedRef.current
+          || !visibleRef.current
+          || interactionGenerationRef.current !== pollGeneration
+          || phaseRef.current !== ph
+          || (disabledRef.current && ph === 'collapsed')) return;
         const scale = window.devicePixelRatio || 1;
         const rect = island.getBoundingClientRect();
 

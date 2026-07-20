@@ -36,6 +36,12 @@ interface SurfaceCall {
 
 const APPLIED = { windowW: 305, windowH: 76 };
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
 describe('useOverlayExpansion', () => {
   let container: HTMLDivElement | null = null;
   let root: Root | null = null;
@@ -78,14 +84,6 @@ describe('useOverlayExpansion', () => {
     document.body.appendChild(container);
     root = createRoot(container);
     await act(async () => { root!.render(<Harness {...props} />); });
-    // The controller does not resize on mount (show_overlay set the collapsed
-    // size), but drain any pending writer call and reset the tracking array so
-    // each test's first surface call starts at index 0.
-    await act(async () => {
-      surfaceCalls.forEach((c) => c.resolve(APPLIED));
-      await Promise.resolve();
-    });
-    surfaceCalls.length = 0;
   }
 
   beforeEach(() => {
@@ -113,6 +111,14 @@ describe('useOverlayExpansion', () => {
     mocks.cursorPosition.mockResolvedValue({ x: -9999, y: -9999 });
     mocks.outerPosition.mockReset();
     mocks.outerPosition.mockResolvedValue({ x: 0, y: 0 });
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: vi.fn().mockReturnValue({
+        matches: false,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      }),
+    });
 
     root = null;
     container = null;
@@ -219,6 +225,30 @@ describe('useOverlayExpansion', () => {
     await act(async () => { growC.resolve(APPLIED); });
     await flush();
     expect(current.phase).toBe('open');
+  });
+
+  it('leave during opening immediately supersedes the grow and never reveals from its stale ack', async () => {
+    await mount();
+
+    await act(async () => { current.onHoverStart(); });
+    await act(async () => { vi.advanceTimersByTime(HOVER_OPEN_DWELL_MS); });
+    await flush();
+    expect(current.phase).toBe('opening');
+    const grow = surfaceCalls.find((c) => c.args.expanded)!;
+
+    await act(async () => { current.onHoverEnd(); });
+    expect(current.phase).toBe('closing');
+    expect(current.expanded).toBe(false);
+
+    await act(async () => { grow.resolve(APPLIED); });
+    await flush();
+    expect(current.phase).toBe('closing');
+    expect(current.expanded).toBe(false);
+
+    const collapse = surfaceCalls.find((c) => !c.args.expanded)!;
+    await act(async () => { collapse.resolve(APPLIED); });
+    await flush();
+    expect(current.phase).toBe('collapsed');
   });
 
   it('re-entry while closing reopens cleanly and cancels the pending shrink', async () => {
@@ -346,6 +376,39 @@ describe('useOverlayExpansion', () => {
     expect(mocks.cursorPosition).toHaveBeenCalled();
   });
 
+  it('blocks DOM hover entry while disabled as well as poller entry', async () => {
+    await mount({ disabled: true });
+    await act(async () => { current.onHoverStart(); });
+    await act(async () => { vi.advanceTimersByTime(HOVER_OPEN_DWELL_MS * 2); });
+    await flush();
+    expect(current.phase).toBe('collapsed');
+    expect(surfaceCallCount()).toBe(0);
+  });
+
+  it('drops a cursor result that resolves after the overlay becomes hidden', async () => {
+    const outer = deferred<{ x: number; y: number }>();
+    const cursor = deferred<{ x: number; y: number }>();
+    mocks.outerPosition.mockReturnValueOnce(outer.promise);
+    mocks.cursorPosition.mockReturnValueOnce(cursor.promise);
+    await mount({ withIsland: true });
+
+    await act(async () => { vi.advanceTimersByTime(HOVER_OPEN_DWELL_MS); });
+    await act(async () => { emitEvent('overlay-visible-changed', false); });
+    await flush();
+    const collapse = surfaceCalls.find((c) => !c.args.expanded)!;
+    await act(async () => { collapse.resolve(APPLIED); });
+
+    await act(async () => {
+      outer.resolve({ x: 0, y: 0 });
+      cursor.resolve({ x: 0, y: 0 });
+      await Promise.all([outer.promise, cursor.promise]);
+    });
+    await act(async () => { vi.advanceTimersByTime(HOVER_OPEN_DWELL_MS * 2); });
+    await flush();
+    expect(current.phase).toBe('collapsed');
+    expect(surfaceCalls.some((c) => c.args.expanded)).toBe(false);
+  });
+
   it('keeps the exit watchdog alive while open even when the app is disabled', async () => {
     // Cursor inside the (zero-sized jsdom) island bounds so the poller never
     // closes the card while we drive it open.
@@ -372,7 +435,7 @@ describe('useOverlayExpansion', () => {
     expect(current.phase).toBe('closing');
   });
 
-  it('settles collapsed when the shrink resize is rejected during closing', async () => {
+  it('retries a rejected shrink in the serialized writer before settling collapsed', async () => {
     await mount();
     // Open fully.
     await act(async () => { current.onHoverStart(); });
@@ -392,13 +455,111 @@ describe('useOverlayExpansion', () => {
     const shrink = surfaceCalls.find((c) => !c.args.expanded);
     expect(shrink).toBeTruthy();
 
-    // Rejecting the shrink still settles the phase to `collapsed` (the dropdown is
-    // already hidden). The native window may not have physically shrunk, but the
-    // CSS/phase state stays consistent — matching the pre-refactor best effort.
+    // A transient native failure must keep the controller in closing and retry the
+    // collapse rather than declaring success with a tall transparent window.
     await act(async () => { shrink!.reject(new Error('resize failed')); });
+    await flush();
+    expect(current.phase).toBe('closing');
+    expect(surfaceCalls.filter((c) => !c.args.expanded)).toHaveLength(1);
+
+    await act(async () => { vi.advanceTimersByTime(100); });
+    await flush();
+    const retry = surfaceCalls.filter((c) => !c.args.expanded)[1];
+    expect(retry).toBeTruthy();
+
+    await act(async () => { retry.resolve(APPLIED); });
     await flush();
     expect(current.phase).toBe('collapsed');
     expect(current.expanded).toBe(false);
+  });
+
+  it('serializes a collapse retry ahead of a re-entry grow without racing the frame', async () => {
+    await mount();
+    await act(async () => { current.onHoverStart(); });
+    await act(async () => { vi.advanceTimersByTime(HOVER_OPEN_DWELL_MS); });
+    await flush();
+    await act(async () => { surfaceCalls.find((c) => c.args.expanded)!.resolve(APPLIED); });
+    await flush();
+
+    await act(async () => { current.onHoverEnd(); });
+    await act(async () => { vi.advanceTimersByTime(COLLAPSE_DELAY_MS + SHRINK_DELAY_MS); });
+    await flush();
+    const shrink = surfaceCalls.find((c) => !c.args.expanded)!;
+    await act(async () => { shrink.reject(new Error('resize failed')); });
+    await flush();
+    expect(current.phase).toBe('closing');
+
+    await act(async () => { current.onHoverStart(); });
+    await act(async () => { vi.advanceTimersByTime(100); });
+    await flush();
+    const retry = surfaceCalls.filter((c) => !c.args.expanded)[1];
+    expect(retry).toBeTruthy();
+    expect(current.phase).toBe('closing');
+
+    // The dwell completes while the retry is in flight. The next grow is queued,
+    // not dispatched concurrently, until the collapse retry acknowledges.
+    await act(async () => { vi.advanceTimersByTime(HOVER_OPEN_DWELL_MS - 100); });
+    await flush();
+    expect(current.phase).toBe('opening');
+    expect(surfaceCalls.filter((c) => c.args.expanded)).toHaveLength(1);
+
+    await act(async () => { retry.resolve(APPLIED); });
+    await flush();
+    const newest = surfaceCalls[surfaceCalls.length - 1];
+    expect(newest.args.expanded).toBe(true);
+
+    await act(async () => { newest.resolve(APPLIED); });
+    await flush();
+    expect(current.phase).toBe('open');
+  });
+
+  it('bounds collapse retries and settles after the final native failure', async () => {
+    await mount();
+    await act(async () => { current.onHoverStart(); });
+    await act(async () => { vi.advanceTimersByTime(HOVER_OPEN_DWELL_MS); });
+    await flush();
+    await act(async () => { surfaceCalls.find((c) => c.args.expanded)!.resolve(APPLIED); });
+    await flush();
+    surfaceCalls.length = 0;
+
+    await act(async () => { current.onHoverEnd(); });
+    await act(async () => { vi.advanceTimersByTime(COLLAPSE_DELAY_MS + SHRINK_DELAY_MS); });
+    await flush();
+    await act(async () => { surfaceCalls[0].reject(new Error('first failure')); });
+    await flush();
+    await act(async () => { vi.advanceTimersByTime(100); });
+    await flush();
+    await act(async () => { surfaceCalls[1].reject(new Error('second failure')); });
+    await flush();
+    await act(async () => { vi.advanceTimersByTime(300); });
+    await flush();
+    await act(async () => { surfaceCalls[2].reject(new Error('final failure')); });
+    await flush();
+
+    expect(surfaceCalls).toHaveLength(3);
+    expect(current.phase).toBe('collapsed');
+    expect(current.expanded).toBe(false);
+  });
+
+  it('shrinks immediately after the leave delay when reduced motion is preferred', async () => {
+    vi.mocked(window.matchMedia).mockReturnValue({
+      matches: true,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    } as unknown as MediaQueryList);
+    await mount();
+
+    await act(async () => { current.onHoverStart(); });
+    await act(async () => { vi.advanceTimersByTime(HOVER_OPEN_DWELL_MS); });
+    await flush();
+    await act(async () => { surfaceCalls.find((c) => c.args.expanded)!.resolve(APPLIED); });
+    await flush();
+    surfaceCalls.length = 0;
+
+    await act(async () => { current.onHoverEnd(); });
+    await act(async () => { vi.advanceTimersByTime(COLLAPSE_DELAY_MS + 1); });
+    await flush();
+    expect(surfaceCalls.some((c) => !c.args.expanded)).toBe(true);
   });
 });
 
