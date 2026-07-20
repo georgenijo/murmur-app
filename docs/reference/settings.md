@@ -105,6 +105,12 @@ The store reports recovered, reinitialized, and unavailable states visibly. This
 
 At recording start, the backend resolves one immutable context using global settings → matching style → matching profile fine-tuning → one-session overrides. Settings or focus changes during recording apply only to the next session. Explicit IDE opt-in also disables Smart Formatting for that recording and can capture only the matching profile's fresh local index. See [Per-App Dictation Context](../features/per-app-profiles.md) and [Local IDE Symbols and `@file` Context](../features/ide-context.md).
 
+## Voice Commands
+
+`voiceCommandsEnabled` remains the global execution switch. Legacy `voiceCommands` pairs in `dictation-settings` are migration-only compatibility input: Rust imports them once into the personal knowledge store as global `text_replacement` commands, while retaining the old in-memory path if the store is unavailable.
+
+New text replacements and snippets are Rust-owned knowledge records rather than localStorage settings. They support global/app scope, enabled state, multiline snippet bodies, deterministic `{{date}}` / `{{time}}`, and explicitly granted `{{clipboard}}`. See [Voice Commands 2.0](../features/voice-commands.md).
+
 ---
 
 ## System Settings

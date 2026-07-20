@@ -8,7 +8,8 @@
 use crate::cli_command::CliFormattingMode;
 use crate::correction::CorrectionMatcher;
 use crate::ide_context::IdeContextIndex;
-use crate::state::{AppProfile, DictationState, VoiceCommand, WritingStyle};
+use crate::state::{AppProfile, DictationState, WritingStyle};
+use crate::voice_commands::ResolvedVoiceCommand;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,7 +79,7 @@ pub struct TransformationSettings {
     pub cleanup_enabled: bool,
     pub cleanup_remove_filler: bool,
     pub cleanup_capitalize: bool,
-    pub voice_command_pairs: Vec<VoiceCommand>,
+    pub voice_commands: Vec<ResolvedVoiceCommand>,
     pub correction_enabled: bool,
     pub correction_matcher: Option<Arc<CorrectionMatcher>>,
     pub cli_formatting_mode: CliFormattingMode,
@@ -128,6 +129,9 @@ pub struct ResolverInputs<'a> {
     pub correction_matcher: Option<Arc<CorrectionMatcher>>,
     pub ide_context_index: Option<Arc<IdeContextIndex>>,
     pub vocabulary_version: u64,
+    /// Repository-backed commands already filtered for the active app. `None`
+    /// preserves legacy in-memory pairs when the local store is unavailable.
+    pub voice_commands: Option<Vec<ResolvedVoiceCommand>>,
     pub session_overrides: SessionOverrides,
 }
 
@@ -222,6 +226,26 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
     let voice_commands = style
         .voice_commands_enabled
         .unwrap_or(global.voice_commands_enabled);
+    let resolved_voice_commands = inputs.voice_commands.unwrap_or_else(|| {
+        global
+            .voice_command_pairs
+            .iter()
+            .enumerate()
+            .map(|(index, command)| ResolvedVoiceCommand {
+                id: format!("legacy-runtime-{index:08}"),
+                phrase: command.phrase.clone(),
+                command_type: crate::knowledge_store::VoiceCommandKind::TextReplacement,
+                content: command.replacement.clone(),
+                allow_clipboard_read: false,
+                app_scoped: false,
+            })
+            .collect::<Vec<_>>()
+    });
+    let clipboard_read_allowed = voice_commands
+        && resolved_voice_commands
+            .iter()
+            .any(|command| command.allow_clipboard_read);
+    let custom_voice_commands = voice_commands && !resolved_voice_commands.is_empty();
 
     DictationContextSnapshot {
         app: ActiveAppIdentity {
@@ -243,7 +267,7 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
             cleanup_capitalize: style
                 .cleanup_capitalize
                 .unwrap_or(global.cleanup_capitalize),
-            voice_command_pairs: global.voice_command_pairs.clone(),
+            voice_commands: resolved_voice_commands,
             correction_enabled: style
                 .correction_enabled
                 .unwrap_or(global.correction_enabled),
@@ -271,11 +295,12 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
         },
         enabled_command_groups: EnabledCommandGroups {
             built_in_voice_commands: voice_commands,
-            custom_voice_commands: voice_commands && !global.voice_command_pairs.is_empty(),
+            custom_voice_commands,
         },
-        // No selected-text, screen-text, or clipboard reads exist. The project
-        // index permission is a separate explicit per-profile opt-in.
+        // Clipboard input is granted only when an applicable command explicitly
+        // opts in; selected/screen text remain denied. Project indexing is separate.
         context_capture: ContextCapturePermissions {
+            clipboard: clipboard_read_allowed,
             local_project_index: ide_context_enabled,
             ..ContextCapturePermissions::default()
         },
@@ -444,6 +469,7 @@ mod tests {
             correction_matcher: None,
             ide_context_index: None,
             vocabulary_version: 7,
+            voice_commands: None,
             session_overrides,
         })
     }
@@ -687,8 +713,16 @@ mod tests {
             Some("com.apple.dt.Xcode"),
             SessionOverrides::default(),
         );
-        assert!(!ide_named_but_unconfigured.transformations.ide_context_enabled);
-        assert!(ide_named_but_unconfigured.transformations.smart_formatting_enabled);
+        assert!(
+            !ide_named_but_unconfigured
+                .transformations
+                .ide_context_enabled
+        );
+        assert!(
+            ide_named_but_unconfigured
+                .transformations
+                .smart_formatting_enabled
+        );
         assert_eq!(
             ide_named_but_unconfigured.context_capture,
             ContextCapturePermissions::default()

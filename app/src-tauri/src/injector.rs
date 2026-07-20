@@ -1,6 +1,14 @@
 use arboard::Clipboard;
 use std::time::Instant;
 
+pub(crate) fn read_clipboard_text() -> Result<String, String> {
+    let mut clipboard =
+        Clipboard::new().map_err(|_| "Clipboard access is unavailable.".to_string())?;
+    clipboard
+        .get_text()
+        .map_err(|_| "Clipboard does not currently contain readable text.".to_string())
+}
+
 /// Copy text to clipboard and optionally simulate Cmd+V paste.
 /// `delay_ms` controls the pause before pasting (window focus settling).
 /// On paste failure, retries once after a 100ms backoff.

@@ -142,6 +142,24 @@ describe('loadSettings', () => {
     expect(loadSettings().smartFormattingEnabled).toBe(false);
   });
 
+  it('preserves legacy custom Voice Command pairs for one-time Rust migration', () => {
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      voiceCommandsEnabled: true,
+      voiceCommands: [
+        { phrase: ' insert standup ', replacement: 'Yesterday:\n- done\nToday:\n- ship' },
+        { phrase: 'remove phrase', replacement: '' },
+        { phrase: '', replacement: 'ignored' },
+      ],
+    }));
+    const settings = loadSettings();
+    expect(settings.voiceCommandsEnabled).toBe(true);
+    expect(settings.voiceCommands).toEqual([
+      { phrase: 'insert standup', replacement: 'Yesterday:\n- done\nToday:\n- ship' },
+      { phrase: 'remove phrase', replacement: '' },
+    ]);
+  });
+
   it('fills missing fields from defaults', () => {
     localStorage.setItem('dictation-settings', JSON.stringify({
       model: 'base.en',

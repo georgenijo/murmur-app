@@ -116,6 +116,7 @@ export function KnowledgeEditorModal({ entry, profiles, onClose, onSave }: Props
         payload,
         enabled,
         scope: buildScope()!,
+        voiceCommand: entry?.voiceCommand ?? null,
       });
     } catch (cause) {
       setError(String(cause));
@@ -223,6 +224,12 @@ export function KnowledgeEditorModal({ entry, profiles, onClose, onSave }: Props
             <input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} className="accent-primary" />
             Enabled for future repository lookups
           </label>
+
+          {entry?.voiceCommand && (
+            <p className="rounded-lg border border-primary/25 bg-primary/5 px-3 py-2 text-xs text-on-surface-variant">
+              This record is also a {entry.voiceCommand.commandType === 'snippet' ? 'snippet' : 'text replacement'} Voice Command. Use the Voice Commands section to change its command type, test it, or review clipboard access.
+            </p>
+          )}
 
           {error && <p role="alert" className="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300">{error}</p>}
 
