@@ -183,7 +183,7 @@
 - Metal GPU acceleration for Whisper backend
 - Developer ID signed + notarized
 - DMG installer via GitHub Actions (tag-triggered)
-- Release optimized with opt-level "s", LTO, codegen-units 1, and panic abort; stripping is disabled so Tauri can patch the updater bundle-type marker
+- Release optimized with opt-level "s", LTO off, codegen-units 16, and panic abort; stripping is disabled so Tauri can patch the updater bundle-type marker
 - Dev build has separate bundle identifier (com.localdictation.dev) and name (Local Dictation Dev)
 
 ### CI/CD
