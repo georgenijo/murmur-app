@@ -110,6 +110,9 @@ pub struct FixtureResult {
     pub word_error_rate: f64,
     pub word_errors: usize,
     pub reference_words: usize,
+    pub normalized_word_error_rate: f64,
+    pub normalized_word_errors: usize,
+    pub normalized_reference_words: usize,
     pub reference: String,
     pub transcript: String,
 }
@@ -127,6 +130,7 @@ pub struct ModelResult {
     pub warm_p95_ms: Option<f64>,
     pub realtime_factor: Option<f64>,
     pub word_error_rate: Option<f64>,
+    pub normalized_word_error_rate: Option<f64>,
     pub memory_delta_mb: u64,
     pub fixtures: Vec<FixtureResult>,
     pub error: Option<String>,
@@ -358,9 +362,233 @@ fn words(text: &str) -> Vec<String> {
         .collect()
 }
 
-fn word_errors(reference: &str, hypothesis: &str) -> (usize, usize) {
-    let reference = words(reference);
-    let hypothesis = words(hypothesis);
+// --- Text normalization for WER scoring -------------------------------------
+//
+// Raw WER punishes formatting and inverse-text-normalization (ITN) differences
+// that are not recognition errors: "16 kHz" vs "sixteen kilohertz", "Mac OS" vs
+// "macOS", "front end" vs "frontend". `normalized_words` maps both the reference
+// and the hypothesis to a common canonical token stream (on top of the existing
+// lowercase + punctuation-split behaviour) so those differences stop counting.
+//
+// The normalization is intentionally conservative: every rule maps genuinely
+// equivalent spellings of the SAME thing to one token. It never collapses two
+// different spoken words, so real misrecognitions (e.g. "Tauri" -> "Tori") still
+// score as errors. The compound-word and unit tables below are small, curated,
+// and hand-maintained for exactly this reason.
+
+/// Curated technical compounds frequently written as either one word or two.
+/// Both spellings collapse to the joined single-word form. Adding an entry that
+/// joins two genuinely distinct words would hide real errors, so keep this list
+/// limited to true one-word/two-word spelling variants.
+const COMPOUND_JOINS: &[(&str, &str)] = &[
+    ("front", "end"),
+    ("back", "end"),
+    ("mac", "os"),
+    ("web", "site"),
+    ("data", "base"),
+    ("run", "time"),
+    ("code", "base"),
+    ("name", "space"),
+    ("white", "space"),
+    ("life", "cycle"),
+    ("key", "board"),
+    ("check", "box"),
+    ("drop", "down"),
+    ("time", "stamp"),
+];
+
+/// Canonicalize a common unit token. Both the abbreviation and the spelled-out
+/// form map to the same canonical abbreviation. Curated; only true synonyms.
+fn normalize_unit(word: &str) -> Option<&'static str> {
+    Some(match word {
+        "hz" | "hertz" => "hz",
+        "khz" | "kilohertz" => "khz",
+        "mhz" | "megahertz" => "mhz",
+        "ghz" | "gigahertz" => "ghz",
+        "kb" | "kilobyte" | "kilobytes" => "kb",
+        "mb" | "megabyte" | "megabytes" => "mb",
+        "gb" | "gigabyte" | "gigabytes" => "gb",
+        "tb" | "terabyte" | "terabytes" => "tb",
+        "ms" | "millisecond" | "milliseconds" => "ms",
+        _ => return None,
+    })
+}
+
+fn cardinal_small(word: &str) -> Option<u32> {
+    Some(match word {
+        "zero" => 0,
+        "one" => 1,
+        "two" => 2,
+        "three" => 3,
+        "four" => 4,
+        "five" => 5,
+        "six" => 6,
+        "seven" => 7,
+        "eight" => 8,
+        "nine" => 9,
+        "ten" => 10,
+        "eleven" => 11,
+        "twelve" => 12,
+        "thirteen" => 13,
+        "fourteen" => 14,
+        "fifteen" => 15,
+        "sixteen" => 16,
+        "seventeen" => 17,
+        "eighteen" => 18,
+        "nineteen" => 19,
+        _ => return None,
+    })
+}
+
+fn tens_word(word: &str) -> Option<u32> {
+    Some(match word {
+        "twenty" => 20,
+        "thirty" => 30,
+        "forty" => 40,
+        "fifty" => 50,
+        "sixty" => 60,
+        "seventy" => 70,
+        "eighty" => 80,
+        "ninety" => 90,
+        _ => return None,
+    })
+}
+
+fn ones_word(word: &str) -> Option<u32> {
+    cardinal_small(word).filter(|value| (1..=9).contains(value))
+}
+
+fn ordinal_word(word: &str) -> Option<u32> {
+    Some(match word {
+        "first" => 1,
+        "second" => 2,
+        "third" => 3,
+        "fourth" => 4,
+        "fifth" => 5,
+        "sixth" => 6,
+        "seventh" => 7,
+        "eighth" => 8,
+        "ninth" => 9,
+        "tenth" => 10,
+        "eleventh" => 11,
+        "twelfth" => 12,
+        "thirteenth" => 13,
+        "fourteenth" => 14,
+        "fifteenth" => 15,
+        "sixteenth" => 16,
+        "seventeenth" => 17,
+        "eighteenth" => 18,
+        "nineteenth" => 19,
+        "twentieth" => 20,
+        "thirtieth" => 30,
+        "fortieth" => 40,
+        "fiftieth" => 50,
+        "sixtieth" => 60,
+        "seventieth" => 70,
+        "eightieth" => 80,
+        "ninetieth" => 90,
+        _ => return None,
+    })
+}
+
+/// Parse a digit ordinal such as "1st", "2nd", "16th" into its numeric value.
+fn digit_ordinal(word: &str) -> Option<u32> {
+    for suffix in ["st", "nd", "rd", "th"] {
+        if let Some(digits) = word.strip_suffix(suffix) {
+            if !digits.is_empty() && digits.chars().all(|character| character.is_ascii_digit()) {
+                return digits.parse().ok();
+            }
+        }
+    }
+    None
+}
+
+/// Collapse number words to digits so "sixteen" and "16" score identically.
+/// Cardinals and ordinals map to distinct canonical tokens ("16" vs "16ord") so
+/// a cardinal/ordinal mismatch is still counted. Handles 0-100, common ordinals,
+/// two-word tens ("twenty one" -> "21"), and "hundred".
+fn fold_numbers(tokens: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(tokens.len());
+    let mut index = 0;
+    while index < tokens.len() {
+        let token = tokens[index].as_str();
+
+        if let Some(value) = digit_ordinal(token).or_else(|| ordinal_word(token)) {
+            out.push(format!("{value}ord"));
+            index += 1;
+            continue;
+        }
+
+        if let Some(tens) = tens_word(token) {
+            if let Some(ones) = tokens.get(index + 1).and_then(|word| ones_word(word)) {
+                out.push((tens + ones).to_string());
+                index += 2;
+                continue;
+            }
+            out.push(tens.to_string());
+            index += 1;
+            continue;
+        }
+
+        if token == "hundred" {
+            if let Some(previous) = out.last().and_then(|word| word.parse::<u32>().ok()) {
+                if (1..=9).contains(&previous) {
+                    *out.last_mut().expect("previous digit present") = (previous * 100).to_string();
+                    index += 1;
+                    continue;
+                }
+            }
+            out.push("100".to_string());
+            index += 1;
+            continue;
+        }
+
+        if let Some(value) = cardinal_small(token) {
+            out.push(value.to_string());
+            index += 1;
+            continue;
+        }
+
+        out.push(tokens[index].clone());
+        index += 1;
+    }
+    out
+}
+
+/// Join curated two-word technical compounds into their single-word form.
+fn join_compounds(tokens: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(tokens.len());
+    let mut index = 0;
+    while index < tokens.len() {
+        if let Some(next) = tokens.get(index + 1) {
+            let matches = COMPOUND_JOINS
+                .iter()
+                .any(|(left, right)| *left == tokens[index] && *right == next);
+            if matches {
+                out.push(format!("{}{}", tokens[index], next));
+                index += 2;
+                continue;
+            }
+        }
+        out.push(tokens[index].clone());
+        index += 1;
+    }
+    out
+}
+
+/// Whisper-`EnglishTextNormalizer`-style canonicalization on top of `words`:
+/// digit/word number equivalence, common unit abbreviations, and curated tech
+/// compounds. Deterministic and local. Applied to both reference and hypothesis
+/// before the edit-distance pass.
+fn normalized_words(text: &str) -> Vec<String> {
+    let joined = join_compounds(fold_numbers(words(text)));
+    joined
+        .into_iter()
+        .map(|word| normalize_unit(&word).map(str::to_string).unwrap_or(word))
+        .collect()
+}
+
+fn edit_distance(reference: &[String], hypothesis: &[String]) -> usize {
     let mut previous: Vec<usize> = (0..=hypothesis.len()).collect();
     for (row, reference_word) in reference.iter().enumerate() {
         let mut current = vec![row + 1; hypothesis.len() + 1];
@@ -371,7 +599,22 @@ fn word_errors(reference: &str, hypothesis: &str) -> (usize, usize) {
         }
         previous = current;
     }
-    (previous[hypothesis.len()], reference.len())
+    previous[hypothesis.len()]
+}
+
+/// Raw WER: lowercase + punctuation split only. Returns (errors, reference words).
+fn word_errors(reference: &str, hypothesis: &str) -> (usize, usize) {
+    let reference = words(reference);
+    let hypothesis = words(hypothesis);
+    (edit_distance(&reference, &hypothesis), reference.len())
+}
+
+/// Normalized WER: applies `normalized_words` before scoring so formatting/ITN
+/// differences do not count. Returns (errors, normalized reference words).
+fn normalized_word_errors(reference: &str, hypothesis: &str) -> (usize, usize) {
+    let reference = normalized_words(reference);
+    let hypothesis = normalized_words(hypothesis);
+    (edit_distance(&reference, &hypothesis), reference.len())
 }
 
 fn percentile(values: &[f64], percentile: f64) -> Option<f64> {
@@ -419,6 +662,7 @@ fn error_result(model: &BenchmarkModel, error: String) -> ModelResult {
         warm_p95_ms: None,
         realtime_factor: None,
         word_error_rate: None,
+        normalized_word_error_rate: None,
         memory_delta_mb: 0,
         fixtures: Vec::new(),
         error: Some(error),
@@ -470,19 +714,25 @@ fn recommendations(results: &[ModelResult]) -> Recommendations {
         .filter_map(|result| result.warm_median_ms.map(|value| (*result, value)))
         .min_by(|left, right| left.1.total_cmp(&right.1))
         .map(|(result, _)| result.model_name.clone());
+    // Accuracy recommendations rank on the normalized WER so formatting/ITN
+    // differences do not distort the ranking (see `normalized_words`).
     let most_accurate = successful
         .iter()
-        .filter_map(|result| result.word_error_rate.map(|value| (*result, value)))
+        .filter_map(|result| result.normalized_word_error_rate.map(|value| (*result, value)))
         .min_by(|left, right| left.1.total_cmp(&right.1))
         .map(|(result, _)| result.model_name.clone());
     let best_wer = successful
         .iter()
-        .filter_map(|result| result.word_error_rate)
+        .filter_map(|result| result.normalized_word_error_rate)
         .min_by(f64::total_cmp);
     let balanced = best_wer.and_then(|best| {
         successful
             .iter()
-            .filter(|result| result.word_error_rate.is_some_and(|wer| wer <= best + 0.02))
+            .filter(|result| {
+                result
+                    .normalized_word_error_rate
+                    .is_some_and(|wer| wer <= best + 0.02)
+            })
             .filter_map(|result| result.warm_median_ms.map(|value| (*result, value)))
             .min_by(|left, right| left.1.total_cmp(&right.1))
             .map(|(result, _)| result.model_name.clone())
@@ -564,6 +814,8 @@ pub fn run(
         let mut fixture_results = Vec::with_capacity(fixtures.len());
         let mut total_errors = 0;
         let mut total_reference_words = 0;
+        let mut total_normalized_errors = 0;
+        let mut total_normalized_reference_words = 0;
         let mut corpus_warm_seconds = 0.0;
         let mut corpus_audio_seconds = 0.0;
         let mut failed = None;
@@ -634,20 +886,40 @@ pub fn run(
             all_warm.extend_from_slice(&warm);
             corpus_warm_seconds += warm_median_ms / 1000.0;
             corpus_audio_seconds += audio_seconds;
+            // Score each transcript on both raw and normalized WER. Pick the
+            // median transcript by normalized errors (the reported ranking
+            // metric), breaking ties by raw errors for determinism.
             let mut scored_transcripts = transcripts
                 .into_iter()
                 .map(|transcript| {
                     let (errors, reference_words) = word_errors(fixture.reference, &transcript);
-                    (errors, reference_words, transcript)
+                    let (normalized_errors, normalized_reference_words) =
+                        normalized_word_errors(fixture.reference, &transcript);
+                    (
+                        normalized_errors,
+                        errors,
+                        reference_words,
+                        normalized_reference_words,
+                        transcript,
+                    )
                 })
                 .collect::<Vec<_>>();
-            scored_transcripts.sort_by_key(|(errors, _, _)| *errors);
-            let (errors, reference_words, transcript) = scored_transcripts
+            scored_transcripts
+                .sort_by_key(|(normalized_errors, errors, ..)| (*normalized_errors, *errors));
+            let (
+                normalized_errors,
+                errors,
+                reference_words,
+                normalized_reference_words,
+                transcript,
+            ) = scored_transcripts
                 .into_iter()
                 .nth((iterations - 1) / 2)
                 .expect("benchmark presets include measured iterations");
             total_errors += errors;
             total_reference_words += reference_words;
+            total_normalized_errors += normalized_errors;
+            total_normalized_reference_words += normalized_reference_words;
             fixture_results.push(FixtureResult {
                 fixture_id: fixture.id.to_string(),
                 label: fixture.label.to_string(),
@@ -658,6 +930,10 @@ pub fn run(
                 word_error_rate: errors as f64 / reference_words as f64,
                 word_errors: errors,
                 reference_words,
+                normalized_word_error_rate: normalized_errors as f64
+                    / normalized_reference_words as f64,
+                normalized_word_errors: normalized_errors,
+                normalized_reference_words,
                 reference: fixture.reference.trim().to_string(),
                 transcript,
             });
@@ -681,6 +957,9 @@ pub fn run(
             warm_p95_ms: percentile(&all_warm, 0.95),
             realtime_factor: Some(corpus_warm_seconds / corpus_audio_seconds),
             word_error_rate: Some(total_errors as f64 / total_reference_words as f64),
+            normalized_word_error_rate: Some(
+                total_normalized_errors as f64 / total_normalized_reference_words as f64,
+            ),
             memory_delta_mb: peak_rss.saturating_sub(baseline_rss),
             fixtures: fixture_results,
             error: None,
@@ -723,6 +1002,47 @@ mod tests {
         assert_eq!(word_errors("one two three", "one four three"), (1, 3));
         assert_eq!(word_errors("one two three", "one two three four"), (1, 3));
         assert_eq!(word_errors("one two three", "one three"), (1, 3));
+    }
+
+    #[test]
+    fn normalizer_collapses_formatting_and_itn_differences() {
+        // The concrete pairs from the issue must normalize to identical tokens.
+        assert_eq!(normalized_words("16 kHz"), normalized_words("sixteen kilohertz"));
+        assert_eq!(normalized_words("Mac OS"), normalized_words("macOS"));
+        assert_eq!(normalized_words("front end"), normalized_words("frontend"));
+        // A few more equivalences the tables promise.
+        assert_eq!(normalized_words("500 MB"), normalized_words("five hundred megabytes"));
+        assert_eq!(normalized_words("2 ms"), normalized_words("two milliseconds"));
+        assert_eq!(normalized_words("twenty one"), normalized_words("21"));
+        assert_eq!(normalized_words("the 1st run"), normalized_words("the first run"));
+    }
+
+    #[test]
+    fn normalized_word_errors_ignores_formatting_but_keeps_recognition_errors() {
+        // Formatting/ITN differences score zero under normalization.
+        assert_eq!(normalized_word_errors("16 kHz", "sixteen kilohertz"), (0, 2));
+        assert_eq!(normalized_word_errors("front end", "frontend"), (0, 1));
+        assert_eq!(normalized_word_errors("Mac OS", "macOS"), (0, 1));
+
+        // Real misrecognitions still count (this is #271's territory, not ours).
+        assert!(normalized_word_errors("Tauri", "Tori").0 > 0);
+        assert!(word_errors("Tauri", "Tori").0 > 0);
+
+        // Different numbers/units must not collapse to the same token.
+        assert_eq!(normalized_word_errors("16 kHz", "32 kHz"), (1, 2));
+        assert_eq!(normalized_word_errors("500 MB", "500 GB"), (1, 2));
+        // Cardinal vs ordinal is a genuine difference and is preserved.
+        assert!(normalized_word_errors("one", "first").0 > 0);
+    }
+
+    #[test]
+    fn normalization_shrinks_a_known_raw_wer_delta() {
+        // Same sentence, formatted two ways: raw scoring counts several errors,
+        // normalized scoring counts none. Locks the raw-vs-normalized delta.
+        let reference = "The front end uses 16 kHz audio";
+        let hypothesis = "The frontend uses sixteen kilohertz audio";
+        assert_eq!(word_errors(reference, hypothesis), (4, 7));
+        assert_eq!(normalized_word_errors(reference, hypothesis), (0, 6));
     }
 
     #[test]
@@ -778,6 +1098,7 @@ mod tests {
             warm_p95_ms: Some(latency),
             realtime_factor: Some(latency / 1000.0),
             word_error_rate: Some(wer),
+            normalized_word_error_rate: Some(wer),
             memory_delta_mb: 0,
             fixtures: Vec::new(),
             error: None,
