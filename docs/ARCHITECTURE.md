@@ -248,7 +248,7 @@ The initial model downloader screen shows a curated subset of 2 models: `large-v
 
 ### `commands/overlay.rs` -- Notch Overlay
 
-- `detect_notch_info()`: reads `NSScreen.mainScreen().safeAreaInsets()` via `objc2`; uses `auxiliaryTopLeftArea` + `auxiliaryTopRightArea` to compute notch width. Main-thread only. Fallback: 200px wide, 37px tall.
+- `detect_notch_info()`: reads `NSScreen.mainScreen().safeAreaInsets()` via `objc2`; uses `auxiliaryTopLeftArea` + `auxiliaryTopRightArea` to compute notch width. Main-thread only. Returns `None` when no notch is present; fallback dimensions come from `geometry_for()`.
 - `raise_window_above_menubar()`: sets NSWindow level to **25** (NSMainMenuWindowLevel = 24). Calls private API `_setPreventsActivation(true)` to prevent focus-stealing on click; guarded with `respondsToSelector()` for forward compatibility.
 - `register_screen_change_observer()`: subscribes to `NSApplicationDidChangeScreenParametersNotification` -- repositions overlay automatically when displays are plugged/unplugged or lid opens. Emits `overlay-geometry-changed` (the recomputed `OverlayGeometry`) to frontend. Observer intentionally leaked (app lifetime).
 - Every overlay dimension comes from one source, `geometry_for(notch)` in `commands/overlay.rs`, which returns an `OverlayGeometry`; the frontend only reads it (`get_overlay_geometry`, `overlay-geometry-changed`) and never hardcodes pixels. See [docs/features/overlay.md](features/overlay.md) for the full geometry contract and the hover-expand lifecycle. Mouse events are explicitly re-enabled (`setIgnoreCursorEvents(false)`) because `focusable:false` disables them on macOS.

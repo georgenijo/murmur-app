@@ -13,7 +13,7 @@ export function latestPreviewText(text: string, maxCharacters = 36): string {
   return `…${(firstBoundary >= 0 ? suffix.slice(firstBoundary + 1) : suffix).trim()}`;
 }
 
-/** Parakeet and Core ML models never emit incremental partial transcripts. */
+/** Parakeet models never emit incremental partial transcripts. */
 export function supportsLiveTranscriptPreview(model: string): boolean {
   return !model.startsWith('parakeet-');
 }

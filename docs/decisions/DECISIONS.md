@@ -6,6 +6,23 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 ---
 
+## 2026-07-20: Overlay geometry & lifecycle contract locked (#280)
+
+**Decision:** Five locked outcomes of the overlay architecture review (issue #280; PRs #290, #296, `overlay/pr3-split`):
+1. **Rust is sole author of overlay geometry.** All dimensions derive from `geometry_for()` in `commands/overlay.rs` returning `OverlayGeometry`; the frontend consumes it at runtime (`get_overlay_geometry`, `overlay-geometry-changed`) and contains no geometry pixel constants. Motion timing (ms/easing) is frontend-owned in `lib/overlayMotion.ts`, with the shrink delay derived from the height-transition token — never free-standing.
+2. **Contract enforced by a shared checked-in fixture** (`app/src/components/overlay/overlay-geometry.fixture.json`) asserted from both `cargo test` and vitest. No codegen.
+3. **Hover expansion is one serialized 4-phase controller** (`useOverlayExpansion`: collapsed/opening/open/closing) with grow-then-reveal / hide-then-shrink ordering, applied-frame acks from `set_overlay_surface`, and a generation-guarded writer owning every surface resize (including preview-row). No hook may own half of this lifecycle.
+4. **Contract + controller + split land before any visual rehaul** (PR4); the rehaul may not touch geometry derivation except via `geometry_for()`.
+5. **Cross-window settings stay localStorage + `settings-changed` events**, wrapped in per-window hooks; all overlay settings access goes through `loadSettings()` — no Rust settings store.
+
+**Rationale:** TS and Rust were independent authors of overlay geometry (divergent no-notch fallbacks 185/140/200, hand-mirrored 44px drop height) and the expand choreography was un-acknowledged (CSS could animate into a window that had not grown). Two independent architecture reviews converged on the diagnosis; runtime Rust-owned geometry beats a shared-constants file because it shares the *derivation*, not just values, making formula drift structurally impossible rather than test-guarded.
+
+**Status:** active
+
+**References:** issue #280 (review memo + drift note), PR #290 (PR1 geometry contract), PR #296 (PR2 expansion controller), `overlay/pr3-split` (PR3 component split), `docs/features/overlay.md`.
+
+---
+
 ## 2026-06-23: In-process Tier 3 abandoned (ggml ABI clash); deferred to a sidecar
 
 **Decision:** Tiers 1–2 (no-LLM post-model correction) ship as planned. Tier 3 (local-LLM cleanup) is NOT shipped in-process — the `llama-cpp-2` integration and dormant settings/module were removed from the app crate. Tier 3 is deferred to a future sidecar-process design. This supersedes the Tier-3 portion of the entry below (Tiers 1–2 portion still stands).
