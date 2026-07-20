@@ -47,7 +47,7 @@ function modelLabel(report: BenchmarkReport, modelName: string | null): string {
 }
 
 type LatencyResult = BenchmarkModelResult & { warmMedianMs: number; warmP95Ms: number };
-type AccuracyResult = BenchmarkModelResult & { wordErrorRate: number };
+type AccuracyResult = BenchmarkModelResult & { normalizedWordErrorRate: number };
 
 function latencyResults(report: BenchmarkReport): LatencyResult[] {
   return report.results.filter((result): result is LatencyResult => (
@@ -57,7 +57,7 @@ function latencyResults(report: BenchmarkReport): LatencyResult[] {
 
 function accuracyResults(report: BenchmarkReport): AccuracyResult[] {
   return report.results.filter((result): result is AccuracyResult => (
-    !result.error && result.wordErrorRate !== null
+    !result.error && result.normalizedWordErrorRate !== null
   ));
 }
 
@@ -103,11 +103,11 @@ function AccuracyChart({ report }: { report: BenchmarkReport }) {
     <div>
       <div className="mb-2 flex items-center justify-between gap-3">
         <h4 className="text-xs font-semibold text-stone-700 dark:text-stone-300">Word accuracy</h4>
-        <span className="text-[10px] text-stone-400 dark:text-stone-500">Higher is better</span>
+        <span className="text-[10px] text-stone-400 dark:text-stone-500">Normalized / higher is better</span>
       </div>
       <div className="space-y-2">
         {results.map((result) => {
-          const accuracy = Math.max(0, 1 - result.wordErrorRate);
+          const accuracy = Math.max(0, 1 - result.normalizedWordErrorRate);
           return (
             <div key={result.modelName} className="grid grid-cols-[6.5rem_1fr_3rem] items-center gap-2">
               <span className="truncate text-[11px] font-medium text-stone-600 dark:text-stone-300" title={result.label}>{result.label}</span>
@@ -485,7 +485,7 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
                   <th className="px-2 py-2 font-medium text-right">Median</th>
                   <th className="px-2 py-2 font-medium text-right">P95</th>
                   <th className="px-2 py-2 font-medium text-right">Speed</th>
-                  <th className="pl-2 py-2 font-medium text-right">WER</th>
+                  <th className="pl-2 py-2 font-medium text-right">WER norm (raw)</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-stone-200 dark:divide-stone-700 text-stone-700 dark:text-stone-300">
@@ -502,7 +502,10 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
                         <td className="px-2 py-2.5 text-right tabular-nums">{milliseconds(result.warmMedianMs)}</td>
                         <td className="px-2 py-2.5 text-right tabular-nums">{milliseconds(result.warmP95Ms)}</td>
                         <td className="px-2 py-2.5 text-right tabular-nums">{speed(result.realtimeFactor)}</td>
-                        <td className="pl-2 py-2.5 text-right tabular-nums">{percentage(result.wordErrorRate)}</td>
+                        <td className="pl-2 py-2.5 text-right tabular-nums">
+                          {percentage(result.normalizedWordErrorRate)}
+                          <span className="text-stone-400 dark:text-stone-500"> ({percentage(result.wordErrorRate)})</span>
+                        </td>
                       </>
                     )}
                   </tr>
@@ -512,7 +515,7 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
           </div>
 
           <p className="text-[11px] leading-relaxed text-stone-500 dark:text-stone-400">
-            WER counts changed, missing, and extra words against the known transcript. Balanced means the fastest model within 2 accuracy points of the best result.
+            WER counts changed, missing, and extra words against the known transcript. Normalized WER first ignores formatting and number/unit spelling (16 kHz = sixteen kilohertz, front end = frontend) so it reflects recognition, not formatting; raw WER is shown in parentheses. Accuracy ranking and the Accurate/Balanced picks use the normalized number. Balanced means the fastest model within 2 accuracy points of the best result.
           </p>
 
           <div className="space-y-2">
@@ -531,7 +534,10 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
                     <div key={fixture.fixtureId} className="text-[11px] leading-relaxed">
                       <div className="flex justify-between gap-3 font-medium text-stone-700 dark:text-stone-300">
                         <span>{fixture.label} / {fixture.audioSeconds.toFixed(1)}s</span>
-                        <span>{fixture.wordErrors}/{fixture.referenceWords} errors</span>
+                        <span>
+                          {fixture.normalizedWordErrors}/{fixture.normalizedReferenceWords} errors
+                          <span className="text-stone-400 dark:text-stone-500"> ({fixture.wordErrors}/{fixture.referenceWords} raw)</span>
+                        </span>
                       </div>
                       <div className="mt-1 grid gap-1 text-stone-500 dark:text-stone-400">
                         <p><span className="font-medium">Reference:</span> {fixture.reference}</p>

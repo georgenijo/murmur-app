@@ -36,6 +36,9 @@ export interface BenchmarkFixtureResult {
   wordErrorRate: number;
   wordErrors: number;
   referenceWords: number;
+  normalizedWordErrorRate: number;
+  normalizedWordErrors: number;
+  normalizedReferenceWords: number;
   reference: string;
   transcript: string;
 }
@@ -51,6 +54,7 @@ export interface BenchmarkModelResult {
   warmP95Ms: number | null;
   realtimeFactor: number | null;
   wordErrorRate: number | null;
+  normalizedWordErrorRate: number | null;
   memoryDeltaMb: number;
   fixtures: BenchmarkFixtureResult[];
   error: string | null;
@@ -101,6 +105,9 @@ function isFixtureResult(value: unknown): value is BenchmarkFixtureResult {
     && isNumber(value.wordErrorRate)
     && isNumber(value.wordErrors)
     && isNumber(value.referenceWords)
+    && isNumber(value.normalizedWordErrorRate)
+    && isNumber(value.normalizedWordErrors)
+    && isNumber(value.normalizedReferenceWords)
     && typeof value.reference === 'string'
     && typeof value.transcript === 'string';
 }
@@ -117,6 +124,7 @@ function isModelResult(value: unknown): value is BenchmarkModelResult {
     && isNullableNumber(value.warmP95Ms)
     && isNullableNumber(value.realtimeFactor)
     && isNullableNumber(value.wordErrorRate)
+    && isNullableNumber(value.normalizedWordErrorRate)
     && isNumber(value.memoryDeltaMb)
     && Array.isArray(value.fixtures)
     && value.fixtures.every(isFixtureResult)
