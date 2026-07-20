@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { listen, emit } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { cursorPosition, getCurrentWindow } from '@tauri-apps/api/window';
-import { isDictationStatus } from '../lib/types';
 import type { DictationStatus } from '../lib/types';
 import { flog } from '../lib/log';
 import { STORAGE_KEY, DEFAULT_SETTINGS, loadSettings, saveSettings } from '../lib/settings';
@@ -97,7 +96,6 @@ function SlidersIcon({ stroke }: { stroke: string }) {
 }
 
 export function OverlayWidget() {
-  const [status, setStatus] = useState<DictationStatus>('idle');
   const [showCancelled, setShowCancelled] = useState(false);
   const [showHotkeyMiss, setShowHotkeyMiss] = useState(false);
   const [lockedMode, setLockedMode] = useState(false);
@@ -114,7 +112,6 @@ export function OverlayWidget() {
   const [notchHeight, setNotchHeight] = useState(0);
   const [notchWidth, setNotchWidth] = useState(185);
   const islandRef = useRef<HTMLDivElement | null>(null);
-  const statusRef = useRef(status);
   const lockedRef = useRef(lockedMode);
   const disabledRef = useRef(disabled);
   const expandedRef = useRef(expanded);
@@ -132,6 +129,8 @@ export function OverlayWidget() {
     liveTranscriptPreview && previewSupported,
     previewModel,
   );
+  const status = partialTranscript.status;
+  const statusRef = useRef(status);
 
   useEffect(() => { statusRef.current = status; }, [status]);
   useEffect(() => { lockedRef.current = lockedMode; }, [lockedMode]);
@@ -199,29 +198,20 @@ export function OverlayWidget() {
   // TODO: re-enable position persistence after notch positioning is stable.
   // Both save (onMoved) and restore are disabled to avoid saving programmatic repositions.
 
-  // Subscribe to recording status events from Rust
+  // The preview hook registers status and transcript listeners together, then
+  // reconciles both from one active-session snapshot if startup events were missed.
   useEffect(() => {
-    let cancelled = false;
-    let unlisten: (() => void) | null = null;
-    listen<string>('recording-status-changed', (event) => {
-      if (isDictationStatus(event.payload)) {
-        flog.info('overlay', 'status changed', { status: event.payload });
-        setStatus(event.payload);
-        if (event.payload === 'idle') {
-          setLockedMode(false);
-        } else {
-          setShowHotkeyMiss(false);
-          if (hotkeyMissTimerRef.current) {
-            clearTimeout(hotkeyMissTimerRef.current);
-            hotkeyMissTimerRef.current = null;
-          }
-        }
+    flog.info('overlay', 'status changed', { status });
+    if (status === 'idle') {
+      setLockedMode(false);
+    } else {
+      setShowHotkeyMiss(false);
+      if (hotkeyMissTimerRef.current) {
+        clearTimeout(hotkeyMissTimerRef.current);
+        hotkeyMissTimerRef.current = null;
       }
-    }).then((fn) => {
-      if (cancelled) { fn(); } else { unlisten = fn; }
-    });
-    return () => { cancelled = true; unlisten?.(); };
-  }, []);
+    }
+  }, [status]);
 
   // A rejected-tap event is emitted only when the double-tap window expires.
   // The setting gate lives here because the overlay is a separate webview with

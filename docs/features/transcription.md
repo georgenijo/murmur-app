@@ -66,7 +66,7 @@ The worker holds no queued audio. It reads the current buffer length, copies onl
 
 The backend also emits versioned `recording-session-started` and `partial-transcript-cleared` lifecycle events. Clears are recording-ID scoped, so a late cancellation or fallback from an older session cannot erase or update a newer preview. Fallback clears provisional text immediately while the existing full-buffer path remains authoritative. Partial contents are never written to logs, history, stats, settings, files, the clipboard, or auto-paste; telemetry records only first-partial latency, update count, last-partial-to-final latency, and completed/fallback flags.
 
-The overlay registers the full lifecycle listener set before reconciling a privacy-safe active-session snapshot from Rust. This closes the WebView-startup ordering gap without replaying provisional content. Frontend diagnostics record listener readiness, accepted/rejected counts, recording-ID match, chunk index, and clear reason only. The native overlay renders accepted Whisper updates below the physical notch; Parakeet/Core ML remain final-only and say so explicitly.
+The overlay registers status and transcript lifecycle listeners as one set before reconciling a privacy-safe active-session snapshot from Rust. The snapshot restores both the active recording ID and recording/processing status, closing the WebView-startup ordering gap without replaying provisional content. Frontend diagnostics record listener readiness, accepted/rejected counts, recording-ID match, chunk index, and clear reason only. The native overlay renders accepted Whisper updates below the physical notch; Parakeet/Core ML remain final-only and say so explicitly.
 
 ## Model Options
 

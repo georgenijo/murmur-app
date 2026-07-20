@@ -2,6 +2,8 @@ import { useEffect, useReducer } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { flog } from '../log';
+import { isDictationStatus } from '../types';
+import type { DictationStatus } from '../types';
 
 export const PARTIAL_TRANSCRIPT_CONTRACT_VERSION = 1 as const;
 
@@ -27,6 +29,7 @@ export interface PartialTranscriptClearedPayload extends RecordingSessionStarted
 }
 
 export interface PartialTranscriptState {
+  status: DictationStatus;
   activeRecordingId: number | null;
   latestRecordingId: number | null;
   text: string;
@@ -55,6 +58,8 @@ export interface ActiveRecordingSessionSnapshot {
 
 export type PartialTranscriptAction =
   | { type: 'sessionStarted'; payload: RecordingSessionStartedPayload }
+  | { type: 'sessionSnapshot'; payload: ActiveRecordingSessionSnapshot }
+  | { type: 'statusChanged'; status: DictationStatus }
   | { type: 'partialReceived'; payload: PartialTranscriptPayload }
   | { type: 'sessionCleared'; payload: PartialTranscriptClearedPayload }
   | { type: 'settingsChanged'; enabled: boolean; model: string };
@@ -64,6 +69,7 @@ export function createPartialTranscriptState(
   model: string,
 ): PartialTranscriptState {
   return {
+    status: 'idle',
     activeRecordingId: null,
     latestRecordingId: null,
     text: '',
@@ -108,6 +114,22 @@ export function partialTranscriptReducer(
         ...clearSession(state, action.payload.recordingId),
         latestRecordingId: action.payload.recordingId,
       };
+    case 'sessionSnapshot': {
+      const { recordingId, status } = action.payload;
+      if (state.latestRecordingId !== null && recordingId < state.latestRecordingId) {
+        return state;
+      }
+      if (recordingId === state.latestRecordingId) {
+        return state.status === status ? state : { ...state, status };
+      }
+      return {
+        ...clearSession(state, recordingId),
+        latestRecordingId: recordingId,
+        status,
+      };
+    }
+    case 'statusChanged':
+      return state.status === action.status ? state : { ...state, status: action.status };
     case 'partialReceived': {
       const { payload } = action;
       const decision = classifyPartialTranscriptEvent(state, payload);
@@ -264,6 +286,11 @@ export function usePartialTranscript(enabled: boolean, model: string) {
             dispatch({ type: 'sessionStarted', payload: event.payload });
           }
         }),
+        listen<unknown>('recording-status-changed', (event) => {
+          if (isDictationStatus(event.payload)) {
+            dispatch({ type: 'statusChanged', status: event.payload });
+          }
+        }),
         listen<unknown>('partial-transcript', (event) => {
           if (isPartialTranscriptPayload(event.payload)) {
             dispatch({ type: 'partialReceived', payload: event.payload });
@@ -319,13 +346,7 @@ export function usePartialTranscript(enabled: boolean, model: string) {
             status: snapshot.status,
             source: 'readiness_snapshot',
           });
-          dispatch({
-            type: 'sessionStarted',
-            payload: {
-              contractVersion: PARTIAL_TRANSCRIPT_CONTRACT_VERSION,
-              recordingId: snapshot.recordingId,
-            },
-          });
+          dispatch({ type: 'sessionSnapshot', payload: snapshot });
         }
       } catch (error) {
         flog.warn('overlay-preview', 'active session reconciliation failed', {

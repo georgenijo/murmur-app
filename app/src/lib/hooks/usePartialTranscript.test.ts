@@ -174,6 +174,21 @@ describe('partialTranscriptReducer', () => {
 });
 
 describe('active session readiness snapshot', () => {
+  it('recovers status and preview when the startup status event was missed', () => {
+    const initial = createPartialTranscriptState(true, 'small.en');
+    const recovered = partialTranscriptReducer(initial, {
+      type: 'sessionSnapshot',
+      payload: { recordingId: 12, status: 'recording' },
+    });
+    const updated = withPartial(recovered, 12, 'visible after snapshot recovery', 1);
+
+    expect(initial.status).toBe('idle');
+    expect(recovered.status).toBe('recording');
+    expect(recovered.activeRecordingId).toBe(12);
+    expect(updated.status).toBe('recording');
+    expect(updated.text).toBe('visible after snapshot recovery');
+  });
+
   it('accepts only active recording or processing snapshots', () => {
     expect(isActiveRecordingSessionSnapshot({ recordingId: 12, status: 'recording' })).toBe(true);
     expect(isActiveRecordingSessionSnapshot({ recordingId: 12, status: 'processing' })).toBe(true);
