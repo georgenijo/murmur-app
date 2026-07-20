@@ -14,24 +14,7 @@ bench/make_audio.sh
 cd app/src-tauri
 cargo run --release --example transcription_bench -- --engine coreml --iterations 5
 cargo run --release --example transcription_bench -- --engine parakeet --iterations 5
-
-# Whisper stop-latency comparison on the longest fixture. The first command-line
-# argument is a 16kHz mono WAV; the second is an installed Whisper model name.
-cargo run --release --example streaming_bench -- ../../bench/audio/xlong.wav base.en
 ```
-
-The streaming runner warms the model, times a full-buffer batch pass, then simulates the production 10-second window / 8-second step / 2-second overlap algorithm. During-recording chunk time is reported separately; `incremental_post_stop_ms` measures only the final tail that remains after stop. It also reports reference WER and incremental-vs-batch WER so latency improvements are never presented without an output comparison.
-
-### Issue #129 incremental result
-
-Measured on an Apple M4 Mac mini (24 GB) with `base.en` and the 28.50-second `xlong` fixture on 2026-07-18. Latencies are medians of five warm runs:
-
-| Path | Post-stop inference | Reference WER | Output coverage |
-| --- | ---: | ---: | --- |
-| Full-buffer batch | 298.0 ms | 25.3% | Truncated after "for dictating" |
-| Incremental, final tail | 95.4 ms | 13.3% | Complete through "throughout the day" |
-
-The final-tail path was 3.12x faster after stop. Three bounded chunks used a median ~433 ms of inference spread across the 28.5-second recording; no queued work or second model context was created. Incremental-vs-batch WER was 12.7%, reported because chunking changes decoding context rather than promising byte-identical output.
 
 ## Apple M4 results
 

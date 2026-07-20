@@ -48,7 +48,7 @@ The visible pill width adjusts based on recording state and hover:
 
 The full overlay window is `windowW` wide and is horizontally centered at the top of the screen (y=0).
 
-Height is composed as `collapsedH + preview + expanded`: a provisional preview adds a `previewRowH` row below the physical notch, and hover independently adds the `dropdownH` dropdown row. These rows compose, so neither clips the other.
+Height is `collapsedH` at rest. Hover is the only dynamic height change: the window grows to `expandedH`, where `expandedH = collapsedH + dropdownH`.
 
 Width transitions over 400ms and height over 360ms, both using the spring curve `cubic-bezier(0.34, 1.56, 0.64, 1)`.
 
@@ -56,7 +56,7 @@ Width transitions over 400ms and height over 360ms, both using the spring curve 
 
 Hovering the pill expands it downward into a quick-settings dropdown. The dropdown is identical regardless of state — only the top bar differs.
 
-The entire expand/collapse and native-resize lifecycle is owned by one controller hook, `useOverlayExpansion` (`app/src/lib/hooks/useOverlayExpansion.ts`). Nothing else in the overlay calls `set_overlay_surface` or owns the dwell/collapse/shrink timers — the controller is the single writer to the native resize path.
+The entire expand/collapse and native-resize lifecycle is owned by one controller hook, `useOverlayExpansion` (`app/src/lib/hooks/useOverlayExpansion.ts`). Nothing else in the overlay calls `set_overlay_expanded` or owns the dwell/collapse/shrink timers — the controller is the single writer to the native resize path.
 
 ### Phase model
 
@@ -70,8 +70,8 @@ The controller runs a four-phase state machine:
 | `closing` | Dropdown hidden immediately; the window stays tall until the close animation finishes, then shrinks. |
 
 - **Expand** requires hover intent: the cursor must dwell on the island for `HOVER_OPEN_DWELL_MS` (150ms) before opening — grazing the notch does nothing. **Collapse** begins 300ms after the cursor leaves.
-- **Acknowledged ordering:** because a transparent overlay with cursor events enabled captures the mouse across its whole frame, the window is **dynamically resized** rather than pre-allocated tall — otherwise the idle overlay would create a click dead-zone below the notch. Expand enqueues the grow, **awaits the ack from `set_overlay_surface`** (which returns the applied frame), and only then reveals the card, so CSS can never animate the dropdown into a window that has not yet grown. If the resize is rejected, the controller reverts to `collapsed` without revealing. Collapse hides the card immediately, then shrinks the window `SHRINK_DELAY_MS` later so the dropdown is never clipped mid-transition.
-- **Serialized surface writer:** all `set_overlay_surface` calls — hover grow/shrink *and* the below-notch preview-row sync — flow through one async queue with a generation counter. A newer request supersedes any queued or in-flight older one, and stale acks are dropped, so rapid enter/leave/enter can never apply an out-of-date resize. Re-entry while `closing` cancels the pending shrink and reopens cleanly.
+- **Acknowledged ordering:** because a transparent overlay with cursor events enabled captures the mouse across its whole frame, the window is **dynamically resized** rather than pre-allocated tall — otherwise the idle overlay would create a click dead-zone below the notch. Expand enqueues the grow, **awaits the ack from `set_overlay_expanded`** (which returns the applied frame), and only then reveals the card, so CSS can never animate the dropdown into a window that has not yet grown. If the resize is rejected, the controller reverts to `collapsed` without revealing. Collapse hides the card immediately, then shrinks the window `SHRINK_DELAY_MS` later so the dropdown is never clipped mid-transition.
+- **Serialized surface writer:** all `set_overlay_expanded` calls flow through one async queue with a generation counter. A newer request supersedes any queued or in-flight older one, and stale acks are dropped, so rapid enter/leave/enter can never apply an out-of-date resize. Re-entry while `closing` cancels the pending shrink and reopens cleanly.
 - **Motion tokens:** the transition durations/easings live in `app/src/lib/overlayMotion.ts` (width 400ms, height 360ms, spring `cubic-bezier(0.34,1.56,0.64,1)`, dwell 150ms, collapse-delay 300ms). `SHRINK_DELAY_MS` is **derived** as `OVERLAY_HEIGHT_MS + 20` (= 380ms) rather than a hand-tuned constant, so it can never drift from the height transition it guards. The island's `transition` string is templated from these tokens.
 - **Single gated poller:** the overlay is non-activating and sits above the menu bar, so macOS can miss DOM hover events. One 150ms interval branches on phase — strict entry bounds arm the dwell while `collapsed`/`closing`; padded exit bounds collapse the card while `open`. Gating: ticks do **no IPC** (no `outerPosition`/`cursorPosition`) while the overlay is **hidden**; while **disabled**, only the `collapsed` entry detector is skipped (battery) — the exit watchdog stays alive for `open`/`closing`, so clicking the dropdown's own Disable control can never strand the card open on a missed mouseleave. Visibility is tracked via `overlay-visible-changed`, defaulting to visible on mount. A display change (`overlay-geometry-changed`) is authoritative: it cancels timers, forces `collapsed`, and enqueues one corrective collapse resize through the writer (which supersedes any straggler grow and repairs the window).
   - **Note:** `overlay-visible-changed` is emitted by the `show_overlay`/`hide_overlay` commands, which are **not currently invoked in production** — the overlay is shown once at setup (`overlay_win.show()` in `lib.rs`) and stays visible. The visibility ref therefore defaults to `true` so first-hover works from mount, and the `disabled`-phase gate is the active battery saver today; the visibility gate is plumbing that activates if/when show/hide get wired to dynamic callers.
@@ -99,10 +99,10 @@ The overlay has three visual states driven by `recording-status-changed` Tauri e
 Small mic SVG icon at 40% white opacity. Compact width.
 
 ### Recording
-Expanded width. The red pulsing dot and elapsed timer occupy the visible left wing, while the animated 7-bar waveform occupies the right. The physical notch obscures the center of the top bar, so long Whisper recordings render the latest suffix of cumulative incremental text in a clearly labeled `Provisional` row immediately below it. The preview is one line and has pointer events disabled.
+Expanded width. The red pulsing dot and elapsed timer occupy the visible left wing, while the animated 7-bar waveform occupies the right. No transcript text is displayed while recording.
 
 ### Processing
-Same expanded width. Spinning circle on the left; the waveform is hidden (visible only while recording). A provisional preview may remain visible until the authoritative final result completes, then clears.
+Same expanded width. Spinning circle on the left; the waveform is hidden (visible only while recording). No transcript text is displayed while processing.
 
 ### Hotkey Timing Miss (optional)
 
@@ -162,19 +162,16 @@ The observer is intentionally leaked (`std::mem::forget`) for app-lifetime obser
 |---------|-------------|
 | `show_overlay` | Positions, sizes, and shows the overlay window. Re-enables mouse events. Emits `overlay-visible-changed(true)` after showing. |
 | `hide_overlay` | Hides the overlay window. Gracefully handles missing window. Emits `overlay-visible-changed(false)` after hiding. |
-| `set_overlay_surface` | Composes the below-notch preview row and hover dropdown height independently, then **returns the applied frame** as `AppliedSurface { windowW, windowH }`. The expansion controller awaits this value as the resize ack before revealing the dropdown. Width remains fixed and top anchored. Sizes derived from `geometry_for()`. |
+| `set_overlay_expanded` | Switches between the collapsed and expanded frames while keeping the window top anchored, then **returns the applied frame** as `AppliedSurface { windowW, windowH }`. The expansion controller awaits this value as the resize ack before revealing the dropdown. Sizes are derived from `geometry_for()`. |
 | `get_overlay_geometry` | Returns the current `OverlayGeometry` (never null) derived from the cached notch via `geometry_for()`. |
 
-`set_overlay_surface` and `position_overlay_default` both size the window from `geometry_for()`, so they stay consistent.
+`set_overlay_expanded` and `position_overlay_default` both size the window from `geometry_for()`, so they stay consistent.
 
 ## Events
 
 | Event | Payload | Description |
 |-------|---------|-------------|
 | `recording-status-changed` | String | Drives visual state transitions |
-| `recording-session-started` | `{ contractVersion, recordingId }` | Selects the active session and clears any older preview |
-| `partial-transcript` | `{ contractVersion, recordingId, text, chunkIndex, processedAudioMs }` | Supplies cumulative in-memory provisional text for the active session only |
-| `partial-transcript-cleared` | `{ contractVersion, recordingId, reason }` | Session-scoped cleanup on cancellation, fallback, error, or finalization |
 | `audio-level` | Number (RMS 0.0-1.0) | Real-time audio level for waveform |
 | `overlay-geometry-changed` | `OverlayGeometry` | Display configuration changed; carries the recomputed geometry (never null). Authoritative reset for the expansion controller (forces `collapsed`). |
 | `overlay-visible-changed` | Boolean | Overlay window shown (`true`) / hidden (`false`); gates the expansion controller's cursor poller so it does no IPC while hidden |
@@ -183,13 +180,7 @@ The observer is intentionally leaked (`std::mem::forget`) for app-lifetime obser
 | `hotkey-tap-rejected` | `{ reason: "second_tap_expired", mode: "double_tap" \| "both" }` | Drives the opt-in amber timing-miss flash |
 | `open-settings` | (none) | Overlay gear asks the main window to open the Settings panel |
 
-The entire overlay surface is a Tauri drag region (`data-tauri-drag-region`), allowing the user to reposition it. Overlay position save/restore is currently disabled (TODO: re-enable after notch positioning is stable).
-
-## Live transcript preview
-
-`liveTranscriptPreview` is a local Settings boolean and defaults to enabled. Turning it off clears visible provisional text immediately and ignores further partial updates while disabled. The overlay tracks the active `recordingId`, rejects stale or out-of-order chunks, and clears on cancellation, incremental fallback, final completion, model change, error, or a newer recording. Status and transcript listeners register together before a privacy-safe active-session snapshot reconciles both the session ID and active status, so a WebView mounting during recording cannot remain visually idle after missing startup events. A monotonic lifecycle generation discards the snapshot if a status, session, clear/cancel, completion, or settings event arrives while the command is in flight, preventing stale recovery from reactivating a finished session. Diagnostics contain only listener readiness, event counts, IDs, match decisions, chunk indexes, and clear reasons—never provisional text.
-
-Live preview is available only for Whisper models. When Parakeet or Core ML is selected, Settings disables the preview control with an unavailable explanation, and an active recording shows a `Final only` status instead of silently waiting for updates that backend cannot produce.
+Only the top bar is a Tauri drag region (`data-tauri-drag-region`); the dropdown controls remain clickable. Overlay position save/restore is currently disabled (TODO: re-enable after notch positioning is stable).
 
 ## Transparent window caveat
 

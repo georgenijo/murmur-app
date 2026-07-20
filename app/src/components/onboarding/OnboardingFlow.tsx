@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   checkAccessibilityPermission,
   checkMicrophonePermissionStatus,
-  checkModelExists,
   openMicrophoneSettings,
   requestAccessibilityPermission,
   requestMicrophoneAccess,
@@ -10,6 +9,7 @@ import {
   resetMicrophonePermission,
   type MicPermissionStatus,
 } from '../../lib/dictation';
+import { getModelRuntimeCatalog } from '../../lib/modelRuntime';
 import { DOWNLOAD_MODEL_KEYS, ModelDownloadPanel } from '../ModelDownloader';
 import type { DoubleTapKey, ModelOption, RecordingMode } from '../../lib/settings';
 
@@ -107,19 +107,23 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   useEffect(() => {
     if (step !== 'model') return;
     let stale = false;
-    Promise.all(
-      DOWNLOAD_MODEL_KEYS.map((model) =>
-        checkModelExists(model).then(
-          (exists) => [model, exists] as const,
-          // Fail open per row (skip the download) — matches the standalone
-          // gate's behavior; a genuine fresh install resolves to `false`
-          // rather than throwing.
-          () => [model, true] as const,
-        ),
-      ),
-    ).then((entries) => {
+    getModelRuntimeCatalog().then((catalog) => {
       if (!stale) {
+        const byName = new Map(catalog.map((model) => [model.modelName, model]));
+        const entries = DOWNLOAD_MODEL_KEYS.map((model) => [
+          model,
+          byName.get(model)?.installState === 'installed',
+        ] as const);
         setInstalledModels(Object.fromEntries(entries) as Partial<Record<ModelOption, boolean>>);
+      }
+    }, () => {
+      if (!stale) {
+        // Preserve the previous fail-open onboarding behavior if the status
+        // command itself is unavailable; genuine missing models are reported
+        // as notInstalled rather than rejecting the request.
+        setInstalledModels(Object.fromEntries(
+          DOWNLOAD_MODEL_KEYS.map((model) => [model, true]),
+        ) as Partial<Record<ModelOption, boolean>>);
       }
     });
     return () => {

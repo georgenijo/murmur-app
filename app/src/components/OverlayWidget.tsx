@@ -1,13 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { listen, emit } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
+import { isDictationStatus } from '../lib/types';
 import type { DictationStatus } from '../lib/types';
 import { flog } from '../lib/log';
 import { STORAGE_KEY, DEFAULT_SETTINGS, loadSettings, saveSettings } from '../lib/settings';
 import type { Settings } from '../lib/settings';
 import { buildConfigureOptions } from '../lib/dictation';
 import type { DictationResponse } from '../lib/dictation';
-import { usePartialTranscript } from '../lib/hooks/usePartialTranscript';
 import { useOverlayGeometry } from '../lib/hooks/useOverlayGeometry';
 import { useOverlayExpansion } from '../lib/hooks/useOverlayExpansion';
 import { OVERLAY_ISLAND_TRANSITION } from '../lib/overlayMotion';
@@ -23,35 +23,6 @@ function formatElapsed(seconds: number): string {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
   return `${m}:${String(s).padStart(2, '0')}`;
-}
-
-export function latestPreviewText(text: string, maxCharacters = 36): string {
-  const normalized = text.trim();
-  if (normalized.length <= maxCharacters) return normalized;
-  const suffix = normalized.slice(-maxCharacters);
-  const firstBoundary = suffix.indexOf(' ');
-  return `…${(firstBoundary >= 0 ? suffix.slice(firstBoundary + 1) : suffix).trim()}`;
-}
-
-export function supportsLiveTranscriptPreview(model: string): boolean {
-  return !model.startsWith('parakeet-');
-}
-
-export function getOverlayPreviewPresentation(
-  status: DictationStatus,
-  enabled: boolean,
-  model: string,
-  text: string,
-) {
-  const supported = supportsLiveTranscriptPreview(model);
-  const active = status === 'recording' || status === 'processing';
-  const previewText = enabled && supported && active ? latestPreviewText(text) : '';
-  const unavailable = !supported && status === 'recording';
-  return {
-    previewText,
-    unavailable,
-    visible: Boolean(previewText) || unavailable,
-  };
 }
 
 function PowerIcon({ stroke }: { stroke: string }) {
@@ -89,16 +60,13 @@ function SlidersIcon({ stroke }: { stroke: string }) {
 }
 
 export function OverlayWidget() {
+  const [status, setStatus] = useState<DictationStatus>('idle');
   const [showCancelled, setShowCancelled] = useState(false);
   const [showHotkeyMiss, setShowHotkeyMiss] = useState(false);
   const [lockedMode, setLockedMode] = useState(false);
   const [disabled, setDisabled] = useState(false);
   const [autoPaste, setAutoPaste] = useState(false);
   const [fileOutputEnabled, setFileOutputEnabled] = useState(false);
-  const [liveTranscriptPreview, setLiveTranscriptPreview] = useState(
-    DEFAULT_SETTINGS.liveTranscriptPreview,
-  );
-  const [previewModel, setPreviewModel] = useState(DEFAULT_SETTINGS.model);
   const [elapsed, setElapsed] = useState(0);
   const geometry = useOverlayGeometry();
   const lockedRef = useRef(lockedMode);
@@ -108,27 +76,13 @@ export function OverlayWidget() {
   const audioLevelRef = useRef(0);
   const hotkeyMissFeedbackRef = useRef(false);
   const barRefs = useRef<(HTMLDivElement | null)[]>([]);
-  const previewSupported = supportsLiveTranscriptPreview(previewModel);
-  const partialTranscript = usePartialTranscript(
-    liveTranscriptPreview && previewSupported,
-    previewModel,
-  );
-  const status = partialTranscript.status;
   const statusRef = useRef(status);
 
-  const previewPresentation = getOverlayPreviewPresentation(
-    status,
-    liveTranscriptPreview,
-    previewModel,
-    partialTranscript.text,
-  );
-  const previewRowVisible = previewPresentation.visible;
-
   // The expansion controller owns the entire expand/collapse + surface lifecycle:
-  // dwell/collapse/shrink timers, the serialized set_overlay_surface writer, and
+  // dwell/collapse/shrink timers, the serialized set_overlay_expanded writer, and
   // the single cursor poller. It is the only writer to the native resize path.
   const { phase, expanded, expandedRef, islandRef, onHoverStart, onHoverEnd } =
-    useOverlayExpansion({ previewRowVisible, disabled });
+    useOverlayExpansion({ disabled });
 
   useEffect(() => { statusRef.current = status; }, [status]);
   useEffect(() => { lockedRef.current = lockedMode; }, [lockedMode]);
@@ -138,8 +92,6 @@ export function OverlayWidget() {
     setDisabled(settings.disabled);
     setAutoPaste(settings.autoPaste);
     setFileOutputEnabled(settings.saveTranscript || settings.saveAudio);
-    setLiveTranscriptPreview(settings.liveTranscriptPreview);
-    setPreviewModel(settings.model);
     hotkeyMissFeedbackRef.current = settings.hotkeyMissFeedback;
     if (!settings.hotkeyMissFeedback) setShowHotkeyMiss(false);
   }, []);
@@ -189,20 +141,29 @@ export function OverlayWidget() {
   // TODO: re-enable position persistence after notch positioning is stable.
   // Both save (onMoved) and restore are disabled to avoid saving programmatic repositions.
 
-  // The preview hook registers status and transcript listeners together, then
-  // reconciles both from one active-session snapshot if startup events were missed.
+  // Subscribe to recording status events from Rust.
   useEffect(() => {
-    flog.info('overlay', 'status changed', { status });
-    if (status === 'idle') {
-      setLockedMode(false);
-    } else {
-      setShowHotkeyMiss(false);
-      if (hotkeyMissTimerRef.current) {
-        clearTimeout(hotkeyMissTimerRef.current);
-        hotkeyMissTimerRef.current = null;
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    listen<unknown>('recording-status-changed', (event) => {
+      if (isDictationStatus(event.payload)) {
+        flog.info('overlay', 'status changed', { status: event.payload });
+        setStatus(event.payload);
+        if (event.payload === 'idle') {
+          setLockedMode(false);
+        } else {
+          setShowHotkeyMiss(false);
+          if (hotkeyMissTimerRef.current) {
+            clearTimeout(hotkeyMissTimerRef.current);
+            hotkeyMissTimerRef.current = null;
+          }
+        }
       }
-    }
-  }, [status]);
+    }).then((fn) => {
+      if (cancelled) { fn(); } else { unlisten = fn; }
+    });
+    return () => { cancelled = true; unlisten?.(); };
+  }, []);
 
   // A rejected-tap event is emitted only when the double-tap window expires.
   // The setting gate lives here because the overlay is a separate webview with
@@ -494,7 +455,6 @@ export function OverlayWidget() {
   // rather than TS fallback pixels — no mis-sized flash, no fallback constants.
   if (!geometry) return null;
   const topH = geometry.collapsedH;
-
   const effectiveAutoPaste = autoPaste && !fileOutputEnabled;
   const autoPastePaused = autoPaste && fileOutputEnabled;
   const autoPasteLabel = autoPastePaused
@@ -537,9 +497,7 @@ export function OverlayWidget() {
           width: (expanded || isActive)
             ? geometry.pillActiveW
             : geometry.pillIdleW,
-          height: topH
-            + (previewRowVisible ? geometry.previewRowH : 0)
-            + (expanded ? geometry.dropdownH : 0),
+          height: topH + (expanded ? geometry.dropdownH : 0),
           marginLeft: (expanded || isActive)
             ? geometry.pillMarginActive
             : geometry.pillMarginIdle,
@@ -610,37 +568,6 @@ export function OverlayWidget() {
             </div>
           )}
         </div>
-
-        {/* The physical notch hides the top-bar center. Put preview/status below it. */}
-        {previewRowVisible && (
-          <div
-            aria-label={previewPresentation.unavailable
-              ? 'Live transcript preview unavailable'
-              : 'Provisional transcript preview'}
-            className="flex items-center gap-2 px-3 pointer-events-none"
-            style={{ height: geometry.previewRowH }}
-          >
-            {previewPresentation.unavailable ? (
-              <>
-                <span className="shrink-0 text-[8px] uppercase tracking-[0.12em] text-white/45">
-                  Final only
-                </span>
-                <span className="min-w-0 truncate text-[10px] text-white/65">
-                  Live preview unavailable for Parakeet
-                </span>
-              </>
-            ) : (
-              <>
-                <span className="shrink-0 text-[8px] uppercase tracking-[0.12em] text-amber-300/85">
-                  Provisional
-                </span>
-                <span className="min-w-0 truncate text-[10px] text-white/80">
-                  {previewPresentation.previewText}
-                </span>
-              </>
-            )}
-          </div>
-        )}
 
         {/* Quick-settings dropdown — revealed on hover (identical in idle/recording) */}
         <div

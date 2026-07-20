@@ -7,13 +7,15 @@ import {
   Settings, RecordingMode, DEFAULT_SETTINGS,
   AVAILABLE_MODEL_OPTIONS, DOUBLE_TAP_KEY_OPTIONS, RECORDING_MODE_OPTIONS,
   IDLE_TIMEOUT_OPTIONS, LANGUAGE_OPTIONS, WRITING_STYLE_OPTIONS,
-  AppProfile, VoiceCommand, WritingStyle, WritingStyleChoice, vocabularyPrompt,
+  AppProfile, WritingStyle, WritingStyleChoice, vocabularyPrompt,
 } from '../../lib/settings';
 import { Select } from '../ui/Select';
 import { SettingsSection } from './SettingsSection';
 import { VocabScanStrip } from './VocabScanStrip';
 import { PerformanceLab } from './PerformanceLab';
 import { VocabularyAliasesEditor } from './VocabularyAliasesEditor';
+import { KnowledgeManager } from './KnowledgeManager';
+import { VoiceCommandsManager } from './VoiceCommandsManager';
 import { useVocabScan } from '../../lib/hooks/useVocabScan';
 import {
   modelDownloadLabel,
@@ -22,6 +24,7 @@ import {
 } from '../../lib/modelDownload';
 import type { DictationStatus } from '../../lib/types';
 import type { UpdateStatus } from '../../lib/updater';
+import { useModelRuntimeCatalog } from '../../lib/modelRuntime';
 
 function PasteDelaySlider({ value, onCommit }: { value: number; onCommit: (v: number) => void }) {
   const [draft, setDraft] = useState(value);
@@ -487,108 +490,6 @@ function AppProfilesEditor({ profiles, onChange }: {
   );
 }
 
-// Custom voice commands: user-defined phrase -> replacement pairs applied after
-// the built-in command set. Simple add/remove list.
-function VoiceCommandsEditor({ commands, onChange }: {
-  commands: VoiceCommand[];
-  onChange: (next: VoiceCommand[]) => void;
-}) {
-  const [phrase, setPhrase] = useState('');
-  const [replacement, setReplacement] = useState('');
-
-  const handleAdd = () => {
-    const trimmedPhrase = phrase.trim();
-    if (!trimmedPhrase) return;
-    if (commands.some((c) => c.phrase.toLowerCase() === trimmedPhrase.toLowerCase())) {
-      setPhrase('');
-      setReplacement('');
-      return;
-    }
-    onChange([...commands, { phrase: trimmedPhrase, replacement }]);
-    setPhrase('');
-    setReplacement('');
-  };
-
-  const handleRemove = (p: string) => {
-    onChange(commands.filter((c) => c.phrase !== p));
-  };
-
-  return (
-    <div className="mt-3">
-      <p className="mb-2 text-xs text-on-surface-variant">
-        Add your own spoken phrases. When you say the phrase it's replaced by the
-        text (case-insensitive). Runs after the built-in commands.
-      </p>
-
-      {commands.length > 0 && (
-        <ul className="mb-3 space-y-1.5">
-          {commands.map((c) => (
-            <li
-              key={c.phrase}
-              className="flex items-center gap-2 rounded-lg bg-surface-container-lowest px-2.5 py-2 shadow-sm"
-            >
-              <div className="min-w-0 flex-1">
-                <div className="text-xs font-medium text-on-surface truncate">
-                  “{c.phrase}”
-                </div>
-                <div className="text-xs font-mono text-on-surface-variant truncate">
-                  → {c.replacement || '(empty)'}
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => handleRemove(c.phrase)}
-                aria-label={`Remove voice command ${c.phrase}`}
-                className="shrink-0 rounded-md p-1 text-on-surface-variant transition-colors hover:bg-surface-container hover:text-error focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-              >
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-
-      <div className="space-y-2">
-        <input
-          type="text"
-          value={phrase}
-          onChange={(e) => setPhrase(e.target.value)}
-          placeholder="Spoken phrase (e.g. my email)"
-          autoComplete="off"
-          autoCorrect="off"
-          autoCapitalize="off"
-          spellCheck={false}
-          className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface placeholder:text-on-surface-variant focus:outline-none focus:ring-2 focus:ring-primary"
-        />
-        <div className="flex gap-2">
-          <input
-            type="text"
-            value={replacement}
-            onChange={(e) => setReplacement(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') handleAdd(); }}
-            placeholder="Replacement (e.g. me@example.com)"
-            autoComplete="off"
-            autoCorrect="off"
-            autoCapitalize="off"
-            spellCheck={false}
-            className="min-w-0 flex-1 rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface placeholder:text-on-surface-variant focus:outline-none focus:ring-2 focus:ring-primary"
-          />
-          <button
-            type="button"
-            onClick={handleAdd}
-            disabled={!phrase.trim()}
-            className="shrink-0 px-3 py-2 rounded-lg text-xs font-medium border border-outline-variant/20 bg-surface-container-lowest text-on-surface-variant hover:bg-surface-container hover:text-primary transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            Add
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 interface SettingsPanelProps {
   isOpen: boolean;
   onClose: () => void;
@@ -611,11 +512,13 @@ const SETTINGS_CATEGORIES = [
   { id: 'output', label: 'Output & Paste' },
   { id: 'profiles', label: 'Per-App Profiles' },
   { id: 'vocab', label: 'Vocabulary' },
+  { id: 'knowledge', label: 'Knowledge' },
   { id: 'performance', label: 'Performance' },
   { id: 'about', label: 'About' },
 ] as const;
 
 export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, status, onResetStats, onViewLogs, onRerunSetup, accessibilityGranted, onCheckForUpdate, updateStatus, configureError }: SettingsPanelProps) {
+  const { models: runtimeModels, byName: runtimeByName } = useModelRuntimeCatalog(isOpen);
   const [confirmReset, setConfirmReset] = useState(false);
   const [activeCat, setActiveCat] = useState<string>('transcription');
   const [version, setVersion] = useState('');
@@ -694,7 +597,10 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
   const saveToFile = settings.saveTranscript || settings.saveAudio;
 
   // Model availability check and inline download
-  const [modelAvailable, setModelAvailable] = useState<boolean | null>(null);
+  const selectedRuntime = runtimeByName.get(settings.model);
+  const modelAvailable = selectedRuntime
+    ? selectedRuntime.installState === 'installed'
+    : null;
   const [modelDownload, setModelDownload] = useState<
     | { phase: 'idle' }
     | { phase: 'downloading'; progress: ModelDownloadProgress }
@@ -704,14 +610,8 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
   const downloadModelRef = useRef<string | null>(null);
 
   useEffect(() => {
-    let stale = false;
-    setModelAvailable(null);
     setModelDownload({ phase: 'idle' });
     downloadModelRef.current = null;
-    invoke<boolean>('check_specific_model_exists', { modelName: settings.model })
-      .then((v) => { if (!stale) setModelAvailable(v); })
-      .catch(() => { if (!stale) setModelAvailable(null); });
-    return () => { stale = true; };
   }, [settings.model]);
 
   useEffect(() => {
@@ -747,7 +647,6 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
       if (downloadModelRef.current === modelName) {
         downloadModelRef.current = null;
         setModelDownload({ phase: 'idle' });
-        setModelAvailable(true);
       }
     } catch (err) {
       unlisten?.();
@@ -783,11 +682,11 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
       : 'Hold to start recording, release to stop';
   const isRecording = status !== 'idle';
   const selectedModel = AVAILABLE_MODEL_OPTIONS.find(m => m.value === settings.model);
-  const livePreviewAvailable = selectedModel?.backend === 'whisper';
-  const supportsCoreMl = AVAILABLE_MODEL_OPTIONS.some(m => m.backend === 'coreml');
-  const useNeuralEngine = selectedModel?.backend === 'coreml';
-  // The sherpa Parakeet bundle is English-only; FluidAudio Parakeet v3 is multilingual.
-  const isEnglishOnlyModel = settings.model.endsWith('.en') || selectedModel?.backend === 'parakeet';
+  const supportsCoreMl = runtimeModels.some(model => model.backend === 'coreml' && model.supported);
+  const useNeuralEngine = selectedRuntime?.backend === 'coreml';
+  const isEnglishOnlyModel = selectedRuntime
+    ? !selectedRuntime.capabilities.multilingual
+    : true;
   const activeModelDownload = modelDownload.phase === 'downloading'
     ? modelDownload.progress
     : null;
@@ -888,6 +787,11 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
           <p className="mt-1 text-xs text-on-surface-variant">
             Larger models are more accurate but slower.
           </p>
+          {selectedRuntime && (
+            <p className="mt-1 text-xs text-on-surface-variant" data-testid="model-runtime-status">
+              {selectedRuntime.label}: {selectedRuntime.installState} · {selectedRuntime.lifecycleState}
+            </p>
+          )}
           {isRecording && (
             <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
               Stop recording before changing model
@@ -1163,36 +1067,6 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
             onCommit={(value) => onUpdateSettings({ vadSensitivity: value })}
           />
 
-          <div className="flex items-center justify-between gap-6">
-            <div>
-              <label className="block text-sm font-medium text-on-surface">
-                Live Transcript Preview
-              </label>
-              <p className="mt-1 text-xs text-on-surface-variant">
-                {livePreviewAvailable
-                  ? 'Show clearly labeled provisional text below the notch during long recordings'
-                  : 'Unavailable for Parakeet and Core ML; final transcription still appears after stop'}
-              </p>
-            </div>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={settings.liveTranscriptPreview}
-              aria-disabled={!livePreviewAvailable}
-              aria-label="Live transcript preview"
-              disabled={!livePreviewAvailable}
-              onClick={() => onUpdateSettings({ liveTranscriptPreview: !settings.liveTranscriptPreview })}
-              className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-45 ${
-                settings.liveTranscriptPreview ? 'bg-primary' : 'bg-surface-container-highest'
-              }`}
-            >
-              <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-on-primary shadow transition-transform ${
-                  settings.liveTranscriptPreview ? 'translate-x-6' : 'translate-x-1'
-                }`}
-              />
-            </button>
-          </div>
         </div>
 
         {/* Recording Trigger */}
@@ -1496,12 +1370,11 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
           </button>
         </div>
 
-        {settings.voiceCommandsEnabled && (
-          <VoiceCommandsEditor
-            commands={settings.voiceCommands}
-            onChange={(next) => onUpdateSettings({ voiceCommands: next })}
-          />
-        )}
+        <VoiceCommandsManager
+          active={isOpen && activeCat === 'output'}
+          globallyEnabled={settings.voiceCommandsEnabled}
+          profiles={settings.appProfiles}
+        />
         </SettingsSection>
 
         <SettingsSection pageId="profiles" activePage={activeCat} title="Per-App Profiles" subtitle="Paste and formatting per frontmost app">
@@ -1652,6 +1525,10 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
         </div>
         </SettingsSection>
 
+        <SettingsSection pageId="knowledge" activePage={activeCat} title="Knowledge" subtitle="Inspect and manage personal knowledge stored on this Mac">
+          <KnowledgeManager active={isOpen && activeCat === 'knowledge'} profiles={settings.appProfiles} />
+        </SettingsSection>
+
         <SettingsSection pageId="performance" activePage={activeCat} title="Performance Lab" subtitle="Compare local transcription engines">
           <PerformanceLab status={status} />
         </SettingsSection>
@@ -1661,7 +1538,7 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
         <div>
           <div className="text-sm text-on-surface-variant">
             <p><strong>Model:</strong> {selectedModel?.label}</p>
-            <p><strong>Backend:</strong> {selectedModel?.backend === 'coreml' ? 'FluidAudio (Apple Neural Engine)' : selectedModel?.backend === 'parakeet' ? 'sherpa-onnx (CPU)' : 'Whisper (Metal GPU)'}</p>
+            <p><strong>Backend:</strong> {selectedRuntime ? `${selectedRuntime.backend} (${selectedRuntime.accelerator})` : selectedModel?.backend}</p>
             <p><strong>Size:</strong> {selectedModel?.size}</p>
           </div>
         </div>

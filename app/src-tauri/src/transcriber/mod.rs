@@ -1,6 +1,5 @@
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub mod coreml;
-pub mod chunking;
 pub mod parakeet;
 pub mod whisper;
 
@@ -22,52 +21,6 @@ pub fn is_coreml_model(model_name: &str) -> bool {
     model_name == COREML_MODEL_NAME
 }
 
-pub fn is_whisper_model(model_name: &str) -> bool {
-    !is_coreml_model(model_name) && !parakeet::is_parakeet_model(model_name)
-}
-
-pub fn backend_name_for_model(model_name: &str) -> &'static str {
-    if is_coreml_model(model_name) {
-        "coreml"
-    } else if parakeet::is_parakeet_model(model_name) {
-        "parakeet"
-    } else {
-        "whisper"
-    }
-}
-
-/// Ensure the shared backend implementation matches the model selected by the
-/// immutable recording snapshot. This lets a settings change apply to the next
-/// session without changing the backend underneath the active one.
-pub fn ensure_backend_for_model(
-    backend: &mut Box<dyn TranscriptionBackend>,
-    model_name: &str,
-) -> Result<(), String> {
-    let desired = backend_name_for_model(model_name);
-    if backend.name() == desired {
-        return Ok(());
-    }
-    *backend = match desired {
-        "coreml" => {
-            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-            {
-                Box::new(CoreMlBackend::new())
-            }
-            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-            {
-                return Err(
-                    "Core ML transcription is available only on macOS 14 or newer with Apple Silicon"
-                        .to_string(),
-                );
-            }
-        }
-        "parakeet" => Box::new(ParakeetBackend::new()),
-        _ => Box::new(WhisperBackend::new()),
-    };
-    tracing::info!(target: "pipeline", "Switched transcription backend to {}", backend.name());
-    Ok(())
-}
-
 /// Sample rate required by transcription models (16kHz).
 pub const WHISPER_SAMPLE_RATE: u32 = 16000;
 
@@ -84,7 +37,13 @@ pub trait TranscriptionBackend: Send + Sync {
     fn is_model_loaded(&self, model_name: &str) -> bool;
 
     /// Run inference on 16kHz mono f32 samples. If `smart_punctuation` is false, punctuation is stripped from the returned text.
-    fn transcribe(&mut self, samples: &[f32], language: &str, initial_prompt: Option<&str>, smart_punctuation: bool) -> Result<String, String>;
+    fn transcribe(
+        &mut self,
+        samples: &[f32],
+        language: &str,
+        initial_prompt: Option<&str>,
+        smart_punctuation: bool,
+    ) -> Result<String, String>;
 
     /// Count tokens in text using the model's tokenizer. Returns None if model not loaded.
     fn token_count(&self, text: &str) -> Option<usize>;
@@ -102,8 +61,7 @@ pub trait TranscriptionBackend: Send + Sync {
 /// Parse WAV audio bytes and convert to f32 samples for transcription.
 pub fn parse_wav_to_samples(wav_bytes: &[u8]) -> Result<Vec<f32>, String> {
     let cursor = Cursor::new(wav_bytes);
-    let reader =
-        WavReader::new(cursor).map_err(|e| format!("Failed to parse WAV: {}", e))?;
+    let reader = WavReader::new(cursor).map_err(|e| format!("Failed to parse WAV: {}", e))?;
 
     let spec = reader.spec();
 
@@ -209,13 +167,4 @@ mod tests {
         let result = parse_wav_to_samples(b"not a wav file");
         assert!(result.is_err());
     }
-
-    #[test]
-    fn incremental_classifier_selects_only_whisper_models() {
-        assert!(is_whisper_model("base.en"));
-        assert!(is_whisper_model("large-v3-turbo"));
-        assert!(!is_whisper_model(COREML_MODEL_NAME));
-        assert!(!is_whisper_model("parakeet-tdt-0.6b-v2-fp16"));
-    }
-
 }

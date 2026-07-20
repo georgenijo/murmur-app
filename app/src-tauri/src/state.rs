@@ -1,4 +1,4 @@
-use crate::transcriber::{TranscriptionBackend, WhisperBackend};
+use crate::model_runtime::ModelRuntimeManager;
 use crate::MutexExt;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -243,7 +243,7 @@ pub struct AppState {
     /// for the cpal stream to become ready, so a fast key release must not tear
     /// the recorder down until that startup has fully completed.
     pub recording_transition: tokio::sync::Mutex<()>,
-    pub backend: Mutex<Box<dyn TranscriptionBackend>>,
+    pub model_runtime: ModelRuntimeManager,
     pub last_transcription_at: Mutex<Option<Instant>>,
     pub idle_timeout_minutes: Mutex<u32>,
     /// Monotonically increasing ID assigned to each recording session.
@@ -268,13 +268,13 @@ pub struct AppState {
     /// Aho-Corasick automaton isn't serializable.
     pub correction_matcher:
         Mutex<Option<std::sync::Arc<crate::vocabulary_alias::CorrectionMatcherSet>>>,
+    /// Enabled replacement rules from the local knowledge repository, ordered
+    /// by its deterministic precedence. Refreshed only after repository writes;
+    /// recording snapshots never query SQLite in the transform hot path.
+    pub knowledge_replacements: Mutex<Arc<Vec<crate::knowledge_store::KnowledgeEntry>>>,
     /// Short-lived local project indexes for explicitly opted-in app profiles.
     /// Contents (symbols and root-relative filenames) are never serialized.
     pub ide_context: Mutex<crate::ide_context::IdeContextStore>,
-    /// At most one bounded incremental Whisper worker is attached to the active
-    /// recording. The handle owns no audio; it snapshots one fixed-size window
-    /// at a time and stores only reconciled text and timing counters.
-    pub streaming_session: tokio::sync::Mutex<Option<crate::streaming::StreamingSession>>,
 }
 
 impl AppState {
@@ -344,7 +344,7 @@ impl Default for AppState {
         Self {
             dictation: Mutex::new(DictationState::default()),
             recording_transition: tokio::sync::Mutex::new(()),
-            backend: Mutex::new(Box::new(WhisperBackend::new())),
+            model_runtime: ModelRuntimeManager::default(),
             last_transcription_at: Mutex::new(None),
             idle_timeout_minutes: Mutex::new(5),
             recording_id: AtomicU64::new(0),
@@ -354,8 +354,8 @@ impl Default for AppState {
             cancelled_id: AtomicU64::new(0),
             file_transcribing: AtomicBool::new(false),
             correction_matcher: Mutex::new(None),
+            knowledge_replacements: Mutex::new(Arc::new(Vec::new())),
             ide_context: Mutex::new(crate::ide_context::IdeContextStore::default()),
-            streaming_session: tokio::sync::Mutex::new(None),
         }
     }
 }
@@ -377,6 +377,7 @@ mod tests {
             correction_matcher: None,
             ide_context_index: None,
             vocabulary_version: 0,
+            voice_commands: None,
             session_overrides: SessionOverrides::default(),
         }))
     }

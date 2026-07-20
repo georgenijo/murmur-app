@@ -1,117 +1,142 @@
-use crate::{MutexExt, State};
+use crate::model_runtime::{self, InstallKind, InstallState};
 use crate::transcriber::{self, TranscriptionBackend};
 use crate::vad;
-use std::collections::HashMap;
-use std::sync::{Arc, LazyLock, Mutex};
+use crate::State;
+use std::sync::LazyLock;
 use tauri::Emitter;
 
-type ModelInstallLock = Arc<tokio::sync::Mutex<()>>;
-
-static MODEL_INSTALL_LOCKS: LazyLock<Mutex<HashMap<String, ModelInstallLock>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
-fn model_install_lock(model_name: &str) -> ModelInstallLock {
-    let mut locks = MODEL_INSTALL_LOCKS.lock_or_recover();
-    locks
-        .entry(model_name.to_string())
-        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-        .clone()
-}
+static VAD_INSTALL_LOCK: LazyLock<tokio::sync::Mutex<()>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(()));
 
 #[tauri::command]
 pub fn check_model_exists(state: tauri::State<'_, State>) -> bool {
-    let backend = state.app_state.backend.lock_or_recover();
-    backend.model_exists()
+    state.app_state.model_runtime.any_model_installed()
 }
 
 #[tauri::command]
-pub fn check_specific_model_exists(model_name: String) -> bool {
-    // Reject path traversal or absolute paths in untrusted input
-    if model_name.contains("..") || model_name.contains('/') || model_name.contains('\\') {
-        return false;
-    }
-    if transcriber::is_coreml_model(&model_name) {
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        return transcriber::coreml::specific_model_exists(&model_name);
-        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-        return false;
-    }
-    // --- Parakeet backend (removable): delete this branch to remove. ---
-    if transcriber::parakeet::is_parakeet_model(&model_name) {
-        return transcriber::parakeet::specific_model_exists(&model_name);
-    }
-    transcriber::whisper::specific_model_exists(&model_name)
+pub fn get_model_runtime_catalog(
+    state: tauri::State<'_, State>,
+) -> Vec<model_runtime::ModelRuntimeSnapshot> {
+    state.app_state.model_runtime.catalog()
 }
 
 #[tauri::command]
-pub async fn download_model(app_handle: tauri::AppHandle, model_name: String) -> Result<(), String> {
-    const ALLOWED_MODELS: &[&str] = &[
-        "large-v3-turbo", "small.en", "base.en", "tiny.en", "medium.en",
-    ];
-    let is_coreml = transcriber::is_coreml_model(&model_name);
-    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-    if is_coreml {
-        return Err(
-            "Core ML transcription is available only on macOS 14 or newer with Apple Silicon"
-                .to_string(),
-        );
+pub fn get_model_runtime_status(
+    state: tauri::State<'_, State>,
+    model_name: String,
+) -> Result<model_runtime::ModelRuntimeSnapshot, String> {
+    state.app_state.model_runtime.snapshot(&model_name)
+}
+
+#[tauri::command]
+pub fn check_specific_model_exists(state: tauri::State<'_, State>, model_name: String) -> bool {
+    if !is_safe_model_identifier(&model_name) {
+        return false;
     }
-    // --- Parakeet backend (removable): delete this branch + download_parakeet_model to remove. ---
-    let is_parakeet = transcriber::parakeet::is_parakeet_model(&model_name);
-    if is_coreml {
-        // The explicit Core ML value is also prefixed with "parakeet"; classify
-        // it before the broad sherpa sentinel.
-    } else if is_parakeet {
-        if transcriber::parakeet::download_spec(&model_name).is_none() {
-            return Err(format!("Unknown Parakeet model '{}'", model_name));
-        }
-    } else if !ALLOWED_MODELS.contains(&model_name.as_str()) {
-        return Err(format!("Unknown model '{}'. Allowed: {}", model_name, ALLOWED_MODELS.join(", ")));
+    state
+        .app_state
+        .model_runtime
+        .snapshot(&model_name)
+        .is_ok_and(|snapshot| snapshot.install_state == InstallState::Installed)
+}
+
+fn is_safe_model_identifier(model_name: &str) -> bool {
+    // Model identifiers are catalog keys, never paths supplied by callers.
+    !model_name.contains("..") && !model_name.contains('/') && !model_name.contains('\\')
+}
+
+#[tauri::command]
+pub async fn download_model(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, State>,
+    model_name: String,
+) -> Result<(), String> {
+    let definition = model_runtime::model_definition(&model_name)?;
+    if !model_runtime::model_supported(definition) {
+        return Err("This model is not supported on the current platform".to_string());
     }
 
     // The entire existence-check/download/install transaction is single-flight
     // per model. Different models may still download concurrently.
-    let install_lock = model_install_lock(&model_name);
+    let install_lock = state.app_state.model_runtime.install_lock(&model_name)?;
     let _install_guard = install_lock.lock().await;
+    if !state
+        .app_state
+        .model_runtime
+        .begin_install(Some(&app_handle), &model_name)?
+    {
+        return Ok(());
+    }
 
-    // Whisper and sherpa share Murmur's models directory. FluidAudio owns a
-    // separate Application Support cache, but VAD must still land here.
-    let models_dir = transcriber::WhisperBackend::new().models_dir()?;
-    tokio::fs::create_dir_all(&models_dir)
-        .await
-        .map_err(|e| format!("Failed to create models directory: {}", e))?;
+    let install_result: Result<(), String> = async {
+        // Whisper and sherpa share Murmur's models directory. FluidAudio owns a
+        // separate Application Support cache, but VAD must still land here.
+        // Keep setup inside this result boundary so every failure after the
+        // Installing transition is published as Invalid rather than leaving a
+        // permanently in-progress snapshot.
+        let models_dir = transcriber::WhisperBackend::new().models_dir()?;
+        tokio::fs::create_dir_all(&models_dir)
+            .await
+            .map_err(|e| format!("Failed to create models directory: {}", e))?;
 
-    if is_coreml {
-        let _ = app_handle.emit("download-progress", serde_json::json!({
-            "received": 0,
-            "total": 0,
-            "phase": "installing"
-        }));
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        {
-            let model_name = model_name.clone();
-            tokio::task::spawn_blocking(move || transcriber::coreml::prepare_model(&model_name))
-                .await
-                .map_err(|error| format!("Core ML setup task failed: {error}"))??;
+        if definition.install_kind == InstallKind::Coreml {
+            let _ = app_handle.emit("download-progress", serde_json::json!({
+                "received": 0,
+                "total": 0,
+                "phase": "installing"
+            }));
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            {
+                let model_name = model_name.clone();
+                tokio::task::spawn_blocking(move || transcriber::coreml::prepare_model(&model_name))
+                    .await
+                    .map_err(|error| format!("Core ML setup task failed: {error}"))??;
+            }
+            let _ = app_handle.emit("download-progress", serde_json::json!({
+                "received": 1,
+                "total": 1,
+                "phase": "installing"
+            }));
+        } else if definition.install_kind == InstallKind::Parakeet {
+            download_parakeet_model(&app_handle, &model_name, &models_dir).await?;
+        } else {
+            download_whisper_model(&app_handle, &model_name, &models_dir).await?;
         }
-        let _ = app_handle.emit("download-progress", serde_json::json!({
-            "received": 1,
-            "total": 1,
-            "phase": "installing"
-        }));
-    } else if is_parakeet {
-        download_parakeet_model(&app_handle, &model_name, &models_dir).await?;
-    } else {
-        download_whisper_model(&app_handle, &model_name, &models_dir).await?;
-    }
 
-    // Co-download VAD model alongside the transcription model (~1.8MB).
-    // Its own lock prevents different model installs from sharing a temp file.
-    if let Err(error) = ensure_vad_model(&app_handle).await {
-        tracing::warn!(target: "system", "VAD model co-download failed (non-fatal): {}", error);
-    }
+        state.app_state.model_runtime.set_install_state(
+            Some(&app_handle),
+            &model_name,
+            InstallState::Validating,
+        )?;
+        if !model_runtime::model_installed(&model_name) {
+            return Err("Model installation completed but validation failed".to_string());
+        }
 
-    Ok(())
+        // Co-download VAD model alongside the transcription model (~1.8MB).
+        // Its own lock prevents different model installs from sharing a temp file.
+        if let Err(error) = ensure_vad_model(&app_handle).await {
+            tracing::warn!(target: "system", "VAD model co-download failed (non-fatal): {}", error);
+        }
+
+        Ok(())
+    }
+    .await;
+
+    match install_result {
+        Ok(()) => state.app_state.model_runtime.set_install_state(
+            Some(&app_handle),
+            &model_name,
+            InstallState::Installed,
+        ),
+        Err(error) => {
+            let _ = state.app_state.model_runtime.set_install_state(
+                Some(&app_handle),
+                &model_name,
+                InstallState::Invalid,
+            );
+            Err(error)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -157,17 +182,24 @@ mod tests {
 
     #[test]
     fn specific_model_check_rejects_paths() {
-        assert!(!check_specific_model_exists("../base.en".to_string()));
-        assert!(!check_specific_model_exists("models/base.en".to_string()));
-        assert!(!check_specific_model_exists("models\\base.en".to_string()));
+        assert!(!is_safe_model_identifier("../base.en"));
+        assert!(!is_safe_model_identifier("models/base.en"));
+        assert!(!is_safe_model_identifier("models\\base.en"));
+        assert!(is_safe_model_identifier("base.en"));
     }
 
     #[test]
     fn coreml_model_is_not_dispatched_as_sherpa_download() {
         assert!(transcriber::is_coreml_model(transcriber::COREML_MODEL_NAME));
-        assert!(transcriber::parakeet::is_parakeet_model(
+        assert!(!transcriber::parakeet::is_parakeet_model(
             transcriber::COREML_MODEL_NAME
         ));
+        assert_eq!(
+            model_runtime::model_definition(transcriber::COREML_MODEL_NAME)
+                .unwrap()
+                .install_kind,
+            InstallKind::Coreml
+        );
     }
 
     #[test]
@@ -262,11 +294,13 @@ mod tests {
 
     #[test]
     fn model_install_locks_are_keyed_and_reused() {
-        let first = model_install_lock("test-model-a");
-        let same = model_install_lock("test-model-a");
-        let different = model_install_lock("test-model-b");
-        assert!(Arc::ptr_eq(&first, &same));
-        assert!(!Arc::ptr_eq(&first, &different));
+        let manager = model_runtime::ModelRuntimeManager::default();
+        let first = manager.install_lock("base.en").unwrap();
+        let same = manager.install_lock("base.en").unwrap();
+        let different = manager.install_lock("tiny.en").unwrap();
+        assert!(std::sync::Arc::ptr_eq(&first, &same));
+        assert!(!std::sync::Arc::ptr_eq(&first, &different));
+        assert!(manager.install_lock("unknown-model").is_err());
     }
 }
 
@@ -504,8 +538,7 @@ fn classify_archive_unpack_error(error: std::io::Error) -> ParakeetInstallError 
 /// This is the fallback for users who have a transcription model but not the
 /// VAD model (e.g. upgrade from a pre-VAD version or manual model install).
 pub(crate) async fn ensure_vad_model(app_handle: &tauri::AppHandle) -> Result<(), String> {
-    let install_lock = model_install_lock(vad::VAD_MODEL_FILENAME);
-    let _install_guard = install_lock.lock().await;
+    let _install_guard = VAD_INSTALL_LOCK.lock().await;
     if vad::vad_model_exists() {
         return Ok(());
     }

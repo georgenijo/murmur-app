@@ -12,11 +12,11 @@ import {
 /**
  * The overlay expand/collapse lifecycle, owned end to end by this controller.
  *
- * After this hook, nothing else in the overlay may call `set_overlay_surface` or
- * own the dwell / collapse / shrink timers. The controller is the single writer
- * to the native resize path, so the CSS reveal and the window resize can never
- * race (problem the PR fixes): opening enqueues the grow, waits for the Rust ack,
- * and only then reveals the dropdown.
+ * After this hook, nothing else in the overlay may call `set_overlay_expanded`
+ * or own the dwell / collapse / shrink timers. The controller is the single
+ * writer to the native resize path, so the CSS reveal and the window resize can
+ * never race (problem the PR fixes): opening enqueues the grow, waits for the
+ * Rust ack, and only then reveals the dropdown.
  *
  * Phase model:
  *  - `collapsed` — pill only, window at collapsed height.
@@ -38,8 +38,6 @@ interface AppliedSurface {
 }
 
 interface UseOverlayExpansionArgs {
-  /** Whether the below-notch preview row is currently visible. */
-  previewRowVisible: boolean;
   /** Global-disable state — the cursor poller is gated off while disabled. */
   disabled: boolean;
 }
@@ -68,7 +66,6 @@ export interface OverlayExpansion {
 const SUPERSEDED = Symbol('overlay-surface-superseded');
 
 export function useOverlayExpansion({
-  previewRowVisible,
   disabled,
 }: UseOverlayExpansionArgs): OverlayExpansion {
   const [phase, setPhase] = useState<OverlayPhase>('collapsed');
@@ -86,16 +83,9 @@ export function useOverlayExpansion({
   // Serialized surface writer state.
   const genRef = useRef(0);
   const chainRef = useRef<Promise<unknown>>(Promise.resolve());
-  const desiredRef = useRef<{ expanded: boolean; previewVisible: boolean }>({
-    expanded: false,
-    previewVisible: false,
-  });
-  // Whether the window is currently meant to be at expanded height. Distinct from
-  // the CSS `expanded` flag: stays true through `closing` until the shrink lands.
-  const windowExpandedRef = useRef(false);
+  const desiredRef = useRef<{ expanded: boolean }>({ expanded: false });
 
   // Inputs mirrored into refs for the always-on poller / async callbacks.
-  const previewRef = useRef(previewRowVisible);
   const disabledRef = useRef(disabled);
   const visibleRef = useRef(true); // default visible on mount, matches show_overlay ordering
   const pollInFlightRef = useRef(false);
@@ -138,18 +128,16 @@ export function useOverlayExpansion({
     if (gen !== genRef.current) return SUPERSEDED; // superseded while queued — skip resize
     const desired = desiredRef.current;
     try {
-      const applied = await invoke<AppliedSurface>('set_overlay_surface', {
+      const applied = await invoke<AppliedSurface>('set_overlay_expanded', {
         expanded: desired.expanded,
-        previewVisible: desired.previewVisible,
       });
       if (gen !== genRef.current) return SUPERSEDED; // a newer request will reconcile
       reconcileOnSuccess(desired.expanded);
       return applied;
     } catch (err) {
       if (gen !== genRef.current) return SUPERSEDED; // stale failure — ignore
-      flog.warn('overlay', 'set_overlay_surface failed', {
+      flog.warn('overlay', 'set_overlay_expanded failed', {
         expanded: desired.expanded,
-        previewVisible: desired.previewVisible,
         error: String(err),
       });
       reconcileOnFailure(desired.expanded);
@@ -160,8 +148,7 @@ export function useOverlayExpansion({
   // Enqueue a resize to the latest desired surface. A newer request supersedes any
   // queued or in-flight older one; stale acks are dropped by the generation guard.
   const pushSurface = useCallback((expanded: boolean) => {
-    desiredRef.current = { expanded, previewVisible: previewRef.current };
-    windowExpandedRef.current = expanded;
+    desiredRef.current = { expanded };
     const gen = ++genRef.current;
     chainRef.current = chainRef.current.then(
       () => applyIfLatest(gen),
@@ -238,14 +225,6 @@ export function useOverlayExpansion({
     clearOpenDwell();
     beginClose(COLLAPSE_DELAY_MS);
   }, [clearOpenDwell, beginClose]);
-
-  // --- Preview-row surface sync ---------------------------------------------
-  // The preview row height also flows through the single writer, so it can never
-  // race the hover resize. Runs on mount and whenever preview visibility changes.
-  useEffect(() => {
-    previewRef.current = previewRowVisible;
-    pushSurface(windowExpandedRef.current);
-  }, [previewRowVisible, pushSurface]);
 
   // --- Visibility gating for the poller -------------------------------------
   useEffect(() => {

@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-This document lists all 30 registered Tauri commands exposed from the Rust backend to the frontend via `invoke()`. Commands are grouped by their source module under `app/src-tauri/src/`.
+This document lists the registered Tauri commands exposed from the Rust backend to the frontend via `invoke()`. Commands are grouped by their source module under `app/src-tauri/src/`.
 
 For event-based communication (Rust to frontend), see [events.md](events.md). For frontend hooks that call these commands, see [hooks.md](hooks.md).
 
@@ -45,6 +45,32 @@ For event-based communication (Rust to frontend), see [events.md](events.md). Fo
 | `clear_logs` | _(none)_ | `Result<(), String>` | Removes all log files (including rotated variants, JSONL event files, frontend logs) and clears the in-memory event ring buffer. |
 | `log_frontend` | `level: String`, `message: String` | `()` | Routes a frontend log message through the Rust tracing system. Accepts levels: `"INFO"`, `"WARN"`, `"ERROR"`. Messages appear in the structured event stream with `source="frontend"`. |
 | `open_log_viewer` | _(none)_ | `Result<(), String>` | Shows and focuses the `log-viewer` window. |
+
+## Personal Knowledge (`commands/knowledge.rs`)
+
+| Command | Parameters | Return Type | Description |
+|---------|-----------|-------------|-------------|
+| `get_knowledge_store_status` | _(none)_ | `KnowledgeStoreStatus` | Returns ready/recovered/reinitialized/unavailable state, schema version, record count, store revision, and privacy-safe recovery information. |
+| `retry_knowledge_store` | _(none)_ | `KnowledgeStoreStatus` | Re-runs local initialization after an unavailable state. |
+| `list_knowledge` | `request: KnowledgeListRequest` | `Result<KnowledgeListResponse, String>` | Bounded search/filter page, including an optional Voice Command filter; defaults to 50 and caps at 100 records. |
+| `get_knowledge` | `id: String` | `Result<KnowledgeEntry, String>` | Returns one local record by stable ID. |
+| `upsert_knowledge` | `draft: KnowledgeDraft` | `Result<KnowledgeEntry, String>` | Creates a manual record or edits one using its expected revision. Typed Voice Commands also validate payload/type, scope, built-ins, duplicate phrases, variables, clipboard permission, and vocabulary conflicts. |
+| `set_knowledge_enabled` | `id`, `enabled`, `expected_revision` | `Result<KnowledgeEntry, String>` | Enables/disables one record with optimistic concurrency. |
+| `delete_knowledge` | `id`, `expected_revision` | `Result<u64, String>` | Deletes one record and returns the new store revision. |
+| `resolve_knowledge` | `request: KnowledgeResolveRequest` | `Result<Option<KnowledgeEntry>, String>` | Deterministically resolves an exact trigger across applicable scopes, using the same scope/provenance precedence that separately feeds the immutable Smart Correction matcher after knowledge mutations. |
+| `preview_voice_command` | `request: VoiceCommandPreviewRequest` | `Result<VoiceCommandPreviewResponse, String>` | Runs the real local matcher and variable expansion without clipboard output or paste. Clipboard input requires both saved command permission and an explicit preview request. |
+| `export_knowledge_to_file` | `path: String` | `Result<u64, String>` | Atomically exports the local store to versioned JSON selected by the user. |
+| `inspect_knowledge_import` | `path: String` | `Result<KnowledgeImportSummary, String>` | Validates an import and reports new, duplicate, and conflicting records without writing. |
+| `import_knowledge_from_file` | `path: String` | `Result<KnowledgeImportResult, String>` | Atomically imports validated new records without overwriting local records. |
+| `delete_all_knowledge` | `expected_revision: u64` | `Result<u64, String>` | Deletes all records and in-store recovery artifacts after a revision-checked UI confirmation. |
+
+## Correct and Teach (`commands/correct_and_teach.rs`)
+
+| Command | Parameters | Return Type | Description |
+|---------|-----------|-------------|-------------|
+| `propose_learned_correction` | `request: CorrectionProposalRequest` | `CorrectionProposalOutcome` | Computes one bounded local diff and stores only an ephemeral reviewed proposal. It never writes knowledge. |
+| `confirm_learned_correction` | `proposal_id`, `scope` | `Result<KnowledgeEntry, String>` | Persists the exact reviewed replacement with `learned_correction` provenance and refreshes the next matcher generation. |
+| `discard_learned_correction_proposal` | `proposal_id` | `()` | Discards the matching ephemeral proposal without persistence. |
 
 ## Models (`commands/models.rs`)
 

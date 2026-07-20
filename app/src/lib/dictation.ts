@@ -9,7 +9,6 @@ export interface DictationResponse {
   error?: string;
   /** Decoded audio length in seconds (file transcription only). */
   duration?: number;
-  recordingId?: number;
 }
 
 export async function initDictation(): Promise<DictationResponse> {
