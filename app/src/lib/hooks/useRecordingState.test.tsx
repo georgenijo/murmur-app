@@ -2,11 +2,20 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const mocks = vi.hoisted(() => ({
-  startRecording: vi.fn(),
-  stopRecording: vi.fn(),
-  listen: vi.fn(async () => () => {}),
-}));
+const mocks = vi.hoisted(() => {
+  const listeners = new Map<string, (event: { payload: unknown }) => void>();
+  return {
+    startRecording: vi.fn(),
+    stopRecording: vi.fn(),
+    listeners,
+    listen: vi.fn(async (event: string, handler: (event: { payload: unknown }) => void) => {
+      listeners.set(event, handler);
+      return () => listeners.delete(event);
+    }),
+    addEntry: vi.fn(),
+    updateStats: vi.fn(),
+  };
+});
 
 vi.mock('../dictation', () => ({
   startRecording: mocks.startRecording,
@@ -18,7 +27,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 }));
 
 vi.mock('../stats', () => ({
-  updateStats: vi.fn(),
+  updateStats: mocks.updateStats,
 }));
 
 vi.mock('../log', () => ({
@@ -42,13 +51,14 @@ describe('useRecordingState transition ordering', () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    mocks.listeners.clear();
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
 
     function Harness() {
       current = useRecordingState({
-        addEntry: vi.fn(),
+        addEntry: mocks.addEntry,
         microphone: 'system_default',
       });
       return null;
@@ -95,5 +105,31 @@ describe('useRecordingState transition ordering', () => {
 
     expect(mocks.stopRecording).toHaveBeenCalledOnce();
     expect(current.status).toBe('idle');
+  });
+
+  it('records history and stats exactly once from the final completion event', async () => {
+    mocks.startRecording.mockResolvedValueOnce({
+      type: 'recording_started',
+      state: 'recording',
+    });
+    mocks.stopRecording.mockImplementationOnce(async () => {
+      mocks.listeners.get('transcription-complete')?.({
+        payload: { text: 'one final transcript', duration: 12 },
+      });
+      return {
+        type: 'transcription',
+        state: 'idle',
+        text: 'one final transcript',
+      };
+    });
+
+    await act(async () => current.handleStart());
+    await act(async () => current.handleStop());
+
+    expect(mocks.addEntry).toHaveBeenCalledTimes(1);
+    expect(mocks.addEntry).toHaveBeenCalledWith('one final transcript', 12);
+    expect(mocks.updateStats).toHaveBeenCalledTimes(1);
+    expect(mocks.updateStats).toHaveBeenCalledWith('one final transcript', 12);
+    expect(current.transcription).toBe('one final transcript');
   });
 });

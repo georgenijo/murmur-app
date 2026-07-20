@@ -1,6 +1,6 @@
 # Per-App Dictation Context
 
-Murmur resolves one immutable `DictationContextSnapshot` for every live recording. The snapshot is created when recording starts from the frontmost application's bundle identifier and the current backend configuration. Incremental transcription, batch fallback, transformations, file output, clipboard output, and auto-paste all use that same snapshot.
+Murmur resolves one immutable `DictationContextSnapshot` for every live recording. The snapshot is created when recording starts from the frontmost application's bundle identifier and the current backend configuration. Final transcription, transformations, file output, clipboard output, and auto-paste all use that same snapshot.
 
 ## Resolution and precedence
 

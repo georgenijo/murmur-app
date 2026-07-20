@@ -2,11 +2,16 @@ use super::TranscriptionBackend;
 use std::path::{Path, PathBuf};
 use std::sync::Once;
 use whisper_rs::{
-    FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
-    install_logging_hooks,
+    install_logging_hooks, FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters,
+    WhisperState,
 };
 
 static INIT_LOGGING: Once = Once::new();
+
+/// Short audio retains the established single-segment decode behavior, while
+/// longer batch decodes need Whisper's timestamp-based continuation after an
+/// early end-of-text token.
+const SINGLE_SEGMENT_MAX_SAMPLES: usize = 12 * super::WHISPER_SAMPLE_RATE as usize;
 
 /// Relative path under the platform data directory for app models.
 const APP_MODELS_REL: &[&str] = &["local-dictation", "models"];
@@ -21,7 +26,9 @@ fn suppress_whisper_logs() {
 
 /// Build the app's primary models directory from a data dir root.
 fn app_models_dir(data_dir: &Path) -> PathBuf {
-    APP_MODELS_REL.iter().fold(data_dir.to_path_buf(), |p, s| p.join(s))
+    APP_MODELS_REL
+        .iter()
+        .fold(data_dir.to_path_buf(), |p, s| p.join(s))
 }
 
 /// Get all potential model directories to search.
@@ -84,6 +91,62 @@ impl WhisperBackend {
     pub fn new() -> Self {
         Self::default()
     }
+
+    fn transcribe_with_single_segment(
+        &mut self,
+        samples: &[f32],
+        language: &str,
+        initial_prompt: Option<&str>,
+        smart_punctuation: bool,
+        single_segment: bool,
+    ) -> Result<String, String> {
+        let state = self
+            .state
+            .as_mut()
+            .ok_or_else(|| "Whisper state not initialized. Call load_model() first.".to_string())?;
+        tracing::info!(target: "pipeline", "whisper: reusing cached state for transcription");
+
+        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+        params.set_language(whisper_language_param(language));
+        params.set_print_special(false);
+        params.set_print_progress(false);
+        params.set_print_realtime(false);
+        params.set_print_timestamps(false);
+        params.set_suppress_blank(true);
+        params.set_single_segment(single_segment);
+        if let Some(prompt) = initial_prompt {
+            params.set_initial_prompt(prompt);
+        }
+        params.set_debug_mode(false);
+
+        state
+            .full(params, samples)
+            .map_err(|e| format!("Transcription failed: {}", e))?;
+
+        let num_segments = state.full_n_segments();
+
+        let mut text = String::new();
+        for i in 0..num_segments {
+            let segment = state
+                .get_segment(i)
+                .ok_or_else(|| format!("Failed to get segment {}", i))?;
+            let segment_text = segment
+                .to_str()
+                .map_err(|e| format!("Failed to get text for segment {}: {}", i, e))?;
+            text.push_str(segment_text);
+        }
+
+        let trimmed = text.trim().to_string();
+        if smart_punctuation {
+            Ok(trimmed)
+        } else {
+            Ok(strip_punctuation(&trimmed))
+        }
+    }
+}
+
+fn should_use_single_segment(sample_count: usize) -> bool {
+    sample_count <= SINGLE_SEGMENT_MAX_SAMPLES
 }
 
 impl Default for WhisperBackend {
@@ -150,49 +213,20 @@ impl TranscriptionBackend for WhisperBackend {
     fn is_model_loaded(&self, model_name: &str) -> bool {
         self.loaded_model_name.as_deref() == Some(model_name)
     }
-    fn transcribe(&mut self, samples: &[f32], language: &str, initial_prompt: Option<&str>, smart_punctuation: bool) -> Result<String, String> {
-        let state = self
-            .state
-            .as_mut()
-            .ok_or_else(|| "Whisper state not initialized. Call load_model() first.".to_string())?;
-        tracing::info!(target: "pipeline", "whisper: reusing cached state for transcription");
-
-        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-        params.set_language(whisper_language_param(language));
-        params.set_print_special(false);
-        params.set_print_progress(false);
-        params.set_print_realtime(false);
-        params.set_print_timestamps(false);
-        params.set_suppress_blank(true);
-        params.set_single_segment(true);
-        if let Some(prompt) = initial_prompt {
-            params.set_initial_prompt(prompt);
-        }
-        params.set_debug_mode(false);
-
-        state
-            .full(params, samples)
-            .map_err(|e| format!("Transcription failed: {}", e))?;
-
-        let num_segments = state.full_n_segments();
-
-        let mut text = String::new();
-        for i in 0..num_segments {
-            let segment = state
-                .get_segment(i)
-                .ok_or_else(|| format!("Failed to get segment {}", i))?;
-            let segment_text = segment
-                .to_str()
-                .map_err(|e| format!("Failed to get text for segment {}: {}", i, e))?;
-            text.push_str(segment_text);
-        }
-
-        let trimmed = text.trim().to_string();
-        if smart_punctuation {
-            Ok(trimmed)
-        } else {
-            Ok(strip_punctuation(&trimmed))
-        }
+    fn transcribe(
+        &mut self,
+        samples: &[f32],
+        language: &str,
+        initial_prompt: Option<&str>,
+        smart_punctuation: bool,
+    ) -> Result<String, String> {
+        self.transcribe_with_single_segment(
+            samples,
+            language,
+            initial_prompt,
+            smart_punctuation,
+            should_use_single_segment(samples.len()),
+        )
     }
 
     fn token_count(&self, text: &str) -> Option<usize> {
@@ -215,8 +249,8 @@ impl TranscriptionBackend for WhisperBackend {
     }
 
     fn models_dir(&self) -> Result<PathBuf, String> {
-        let data_dir =
-            dirs::data_dir().ok_or_else(|| "Could not find application data directory".to_string())?;
+        let data_dir = dirs::data_dir()
+            .ok_or_else(|| "Could not find application data directory".to_string())?;
         Ok(app_models_dir(&data_dir))
     }
 
@@ -263,11 +297,10 @@ fn strip_punctuation(input: &str) -> String {
                 }
             }
             // Strip sentence and quotation punctuation
-            '.' | ',' | '!' | '?' | ';' | ':' | '"' | '\u{201C}' | '\u{201D}'
-            | '\u{2018}' | '\u{2014}' | '\u{2013}' | '\u{2026}'
-            | '\u{AB}' | '\u{BB}' | '\u{BF}' | '\u{A1}'
-            | '\u{3002}' | '\u{3001}' | '\u{FF01}' | '\u{FF1F}'
-            | '\u{30FB}' | '\u{300C}' | '\u{300D}' | '\u{300E}' | '\u{300F}' => result.push(' '),
+            '.' | ',' | '!' | '?' | ';' | ':' | '"' | '\u{201C}' | '\u{201D}' | '\u{2018}'
+            | '\u{2014}' | '\u{2013}' | '\u{2026}' | '\u{AB}' | '\u{BB}' | '\u{BF}' | '\u{A1}'
+            | '\u{3002}' | '\u{3001}' | '\u{FF01}' | '\u{FF1F}' | '\u{30FB}' | '\u{300C}'
+            | '\u{300D}' | '\u{300E}' | '\u{300F}' => result.push(' '),
             _ => result.push(c),
         }
     }
@@ -277,7 +310,80 @@ fn strip_punctuation(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{strip_punctuation, whisper_language_param};
+    use super::{
+        should_use_single_segment, specific_model_exists, strip_punctuation,
+        whisper_language_param, WhisperBackend, SINGLE_SEGMENT_MAX_SAMPLES,
+    };
+    use crate::transcriber::{parse_wav_to_samples, TranscriptionBackend};
+
+    #[test]
+    fn short_batch_audio_keeps_single_segment_mode() {
+        assert!(should_use_single_segment(
+            10 * crate::transcriber::WHISPER_SAMPLE_RATE as usize
+        ));
+    }
+
+    #[test]
+    fn single_segment_duration_boundary_is_inclusive() {
+        assert!(should_use_single_segment(SINGLE_SEGMENT_MAX_SAMPLES));
+        assert!(!should_use_single_segment(SINGLE_SEGMENT_MAX_SAMPLES + 1));
+    }
+
+    #[test]
+    #[ignore = "requires an installed base.en model and runs Whisper inference"]
+    fn xlong_truncation_repro_single_segment() {
+        if !specific_model_exists("base.en") {
+            eprintln!("skipping xlong regression: base.en is not installed");
+            return;
+        }
+
+        let samples = parse_wav_to_samples(include_bytes!("../../../../bench/audio/xlong.wav"))
+            .expect("xlong fixture should decode");
+        assert!(!should_use_single_segment(samples.len()));
+
+        let mut backend = WhisperBackend::new();
+        backend.load_model("base.en").expect("base.en should load");
+        let single_segment = backend
+            .transcribe_with_single_segment(&samples, "en", None, true, true)
+            .expect("single-segment transcription should succeed");
+        let continued = backend
+            .transcribe_with_single_segment(&samples, "en", None, true, false)
+            .expect("timestamp-based continuation should succeed");
+
+        eprintln!("single_segment=true: {single_segment}");
+        eprintln!("single_segment=false: {continued}");
+
+        let single_words = single_segment.split_whitespace().count();
+        let continued_words = continued.split_whitespace().count();
+        assert!(
+            continued_words >= single_words + 4,
+            "continuation should recover a meaningful tail: single={single_words}, continued={continued_words}"
+        );
+
+        let tail_terms = ["code", "comments", "chat", "messages", "throughout", "day"];
+        let normalized_single = single_segment.to_ascii_lowercase();
+        let normalized_continued = continued.to_ascii_lowercase();
+        let single_tail_hits = tail_terms
+            .iter()
+            .filter(|term| {
+                normalized_single
+                    .split(|c: char| !c.is_alphanumeric())
+                    .any(|word| word == **term)
+            })
+            .count();
+        let continued_tail_hits = tail_terms
+            .iter()
+            .filter(|term| {
+                normalized_continued
+                    .split(|c: char| !c.is_alphanumeric())
+                    .any(|word| word == **term)
+            })
+            .count();
+        assert!(
+            continued_tail_hits >= 4 && continued_tail_hits > single_tail_hits,
+            "continued transcript should recover the reference tail: single_hits={single_tail_hits}, continued_hits={continued_tail_hits}"
+        );
+    }
 
     #[test]
     fn language_auto_maps_to_none() {
@@ -310,12 +416,18 @@ mod tests {
 
     #[test]
     fn strip_preserves_hyphen_in_compound() {
-        assert_eq!(strip_punctuation("It's state-of-the-art!"), "It's state-of-the-art");
+        assert_eq!(
+            strip_punctuation("It's state-of-the-art!"),
+            "It's state-of-the-art"
+        );
     }
 
     #[test]
     fn strip_unicode_dashes_and_ellipsis() {
-        assert_eq!(strip_punctuation("Hello\u{2026} world\u{2014}really?"), "Hello world really");
+        assert_eq!(
+            strip_punctuation("Hello\u{2026} world\u{2014}really?"),
+            "Hello world really"
+        );
     }
 
     #[test]

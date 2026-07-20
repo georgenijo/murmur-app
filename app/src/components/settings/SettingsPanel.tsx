@@ -785,7 +785,6 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
       : 'Hold to start recording, release to stop';
   const isRecording = status !== 'idle';
   const selectedModel = AVAILABLE_MODEL_OPTIONS.find(m => m.value === settings.model);
-  const livePreviewAvailable = selectedModel?.backend === 'whisper';
   const supportsCoreMl = AVAILABLE_MODEL_OPTIONS.some(m => m.backend === 'coreml');
   const useNeuralEngine = selectedModel?.backend === 'coreml';
   // The sherpa Parakeet bundle is English-only; FluidAudio Parakeet v3 is multilingual.
@@ -1165,36 +1164,6 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
             onCommit={(value) => onUpdateSettings({ vadSensitivity: value })}
           />
 
-          <div className="flex items-center justify-between gap-6">
-            <div>
-              <label className="block text-sm font-medium text-on-surface">
-                Live Transcript Preview
-              </label>
-              <p className="mt-1 text-xs text-on-surface-variant">
-                {livePreviewAvailable
-                  ? 'Show clearly labeled provisional text below the notch during long recordings'
-                  : 'Unavailable for Parakeet and Core ML; final transcription still appears after stop'}
-              </p>
-            </div>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={settings.liveTranscriptPreview}
-              aria-disabled={!livePreviewAvailable}
-              aria-label="Live transcript preview"
-              disabled={!livePreviewAvailable}
-              onClick={() => onUpdateSettings({ liveTranscriptPreview: !settings.liveTranscriptPreview })}
-              className={`relative inline-flex shrink-0 h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-45 ${
-                settings.liveTranscriptPreview ? 'bg-primary' : 'bg-surface-container-highest'
-              }`}
-            >
-              <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-on-primary shadow transition-transform ${
-                  settings.liveTranscriptPreview ? 'translate-x-6' : 'translate-x-1'
-                }`}
-              />
-            </button>
-          </div>
         </div>
 
         {/* Recording Trigger */}

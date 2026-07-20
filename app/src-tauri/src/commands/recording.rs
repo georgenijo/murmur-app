@@ -1,8 +1,8 @@
-use crate::{MutexExt, State};
 use crate::dictation_context::{self, DictationContextSnapshot, ResolverInputs, SessionOverrides};
 use crate::state::{AppState, DictationStatus};
 use crate::transcriber;
-use crate::{audio, audio_decode, injector, keyboard, partial_transcript, streaming, vad};
+use crate::{audio, audio_decode, injector, keyboard, vad};
+use crate::{MutexExt, State};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
@@ -33,10 +33,8 @@ fn build_code_vocab_prompt(folder: &str) -> String {
     if folder.is_empty() {
         return String::new();
     }
-    let prompt = crate::vocab::build_vocab_prompt_from_dir(
-        std::path::Path::new(folder),
-        CORRECTION_TERMS,
-    );
+    let prompt =
+        crate::vocab::build_vocab_prompt_from_dir(std::path::Path::new(folder), CORRECTION_TERMS);
     tracing::info!(
         target: "pipeline",
         prompt_chars = prompt.len(),
@@ -243,10 +241,7 @@ fn parse_vocab_terms(s: &str) -> Vec<String> {
 /// and store it in `app_state.correction_matcher`. Called on settings-change (in
 /// `configure_dictation`) — never per-utterance. `dictation` is the already-held
 /// lock guard; the matcher is stored under a separate leaf mutex.
-fn rebuild_correction_matcher(
-    app_state: &AppState,
-    dictation: &crate::state::DictationState,
-) {
+fn rebuild_correction_matcher(app_state: &AppState, dictation: &crate::state::DictationState) {
     let code_enabled = dictation.code_vocab_enabled;
     let mut terms = Vec::new();
     if code_enabled {
@@ -290,7 +285,11 @@ struct IdleGuard<'a> {
 
 impl<'a> IdleGuard<'a> {
     fn new(app_state: &'a AppState, recording_id: u64) -> Self {
-        Self { app_state, recording_id, disarmed: false }
+        Self {
+            app_state,
+            recording_id,
+            disarmed: false,
+        }
     }
 
     fn disarm(&mut self) {
@@ -326,7 +325,9 @@ struct FileTranscribeGuard<'a> {
 
 impl Drop for FileTranscribeGuard<'_> {
     fn drop(&mut self) {
-        self.app_state.file_transcribing.store(false, Ordering::SeqCst);
+        self.app_state
+            .file_transcribing
+            .store(false, Ordering::SeqCst);
         if let Some(app_handle) = &self.app_handle {
             let _ = app_handle.emit("file-transcription-status-changed", false);
         }
@@ -345,11 +346,7 @@ impl Drop for SharedBackendChangeGuard {
 /// expensive cold initialization with the user's speech. The normal pipeline
 /// still calls `load_model`, so it either observes a hit or waits on this same
 /// backend lock when a very short recording ends before preparation completes.
-fn spawn_model_preparation(
-    app_handle: tauri::AppHandle,
-    model_name: String,
-    recording_id: u64,
-) {
+fn spawn_model_preparation(app_handle: tauri::AppHandle, model_name: String, recording_id: u64) {
     let queued_at = std::time::Instant::now();
     let _ = tauri::async_runtime::spawn_blocking(move || {
         let queue_ms = queued_at.elapsed().as_millis() as u64;
@@ -358,7 +355,9 @@ fn spawn_model_preparation(
             let dictation = state.app_state.dictation.lock_or_recover();
             state.app_state.recording_id.load(Ordering::SeqCst) == recording_id
                 && dictation.status == DictationStatus::Recording
-                && state.app_state.active_context(recording_id)
+                && state
+                    .app_state
+                    .active_context(recording_id)
                     .is_some_and(|context| context.transcription.model_name == model_name)
         };
         if !is_active {
@@ -375,7 +374,9 @@ fn spawn_model_preparation(
             let dictation = state.app_state.dictation.lock_or_recover();
             state.app_state.recording_id.load(Ordering::SeqCst) == recording_id
                 && dictation.status == DictationStatus::Recording
-                && state.app_state.active_context(recording_id)
+                && state
+                    .app_state
+                    .active_context(recording_id)
                     .is_some_and(|context| context.transcription.model_name == model_name)
         };
         if !is_still_active {
@@ -500,15 +501,6 @@ pub(crate) struct PipelineTimings {
     pub paste_ms: u64,
     pub rss_before_mb: u64,
     pub rss_after_mb: u64,
-    pub incremental_chunks: u32,
-    pub streaming_inference_ms: u64,
-    pub final_chunk_ms: u64,
-    pub incremental_attempted: bool,
-    pub incremental_completed: bool,
-    pub incremental_fell_back: bool,
-    pub start_to_first_partial_ms: Option<u64>,
-    pub partial_update_count: u32,
-    pub last_partial_at: Option<std::time::Instant>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -522,7 +514,12 @@ fn transcribe_with_coreml_vad_retry(
     prompt: Option<&str>,
     smart_punctuation: bool,
 ) -> Result<String, String> {
-    let text = backend.transcribe(samples_for_transcription, language, prompt, smart_punctuation)?;
+    let text = backend.transcribe(
+        samples_for_transcription,
+        language,
+        prompt,
+        smart_punctuation,
+    )?;
     if transcriber::is_coreml_model(model_name) && vad_trimmed && text.trim().is_empty() {
         tracing::warn!(
             target: "pipeline",
@@ -544,7 +541,6 @@ async fn run_transcription_pipeline(
     app_state: &AppState,
     recording_id: u64,
     context: Arc<DictationContextSnapshot>,
-    incremental: streaming::IncrementalFinalization,
 ) -> Result<(String, PipelineTimings), String> {
     // Guard resets status to Idle on any return path (error or success),
     // but only if this recording is still the active one
@@ -557,7 +553,8 @@ async fn run_transcription_pipeline(
     // When saving to a file, suppress auto-paste into the focused app. The
     // clipboard write inside `inject_text` is unconditional, so text remains
     // copyable regardless of these toggles.
-    let effective_auto_paste = delivery.auto_paste && !(delivery.save_transcript || delivery.save_audio);
+    let effective_auto_paste =
+        delivery.auto_paste && !(delivery.save_transcript || delivery.save_audio);
 
     // Pre-VAD signal level logging for mic diagnosis
     let rms = audio::compute_rms(samples);
@@ -571,133 +568,102 @@ async fn run_transcription_pipeline(
         return Ok((String::new(), PipelineTimings::default()));
     }
 
-    let streaming::IncrementalFinalization {
-        transcript: incremental_transcript,
-        metrics: incremental_metrics,
-    } = incremental;
-    let partial_metric_timings = || PipelineTimings {
-        incremental_attempted: incremental_metrics.attempted,
-        incremental_completed: incremental_metrics.completed,
-        incremental_fell_back: incremental_metrics.fell_back,
-        start_to_first_partial_ms: incremental_metrics.start_to_first_partial_ms,
-        partial_update_count: incremental_metrics.partial_update_count,
-        last_partial_at: incremental_metrics.last_partial_at,
-        ..PipelineTimings::default()
-    };
+    // Every backend uses one authoritative full-buffer VAD + inference pass
+    // after recording stops.
+    let vad_threshold = 1.0 - (transcription.vad_sensitivity as f32 / 100.0);
+    let t_vad = std::time::Instant::now();
+    let (samples_for_transcription, vad_trimmed) = match vad::vad_model_path() {
+        Some(vad_path) if vad_path.exists() => {
+            let vad_path_str = vad_path.to_string_lossy().to_string();
+            let samples_owned = samples.to_vec();
+            let vad_result = tokio::task::spawn_blocking(move || {
+                vad::filter_speech(&vad_path_str, &samples_owned, vad_threshold)
+            })
+            .await
+            .unwrap_or_else(|e| Err(format!("VAD task panicked: {}", e)));
 
-    let (text, mut timings) = if let Some(incremental) = incremental_transcript {
-        tracing::info!(
-            target: "pipeline",
-            recording_id,
-            chunks = incremental.chunk_count,
-            streaming_inference_ms = incremental.streaming_inference_ms,
-            final_chunk_ms = incremental.final_chunk_ms,
-            "using authoritative incremental transcript"
-        );
-        (
-            incremental.text,
-            PipelineTimings {
-                vad_ms: incremental.vad_ms,
-                inference_ms: incremental.final_chunk_ms,
-                decode_ms: incremental.final_chunk_ms,
-                rss_before_mb: incremental.rss_before_mb,
-                rss_after_mb: incremental.rss_after_mb,
-                incremental_chunks: incremental.chunk_count,
-                streaming_inference_ms: incremental.streaming_inference_ms,
-                final_chunk_ms: incremental.final_chunk_ms,
-                ..partial_metric_timings()
-            },
-        )
-    } else {
-        // Batch fallback and all non-Whisper backends retain the pre-existing
-        // full-buffer VAD + inference behavior.
-        let vad_threshold = 1.0 - (transcription.vad_sensitivity as f32 / 100.0);
-        let t_vad = std::time::Instant::now();
-        let (samples_for_transcription, vad_trimmed) = match vad::vad_model_path() {
-            Some(vad_path) if vad_path.exists() => {
-                let vad_path_str = vad_path.to_string_lossy().to_string();
-                let samples_owned = samples.to_vec();
-                let vad_result = tokio::task::spawn_blocking(move || {
-                    vad::filter_speech(&vad_path_str, &samples_owned, vad_threshold)
-                })
-                .await
-                .unwrap_or_else(|e| Err(format!("VAD task panicked: {}", e)));
-
-                match vad_result {
-                    Ok(vad::VadResult::NoSpeech) => {
-                        tracing::info!(target: "pipeline", "VAD detected no speech ({} samples, {:?}), skipping transcription",
+            match vad_result {
+                Ok(vad::VadResult::NoSpeech) => {
+                    tracing::info!(target: "pipeline", "VAD detected no speech ({} samples, {:?}), skipping transcription",
                             samples.len(), t_vad.elapsed());
-                        return Ok((String::new(), PipelineTimings {
+                    return Ok((
+                        String::new(),
+                        PipelineTimings {
                             vad_ms: t_vad.elapsed().as_millis() as u64,
-                            ..partial_metric_timings()
-                        }));
-                    }
-                    Ok(vad::VadResult::Speech(trimmed)) => {
-                        tracing::info!(target: "pipeline", "VAD trimmed {} -> {} samples ({:.0}% speech, {:?})",
+                            ..PipelineTimings::default()
+                        },
+                    ));
+                }
+                Ok(vad::VadResult::Speech(trimmed)) => {
+                    tracing::info!(target: "pipeline", "VAD trimmed {} -> {} samples ({:.0}% speech, {:?})",
                             samples.len(), trimmed.len(),
                             trimmed.len() as f64 / samples.len() as f64 * 100.0,
                             t_vad.elapsed());
-                        let vad_trimmed = trimmed.len() != samples.len();
-                        (trimmed, vad_trimmed)
-                    }
-                    Err(e) => {
-                        tracing::warn!(target: "pipeline", "VAD failed ({}), proceeding without filtering", e);
-                        (samples.to_vec(), false)
-                    }
+                    let vad_trimmed = trimmed.len() != samples.len();
+                    (trimmed, vad_trimmed)
+                }
+                Err(e) => {
+                    tracing::warn!(target: "pipeline", "VAD failed ({}), proceeding without filtering", e);
+                    (samples.to_vec(), false)
                 }
             }
-            _ => {
-                let handle = app_handle.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = super::models::ensure_vad_model(&handle).await {
-                        tracing::warn!(target: "pipeline", "VAD model download failed ({}), skipping VAD", e);
-                    }
-                });
-                (samples.to_vec(), false)
-            }
-        };
-        let vad_ms = t_vad.elapsed().as_millis() as u64;
-
-        if app_state.is_cancelled(recording_id) {
-            tracing::info!(target: "pipeline", "cancelled before transcription (recording_id={})", recording_id);
-            return Ok((String::new(), PipelineTimings {
-                vad_ms,
-                ..partial_metric_timings()
-            }));
         }
+        _ => {
+            let handle = app_handle.clone();
+            tokio::spawn(async move {
+                if let Err(e) = super::models::ensure_vad_model(&handle).await {
+                    tracing::warn!(target: "pipeline", "VAD model download failed ({}), skipping VAD", e);
+                }
+            });
+            (samples.to_vec(), false)
+        }
+    };
+    let vad_ms = t_vad.elapsed().as_millis() as u64;
 
-        let rss_before_mb = crate::resource_monitor::get_process_rss_mb();
-        let t_transcribe = std::time::Instant::now();
-        let (text, model_load_ms, decode_ms) = {
-            let load_started = std::time::Instant::now();
-            let mut backend = app_state.backend.lock_or_recover();
-            transcriber::ensure_backend_for_model(&mut backend, &transcription.model_name)?;
-            backend.load_model(&transcription.model_name)?;
-            let model_load_ms = load_started.elapsed().as_millis() as u64;
-            let decode_started = std::time::Instant::now();
-            let text = transcribe_with_coreml_vad_retry(
-                backend.as_mut(), &transcription.model_name, &samples_for_transcription, samples,
-                vad_trimmed, &transcription.language, transcription.prompt.as_deref(),
-                transcription.smart_punctuation,
-            )?;
-            let decode_ms = decode_started.elapsed().as_millis() as u64;
-            (text, model_load_ms, decode_ms)
-        };
-        let inference_ms = t_transcribe.elapsed().as_millis() as u64;
-        let rss_after_mb = crate::resource_monitor::get_process_rss_mb();
-        tracing::info!(target: "pipeline", "transcription ({} samples): {:?}", samples_for_transcription.len(), t_transcribe.elapsed());
-        (
-            text,
+    if app_state.is_cancelled(recording_id) {
+        tracing::info!(target: "pipeline", "cancelled before transcription (recording_id={})", recording_id);
+        return Ok((
+            String::new(),
             PipelineTimings {
                 vad_ms,
-                model_load_ms,
-                decode_ms,
-                inference_ms,
-                rss_before_mb,
-                rss_after_mb,
-                ..partial_metric_timings()
+                ..PipelineTimings::default()
             },
-        )
+        ));
+    }
+
+    let rss_before_mb = crate::resource_monitor::get_process_rss_mb();
+    let t_transcribe = std::time::Instant::now();
+    let (text, model_load_ms, decode_ms) = {
+        let load_started = std::time::Instant::now();
+        let mut backend = app_state.backend.lock_or_recover();
+        transcriber::ensure_backend_for_model(&mut backend, &transcription.model_name)?;
+        backend.load_model(&transcription.model_name)?;
+        let model_load_ms = load_started.elapsed().as_millis() as u64;
+        let decode_started = std::time::Instant::now();
+        let text = transcribe_with_coreml_vad_retry(
+            backend.as_mut(),
+            &transcription.model_name,
+            &samples_for_transcription,
+            samples,
+            vad_trimmed,
+            &transcription.language,
+            transcription.prompt.as_deref(),
+            transcription.smart_punctuation,
+        )?;
+        let decode_ms = decode_started.elapsed().as_millis() as u64;
+        (text, model_load_ms, decode_ms)
+    };
+    let inference_ms = t_transcribe.elapsed().as_millis() as u64;
+    let rss_after_mb = crate::resource_monitor::get_process_rss_mb();
+    tracing::info!(target: "pipeline", "transcription ({} samples): {:?}", samples_for_transcription.len(), t_transcribe.elapsed());
+    let mut timings = PipelineTimings {
+        vad_ms,
+        model_load_ms,
+        decode_ms,
+        inference_ms,
+        rss_before_mb,
+        rss_after_mb,
+        ..PipelineTimings::default()
     };
 
     // Post-recognition transformation is backend-neutral and ordered in one
@@ -717,9 +683,7 @@ async fn run_transcription_pipeline(
             cleanup_enabled: transformations.cleanup_enabled,
             cleanup_remove_filler: transformations.cleanup_remove_filler,
             cleanup_capitalize: transformations.cleanup_capitalize,
-            voice_commands_enabled: context
-                .enabled_command_groups
-                .built_in_voice_commands,
+            voice_commands_enabled: context.enabled_command_groups.built_in_voice_commands,
             smart_correction_enabled: transformations.correction_enabled,
             smart_formatting_enabled: transformations.smart_formatting_enabled,
             ide_context_enabled: transformations.ide_context_enabled,
@@ -747,8 +711,8 @@ async fn run_transcription_pipeline(
         changed = transformed.was_changed(),
         "transcript_transform_complete"
     );
-    let correction_ms = transformed
-        .stage_duration_ms(crate::transcript_transform::SMART_CORRECTION_STAGE);
+    let correction_ms =
+        transformed.stage_duration_ms(crate::transcript_transform::SMART_CORRECTION_STAGE);
     let text = transformed.text;
 
     // Update last_transcription_at for idle timeout tracking
@@ -765,7 +729,11 @@ async fn run_transcription_pipeline(
     // is already on its way to the clipboard. Uses the original (pre-VAD) samples.
     if delivery.save_audio || delivery.save_transcript {
         if let Err(e) = crate::file_output::write_dictation_outputs(
-            samples, &text, delivery.save_audio, delivery.save_transcript, &delivery.output_dir,
+            samples,
+            &text,
+            delivery.save_audio,
+            delivery.save_transcript,
+            &delivery.output_dir,
         ) {
             tracing::warn!(target: "pipeline", "file output failed: {}", e);
             let _ = app_handle.emit(
@@ -783,7 +751,11 @@ async fn run_transcription_pipeline(
         let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
         app_handle
             .run_on_main_thread(move || {
-                let _ = tx.send(injector::inject_text(&text_to_inject, effective_auto_paste, paste_delay_ms));
+                let _ = tx.send(injector::inject_text(
+                    &text_to_inject,
+                    effective_auto_paste,
+                    paste_delay_ms,
+                ));
             })
             .map_err(|e| format!("Failed to dispatch to main thread: {}", e))?;
         let paste_hint = if cfg!(target_os = "macos") {
@@ -838,7 +810,9 @@ pub async fn process_audio(
         // transcription holds the slot. Checked under the dictation lock.
         if state.app_state.file_transcribing.load(Ordering::SeqCst) {
             tracing::warn!(target: "pipeline", "process_audio: blocked — file transcription in progress");
-            return Err("Cannot process audio while a file transcription is in progress.".to_string());
+            return Err(
+                "Cannot process audio while a file transcription is in progress.".to_string(),
+            );
         }
         if state.benchmark.is_running() {
             tracing::warn!(target: "pipeline", "process_audio: blocked — benchmark in progress");
@@ -885,7 +859,6 @@ pub async fn process_audio(
         &state.app_state,
         rid,
         Arc::clone(&context),
-        streaming::IncrementalFinalization::default(),
     )
     .await;
     // Only emit idle if this recording wasn't cancelled/superseded.
@@ -902,7 +875,11 @@ pub async fn process_audio(
 
     let total_ms = t_total.elapsed().as_millis() as u64;
     let audio_secs = samples.len() as f64 / 16_000.0;
-    let word_count = if text.trim().is_empty() { 0 } else { text.split_whitespace().count() };
+    let word_count = if text.trim().is_empty() {
+        0
+    } else {
+        text.split_whitespace().count()
+    };
     let char_count = text.len();
     let model_name = context.transcription.model_name.clone();
     let backend_name = transcriber::backend_name_for_model(&model_name).to_string();
@@ -913,9 +890,6 @@ pub async fn process_audio(
         model_load_ms = timings.model_load_ms,
         decode_ms = timings.decode_ms,
         inference_ms = timings.inference_ms,
-        incremental_chunks = timings.incremental_chunks,
-        streaming_inference_ms = timings.streaming_inference_ms,
-        final_chunk_ms = timings.final_chunk_ms,
         correction_ms = timings.correction_ms,
         paste_ms = timings.paste_ms,
         total_ms = total_ms,
@@ -1084,9 +1058,7 @@ fn stage_vocabulary_configuration(
     let effective_commands = voice_commands
         .as_deref()
         .unwrap_or(&dictation.voice_command_pairs);
-    let effective_entries = entries
-        .as_deref()
-        .unwrap_or(&dictation.vocabulary_entries);
+    let effective_entries = entries.as_deref().unwrap_or(&dictation.vocabulary_entries);
     crate::vocabulary_alias::validate_entries(effective_entries, effective_commands)?;
 
     Ok(StagedVocabularyConfiguration {
@@ -1113,13 +1085,16 @@ pub async fn configure_dictation(
         "configure_dictation"
     );
 
-    let model = options.get("model").and_then(|v| v.as_str()).map(String::from);
-    let language = options.get("language").and_then(|v| v.as_str()).map(String::from);
+    let model = options
+        .get("model")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let language = options
+        .get("language")
+        .and_then(|v| v.as_str())
+        .map(String::from);
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-    if model
-        .as_deref()
-        .is_some_and(transcriber::is_coreml_model)
-    {
+    if model.as_deref().is_some_and(transcriber::is_coreml_model) {
         return Err(
             "Core ML transcription is available only on macOS 14 or newer with Apple Silicon"
                 .to_string(),
@@ -1180,7 +1155,10 @@ pub async fn configure_dictation(
         dictation.smart_punctuation = sp;
     }
 
-    if let Some(vc) = options.get("voiceCommandsEnabled").and_then(|v| v.as_bool()) {
+    if let Some(vc) = options
+        .get("voiceCommandsEnabled")
+        .and_then(|v| v.as_bool())
+    {
         dictation.voice_commands_enabled = vc;
     }
 
@@ -1203,7 +1181,11 @@ pub async fn configure_dictation(
         dictation.app_profiles = profiles
             .iter()
             .filter_map(|p| {
-                let bundle_id = p.get("bundleId").and_then(|v| v.as_str())?.trim().to_string();
+                let bundle_id = p
+                    .get("bundleId")
+                    .and_then(|v| v.as_str())?
+                    .trim()
+                    .to_string();
                 if bundle_id.is_empty() {
                     return None;
                 }
@@ -1215,12 +1197,10 @@ pub async fn configure_dictation(
                 // null/absent -> None (use global); otherwise the boolean override.
                 let auto_paste_override = p.get("autoPasteOverride").and_then(|v| v.as_bool());
                 let cleanup_override = p.get("cleanupOverride").and_then(|v| v.as_bool());
-                let cli_formatting_override = p
-                    .get("cliFormattingOverride")
-                    .and_then(|v| v.as_bool());
-                let smart_formatting_override = p
-                    .get("smartFormattingOverride")
-                    .and_then(|v| v.as_bool());
+                let cli_formatting_override =
+                    p.get("cliFormattingOverride").and_then(|v| v.as_bool());
+                let smart_formatting_override =
+                    p.get("smartFormattingOverride").and_then(|v| v.as_bool());
                 let writing_style = parse_writing_style(p.get("writingStyle"));
                 let ide_context_enabled = p
                     .get("ideContextEnabled")
@@ -1357,8 +1337,7 @@ pub async fn configure_dictation(
     if let Some(model_name) = idle_preparation {
         // Treat warmup as activity so an already-expired idle timer cannot
         // immediately release the model this preparation is about to load.
-        *state.app_state.last_transcription_at.lock_or_recover() =
-            Some(std::time::Instant::now());
+        *state.app_state.last_transcription_at.lock_or_recover() = Some(std::time::Instant::now());
         spawn_idle_model_preparation(
             app_handle,
             model_name,
@@ -1452,9 +1431,8 @@ fn complete_code_vocab_scan(
 ) -> bool {
     let mut dictation = app_state.dictation.lock_or_recover();
     let is_active = dictation.code_vocab_scan_id.as_deref() == Some(scan_id);
-    let adopted = is_active
-        && dictation.code_vocab_enabled
-        && dictation.code_vocab_folder == folder;
+    let adopted =
+        is_active && dictation.code_vocab_enabled && dictation.code_vocab_folder == folder;
     if adopted {
         dictation.code_vocab_prompt = Some(prompt);
         dictation.code_vocab_scan_id = None;
@@ -1635,7 +1613,10 @@ pub async fn scan_code_vocab(
         // them feed Whisper (min(96, kept)).
         let ranked_terms: Vec<RankedTermJson> = ranked
             .iter()
-            .map(|r| RankedTermJson { term: r.term.clone(), freq: r.freq })
+            .map(|r| RankedTermJson {
+                term: r.term.clone(),
+                freq: r.freq,
+            })
             .collect();
         let whisper_count = ranked_terms.len().min(WHISPER_PROMPT_TERMS);
         let terms = ranked_terms.len();
@@ -1658,12 +1639,7 @@ pub async fn scan_code_vocab(
     .map_err(|e| format!("Vocab scan task panicked: {}", e))?;
 
     let mut summary = summary;
-    summary.adopted = complete_code_vocab_scan(
-        &state.app_state,
-        &scan_id,
-        &folder_trimmed,
-        prompt,
-    );
+    summary.adopted = complete_code_vocab_scan(&state.app_state, &scan_id, &folder_trimmed, prompt);
 
     // Final progress tick so the UI lands on the accurate adopted/superseded
     // state before the command result resolves.
@@ -1698,10 +1674,7 @@ pub async fn scan_code_vocab(
 /// Run a memory-only IDE project scan off the async runtime. Completion adopts
 /// only the still-current generation; root/profile changes and Clear invalidate
 /// the request before it can publish stale symbols.
-fn schedule_ide_scan(
-    app_handle: tauri::AppHandle,
-    request: crate::ide_context::IdeScanRequest,
-) {
+fn schedule_ide_scan(app_handle: tauri::AppHandle, request: crate::ide_context::IdeScanRequest) {
     tracing::info!(
         target: "pipeline",
         generation = request.generation,
@@ -1914,7 +1887,9 @@ pub async fn start_native_recording(
     let bundle_id = crate::frontmost::frontmost_bundle_id();
     refresh_expired_ide_context(&app_handle, &state.app_state, bundle_id.as_deref());
     let context = resolve_live_context(&state.app_state, bundle_id.as_deref());
-    state.app_state.set_active_context(rid, Arc::clone(&context));
+    state
+        .app_state
+        .set_active_context(rid, Arc::clone(&context));
     tracing::info!(
         target: "pipeline",
         recording_id = rid,
@@ -1940,59 +1915,18 @@ pub async fn start_native_recording(
         return Err(e);
     }
     *state.app_state.last_transcription_at.lock_or_recover() = Some(std::time::Instant::now());
-    partial_transcript::emit_session_started(&app_handle, rid);
     let _ = app_handle.emit("recording-status-changed", "recording");
     tracing::info!(target: "pipeline", "start_native_recording: started");
-    spawn_model_preparation(app_handle.clone(), context.transcription.model_name.clone(), rid);
-    streaming::start_session(
+    spawn_model_preparation(
         app_handle.clone(),
-        streaming::StreamingConfig {
-            recording_id: rid,
-            context: Arc::clone(&context),
-        },
-    )
-    .await;
+        context.transcription.model_name.clone(),
+        rid,
+    );
 
     Ok(serde_json::json!({
         "type": "recording_started",
-        "state": "recording",
-        "recordingId": rid
+        "state": "recording"
     }))
-}
-
-#[derive(Clone, Copy, Debug, serde::Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct ActiveRecordingSession {
-    recording_id: u64,
-    status: DictationStatus,
-}
-
-fn active_recording_session(
-    status: DictationStatus,
-    recording_id: u64,
-) -> Option<ActiveRecordingSession> {
-    matches!(
-        status,
-        DictationStatus::Recording | DictationStatus::Processing
-    )
-    .then_some(ActiveRecordingSession {
-        recording_id,
-        status,
-    })
-}
-
-/// Privacy-safe listener-readiness snapshot for the overlay WebView. This lets
-/// a newly mounted listener recover the current session ID without replaying or
-/// exposing any provisional text.
-#[tauri::command]
-pub fn get_active_recording_session(
-    state: tauri::State<'_, State>,
-) -> Option<ActiveRecordingSession> {
-    let dictation = state.app_state.dictation.lock_or_recover();
-    active_recording_session(
-        dictation.status,
-        state.app_state.recording_id.load(Ordering::SeqCst),
-    )
 }
 
 #[tauri::command]
@@ -2005,10 +1939,12 @@ pub async fn stop_native_recording(
     let rid = {
         let mut dictation = state.app_state.dictation.lock_or_recover();
         match dictation.status {
-            DictationStatus::Processing => return Ok(serde_json::json!({
-                "type": "already_processing",
-                "state": "processing"
-            })),
+            DictationStatus::Processing => {
+                return Ok(serde_json::json!({
+                    "type": "already_processing",
+                    "state": "processing"
+                }))
+            }
             DictationStatus::Idle => {
                 tracing::warn!(target: "pipeline", "stop_native_recording: not recording");
                 return Ok(serde_json::json!({
@@ -2030,11 +1966,6 @@ pub async fn stop_native_recording(
                 dictation.status = DictationStatus::Idle;
             }
             keyboard::set_processing(false);
-            partial_transcript::emit_clear(
-                &app_handle,
-                rid,
-                partial_transcript::PartialTranscriptClearReason::Error,
-            );
             let _ = app_handle.emit("recording-status-changed", "idle");
             return Err(format!("Missing dictation context for recording {rid}"));
         }
@@ -2042,7 +1973,6 @@ pub async fn stop_native_recording(
     keyboard::set_processing(true);
     tracing::info!(target: "pipeline", "stop_native_recording: stopping");
     let _ = app_handle.emit("recording-status-changed", "processing");
-    let streaming_session = streaming::begin_finish(&state.app_state, rid).await;
 
     // Guard resets status to Idle if stop_recording fails or samples are empty;
     // disarmed before handing off to run_transcription_pipeline (which has its own guard)
@@ -2051,11 +1981,6 @@ pub async fn stop_native_recording(
     // Phase: Audio teardown + 16kHz resample
     let t_total = std::time::Instant::now();
     let samples = audio::stop_recording().map_err(|e| {
-        partial_transcript::emit_clear(
-            &app_handle,
-            rid,
-            partial_transcript::PartialTranscriptClearReason::Error,
-        );
         tracing::error!(target: "audio", "stop_native_recording: stop_recording failed: {}", e);
         if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
             let _ = app_handle.emit("recording-status-changed", "idle");
@@ -2068,12 +1993,6 @@ pub async fn stop_native_recording(
     tracing::info!(target: "pipeline", "audio teardown + resample: {:?}", t_total.elapsed());
 
     if samples.is_empty() {
-        streaming::discard(streaming_session);
-        partial_transcript::emit_clear(
-            &app_handle,
-            rid,
-            partial_transcript::PartialTranscriptClearReason::Finalized,
-        );
         tracing::info!(target: "pipeline", "stop_native_recording: no audio captured");
         // guard drops on return, resetting status to Idle
         if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
@@ -2091,12 +2010,6 @@ pub async fn stop_native_recording(
     const MIN_RECORDING_SAMPLES: usize = 4_800; // 0.3s at 16kHz
 
     if samples.len() < MIN_RECORDING_SAMPLES {
-        streaming::discard(streaming_session);
-        partial_transcript::emit_clear(
-            &app_handle,
-            rid,
-            partial_transcript::PartialTranscriptClearReason::Finalized,
-        );
         tracing::info!(target: "pipeline", "stop_native_recording: recording too short ({}ms), discarding",
             samples.len() / 16); // samples / 16_000 * 1000
         if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
@@ -2112,14 +2025,12 @@ pub async fn stop_native_recording(
     // Hand off status management to the pipeline's own guard
     guard.disarm();
 
-    let incremental = streaming::finalize(app_handle.clone(), streaming_session, &samples).await;
     let pipeline_result = run_transcription_pipeline(
         &samples,
         &app_handle,
         &state.app_state,
         rid,
         Arc::clone(&context),
-        incremental,
     )
     .await;
     // Only emit idle if this recording wasn't cancelled/superseded by a new one.
@@ -2133,20 +2044,8 @@ pub async fn stop_native_recording(
         }
     }
     let (text, timings) = match pipeline_result {
-        Ok(result) => {
-            partial_transcript::emit_clear(
-                &app_handle,
-                rid,
-                partial_transcript::PartialTranscriptClearReason::Finalized,
-            );
-            result
-        }
+        Ok(result) => result,
         Err(error) => {
-            partial_transcript::emit_clear(
-                &app_handle,
-                rid,
-                partial_transcript::PartialTranscriptClearReason::Error,
-            );
             tracing::error!(target: "pipeline", "stop_native_recording: pipeline failed: {}", error);
             return Err(error);
         }
@@ -2154,14 +2053,14 @@ pub async fn stop_native_recording(
 
     let total_ms = t_total.elapsed().as_millis() as u64;
     let audio_secs = samples.len() as f64 / 16_000.0;
-    let word_count = if text.trim().is_empty() { 0 } else { text.split_whitespace().count() };
+    let word_count = if text.trim().is_empty() {
+        0
+    } else {
+        text.split_whitespace().count()
+    };
     let char_count = text.len();
     let model_name = context.transcription.model_name.clone();
     let backend_name = transcriber::backend_name_for_model(&model_name).to_string();
-    let last_partial_to_final_ms = timings
-        .last_partial_at
-        .map(|at| at.elapsed().as_millis() as u64)
-        .unwrap_or(0);
 
     tracing::info!(
         target: "pipeline",
@@ -2170,16 +2069,6 @@ pub async fn stop_native_recording(
         model_load_ms = timings.model_load_ms,
         decode_ms = timings.decode_ms,
         inference_ms = timings.inference_ms,
-        incremental_chunks = timings.incremental_chunks,
-        incremental_attempted = timings.incremental_attempted,
-        incremental_completed = timings.incremental_completed,
-        incremental_fell_back = timings.incremental_fell_back,
-        start_to_first_partial_ms = timings.start_to_first_partial_ms.unwrap_or(0),
-        had_partial = timings.start_to_first_partial_ms.is_some(),
-        partial_update_count = timings.partial_update_count,
-        last_partial_to_final_ms,
-        streaming_inference_ms = timings.streaming_inference_ms,
-        final_chunk_ms = timings.final_chunk_ms,
         correction_ms = timings.correction_ms,
         paste_ms = timings.paste_ms,
         total_ms = total_ms,
@@ -2197,11 +2086,14 @@ pub async fn stop_native_recording(
     // its history even when recording was initiated from the overlay).
     let recording_secs = samples.len() / 16_000;
     if !text.is_empty() {
-        let _ = app_handle.emit("transcription-complete", serde_json::json!({
-            "recordingId": rid,
-            "text": text,
-            "duration": recording_secs
-        }));
+        let _ = app_handle.emit(
+            "transcription-complete",
+            serde_json::json!({
+                "recordingId": rid,
+                "text": text,
+                "duration": recording_secs
+            }),
+        );
     }
 
     Ok(serde_json::json!({
@@ -2236,12 +2128,6 @@ pub async fn cancel_native_recording(
         }
         (prev, rid)
     };
-    streaming::cancel(&state.app_state, rid).await;
-    partial_transcript::emit_clear(
-        &app_handle,
-        rid,
-        partial_transcript::PartialTranscriptClearReason::Cancelled,
-    );
     state.app_state.clear_active_context(rid);
 
     let stop_err = match prev_status {
@@ -2329,7 +2215,11 @@ pub async fn transcribe_file(
     // Claim the slot first (so a racing `start_native_recording` is blocked),
     // then refuse if a live recording/processing is already underway. The guard
     // releases the claim on every return path below.
-    if state.app_state.file_transcribing.swap(true, Ordering::SeqCst) {
+    if state
+        .app_state
+        .file_transcribing
+        .swap(true, Ordering::SeqCst)
+    {
         return Err("Already transcribing a file.".to_string());
     }
     let _file_guard = FileTranscribeGuard {
@@ -2363,9 +2253,10 @@ pub async fn transcribe_file(
     // Phase: decode + downmix + resample to 16kHz mono (off the async runtime).
     let t_decode = std::time::Instant::now();
     let path_for_decode = file_path.clone();
-    let samples = tokio::task::spawn_blocking(move || audio_decode::decode_to_mono_16k(&path_for_decode))
-        .await
-        .map_err(|e| format!("Decode task panicked: {}", e))??;
+    let samples =
+        tokio::task::spawn_blocking(move || audio_decode::decode_to_mono_16k(&path_for_decode))
+            .await
+            .map_err(|e| format!("Decode task panicked: {}", e))??;
     if samples.is_empty() {
         return Err("No audio samples decoded from file".to_string());
     }
@@ -2377,8 +2268,13 @@ pub async fn transcribe_file(
     // Read the settings shared with live dictation in one lock.
     let (model_name, language, vad_sensitivity, custom_vocabulary, smart_punctuation) = {
         let dictation = state.app_state.dictation.lock_or_recover();
-        (dictation.model_name.clone(), dictation.language.clone(), dictation.vad_sensitivity,
-         dictation.custom_vocabulary.clone(), dictation.smart_punctuation)
+        (
+            dictation.model_name.clone(),
+            dictation.language.clone(),
+            dictation.vad_sensitivity,
+            dictation.custom_vocabulary.clone(),
+            dictation.smart_punctuation,
+        )
     };
 
     // Phase: VAD — skip silence, best-effort with fallback to full audio (mirrors live).
@@ -2434,8 +2330,14 @@ pub async fn transcribe_file(
         let model_load_ms = load_started.elapsed().as_millis() as u64;
         let decode_started = std::time::Instant::now();
         let text = transcribe_with_coreml_vad_retry(
-            backend.as_mut(), &model_name, &samples_for_transcription, &samples,
-            vad_trimmed, &language, prompt.as_deref(), smart_punctuation,
+            backend.as_mut(),
+            &model_name,
+            &samples_for_transcription,
+            &samples,
+            vad_trimmed,
+            &language,
+            prompt.as_deref(),
+            smart_punctuation,
         )?;
         let decode_ms = decode_started.elapsed().as_millis() as u64;
         (text, model_load_ms, decode_ms)
@@ -2460,7 +2362,11 @@ pub async fn transcribe_file(
 
     *state.app_state.last_transcription_at.lock_or_recover() = Some(std::time::Instant::now());
 
-    let word_count = if text.trim().is_empty() { 0 } else { text.split_whitespace().count() };
+    let word_count = if text.trim().is_empty() {
+        0
+    } else {
+        text.split_whitespace().count()
+    };
     tracing::info!(
         target: "pipeline",
         model_load_ms,
@@ -2493,23 +2399,46 @@ mod tests {
     impl RetryTestBackend {
         fn new(responses: &[&str]) -> Self {
             Self {
-                responses: responses.iter().map(|response| response.to_string()).collect(),
+                responses: responses
+                    .iter()
+                    .map(|response| response.to_string())
+                    .collect(),
                 sample_counts: Vec::new(),
             }
         }
     }
 
     impl transcriber::TranscriptionBackend for RetryTestBackend {
-        fn name(&self) -> &str { "retry-test" }
-        fn load_model(&mut self, _model_name: &str) -> Result<(), String> { Ok(()) }
-        fn is_model_loaded(&self, _model_name: &str) -> bool { true }
-        fn transcribe(&mut self, samples: &[f32], _language: &str, _initial_prompt: Option<&str>, _smart_punctuation: bool) -> Result<String, String> {
-            self.sample_counts.push(samples.len());
-            self.responses.pop_front().ok_or_else(|| "unexpected extra transcription attempt".to_string())
+        fn name(&self) -> &str {
+            "retry-test"
         }
-        fn token_count(&self, _text: &str) -> Option<usize> { None }
-        fn model_exists(&self) -> bool { true }
-        fn models_dir(&self) -> Result<PathBuf, String> { Ok(std::env::temp_dir()) }
+        fn load_model(&mut self, _model_name: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn is_model_loaded(&self, _model_name: &str) -> bool {
+            true
+        }
+        fn transcribe(
+            &mut self,
+            samples: &[f32],
+            _language: &str,
+            _initial_prompt: Option<&str>,
+            _smart_punctuation: bool,
+        ) -> Result<String, String> {
+            self.sample_counts.push(samples.len());
+            self.responses
+                .pop_front()
+                .ok_or_else(|| "unexpected extra transcription attempt".to_string())
+        }
+        fn token_count(&self, _text: &str) -> Option<usize> {
+            None
+        }
+        fn model_exists(&self) -> bool {
+            true
+        }
+        fn models_dir(&self) -> Result<PathBuf, String> {
+            Ok(std::env::temp_dir())
+        }
         fn reset(&mut self) {}
     }
 
@@ -2557,7 +2486,10 @@ mod tests {
             "confidential replacement",
             "/Users/private/CustomerFiles",
         ] {
-            assert!(!rendered.contains(secret), "telemetry metadata leaked {secret}");
+            assert!(
+                !rendered.contains(secret),
+                "telemetry metadata leaked {secret}"
+            );
         }
     }
 
@@ -2638,9 +2570,16 @@ mod tests {
         let original = vec![0.0; 16_000];
         let mut backend = RetryTestBackend::new(&["", "recovered words"]);
         let text = transcribe_with_coreml_vad_retry(
-            &mut backend, transcriber::COREML_MODEL_NAME, &filtered, &original,
-            true, "auto", None, true,
-        ).unwrap();
+            &mut backend,
+            transcriber::COREML_MODEL_NAME,
+            &filtered,
+            &original,
+            true,
+            "auto",
+            None,
+            true,
+        )
+        .unwrap();
         assert_eq!(text, "recovered words");
         assert_eq!(backend.sample_counts, vec![8_000, 16_000]);
     }
@@ -2651,9 +2590,16 @@ mod tests {
         let original = vec![0.0; 16_000];
         let mut backend = RetryTestBackend::new(&["", ""]);
         let text = transcribe_with_coreml_vad_retry(
-            &mut backend, transcriber::COREML_MODEL_NAME, &filtered, &original,
-            true, "auto", None, true,
-        ).unwrap();
+            &mut backend,
+            transcriber::COREML_MODEL_NAME,
+            &filtered,
+            &original,
+            true,
+            "auto",
+            None,
+            true,
+        )
+        .unwrap();
         assert!(text.is_empty());
         assert_eq!(backend.sample_counts, vec![8_000, 16_000]);
     }
@@ -2663,17 +2609,31 @@ mod tests {
         let samples = vec![0.0; 8_000];
         let mut non_coreml = RetryTestBackend::new(&[""]);
         let text = transcribe_with_coreml_vad_retry(
-            &mut non_coreml, "base.en", &samples, &samples,
-            true, "en", None, true,
-        ).unwrap();
+            &mut non_coreml,
+            "base.en",
+            &samples,
+            &samples,
+            true,
+            "en",
+            None,
+            true,
+        )
+        .unwrap();
         assert!(text.is_empty());
         assert_eq!(non_coreml.sample_counts, vec![8_000]);
 
         let mut untrimmed_coreml = RetryTestBackend::new(&[""]);
         let text = transcribe_with_coreml_vad_retry(
-            &mut untrimmed_coreml, transcriber::COREML_MODEL_NAME, &samples, &samples,
-            false, "auto", None, true,
-        ).unwrap();
+            &mut untrimmed_coreml,
+            transcriber::COREML_MODEL_NAME,
+            &samples,
+            &samples,
+            false,
+            "auto",
+            None,
+            true,
+        )
+        .unwrap();
         assert!(text.is_empty());
         assert_eq!(untrimmed_coreml.sample_counts, vec![8_000]);
     }
@@ -2702,17 +2662,29 @@ mod tests {
         let combined = combine_prompts(custom, code).unwrap();
         assert_eq!(combined, "tauri myProject SERDE useEffect");
         // Each shared term appears exactly once (case-insensitively).
-        let n_tauri = combined.split(' ').filter(|t| t.eq_ignore_ascii_case("tauri")).count();
+        let n_tauri = combined
+            .split(' ')
+            .filter(|t| t.eq_ignore_ascii_case("tauri"))
+            .count();
         assert_eq!(n_tauri, 1, "combined={:?}", combined);
-        let n_serde = combined.split(' ').filter(|t| t.eq_ignore_ascii_case("serde")).count();
+        let n_serde = combined
+            .split(' ')
+            .filter(|t| t.eq_ignore_ascii_case("serde"))
+            .count();
         assert_eq!(n_serde, 1, "combined={:?}", combined);
     }
 
     #[test]
     fn combine_prompts_handles_single_and_empty_sources() {
         assert_eq!(combine_prompts("", ""), None);
-        assert_eq!(combine_prompts("custom dupCustom", "").as_deref(), Some("custom dupCustom"));
-        assert_eq!(combine_prompts("", "code dupe Dupe").as_deref(), Some("code dupe"));
+        assert_eq!(
+            combine_prompts("custom dupCustom", "").as_deref(),
+            Some("custom dupCustom")
+        );
+        assert_eq!(
+            combine_prompts("", "code dupe Dupe").as_deref(),
+            Some("code dupe")
+        );
     }
 
     #[test]
@@ -2734,10 +2706,17 @@ mod tests {
             .join(" ");
         let prefix = whisper_prefix(&full);
         let words: Vec<&str> = prefix.split_whitespace().collect();
-        assert_eq!(words.len(), WHISPER_PROMPT_TERMS, "Whisper budget caps at 96");
+        assert_eq!(
+            words.len(),
+            WHISPER_PROMPT_TERMS,
+            "Whisper budget caps at 96"
+        );
         // Prefix is the leading slice of the full ranked list.
         assert_eq!(words[0], "term000");
-        assert_eq!(words[WHISPER_PROMPT_TERMS - 1], format!("term{:03}", WHISPER_PROMPT_TERMS - 1));
+        assert_eq!(
+            words[WHISPER_PROMPT_TERMS - 1],
+            format!("term{:03}", WHISPER_PROMPT_TERMS - 1)
+        );
         // Shorter-than-budget prompt passes through unchanged.
         assert_eq!(whisper_prefix("alpha beta gamma"), "alpha beta gamma");
         assert_eq!(whisper_prefix(""), "");
@@ -2756,8 +2735,14 @@ mod tests {
             ms: 7,
             sample_terms: vec!["fooBar".into()],
             ranked_terms: vec![
-                RankedTermJson { term: "fooBar".into(), freq: 5 },
-                RankedTermJson { term: "barBaz".into(), freq: 2 },
+                RankedTermJson {
+                    term: "fooBar".into(),
+                    freq: 5,
+                },
+                RankedTermJson {
+                    term: "barBaz".into(),
+                    freq: 2,
+                },
             ],
             whisper_count: 2,
             adopted: true,
@@ -2825,7 +2810,11 @@ mod tests {
 
         assert!(!cancel_code_vocab_scan_id(&app_state, "scan-b"));
         assert_eq!(
-            app_state.dictation.lock_or_recover().code_vocab_scan_id.as_deref(),
+            app_state
+                .dictation
+                .lock_or_recover()
+                .code_vocab_scan_id
+                .as_deref(),
             Some("scan-a"),
         );
         assert!(cancel_code_vocab_scan_id(&app_state, "scan-a"));
@@ -2835,7 +2824,11 @@ mod tests {
             "/project",
             "canceledTerm".into(),
         ));
-        assert!(app_state.dictation.lock_or_recover().code_vocab_prompt.is_none());
+        assert!(app_state
+            .dictation
+            .lock_or_recover()
+            .code_vocab_prompt
+            .is_none());
     }
 
     #[test]
@@ -2855,12 +2848,7 @@ mod tests {
             }
 
             assert!(
-                !complete_code_vocab_scan(
-                    &app_state,
-                    "scan-a",
-                    "/project-a",
-                    "staleTerm".into(),
-                ),
+                !complete_code_vocab_scan(&app_state, "scan-a", "/project-a", "staleTerm".into(),),
                 "{change} must supersede the in-flight scan",
             );
             let dictation = app_state.dictation.lock_or_recover();
@@ -2984,15 +2972,5 @@ mod tests {
         assert_eq!(id1, 1);
         assert_eq!(id2, 2);
         assert_eq!(id3, 3);
-    }
-
-    #[test]
-    fn active_recording_session_snapshot_contains_no_transcript_data() {
-        let snapshot = active_recording_session(DictationStatus::Recording, 17).unwrap();
-        let value = serde_json::to_value(snapshot).unwrap();
-        assert_eq!(value["recordingId"], 17);
-        assert_eq!(value["status"], "recording");
-        assert!(value.get("text").is_none());
-        assert!(active_recording_session(DictationStatus::Idle, 17).is_none());
     }
 }

@@ -65,7 +65,7 @@ In `run_transcription_pipeline()`, the VAD phase runs after pre-VAD diagnostics 
 
 The VAD execution time is logged as `vad_ms` in the structured telemetry output alongside `inference_ms`, `paste_ms`, and `total_ms`. This timing data is visible in the log viewer's Metrics tab. See [log-viewer.md](log-viewer.md) for details.
 
-For long live Whisper recordings, the same threshold is applied independently to each bounded incremental window and the final tail. If VAD is unavailable or fails for any incremental window, Murmur discards the partial work and runs the established full-buffer fallback; it never accepts unfiltered incremental text as authoritative output.
+Every live recording runs VAD once against the final full buffer after recording stops. If VAD is unavailable or fails, Murmur proceeds once with the unfiltered full buffer.
 
 ## Settings
 
