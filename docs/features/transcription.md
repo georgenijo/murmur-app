@@ -51,6 +51,7 @@ The active backend is stored as `Mutex<Box<dyn TranscriptionBackend>>` in `AppSt
 - If the user changes models in settings, the context is dropped and re-created on next transcription
 - Model files are single `.bin` files (e.g., `ggml-base.en.bin`)
 - Model search paths are documented in `docs/onboarding.md`
+- `single_segment` decoding is duration-conditional (`should_use_single_segment`, 12s threshold): short chunks (streaming's 10s windows) stay single-segment, but longer batch/file transcriptions use multi-segment decoding so an early end-of-text token from the model can't force-skip the rest of a long window and silently truncate the tail
 
 ### Incremental Whisper path (`streaming.rs`, `transcriber/chunking.rs`)
 
