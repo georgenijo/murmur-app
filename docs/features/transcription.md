@@ -46,10 +46,12 @@ The active backend is stored as `Mutex<Box<dyn TranscriptionBackend>>` in `AppSt
 
 - Uses `whisper-rs` with Metal GPU acceleration
 - Enables flash attention; Murmur consumes segment text and does not use the incompatible DTW token timestamps
+- Keeps single-segment decoding for short audio up to 12 seconds (including the 10-second incremental windows), while longer batch decodes retain timestamp-based continuation so an early end-of-text token cannot silently skip the remaining audio
 - **Recording-start preparation**: model initialization begins after capture starts, overlapping cold load with speech rather than post-release latency
 - If the user changes models in settings, the context is dropped and re-created on next transcription
 - Model files are single `.bin` files (e.g., `ggml-base.en.bin`)
 - Model search paths are documented in `docs/onboarding.md`
+- `single_segment` decoding is duration-conditional (`should_use_single_segment`, 12s threshold): short chunks (streaming's 10s windows) stay single-segment, but longer batch/file transcriptions use multi-segment decoding so an early end-of-text token from the model can't force-skip the rest of a long window and silently truncate the tail
 
 ### Incremental Whisper path (`streaming.rs`, `transcriber/chunking.rs`)
 

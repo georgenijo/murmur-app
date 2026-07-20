@@ -15,6 +15,7 @@ function report(createdAt: string): BenchmarkReport {
     platform: 'macos aarch64',
     preset: 'quick',
     iterations: 3,
+    sharedInitMs: 1200,
     results: [],
     recommendations: { fastest: null, mostAccurate: null, balanced: null },
   };

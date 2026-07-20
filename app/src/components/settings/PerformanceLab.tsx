@@ -25,8 +25,8 @@ import type { DictationStatus } from '../../lib/types';
 
 const PRESETS: { id: BenchmarkPreset; label: string; detail: string }[] = [
   { id: 'quick', label: 'Quick', detail: '2 clips x 3 runs' },
-  { id: 'standard', label: 'Standard', detail: '4 clips x 5 runs' },
-  { id: 'thorough', label: 'Thorough', detail: '4 clips x 10 runs' },
+  { id: 'standard', label: 'Standard', detail: '7 clips x 5 runs' },
+  { id: 'thorough', label: 'Thorough', detail: '9 clips x 10 runs' },
 ];
 
 function milliseconds(value: number | null): string {
@@ -47,7 +47,7 @@ function modelLabel(report: BenchmarkReport, modelName: string | null): string {
 }
 
 type LatencyResult = BenchmarkModelResult & { warmMedianMs: number; warmP95Ms: number };
-type AccuracyResult = BenchmarkModelResult & { wordErrorRate: number };
+type AccuracyResult = BenchmarkModelResult & { normalizedWordErrorRate: number };
 
 function latencyResults(report: BenchmarkReport): LatencyResult[] {
   return report.results.filter((result): result is LatencyResult => (
@@ -57,7 +57,7 @@ function latencyResults(report: BenchmarkReport): LatencyResult[] {
 
 function accuracyResults(report: BenchmarkReport): AccuracyResult[] {
   return report.results.filter((result): result is AccuracyResult => (
-    !result.error && result.wordErrorRate !== null
+    !result.error && result.normalizedWordErrorRate !== null
   ));
 }
 
@@ -103,11 +103,11 @@ function AccuracyChart({ report }: { report: BenchmarkReport }) {
     <div>
       <div className="mb-2 flex items-center justify-between gap-3">
         <h4 className="text-xs font-semibold text-stone-700 dark:text-stone-300">Word accuracy</h4>
-        <span className="text-[10px] text-stone-400 dark:text-stone-500">Higher is better</span>
+        <span className="text-[10px] text-stone-400 dark:text-stone-500">Normalized / higher is better</span>
       </div>
       <div className="space-y-2">
         {results.map((result) => {
-          const accuracy = Math.max(0, 1 - result.wordErrorRate);
+          const accuracy = Math.max(0, 1 - result.normalizedWordErrorRate);
           return (
             <div key={result.modelName} className="grid grid-cols-[6.5rem_1fr_3rem] items-center gap-2">
               <span className="truncate text-[11px] font-medium text-stone-600 dark:text-stone-300" title={result.label}>{result.label}</span>
@@ -415,6 +415,12 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
               <p className="mt-0.5 text-[11px] text-stone-500 dark:text-stone-400">
                 {report.platform} / Murmur v{report.appVersion} / {report.preset}
               </p>
+              <p
+                className="mt-0.5 text-[11px] text-stone-500 dark:text-stone-400"
+                title="One-time shared backend init (Metal shader compilation, ANE compile cache, etc.) measured once before per-model timing, so it doesn't skew any single model's cold-load number."
+              >
+                Shared init (one-time): {milliseconds(report.sharedInitMs)}
+              </p>
             </div>
             <button
               type="button"
@@ -473,9 +479,10 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
             <h4 className="mb-1 text-xs font-semibold text-stone-700 dark:text-stone-300">Metrics</h4>
             <table className="w-full table-fixed text-[11px]">
               <colgroup>
-                <col className="w-[34%]" />
-                <col className="w-[18%]" />
-                <col className="w-[16%]" />
+                <col className="w-[28%]" />
+                <col className="w-[14%]" />
+                <col className="w-[13%]" />
+                <col className="w-[13%]" />
                 <col className="w-[16%]" />
                 <col className="w-[16%]" />
               </colgroup>
@@ -485,7 +492,8 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
                   <th className="px-2 py-2 font-medium text-right">Median</th>
                   <th className="px-2 py-2 font-medium text-right">P95</th>
                   <th className="px-2 py-2 font-medium text-right">Speed</th>
-                  <th className="pl-2 py-2 font-medium text-right">WER</th>
+                  <th className="px-2 py-2 font-medium text-right">WER norm (raw)</th>
+                  <th className="pl-2 py-2 font-medium text-right">Delivered (raw)</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-stone-200 dark:divide-stone-700 text-stone-700 dark:text-stone-300">
@@ -496,13 +504,20 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
                       <span className="block text-[10px] text-stone-400">{result.accelerator}</span>
                     </td>
                     {result.error ? (
-                      <td colSpan={4} className="px-2 py-2.5 text-red-600 dark:text-red-400">{result.error}</td>
+                      <td colSpan={5} className="px-2 py-2.5 text-red-600 dark:text-red-400">{result.error}</td>
                     ) : (
                       <>
                         <td className="px-2 py-2.5 text-right tabular-nums">{milliseconds(result.warmMedianMs)}</td>
                         <td className="px-2 py-2.5 text-right tabular-nums">{milliseconds(result.warmP95Ms)}</td>
                         <td className="px-2 py-2.5 text-right tabular-nums">{speed(result.realtimeFactor)}</td>
-                        <td className="pl-2 py-2.5 text-right tabular-nums">{percentage(result.wordErrorRate)}</td>
+                        <td className="px-2 py-2.5 text-right tabular-nums">
+                          {percentage(result.normalizedWordErrorRate)}
+                          <span className="text-stone-400 dark:text-stone-500"> ({percentage(result.wordErrorRate)})</span>
+                        </td>
+                        <td className="pl-2 py-2.5 text-right tabular-nums">
+                          {percentage(result.deliveredNormalizedWordErrorRate)}
+                          <span className="text-stone-400 dark:text-stone-500"> ({percentage(result.deliveredWordErrorRate)})</span>
+                        </td>
                       </>
                     )}
                   </tr>
@@ -512,7 +527,7 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
           </div>
 
           <p className="text-[11px] leading-relaxed text-stone-500 dark:text-stone-400">
-            WER counts changed, missing, and extra words against the known transcript. Balanced means the fastest model within 2 accuracy points of the best result.
+            WER counts changed, missing, and extra words against the known transcript. Normalized WER first ignores formatting and number/unit spelling (16 kHz = sixteen kilohertz, front end = frontend) so it reflects recognition, not formatting; raw WER is shown in parentheses. Delivered WER scores the text after the production transform pipeline (dev-vocab prompt for Whisper, then cleanup / correction / formatting) — what actually reaches the clipboard — again shown normalized with raw in parentheses. Accuracy ranking and the Accurate/Balanced picks use the normalized recognition number. Balanced means the fastest model within 2 accuracy points of the best result.
           </p>
 
           <div className="space-y-2">
@@ -525,17 +540,37 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
                   <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] text-stone-500 dark:text-stone-400">
                     <span>Cold load</span><span className="text-right tabular-nums">{milliseconds(result.modelLoadMs)}</span>
                     <span>First inference</span><span className="text-right tabular-nums">{milliseconds(result.firstInferenceMs)}</span>
-                    <span>Memory increase</span><span className="text-right tabular-nums">{result.memoryDeltaMb} MB</span>
+                    <span title="Process RSS delta. Models run sequentially in one process, so allocator retention from an earlier model can inflate a later model's baseline — treat as a rough signal, not an isolated measurement.">Memory increase</span><span className="text-right tabular-nums">{result.memoryDeltaMb} MB</span>
                   </div>
                   {result.fixtures.map((fixture) => (
                     <div key={fixture.fixtureId} className="text-[11px] leading-relaxed">
                       <div className="flex justify-between gap-3 font-medium text-stone-700 dark:text-stone-300">
-                        <span>{fixture.label} / {fixture.audioSeconds.toFixed(1)}s</span>
-                        <span>{fixture.wordErrors}/{fixture.referenceWords} errors</span>
+                        <span>
+                          {fixture.label} / {fixture.audioSeconds.toFixed(1)}s
+                          {fixture.normalizedWordErrors === 0 && (
+                            <span
+                              className="ml-1 text-emerald-500 dark:text-emerald-400"
+                              title="This model scored a perfect normalized transcript on this clip — the clip does not distinguish it from other top models."
+                            >
+                              (saturated)
+                            </span>
+                          )}
+                        </span>
+                        <span>
+                          {fixture.normalizedWordErrors}/{fixture.normalizedReferenceWords} errors
+                          <span className="text-stone-400 dark:text-stone-500"> ({fixture.wordErrors}/{fixture.referenceWords} raw)</span>
+                        </span>
                       </div>
                       <div className="mt-1 grid gap-1 text-stone-500 dark:text-stone-400">
                         <p><span className="font-medium">Reference:</span> {fixture.reference}</p>
                         <p><span className="font-medium">Output:</span> {fixture.transcript || '(empty)'}</p>
+                        <p>
+                          <span className="font-medium">Delivered:</span> {fixture.deliveredTranscript || '(empty)'}
+                          <span className="text-stone-400 dark:text-stone-500"> — {fixture.deliveredNormalizedWordErrors}/{fixture.normalizedReferenceWords} errors ({fixture.deliveredWordErrors}/{fixture.referenceWords} raw)</span>
+                          {fixture.deliveredTransformFailed && (
+                            <span className="text-amber-600 dark:text-amber-400"> — transform failed, showing raw</span>
+                          )}
+                        </p>
                       </div>
                     </div>
                   ))}
