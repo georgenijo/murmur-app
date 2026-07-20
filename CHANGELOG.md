@@ -5,7 +5,9 @@ All notable changes to Murmur will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
+
 ### Added
+- **Persistent personal knowledge store** keeps replacement rules, vocabulary terms, and snippets in a versioned local SQLite database with deterministic migration/backup recovery. Settings provides bounded search, scoped inspection, create/edit/enable-disable/delete, atomic export/import, visible recovery state, and confirmed delete-all; transcription, Correct and Teach, and command execution remain separate future integrations (#246).
 - **Explicit spoken vocabulary aliases** let users map exact recognized variants such as `Tori` and `Tory` to a canonical written term such as `Tauri`. Structured entries migrate existing vocabulary, validate ambiguity/cycles/command conflicts, run locally across every backend before fuzzy and CLI formatting, and include an in-memory Settings preview (#268).
 - Opt-in per-app **Local IDE symbols and `@file` context** builds a bounded memory-only index from user-selected roots, corrects unique project symbols, and canonicalizes explicitly triggered file mentions to root-relative text. It never reads screen, selection, or clipboard context; ambiguous or stale references stay unchanged, and reviewed CLI formatting remains authoritative (#253).
 - Per-app **Writing Styles** add explicit Inherit, Conversational, Polished prose, Code / technical, Verbatim, and Notes policies using only local deterministic transforms. Styles resolve once in the immutable recording context, never infer app type or capture app content, and preserve existing delivery behavior (#250).
@@ -18,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 - Performance Lab recommendations now rank Fastest by duration-weighted corpus speed and keep Balanced from favoring a memory-heavy model when lower-memory alternatives have comparable speed and accuracy (#272).
+- Long Whisper batch and file transcriptions now retain timestamp-based continuation, preventing an early end-of-text token from silently dropping the remaining audio while preserving single-segment decoding for short streaming windows (#269).
 - Whisper live-preview updates now render in a clearly labeled row below the physical MacBook notch instead of behind it, with an always-visible recording timer, privacy-safe listener diagnostics, generation-guarded startup session/status reconciliation, and an explicit final-only state for Parakeet/Core ML (#266).
 - Per-app profile matching now uses the native macOS frontmost-application query with bounded retries and a timeout-bounded compatibility fallback, while preserving one immutable recording-start snapshot and privacy-safe detection telemetry (#265).
 
