@@ -56,9 +56,27 @@ Width transitions over 400ms and height over 360ms, both using the spring curve 
 
 Hovering the pill expands it downward into a quick-settings dropdown. The dropdown is identical regardless of state — only the top bar differs.
 
-- **Expand** requires hover intent: the cursor must dwell on the island for `HOVER_OPEN_DWELL_MS` (150ms) before the card opens — grazing the notch does nothing. **Collapse** 300ms after `mouseLeave`.
-- Because a transparent overlay with cursor events enabled captures the mouse across its whole frame, the window is **dynamically resized** rather than pre-allocated tall — otherwise the idle overlay would create a click dead-zone below the notch. Expand grows the window first, then the card animates open; collapse animates the card closed, then shrinks the window ~380ms later so the dropdown is never clipped mid-transition.
+The entire expand/collapse and native-resize lifecycle is owned by one controller hook, `useOverlayExpansion` (`app/src/lib/hooks/useOverlayExpansion.ts`). Nothing else in the overlay calls `set_overlay_expanded` or owns the dwell/collapse/shrink timers — the controller is the single writer to the native resize path.
+
+### Phase model
+
+The controller runs a four-phase state machine:
+
+| Phase | Meaning |
+|-------|---------|
+| `collapsed` | Pill only; window at collapsed height. |
+| `opening` | Grow requested; **awaiting the resize ack**. The dropdown is not revealed yet. |
+| `open` | Ack received; the dropdown is revealed (`expanded` CSS flag = `phase === 'open'`). Also spans the leave-delay. |
+| `closing` | Dropdown hidden immediately; the window stays tall until the close animation finishes, then shrinks. |
+
+- **Expand** requires hover intent: the cursor must dwell on the island for `HOVER_OPEN_DWELL_MS` (150ms) before opening — grazing the notch does nothing. **Collapse** begins 300ms after the cursor leaves.
+- **Acknowledged ordering:** because a transparent overlay with cursor events enabled captures the mouse across its whole frame, the window is **dynamically resized** rather than pre-allocated tall — otherwise the idle overlay would create a click dead-zone below the notch. Expand enqueues the grow, **awaits the ack from `set_overlay_expanded`** (which returns the applied frame), and only then reveals the card, so CSS can never animate the dropdown into a window that has not yet grown. If the resize is rejected, the controller reverts to `collapsed` without revealing. Collapse hides the card immediately, then shrinks the window `SHRINK_DELAY_MS` later so the dropdown is never clipped mid-transition.
+- **Serialized surface writer:** all `set_overlay_expanded` hover grow/shrink calls flow through one async queue with a generation counter. A newer request supersedes any queued or in-flight older one, and stale acks are dropped, so rapid enter/leave/enter can never apply an out-of-date resize. Leaving during `opening` immediately supersedes the pending grow with a collapse, so a late grow ack cannot reveal the dropdown. Re-entry while `closing` cancels the pending shrink and reopens cleanly. A rejected collapse is retried twice inside the same generation-aware queue (after 100ms, then 300ms) before the controller gives up, reducing the chance that a transient native resize failure leaves a tall transparent hit area.
+- **Motion tokens:** the transition durations/easings live in `app/src/lib/overlayMotion.ts` (width 400ms, height 360ms, spring `cubic-bezier(0.34,1.56,0.64,1)`, dwell 150ms, collapse-delay 300ms). `SHRINK_DELAY_MS` is **derived** as `OVERLAY_HEIGHT_MS + 20` (= 380ms) rather than a hand-tuned constant, so it can never drift from the height transition it guards. The island's `transition` string is templated from these tokens. With `prefers-reduced-motion: reduce`, CSS transitions are removed and the controller shrinks immediately after the leave-intent delay, avoiding both motion and a residual transparent hit area.
+- **Single gated poller:** the overlay is non-activating and sits above the menu bar, so macOS can miss DOM hover events. One 150ms interval branches on phase — strict entry bounds arm the dwell while `collapsed`/`closing`; padded exit bounds collapse the card while `open`. Gating: ticks do **no IPC** (no `outerPosition`/`cursorPosition`) while the overlay is **hidden**; while **disabled**, DOM and poller entry are blocked, but the exit watchdog stays alive during an active interaction so clicking the dropdown's own Disable control cannot strand the card open on a missed mouseleave. Visibility is tracked via `overlay-visible-changed`, defaulting to visible on mount; hiding also cancels timers, resets the phase, and serializes a collapse. In-flight cursor results are generation-guarded so they cannot reopen after a visibility or display reset. A display change (`overlay-geometry-changed`) is authoritative: it cancels timers, forces `collapsed`, and enqueues one corrective collapse resize through the writer (which supersedes any straggler grow and repairs the window).
+  - **Note:** `overlay-visible-changed` is emitted by the `show_overlay`/`hide_overlay` commands, which are **not currently invoked in production** — the overlay is shown once at setup (`overlay_win.show()` in `lib.rs`) and stays visible. The visibility ref therefore defaults to `true` so first-hover works from mount, and the `disabled`-phase gate is the active battery saver today; the visibility gate is plumbing that activates if/when show/hide get wired to dynamic callers.
 - Only the **top bar** is a drag region (`data-tauri-drag-region`); the dropdown buttons are not, so they stay clickable.
+- The dropdown is labeled as the `Quick settings` group and is `aria-hidden` until the expanded-frame acknowledgment reveals it.
 
 ### Dropdown controls
 
@@ -143,9 +161,9 @@ The observer is intentionally leaked (`std::mem::forget`) for app-lifetime obser
 
 | Command | Description |
 |---------|-------------|
-| `show_overlay` | Positions, sizes, and shows the overlay window. Re-enables mouse events. |
-| `hide_overlay` | Hides the overlay window. Gracefully handles missing window. |
-| `set_overlay_expanded` | Switches between the collapsed and expanded frames while keeping the window top anchored. Sizes are derived from `geometry_for()`. |
+| `show_overlay` | Positions, sizes, and shows the overlay window. Re-enables mouse events. Emits `overlay-visible-changed(true)` after showing. |
+| `hide_overlay` | Hides the overlay window. Gracefully handles missing window. Emits `overlay-visible-changed(false)` after hiding. |
+| `set_overlay_expanded` | Switches between collapsed and expanded frames, then **returns the applied frame** as `AppliedSurface { windowW, windowH }`. The expansion controller awaits this value as the resize ack before revealing the dropdown. Width remains fixed and top anchored. Sizes are derived from `geometry_for()`. |
 | `get_overlay_geometry` | Returns the current `OverlayGeometry` (never null) derived from the cached notch via `geometry_for()`. |
 
 `set_overlay_expanded` and `position_overlay_default` both size the window from `geometry_for()`, so they stay consistent.
@@ -156,7 +174,8 @@ The observer is intentionally leaked (`std::mem::forget`) for app-lifetime obser
 |-------|---------|-------------|
 | `recording-status-changed` | String | Drives visual state transitions |
 | `audio-level` | Number (RMS 0.0-1.0) | Real-time audio level for waveform |
-| `overlay-geometry-changed` | `OverlayGeometry` | Display configuration changed; carries the recomputed geometry (never null) |
+| `overlay-geometry-changed` | `OverlayGeometry` | Display configuration changed; carries the recomputed geometry (never null). Authoritative reset for the expansion controller (forces `collapsed`). |
+| `overlay-visible-changed` | Boolean | Overlay window shown (`true`) / hidden (`false`); gates the expansion controller's cursor poller so it does no IPC while hidden |
 | `app-disabled-changed` | Boolean | Global-disable state changed (updates the top-bar mic + speaker-slash) |
 | `settings-changed` | (none) | Overlay-relevant settings changed in another window; listeners re-read localStorage |
 | `hotkey-tap-rejected` | `{ reason: "second_tap_expired", mode: "double_tap" \| "both" }` | Drives the opt-in amber timing-miss flash |

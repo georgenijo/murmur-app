@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { listen, emit } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
-import { cursorPosition, getCurrentWindow } from '@tauri-apps/api/window';
 import { isDictationStatus } from '../lib/types';
 import type { DictationStatus } from '../lib/types';
 import { flog } from '../lib/log';
@@ -10,6 +9,8 @@ import type { Settings } from '../lib/settings';
 import { buildConfigureOptions } from '../lib/dictation';
 import type { DictationResponse } from '../lib/dictation';
 import { useOverlayGeometry } from '../lib/hooks/useOverlayGeometry';
+import { useOverlayExpansion } from '../lib/hooks/useOverlayExpansion';
+import { OVERLAY_ISLAND_TRANSITION } from '../lib/overlayMotion';
 import {
   HOTKEY_MISS_FLASH_MS,
   isHotkeyTapRejectedPayload,
@@ -17,11 +18,6 @@ import {
 } from '../lib/hotkeyFeedback';
 
 const BAR_COUNT = 7;
-const COLLAPSE_DELAY_MS = 300;
-const SHRINK_DELAY_MS = 380;
-const HOVER_WATCHDOG_MS = 150;
-const HOVER_BOUNDS_PADDING = 8;
-const HOVER_OPEN_DWELL_MS = 150;
 
 function formatElapsed(seconds: number): string {
   const m = Math.floor(seconds / 60);
@@ -69,29 +65,28 @@ export function OverlayWidget() {
   const [showHotkeyMiss, setShowHotkeyMiss] = useState(false);
   const [lockedMode, setLockedMode] = useState(false);
   const [disabled, setDisabled] = useState(false);
-  const [expanded, setExpanded] = useState(false);
   const [autoPaste, setAutoPaste] = useState(false);
   const [fileOutputEnabled, setFileOutputEnabled] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const geometry = useOverlayGeometry();
-  const islandRef = useRef<HTMLDivElement | null>(null);
   const lockedRef = useRef(lockedMode);
   const disabledRef = useRef(disabled);
-  const expandedRef = useRef(expanded);
   const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const collapseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const shrinkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const dwellTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hotkeyMissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const audioLevelRef = useRef(0);
   const hotkeyMissFeedbackRef = useRef(false);
   const barRefs = useRef<(HTMLDivElement | null)[]>([]);
   const statusRef = useRef(status);
 
+  // The expansion controller owns the entire expand/collapse + surface lifecycle:
+  // dwell/collapse/shrink timers, the serialized set_overlay_expanded writer, and
+  // the single cursor poller. It is the only writer to the native resize path.
+  const { phase, expanded, expandedRef, islandRef, onHoverStart, onHoverEnd } =
+    useOverlayExpansion({ disabled });
+
   useEffect(() => { statusRef.current = status; }, [status]);
   useEffect(() => { lockedRef.current = lockedMode; }, [lockedMode]);
   useEffect(() => { disabledRef.current = disabled; }, [disabled]);
-  useEffect(() => { expandedRef.current = expanded; }, [expanded]);
 
   const applySettingsSnapshot = useCallback((settings: Settings) => {
     setDisabled(settings.disabled);
@@ -110,12 +105,19 @@ export function OverlayWidget() {
     return () => {
       flog.info('overlay', 'unmounted');
       if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
-      if (collapseTimerRef.current) clearTimeout(collapseTimerRef.current);
-      if (shrinkTimerRef.current) clearTimeout(shrinkTimerRef.current);
-      if (dwellTimerRef.current) clearTimeout(dwellTimerRef.current);
       if (hotkeyMissTimerRef.current) clearTimeout(hotkeyMissTimerRef.current);
     };
   }, [applySettingsSnapshot]);
+
+  // Refresh quick-control values from localStorage as the card starts opening,
+  // so the dropdown (revealed once the resize acks) shows current settings. The
+  // overlay has no shared React settings context, so it re-reads on each open.
+  useEffect(() => {
+    if (phase !== 'opening') return;
+    try {
+      applySettingsSnapshot(loadSettings());
+    } catch { /* ignore */ }
+  }, [phase, applySettingsSnapshot]);
 
   // Restore saved position (Rust handles default positioning)
   // TODO: re-enable after notch positioning is stable
@@ -218,24 +220,6 @@ export function OverlayWidget() {
       if (timeoutId) clearTimeout(timeoutId);
       unlisten?.();
     };
-  }, []);
-
-  // Subscribe to overlay-geometry-changed for its display-change side effects only.
-  // useOverlayGeometry owns the geometry state; this listener keeps the expanded UI
-  // in sync because Rust resizes the window back to collapsed dimensions on change.
-  useEffect(() => {
-    let cancelled = false;
-    let unlisten: (() => void) | null = null;
-    listen('overlay-geometry-changed', () => {
-      // Rust resizes the window back to collapsed dimensions on display change,
-      // so reset the expanded UI state to stay in sync.
-      setExpanded(false);
-      invoke('set_overlay_expanded', { expanded: false })
-        .catch((e) => flog.warn('overlay', 'display-change surface sync failed', { error: String(e) }));
-    }).then((fn) => {
-      if (cancelled) { fn(); } else { unlisten = fn; }
-    });
-    return () => { cancelled = true; unlisten?.(); };
   }, []);
 
   // Subscribe to audio level events from Rust (store in ref, no state update)
@@ -415,131 +399,6 @@ export function OverlayWidget() {
     });
   }, []);
 
-  const shrinkOverlayWindow = useCallback(() => {
-    if (shrinkTimerRef.current) clearTimeout(shrinkTimerRef.current);
-    shrinkTimerRef.current = setTimeout(() => {
-      shrinkTimerRef.current = null;
-      invoke('set_overlay_expanded', { expanded: false })
-        .catch((e) => flog.warn('overlay', 'set_overlay_expanded(false) failed', { error: String(e) }));
-    }, SHRINK_DELAY_MS);
-  }, []);
-
-  const collapseOverlay = useCallback((delayMs = COLLAPSE_DELAY_MS) => {
-    if (collapseTimerRef.current) clearTimeout(collapseTimerRef.current);
-    collapseTimerRef.current = setTimeout(() => {
-      collapseTimerRef.current = null;
-      setExpanded(false);
-      shrinkOverlayWindow();
-    }, delayMs);
-  }, [shrinkOverlayWindow]);
-
-  // Hover-expand: grow the window first, then animate the card open.
-  const openOverlay = useCallback(() => {
-    if (dwellTimerRef.current) { clearTimeout(dwellTimerRef.current); dwellTimerRef.current = null; }
-    if (expandedRef.current) return;
-    // Refresh quick-control values from localStorage (overlay has no shared settings context).
-    try {
-      const s = loadSettings();
-      applySettingsSnapshot(s);
-    } catch { /* ignore */ }
-    invoke('set_overlay_expanded', { expanded: true })
-      .catch((e) => flog.warn('overlay', 'set_overlay_expanded(true) failed', { error: String(e) }));
-    setExpanded(true);
-  }, [applySettingsSnapshot]);
-
-  // Opening requires hover intent: the cursor must dwell on the island before
-  // the card expands, so grazing the notch no longer pops the dropdown.
-  const noteHoverStart = useCallback(() => {
-    if (collapseTimerRef.current) { clearTimeout(collapseTimerRef.current); collapseTimerRef.current = null; }
-    if (shrinkTimerRef.current) { clearTimeout(shrinkTimerRef.current); shrinkTimerRef.current = null; }
-    if (expandedRef.current || dwellTimerRef.current) return;
-    dwellTimerRef.current = setTimeout(() => {
-      dwellTimerRef.current = null;
-      openOverlay();
-    }, HOVER_OPEN_DWELL_MS);
-  }, [openOverlay]);
-
-  const cancelHoverDwell = useCallback(() => {
-    if (dwellTimerRef.current) { clearTimeout(dwellTimerRef.current); dwellTimerRef.current = null; }
-  }, []);
-
-  // Collapse after a 300ms hover-intent delay; shrink the window only after the
-  // close animation finishes so the dropdown isn't clipped mid-transition.
-  const handleMouseLeave = useCallback(() => {
-    cancelHoverDwell();
-    collapseOverlay();
-  }, [cancelHoverDwell, collapseOverlay]);
-
-  // Safety net for macOS/Tauri hover edge cases: if the native window is already
-  // expanded but a leave event is missed, collapse once the cursor is outside the
-  // actual visible island card (not merely outside the transparent window frame).
-  useEffect(() => {
-    if (!expanded) return;
-    const currentWindow = getCurrentWindow();
-    const intervalId = setInterval(async () => {
-      const island = islandRef.current;
-      if (!island || !expandedRef.current) return;
-      try {
-        const [windowPosition, cursor] = await Promise.all([
-          currentWindow.outerPosition(),
-          cursorPosition(),
-        ]);
-        const scale = window.devicePixelRatio || 1;
-        const rect = island.getBoundingClientRect();
-        const padding = HOVER_BOUNDS_PADDING * scale;
-        const left = windowPosition.x + rect.left * scale - padding;
-        const right = windowPosition.x + rect.right * scale + padding;
-        const top = windowPosition.y + rect.top * scale - padding;
-        const bottom = windowPosition.y + rect.bottom * scale + padding;
-
-        if (cursor.x < left || cursor.x > right || cursor.y < top || cursor.y > bottom) {
-          collapseOverlay(0);
-        }
-      } catch (err) {
-        flog.warn('overlay', 'hover watchdog failed', { error: String(err) });
-      }
-    }, HOVER_WATCHDOG_MS);
-    return () => clearInterval(intervalId);
-  }, [expanded, collapseOverlay]);
-
-  // The overlay is non-activating and sits above the menu bar, so macOS can miss
-  // normal DOM hover entry events. Polling the cursor against the visible island
-  // bounds keeps hover-expand reliable without widening the clickable window.
-  // Entry bounds are strict (no padding) and only arm the dwell timer — the
-  // card opens after HOVER_OPEN_DWELL_MS of sustained hover, not on a graze.
-  useEffect(() => {
-    const currentWindow = getCurrentWindow();
-    let inFlight = false;
-    const intervalId = setInterval(async () => {
-      const island = islandRef.current;
-      if (!island || expandedRef.current || inFlight) return;
-      inFlight = true;
-      try {
-        const [windowPosition, cursor] = await Promise.all([
-          currentWindow.outerPosition(),
-          cursorPosition(),
-        ]);
-        const scale = window.devicePixelRatio || 1;
-        const rect = island.getBoundingClientRect();
-        const left = windowPosition.x + rect.left * scale;
-        const right = windowPosition.x + rect.right * scale;
-        const top = windowPosition.y + rect.top * scale;
-        const bottom = windowPosition.y + rect.bottom * scale;
-
-        if (cursor.x >= left && cursor.x <= right && cursor.y >= top && cursor.y <= bottom) {
-          noteHoverStart();
-        } else {
-          cancelHoverDwell();
-        }
-      } catch (err) {
-        flog.warn('overlay', 'hover detector failed', { error: String(err) });
-      } finally {
-        inFlight = false;
-      }
-    }, HOVER_WATCHDOG_MS);
-    return () => clearInterval(intervalId);
-  }, [noteHoverStart, cancelHoverDwell]);
-
   // Quick control: auto-paste. Write localStorage + notify the main window.
   const handleToggleAutoPaste = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -621,18 +480,18 @@ export function OverlayWidget() {
       onMouseDown={handleMouseDown}
       onDoubleClick={handleDoubleClick}
       onClick={handleClick}
-      onMouseEnter={noteHoverStart}
-      onMouseMove={noteHoverStart}
+      onMouseEnter={onHoverStart}
+      onMouseMove={onHoverStart}
     >
       {/* Dynamic Island: top bar matches notch height; hover expands it downward
           to reveal the quick-settings dropdown. Idle/recording only changes the
           top bar — the dropdown row is identical. */}
       <div
         ref={islandRef}
-        className="cursor-pointer select-none overflow-hidden"
-        onMouseEnter={noteHoverStart}
-        onMouseMove={noteHoverStart}
-        onMouseLeave={handleMouseLeave}
+        className="overlay-island cursor-pointer select-none overflow-hidden"
+        onMouseEnter={onHoverStart}
+        onMouseMove={onHoverStart}
+        onMouseLeave={onHoverEnd}
         style={{
           borderRadius: '0 0 12px 12px',
           width: (expanded || isActive)
@@ -646,7 +505,7 @@ export function OverlayWidget() {
           boxShadow: showHotkeyMiss ? 'inset 0 -2px 0 rgba(245,158,11,0.9), 0 3px 16px rgba(245,158,11,0.22)' : 'none',
           backdropFilter: 'blur(40px)',
           WebkitBackdropFilter: 'blur(40px)',
-          transition: 'width 400ms cubic-bezier(0.34,1.56,0.64,1), height 360ms cubic-bezier(0.34,1.56,0.64,1)',
+          transition: OVERLAY_ISLAND_TRANSITION,
         }}
       >
         {/* Top bar — the only draggable surface (keeps the dropdown buttons clickable) */}
@@ -712,7 +571,10 @@ export function OverlayWidget() {
 
         {/* Quick-settings dropdown — revealed on hover (identical in idle/recording) */}
         <div
-          className="flex items-center justify-center gap-3"
+          className="overlay-dropdown flex items-center justify-center gap-3"
+          role="group"
+          aria-label="Quick settings"
+          aria-hidden={!expanded}
           style={{
             height: geometry.dropdownH,
             padding: '0 10px 6px',
