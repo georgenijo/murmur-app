@@ -9,7 +9,7 @@ use chrono::{DateTime, FixedOffset, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -494,6 +494,23 @@ struct FixedEvaluationClock {
     elapsed_ms: u64,
 }
 
+enum HardwareRecognition {
+    Completed {
+        raw_asr: String,
+        model: ModelMetadata,
+        elapsed_ms: u64,
+    },
+    Skipped {
+        reason: String,
+        model: ModelMetadata,
+    },
+    Failed {
+        reason: String,
+        model: ModelMetadata,
+        elapsed_ms: u64,
+    },
+}
+
 impl FixedEvaluationClock {
     fn advance(&mut self, amount_ms: u64) {
         self.elapsed_ms = self.elapsed_ms.saturating_add(amount_ms);
@@ -566,6 +583,12 @@ fn load_fixtures(
             FixtureDocument::One(fixture) => vec![fixture],
             FixtureDocument::Many(fixtures) => fixtures,
         };
+        if document_fixtures.is_empty() {
+            return Err(format!(
+                "Invalid strict fixture {}: fixture arrays must not be empty",
+                path.display()
+            ));
+        }
         for fixture in document_fixtures {
             validate_fixture(&fixture, tier, &path)?;
             if !ids.insert(fixture.id.clone()) {
@@ -626,10 +649,63 @@ fn validate_fixture(
     if fixture.expected.delivery.partial_count != 0
         || fixture.expected.delivery.first_partial_ms.is_some()
         || !fixture.expected.delivery.final_only
+        || fixture.expected.delivery.attempts != 1
     {
         return Err(fail(
-            "Murmur is final-only: partialCount must be 0, firstPartialMs null, and finalOnly true",
+            "Murmur is final-only: attempts must be 1, partialCount must be 0, firstPartialMs null, and finalOnly true",
         ));
+    }
+    DateTime::parse_from_rfc3339(&fixture.context.fixed_now)
+        .map_err(|error| fail(&format!("fixedNow must be RFC 3339: {error}")))?;
+
+    const STAGES: &[&str] = &[
+        crate::transcript_transform::CLEANUP_STAGE,
+        crate::transcript_transform::VOICE_COMMANDS_STAGE,
+        crate::transcript_transform::SMART_CORRECTION_STAGE,
+        crate::transcript_transform::SMART_FORMATTING_STAGE,
+        crate::transcript_transform::IDE_CONTEXT_STAGE,
+        crate::transcript_transform::CLI_COMMAND_STAGE,
+    ];
+    const OUTCOMES: &[&str] = &["applied", "skipped", "fallback", "failed"];
+    let mut expected_stages = HashSet::new();
+    for stage in &fixture.expected.stages {
+        if !STAGES.contains(&stage.name.as_str()) {
+            return Err(fail(&format!("unknown expected stage '{}'", stage.name)));
+        }
+        if !OUTCOMES.contains(&stage.outcome.as_str()) {
+            return Err(fail(&format!(
+                "unknown expected outcome '{}' for stage '{}'",
+                stage.outcome, stage.name
+            )));
+        }
+        if !expected_stages.insert(stage.name.as_str()) {
+            return Err(fail(&format!("duplicate expected stage '{}'", stage.name)));
+        }
+    }
+
+    let mut command_ids = HashSet::new();
+    for command in &fixture.context.resources.voice_commands {
+        if command.id.trim().is_empty() || command.phrase.trim().is_empty() {
+            return Err(fail("voice-command id and phrase must be non-empty"));
+        }
+        if !command_ids.insert(command.id.as_str()) {
+            return Err(fail(&format!(
+                "duplicate voice-command id '{}'",
+                command.id
+            )));
+        }
+        if command.command_type == VoiceCommandKind::Snippet {
+            crate::voice_commands::validate_snippet_template(
+                &command.content,
+                command.allow_clipboard_read,
+            )
+            .map_err(|error| fail(&format!("invalid voice-command snippet: {error}")))?;
+        }
+    }
+    for file in &fixture.context.resources.ide_files {
+        if !is_clean_relative_path(file) {
+            return Err(fail("IDE fixture files must be clean root-relative paths"));
+        }
     }
     match tier {
         EvaluationTier::Deterministic => {
@@ -646,7 +722,10 @@ fn validate_fixture(
             let Some(model) = fixture.requirements.model.as_ref() else {
                 return Err(fail("hardware fixtures require model metadata"));
             };
-            if fixture.requirements.audio.is_none() || fixture.input.raw_asr.is_some() {
+            let Some(audio) = fixture.requirements.audio.as_ref() else {
+                return Err(fail("hardware fixtures require audio metadata"));
+            };
+            if fixture.input.raw_asr.is_some() {
                 return Err(fail(
                     "hardware fixtures require audio and must obtain rawAsr from the model",
                 ));
@@ -654,9 +733,42 @@ fn validate_fixture(
             if !model.installed_only {
                 return Err(fail("hardware fixtures must set installedOnly true"));
             }
+            let definition = crate::model_runtime::model_definition(&model.name)
+                .map_err(|error| fail(&error))?;
+            if model.backend != definition.backend.as_str() {
+                return Err(fail(
+                    "hardware model backend does not match the model catalog",
+                ));
+            }
+            if model.language.trim().is_empty() {
+                return Err(fail("hardware model language must be non-empty"));
+            }
+            if !is_clean_relative_path(&audio.path)
+                || Path::new(&audio.path)
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    != Some("wav")
+            {
+                return Err(fail(
+                    "hardware audio must be a clean workspace-relative WAV path",
+                ));
+            }
+            if audio.sample_rate_hz == 0 || audio.channels == 0 {
+                return Err(fail(
+                    "hardware audio sample rate and channel count must be non-zero",
+                ));
+            }
         }
     }
     Ok(())
+}
+
+fn is_clean_relative_path(value: &str) -> bool {
+    !value.trim().is_empty()
+        && !Path::new(value).is_absolute()
+        && Path::new(value)
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
 }
 
 fn run_fixture(_path: &Path, fixture: EvaluationFixture, options: &RunOptions) -> CaseReport {
@@ -664,19 +776,44 @@ fn run_fixture(_path: &Path, fixture: EvaluationFixture, options: &RunOptions) -
     let memory_before = (options.tier == EvaluationTier::Hardware)
         .then(current_memory_mb)
         .flatten();
-    let (raw_asr, model, measured_raw_ms, skip_reason) = match options.tier {
+    let (raw_asr, model, measured_raw_ms) = match options.tier {
         EvaluationTier::Deterministic => (
             fixture.input.raw_asr.clone().unwrap_or_default(),
             None,
             fixture.timing.raw_asr_ms,
-            None,
         ),
-        EvaluationTier::Hardware => run_hardware_recognition(&fixture, options),
+        EvaluationTier::Hardware => match run_hardware_recognition(&fixture, options) {
+            HardwareRecognition::Completed {
+                raw_asr,
+                model,
+                elapsed_ms,
+            } => (raw_asr, Some(model), elapsed_ms),
+            HardwareRecognition::Skipped { reason, model } => {
+                return unexecuted_case(
+                    &fixture,
+                    CaseStatus::Skipped,
+                    reason,
+                    Some(model),
+                    0,
+                    memory_before,
+                )
+            }
+            HardwareRecognition::Failed {
+                reason,
+                model,
+                elapsed_ms,
+            } => {
+                return unexecuted_case(
+                    &fixture,
+                    CaseStatus::Failed,
+                    reason,
+                    Some(model),
+                    elapsed_ms,
+                    memory_before,
+                )
+            }
+        },
     };
-
-    if let Some(reason) = skip_reason {
-        return skipped_case(&fixture, reason, model, memory_before);
-    }
 
     let recognition = score_recognition(
         fixture
@@ -801,7 +938,7 @@ fn run_fixture(_path: &Path, fixture: EvaluationFixture, options: &RunOptions) -
 fn run_hardware_recognition(
     fixture: &EvaluationFixture,
     options: &RunOptions,
-) -> (String, Option<ModelMetadata>, u64, Option<String>) {
+) -> HardwareRecognition {
     let audio = fixture
         .requirements
         .audio
@@ -823,101 +960,105 @@ fn run_hardware_recognition(
         sample_rate_hz: audio.sample_rate_hz,
         channels: audio.channels,
     };
-    if !crate::model_runtime::model_installed(&model.name) {
-        return (
-            String::new(),
-            Some(model_metadata),
-            0,
-            Some(format!(
-                "required installed model '{}' is unavailable",
-                model.name
-            )),
-        );
-    }
     let audio_path = options.workspace_root.join(&audio.path);
     let workspace = match options.workspace_root.canonicalize() {
         Ok(path) => path,
         Err(error) => {
-            return (
-                String::new(),
-                Some(model_metadata),
-                0,
-                Some(format!("workspace root is unavailable: {error}")),
-            )
+            return HardwareRecognition::Failed {
+                reason: format!("workspace root is unavailable: {error}"),
+                model: model_metadata,
+                elapsed_ms: 0,
+            }
         }
     };
     let audio_path = match audio_path.canonicalize() {
         Ok(path) if path.starts_with(&workspace) => path,
         Ok(_) => {
-            return (
-                String::new(),
-                Some(model_metadata),
-                0,
-                Some("audio path escapes the local workspace boundary".to_string()),
-            )
+            return HardwareRecognition::Failed {
+                reason: "audio path escapes the local workspace boundary".to_string(),
+                model: model_metadata,
+                elapsed_ms: 0,
+            }
         }
         Err(error) => {
-            return (
-                String::new(),
-                Some(model_metadata),
-                0,
-                Some(format!("audio fixture is unavailable: {error}")),
-            )
+            return HardwareRecognition::Failed {
+                reason: format!("audio fixture is unavailable: {error}"),
+                model: model_metadata,
+                elapsed_ms: 0,
+            }
         }
     };
     if audio_path.extension().and_then(|value| value.to_str()) != Some("wav") {
-        return (
-            String::new(),
-            Some(model_metadata),
-            0,
-            Some("hardware audio fixture must be a WAV file".to_string()),
-        );
+        return HardwareRecognition::Failed {
+            reason: "hardware audio fixture must be a WAV file".to_string(),
+            model: model_metadata,
+            elapsed_ms: 0,
+        };
     }
     let wav_spec = match hound::WavReader::open(&audio_path) {
         Ok(reader) => reader.spec(),
         Err(error) => {
-            return (
-                String::new(),
-                Some(model_metadata),
-                0,
-                Some(format!("could not inspect WAV fixture: {error}")),
-            )
+            return HardwareRecognition::Failed {
+                reason: format!("could not inspect WAV fixture: {error}"),
+                model: model_metadata,
+                elapsed_ms: 0,
+            }
         }
     };
     if wav_spec.sample_rate != audio.sample_rate_hz || wav_spec.channels != audio.channels {
-        return (
-            String::new(),
-            Some(model_metadata),
-            0,
-            Some(format!(
+        return HardwareRecognition::Failed {
+            reason: format!(
                 "WAV metadata mismatch: expected {} Hz/{} channel(s), got {} Hz/{} channel(s)",
                 audio.sample_rate_hz, audio.channels, wav_spec.sample_rate, wav_spec.channels
-            )),
-        );
+            ),
+            model: model_metadata,
+            elapsed_ms: 0,
+        };
+    }
+    if !crate::model_runtime::model_installed(&model.name) {
+        return HardwareRecognition::Skipped {
+            reason: format!("required installed model '{}' is unavailable", model.name),
+            model: model_metadata,
+        };
     }
     let samples = match crate::audio_decode::decode_to_mono_16k(&audio_path.to_string_lossy()) {
         Ok(samples) => samples,
-        Err(error) => return (String::new(), Some(model_metadata), 0, Some(error)),
+        Err(error) => {
+            return HardwareRecognition::Failed {
+                reason: error,
+                model: model_metadata,
+                elapsed_ms: 0,
+            }
+        }
     };
     let mut backend = match crate::model_runtime::create_backend(&model.name) {
         Ok(backend) => backend,
-        Err(error) => return (String::new(), Some(model_metadata), 0, Some(error)),
+        Err(error) => {
+            return HardwareRecognition::Failed {
+                reason: error,
+                model: model_metadata,
+                elapsed_ms: 0,
+            }
+        }
     };
     if backend.name() != model.backend {
-        return (
-            String::new(),
-            Some(model_metadata),
-            0,
-            Some(format!(
+        return HardwareRecognition::Failed {
+            reason: format!(
                 "fixture backend '{}' does not match runtime backend '{}'",
                 model.backend,
                 backend.name()
-            )),
-        );
+            ),
+            model: model_metadata,
+            elapsed_ms: 0,
+        };
     }
     let started = Instant::now();
     if let Err(error) = backend.load_model(&model.name) {
-        return (String::new(), Some(model_metadata), 0, Some(error));
+        return HardwareRecognition::Failed {
+            reason: error,
+            model: model_metadata,
+            elapsed_ms: started.elapsed().as_millis() as u64,
+        };
     }
     let transcript = backend.transcribe(
         &samples,
@@ -928,8 +1069,16 @@ fn run_hardware_recognition(
     let elapsed_ms = started.elapsed().as_millis() as u64;
     backend.reset();
     match transcript {
-        Ok(text) => (text, Some(model_metadata), elapsed_ms, None),
-        Err(error) => (String::new(), Some(model_metadata), elapsed_ms, Some(error)),
+        Ok(raw_asr) => HardwareRecognition::Completed {
+            raw_asr,
+            model: model_metadata,
+            elapsed_ms,
+        },
+        Err(reason) => HardwareRecognition::Failed {
+            reason,
+            model: model_metadata,
+            elapsed_ms,
+        },
     }
 }
 
@@ -1063,9 +1212,11 @@ fn score_stages(
         .iter()
         .map(|stage| (stage.name.as_str(), stage))
         .collect::<HashMap<_, _>>();
-    actual
+    let mut observed = HashSet::new();
+    let metrics = actual
         .into_iter()
         .map(|(report, text)| {
+            observed.insert(report.stage);
             let outcome = report.outcome.as_str().to_string();
             let expectation_match = expected.get(report.stage).is_none_or(|expected| {
                 expected.outcome == outcome
@@ -1084,18 +1235,27 @@ fn score_stages(
                 expectation_match,
             }
         })
-        .collect()
+        .collect::<Vec<_>>();
+    for stage in expected.values() {
+        if !observed.contains(stage.name.as_str()) {
+            failures.push(format!("expected stage '{}' was not observed", stage.name));
+        }
+    }
+    metrics
 }
 
-fn skipped_case(
+fn unexecuted_case(
     fixture: &EvaluationFixture,
+    status: CaseStatus,
     reason: String,
     model: Option<ModelMetadata>,
+    raw_asr_ms: u64,
     memory_before: Option<u64>,
 ) -> CaseReport {
+    let memory_after = current_memory_mb();
     CaseReport {
         id: fixture.id.clone(),
-        status: CaseStatus::Skipped,
+        status,
         failures: vec![reason],
         provenance: provenance_report(fixture),
         context: context_report(fixture),
@@ -1111,10 +1271,19 @@ fn skipped_case(
             final_only: true,
             ..DeliveryMetrics::default()
         },
-        latency: LatencyMetrics::default(),
+        latency: LatencyMetrics {
+            raw_asr_ms,
+            finalization_ms: raw_asr_ms,
+            total_ms: raw_asr_ms,
+            ..LatencyMetrics::default()
+        },
         runtime: RuntimeMetadata {
             incremental_completion: "notApplicableFinalOnly",
             memory_before_mb: memory_before,
+            memory_after_mb: memory_after,
+            memory_delta_mb: memory_before
+                .zip(memory_after)
+                .map(|(before, after)| after as i64 - before as i64),
             ..RuntimeMetadata::default()
         },
     }
@@ -1250,7 +1419,7 @@ mod tests {
     }
 
     #[test]
-    fn strict_schema_rejects_unknown_fields_and_real_user_data() {
+    fn strict_schema_rejects_unknown_fields_and_malformed_expectations() {
         let fixture = r#"{
           "fixtureVersion": 1,
           "id": "bad",
@@ -1260,13 +1429,87 @@ mod tests {
         assert!(serde_json::from_str::<EvaluationFixture>(fixture).is_err());
 
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("eval/fixtures/deterministic");
-        let mut fixtures = load_fixtures(&root, EvaluationTier::Deterministic).unwrap();
-        let (path, mut fixture) = fixtures.remove(0);
-        fixture.provenance.contains_real_user_data = true;
+        let (path, fixture) = load_fixtures(&root, EvaluationTier::Deterministic)
+            .unwrap()
+            .remove(0);
+
+        let mut real_user_fixture = fixture.clone();
+        real_user_fixture.provenance.contains_real_user_data = true;
         assert!(
-            validate_fixture(&fixture, EvaluationTier::Deterministic, &path)
+            validate_fixture(&real_user_fixture, EvaluationTier::Deterministic, &path)
                 .unwrap_err()
                 .contains("real-user data is forbidden")
         );
+
+        let mut misspelled_stage = fixture.clone();
+        misspelled_stage.expected.stages[0].name = "smart_formattting".to_string();
+        assert!(
+            validate_fixture(&misspelled_stage, EvaluationTier::Deterministic, &path)
+                .unwrap_err()
+                .contains("unknown expected stage")
+        );
+
+        let mut duplicate_stage = fixture.clone();
+        duplicate_stage
+            .expected
+            .stages
+            .push(duplicate_stage.expected.stages[0].clone());
+        assert!(
+            validate_fixture(&duplicate_stage, EvaluationTier::Deterministic, &path)
+                .unwrap_err()
+                .contains("duplicate expected stage")
+        );
+
+        let mut multiple_deliveries = fixture.clone();
+        multiple_deliveries.expected.delivery.attempts = 2;
+        assert!(
+            validate_fixture(&multiple_deliveries, EvaluationTier::Deterministic, &path)
+                .unwrap_err()
+                .contains("attempts must be 1")
+        );
+
+        let empty_dir = tempfile::tempdir().unwrap();
+        fs::write(empty_dir.path().join("empty.json"), "[]").unwrap();
+        assert!(
+            load_fixtures(empty_dir.path(), EvaluationTier::Deterministic)
+                .unwrap_err()
+                .contains("fixture arrays must not be empty")
+        );
+    }
+
+    #[test]
+    fn hardware_schema_and_runtime_errors_cannot_be_reported_as_skips() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("eval/fixtures/hardware");
+        let (path, fixture) = load_fixtures(&root, EvaluationTier::Hardware)
+            .unwrap()
+            .remove(0);
+
+        let mut unknown_model = fixture.clone();
+        unknown_model.requirements.model.as_mut().unwrap().name = "unknown-model".to_string();
+        assert!(
+            validate_fixture(&unknown_model, EvaluationTier::Hardware, &path)
+                .unwrap_err()
+                .contains("Unknown transcription model")
+        );
+
+        let mut escaping_audio = fixture.clone();
+        escaping_audio.requirements.audio.as_mut().unwrap().path = "../outside.wav".to_string();
+        assert!(
+            validate_fixture(&escaping_audio, EvaluationTier::Hardware, &path)
+                .unwrap_err()
+                .contains("clean workspace-relative WAV path")
+        );
+
+        let unavailable_workspace = tempfile::tempdir().unwrap().path().join("removed");
+        let result = run_hardware_recognition(
+            &fixture,
+            &RunOptions {
+                tier: EvaluationTier::Hardware,
+                fixtures_dir: root,
+                workspace_root: unavailable_workspace,
+                machine_label: "test".to_string(),
+            },
+        );
+        assert!(matches!(result, HardwareRecognition::Failed { .. }));
     }
 }

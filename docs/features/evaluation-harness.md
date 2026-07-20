@@ -28,6 +28,7 @@ cargo run --bin murmur-eval -- hardware \
 ```
 
 Hardware fixtures reference repository-owned WAV files and an exact backend/model. The runner refuses missing models instead of downloading them, restricts audio to the selected workspace root, and records OS, architecture, logical CPU count, user-supplied machine label, model/backend/accelerator, latency, and memory metadata where available. Missing installed hardware is reported as skipped.
+Malformed fixtures, invalid workspace/audio boundaries, backend mismatches, model-load failures, and inference failures are evaluation failures and make the CLI exit non-zero; only a valid fixture whose declared model is not installed is skipped.
 
 ## Fixture contract
 
