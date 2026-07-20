@@ -2,7 +2,13 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_SETTINGS } from '../../lib/settings';
-import { SETTINGS_CATEGORIES, SettingsPanel, effectiveAutoPaste } from './SettingsPanel';
+import {
+  SETTINGS_CATEGORIES,
+  SettingsPanel,
+  autoPasteDeliveryDescription,
+  effectiveAutoPaste,
+  fileOutputDeliveryDescription,
+} from './SettingsPanel';
 
 vi.mock('@tauri-apps/api/app', () => ({ getVersion: vi.fn(async () => '0.18.0') }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(async (command: string) => command === 'list_audio_devices' ? [] : undefined) }));
@@ -84,5 +90,17 @@ describe('effectiveAutoPaste', () => {
     expect(effectiveAutoPaste({ autoPaste: true, saveTranscript: false, saveAudio: false })).toBe(true);
     expect(effectiveAutoPaste({ autoPaste: true, saveTranscript: true, saveAudio: false })).toBe(false);
     expect(effectiveAutoPaste({ autoPaste: true, saveTranscript: false, saveAudio: true })).toBe(false);
+  });
+
+  it('describes paused and already-off preferences without conflating them', () => {
+    expect(autoPasteDeliveryDescription({ autoPaste: true, saveTranscript: true, saveAudio: false })).toContain('Paused');
+    expect(fileOutputDeliveryDescription({ autoPaste: true })).toContain('paused');
+
+    expect(autoPasteDeliveryDescription({ autoPaste: false, saveTranscript: false, saveAudio: true })).toBe(
+      'Unavailable while file output is on. Turn off file output to enable auto-paste.',
+    );
+    expect(fileOutputDeliveryDescription({ autoPaste: false })).toBe(
+      'Clipboard copying stays on; auto-paste remains off.',
+    );
   });
 });

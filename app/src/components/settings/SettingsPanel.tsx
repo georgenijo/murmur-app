@@ -148,6 +148,21 @@ export function effectiveAutoPaste(settings: Pick<Settings, 'autoPaste' | 'saveT
   return settings.autoPaste && !settings.saveTranscript && !settings.saveAudio;
 }
 
+export function autoPasteDeliveryDescription(settings: Pick<Settings, 'autoPaste' | 'saveTranscript' | 'saveAudio'>): string {
+  if (!settings.saveTranscript && !settings.saveAudio) {
+    return 'Paste the clipboard result into the active app (Accessibility permission required).';
+  }
+  return settings.autoPaste
+    ? 'Paused while file output is on. Your saved preference will resume when file output is off.'
+    : 'Unavailable while file output is on. Turn off file output to enable auto-paste.';
+}
+
+export function fileOutputDeliveryDescription(settings: Pick<Settings, 'autoPaste'>): string {
+  return settings.autoPaste
+    ? 'Clipboard copying stays on; only automatic paste is paused.'
+    : 'Clipboard copying stays on; auto-paste remains off.';
+}
+
 export function SettingsPanel({
   isOpen,
   onClose,
@@ -432,7 +447,7 @@ export function SettingsPanel({
               <h2 className="text-sm font-medium text-on-surface">Always copied to clipboard</h2>
               <p className="mt-1 text-xs text-on-surface-variant">Every completed transcription is copied first. Auto-paste and file output only change what happens next.</p>
             </div>
-            <SettingToggle title="Auto-Paste" label="Auto paste" description={saveToFile ? 'Paused while file output is on. Your saved preference will resume when file output is off.' : 'Paste the clipboard result into the active app (Accessibility permission required).'} checked={autoPasteOn} disabled={saveToFile} onChange={() => onUpdateSettings({ autoPaste: !settings.autoPaste })} />
+            <SettingToggle title="Auto-Paste" label="Auto paste" description={autoPasteDeliveryDescription(settings)} checked={autoPasteOn} disabled={saveToFile} onChange={() => onUpdateSettings({ autoPaste: !settings.autoPaste })} />
             {settings.autoPaste && saveToFile && <p role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">Auto-paste is paused; the stored preference remains on.</p>}
             {autoPasteOn && accessibilityGranted !== null && <div className={`flex items-center gap-2 text-xs ${accessibilityGranted ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}`}><span>{accessibilityGranted ? 'Accessibility permission granted' : 'Accessibility permission required'}</span>{accessibilityGranted === false && <button type="button" onClick={requestAccessibility} className="underline">Grant</button>}</div>}
             {autoPasteOn && <PasteDelaySlider value={settings.autoPasteDelayMs} onCommit={(autoPasteDelayMs) => onUpdateSettings({ autoPasteDelayMs })} />}
@@ -443,7 +458,7 @@ export function SettingsPanel({
                 <p className="mb-1 text-xs text-on-surface-variant">Output Folder</p>
                 <p className="break-all rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface">{settings.outputDir || 'Documents/Murmur (default)'}</p>
                 <div className="mt-2 flex gap-3"><button type="button" onClick={() => void chooseOutputFolder()} className="text-xs font-medium text-on-surface-variant underline hover:text-primary">Choose Folder</button>{settings.outputDir && <button type="button" onClick={() => onUpdateSettings({ outputDir: '' })} className="text-xs font-medium text-on-surface-variant underline hover:text-primary">Reset to default</button>}</div>
-                <p className="mt-2 text-xs text-on-surface-variant">Clipboard copying stays on; only automatic paste is paused.</p>
+                <p className="mt-2 text-xs text-on-surface-variant">{fileOutputDeliveryDescription(settings)}</p>
               </div>
             )}
             <div className="border-t border-outline-variant/20 pt-4">

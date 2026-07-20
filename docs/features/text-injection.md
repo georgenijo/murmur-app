@@ -113,7 +113,9 @@ Writing happens in `file_output.rs`, called from `run_transcription_pipeline` af
 **Interaction with auto-paste:** when either toggle is on, the recording is treated as a "capture to file" action — the clipboard write still happens (clipboard-first is unconditional), but auto-paste is suppressed (`effective_auto_paste = auto_paste && !(save_transcript || save_audio)`). With both toggles off, behavior is unchanged. Write failures are non-fatal: they are logged and surfaced to the UI via the `file-output-failed` event (text remains in the clipboard).
 
 The UI mirrors this effective state without mutating the stored `autoPaste`
-preference: the switch appears off and paused while file output is active, and
-the saved preference resumes when both file toggles are off.
+preference: the switch appears off and unavailable while file output is active.
+When the stored preference is on, the copy identifies it as paused and says it
+will resume when both file toggles are off; when it is already off, the copy
+says it remains off.
 
 **Known limitation:** recordings the VAD classifies as no-speech return early before the write step, so they save neither file.
