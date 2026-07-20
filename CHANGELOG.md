@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-07-20
+
 ### Added
 - **Correct and Teach** lets users edit the newest local history entry, review one bounded high-confidence replacement, and explicitly save it as global, app, or unambiguous project-scoped knowledge. Learned rules persist locally, run deterministically through Smart Correction, and remain inspectable, editable, disableable, exportable, and deletable in Knowledge; ambiguous edits and Voice Command conflicts fail closed (#251).
 - A single transcription model catalog and runtime manager now expose backend capabilities, platform/install state, serialized load/warm/readiness/unload lifecycle, and privacy-safe generation-ordered status events for all seven shipped models (#247).
