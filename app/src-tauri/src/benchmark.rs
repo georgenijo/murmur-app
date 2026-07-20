@@ -16,6 +16,7 @@ use std::time::Instant;
 use tauri::Emitter;
 
 const BALANCED_ACCURACY_WINDOW: f64 = 0.02;
+const BENCHMARK_REPORT_VERSION: u32 = 2;
 
 /// Whisper model names ordered smallest-to-largest. Used to pick the
 /// cheapest selected whisper model for the untimed shared-init warm-up.
@@ -206,6 +207,9 @@ pub struct ModelResult {
     pub label: String,
     pub backend: String,
     pub accelerator: String,
+    /// Catalog download size. This is deliberately separate from the rough
+    /// process-RSS delta measured below.
+    pub download_size: String,
     pub model_load_ms: Option<f64>,
     pub first_inference_ms: Option<f64>,
     pub warm_median_ms: Option<f64>,
@@ -237,7 +241,41 @@ pub struct Recommendations {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct BenchmarkEnvironment {
+    pub os: String,
+    pub os_version: Option<String>,
+    pub architecture: String,
+    pub hardware_model: Option<String>,
+    pub chip: Option<String>,
+    pub memory_mb: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BenchmarkCorpus {
+    pub language: &'static str,
+    pub fixture_ids: Vec<String>,
+    pub fixture_count: usize,
+    pub reference_words: usize,
+    pub provenance: &'static str,
+    pub limitation: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BenchmarkConfiguration {
+    pub vad_threshold: f32,
+    pub execution_path: &'static str,
+    pub transcript_transform_profile: &'static str,
+    pub percentile_method: &'static str,
+    pub model_run_order: Vec<String>,
+    pub shared_init_order: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BenchmarkReport {
+    pub report_version: u32,
     pub created_at: String,
     pub app_version: String,
     pub platform: String,
@@ -250,6 +288,9 @@ pub struct BenchmarkReport {
     /// It IS representative of real first-launch latency, just not a
     /// per-model attribute.
     pub shared_init_ms: f64,
+    pub environment: BenchmarkEnvironment,
+    pub corpus: BenchmarkCorpus,
+    pub configuration: BenchmarkConfiguration,
     pub results: Vec<ModelResult>,
     pub recommendations: Recommendations,
 }
@@ -680,6 +721,7 @@ fn error_result(model: &BenchmarkModel, error: String) -> ModelResult {
         label: model.label.clone(),
         backend: model.backend.clone(),
         accelerator: model.accelerator.clone(),
+        download_size: model.size.clone(),
         model_load_ms: None,
         first_inference_ms: None,
         warm_median_ms: None,
@@ -692,6 +734,74 @@ fn error_result(model: &BenchmarkModel, error: String) -> ModelResult {
         memory_delta_mb: 0,
         fixtures: Vec::new(),
         error: Some(error),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn command_output(program: &str, args: &[&str]) -> Option<String> {
+    let output = std::process::Command::new(program)
+        .args(args)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8(output.stdout).ok()?;
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+fn benchmark_environment() -> BenchmarkEnvironment {
+    #[cfg(target_os = "macos")]
+    {
+        let memory_mb = command_output("/usr/sbin/sysctl", &["-n", "hw.memsize"])
+            .and_then(|value| value.parse::<u64>().ok())
+            .map(|bytes| bytes / 1024 / 1024);
+        BenchmarkEnvironment {
+            os: "macOS".to_string(),
+            os_version: command_output("/usr/bin/sw_vers", &["-productVersion"]),
+            architecture: std::env::consts::ARCH.to_string(),
+            hardware_model: command_output("/usr/sbin/sysctl", &["-n", "hw.model"]),
+            chip: command_output("/usr/sbin/sysctl", &["-n", "machdep.cpu.brand_string"]),
+            memory_mb,
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        BenchmarkEnvironment {
+            os: std::env::consts::OS.to_string(),
+            os_version: None,
+            architecture: std::env::consts::ARCH.to_string(),
+            hardware_model: None,
+            chip: None,
+            memory_mb: None,
+        }
+    }
+}
+
+fn benchmark_corpus(preset: BenchmarkPreset) -> BenchmarkCorpus {
+    let fixtures = preset.fixtures();
+    BenchmarkCorpus {
+        language: "en",
+        fixture_ids: fixtures.iter().map(|fixture| fixture.id.to_string()).collect(),
+        fixture_count: fixtures.len(),
+        reference_words: fixtures.iter().map(|fixture| words(fixture.reference).len()).sum(),
+        provenance: "Bundled macOS Samantha TTS fixtures",
+        limitation: "Directional local comparison only; clean synthetic speech is not representative of natural speakers, accents, microphones, or environments.",
+    }
+}
+
+fn benchmark_configuration(
+    model_run_order: Vec<String>,
+    shared_init_order: Vec<String>,
+) -> BenchmarkConfiguration {
+    BenchmarkConfiguration {
+        vad_threshold: 0.5,
+        execution_path: "full-buffer final transcription after recording stops",
+        transcript_transform_profile: "default local delivery pipeline",
+        percentile_method: "nearest-rank over measured warm iterations",
+        model_run_order,
+        shared_init_order,
     }
 }
 
@@ -1024,6 +1134,11 @@ pub fn run<R: tauri::Runtime>(
     let iterations = request.preset.iterations();
     let steps_per_model = 1 + fixtures.len() * (1 + iterations);
     let warmup_targets = warmup_plan(&selected);
+    let model_run_order = selected
+        .iter()
+        .map(|model| model.model_name.clone())
+        .collect();
+    let shared_init_order = warmup_targets.clone();
     let total_steps = selected.len() * steps_per_model + warmup_targets.len();
     let mut completed = 0;
     let mut results = Vec::with_capacity(selected.len());
@@ -1258,6 +1373,7 @@ pub fn run<R: tauri::Runtime>(
             label: model.label,
             backend: model.backend,
             accelerator: model.accelerator,
+            download_size: model.size,
             model_load_ms: Some(model_load_ms),
             first_inference_ms,
             warm_median_ms: percentile(&all_warm, 0.5),
@@ -1296,12 +1412,16 @@ pub fn run<R: tauri::Runtime>(
     );
     let recommendations = recommendations(&results);
     Ok(BenchmarkReport {
+        report_version: BENCHMARK_REPORT_VERSION,
         created_at: chrono::Utc::now().to_rfc3339(),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         platform: format!("{} {}", std::env::consts::OS, std::env::consts::ARCH),
         preset: request.preset,
         iterations,
         shared_init_ms,
+        environment: benchmark_environment(),
+        corpus: benchmark_corpus(request.preset),
+        configuration: benchmark_configuration(model_run_order, shared_init_order),
         results,
         recommendations,
     })
@@ -1323,6 +1443,7 @@ mod tests {
             label: name.to_string(),
             backend: String::new(),
             accelerator: String::new(),
+            download_size: String::new(),
             model_load_ms: Some(1.0),
             first_inference_ms: Some(1.0),
             warm_median_ms: Some(warm_median_ms),
@@ -1343,6 +1464,30 @@ mod tests {
         assert_eq!(word_errors("one two three", "one four three"), (1, 3));
         assert_eq!(word_errors("one two three", "one two three four"), (1, 3));
         assert_eq!(word_errors("one two three", "one three"), (1, 3));
+    }
+
+    #[test]
+    fn report_metadata_describes_the_exact_corpus_and_final_only_path() {
+        let quick = benchmark_corpus(BenchmarkPreset::Quick);
+        let standard = benchmark_corpus(BenchmarkPreset::Standard);
+        let thorough = benchmark_corpus(BenchmarkPreset::Thorough);
+        assert_eq!(BENCHMARK_REPORT_VERSION, 2);
+        assert_eq!((quick.fixture_count, quick.reference_words), (2, 29));
+        assert_eq!((standard.fixture_count, standard.reference_words), (7, 248));
+        assert_eq!((thorough.fixture_count, thorough.reference_words), (9, 514));
+        assert!(thorough.limitation.contains("synthetic speech"));
+
+        let configuration = benchmark_configuration(
+            vec!["tiny.en".to_string(), "base.en".to_string()],
+            vec!["tiny.en".to_string()],
+        );
+        assert_eq!(configuration.vad_threshold, 0.5);
+        assert_eq!(
+            configuration.execution_path,
+            "full-buffer final transcription after recording stops"
+        );
+        assert_eq!(configuration.model_run_order, ["tiny.en", "base.en"]);
+        assert_eq!(configuration.shared_init_order, ["tiny.en"]);
     }
 
     #[test]

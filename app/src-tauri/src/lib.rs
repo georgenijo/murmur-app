@@ -196,6 +196,7 @@ pub fn run() {
             commands::models::get_model_runtime_catalog,
             commands::models::get_model_runtime_status,
             commands::models::download_model,
+            frontmost::list_running_applications,
             commands::benchmark::get_benchmark_models,
             commands::benchmark::get_benchmark_activity,
             commands::benchmark::run_benchmark,

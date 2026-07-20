@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ## [0.19.0] - 2026-07-20
 
 ### Added
+- **Unified Settings and trustworthy Performance Lab state** reorganizes Settings into six task-oriented pages, adds a bounded memory-only running-app picker with manual bundle-ID fallback, and records privacy-safe environment/corpus/execution metadata in versioned benchmark reports while retaining legacy saved runs (#258).
 - **Correct and Teach** lets users edit the newest local history entry, review one bounded high-confidence replacement, and explicitly save it as global, app, or unambiguous project-scoped knowledge. Learned rules persist locally, run deterministically through Smart Correction, and remain inspectable, editable, disableable, exportable, and deletable in Knowledge; ambiguous edits and Voice Command conflicts fail closed (#251).
 - A single transcription model catalog and runtime manager now expose backend capabilities, platform/install state, serialized load/warm/readiness/unload lifecycle, and privacy-safe generation-ordered status events for all seven shipped models (#247).
 - **Voice Commands 2.0** upgrades legacy phrase replacements into typed, persistent local commands with multiline snippets, deterministic date/time variables, explicitly permitted clipboard insertion, global/per-app scopes, conflict validation, and a no-paste preview/test UI. Existing pairs migrate idempotently and retain built-in-first literal behavior (#248).
@@ -22,6 +23,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- Settings now uses one model selector, presents clipboard-first delivery and file-output suppression explicitly without overwriting the stored auto-paste preference, and uses semantic surface tokens throughout Performance Lab. The strict Fastest and Balanced recommendation contract is unchanged (#258).
 - Onboarding, Settings, recording preparation, model downloads, and Performance Lab now consume the shared catalog/runtime contract. Unknown model identifiers fail closed, and model failures never trigger automatic cross-model fallback (#247).
 - All supported backends now use one final-after-stop transcription path. The Whisper-only incremental worker, provisional overlay preview, preview setting, lifecycle events, reconciliation code, and incremental telemetry were removed; final clipboard, paste, file output, history, and stats delivery remains exactly once (#279).
 - Post-recognition cleanup, voice commands, and Smart Correction now run through one ordered, backend-neutral transformation pipeline with privacy-safe per-stage timing/change telemetry and explicit failure policy (#244).
