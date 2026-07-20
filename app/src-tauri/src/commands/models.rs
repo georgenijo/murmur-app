@@ -60,20 +60,25 @@ pub async fn download_model(
     // per model. Different models may still download concurrently.
     let install_lock = state.app_state.model_runtime.install_lock(&model_name)?;
     let _install_guard = install_lock.lock().await;
-    state.app_state.model_runtime.set_install_state(
-        Some(&app_handle),
-        &model_name,
-        InstallState::Installing,
-    )?;
-
-    // Whisper and sherpa share Murmur's models directory. FluidAudio owns a
-    // separate Application Support cache, but VAD must still land here.
-    let models_dir = transcriber::WhisperBackend::new().models_dir()?;
-    tokio::fs::create_dir_all(&models_dir)
-        .await
-        .map_err(|e| format!("Failed to create models directory: {}", e))?;
+    if !state
+        .app_state
+        .model_runtime
+        .begin_install(Some(&app_handle), &model_name)?
+    {
+        return Ok(());
+    }
 
     let install_result: Result<(), String> = async {
+        // Whisper and sherpa share Murmur's models directory. FluidAudio owns a
+        // separate Application Support cache, but VAD must still land here.
+        // Keep setup inside this result boundary so every failure after the
+        // Installing transition is published as Invalid rather than leaving a
+        // permanently in-progress snapshot.
+        let models_dir = transcriber::WhisperBackend::new().models_dir()?;
+        tokio::fs::create_dir_all(&models_dir)
+            .await
+            .map_err(|e| format!("Failed to create models directory: {}", e))?;
+
         if definition.install_kind == InstallKind::Coreml {
             let _ = app_handle.emit("download-progress", serde_json::json!({
                 "received": 0,

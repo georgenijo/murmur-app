@@ -467,6 +467,30 @@ impl ModelRuntimeManager {
             .clone())
     }
 
+    pub fn begin_install(
+        &self,
+        app: Option<&tauri::AppHandle>,
+        model_name: &str,
+    ) -> Result<bool, String> {
+        self.begin_install_with_presence(app, model_name, model_installed(model_name))
+    }
+
+    fn begin_install_with_presence(
+        &self,
+        app: Option<&tauri::AppHandle>,
+        model_name: &str,
+        already_installed: bool,
+    ) -> Result<bool, String> {
+        self.definition(model_name)?;
+        let state = if already_installed {
+            InstallState::Installed
+        } else {
+            InstallState::Installing
+        };
+        self.set_install_state(app, model_name, state)?;
+        Ok(!already_installed)
+    }
+
     pub fn set_install_state(
         &self,
         app: Option<&tauri::AppHandle>,
@@ -526,6 +550,7 @@ impl ModelRuntimeManager {
 
     fn ensure_backend<'a>(
         &self,
+        app: Option<&tauri::AppHandle>,
         inner: &'a mut MutexGuard<'_, RuntimeInner>,
         model_name: &str,
     ) -> Result<&'a mut Box<dyn TranscriptionBackend>, String> {
@@ -533,17 +558,34 @@ impl ModelRuntimeManager {
         if !model_supported(definition) {
             return Err("This model is not supported on the current platform".to_string());
         }
+
+        if let Some(active) = inner
+            .active_model
+            .as_deref()
+            .filter(|active| *active != model_name)
+            .map(str::to_string)
+        {
+            self.set_lifecycle(
+                app,
+                &active,
+                LifecycleState::Unloading,
+                false,
+                UnloadReason::ModelChanged.as_str(),
+            )?;
+            inner.backend.reset();
+            inner.active_model = None;
+            self.set_lifecycle(
+                app,
+                &active,
+                LifecycleState::Unloaded,
+                false,
+                UnloadReason::ModelChanged.as_str(),
+            )?;
+        }
+
         if inner.backend.name() != definition.backend.as_str() {
             inner.backend.reset();
             inner.backend = create_backend(model_name)?;
-            inner.active_model = None;
-        } else if inner
-            .active_model
-            .as_deref()
-            .is_some_and(|active| active != model_name)
-        {
-            inner.backend.reset();
-            inner.active_model = None;
         }
         Ok(&mut inner.backend)
     }
@@ -560,7 +602,7 @@ impl ModelRuntimeManager {
         } else {
             LifecycleState::Loading
         };
-        let backend = self.ensure_backend(inner, model_name)?;
+        let backend = self.ensure_backend(app, inner, model_name)?;
         let cache_hit = backend.is_model_loaded(model_name);
         if cache_hit {
             inner.active_model = Some(model_name.to_string());
@@ -781,18 +823,32 @@ mod tests {
         punctuation_control: false,
     };
 
-    static FAKE_DEFINITIONS: &[ModelDefinition] = &[ModelDefinition {
-        model_name: "fake-translation",
-        label: "Fake translation backend",
-        size: "0 MB",
-        backend: BackendKind::Whisper,
-        accelerator: "Test",
-        capabilities: FAKE_CAPABILITIES,
-        install_kind: InstallKind::Whisper,
-        warm_on_startup: false,
-        retry_unfiltered_on_empty: false,
-        platform: PlatformRequirement::Desktop,
-    }];
+    static FAKE_DEFINITIONS: &[ModelDefinition] = &[
+        ModelDefinition {
+            model_name: "fake-translation",
+            label: "Fake translation backend",
+            size: "0 MB",
+            backend: BackendKind::Whisper,
+            accelerator: "Test",
+            capabilities: FAKE_CAPABILITIES,
+            install_kind: InstallKind::Whisper,
+            warm_on_startup: false,
+            retry_unfiltered_on_empty: false,
+            platform: PlatformRequirement::Desktop,
+        },
+        ModelDefinition {
+            model_name: "fake-second",
+            label: "Second fake model",
+            size: "0 MB",
+            backend: BackendKind::Whisper,
+            accelerator: "Test",
+            capabilities: FAKE_CAPABILITIES,
+            install_kind: InstallKind::Whisper,
+            warm_on_startup: false,
+            retry_unfiltered_on_empty: false,
+            platform: PlatformRequirement::Desktop,
+        },
+    ];
 
     struct FakeBackend {
         active: Arc<AtomicUsize>,
@@ -910,6 +966,67 @@ mod tests {
                 .unwrap()
                 .lifecycle_state,
             LifecycleState::Ready
+        );
+    }
+
+    #[test]
+    fn preparation_switch_marks_the_previous_model_unloaded() {
+        let manager = fake_manager(
+            Arc::new(AtomicUsize::new(0)),
+            Arc::new(AtomicUsize::new(0)),
+            None,
+        );
+        manager
+            .prepare(None, "fake-translation", PreparationReason::Recording)
+            .unwrap();
+        manager
+            .prepare(None, "fake-second", PreparationReason::Recording)
+            .unwrap();
+
+        assert_eq!(
+            manager
+                .snapshot("fake-translation")
+                .unwrap()
+                .lifecycle_state,
+            LifecycleState::Unloaded
+        );
+        assert_eq!(
+            manager.snapshot("fake-second").unwrap().lifecycle_state,
+            LifecycleState::Ready
+        );
+    }
+
+    #[test]
+    fn existing_install_is_reused_without_reentering_installing() {
+        let manager = fake_manager(
+            Arc::new(AtomicUsize::new(0)),
+            Arc::new(AtomicUsize::new(0)),
+            None,
+        );
+
+        assert!(!manager
+            .begin_install_with_presence(None, "fake-translation", true)
+            .unwrap());
+        assert_eq!(
+            manager.snapshot("fake-translation").unwrap().install_state,
+            InstallState::Installed
+        );
+    }
+
+    #[test]
+    fn missing_install_enters_installing_state() {
+        let manager = fake_manager(
+            Arc::new(AtomicUsize::new(0)),
+            Arc::new(AtomicUsize::new(0)),
+            None,
+        );
+
+        assert!(manager
+            .begin_install_with_presence(None, "fake-translation", false)
+            .unwrap());
+        assert_eq!(
+            manager.snapshot("fake-translation").unwrap().install_state,
+            InstallState::Installing
         );
     }
 
