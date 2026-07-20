@@ -407,6 +407,52 @@ describe('loadSettings', () => {
     expect(settings.correctionFuzzy).toBe(false);
   });
 
+  it('migrates legacy custom vocabulary into enabled global entries', () => {
+    const legacy = { ...DEFAULT_SETTINGS } as Record<string, unknown>;
+    delete legacy.vocabularyEntries;
+    legacy.customVocabulary = 'Tauri, API Gateway\nMünchen';
+    localStorage.setItem('dictation-settings', JSON.stringify(legacy));
+
+    const settings = loadSettings();
+    expect(settings.vocabularyEntries).toEqual([
+      { id: 'legacy-0', written: 'Tauri', aliases: [], enabled: true, scope: { kind: 'global' } },
+      { id: 'legacy-1', written: 'API Gateway', aliases: [], enabled: true, scope: { kind: 'global' } },
+      { id: 'legacy-2', written: 'München', aliases: [], enabled: true, scope: { kind: 'global' } },
+    ]);
+    expect(settings.customVocabulary).toBe('Tauri, API Gateway, München');
+  });
+
+  it('sanitizes structured vocabulary and derives the legacy prompt mirror', () => {
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      customVocabulary: 'stale value',
+      vocabularyEntries: [
+        {
+          id: 'tauri',
+          written: ' Tauri ',
+          aliases: [' Tori ', 'tori', ' Tory '],
+          enabled: true,
+          scope: { kind: 'global' },
+        },
+        {
+          id: 'disabled',
+          written: 'Hidden',
+          aliases: ['heard'],
+          enabled: false,
+          scope: { kind: 'global' },
+        },
+        { id: 'bad', written: '', aliases: [], enabled: true },
+      ],
+    }));
+
+    const settings = loadSettings();
+    expect(settings.vocabularyEntries).toEqual([
+      { id: 'tauri', written: 'Tauri', aliases: ['Tori', 'Tory'], enabled: true, scope: { kind: 'global' } },
+      { id: 'disabled', written: 'Hidden', aliases: ['heard'], enabled: false, scope: { kind: 'global' } },
+    ]);
+    expect(settings.customVocabulary).toBe('Tauri');
+  });
+
   it('defaults codeVocabLastScan to null when absent', () => {
     localStorage.setItem('dictation-settings', JSON.stringify({
       model: 'base.en',

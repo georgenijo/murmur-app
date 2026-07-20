@@ -520,6 +520,15 @@ impl TranscriptTransform for SmartCorrectionStage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::Deserialize;
+
+    #[derive(Deserialize)]
+    struct VocabularyAliasEvalCase {
+        name: String,
+        input: String,
+        output: String,
+        cli: bool,
+    }
 
     fn live_context(stages: TranscriptStageConfig) -> TranscriptContext {
         TranscriptContext {
@@ -824,6 +833,43 @@ mod tests {
         assert_eq!(output.stages[3].stage, SMART_FORMATTING_STAGE);
         assert_eq!(output.stages[4].stage, IDE_CONTEXT_STAGE);
         assert_eq!(output.stages[5].stage, CLI_COMMAND_STAGE);
+    }
+
+    #[test]
+    fn vocabulary_alias_eval() {
+        let cases: Vec<VocabularyAliasEvalCase> =
+            serde_json::from_str(include_str!("../../../bench/vocabulary-aliases.json")).unwrap();
+        for case in cases {
+            let stages = TranscriptStageConfig {
+                cleanup_enabled: false,
+                cleanup_remove_filler: false,
+                cleanup_capitalize: false,
+                voice_commands_enabled: false,
+                smart_correction_enabled: true,
+                smart_formatting_enabled: false,
+                ide_context_enabled: false,
+                cli_command_enabled: case.cli,
+            };
+            let matcher = Arc::new(CorrectionMatcher::build(
+                &["Tauri".to_string()],
+                &[
+                    ("Tori".to_string(), "Tauri".to_string()),
+                    ("Tory".to_string(), "Tauri".to_string()),
+                ],
+                true,
+                false,
+            ));
+            let output = transform_transcript(
+                case.input.clone(),
+                &live_context(stages),
+                TranscriptTransformResources {
+                    correction_matcher: Some(matcher),
+                    ..TranscriptTransformResources::empty()
+                },
+            )
+            .unwrap();
+            assert_eq!(output.text, case.output, "alias eval case: {}", case.name);
+        }
     }
 
     #[test]

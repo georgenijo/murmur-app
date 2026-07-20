@@ -98,7 +98,7 @@ Uses `IdleGuard` (RAII) to reset status on any early return or error — prevent
 `transform_transcript()` is the authoritative post-recognition entry point for both live and imported-file transcription. It owns a fixed internal sequence:
 
 ```text
-raw transcript → cleanup → voice commands → Smart Correction → Smart Formatting → IDE context → CLI formatting → final text
+raw transcript → cleanup → voice commands → Smart Correction (explicit aliases, exact/derived terms, then fuzzy) → Smart Formatting → IDE context → CLI formatting → final text
 ```
 
 Each stage receives immutable session/source metadata plus privacy-safe enablement flags and produces privacy-safe execution metadata (`duration_us`, changed/not-changed, outcome, and required/optional failure policy). Structured stage logs never include transcript text, model/language settings, app/profile values, custom replacement values, correction vocabulary, package/script names, or project paths.
@@ -111,6 +111,7 @@ File persistence, clipboard/paste, history, and stats are intentionally outside 
 
 See [Per-App Dictation Context](per-app-profiles.md) for resolver precedence, duplicate-profile compatibility, lifetime, and privacy boundaries.
 See [Spoken CLI Command Formatting](cli-command-formatting.md) for activation, grammar, local lexicon layering, and safety guarantees.
+See [Explicit Spoken Vocabulary Aliases](vocabulary-aliases.md) for migration, precedence, scope, validation, and privacy guarantees.
 See [Smart Formatting and Same-Utterance Backtracking](smart-formatting.md) for its explicit prose grammar, bounds, bypass rules, and privacy contract.
 See [Local IDE Symbols and `@file` Context](ide-context.md) for opt-in, scan boundaries, ambiguity, expiry, and privacy guarantees.
 

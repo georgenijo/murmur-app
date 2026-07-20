@@ -207,7 +207,11 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
         writing_style: profile.writing_style,
         ide_context_enabled: profile.ide_context_enabled,
     });
-    let custom_vocab = !global.custom_vocabulary.trim().is_empty();
+    let custom_vocab = crate::vocabulary_alias::has_applicable_entries(
+        &global.vocabulary_entries,
+        inputs.bundle_id,
+        &global.app_profiles,
+    );
     let code_vocab = global.code_vocab_enabled;
     let source = match (custom_vocab, code_vocab) {
         (false, false) => VocabularySource::None,

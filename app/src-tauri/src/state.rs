@@ -103,6 +103,44 @@ pub struct VoiceCommand {
     pub replacement: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum VocabularyScope {
+    Global,
+    App {
+        #[serde(rename = "bundleId")]
+        bundle_id: String,
+    },
+    Project {
+        #[serde(rename = "bundleId")]
+        bundle_id: String,
+        root: String,
+    },
+}
+
+impl Default for VocabularyScope {
+    fn default() -> Self {
+        Self::Global
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VocabularyEntry {
+    pub id: String,
+    pub written: String,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub scope: VocabularyScope,
+}
+
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DictationState {
     pub status: DictationStatus,
@@ -112,6 +150,8 @@ pub struct DictationState {
     pub auto_paste_delay_ms: u64,
     pub vad_sensitivity: u32,
     pub custom_vocabulary: String,
+    #[serde(default)]
+    pub vocabulary_entries: Vec<VocabularyEntry>,
     pub smart_punctuation: bool,
     pub save_transcript: bool,
     pub save_audio: bool,
@@ -168,6 +208,7 @@ impl Default for DictationState {
             auto_paste_delay_ms: 50,
             vad_sensitivity: 50,
             custom_vocabulary: String::new(),
+            vocabulary_entries: Vec::new(),
             smart_punctuation: true,
             save_transcript: false,
             save_audio: false,
@@ -225,7 +266,8 @@ pub struct AppState {
     /// Compiled post-model correction matcher, rebuilt on settings-change in
     /// `configure_dictation`. Lives outside `DictationState` because the compiled
     /// Aho-Corasick automaton isn't serializable.
-    pub correction_matcher: Mutex<Option<std::sync::Arc<crate::correction::CorrectionMatcher>>>,
+    pub correction_matcher:
+        Mutex<Option<std::sync::Arc<crate::vocabulary_alias::CorrectionMatcherSet>>>,
     /// Short-lived local project indexes for explicitly opted-in app profiles.
     /// Contents (symbols and root-relative filenames) are never serialized.
     pub ide_context: Mutex<crate::ide_context::IdeContextStore>,

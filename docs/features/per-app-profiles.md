@@ -61,6 +61,8 @@ This policy is separate from delivery. Murmur remains clipboard-first: the compl
 
 Writing styles also do not change the ASR model, language, vocabulary inputs, prompt, file-saving behavior, clipboard write, auto-paste timing, or destination. Style telemetry contains only the stable resolved enum plus the existing matched-profile boolean; bundle identifiers, labels, setting values, and transcript content are never logged.
 
+Vocabulary aliases use this same immutable context. Global aliases always apply. Typed app aliases require the matching snapshot bundle identifier; typed project aliases additionally require the matching profile's enabled local project context and configured root. Settings currently creates global aliases first. No alias path re-detects the frontmost app.
+
 Frontmost-app detection telemetry likewise contains only a numeric outcome code, retry count, numeric source code, and elapsed milliseconds. It never contains the detected bundle identifier, application name, profile label, project roots, or user content.
 
 ## Extension points

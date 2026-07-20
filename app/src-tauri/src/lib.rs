@@ -24,6 +24,7 @@ pub mod telemetry;
 pub mod transcriber;
 mod vad;
 mod vocab;
+mod vocabulary_alias;
 mod voice_commands;
 
 #[cfg(target_os = "macos")]
@@ -140,6 +141,7 @@ pub fn run() {
             commands::recording::stop_native_recording,
             commands::recording::cancel_native_recording,
             commands::recording::count_vocab_tokens,
+            commands::recording::preview_vocabulary_aliases,
             commands::recording::transcribe_file,
             commands::recording::scan_code_vocab,
             commands::recording::cancel_code_vocab_scan,
