@@ -707,6 +707,7 @@ async fn run_transcription_pipeline(
         correction_matcher: transformations.correction_matcher.clone(),
         cli_lexicon,
         ide_context_index: transformations.ide_context_index.clone(),
+        voice_command_runtime: None,
     };
     let transformed = crate::transcript_transform::transform_transcript(
         text,

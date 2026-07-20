@@ -49,6 +49,27 @@ pub(crate) struct IdeContextIndex {
 }
 
 impl IdeContextIndex {
+    /// Build a bounded, memory-only index from explicitly curated evaluation
+    /// fixture values. This never walks project roots or reads source files.
+    pub(crate) fn from_eval_fixture(symbols: &[String], files: &[String]) -> Arc<Self> {
+        let symbols = symbols
+            .iter()
+            .take(MAX_IDE_SYMBOLS)
+            .cloned()
+            .collect::<Vec<_>>();
+        let files = files
+            .iter()
+            .take(MAX_IDE_FILES)
+            .cloned()
+            .collect::<Vec<_>>();
+        Arc::new(Self {
+            symbol_matcher: Arc::new(CorrectionMatcher::build(&symbols, &[], false, false)),
+            file_aliases: Arc::new(build_file_aliases(&files)),
+            built_at: Instant::now(),
+            valid: AtomicBool::new(true),
+        })
+    }
+
     fn is_fresh(&self) -> bool {
         self.built_at.elapsed() < INDEX_TTL
     }

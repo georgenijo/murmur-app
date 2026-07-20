@@ -49,7 +49,7 @@ pub(crate) struct VoiceCommandApplication {
     pub clipboard_read: bool,
 }
 
-pub(crate) trait VoiceCommandRuntime {
+pub(crate) trait VoiceCommandRuntime: Send + Sync {
     fn now(&self) -> DateTime<FixedOffset>;
     fn clipboard_text(&self) -> Result<String, String>;
 }
@@ -546,12 +546,12 @@ fn delete_previous_sentence(out: &mut String) {
 mod tests {
     use super::*;
     use chrono::TimeZone;
-    use std::cell::Cell;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     struct FixedRuntime {
         now: DateTime<FixedOffset>,
         clipboard: Result<String, String>,
-        reads: Cell<u32>,
+        reads: AtomicU32,
     }
 
     impl VoiceCommandRuntime for FixedRuntime {
@@ -560,7 +560,7 @@ mod tests {
         }
 
         fn clipboard_text(&self) -> Result<String, String> {
-            self.reads.set(self.reads.get() + 1);
+            self.reads.fetch_add(1, Ordering::Relaxed);
             self.clipboard.clone()
         }
     }
@@ -570,7 +570,7 @@ mod tests {
         FixedRuntime {
             now: zone.with_ymd_and_hms(2026, 7, 20, 9, 7, 0).unwrap(),
             clipboard: clipboard.map(str::to_string).map_err(str::to_string),
-            reads: Cell::new(0),
+            reads: AtomicU32::new(0),
         }
     }
 
@@ -788,7 +788,7 @@ mod tests {
             "Yesterday:\n- done\nToday 2026-07-20 09:07:\n- ship"
         );
         assert!(applied.matched);
-        assert_eq!(runtime.reads.get(), 0);
+        assert_eq!(runtime.reads.load(Ordering::Relaxed), 0);
     }
 
     #[test]
@@ -807,13 +807,13 @@ mod tests {
             &runtime,
         );
         assert_eq!(missed.text, "ordinary prose");
-        assert_eq!(runtime.reads.get(), 0);
+        assert_eq!(runtime.reads.load(Ordering::Relaxed), 0);
 
         let applied = apply_voice_commands_with_resolved("paste note", true, &[command], &runtime);
         assert_eq!(applied.text, "Note:\nalpha\nbeta");
         assert!(applied.clipboard_required);
         assert!(applied.clipboard_read);
-        assert_eq!(runtime.reads.get(), 1);
+        assert_eq!(runtime.reads.load(Ordering::Relaxed), 1);
     }
 
     #[test]
@@ -854,7 +854,7 @@ mod tests {
             apply_voice_commands_with_resolved("remove me", true, &[empty], &runtime).text,
             ""
         );
-        assert_eq!(runtime.reads.get(), 0);
+        assert_eq!(runtime.reads.load(Ordering::Relaxed), 0);
     }
 
     #[test]
