@@ -1,6 +1,6 @@
 use crate::correct_and_teach::{CorrectionProposalOutcome, CorrectionProposalRequest};
 use crate::knowledge_store::{KnowledgeEntry, KnowledgeScope};
-use crate::State;
+use crate::{MutexExt, State};
 
 #[tauri::command]
 pub fn propose_learned_correction(
@@ -9,11 +9,7 @@ pub fn propose_learned_correction(
 ) -> CorrectionProposalOutcome {
     let original_chars = request.original_text.chars().count() as u64;
     let corrected_chars = request.corrected_text.chars().count() as u64;
-    let dictation = state
-        .app_state
-        .dictation
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let dictation = state.app_state.dictation.lock_or_recover();
     let outcome = state.correct_and_teach.propose(request, &dictation);
     tracing::info!(
         target: "pipeline",
@@ -36,7 +32,9 @@ pub fn confirm_learned_correction(
         state
             .knowledge
             .create_learned_replacement(pending.source, pending.replacement, scope)?;
-    crate::commands::knowledge::refresh_correction_rules(&state)?;
+    if let Err(error) = crate::commands::knowledge::refresh_correction_rules(&state) {
+        tracing::warn!(target: "system", error, "correct_and_teach matcher refresh failed");
+    }
     state.correct_and_teach.discard(proposal_id);
     tracing::info!(
         target: "pipeline",

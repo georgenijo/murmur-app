@@ -1,5 +1,5 @@
 use crate::knowledge_store::*;
-use crate::State;
+use crate::{MutexExt, State};
 use std::path::PathBuf;
 
 pub(crate) fn refresh_correction_rules(state: &State) -> Result<(), String> {
@@ -7,13 +7,8 @@ pub(crate) fn refresh_correction_rules(state: &State) -> Result<(), String> {
     *state
         .app_state
         .knowledge_replacements
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = std::sync::Arc::new(entries);
-    let dictation = state
-        .app_state
-        .dictation
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+        .lock_or_recover() = std::sync::Arc::new(entries);
+    let dictation = state.app_state.dictation.lock_or_recover();
     crate::commands::recording::rebuild_correction_matcher(&state.app_state, &dictation);
     state.app_state.bump_settings_revision();
     Ok(())

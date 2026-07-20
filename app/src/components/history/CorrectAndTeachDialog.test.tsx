@@ -84,4 +84,12 @@ describe('CorrectAndTeachDialog', () => {
     expect(mocks.discard).toHaveBeenCalledWith(7);
     expect(mocks.confirm).not.toHaveBeenCalled();
   });
+
+  it('discards a reviewed proposal when its parent unmounts', async () => {
+    await act(async () => setValue(container.querySelector('[aria-label="Corrected transcript"]') as HTMLTextAreaElement, 'useRecordingState'));
+    await act(async () => button(container, 'Review correction').click());
+    await act(async () => root.render(<></>));
+    expect(mocks.discard).toHaveBeenCalledWith(7);
+    expect(mocks.confirm).not.toHaveBeenCalled();
+  });
 });

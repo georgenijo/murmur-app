@@ -6,6 +6,7 @@
 
 use crate::knowledge_store::KnowledgeScope;
 use crate::state::DictationState;
+use crate::MutexExt;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -82,10 +83,7 @@ impl CorrectAndTeachState {
         // Starting any new review invalidates the previous capability, even if
         // this request turns out to be unsafe. Only the proposal currently on
         // screen may be confirmed.
-        *self
-            .pending
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        *self.pending.lock_or_recover() = None;
         let candidate = match propose_rule(&request.original_text, &request.corrected_text) {
             Ok(candidate) => candidate,
             Err(reason) => return CorrectionProposalOutcome::Unsafe { reason },
@@ -99,10 +97,7 @@ impl CorrectAndTeachState {
 
         let scope_options = available_scopes(request.teaching_context.as_ref(), dictation);
         let proposal_id = self.next_id.fetch_add(1, Ordering::SeqCst) + 1;
-        *self
-            .pending
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(PendingCorrection {
+        *self.pending.lock_or_recover() = Some(PendingCorrection {
             proposal_id,
             source: candidate.source.clone(),
             replacement: candidate.replacement.clone(),
@@ -128,14 +123,9 @@ impl CorrectAndTeachState {
         proposal_id: u64,
         scope: &KnowledgeScope,
     ) -> Result<PendingCorrection, String> {
-        let pending = self
-            .pending
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
-            .ok_or_else(|| {
-                "This correction proposal is no longer available. Review it again.".to_string()
-            })?;
+        let pending = self.pending.lock_or_recover().clone().ok_or_else(|| {
+            "This correction proposal is no longer available. Review it again.".to_string()
+        })?;
         if pending.proposal_id != proposal_id || !pending.scopes.contains(scope) {
             return Err(
                 "The correction or its scope changed. Review it again before saving.".to_string(),
@@ -145,10 +135,7 @@ impl CorrectAndTeachState {
     }
 
     pub fn discard(&self, proposal_id: u64) {
-        let mut pending = self
-            .pending
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut pending = self.pending.lock_or_recover();
         if pending
             .as_ref()
             .is_some_and(|proposal| proposal.proposal_id == proposal_id)
@@ -601,8 +588,7 @@ mod tests {
 
         let pending = state
             .pending
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .lock_or_recover()
             .clone()
             .expect("proposal should be pending");
         assert_eq!(pending.source, "use recording state");

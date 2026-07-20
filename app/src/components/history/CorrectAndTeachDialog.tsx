@@ -60,6 +60,7 @@ export function CorrectAndTeachDialog({ entry, onClose, onSaveCorrection }: Prop
       document.removeEventListener('keydown', onKey);
       window.clearTimeout(timer);
       previous?.focus();
+      if (proposalIdRef.current !== null) void discardLearnedCorrectionProposal(proposalIdRef.current).catch(() => {});
     };
     // The dialog owns one proposal lifecycle; recreating this handler would
     // discard a proposal while the user is reviewing it.

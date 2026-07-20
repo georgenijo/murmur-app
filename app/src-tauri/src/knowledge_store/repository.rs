@@ -250,8 +250,9 @@ impl KnowledgeRepository {
         validate_payload(&payload)?;
         validate_scope(&scope)?;
 
-        let connection = self.open_checked()?;
-        for existing in entries_with_kind(&connection, KnowledgeKind::ReplacementRule)? {
+        let mut connection = self.open_checked()?;
+        let transaction = connection.transaction().map_err(db_error)?;
+        for existing in entries_with_kind(&transaction, KnowledgeKind::ReplacementRule)? {
             let KnowledgePayload::ReplacementRule {
                 source: existing_source,
                 replacement: existing_replacement,
@@ -270,15 +271,11 @@ impl KnowledgeRepository {
                     .to_string(),
             );
         }
-        if record_count(&connection)? >= MAX_ENTRIES {
+        if record_count_tx(&transaction)? >= MAX_ENTRIES {
             return Err(
                 "The personal knowledge store has reached its 10,000-record limit.".to_string(),
             );
         }
-        drop(connection);
-
-        let mut connection = self.open_checked()?;
-        let transaction = connection.transaction().map_err(db_error)?;
         let timestamp = now_ms();
         let id: String = transaction
             .query_row("SELECT lower(hex(randomblob(16)))", [], |row| row.get(0))
