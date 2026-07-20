@@ -19,6 +19,8 @@ describe('overlay geometry contract fixture', () => {
     expect(g.windowW).toBeGreaterThanOrEqual(g.pillIdleW + g.pillMarginIdle);
     expect(g.expandedH).toBe(g.collapsedH + g.dropdownH);
     expect(g.pillActiveW).toBeGreaterThanOrEqual(g.pillIdleW);
+    expect(g.wingW).toBeGreaterThan(0);
+    expect(g.windowW).toBeGreaterThanOrEqual(2 * g.wingW);
   });
 
   it('locks the characterization values', () => {
@@ -26,13 +28,13 @@ describe('overlay geometry contract fixture', () => {
       windowW: 257, collapsedH: 32, expandedH: 76,
       pillIdleW: 257, pillActiveW: 257,
       pillMarginIdle: 0, pillMarginActive: 0,
-      dropdownH: 44,
+      dropdownH: 44, wingW: 36,
     });
     expect(fixture.fallback).toEqual({
       windowW: 152, collapsedH: 37, expandedH: 81,
       pillIdleW: 152, pillActiveW: 152,
       pillMarginIdle: 0, pillMarginActive: 0,
-      dropdownH: 44,
+      dropdownH: 44, wingW: 36,
     });
   });
 

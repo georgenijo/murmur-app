@@ -2,11 +2,11 @@ export interface OverlayGeometry {
   windowW: number; collapsedH: number; expandedH: number;
   pillIdleW: number; pillActiveW: number;
   pillMarginIdle: number; pillMarginActive: number;
-  dropdownH: number;
+  dropdownH: number; wingW: number;
 }
 
 const KEYS = ['windowW', 'collapsedH', 'expandedH', 'pillIdleW', 'pillActiveW',
-  'pillMarginIdle', 'pillMarginActive', 'dropdownH'] as const;
+  'pillMarginIdle', 'pillMarginActive', 'dropdownH', 'wingW'] as const;
 
 export function isOverlayGeometry(v: unknown): v is OverlayGeometry {
   if (typeof v !== 'object' || v === null) return false;
