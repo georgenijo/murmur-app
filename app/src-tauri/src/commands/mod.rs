@@ -1,5 +1,6 @@
 pub mod benchmark;
 pub mod keyboard;
+pub mod knowledge;
 pub mod logging;
 pub mod models;
 pub mod overlay;
