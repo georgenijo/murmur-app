@@ -41,6 +41,18 @@ export interface BenchmarkFixtureResult {
   normalizedReferenceWords: number;
   reference: string;
   transcript: string;
+  /** Text after the production transcript-transform pipeline ran on
+   * `transcript` — what actually reaches the clipboard. The delivered* WER
+   * fields score this against `reference`; raw/normalized above score the
+   * decoder output. See issue #271. */
+  deliveredTranscript: string;
+  deliveredWordErrorRate: number;
+  deliveredWordErrors: number;
+  deliveredNormalizedWordErrorRate: number;
+  deliveredNormalizedWordErrors: number;
+  /** True when the transform errored and delivered* fell back to scoring the
+   * untransformed `transcript`. */
+  deliveredTransformFailed: boolean;
 }
 
 export interface BenchmarkModelResult {
@@ -55,6 +67,11 @@ export interface BenchmarkModelResult {
   realtimeFactor: number | null;
   wordErrorRate: number | null;
   normalizedWordErrorRate: number | null;
+  /** Corpus WER of the delivered text (post transcript-transform pipeline),
+   * raw and normalized — the metric reflecting clipboard output rather than
+   * raw decoder output. See issue #271. */
+  deliveredWordErrorRate: number | null;
+  deliveredNormalizedWordErrorRate: number | null;
   /** Process-RSS delta for this model's run. Models are benchmarked
    * sequentially in one process, so allocator retention from an earlier
    * model can inflate a later model's baseline — treat as a rough signal,
@@ -118,7 +135,13 @@ function isFixtureResult(value: unknown): value is BenchmarkFixtureResult {
     && isNumber(value.normalizedWordErrors)
     && isNumber(value.normalizedReferenceWords)
     && typeof value.reference === 'string'
-    && typeof value.transcript === 'string';
+    && typeof value.transcript === 'string'
+    && typeof value.deliveredTranscript === 'string'
+    && isNumber(value.deliveredWordErrorRate)
+    && isNumber(value.deliveredWordErrors)
+    && isNumber(value.deliveredNormalizedWordErrorRate)
+    && isNumber(value.deliveredNormalizedWordErrors)
+    && typeof value.deliveredTransformFailed === 'boolean';
 }
 
 function isModelResult(value: unknown): value is BenchmarkModelResult {
@@ -134,6 +157,8 @@ function isModelResult(value: unknown): value is BenchmarkModelResult {
     && isNullableNumber(value.realtimeFactor)
     && isNullableNumber(value.wordErrorRate)
     && isNullableNumber(value.normalizedWordErrorRate)
+    && isNullableNumber(value.deliveredWordErrorRate)
+    && isNullableNumber(value.deliveredNormalizedWordErrorRate)
     && isNumber(value.memoryDeltaMb)
     && Array.isArray(value.fixtures)
     && value.fixtures.every(isFixtureResult)

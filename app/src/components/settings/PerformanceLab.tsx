@@ -479,9 +479,10 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
             <h4 className="mb-1 text-xs font-semibold text-stone-700 dark:text-stone-300">Metrics</h4>
             <table className="w-full table-fixed text-[11px]">
               <colgroup>
-                <col className="w-[34%]" />
-                <col className="w-[18%]" />
-                <col className="w-[16%]" />
+                <col className="w-[28%]" />
+                <col className="w-[14%]" />
+                <col className="w-[13%]" />
+                <col className="w-[13%]" />
                 <col className="w-[16%]" />
                 <col className="w-[16%]" />
               </colgroup>
@@ -491,7 +492,8 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
                   <th className="px-2 py-2 font-medium text-right">Median</th>
                   <th className="px-2 py-2 font-medium text-right">P95</th>
                   <th className="px-2 py-2 font-medium text-right">Speed</th>
-                  <th className="pl-2 py-2 font-medium text-right">WER norm (raw)</th>
+                  <th className="px-2 py-2 font-medium text-right">WER norm (raw)</th>
+                  <th className="pl-2 py-2 font-medium text-right">Delivered (raw)</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-stone-200 dark:divide-stone-700 text-stone-700 dark:text-stone-300">
@@ -502,15 +504,19 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
                       <span className="block text-[10px] text-stone-400">{result.accelerator}</span>
                     </td>
                     {result.error ? (
-                      <td colSpan={4} className="px-2 py-2.5 text-red-600 dark:text-red-400">{result.error}</td>
+                      <td colSpan={5} className="px-2 py-2.5 text-red-600 dark:text-red-400">{result.error}</td>
                     ) : (
                       <>
                         <td className="px-2 py-2.5 text-right tabular-nums">{milliseconds(result.warmMedianMs)}</td>
                         <td className="px-2 py-2.5 text-right tabular-nums">{milliseconds(result.warmP95Ms)}</td>
                         <td className="px-2 py-2.5 text-right tabular-nums">{speed(result.realtimeFactor)}</td>
-                        <td className="pl-2 py-2.5 text-right tabular-nums">
+                        <td className="px-2 py-2.5 text-right tabular-nums">
                           {percentage(result.normalizedWordErrorRate)}
                           <span className="text-stone-400 dark:text-stone-500"> ({percentage(result.wordErrorRate)})</span>
+                        </td>
+                        <td className="pl-2 py-2.5 text-right tabular-nums">
+                          {percentage(result.deliveredNormalizedWordErrorRate)}
+                          <span className="text-stone-400 dark:text-stone-500"> ({percentage(result.deliveredWordErrorRate)})</span>
                         </td>
                       </>
                     )}
@@ -521,7 +527,7 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
           </div>
 
           <p className="text-[11px] leading-relaxed text-stone-500 dark:text-stone-400">
-            WER counts changed, missing, and extra words against the known transcript. Normalized WER first ignores formatting and number/unit spelling (16 kHz = sixteen kilohertz, front end = frontend) so it reflects recognition, not formatting; raw WER is shown in parentheses. Accuracy ranking and the Accurate/Balanced picks use the normalized number. Balanced means the fastest model within 2 accuracy points of the best result.
+            WER counts changed, missing, and extra words against the known transcript. Normalized WER first ignores formatting and number/unit spelling (16 kHz = sixteen kilohertz, front end = frontend) so it reflects recognition, not formatting; raw WER is shown in parentheses. Delivered WER scores the text after the production transform pipeline (dev-vocab prompt for Whisper, then cleanup / correction / formatting) — what actually reaches the clipboard — again shown normalized with raw in parentheses. Accuracy ranking and the Accurate/Balanced picks use the normalized recognition number. Balanced means the fastest model within 2 accuracy points of the best result.
           </p>
 
           <div className="space-y-2">
@@ -548,6 +554,13 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
                       <div className="mt-1 grid gap-1 text-stone-500 dark:text-stone-400">
                         <p><span className="font-medium">Reference:</span> {fixture.reference}</p>
                         <p><span className="font-medium">Output:</span> {fixture.transcript || '(empty)'}</p>
+                        <p>
+                          <span className="font-medium">Delivered:</span> {fixture.deliveredTranscript || '(empty)'}
+                          <span className="text-stone-400 dark:text-stone-500"> — {fixture.deliveredNormalizedWordErrors}/{fixture.normalizedReferenceWords} errors ({fixture.deliveredWordErrors}/{fixture.referenceWords} raw)</span>
+                          {fixture.deliveredTransformFailed && (
+                            <span className="text-amber-600 dark:text-amber-400"> — transform failed, showing raw</span>
+                          )}
+                        </p>
                       </div>
                     </div>
                   ))}

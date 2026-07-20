@@ -1,14 +1,19 @@
 use crate::commands::models::check_specific_model_exists;
+use crate::correction::CorrectionMatcher;
 use crate::resource_monitor::get_process_rss_mb;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use crate::transcriber::CoreMlBackend;
 use crate::transcriber::{
     ParakeetBackend, TranscriptionBackend, WhisperBackend, COREML_MODEL_NAME, WHISPER_SAMPLE_RATE,
 };
+use crate::transcript_transform::{
+    transform_transcript, TranscriptContext, TranscriptSource, TranscriptStageConfig,
+    TranscriptTransformResources,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tauri::Emitter;
 
@@ -120,6 +125,19 @@ pub struct FixtureResult {
     pub normalized_reference_words: usize,
     pub reference: String,
     pub transcript: String,
+    /// Text after the production transcript-transform pipeline ran on
+    /// `transcript` (issue #271). This is what actually lands on the clipboard,
+    /// so the delivered_* WER fields below score it against `reference`. Raw
+    /// `word_error_rate` scores decoder output; `delivered_*` scores post-pipeline
+    /// output; both raw and normalized variants are kept for symmetry.
+    pub delivered_transcript: String,
+    pub delivered_word_error_rate: f64,
+    pub delivered_word_errors: usize,
+    pub delivered_normalized_word_error_rate: f64,
+    pub delivered_normalized_word_errors: usize,
+    /// True when the transform pipeline errored and delivered_* fell back to
+    /// scoring the untransformed `transcript` (issue #271 point 4).
+    pub delivered_transform_failed: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -136,6 +154,11 @@ pub struct ModelResult {
     pub realtime_factor: Option<f64>,
     pub word_error_rate: Option<f64>,
     pub normalized_word_error_rate: Option<f64>,
+    /// Corpus WER of the delivered text (post transcript-transform pipeline),
+    /// raw and normalized. This is the metric that reflects clipboard output
+    /// rather than raw decoder output. See issue #271.
+    pub delivered_word_error_rate: Option<f64>,
+    pub delivered_normalized_word_error_rate: Option<f64>,
     /// Process-RSS delta measured around this model's run. Models are
     /// benchmarked sequentially in one process, so allocator retention from
     /// an earlier model can inflate a later model's baseline; treat this as
@@ -679,9 +702,132 @@ fn error_result(model: &BenchmarkModel, error: String) -> ModelResult {
         realtime_factor: None,
         word_error_rate: None,
         normalized_word_error_rate: None,
+        delivered_word_error_rate: None,
+        delivered_normalized_word_error_rate: None,
         memory_delta_mb: 0,
         fixtures: Vec::new(),
         error: Some(error),
+    }
+}
+
+// --- Delivered-text path (issue #271) --------------------------------------
+//
+// The benchmark must score what lands on the clipboard, not raw decoder output.
+// Two production levers are mirrored here:
+//   1. Whisper models receive the built-in developer-vocabulary initial prompt,
+//      matching production's capability of biasing decoding toward domain terms.
+//      Parakeet / Core ML ignore an initial prompt (parakeet.rs, coreml.rs), so
+//      they get None.
+//   2. Each transcript is run through the production transcript-transform
+//      pipeline configured as a default out-of-the-box install (no per-app
+//      profile). The same built-in developer dictionary that seeds the whisper
+//      prompt also seeds the correction matcher, so SmartCorrectionStage repairs
+//      domain proper nouns exactly as production does when that dictionary is
+//      active. Changing which of these are shipped ON by default is out of scope
+//      (issue #271 point 3); this only measures the capability.
+
+/// Whisper backends bias decoding toward a supplied initial prompt. Feed them
+/// the built-in developer dictionary; return None for backends that ignore the
+/// prompt. See issue #271.
+fn whisper_initial_prompt(model_name: &str) -> Option<String> {
+    matches!(
+        model_name,
+        "tiny.en" | "base.en" | "small.en" | "medium.en" | "large-v3-turbo"
+    )
+    .then(crate::vocab::builtin_terms_prompt)
+}
+
+/// Build the transcript-transform context a default out-of-the-box install
+/// resolves to: global default settings, no per-app profile. Derived from the
+/// production resolver (`dictation_context::resolve`) so the delivered text is
+/// produced by the same stage selection real users get. See issue #271.
+fn default_delivery_context() -> TranscriptContext {
+    let global = crate::state::DictationState::default();
+    let snapshot = crate::dictation_context::resolve(crate::dictation_context::ResolverInputs {
+        bundle_id: None,
+        global: &global,
+        prompt: None,
+        correction_matcher: None,
+        ide_context_index: None,
+        vocabulary_version: 0,
+        session_overrides: crate::dictation_context::SessionOverrides::default(),
+    });
+    TranscriptContext {
+        session_id: 0,
+        source: TranscriptSource::Live,
+        context_handle: None,
+        cli_formatting_mode: snapshot.transformations.cli_formatting_mode,
+        stages: TranscriptStageConfig {
+            cleanup_enabled: snapshot.transformations.cleanup_enabled,
+            cleanup_remove_filler: snapshot.transformations.cleanup_remove_filler,
+            cleanup_capitalize: snapshot.transformations.cleanup_capitalize,
+            voice_commands_enabled: snapshot.enabled_command_groups.built_in_voice_commands,
+            smart_correction_enabled: snapshot.transformations.correction_enabled,
+            smart_formatting_enabled: snapshot.transformations.smart_formatting_enabled,
+            ide_context_enabled: snapshot.transformations.ide_context_enabled,
+            cli_command_enabled: snapshot.transformations.cli_formatting_enabled,
+        },
+    }
+}
+
+/// Correction matcher for the delivered path, seeded with the built-in developer
+/// dictionary (the same terms fed to the whisper prompt) plus the built-in
+/// abbreviations, mirroring `commands::recording::rebuild_correction_matcher`
+/// with the dev dictionary active. `None` when the resulting matcher is empty.
+/// See issue #271.
+fn default_delivery_correction_matcher() -> Option<Arc<CorrectionMatcher>> {
+    let terms: Vec<String> = crate::vocab::builtin_terms_prompt()
+        .split_whitespace()
+        .map(ToString::to_string)
+        .collect();
+    let matcher = CorrectionMatcher::build(
+        &terms,
+        &[],
+        crate::state::DictationState::default().correction_fuzzy,
+        true,
+    );
+    (!matcher.is_empty()).then(|| Arc::new(matcher))
+}
+
+struct DeliveredScore {
+    transcript: String,
+    word_errors: usize,
+    normalized_word_errors: usize,
+    transform_failed: bool,
+}
+
+/// Run one transcript through `transform` (the delivered-text pipeline) and
+/// score the result on both raw and normalized WER. On transform failure the
+/// untransformed transcript is scored instead and `transform_failed` is set, so
+/// a broken stage degrades one fixture's delivered numbers rather than aborting
+/// the whole run (issue #271 point 4). `transform` is injected so the plumbing
+/// is testable with a stub and no models.
+fn score_delivered(
+    reference: &str,
+    transcript: &str,
+    transform: impl FnOnce(&str) -> Result<String, String>,
+) -> DeliveredScore {
+    match transform(transcript) {
+        Ok(text) => {
+            let (raw_errors, _) = word_errors(reference, &text);
+            let (normalized_errors, _) = normalized_word_errors(reference, &text);
+            DeliveredScore {
+                transcript: text,
+                word_errors: raw_errors,
+                normalized_word_errors: normalized_errors,
+                transform_failed: false,
+            }
+        }
+        Err(_) => {
+            let (raw_errors, _) = word_errors(reference, transcript);
+            let (normalized_errors, _) = normalized_word_errors(reference, transcript);
+            DeliveredScore {
+                transcript: transcript.to_string(),
+                word_errors: raw_errors,
+                normalized_word_errors: normalized_errors,
+                transform_failed: true,
+            }
+        }
     }
 }
 
@@ -893,6 +1039,11 @@ pub fn run(
     let mut completed = 0;
     let mut results = Vec::with_capacity(selected.len());
 
+    // Delivered-text pipeline configuration is identical across models and
+    // fixtures, so build it once. See issue #271.
+    let delivery_context = default_delivery_context();
+    let delivery_matcher = default_delivery_correction_matcher();
+
     // Untimed warm-up pass: absorb one-time shared backend init (Metal
     // shader compilation, ANE compile cache, ...) before any per-model
     // timing starts, so it isn't misattributed to whichever model happens
@@ -951,9 +1102,16 @@ pub fn run(
         let mut total_reference_words = 0;
         let mut total_normalized_errors = 0;
         let mut total_normalized_reference_words = 0;
+        let mut total_delivered_errors = 0;
+        let mut total_delivered_normalized_errors = 0;
         let mut corpus_warm_seconds = 0.0;
         let mut corpus_audio_seconds = 0.0;
         let mut failed = None;
+
+        // Whisper backends decode with the built-in dev-vocab prompt; Parakeet /
+        // Core ML ignore it and receive None. See issue #271.
+        let initial_prompt = whisper_initial_prompt(&model.model_name);
+        let prompt_ref = initial_prompt.as_deref();
 
         for prepared in &fixtures {
             let fixture = prepared.fixture;
@@ -972,7 +1130,7 @@ pub fn run(
                 "warming",
             );
             let warmup_started = Instant::now();
-            match backend.transcribe(samples, "en", None, true) {
+            match backend.transcribe(samples, "en", prompt_ref, true) {
                 Ok(_) => {}
                 Err(error) => {
                     failed = Some(error);
@@ -1001,7 +1159,7 @@ pub fn run(
                     "measuring",
                 );
                 let started = Instant::now();
-                match backend.transcribe(samples, "en", None, true) {
+                match backend.transcribe(samples, "en", prompt_ref, true) {
                     Ok(output) => transcripts.push(output),
                     Err(error) => {
                         failed = Some(error);
@@ -1055,6 +1213,24 @@ pub fn run(
             total_reference_words += reference_words;
             total_normalized_errors += normalized_errors;
             total_normalized_reference_words += normalized_reference_words;
+            // Run the reported median transcript through the production
+            // transcript-transform pipeline and score the delivered text (what
+            // reaches the clipboard). The transform is deterministic, so scoring
+            // the median transcript is stable. See issue #271.
+            let delivered = score_delivered(fixture.reference, &transcript, |input| {
+                transform_transcript(
+                    input.to_string(),
+                    &delivery_context,
+                    TranscriptTransformResources {
+                        correction_matcher: delivery_matcher.clone(),
+                        ..TranscriptTransformResources::empty()
+                    },
+                )
+                .map(|output| output.text)
+                .map_err(|error| error.to_string())
+            });
+            total_delivered_errors += delivered.word_errors;
+            total_delivered_normalized_errors += delivered.normalized_word_errors;
             fixture_results.push(FixtureResult {
                 fixture_id: fixture.id.to_string(),
                 label: fixture.label.to_string(),
@@ -1071,6 +1247,13 @@ pub fn run(
                 normalized_reference_words,
                 reference: fixture.reference.trim().to_string(),
                 transcript,
+                delivered_word_error_rate: delivered.word_errors as f64 / reference_words as f64,
+                delivered_word_errors: delivered.word_errors,
+                delivered_normalized_word_error_rate: delivered.normalized_word_errors as f64
+                    / normalized_reference_words as f64,
+                delivered_normalized_word_errors: delivered.normalized_word_errors,
+                delivered_transform_failed: delivered.transform_failed,
+                delivered_transcript: delivered.transcript,
             });
         }
 
@@ -1094,6 +1277,12 @@ pub fn run(
             word_error_rate: Some(total_errors as f64 / total_reference_words as f64),
             normalized_word_error_rate: Some(
                 total_normalized_errors as f64 / total_normalized_reference_words as f64,
+            ),
+            delivered_word_error_rate: Some(
+                total_delivered_errors as f64 / total_reference_words as f64,
+            ),
+            delivered_normalized_word_error_rate: Some(
+                total_delivered_normalized_errors as f64 / total_normalized_reference_words as f64,
             ),
             memory_delta_mb: peak_rss.saturating_sub(baseline_rss),
             fixtures: fixture_results,
@@ -1277,6 +1466,8 @@ mod tests {
             realtime_factor: Some(latency / 1000.0),
             word_error_rate: Some(wer),
             normalized_word_error_rate: Some(wer),
+            delivered_word_error_rate: Some(wer),
+            delivered_normalized_word_error_rate: Some(wer),
             memory_delta_mb: 0,
             fixtures: Vec::new(),
             error: None,
@@ -1310,6 +1501,8 @@ mod tests {
             realtime_factor: Some(realtime_factor),
             word_error_rate: Some(wer),
             normalized_word_error_rate: Some(wer),
+            delivered_word_error_rate: Some(wer),
+            delivered_normalized_word_error_rate: Some(wer),
             memory_delta_mb,
             fixtures: Vec::new(),
             error: None,
@@ -1392,5 +1585,159 @@ mod tests {
             full_result("inaccurate-but-fast", 10.0, 0.01, 0.20, 50),
         ]);
         assert_eq!(recommendations.balanced.as_deref(), Some("accurate"));
+    }
+
+    // --- Delivered-text path (issue #271) -----------------------------------
+
+    #[test]
+    fn whisper_models_get_the_dev_prompt_and_others_do_not() {
+        for whisper in ["tiny.en", "base.en", "small.en", "medium.en", "large-v3-turbo"] {
+            let prompt = whisper_initial_prompt(whisper)
+                .unwrap_or_else(|| panic!("{whisper} should receive an initial prompt"));
+            assert!(
+                prompt.contains("Tauri"),
+                "the built-in dev dictionary should include Tauri"
+            );
+        }
+        // Parakeet / Core ML ignore an initial prompt, so none is supplied.
+        assert!(whisper_initial_prompt(PARAKEET_CPU_MODEL).is_none());
+        assert!(whisper_initial_prompt(COREML_MODEL_NAME).is_none());
+    }
+
+    #[test]
+    fn default_delivery_context_matches_out_of_the_box_settings() {
+        let context = default_delivery_context();
+        assert_eq!(context.source, TranscriptSource::Live);
+        assert_eq!(
+            context.cli_formatting_mode,
+            crate::cli_command::CliFormattingMode::Auto
+        );
+        let stages = context.stages;
+        // Mirrors DictationState::default(): cleanup gate off (filler/capitalize
+        // remain configured but unused until cleanup is enabled), voice commands
+        // off, correction on, smart formatting off, IDE off, CLI stage on (Auto).
+        assert!(!stages.cleanup_enabled);
+        assert!(stages.cleanup_remove_filler);
+        assert!(stages.cleanup_capitalize);
+        assert!(!stages.voice_commands_enabled);
+        assert!(stages.smart_correction_enabled);
+        assert!(!stages.smart_formatting_enabled);
+        assert!(!stages.ide_context_enabled);
+        assert!(stages.cli_command_enabled);
+    }
+
+    #[test]
+    fn score_delivered_scores_transformed_output_on_success() {
+        // Stub transform "corrects" tori -> Tauri, removing the only error.
+        let score = score_delivered("we ship Tauri today", "we ship tori today", |input| {
+            Ok(input.replace("tori", "Tauri"))
+        });
+        assert!(!score.transform_failed);
+        assert_eq!(score.transcript, "we ship Tauri today");
+        assert_eq!(score.word_errors, 0);
+        assert_eq!(score.normalized_word_errors, 0);
+    }
+
+    #[test]
+    fn score_delivered_falls_back_to_raw_transcript_when_transform_fails() {
+        let score = score_delivered("we ship Tauri today", "we ship tori today", |_input| {
+            Err("stage exploded".to_string())
+        });
+        assert!(score.transform_failed);
+        // Scored against the untransformed transcript: "tori" != "Tauri" is one
+        // error, and the delivered transcript is the untransformed text.
+        assert_eq!(score.transcript, "we ship tori today");
+        assert_eq!(score.word_errors, 1);
+    }
+
+    #[test]
+    fn default_delivery_pipeline_runs_the_correction_stage() {
+        // "standard error" is a built-in abbreviation the correction matcher
+        // rewrites to "stderr"; cleanup/voice-commands/smart-formatting are all
+        // no-ops on this prose under default settings, and the CLI stage leaves
+        // non-command prose untouched. So the delivered text equals the
+        // correction-only output, proving the stage is wired and scored.
+        let input = "we deploy with standard error logging";
+        let context = default_delivery_context();
+        let matcher = default_delivery_correction_matcher();
+        let expected = matcher
+            .as_ref()
+            .expect("built-in dictionary yields a non-empty matcher")
+            .apply(input);
+        assert_ne!(expected, input, "correction stage should change the text");
+
+        let score = score_delivered(&expected, input, |transcript| {
+            transform_transcript(
+                transcript.to_string(),
+                &context,
+                TranscriptTransformResources {
+                    correction_matcher: matcher.clone(),
+                    ..TranscriptTransformResources::empty()
+                },
+            )
+            .map(|output| output.text)
+            .map_err(|error| error.to_string())
+        });
+        assert!(!score.transform_failed);
+        assert_eq!(score.transcript, expected);
+        assert_eq!(score.word_errors, 0);
+    }
+
+    #[test]
+    #[ignore = "requires tiny.en + Silero VAD; run on macOS with --ignored"]
+    fn delivered_path_smoke_tiny_en_end_to_end() {
+        // The vocab prompt is passed to whisper and carries the dev dictionary.
+        let prompt =
+            whisper_initial_prompt("tiny.en").expect("whisper models get an initial prompt");
+        assert!(prompt.contains("Tauri"));
+
+        let prepared = prepare_fixtures(&FIXTURES[..1], 0.5).expect("prepare the short fixture");
+        let fixture = &prepared[0];
+
+        let mut backend = backend_for("tiny.en").expect("tiny.en backend");
+        backend.load_model("tiny.en").expect("load tiny.en");
+        let transcript = backend
+            .transcribe(&fixture.samples, "en", Some(prompt.as_str()), true)
+            .expect("transcribe the short fixture");
+        backend.reset();
+        assert!(
+            !transcript.trim().is_empty(),
+            "raw transcript should be non-empty"
+        );
+
+        let context = default_delivery_context();
+        let matcher = default_delivery_correction_matcher();
+        let delivered = score_delivered(fixture.fixture.reference, &transcript, |input| {
+            transform_transcript(
+                input.to_string(),
+                &context,
+                TranscriptTransformResources {
+                    correction_matcher: matcher.clone(),
+                    ..TranscriptTransformResources::empty()
+                },
+            )
+            .map(|output| output.text)
+            .map_err(|error| error.to_string())
+        });
+
+        assert!(!delivered.transform_failed, "default transform must not fail");
+        assert!(
+            !delivered.transcript.trim().is_empty(),
+            "delivered transcript should be populated"
+        );
+        let (raw_errors, reference_words) = word_errors(fixture.fixture.reference, &transcript);
+        assert!(reference_words > 0);
+
+        println!("--- delivered path smoke (tiny.en) ---");
+        println!(
+            "initial_prompt[..60]: {}",
+            prompt.chars().take(60).collect::<String>()
+        );
+        println!("RAW       : {transcript}");
+        println!("DELIVERED : {}", delivered.transcript);
+        println!(
+            "raw WER errors={raw_errors} delivered WER errors={} ref_words={reference_words}",
+            delivered.word_errors
+        );
     }
 }
