@@ -250,8 +250,8 @@ The initial model downloader screen shows a curated subset of 2 models: `large-v
 
 - `detect_notch_info()`: reads `NSScreen.mainScreen().safeAreaInsets()` via `objc2`; uses `auxiliaryTopLeftArea` + `auxiliaryTopRightArea` to compute notch width. Main-thread only. Fallback: 200px wide, 37px tall.
 - `raise_window_above_menubar()`: sets NSWindow level to **25** (NSMainMenuWindowLevel = 24). Calls private API `_setPreventsActivation(true)` to prevent focus-stealing on click; guarded with `respondsToSelector()` for forward compatibility.
-- `register_screen_change_observer()`: subscribes to `NSApplicationDidChangeScreenParametersNotification` -- repositions overlay automatically when displays are plugged/unplugged or lid opens. Emits `notch-info-changed` to frontend. Observer intentionally leaked (app lifetime).
-- Overlay width = notch_width + 120px (60px expansion per side). Mouse events explicitly re-enabled (`setIgnoreCursorEvents(false)`) because `focusable:false` disables them on macOS.
+- `register_screen_change_observer()`: subscribes to `NSApplicationDidChangeScreenParametersNotification` -- repositions overlay automatically when displays are plugged/unplugged or lid opens. Emits `overlay-geometry-changed` (the recomputed `OverlayGeometry`) to frontend. Observer intentionally leaked (app lifetime).
+- Every overlay dimension comes from one source, `geometry_for(notch)` in `commands/overlay.rs`, which returns an `OverlayGeometry`; the frontend only reads it (`get_overlay_geometry`, `overlay-geometry-changed`) and never hardcodes pixels. See [docs/features/overlay.md](features/overlay.md) for the full geometry contract and the hover-expand lifecycle. Mouse events are explicitly re-enabled (`setIgnoreCursorEvents(false)`) because `focusable:false` disables them on macOS.
 
 ### `commands/tray.rs` -- Tray Icon
 
@@ -392,12 +392,13 @@ Color constants map each stream and level to Tailwind classes (bg, text, dot) fo
 
 ### `OverlayWidget.tsx` -- Notch Widget
 
-- Rendered in the overlay window, always-on-top, transparent, no decorations
-- **Three visual states**: Idle (small mic icon, dimmed), Recording (expanded, red pulsing dot + animated waveform), Processing (expanded, spinning circle + dimmed waveform)
-- **7-bar waveform** driven by `requestAnimationFrame` + direct DOM refs -- bypasses React reconciliation for 60fps. Center bars are taller (envelope shaping), random jitter for organic feel
-- Spring-like expand/collapse transition (`cubic-bezier(0.34, 1.56, 0.64, 1)` over 500ms)
-- Single click: stop recording (250ms debounce). Double-click: toggle locked mode (keeps recording across single clicks)
-- Reads microphone setting from localStorage (no Tauri IPC needed)
+Rendered in the overlay window, always-on-top, transparent, no decorations. `OverlayWidget.tsx` itself is a thin composition shell (~150 lines) that wires together the geometry contract, the expansion controller, and four extracted hooks, then renders two presentational components. See [docs/features/overlay.md](features/overlay.md) for the full architecture; summary:
+
+- **Three visual states**: Idle (small mic icon, dimmed), Recording (expanded, red pulsing dot + animated waveform), Processing (expanded, spinning circle + dimmed waveform) -- derived by the pure `deriveVisual()` (`components/overlay/deriveVisual.ts`)
+- **7-bar waveform** (`lib/hooks/useWaveform.ts`), driven by `requestAnimationFrame` + direct DOM refs -- bypasses React reconciliation for 60fps. Center bars are taller (envelope shaping), random jitter for organic feel
+- Spring-like expand/collapse transition (`cubic-bezier(0.34, 1.56, 0.64, 1)`, width 400ms / height 360ms -- see `lib/overlayMotion.ts`), owned end to end by `lib/hooks/useOverlayExpansion.ts`
+- Single click: stop recording (250ms debounce). Double-click: toggle locked mode (keeps recording across single clicks) -- `lib/hooks/useRecordingControls.ts`
+- Reads settings via the validated `loadSettings()` API (localStorage; no Tauri IPC needed) -- `lib/hooks/useOverlaySettingsMirror.ts`
 
 ### Log Viewer (`components/log-viewer/`)
 
@@ -456,7 +457,9 @@ Color constants map each stream and level to Tailwind classes (bg, text, dot) fo
 | tray | `update_tray_icon` | No-op (static white icon). Kept for API compat |
 | overlay | `show_overlay` | Positions and shows the overlay window |
 | overlay | `hide_overlay` | Hides the overlay window |
-| overlay | `get_notch_info` | Returns cached notch dimensions or None |
+| overlay | `get_overlay_geometry` | Returns the current `OverlayGeometry` contract (never null) |
+| overlay | `set_overlay_surface` | Resizes for hover/preview state; returns the applied frame as a resize ack |
+| overlay | `show_main_window` | Shows and focuses the main window (used by the overlay's gear button) |
 | telemetry | `get_event_history` | Returns ring buffer (up to 500 events) |
 | telemetry | `clear_event_history` | Clears the event ring buffer |
 | resource_monitor | `get_resource_usage` | Returns CPU% and memory MB |
@@ -476,7 +479,8 @@ Color constants map each stream and level to Tailwind classes (bg, text, dot) fo
 | `hold-down-start` | `()` | Hold key pressed (or promoted in both mode) |
 | `hold-down-stop` | `()` | Hold key released |
 | `keyboard-listener-error` | String | rdev thread error; frontend retries after 2s |
-| `notch-info-changed` | `Option<{notch_width, notch_height}>` | Display config changed |
+| `overlay-geometry-changed` | `OverlayGeometry` (never null) | Display config changed; carries the recomputed geometry contract |
+| `overlay-visible-changed` | Boolean | Overlay shown/hidden (no production emitter today — see events.md) |
 | `app-event` | `AppEvent` | Every tracing event, powers log viewer |
 | `show-about` | `()` | Tray menu "About" click |
 

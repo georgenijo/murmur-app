@@ -45,7 +45,7 @@ Read these before working on a feature:
 | `commands/logging.rs` | 4 logging commands, delegates to telemetry.rs |
 | `commands/models.rs` | Model download pipeline and existence checks |
 | `commands/tray.rs` | Tray icon rendering (`make_tray_icon_data`, `update_tray_icon`) |
-| `commands/overlay.rs` | Notch detection, overlay positioning, show/hide commands |
+| `commands/overlay.rs` | Notch detection, `OverlayGeometry` contract (`geometry_for()`), `set_overlay_surface`, show/hide/show-main-window commands |
 | `keyboard.rs` | Hold-down and double-tap detectors, shared rdev listener thread |
 | `audio.rs` | cpal capture, mono conversion, 16kHz resampling |
 | `transcriber/` | whisper-rs model loading and inference |
@@ -80,10 +80,20 @@ Read these before working on a feature:
 | `lib/hooks/useShowAboutListener.ts` | Listens for show-about tray event |
 | `lib/hooks/useEventStore.ts` | Structured event log buffer with live streaming |
 | `lib/hooks/useResourceMonitor.ts` | CPU/memory polling with rolling buffer |
+| `lib/hooks/useOverlayGeometry.ts` | Overlay geometry contract from Rust (fetch + `overlay-geometry-changed`) |
+| `lib/hooks/useOverlayExpansion.ts` | Overlay hover-expand lifecycle; single writer to the native resize path |
+| `lib/hooks/useOverlayRuntime.ts` | Overlay cancelled/hotkey-miss flash timers, `app-disabled-changed` mirror |
+| `lib/hooks/useOverlaySettingsMirror.ts` | Overlay's localStorage settings snapshot + quick-control actions |
+| `lib/hooks/useRecordingControls.ts` | Overlay click/double-click disambiguation, locked mode |
+| `lib/hooks/useWaveform.ts` | Overlay audio-level listener + rAF waveform bar animation |
 | `components/onboarding/OnboardingFlow.tsx` | First-launch setup assistant (permissions + model wizard) |
 | `components/settings/SettingsPanel.tsx` | Settings UI with mode switching |
 | `components/log-viewer/LogViewerApp.tsx` | Structured event viewer with Events + Metrics tabs |
-| `components/OverlayWidget.tsx` | Dynamic Island notch overlay |
+| `components/overlay/deriveVisual.ts` | Pure: overlay top-bar indicator + flash-priority derivation |
+| `components/overlay/previewPresentation.ts` | Pure: overlay below-notch preview-row derivation |
+| `components/overlay/OverlayPill.tsx` | Overlay top bar + preview row (presentational) |
+| `components/overlay/OverlayDropdown.tsx` | Overlay quick-settings dropdown (presentational) |
+| `components/OverlayWidget.tsx` | Dynamic Island overlay composition shell (~150 lines) |
 
 ## Key Patterns
 

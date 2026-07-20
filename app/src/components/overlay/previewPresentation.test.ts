@@ -3,7 +3,7 @@ import {
   getOverlayPreviewPresentation,
   latestPreviewText,
   supportsLiveTranscriptPreview,
-} from './OverlayWidget';
+} from './previewPresentation';
 
 describe('overlay preview presentation', () => {
   it('renders Whisper partial text only while the session is active', () => {
