@@ -2,7 +2,10 @@
 mod alloc;
 mod audio;
 mod audio_decode;
-mod benchmark;
+// `pub` so the headless benchmark runner (tests/headless_benchmark.rs) can
+// call `benchmark::run` directly with a mock AppHandle; not part of any
+// stable external API.
+pub mod benchmark;
 mod cleanup;
 mod cli_command;
 mod commands;

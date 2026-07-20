@@ -49,6 +49,10 @@ rusqlite = { version = "0.40.1", default-features = false, features = ["backup",
 
 [dev-dependencies]
 tempfile = "3"
+# "test" feature only -- enables tauri::test::mock_app() for the headless
+# benchmark runner (tests/headless_benchmark.rs). Dev-dependency only: does
+# not affect release builds.
+tauri = { version = "2", features = ["test"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 whisper-rs = { version = "0.15", features = ["metal"] }
