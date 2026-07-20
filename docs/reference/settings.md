@@ -102,6 +102,8 @@ model-selection side effects.
 | `saveTranscript` | `boolean` | `false` | `true` / `false` | When enabled, each live dictation's transcript is written to a sequentially numbered `.txt` (`murmur-0001`, `murmur-0002`, …) in the output folder. When `saveTranscript` or `saveAudio` is on, auto-paste is suppressed (clipboard copy still happens). |
 | `saveAudio` | `boolean` | `false` | `true` / `false` | When enabled, each live dictation's audio is written to a matching `.wav` (16kHz mono, 16-bit PCM) in the output folder. |
 | `outputDir` | `string` | `''` | Any absolute folder path, or `''` for default | Destination for saved transcript/audio files. Empty means the app default (`Documents/Murmur`, created on first write). Set via a folder picker (`dialog:allow-open`). |
+| `benchmarkOutputDir` | `string` | `''` | Any absolute folder path, or `''` for default | Destination for saved Performance Lab benchmark reports (`benchmark-<version>-<machine>-<createdAt>.json`). Empty means the app default (`Documents/Murmur`, created on first write). Kept separate from `outputDir` so benchmark JSON doesn't mix with dictation transcripts/audio. Set via a folder picker in the Performance Lab. |
+| `benchmarkAutoSave` | `boolean` | `false` | `true` / `false` | When enabled, each completed benchmark run is written to `benchmarkOutputDir` automatically (in addition to the 10-slot in-app history), so reports survive the localStorage cap. Best-effort: a write failure surfaces an error but does not fail the run. |
 
 ## Vocabulary Settings
 
@@ -181,6 +183,8 @@ When settings change, `useSettings.updateSettings` pushes the following fields t
 | `hotkeyMissFeedback` | _(controls overlay rejection feedback)_ | Frontend only |
 | `microphone` | _(sent as param to `start_native_recording`)_ | Per recording |
 | `launchAtLogin` | _(sent via autostart plugin)_ | Via OS API |
+| `benchmarkOutputDir` | _(sent as param to `save_benchmark_report` / `open_benchmark_output_folder`)_ | On save/reveal |
+| `benchmarkAutoSave` | _(read in the Performance Lab; drives auto-save after each run)_ | Frontend only |
 
 **Optimistic updates with rollback:** If `configure_dictation` fails, the affected settings (model, language, autoPaste, autoPasteDelayMs, vadSensitivity) revert to their previous values. Similarly, if the autostart toggle fails, `launchAtLogin` reverts. A versioned configure ref prevents stale rollbacks from overwriting newer settings.
 

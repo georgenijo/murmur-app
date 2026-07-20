@@ -202,6 +202,8 @@ pub fn run() {
             commands::benchmark::get_benchmark_activity,
             commands::benchmark::run_benchmark,
             commands::benchmark::cancel_benchmark,
+            commands::benchmark::save_benchmark_report,
+            commands::benchmark::open_benchmark_output_folder,
             commands::tray::update_tray_icon,
             commands::overlay::show_overlay,
             commands::overlay::hide_overlay,

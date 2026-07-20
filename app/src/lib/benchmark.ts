@@ -312,6 +312,44 @@ export function getBenchmarkActivity(): Promise<BenchmarkActivity> {
   return invoke('get_benchmark_activity');
 }
 
+/** Reduce a report field to a filesystem-safe filename segment. */
+function sanitizeNameSegment(value: string): string {
+  return value.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'unknown';
+}
+
+/**
+ * Build a self-identifying report filename:
+ * `benchmark-<appVersion>-<machine-or-platform>-<createdAt>.json`. The machine
+ * label prefers the chip, then the hardware model, then the platform, so files
+ * from different machines (#303 cross-machine comparison) sort and self-identify.
+ */
+export function benchmarkReportFileName(report: BenchmarkReport): string {
+  const version = sanitizeNameSegment(report.appVersion);
+  const machine = sanitizeNameSegment(
+    report.environment?.chip ?? report.environment?.hardwareModel ?? report.platform,
+  );
+  // ISO timestamps contain `:` and `.`, which are unsafe or awkward in filenames.
+  const stamp = report.createdAt.replace(/[:.]/g, '-');
+  return `benchmark-${version}-${machine}-${stamp}.json`;
+}
+
+/**
+ * Write the full report JSON to `outputDir` (empty → `Documents/Murmur`) under
+ * the {@link benchmarkReportFileName} name. Returns the absolute path written.
+ */
+export function saveBenchmarkReport(report: BenchmarkReport, outputDir: string): Promise<string> {
+  return invoke('save_benchmark_report', {
+    reportJson: JSON.stringify(report, null, 2),
+    outputDir,
+    fileName: benchmarkReportFileName(report),
+  });
+}
+
+/** Open the benchmark output folder in the system file manager. */
+export function openBenchmarkOutputFolder(outputDir: string): Promise<void> {
+  return invoke('open_benchmark_output_folder', { outputDir });
+}
+
 export function runBenchmark(modelNames: string[], preset: BenchmarkPreset): Promise<BenchmarkReport> {
   return invoke('run_benchmark', { request: { modelNames, preset } });
 }

@@ -79,3 +79,30 @@ pub fn cancel_benchmark(state: tauri::State<'_, State>) -> bool {
     }
     running
 }
+
+/// Write a benchmark report (already serialized on the frontend) to the
+/// configured output folder under `file_name`. Returns the absolute path.
+#[tauri::command]
+pub fn save_benchmark_report(
+    report_json: String,
+    output_dir: String,
+    file_name: String,
+) -> Result<String, String> {
+    crate::file_output::write_benchmark_report(&output_dir, &file_name, &report_json)
+        .map(|path| path.to_string_lossy().into_owned())
+}
+
+/// Open the benchmark output folder (creating it if needed) in the system file
+/// manager, so the user can see and share saved reports.
+#[tauri::command]
+pub fn open_benchmark_output_folder(
+    app_handle: tauri::AppHandle,
+    output_dir: String,
+) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let dir = crate::file_output::resolve_output_dir(&output_dir)?;
+    app_handle
+        .opener()
+        .open_path(dir.to_string_lossy().into_owned(), None::<&str>)
+        .map_err(|e| format!("Failed to open output folder: {}", e))
+}

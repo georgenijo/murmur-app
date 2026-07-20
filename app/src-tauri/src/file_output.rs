@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 /// Resolve the output directory: the user-chosen `output_dir` if non-empty,
 /// otherwise `<Documents>/Murmur` (falling back to `<home>/Murmur`).
-fn resolve_output_dir(output_dir: &str) -> Result<PathBuf, String> {
+pub(crate) fn resolve_output_dir(output_dir: &str) -> Result<PathBuf, String> {
     let dir = if !output_dir.trim().is_empty() {
         PathBuf::from(output_dir)
     } else {
@@ -128,6 +128,45 @@ pub fn write_dictation_outputs(
     Ok(written)
 }
 
+/// Write a pre-serialized benchmark report as JSON into the resolved output
+/// directory (see [`resolve_output_dir`]) under `file_name`. The caller builds
+/// the descriptive name (`benchmark-<version>-<machine>-<createdAt>.json`); this
+/// function sanitizes it to a bare file component so a crafted name cannot escape
+/// the directory, then writes the JSON verbatim. Returns the absolute path.
+///
+/// Privacy: like the rest of this module, it logs only a boolean, never the path.
+pub fn write_benchmark_report(
+    output_dir: &str,
+    file_name: &str,
+    json: &str,
+) -> Result<PathBuf, String> {
+    let dir = resolve_output_dir(output_dir)?;
+
+    // Reduce the requested name to a single path component so `../` or absolute
+    // paths cannot redirect the write outside `dir`, and force a `.json` suffix.
+    let mut safe = Path::new(file_name)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "Invalid benchmark report file name".to_string())?;
+    if !safe.to_ascii_lowercase().ends_with(".json") {
+        safe.push_str(".json");
+    }
+
+    let path = dir.join(&safe);
+    std::fs::write(&path, json)
+        .map_err(|e| format!("Failed to write benchmark report: {}", e))?;
+
+    tracing::info!(
+        target: "pipeline",
+        bytes = json.len(),
+        "benchmark report written to file"
+    );
+
+    Ok(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,6 +278,40 @@ mod tests {
         write_dictation_outputs(&[0.0f32], "fresh", true, true, dir.to_str().unwrap()).unwrap();
         assert!(dir.join("murmur-0001.wav").exists());
         assert!(dir.join("murmur-0001.txt").exists());
+    }
+
+    #[test]
+    fn writes_benchmark_report_json() {
+        let dir = temp_dir("bench_report");
+        let json = r#"{"reportVersion":2}"#;
+        let path = write_benchmark_report(
+            dir.to_str().unwrap(),
+            "benchmark-0.20.0-Apple-M4-2026-07-20T14-30-00-000Z.json",
+            json,
+        )
+        .unwrap();
+        assert_eq!(path.parent().unwrap(), dir);
+        assert_eq!(
+            path.file_name().unwrap().to_str().unwrap(),
+            "benchmark-0.20.0-Apple-M4-2026-07-20T14-30-00-000Z.json"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), json);
+    }
+
+    #[test]
+    fn benchmark_report_name_cannot_escape_directory() {
+        let dir = temp_dir("bench_traversal");
+        // A crafted traversal name is reduced to its bare file component.
+        let path = write_benchmark_report(dir.to_str().unwrap(), "../evil.json", "{}").unwrap();
+        assert_eq!(path, dir.join("evil.json"));
+        assert!(dir.join("evil.json").exists());
+    }
+
+    #[test]
+    fn benchmark_report_name_gets_json_suffix() {
+        let dir = temp_dir("bench_suffix");
+        let path = write_benchmark_report(dir.to_str().unwrap(), "report", "{}").unwrap();
+        assert_eq!(path, dir.join("report.json"));
     }
 
     #[test]
