@@ -37,7 +37,8 @@ For commands invoked from the frontend to the backend, see [commands.md](command
 
 | Event | Payload | Source | When It Fires | Listeners |
 |-------|---------|--------|---------------|-----------|
-| `notch-info-changed` | `{notch_width: number, notch_height: number}` or `null` | `commands/overlay.rs` | When display configuration changes (monitor plug/unplug, lid open/close). Triggered by an NSNotificationCenter observer watching `NSApplicationDidChangeScreenParametersNotification`. | Overlay window (updates notch dimensions for positioning). |
+| `overlay-geometry-changed` | `OverlayGeometry` (never null) | `commands/overlay.rs` | When display configuration changes (monitor plug/unplug, lid open/close). Triggered by an NSNotificationCenter observer watching `NSApplicationDidChangeScreenParametersNotification`; carries the recomputed geometry contract (a synthetic fallback notch substitutes when none is detected, so the payload is never null). | Overlay window: `useOverlayGeometry` updates the geometry it renders from; the expansion controller (`useOverlayExpansion`) treats this as an authoritative reset — it cancels timers, forces `collapsed`, and issues one corrective collapse resize. |
+| `overlay-visible-changed` | `boolean` | `commands/overlay.rs` | After `show_overlay` (`true`) / `hide_overlay` (`false`). **Not currently invoked in production** — the overlay is shown once at setup (`overlay_win.show()` in `lib.rs`) and stays visible for the app's lifetime, so this event has no live emitter today. | Overlay window: gates the expansion controller's cursor poller so it performs no IPC while hidden. Defaults to visible on mount, so first-hover works even though nothing emits this yet. |
 
 ## Structured Logging Events
 

@@ -90,9 +90,11 @@ For event-based communication (Rust to frontend), see [events.md](events.md). Fo
 
 | Command | Parameters | Return Type | Description |
 |---------|-----------|-------------|-------------|
-| `show_overlay` | _(none)_ | `Result<(), String>` | Positions and shows the always-on-top overlay window at the macOS notch area. Re-enables mouse events (disabled by `focusable:false`). |
-| `hide_overlay` | _(none)_ | `Result<(), String>` | Hides the overlay window. Gracefully handles missing window. |
-| `get_notch_info` | _(none)_ | `Option<NotchInfo>` | Returns cached notch dimensions as `{notch_width: f64, notch_height: f64}`, or `null` if no notch is detected. Dimensions are detected via NSScreen APIs. |
+| `show_overlay` | _(none)_ | `Result<(), String>` | Positions and shows the always-on-top overlay window at the macOS notch area. Re-enables mouse events (disabled by `focusable:false`). Emits `overlay-visible-changed(true)`. |
+| `hide_overlay` | _(none)_ | `Result<(), String>` | Hides the overlay window. Gracefully handles missing window. Emits `overlay-visible-changed(false)`. |
+| `get_overlay_geometry` | _(none)_ | `OverlayGeometry` | Returns the current overlay geometry contract (window/pill/dropdown dimensions), derived from the cached notch via `geometry_for()`. Never null — a synthetic fallback notch is substituted when none is detected. |
+| `set_overlay_expanded` | `expanded: bool` | `Result<AppliedSurface, String>` | Resizes the overlay window between the collapsed and expanded frames (top-anchored), returning the applied frame `{windowW, windowH}` as a resize acknowledgment. The frontend's expansion controller awaits this before revealing the dropdown, so CSS never animates into a window that has not yet grown. |
+| `show_main_window` | _(none)_ | `Result<(), String>` | Shows and focuses the main app window. Used by the overlay's gear button instead of frontend window APIs, avoiding broad window permissions in the overlay webview. |
 
 ## Telemetry (`telemetry.rs`)
 
