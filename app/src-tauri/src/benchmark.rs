@@ -901,18 +901,18 @@ mod tests {
         // Realtime factors within 10% of each other are a tie; the model
         // with lower memory delta should win regardless of pooled timing
         // noise or input order.
-        let recommendations = recommendations(&[
+        let first_order = recommendations(&[
             full_result("heavy", 100.0, 1.00, 0.05, 3000),
             full_result("light", 100.0, 1.05, 0.05, 200),
         ]);
-        assert_eq!(recommendations.fastest.as_deref(), Some("light"));
+        assert_eq!(first_order.fastest.as_deref(), Some("light"));
 
         // Order should not matter.
-        let recommendations = recommendations(&[
+        let second_order = recommendations(&[
             full_result("light", 100.0, 1.05, 0.05, 200),
             full_result("heavy", 100.0, 1.00, 0.05, 3000),
         ]);
-        assert_eq!(recommendations.fastest.as_deref(), Some("light"));
+        assert_eq!(second_order.fastest.as_deref(), Some("light"));
     }
 
     #[test]
