@@ -22,6 +22,7 @@ export function useOverlayGeometry(): OverlayGeometry | null {
       .then((value) => {
         if (cancelled) return;
         if (isOverlayGeometry(value)) {
+          flog.info('overlay', 'geometry loaded', { windowW: value.windowW, collapsedH: value.collapsedH });
           setGeometry(value);
         } else {
           flog.warn('overlay', 'get_overlay_geometry returned invalid payload');

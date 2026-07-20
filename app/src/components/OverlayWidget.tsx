@@ -645,8 +645,9 @@ export function OverlayWidget() {
     }).catch((e) => flog.warn('overlay', 'set_overlay_surface preview sync failed', { error: String(e) }));
   }, [previewRowVisible]);
 
-  // All hooks are above this line. The overlay window starts hidden, so returning
-  // null before geometry loads shows nothing rather than TS fallback pixels.
+  // All hooks are above this line. The overlay window is transparent, so returning
+  // null before geometry arrives (~1 IPC round-trip after mount) paints nothing
+  // rather than TS fallback pixels — no mis-sized flash, no fallback constants.
   if (!geometry) return null;
   const topH = geometry.collapsedH;
 
