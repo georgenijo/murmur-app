@@ -8,7 +8,7 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 ## 2026-07-20: Overlay geometry & lifecycle contract locked (#280)
 
-**Decision:** Five locked outcomes of the overlay architecture review (issue #280; PRs #290, #296, `overlay/pr3-split`):
+**Decision:** Five locked outcomes of the overlay architecture review (issue #280; PRs #290, #299, #301):
 1. **Rust is sole author of overlay geometry.** All dimensions derive from `geometry_for()` in `commands/overlay.rs` returning `OverlayGeometry`; the frontend consumes it at runtime (`get_overlay_geometry`, `overlay-geometry-changed`) and contains no geometry pixel constants. Motion timing (ms/easing) is frontend-owned in `lib/overlayMotion.ts`, with the shrink delay derived from the height-transition token — never free-standing.
 2. **Contract enforced by a shared checked-in fixture** (`app/src/components/overlay/overlay-geometry.fixture.json`) asserted from both `cargo test` and vitest. No codegen.
 3. **Hover expansion is one serialized 4-phase controller** (`useOverlayExpansion`: collapsed/opening/open/closing) with grow-then-reveal / hide-then-shrink ordering, applied-frame acks from `set_overlay_expanded`, and a generation-guarded writer owning every surface resize. No hook may own half of this lifecycle.
@@ -19,7 +19,7 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 **Status:** active
 
-**References:** issue #280 (review memo + drift note), PR #290 (PR1 geometry contract), PR #296 (PR2 expansion controller), `overlay/pr3-split` (PR3 component split), `docs/features/overlay.md`.
+**References:** issue #280 (review memo + drift note), PR #290 (PR1 geometry contract), PR #299 (replacement PR2 expansion controller), PR #301 (replacement PR3 component split), `docs/features/overlay.md`.
 
 ---
 
