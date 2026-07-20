@@ -3,6 +3,12 @@ import { invoke } from '@tauri-apps/api/core';
 export type KnowledgeKind = 'replacement_rule' | 'vocabulary_term' | 'snippet';
 export type KnowledgeProvenance = 'manual' | 'code_scan' | 'learned_correction' | 'import';
 export type KnowledgeAvailability = 'ready' | 'recovered' | 'reinitialized' | 'unavailable';
+export type VoiceCommandKind = 'text_replacement' | 'snippet';
+
+export interface VoiceCommandMetadata {
+  commandType: VoiceCommandKind;
+  allowClipboardRead: boolean;
+}
 
 export type KnowledgeScope =
   | { kind: 'global' }
@@ -23,6 +29,7 @@ export interface KnowledgeEntry {
   createdAtMs: number;
   updatedAtMs: number;
   revision: number;
+  voiceCommand?: VoiceCommandMetadata | null;
 }
 
 export interface KnowledgeDraft {
@@ -31,6 +38,7 @@ export interface KnowledgeDraft {
   payload: KnowledgePayload;
   enabled: boolean;
   scope: KnowledgeScope;
+  voiceCommand?: VoiceCommandMetadata | null;
 }
 
 export interface KnowledgeListRequest {
@@ -38,8 +46,16 @@ export interface KnowledgeListRequest {
   kind?: KnowledgeKind;
   enabled?: boolean;
   scopeKind?: KnowledgeScope['kind'];
+  voiceCommand?: boolean;
   limit?: number;
   offset?: number;
+}
+
+export interface VoiceCommandPreviewResponse {
+  output: string;
+  matched: boolean;
+  clipboardRequired: boolean;
+  clipboardRead: boolean;
 }
 
 export interface KnowledgeListResponse {
@@ -107,6 +123,14 @@ export const importKnowledgeFromFile = (path: string) =>
 
 export const deleteAllKnowledge = (expectedRevision: number) =>
   invoke<number>('delete_all_knowledge', { expectedRevision });
+
+export const previewVoiceCommand = (
+  draft: KnowledgeDraft,
+  text: string,
+  readClipboard: boolean,
+) => invoke<VoiceCommandPreviewResponse>('preview_voice_command', {
+  request: { draft, text, readClipboard },
+});
 
 export function payloadTitle(payload: KnowledgePayload): string {
   switch (payload.kind) {

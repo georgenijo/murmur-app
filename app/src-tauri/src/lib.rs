@@ -173,6 +173,7 @@ pub fn run() {
             commands::knowledge::list_knowledge,
             commands::knowledge::get_knowledge,
             commands::knowledge::upsert_knowledge,
+            commands::knowledge::preview_voice_command,
             commands::knowledge::set_knowledge_enabled,
             commands::knowledge::delete_knowledge,
             commands::knowledge::resolve_knowledge,

@@ -55,7 +55,7 @@ Context capture is deny-by-default. A profile may explicitly grant only its boun
 
 - Selected text
 - Nearby or surrounding screen text
-- Clipboard contents as transcription context
+- Clipboard contents as general transcription context. A matched snippet may read it only when that exact Voice Command carries explicit clipboard permission.
 
 This policy is separate from delivery. Murmur remains clipboard-first: the completed transcript is still written to the clipboard, and existing auto-paste behavior is unchanged. IDE project context does not change those denials: it reads only user-selected roots through the bounded local index described in [Local IDE Symbols and `@file` Context](ide-context.md). Unmatched profiles and app names that merely look like IDEs remain no-ops.
 
@@ -68,3 +68,5 @@ Frontmost-app detection telemetry likewise contains only a numeric outcome code,
 ## Extension points
 
 Future app-specific model, language, vocabulary, command, formatting, or context-policy fields should be added to the profile schema and folded into `DictationContextSnapshot` by the single resolver. Pipeline stages should consume the snapshot rather than re-reading `DictationState` or detecting the frontmost app again.
+
+Voice Commands already follow this rule: applicable global/app records are selected with the sampled bundle identifier and stored in the snapshot. An app-scoped phrase overrides its global counterpart only for that recording context.

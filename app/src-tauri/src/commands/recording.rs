@@ -142,8 +142,20 @@ fn cached_code_vocab_prompt(dictation: &crate::state::DictationState) -> Option<
 /// snapshot.
 fn resolve_live_context(
     app_state: &AppState,
+    knowledge: &crate::knowledge_store::KnowledgeStore,
     bundle_id: Option<&str>,
 ) -> Arc<DictationContextSnapshot> {
+    let repository_voice_commands = match knowledge.voice_commands_for_context(bundle_id) {
+        Ok(entries) => Some(crate::voice_commands::commands_from_knowledge(entries)),
+        Err(error) => {
+            tracing::warn!(
+                target: "pipeline",
+                error = %error,
+                "knowledge-backed voice commands unavailable; using legacy configuration"
+            );
+            None
+        }
+    };
     loop {
         let code_vocab = resolve_code_vocab_prompt(app_state);
         let dictation = app_state.dictation.lock_or_recover();
@@ -186,6 +198,7 @@ fn resolve_live_context(
             correction_matcher,
             ide_context_index,
             vocabulary_version,
+            voice_commands: repository_voice_commands.clone(),
             session_overrides: SessionOverrides::default(),
         }));
     }
@@ -659,9 +672,9 @@ async fn run_transcription_pipeline(
     // authoritative entry point. Its stage config and resources come from the
     // immutable recording-start snapshot rather than mutable app settings.
     let custom_commands: Vec<(String, String)> = transformations
-        .voice_command_pairs
+        .voice_commands
         .iter()
-        .map(|vc| (vc.phrase.clone(), vc.replacement.clone()))
+        .map(|command| (command.phrase.clone(), command.content.clone()))
         .collect();
     let transform_context = crate::transcript_transform::TranscriptContext {
         session_id: app_state.next_transcript_session_id(),
@@ -685,6 +698,7 @@ async fn run_transcription_pipeline(
     );
     let transform_resources = crate::transcript_transform::TranscriptTransformResources {
         custom_commands,
+        voice_commands: transformations.voice_commands.clone(),
         correction_matcher: transformations.correction_matcher.clone(),
         cli_lexicon,
         ide_context_index: transformations.ide_context_index.clone(),
@@ -816,7 +830,7 @@ pub async fn process_audio(
     keyboard::set_processing(true);
     let _ = app_handle.emit("recording-status-changed", "processing");
     let bundle_id = crate::frontmost::frontmost_bundle_id();
-    let context = resolve_live_context(&state.app_state, bundle_id.as_deref());
+    let context = resolve_live_context(&state.app_state, &state.knowledge, bundle_id.as_deref());
 
     // Guard resets status to Idle if decode/parse fails before reaching the pipeline
     let mut guard = IdleGuard::new(&state.app_state, rid);
@@ -1005,6 +1019,7 @@ fn legacy_vocabulary_entries(value: &str) -> Vec<crate::state::VocabularyEntry> 
 fn stage_vocabulary_configuration(
     options: &serde_json::Value,
     dictation: &crate::state::DictationState,
+    repository_commands: &[crate::state::VoiceCommand],
 ) -> Result<StagedVocabularyConfiguration, String> {
     let voice_commands = options
         .get("voiceCommands")
@@ -1047,11 +1062,22 @@ fn stage_vocabulary_configuration(
                 .map(legacy_vocabulary_entries)
         });
 
-    let effective_commands = voice_commands
+    let mut effective_commands = voice_commands
         .as_deref()
-        .unwrap_or(&dictation.voice_command_pairs);
-    let effective_entries = entries.as_deref().unwrap_or(&dictation.vocabulary_entries);
-    crate::vocabulary_alias::validate_entries(effective_entries, effective_commands)?;
+        .unwrap_or(&dictation.voice_command_pairs)
+        .to_vec();
+    for command in repository_commands {
+        if !effective_commands.iter().any(|existing| {
+            crate::knowledge_store::normalize_key(&existing.phrase)
+                == crate::knowledge_store::normalize_key(&command.phrase)
+        }) {
+            effective_commands.push(command.clone());
+        }
+    }
+    let effective_entries = entries
+        .as_deref()
+        .unwrap_or(&dictation.vocabulary_entries);
+    crate::vocabulary_alias::validate_entries(effective_entries, &effective_commands)?;
 
     Ok(StagedVocabularyConfiguration {
         voice_commands,
@@ -1077,6 +1103,41 @@ pub async fn configure_dictation(
         "configure_dictation"
     );
 
+    if let Some(pairs) = options
+        .get("voiceCommands")
+        .and_then(serde_json::Value::as_array)
+    {
+        let legacy = pairs
+            .iter()
+            .filter_map(|pair| {
+                let phrase = pair.get("phrase")?.as_str()?.trim();
+                if phrase.is_empty() {
+                    return None;
+                }
+                Some((
+                    phrase.to_string(),
+                    pair.get("replacement")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                ))
+            })
+            .collect::<Vec<_>>();
+        match state.knowledge.migrate_legacy_voice_commands(&legacy) {
+            Ok(inserted) if inserted > 0 => tracing::info!(
+                target: "pipeline",
+                migrated_voice_command_count = inserted,
+                "legacy Voice Commands migrated to personal knowledge"
+            ),
+            Ok(_) => {}
+            Err(error) => tracing::warn!(
+                target: "pipeline",
+                error = %error,
+                "legacy Voice Command migration unavailable; retaining compatibility state"
+            ),
+        }
+    }
+
     let model = options
         .get("model")
         .and_then(|v| v.as_str())
@@ -1092,9 +1153,23 @@ pub async fn configure_dictation(
         }
     }
 
+    let repository_commands = state
+        .knowledge
+        .all_voice_commands()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|entry| {
+            let (phrase, replacement, _) = entry.payload.storage_parts();
+            crate::state::VoiceCommand {
+                phrase,
+                replacement,
+            }
+        })
+        .collect::<Vec<_>>();
     let mut dictation = state.app_state.dictation.lock_or_recover();
     let backend_change_can_apply_now = dictation.status == DictationStatus::Idle;
-    let staged_vocabulary = stage_vocabulary_configuration(&options, &dictation)?;
+    let staged_vocabulary =
+        stage_vocabulary_configuration(&options, &dictation, &repository_commands)?;
 
     let mut model_change_guard = if model
         .as_deref()
@@ -1875,10 +1950,8 @@ pub async fn start_native_recording(
     };
     let bundle_id = crate::frontmost::frontmost_bundle_id();
     refresh_expired_ide_context(&app_handle, &state.app_state, bundle_id.as_deref());
-    let context = resolve_live_context(&state.app_state, bundle_id.as_deref());
-    state
-        .app_state
-        .set_active_context(rid, Arc::clone(&context));
+    let context = resolve_live_context(&state.app_state, &state.knowledge, bundle_id.as_deref());
+    state.app_state.set_active_context(rid, Arc::clone(&context));
     tracing::info!(
         target: "pipeline",
         recording_id = rid,
@@ -2508,7 +2581,7 @@ mod tests {
             "vocabularyEntries": dictation.vocabulary_entries.clone(),
         });
 
-        let result = stage_vocabulary_configuration(&options, &dictation)
+        let result = stage_vocabulary_configuration(&options, &dictation, &[])
             .map(|staged| staged.commit(&mut dictation));
 
         assert!(result.unwrap_err().contains("Voice Command"));

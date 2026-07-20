@@ -1,15 +1,19 @@
 use rusqlite::{Connection, Transaction};
 
-pub const LATEST_SCHEMA_VERSION: u32 = 2;
+pub const LATEST_SCHEMA_VERSION: u32 = 3;
 
 pub fn migrate(connection: &mut Connection) -> Result<(), String> {
+    migrate_through(connection, LATEST_SCHEMA_VERSION)
+}
+
+fn migrate_through(connection: &mut Connection, target: u32) -> Result<(), String> {
     let current = schema_version(connection)?;
-    if current > LATEST_SCHEMA_VERSION {
+    if current > target {
         return Err(format!(
             "This knowledge database uses schema version {current}, which is newer than this Murmur build supports."
         ));
     }
-    for next in (current + 1)..=LATEST_SCHEMA_VERSION {
+    for next in (current + 1)..=target {
         let transaction = connection.transaction().map_err(db_error)?;
         apply(&transaction, next)?;
         transaction
@@ -18,6 +22,11 @@ pub fn migrate(connection: &mut Connection) -> Result<(), String> {
         transaction.commit().map_err(db_error)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+pub fn migrate_to_for_test(connection: &mut Connection, target: u32) -> Result<(), String> {
+    migrate_through(connection, target)
 }
 
 pub fn schema_version(connection: &Connection) -> Result<u32, String> {
@@ -84,6 +93,19 @@ fn apply(transaction: &Transaction<'_>, version: u32) -> Result<(), String> {
                 "#,
             )
             .map_err(db_error),
+        3 => transaction
+            .execute_batch(
+                r#"
+                ALTER TABLE knowledge_entries ADD COLUMN voice_command_kind TEXT
+                    CHECK(voice_command_kind IN ('text_replacement', 'snippet'));
+                ALTER TABLE knowledge_entries ADD COLUMN voice_command_clipboard INTEGER NOT NULL DEFAULT 0
+                    CHECK(voice_command_clipboard IN (0, 1));
+                INSERT INTO knowledge_meta(key, value) VALUES ('legacy_voice_commands_migrated', 0);
+                CREATE INDEX knowledge_entries_voice_commands
+                    ON knowledge_entries(voice_command_kind, enabled, scope_kind, app_bundle_id, created_at_ms, id);
+                "#,
+            )
+            .map_err(db_error),
         _ => Err("Knowledge migration sequence is incomplete.".to_string()),
     }
 }
@@ -114,7 +136,10 @@ pub fn validate_core_schema(connection: &Connection) -> Result<(), String> {
 pub fn validate_schema(connection: &Connection) -> Result<(), String> {
     validate_core_schema(connection)?;
     connection
-        .prepare("SELECT id FROM knowledge_fts LIMIT 0")
+        .prepare(
+            "SELECT voice_command_kind, voice_command_clipboard FROM knowledge_entries LIMIT 0",
+        )
+        .and_then(|_| connection.prepare("SELECT id FROM knowledge_fts LIMIT 0"))
         .map(|_| ())
         .map_err(db_error)
 }
