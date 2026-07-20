@@ -21,48 +21,6 @@ pub fn is_coreml_model(model_name: &str) -> bool {
     model_name == COREML_MODEL_NAME
 }
 
-pub fn backend_name_for_model(model_name: &str) -> &'static str {
-    if is_coreml_model(model_name) {
-        "coreml"
-    } else if parakeet::is_parakeet_model(model_name) {
-        "parakeet"
-    } else {
-        "whisper"
-    }
-}
-
-/// Ensure the shared backend implementation matches the model selected by the
-/// immutable recording snapshot. This lets a settings change apply to the next
-/// session without changing the backend underneath the active one.
-pub fn ensure_backend_for_model(
-    backend: &mut Box<dyn TranscriptionBackend>,
-    model_name: &str,
-) -> Result<(), String> {
-    let desired = backend_name_for_model(model_name);
-    if backend.name() == desired {
-        return Ok(());
-    }
-    *backend = match desired {
-        "coreml" => {
-            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-            {
-                Box::new(CoreMlBackend::new())
-            }
-            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-            {
-                return Err(
-                    "Core ML transcription is available only on macOS 14 or newer with Apple Silicon"
-                        .to_string(),
-                );
-            }
-        }
-        "parakeet" => Box::new(ParakeetBackend::new()),
-        _ => Box::new(WhisperBackend::new()),
-    };
-    tracing::info!(target: "pipeline", "Switched transcription backend to {}", backend.name());
-    Ok(())
-}
-
 /// Sample rate required by transcription models (16kHz).
 pub const WHISPER_SAMPLE_RATE: u32 = 16000;
 
