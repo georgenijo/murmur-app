@@ -49,9 +49,11 @@ Tauri's `focusable: false` configuration disables mouse events on macOS. The `sh
 
 Every overlay dimension comes from one source: `geometry_for(notch)` in `commands/overlay.rs`, which returns an `OverlayGeometry` (`windowW`, `collapsedH`, `expandedH`, `pillIdleW`, `pillActiveW`, `pillMarginIdle`, `pillMarginActive`, `dropdownH`). Rust owns every geometry number; the frontend only reads the struct — via `get_overlay_geometry` (`useOverlayGeometry`, with retry-with-backoff on the initial fetch) and the `overlay-geometry-changed` event — and never hardcodes pixels. No overlay component holds a geometry literal.
 
-- **Pill width** adjusts based on recording state and hover: `pillIdleW` (centered by a `pillMarginIdle` left margin) when idle-and-collapsed, or `pillActiveW` (fills the window, `pillMarginActive = 0`) when recording, processing, cancelled-flash, hotkey-miss-flash, or hover-expanded.
+- **One constant island width.** `windowW == pillIdleW == pillActiveW == notchW + 2·WING` and both margins (`pillMarginIdle`, `pillMarginActive`) are `0`. The island IS the window — same box in every state — so there is no horizontal hit-area mismatch and the width never animates. `WING = 36` is the visible strip on each side of the physical notch, sized to fit the wider wing's content clear of the notch: the left wing holds a 10px-padded 12px status icon (22px), the right wing holds a 10px-padded 23px 7-bar waveform (33px), so 36 leaves 3px of slack. The `pillIdleW`/`pillMarginIdle` fields are retained in the contract shape but now equal their active counterparts.
+- **Notched vs. fallback.** Notched (notch `185×32`): `windowW 257`, `collapsedH 32`, `expandedH 76`, `dropdownH 44`. No-notch fallback (synthetic `80×37` notch, same formula): `windowW 152`, `collapsedH 37`, `expandedH 81`.
 - **Window width** (`windowW`) is fixed and horizontally centers the overlay at the top of the screen (y=0).
-- **Height** is `collapsedH` at rest and grows to `expandedH` (`= collapsedH + dropdownH`) while the hover dropdown is open; the window stays top-anchored so the extra height grows downward.
+- **Height** is `collapsedH` at rest and grows to `expandedH` (`= collapsedH + dropdownH`) while the hover dropdown is open; the window stays top-anchored so the extra height grows downward. Expansion is **height-only** — width is constant.
+- **Nothing renders under the physical notch.** The wings hold ONLY the status indicator (left) and the waveform (right). Anything wider than a wing renders below notch height, in the dropdown row: the recording `m:ss` timer (shown when expanded + recording) and the "Tap missed" hotkey-miss label. The amber `!` badge and the amber border glow stay on the pill.
 - **Motion tokens** — durations and easing for the width/height transition — live in `app/src/lib/overlayMotion.ts` as the single source; see [Motion tokens](#motion-tokens) below rather than restating numbers here.
 
 ## Expansion Controller
@@ -81,7 +83,7 @@ The controller runs a four-phase state machine:
 
 ### Motion tokens
 
-The transition durations/easings live in `app/src/lib/overlayMotion.ts` as the single source: `OVERLAY_WIDTH_MS`, `OVERLAY_HEIGHT_MS`, `OVERLAY_SPRING`, `HOVER_OPEN_DWELL_MS`, `COLLAPSE_DELAY_MS`. `SHRINK_DELAY_MS` is **derived** as `OVERLAY_HEIGHT_MS + 20` rather than a hand-tuned constant, so it can never drift from the height transition it guards. The island's `transition` string (`OVERLAY_ISLAND_TRANSITION`) is templated from these tokens. Read that file for current values rather than duplicating them in prose here. With `prefers-reduced-motion: reduce`, CSS transitions are removed (see `styles.css`) and the controller shrinks immediately after the leave-intent delay, avoiding both motion and a residual transparent hit area.
+The transition durations/easings live in `app/src/lib/overlayMotion.ts` as the single source: `OVERLAY_HEIGHT_MS`, `OVERLAY_SPRING`, `HOVER_OPEN_DWELL_MS`, `COLLAPSE_DELAY_MS`. Expansion is **height-only** — the island's width is constant across every state, so there is no width token and `OVERLAY_ISLAND_TRANSITION` animates height alone. `SHRINK_DELAY_MS` is **derived** as `OVERLAY_HEIGHT_MS + 20` rather than a hand-tuned constant, so it can never drift from the height transition it guards. The island's `transition` string (`OVERLAY_ISLAND_TRANSITION`) is templated from these tokens. Read that file for current values rather than duplicating them in prose here. With `prefers-reduced-motion: reduce`, CSS transitions are removed (see `styles.css`) and the controller shrinks immediately after the leave-intent delay, avoiding both motion and a residual transparent hit area.
 
 ## Frontend Hooks
 
@@ -115,7 +117,7 @@ The island **container** (sizing, hover handlers, `islandRef`) stays in `Overlay
 | Auto-paste toggle | Reads/writes the `autoPaste` setting via `loadSettings()`/`saveSettings()`. |
 | Gear | Emits `open-settings` and shows/focuses the main window (`show_main_window`). |
 
-During recording, an inline `m:ss` timer remains visible next to the red dot in the left wing without requiring hover.
+The dropdown row also carries content too wide for a wing, in a left-anchored slot (absolutely positioned so the buttons stay centered): the recording `m:ss` timer while recording, or the "Tap missed" label during a hotkey-miss flash. Both are only visible while the card is expanded — the transient no-hover cues (red dot / amber `!` badge and border glow) stay on the always-visible pill.
 
 ### Cross-window settings sync
 
@@ -129,16 +131,16 @@ The overlay's top-bar indicator is a pure function of status + two transient fla
 Small mic SVG icon at 40% white opacity (dimmed further to 15% when globally disabled). Compact width.
 
 ### Recording
-Expanded width. The red pulsing dot and elapsed timer occupy the visible left wing, while the animated 7-bar waveform occupies the right. No transcript text is displayed while recording.
+The red pulsing dot occupies the visible left wing and the animated 7-bar waveform occupies the right wing. The `m:ss` elapsed timer renders in the dropdown row (visible on hover-expand), not in a wing. No transcript text is displayed while recording. (Width is constant across all states.)
 
 ### Processing
-Same expanded width. Spinning circle on the left; the waveform is hidden (visible only while recording). No transcript text is displayed while processing.
+Spinning circle in the left wing; the waveform is hidden (visible only while recording). No transcript text is displayed while processing.
 
 ### Cancelled (transient)
 An 800ms red-X flash, triggered by `recording-cancelled`. Takes priority over every other indicator.
 
 ### Hotkey Timing Miss (optional, transient)
-When `hotkeyMissFeedback` is enabled and the backend emits `hotkey-tap-rejected` for an expired second-tap window, the pill briefly expands with an amber outlined exclamation, amber border glow, and `Tap missed` label in place of the waveform. Takes priority over every indicator except cancelled. The setting is off by default.
+When `hotkeyMissFeedback` is enabled and the backend emits `hotkey-tap-rejected` for an expired second-tap window, the pill shows an amber outlined exclamation (`!`) in the left wing plus an amber border glow. The `Tap missed` text label renders in the dropdown row (below notch height, since text is wider than a wing) and is therefore visible while the card is expanded; the `!` and border glow are the always-visible transient cue. Takes priority over every indicator except cancelled. The setting is off by default.
 
 **Styling:** Dark background (`rgba(20, 20, 20, 0.92)`), 40px backdrop blur, rounded bottom corners.
 
