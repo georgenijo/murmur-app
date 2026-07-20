@@ -15,6 +15,7 @@ use tauri::Emitter;
 const PARAKEET_CPU_MODEL: &str = "parakeet-tdt-0.6b-v2-fp16";
 const BALANCED_ACCURACY_WINDOW: f64 = 0.02;
 const BALANCED_SPEED_TIE_RATIO: f64 = 1.10;
+const BALANCED_SPEED_TIE_EPSILON: f64 = 1e-9;
 
 struct Fixture {
     id: &'static str,
@@ -502,7 +503,9 @@ fn recommendations(results: &[ModelResult]) -> Recommendations {
         candidates
             .into_iter()
             .filter(|(_, realtime_factor)| {
-                *realtime_factor <= fastest_realtime_factor * BALANCED_SPEED_TIE_RATIO
+                *realtime_factor
+                    <= fastest_realtime_factor
+                        * (BALANCED_SPEED_TIE_RATIO + BALANCED_SPEED_TIE_EPSILON)
             })
             .min_by(|left, right| {
                 left.0
@@ -854,6 +857,21 @@ mod tests {
             recommendations.balanced.as_deref(),
             Some("clear-speed-winner")
         );
+    }
+
+    #[test]
+    fn balanced_speed_band_includes_exact_ten_percent_boundary() {
+        let at_boundary = recommendations(&[
+            model_result("faster-heavier", 100.0, 1.0, 0.05, 2_925),
+            model_result("slower-lighter", 110.0, 1.1, 0.05, 46),
+        ]);
+        assert_eq!(at_boundary.balanced.as_deref(), Some("slower-lighter"));
+
+        let past_boundary = recommendations(&[
+            model_result("faster-heavier", 100.0, 1.0, 0.05, 2_925),
+            model_result("slower-lighter", 110.01, 1.1001, 0.05, 46),
+        ]);
+        assert_eq!(past_boundary.balanced.as_deref(), Some("faster-heavier"));
     }
 
     #[test]
