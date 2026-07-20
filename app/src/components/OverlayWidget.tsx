@@ -2,13 +2,13 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { listen, emit } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { cursorPosition, getCurrentWindow } from '@tauri-apps/api/window';
+import { isDictationStatus } from '../lib/types';
 import type { DictationStatus } from '../lib/types';
 import { flog } from '../lib/log';
 import { STORAGE_KEY, DEFAULT_SETTINGS, loadSettings, saveSettings } from '../lib/settings';
 import type { Settings } from '../lib/settings';
 import { buildConfigureOptions } from '../lib/dictation';
 import type { DictationResponse } from '../lib/dictation';
-import { usePartialTranscript } from '../lib/hooks/usePartialTranscript';
 import {
   HOTKEY_MISS_FLASH_MS,
   isHotkeyTapRejectedPayload,
@@ -22,7 +22,6 @@ const HOVER_WATCHDOG_MS = 150;
 const HOVER_BOUNDS_PADDING = 8;
 const HOVER_OPEN_DWELL_MS = 150;
 const DROPDOWN_H = 44;
-const PREVIEW_ROW_H = 30;
 const OVERLAY_HORIZONTAL_EXPANSION = 120;
 const FALLBACK_NOTCH_WIDTH = 80;
 
@@ -30,35 +29,6 @@ function formatElapsed(seconds: number): string {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
   return `${m}:${String(s).padStart(2, '0')}`;
-}
-
-export function latestPreviewText(text: string, maxCharacters = 36): string {
-  const normalized = text.trim();
-  if (normalized.length <= maxCharacters) return normalized;
-  const suffix = normalized.slice(-maxCharacters);
-  const firstBoundary = suffix.indexOf(' ');
-  return `…${(firstBoundary >= 0 ? suffix.slice(firstBoundary + 1) : suffix).trim()}`;
-}
-
-export function supportsLiveTranscriptPreview(model: string): boolean {
-  return !model.startsWith('parakeet-');
-}
-
-export function getOverlayPreviewPresentation(
-  status: DictationStatus,
-  enabled: boolean,
-  model: string,
-  text: string,
-) {
-  const supported = supportsLiveTranscriptPreview(model);
-  const active = status === 'recording' || status === 'processing';
-  const previewText = enabled && supported && active ? latestPreviewText(text) : '';
-  const unavailable = !supported && status === 'recording';
-  return {
-    previewText,
-    unavailable,
-    visible: Boolean(previewText) || unavailable,
-  };
 }
 
 function PowerIcon({ stroke }: { stroke: string }) {
@@ -96,6 +66,7 @@ function SlidersIcon({ stroke }: { stroke: string }) {
 }
 
 export function OverlayWidget() {
+  const [status, setStatus] = useState<DictationStatus>('idle');
   const [showCancelled, setShowCancelled] = useState(false);
   const [showHotkeyMiss, setShowHotkeyMiss] = useState(false);
   const [lockedMode, setLockedMode] = useState(false);
@@ -103,10 +74,6 @@ export function OverlayWidget() {
   const [expanded, setExpanded] = useState(false);
   const [autoPaste, setAutoPaste] = useState(false);
   const [fileOutputEnabled, setFileOutputEnabled] = useState(false);
-  const [liveTranscriptPreview, setLiveTranscriptPreview] = useState(
-    DEFAULT_SETTINGS.liveTranscriptPreview,
-  );
-  const [previewModel, setPreviewModel] = useState(DEFAULT_SETTINGS.model);
   const [elapsed, setElapsed] = useState(0);
   const notchHeightRef = useRef(0);
   const [notchHeight, setNotchHeight] = useState(0);
@@ -122,14 +89,7 @@ export function OverlayWidget() {
   const hotkeyMissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const audioLevelRef = useRef(0);
   const hotkeyMissFeedbackRef = useRef(false);
-  const previewRowVisibleRef = useRef(false);
   const barRefs = useRef<(HTMLDivElement | null)[]>([]);
-  const previewSupported = supportsLiveTranscriptPreview(previewModel);
-  const partialTranscript = usePartialTranscript(
-    liveTranscriptPreview && previewSupported,
-    previewModel,
-  );
-  const status = partialTranscript.status;
   const statusRef = useRef(status);
 
   useEffect(() => { statusRef.current = status; }, [status]);
@@ -141,8 +101,6 @@ export function OverlayWidget() {
     setDisabled(settings.disabled);
     setAutoPaste(settings.autoPaste);
     setFileOutputEnabled(settings.saveTranscript || settings.saveAudio);
-    setLiveTranscriptPreview(settings.liveTranscriptPreview);
-    setPreviewModel(settings.model);
     hotkeyMissFeedbackRef.current = settings.hotkeyMissFeedback;
     if (!settings.hotkeyMissFeedback) setShowHotkeyMiss(false);
   }, []);
@@ -198,20 +156,29 @@ export function OverlayWidget() {
   // TODO: re-enable position persistence after notch positioning is stable.
   // Both save (onMoved) and restore are disabled to avoid saving programmatic repositions.
 
-  // The preview hook registers status and transcript listeners together, then
-  // reconciles both from one active-session snapshot if startup events were missed.
+  // Subscribe to recording status events from Rust.
   useEffect(() => {
-    flog.info('overlay', 'status changed', { status });
-    if (status === 'idle') {
-      setLockedMode(false);
-    } else {
-      setShowHotkeyMiss(false);
-      if (hotkeyMissTimerRef.current) {
-        clearTimeout(hotkeyMissTimerRef.current);
-        hotkeyMissTimerRef.current = null;
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    listen<unknown>('recording-status-changed', (event) => {
+      if (isDictationStatus(event.payload)) {
+        flog.info('overlay', 'status changed', { status: event.payload });
+        setStatus(event.payload);
+        if (event.payload === 'idle') {
+          setLockedMode(false);
+        } else {
+          setShowHotkeyMiss(false);
+          if (hotkeyMissTimerRef.current) {
+            clearTimeout(hotkeyMissTimerRef.current);
+            hotkeyMissTimerRef.current = null;
+          }
+        }
       }
-    }
-  }, [status]);
+    }).then((fn) => {
+      if (cancelled) { fn(); } else { unlisten = fn; }
+    });
+    return () => { cancelled = true; unlisten?.(); };
+  }, []);
 
   // A rejected-tap event is emitted only when the double-tap window expires.
   // The setting gate lives here because the overlay is a separate webview with
@@ -289,10 +256,8 @@ export function OverlayWidget() {
         setNotchHeight(0);
         setNotchWidth(FALLBACK_NOTCH_WIDTH);
       }
-      invoke('set_overlay_surface', {
-        expanded: false,
-        previewVisible: previewRowVisibleRef.current,
-      }).catch((e) => flog.warn('overlay', 'display-change surface sync failed', { error: String(e) }));
+      invoke('set_overlay_expanded', { expanded: false })
+        .catch((e) => flog.warn('overlay', 'display-change surface sync failed', { error: String(e) }));
     }).then((fn) => {
       if (cancelled) { fn(); } else { unlisten = fn; }
     });
@@ -480,10 +445,8 @@ export function OverlayWidget() {
     if (shrinkTimerRef.current) clearTimeout(shrinkTimerRef.current);
     shrinkTimerRef.current = setTimeout(() => {
       shrinkTimerRef.current = null;
-      invoke('set_overlay_surface', {
-        expanded: false,
-        previewVisible: previewRowVisibleRef.current,
-      }).catch((e) => flog.warn('overlay', 'set_overlay_surface collapse failed', { error: String(e) }));
+      invoke('set_overlay_expanded', { expanded: false })
+        .catch((e) => flog.warn('overlay', 'set_overlay_expanded(false) failed', { error: String(e) }));
     }, SHRINK_DELAY_MS);
   }, []);
 
@@ -505,10 +468,8 @@ export function OverlayWidget() {
       const s = loadSettings();
       applySettingsSnapshot(s);
     } catch { /* ignore */ }
-    invoke('set_overlay_surface', {
-      expanded: true,
-      previewVisible: previewRowVisibleRef.current,
-    }).catch((e) => flog.warn('overlay', 'set_overlay_surface expand failed', { error: String(e) }));
+    invoke('set_overlay_expanded', { expanded: true })
+      .catch((e) => flog.warn('overlay', 'set_overlay_expanded(true) failed', { error: String(e) }));
     setExpanded(true);
   }, [applySettingsSnapshot]);
 
@@ -657,21 +618,6 @@ export function OverlayWidget() {
   }, []);
 
   const topH = notchHeight || 37;
-  const previewPresentation = getOverlayPreviewPresentation(
-    status,
-    liveTranscriptPreview,
-    previewModel,
-    partialTranscript.text,
-  );
-  const previewRowVisible = previewPresentation.visible;
-  previewRowVisibleRef.current = previewRowVisible;
-
-  useEffect(() => {
-    invoke('set_overlay_surface', {
-      expanded: expandedRef.current,
-      previewVisible: previewRowVisible,
-    }).catch((e) => flog.warn('overlay', 'set_overlay_surface preview sync failed', { error: String(e) }));
-  }, [previewRowVisible]);
   const effectiveAutoPaste = autoPaste && !fileOutputEnabled;
   const autoPastePaused = autoPaste && fileOutputEnabled;
   const autoPasteLabel = autoPastePaused
@@ -714,9 +660,7 @@ export function OverlayWidget() {
           width: (expanded || isActive)
             ? notchWidth + OVERLAY_HORIZONTAL_EXPANSION
             : notchWidth + 28,
-          height: topH
-            + (previewRowVisible ? PREVIEW_ROW_H : 0)
-            + (expanded ? DROPDOWN_H : 0),
+          height: topH + (expanded ? DROPDOWN_H : 0),
           marginLeft: (expanded || isActive)
             ? 0
             : (OVERLAY_HORIZONTAL_EXPANSION - 28) / 2,
@@ -787,37 +731,6 @@ export function OverlayWidget() {
             </div>
           )}
         </div>
-
-        {/* The physical notch hides the top-bar center. Put preview/status below it. */}
-        {previewRowVisible && (
-          <div
-            aria-label={previewPresentation.unavailable
-              ? 'Live transcript preview unavailable'
-              : 'Provisional transcript preview'}
-            className="flex items-center gap-2 px-3 pointer-events-none"
-            style={{ height: PREVIEW_ROW_H }}
-          >
-            {previewPresentation.unavailable ? (
-              <>
-                <span className="shrink-0 text-[8px] uppercase tracking-[0.12em] text-white/45">
-                  Final only
-                </span>
-                <span className="min-w-0 truncate text-[10px] text-white/65">
-                  Live preview unavailable for Parakeet
-                </span>
-              </>
-            ) : (
-              <>
-                <span className="shrink-0 text-[8px] uppercase tracking-[0.12em] text-amber-300/85">
-                  Provisional
-                </span>
-                <span className="min-w-0 truncate text-[10px] text-white/80">
-                  {previewPresentation.previewText}
-                </span>
-              </>
-            )}
-          </div>
-        )}
 
         {/* Quick-settings dropdown — revealed on hover (identical in idle/recording) */}
         <div
