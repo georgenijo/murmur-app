@@ -36,43 +36,46 @@ macro_rules! build_mono_input_stream {
         let active_ref = Arc::clone(&$active);
         let app_handle_opt: Option<tauri::AppHandle> = $app_handle;
         let last_emit_ms = std::sync::atomic::AtomicU64::new(0);
-        $device.build_input_stream(
-            &$config.into(),
-            move |data: &[$sample_type], _: &_| {
-                // Stop accumulating once recording is over — prevents unbounded
-                // buffer growth if the cpal stream outlives the recording session.
-                if !active_ref.load(Ordering::Relaxed) {
-                    return;
-                }
-
-                let mono: Vec<f32> = data.chunks($channels)
-                    .map(|chunk| {
-                        let sum: f32 = chunk.iter().map(|&s| s.to_float_sample()).sum();
-                        sum / $channels as f32
-                    })
-                    .collect();
-
-                // Emit audio level throttled to ~60 fps
-                if let Some(ref handle) = app_handle_opt {
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_millis() as u64;
-                    let last = last_emit_ms.load(Ordering::Relaxed);
-                    if now.saturating_sub(last) >= AUDIO_LEVEL_THROTTLE_MS {
-                        last_emit_ms.store(now, Ordering::Relaxed);
-                        let rms = compute_rms(&mono);
-                        let _ = handle.emit("audio-level", rms);
+        $device
+            .build_input_stream(
+                &$config.into(),
+                move |data: &[$sample_type], _: &_| {
+                    // Stop accumulating once recording is over — prevents unbounded
+                    // buffer growth if the cpal stream outlives the recording session.
+                    if !active_ref.load(Ordering::Relaxed) {
+                        return;
                     }
-                }
 
-                if let Ok(mut s) = samples_ref.lock() {
-                    s.extend(mono);
-                }
-            },
-            $err_fn,
-            None,
-        ).map_err(|e| format!("Failed to build stream: {}", e))?
+                    let mono: Vec<f32> = data
+                        .chunks($channels)
+                        .map(|chunk| {
+                            let sum: f32 = chunk.iter().map(|&s| s.to_float_sample()).sum();
+                            sum / $channels as f32
+                        })
+                        .collect();
+
+                    // Emit audio level throttled to ~60 fps
+                    if let Some(ref handle) = app_handle_opt {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64;
+                        let last = last_emit_ms.load(Ordering::Relaxed);
+                        if now.saturating_sub(last) >= AUDIO_LEVEL_THROTTLE_MS {
+                            last_emit_ms.store(now, Ordering::Relaxed);
+                            let rms = compute_rms(&mono);
+                            let _ = handle.emit("audio-level", rms);
+                        }
+                    }
+
+                    if let Ok(mut s) = samples_ref.lock() {
+                        s.extend(mono);
+                    }
+                },
+                $err_fn,
+                None,
+            )
+            .map_err(|e| format!("Failed to build stream: {}", e))?
     }};
 }
 
@@ -121,15 +124,17 @@ fn get_state() -> &'static Mutex<RecordingState> {
 /// List available input device names.
 pub fn list_input_devices() -> Result<Vec<String>, String> {
     let host = cpal::default_host();
-    let devices = host.input_devices()
+    let devices = host
+        .input_devices()
         .map_err(|e| format!("Failed to enumerate input devices: {}", e))?;
-    let names: Vec<String> = devices
-        .filter_map(|d| d.name().ok())
-        .collect();
+    let names: Vec<String> = devices.filter_map(|d| d.name().ok()).collect();
     Ok(names)
 }
 
-pub fn start_recording(app_handle: Option<tauri::AppHandle>, device_name: Option<String>) -> Result<(), String> {
+pub fn start_recording(
+    app_handle: Option<tauri::AppHandle>,
+    device_name: Option<String>,
+) -> Result<(), String> {
     let state = get_state();
     let mut state_guard = state.lock().unwrap_or_else(|poisoned| {
         tracing::warn!(target: "audio", "start_recording: recording state mutex was poisoned, recovering");
@@ -158,7 +163,14 @@ pub fn start_recording(app_handle: Option<tauri::AppHandle>, device_name: Option
 
     // Spawn audio thread
     let handle = thread::spawn(move || {
-        if let Err(e) = run_audio_capture(cmd_rx, new_buffer, active, ready_tx.clone(), app_handle, device_name) {
+        if let Err(e) = run_audio_capture(
+            cmd_rx,
+            new_buffer,
+            active,
+            ready_tx.clone(),
+            app_handle,
+            device_name,
+        ) {
             tracing::error!(target: "audio", "Audio capture error: {}", e);
             let _ = ready_tx.send(Err(e));
         }
@@ -202,30 +214,32 @@ fn run_audio_capture(
 
     let device = if let Some(ref name) = device_name {
         match host.input_devices() {
-            Ok(mut devices) => {
-                match devices.find(|d| d.name().ok().as_deref() == Some(name)) {
-                    Some(d) => d,
-                    None => {
-                        tracing::warn!(target: "audio", "Requested device '{}' not found, falling back to default", name);
-                        host.default_input_device()
-                            .ok_or_else(|| "No input device available. Please grant microphone permission.".to_string())?
-                    }
+            Ok(mut devices) => match devices.find(|d| d.name().ok().as_deref() == Some(name)) {
+                Some(d) => d,
+                None => {
+                    tracing::warn!(target: "audio", "Requested device '{}' not found, falling back to default", name);
+                    host.default_input_device().ok_or_else(|| {
+                        "No input device available. Please grant microphone permission.".to_string()
+                    })?
                 }
-            }
+            },
             Err(e) => {
                 tracing::warn!(target: "audio", "Failed to enumerate devices: {}, falling back to default", e);
-                host.default_input_device()
-                    .ok_or_else(|| "No input device available. Please grant microphone permission.".to_string())?
+                host.default_input_device().ok_or_else(|| {
+                    "No input device available. Please grant microphone permission.".to_string()
+                })?
             }
         }
     } else {
-        host.default_input_device()
-            .ok_or_else(|| "No input device available. Please grant microphone permission.".to_string())?
+        host.default_input_device().ok_or_else(|| {
+            "No input device available. Please grant microphone permission.".to_string()
+        })?
     };
 
     let actual_name = device.name().unwrap_or_else(|_| "unknown".to_string());
 
-    let config = device.default_input_config()
+    let config = device
+        .default_input_config()
         .map_err(|e| format!("Failed to get input config: {}", e))?;
 
     let device_sample_rate = config.sample_rate().0;
@@ -243,12 +257,25 @@ fn run_audio_capture(
     let err_fn = |err| tracing::error!(target: "audio", "Audio stream error: {}", err);
 
     let stream = match sample_format {
-        SampleFormat::F32 => build_mono_input_stream!(device, config, shared, channels, err_fn, f32, app_handle.clone(), active),
-        SampleFormat::I16 => build_mono_input_stream!(device, config, shared, channels, err_fn, i16, app_handle, active),
+        SampleFormat::F32 => build_mono_input_stream!(
+            device,
+            config,
+            shared,
+            channels,
+            err_fn,
+            f32,
+            app_handle.clone(),
+            active
+        ),
+        SampleFormat::I16 => build_mono_input_stream!(
+            device, config, shared, channels, err_fn, i16, app_handle, active
+        ),
         _ => return Err(format!("Unsupported sample format: {:?}", sample_format)),
     };
 
-    stream.play().map_err(|e| format!("Failed to start stream: {}", e))?;
+    stream
+        .play()
+        .map_err(|e| format!("Failed to start stream: {}", e))?;
 
     // Signal ready with the device sample rate and name
     let _ = ready_tx.send(Ok((device_sample_rate, actual_name.clone())));
@@ -301,7 +328,11 @@ pub fn stop_recording() -> Result<Vec<f32>, String> {
             poisoned.into_inner()
         });
         let raw_count = guard.len();
-        let raw_duration = if sample_rate > 0 { raw_count as f64 / sample_rate as f64 } else { 0.0 };
+        let raw_duration = if sample_rate > 0 {
+            raw_count as f64 / sample_rate as f64
+        } else {
+            0.0
+        };
         if let Some(started) = started_at {
             tracing::info!(target: "audio", "stop_recording: raw_samples={}, sample_rate={}, wall_secs={:.1}, audio_secs={:.1}",
                 raw_count, sample_rate, started.elapsed().as_secs_f64(), raw_duration);
@@ -322,73 +353,6 @@ pub fn stop_recording() -> Result<Vec<f32>, String> {
     } else {
         Ok(samples)
     }
-}
-
-/// Number of 16 kHz-equivalent samples currently captured. This reads only the
-/// buffer length, so the incremental scheduler can decide whether a complete
-/// fixed-size window exists without cloning the recording.
-pub(crate) fn recording_sample_count_16k() -> Option<usize> {
-    let state = RECORDING_STATE.get()?;
-    let guard = state.lock().unwrap_or_else(|poisoned| {
-        tracing::warn!(target: "audio", "recording_sample_count_16k: recording state mutex was poisoned, recovering");
-        poisoned.into_inner()
-    });
-    if !guard.active.load(Ordering::Relaxed) || guard.sample_rate == 0 {
-        return None;
-    }
-    let sample_rate = guard.sample_rate as usize;
-    let buffer = Arc::clone(guard.shared.as_ref()?);
-    drop(guard);
-    let raw_len = buffer.lock().unwrap_or_else(|poisoned| {
-        tracing::warn!(target: "audio", "recording_sample_count_16k: samples mutex was poisoned, recovering");
-        poisoned.into_inner()
-    }).len();
-    Some(raw_len.saturating_mul(WHISPER_SAMPLE_RATE as usize) / sample_rate)
-}
-
-/// Copy one bounded range from the live recording and convert it to 16 kHz.
-/// Indices use the final pipeline's 16 kHz sample coordinate system. The full
-/// recording buffer remains owned by `stop_recording`; this function never
-/// clears it and never creates an audio queue.
-pub(crate) fn snapshot_recording_window_16k(start: usize, end: usize) -> Option<Vec<f32>> {
-    if start >= end {
-        return Some(Vec::new());
-    }
-    let state = RECORDING_STATE.get()?;
-    let guard = state.lock().unwrap_or_else(|poisoned| {
-        tracing::warn!(target: "audio", "snapshot_recording_window_16k: recording state mutex was poisoned, recovering");
-        poisoned.into_inner()
-    });
-    if !guard.active.load(Ordering::Relaxed) || guard.sample_rate == 0 {
-        return None;
-    }
-    let sample_rate = guard.sample_rate as usize;
-    let buffer = Arc::clone(guard.shared.as_ref()?);
-    drop(guard);
-
-    let raw_start = start.saturating_mul(sample_rate) / WHISPER_SAMPLE_RATE as usize;
-    let raw_end = end
-        .saturating_mul(sample_rate)
-        .saturating_add(WHISPER_SAMPLE_RATE as usize - 1)
-        / WHISPER_SAMPLE_RATE as usize;
-    let raw = {
-        let samples = buffer.lock().unwrap_or_else(|poisoned| {
-            tracing::warn!(target: "audio", "snapshot_recording_window_16k: samples mutex was poisoned, recovering");
-            poisoned.into_inner()
-        });
-        if raw_end > samples.len() {
-            return None;
-        }
-        samples[raw_start.min(raw_end)..raw_end].to_vec()
-    };
-
-    let mut converted = if sample_rate as u32 == WHISPER_SAMPLE_RATE {
-        raw
-    } else {
-        resample(&raw, sample_rate as u32, WHISPER_SAMPLE_RATE)
-    };
-    converted.truncate(end - start);
-    Some(converted)
 }
 
 #[allow(dead_code)]

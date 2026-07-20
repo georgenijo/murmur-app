@@ -52,4 +52,4 @@ Recommendations (identical across both runs): fastest = **parakeet v3**, mostAcc
 3. **Whisper model-name lists are duplicated** in `whisper_initial_prompt`, `WHISPER_SIZE_ORDER`, and the catalog — a new whisper model needs three edits; should derive from the catalog's `backend` field.
 4. **Delivered tier uses the built-in dev dictionary as active** (a strict out-of-the-box default has `code_vocab_enabled=false`, which would make the tier a no-op). Deliberate, documented in code. The product question — ship correction terms on by default — is #271's point 3, still open.
 5. `memoryDeltaMb` remains a sequential-process RSS delta (allocator retention skews later baselines) — now documented on the field and in the UI tooltip, not yet re-architected.
-6. Benchmark still measures whisper's **batch** path; production long-form dictation streams. #275 intentionally deferred pending the #279 keep-or-remove-streaming decision.
+6. Benchmark measures whisper's **batch** path, which is also the authoritative production path after #279 removed incremental transcription. The benchmark-vs-streaming gap described by #275 is therefore obsolete.

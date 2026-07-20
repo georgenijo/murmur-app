@@ -13,19 +13,17 @@ mod correction;
 mod dictation_context;
 mod file_output;
 mod frontmost;
-mod injector;
 mod ide_context;
+mod injector;
 mod keyboard;
 mod knowledge_store;
-mod partial_transcript;
 mod platform;
 mod resource_monitor;
 mod smart_formatting;
 mod state;
-mod streaming;
-mod transcript_transform;
 pub mod telemetry;
 pub mod transcriber;
+mod transcript_transform;
 mod vad;
 mod vocab;
 mod vocabulary_alias;
@@ -48,19 +46,22 @@ pub fn ffi_heap_mb() -> u64 {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn rust_heap_mb() -> u64 { 0 }
+pub fn rust_heap_mb() -> u64 {
+    0
+}
 
 #[cfg(not(target_os = "macos"))]
-pub fn ffi_heap_mb() -> u64 { 0 }
+pub fn ffi_heap_mb() -> u64 {
+    0
+}
 
 use state::AppState;
 use std::sync::{Mutex, MutexGuard};
+use tauri::menu::{MenuBuilder, MenuItemBuilder};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::Manager;
 #[cfg(target_os = "macos")]
 use tauri::RunEvent;
-use tauri::menu::{MenuBuilder, MenuItemBuilder};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-
 
 /// Helper trait to recover from poisoned mutexes
 pub(crate) trait MutexExt<T> {
@@ -116,10 +117,7 @@ where
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "linux")]
-    apply_linux_webkit_env_defaults(
-        |k| std::env::var_os(k),
-        |k, v| std::env::set_var(k, v),
-    );
+    apply_linux_webkit_env_defaults(|k| std::env::var_os(k), |k, v| std::env::set_var(k, v));
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -143,7 +141,6 @@ pub fn run() {
             commands::recording::get_status,
             commands::recording::configure_dictation,
             commands::recording::start_native_recording,
-            commands::recording::get_active_recording_session,
             commands::recording::stop_native_recording,
             commands::recording::cancel_native_recording,
             commands::recording::count_vocab_tokens,
@@ -197,7 +194,6 @@ pub fn run() {
             commands::overlay::show_overlay,
             commands::overlay::hide_overlay,
             commands::overlay::set_overlay_expanded,
-            commands::overlay::set_overlay_surface,
             commands::overlay::show_main_window,
             commands::overlay::get_notch_info,
             telemetry::get_event_history,
@@ -334,7 +330,11 @@ pub fn run() {
         // when there are truly no visible windows (e.g. dock-icon click
         // after the user closed everything).
         #[cfg(target_os = "macos")]
-        if let RunEvent::Reopen { has_visible_windows, .. } = &_event {
+        if let RunEvent::Reopen {
+            has_visible_windows,
+            ..
+        } = &_event
+        {
             if !has_visible_windows {
                 if let Some(win) = _app_handle.get_webview_window("main") {
                     let _ = win.show();
@@ -363,16 +363,26 @@ mod tests {
             },
         );
         let map = env.borrow();
-        assert_eq!(map.get("WEBKIT_DISABLE_DMABUF_RENDERER"), Some(&OsString::from("1")));
-        assert_eq!(map.get("WEBKIT_DISABLE_COMPOSITING_MODE"), Some(&OsString::from("1")));
+        assert_eq!(
+            map.get("WEBKIT_DISABLE_DMABUF_RENDERER"),
+            Some(&OsString::from("1"))
+        );
+        assert_eq!(
+            map.get("WEBKIT_DISABLE_COMPOSITING_MODE"),
+            Some(&OsString::from("1"))
+        );
     }
 
     /// User-provided values must be preserved (including explicit "0" opt-outs).
     #[test]
     fn preserves_user_overrides() {
         let env: RefCell<HashMap<String, OsString>> = RefCell::new(HashMap::new());
-        env.borrow_mut().insert("WEBKIT_DISABLE_DMABUF_RENDERER".into(), OsString::from("0"));
-        env.borrow_mut().insert("WEBKIT_DISABLE_COMPOSITING_MODE".into(), OsString::from("custom"));
+        env.borrow_mut()
+            .insert("WEBKIT_DISABLE_DMABUF_RENDERER".into(), OsString::from("0"));
+        env.borrow_mut().insert(
+            "WEBKIT_DISABLE_COMPOSITING_MODE".into(),
+            OsString::from("custom"),
+        );
 
         apply_linux_webkit_env_defaults(
             |k| env.borrow().get(k).cloned(),
@@ -382,15 +392,22 @@ mod tests {
         );
 
         let map = env.borrow();
-        assert_eq!(map.get("WEBKIT_DISABLE_DMABUF_RENDERER"), Some(&OsString::from("0")));
-        assert_eq!(map.get("WEBKIT_DISABLE_COMPOSITING_MODE"), Some(&OsString::from("custom")));
+        assert_eq!(
+            map.get("WEBKIT_DISABLE_DMABUF_RENDERER"),
+            Some(&OsString::from("0"))
+        );
+        assert_eq!(
+            map.get("WEBKIT_DISABLE_COMPOSITING_MODE"),
+            Some(&OsString::from("custom"))
+        );
     }
 
     /// Partial user override: only the unset default should be applied.
     #[test]
     fn applies_only_missing_defaults() {
         let env: RefCell<HashMap<String, OsString>> = RefCell::new(HashMap::new());
-        env.borrow_mut().insert("WEBKIT_DISABLE_DMABUF_RENDERER".into(), OsString::from("0"));
+        env.borrow_mut()
+            .insert("WEBKIT_DISABLE_DMABUF_RENDERER".into(), OsString::from("0"));
         let writes: RefCell<Vec<(String, String)>> = RefCell::new(Vec::new());
 
         apply_linux_webkit_env_defaults(
@@ -403,7 +420,10 @@ mod tests {
 
         assert_eq!(
             *writes.borrow(),
-            vec![("WEBKIT_DISABLE_COMPOSITING_MODE".to_string(), "1".to_string())],
+            vec![(
+                "WEBKIT_DISABLE_COMPOSITING_MODE".to_string(),
+                "1".to_string()
+            )],
         );
         assert_eq!(
             env.borrow().get("WEBKIT_DISABLE_DMABUF_RENDERER"),
@@ -415,7 +435,8 @@ mod tests {
     #[test]
     fn treats_empty_string_as_set() {
         let env: RefCell<HashMap<String, OsString>> = RefCell::new(HashMap::new());
-        env.borrow_mut().insert("WEBKIT_DISABLE_DMABUF_RENDERER".into(), OsString::from(""));
+        env.borrow_mut()
+            .insert("WEBKIT_DISABLE_DMABUF_RENDERER".into(), OsString::from(""));
         let writes: RefCell<Vec<String>> = RefCell::new(Vec::new());
 
         apply_linux_webkit_env_defaults(

@@ -271,10 +271,6 @@ pub struct AppState {
     /// Short-lived local project indexes for explicitly opted-in app profiles.
     /// Contents (symbols and root-relative filenames) are never serialized.
     pub ide_context: Mutex<crate::ide_context::IdeContextStore>,
-    /// At most one bounded incremental Whisper worker is attached to the active
-    /// recording. The handle owns no audio; it snapshots one fixed-size window
-    /// at a time and stores only reconciled text and timing counters.
-    pub streaming_session: tokio::sync::Mutex<Option<crate::streaming::StreamingSession>>,
 }
 
 impl AppState {
@@ -355,7 +351,6 @@ impl Default for AppState {
             file_transcribing: AtomicBool::new(false),
             correction_matcher: Mutex::new(None),
             ide_context: Mutex::new(crate::ide_context::IdeContextStore::default()),
-            streaming_session: tokio::sync::Mutex::new(None),
         }
     }
 }

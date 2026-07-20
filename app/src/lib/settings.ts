@@ -191,7 +191,6 @@ export interface Settings {
   autoPasteDelayMs: number;
   recordingMode: RecordingMode;
   hotkeyMissFeedback: boolean;
-  liveTranscriptPreview: boolean;
   microphone: string;
   launchAtLogin: boolean;
   vadSensitivity: number;
@@ -329,7 +328,6 @@ export const DEFAULT_SETTINGS: Settings = {
   autoPasteDelayMs: 50,
   recordingMode: 'hold_down',
   hotkeyMissFeedback: false,
-  liveTranscriptPreview: true,
   microphone: 'system_default',
   launchAtLogin: false,
   vadSensitivity: 50,
@@ -428,7 +426,11 @@ export function loadSettings(): Settings {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored) {
-      const parsed = JSON.parse(stored) as Partial<Settings> & { hotkey?: string; recordingMode?: string };
+      const parsed = JSON.parse(stored) as Partial<Settings> & {
+        hotkey?: string;
+        liveTranscriptPreview?: unknown;
+        recordingMode?: string;
+      };
 
       // Migrate: 'hotkey' mode no longer exists → default to 'hold_down'
       const validModes: RecordingMode[] = ['hold_down', 'double_tap', 'both'];
@@ -438,6 +440,8 @@ export function loadSettings(): Settings {
 
       // Remove legacy hotkey field if present
       delete parsed.hotkey;
+      // The removed live-preview feature must not remain in persisted settings.
+      delete parsed.liveTranscriptPreview;
 
       // Validate model against current allow-list (includes Moonshine migration)
       const validModels = new Set<string>(AVAILABLE_MODEL_OPTIONS.map((m) => m.value));
@@ -545,10 +549,6 @@ export function loadSettings(): Settings {
       if (typeof parsed.hotkeyMissFeedback !== 'boolean') {
         parsed.hotkeyMissFeedback = DEFAULT_SETTINGS.hotkeyMissFeedback;
       }
-      if (typeof parsed.liveTranscriptPreview !== 'boolean') {
-        parsed.liveTranscriptPreview = DEFAULT_SETTINGS.liveTranscriptPreview;
-      }
-
       // codeVocabEnabled gates the Rust scan — coerce non-booleans (or a missing
       // field on pre-feature stored settings) back to the default.
       if (typeof parsed.codeVocabEnabled !== 'boolean') {

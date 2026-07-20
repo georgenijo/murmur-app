@@ -11,16 +11,6 @@ const FALLBACK_OVERLAY_W: f64 = 200.0;
 const FALLBACK_OVERLAY_H: f64 = 37.0;
 #[cfg(target_os = "macos")]
 const EXPANDED_DROP: f64 = 44.0; // extra height for the hover dropdown row
-#[cfg(target_os = "macos")]
-const PREVIEW_DROP: f64 = 30.0; // visible row below the physical notch
-
-#[cfg(target_os = "macos")]
-fn overlay_surface_height(base_height: f64, expanded: bool, preview_visible: bool) -> f64 {
-    base_height
-        + if preview_visible { PREVIEW_DROP } else { 0.0 }
-        + if expanded { EXPANDED_DROP } else { 0.0 }
-}
-
 #[derive(serde::Serialize, Clone)]
 pub(crate) struct NotchInfo {
     notch_width: f64,
@@ -53,15 +43,20 @@ pub(crate) fn detect_notch_info() -> Option<(f64, f64)> {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub(crate) fn detect_notch_info() -> Option<(f64, f64)> { None }
+pub(crate) fn detect_notch_info() -> Option<(f64, f64)> {
+    None
+}
 
 /// Subscribe to macOS display configuration changes (plug/unplug monitor, lid open/close).
 /// Re-detects notch info, repositions the overlay, and notifies the frontend.
 #[cfg(target_os = "macos")]
 pub(crate) fn register_screen_change_observer(app_handle: tauri::AppHandle) {
-    use objc2_foundation::{NSNotificationCenter, NSNotificationName, NSNotification, NSOperationQueue};
+    use objc2_foundation::{
+        NSNotification, NSNotificationCenter, NSNotificationName, NSOperationQueue,
+    };
 
-    let notification_name = NSNotificationName::from_str("NSApplicationDidChangeScreenParametersNotification");
+    let notification_name =
+        NSNotificationName::from_str("NSApplicationDidChangeScreenParametersNotification");
 
     let block = block2::RcBlock::new(move |_notification: std::ptr::NonNull<NSNotification>| {
         tracing::info!(target: "system", "screen parameters changed — re-detecting notch info");
@@ -77,10 +72,13 @@ pub(crate) fn register_screen_change_observer(app_handle: tauri::AppHandle) {
             position_overlay_default(&overlay, notch);
         }
         // Notify frontend
-        let _ = handle.emit("notch-info-changed", notch.map(|(w, h)| NotchInfo {
-            notch_width: w,
-            notch_height: h,
-        }));
+        let _ = handle.emit(
+            "notch-info-changed",
+            notch.map(|(w, h)| NotchInfo {
+                notch_width: w,
+                notch_height: h,
+            }),
+        );
     });
 
     unsafe {
@@ -127,8 +125,13 @@ fn raise_window_above_menubar(overlay: &tauri::WebviewWindow) {
 /// The window is notch-height tall and wide enough for horizontal expansion.
 /// Takes cached notch_info to avoid calling NSScreen APIs off the main thread.
 #[cfg(target_os = "macos")]
-pub(crate) fn position_overlay_default(overlay: &tauri::WebviewWindow, notch_info: Option<(f64, f64)>) {
-    let overlay_w = notch_info.map(|(w, _)| w + NOTCH_EXPAND).unwrap_or(FALLBACK_OVERLAY_W);
+pub(crate) fn position_overlay_default(
+    overlay: &tauri::WebviewWindow,
+    notch_info: Option<(f64, f64)>,
+) {
+    let overlay_w = notch_info
+        .map(|(w, _)| w + NOTCH_EXPAND)
+        .unwrap_or(FALLBACK_OVERLAY_W);
     let overlay_h = notch_info.map(|(_, h)| h).unwrap_or(37.0);
     tracing::info!(target: "system", "position_overlay_default: notch_info={:?}, overlay_w={}, overlay_h={}", notch_info, overlay_w, overlay_h);
 
@@ -157,7 +160,10 @@ pub(crate) fn position_overlay_default(overlay: &tauri::WebviewWindow, notch_inf
 /// Return cached notch dimensions so the frontend can position content precisely.
 #[tauri::command]
 pub fn get_notch_info(state: tauri::State<'_, State>) -> Option<NotchInfo> {
-    state.notch_info.lock_or_recover().map(|(w, h)| NotchInfo { notch_width: w, notch_height: h })
+    state.notch_info.lock_or_recover().map(|(w, h)| NotchInfo {
+        notch_width: w,
+        notch_height: h,
+    })
 }
 
 /// Show the always-on-top overlay window (macOS notch overlay; no-op on Linux).
@@ -199,44 +205,14 @@ pub fn show_overlay(app: tauri::AppHandle, state: tauri::State<'_, State>) -> Re
 /// transparent overlay with cursor events enabled captures the mouse across its
 /// whole frame, which would create a click dead-zone below the notch when idle.
 #[tauri::command]
-pub fn set_overlay_expanded(app: tauri::AppHandle, state: tauri::State<'_, State>, expanded: bool) -> Result<(), String> {
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (&app, &state, expanded);
-        return Ok(());
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        let notch = *state.notch_info.lock_or_recover();
-        match app.get_webview_window("overlay") {
-            Some(overlay) => {
-                let w = notch.map(|(w, _)| w + NOTCH_EXPAND).unwrap_or(FALLBACK_OVERLAY_W);
-                let base_h = notch.map(|(_, h)| h).unwrap_or(FALLBACK_OVERLAY_H);
-                let h = if expanded { base_h + EXPANDED_DROP } else { base_h };
-                overlay.set_size(tauri::LogicalSize::new(w, h)).map_err(|e| e.to_string())
-            }
-            None => {
-                tracing::warn!(target: "system", "set_overlay_expanded: overlay window not found — skipping");
-                Ok(())
-            }
-        }
-    }
-}
-
-/// Resize the overlay for independently composed preview and hover rows. The
-/// preview sits below the physical notch; the quick-settings row follows it.
-/// Keeping both dimensions explicit prevents either row from clipping the other.
-#[tauri::command]
-pub fn set_overlay_surface(
+pub fn set_overlay_expanded(
     app: tauri::AppHandle,
     state: tauri::State<'_, State>,
     expanded: bool,
-    preview_visible: bool,
 ) -> Result<(), String> {
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (&app, &state, expanded, preview_visible);
+        let _ = (&app, &state, expanded);
         return Ok(());
     }
 
@@ -249,13 +225,17 @@ pub fn set_overlay_surface(
                     .map(|(w, _)| w + NOTCH_EXPAND)
                     .unwrap_or(FALLBACK_OVERLAY_W);
                 let base_h = notch.map(|(_, h)| h).unwrap_or(FALLBACK_OVERLAY_H);
-                let h = overlay_surface_height(base_h, expanded, preview_visible);
+                let h = if expanded {
+                    base_h + EXPANDED_DROP
+                } else {
+                    base_h
+                };
                 overlay
                     .set_size(tauri::LogicalSize::new(w, h))
                     .map_err(|e| e.to_string())
             }
             None => {
-                tracing::warn!(target: "system", "set_overlay_surface: overlay window not found — skipping");
+                tracing::warn!(target: "system", "set_overlay_expanded: overlay window not found — skipping");
                 Ok(())
             }
         }
@@ -289,18 +269,5 @@ pub fn hide_overlay(app: tauri::AppHandle) -> Result<(), String> {
             tracing::warn!(target: "system", "hide_overlay: overlay window not found — skipping");
             Ok(())
         }
-    }
-}
-
-#[cfg(all(test, target_os = "macos"))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn overlay_surface_height_composes_preview_and_settings_rows() {
-        assert_eq!(overlay_surface_height(37.0, false, false), 37.0);
-        assert_eq!(overlay_surface_height(37.0, false, true), 67.0);
-        assert_eq!(overlay_surface_height(37.0, true, false), 81.0);
-        assert_eq!(overlay_surface_height(37.0, true, true), 111.0);
     }
 }

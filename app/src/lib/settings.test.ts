@@ -153,7 +153,6 @@ describe('loadSettings', () => {
     expect(settings.autoPaste).toBe(DEFAULT_SETTINGS.autoPaste);
     expect(settings.recordingMode).toBe('double_tap');
     expect(settings.hotkeyMissFeedback).toBe(false);
-    expect(settings.liveTranscriptPreview).toBe(true);
   });
 
   it('validates the opt-in hotkey timing feedback setting', () => {
@@ -170,18 +169,12 @@ describe('loadSettings', () => {
     expect(loadSettings().hotkeyMissFeedback).toBe(false);
   });
 
-  it('preserves and validates the live transcript preview setting', () => {
+  it('removes the retired live transcript preview setting', () => {
     localStorage.setItem('dictation-settings', JSON.stringify({
       ...DEFAULT_SETTINGS,
-      liveTranscriptPreview: false,
+      liveTranscriptPreview: true,
     }));
-    expect(loadSettings().liveTranscriptPreview).toBe(false);
-
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      liveTranscriptPreview: 'yes',
-    }));
-    expect(loadSettings().liveTranscriptPreview).toBe(true);
+    expect(loadSettings()).not.toHaveProperty('liveTranscriptPreview');
   });
 
   it('migrates legacy "hotkey" recordingMode to "hold_down"', () => {
