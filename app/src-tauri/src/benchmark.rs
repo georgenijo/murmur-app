@@ -18,6 +18,7 @@ use std::time::Instant;
 use tauri::Emitter;
 
 const PARAKEET_CPU_MODEL: &str = "parakeet-tdt-0.6b-v2-fp16";
+const BALANCED_ACCURACY_WINDOW: f64 = 0.02;
 
 /// Whisper model names ordered smallest-to-largest. Used to pick the
 /// cheapest selected whisper model for the untimed shared-init warm-up.
@@ -935,13 +936,13 @@ fn prepare_fixtures(
         .collect()
 }
 
-/// Realtime-factor deltas below this fraction are treated as statistical
-/// noise rather than a genuine performance difference, so run-to-run jitter
-/// never flips which model looks "fastest" or "balanced". See issue #272.
+/// Realtime-factor deltas below this fraction are treated as equivalent for
+/// the Balanced recommendation's speed band. Fastest remains the strict
+/// minimum realtime factor. See issue #272.
 const REALTIME_FACTOR_TIE_BAND: f64 = 0.10;
 
 /// True when `a` and `b` are within `REALTIME_FACTOR_TIE_BAND` of the smaller
-/// of the two, i.e. indistinguishable for recommendation purposes.
+/// of the two, i.e. indistinguishable for the Balanced recommendation.
 fn within_tie_band(a: f64, b: f64) -> bool {
     let base = a.min(b);
     if base <= 0.0 {
@@ -956,8 +957,8 @@ fn within_tie_band(a: f64, b: f64) -> bool {
 /// Picks the model with the lowest `metric` value, then deterministically
 /// breaks ties among every candidate within `REALTIME_FACTOR_TIE_BAND` of the
 /// best value: lower peak memory delta wins, then alphabetical model name as
-/// a final stable tie-break. Used for both "fastest" and "balanced" so noise
-/// in the underlying metric is never presented as signal.
+/// a final stable tie-break. This is the Balanced policy; Fastest remains the
+/// strict minimum realtime factor.
 fn pick_by_metric_with_tiebreak<'a>(
     candidates: &[(&'a ModelResult, f64)],
 ) -> Option<&'a ModelResult> {
@@ -1019,12 +1020,15 @@ fn recommendations(results: &[ModelResult]) -> Recommendations {
     // stable and comparable across different fixture mixes. warm_median_ms is
     // left untouched elsewhere in the report; only this ranking input
     // changes. See issue #272.
-    let fastest_candidates = successful
+    let fastest = successful
         .iter()
         .filter_map(|result| result.realtime_factor.map(|value| (*result, value)))
-        .collect::<Vec<_>>();
-    let fastest =
-        pick_by_metric_with_tiebreak(&fastest_candidates).map(|result| result.model_name.clone());
+        .min_by(|left, right| {
+            left.1
+                .total_cmp(&right.1)
+                .then_with(|| left.0.model_name.cmp(&right.0.model_name))
+        })
+        .map(|(result, _)| result.model_name.clone());
 
     // Accuracy recommendations rank on the normalized WER so formatting/ITN
     // differences do not distort the ranking (see `normalized_words`).
@@ -1040,8 +1044,8 @@ fn recommendations(results: &[ModelResult]) -> Recommendations {
         .min_by(f64::total_cmp);
 
     // "Balanced" first narrows to models within 2 accuracy points of the best
-    // WER, then within that accuracy window ranks by realtime_factor (same
-    // stability fix as "fastest") and, among models whose realtime_factor is
+    // WER, then within that accuracy window ranks by realtime_factor (the same
+    // stable metric as "fastest") and, among models whose realtime_factor is
     // tied within the 10% noise band, prefers lower peak memory delta. This
     // is the rule that stops a model like Parakeet v2 (~2.9GB RSS delta) from
     // winning over alternatives at 46-545MB purely because pooled timing
@@ -1053,7 +1057,7 @@ fn recommendations(results: &[ModelResult]) -> Recommendations {
             .filter(|result| {
                 result
                     .normalized_word_error_rate
-                    .is_some_and(|wer| wer <= best + 0.02)
+                    .is_some_and(|wer| wer <= best + BALANCED_ACCURACY_WINDOW)
             })
             .filter_map(|result| result.realtime_factor.map(|value| (*result, value)))
             .collect::<Vec<_>>();
@@ -1391,6 +1395,33 @@ pub fn run<R: tauri::Runtime>(
 mod tests {
     use super::*;
 
+    fn model_result(
+        name: &str,
+        warm_median_ms: f64,
+        realtime_factor: f64,
+        word_error_rate: f64,
+        memory_delta_mb: u64,
+    ) -> ModelResult {
+        ModelResult {
+            model_name: name.to_string(),
+            label: name.to_string(),
+            backend: String::new(),
+            accelerator: String::new(),
+            model_load_ms: Some(1.0),
+            first_inference_ms: Some(1.0),
+            warm_median_ms: Some(warm_median_ms),
+            warm_p95_ms: Some(warm_median_ms),
+            realtime_factor: Some(realtime_factor),
+            word_error_rate: Some(word_error_rate),
+            normalized_word_error_rate: Some(word_error_rate),
+            delivered_word_error_rate: Some(word_error_rate),
+            delivered_normalized_word_error_rate: Some(word_error_rate),
+            memory_delta_mb,
+            fixtures: Vec::new(),
+            error: None,
+        }
+    }
+
     #[test]
     fn word_error_rate_counts_substitutions_insertions_and_deletions() {
         assert_eq!(word_errors("one two three", "one four three"), (1, 3));
@@ -1663,138 +1694,106 @@ mod tests {
     }
 
     #[test]
-    fn balanced_prefers_fastest_model_within_two_accuracy_points() {
-        let result = |name: &str, latency: f64, wer: f64| ModelResult {
-            model_name: name.to_string(),
-            label: name.to_string(),
-            backend: String::new(),
-            accelerator: String::new(),
-            model_load_ms: Some(1.0),
-            first_inference_ms: Some(1.0),
-            warm_median_ms: Some(latency),
-            warm_p95_ms: Some(latency),
-            realtime_factor: Some(latency / 1000.0),
-            word_error_rate: Some(wer),
-            normalized_word_error_rate: Some(wer),
-            delivered_word_error_rate: Some(wer),
-            delivered_normalized_word_error_rate: Some(wer),
-            memory_delta_mb: 0,
-            fixtures: Vec::new(),
-            error: None,
-        };
+    fn fastest_uses_realtime_factor_instead_of_pooled_latency() {
         let recommendations = recommendations(&[
-            result("accurate", 300.0, 0.05),
-            result("balanced", 100.0, 0.06),
-            result("fast", 50.0, 0.10),
+            model_result("tiny.en", 79.1, 0.0086, 0.08, 46),
+            model_result("parakeet-v3", 108.6, 0.0080, 0.05, 545),
         ]);
-        assert_eq!(recommendations.fastest.as_deref(), Some("fast"));
+
+        assert_eq!(recommendations.fastest.as_deref(), Some("parakeet-v3"));
+    }
+
+    #[test]
+    fn fastest_is_strict_minimum_even_when_slower_model_uses_less_memory() {
+        let recommendations = recommendations(&[
+            model_result("faster-heavier", 100.0, 1.0, 0.05, 2_925),
+            model_result("slower-lighter", 105.0, 1.05, 0.05, 46),
+        ]);
+
+        assert_eq!(recommendations.fastest.as_deref(), Some("faster-heavier"));
+    }
+
+    #[test]
+    fn balanced_prefers_lower_memory_within_ten_percent_speed_band() {
+        let recommendations = recommendations(&[
+            model_result("accurate", 200.0, 0.0120, 0.05, 500),
+            model_result("high-memory", 80.0, 0.0080, 0.06, 2_925),
+            model_result("balanced", 87.0, 0.0087, 0.07, 545),
+            model_result("fast-outside-window", 50.0, 0.0050, 0.10, 46),
+        ]);
+
+        assert_eq!(
+            recommendations.fastest.as_deref(),
+            Some("fast-outside-window")
+        );
         assert_eq!(recommendations.most_accurate.as_deref(), Some("accurate"));
         assert_eq!(recommendations.balanced.as_deref(), Some("balanced"));
     }
 
-    fn full_result(
-        name: &str,
-        warm_median_ms: f64,
-        realtime_factor: f64,
-        wer: f64,
-        memory_delta_mb: u64,
-    ) -> ModelResult {
-        ModelResult {
-            model_name: name.to_string(),
-            label: name.to_string(),
-            backend: String::new(),
-            accelerator: String::new(),
-            model_load_ms: Some(1.0),
-            first_inference_ms: Some(1.0),
-            warm_median_ms: Some(warm_median_ms),
-            warm_p95_ms: Some(warm_median_ms),
-            realtime_factor: Some(realtime_factor),
-            word_error_rate: Some(wer),
-            normalized_word_error_rate: Some(wer),
-            delivered_word_error_rate: Some(wer),
-            delivered_normalized_word_error_rate: Some(wer),
-            memory_delta_mb,
-            fixtures: Vec::new(),
-            error: None,
-        }
+    #[test]
+    fn balanced_keeps_a_clear_speed_winner_despite_higher_memory() {
+        let recommendations = recommendations(&[
+            model_result("accurate", 200.0, 0.0200, 0.05, 500),
+            model_result("clear-speed-winner", 80.0, 0.0080, 0.06, 2_925),
+            model_result("low-memory", 90.0, 0.0090, 0.06, 46),
+        ]);
+
+        assert_eq!(
+            recommendations.balanced.as_deref(),
+            Some("clear-speed-winner")
+        );
     }
 
     #[test]
-    fn fastest_ignores_pooled_median_flip_and_follows_stable_realtime_factor() {
-        // Reproduces the issue #272 scenario: two runs of the same models
-        // where the pooled warm_median_ms straddles and flips which model
-        // looks faster, but realtime_factor (computed per-fixture, stable
-        // across fixture mixes) consistently favors the same model.
-        let run_a = recommendations(&[
-            full_result("tiny.en", 108.6, 0.09, 0.04, 75),
-            full_result("parakeet-v3", 95.0, 0.05, 0.03, 470),
-        ]);
-        let run_b = recommendations(&[
-            full_result("tiny.en", 70.0, 0.09, 0.04, 75),
-            full_result("parakeet-v3", 77.5, 0.05, 0.03, 470),
-        ]);
-        assert_eq!(run_a.fastest.as_deref(), Some("parakeet-v3"));
-        assert_eq!(run_b.fastest.as_deref(), Some("parakeet-v3"));
-    }
-
-    #[test]
-    fn fastest_breaks_ties_within_ten_percent_by_lower_memory_then_name() {
-        // Realtime factors within 10% of each other are a tie; the model
-        // with lower memory delta should win regardless of pooled timing
-        // noise or input order.
-        let first_order = recommendations(&[
-            full_result("heavy", 100.0, 1.00, 0.05, 3000),
-            full_result("light", 100.0, 1.05, 0.05, 200),
-        ]);
-        assert_eq!(first_order.fastest.as_deref(), Some("light"));
-
-        // Order should not matter.
-        let second_order = recommendations(&[
-            full_result("light", 100.0, 1.05, 0.05, 200),
-            full_result("heavy", 100.0, 1.00, 0.05, 3000),
-        ]);
-        assert_eq!(second_order.fastest.as_deref(), Some("light"));
-    }
-
-    #[test]
-    fn fastest_tie_band_boundary_is_exactly_ten_percent() {
-        // At exactly 10% relative delta the two models are still tied, so
-        // the lower-memory model wins even though it is nominally slower.
+    fn balanced_speed_band_includes_exact_ten_percent_boundary() {
         let at_boundary = recommendations(&[
-            full_result("slower-lighter", 100.0, 1.10, 0.05, 100),
-            full_result("faster-heavier", 100.0, 1.00, 0.05, 3000),
+            model_result("faster-heavier", 100.0, 1.0, 0.05, 2_925),
+            model_result("slower-lighter", 110.0, 1.1, 0.05, 46),
         ]);
-        assert_eq!(at_boundary.fastest.as_deref(), Some("slower-lighter"));
+        assert_eq!(at_boundary.balanced.as_deref(), Some("slower-lighter"));
 
-        // Just past 10% the delta is a real difference, so the faster model
-        // wins outright regardless of memory.
         let past_boundary = recommendations(&[
-            full_result("slower-lighter", 100.0, 1.1001, 0.05, 100),
-            full_result("faster-heavier", 100.0, 1.00, 0.05, 3000),
+            model_result("faster-heavier", 100.0, 1.0, 0.05, 2_925),
+            model_result("slower-lighter", 110.01, 1.1001, 0.05, 46),
         ]);
-        assert_eq!(past_boundary.fastest.as_deref(), Some("faster-heavier"));
+        assert_eq!(past_boundary.balanced.as_deref(), Some("faster-heavier"));
     }
 
     #[test]
-    fn balanced_breaks_ties_within_accuracy_window_by_lower_memory() {
-        // Both models are within the 2-point accuracy window and their
-        // realtime factors are tied within 10%, so the lower-memory model
-        // (matching the Parakeet v2 ~2.9GB-vs-alternatives scenario from the
-        // issue) should be recommended as "balanced".
-        let recommendations = recommendations(&[
-            full_result("parakeet-v2", 100.0, 1.00, 0.05, 2925),
-            full_result("small.en", 100.0, 1.03, 0.06, 500),
-        ]);
-        assert_eq!(recommendations.balanced.as_deref(), Some("small.en"));
+    fn recommendations_ignore_failed_and_incomplete_results() {
+        let valid = model_result("valid", 100.0, 0.0100, 0.05, 100);
+        let mut failed = model_result("failed", 10.0, 0.0010, 0.01, 1);
+        failed.error = Some("inference failed".to_string());
+        let mut incomplete = model_result("incomplete", 20.0, 0.0020, 0.02, 2);
+        incomplete.realtime_factor = None;
+        incomplete.word_error_rate = None;
+        incomplete.normalized_word_error_rate = None;
+
+        let recommendations = recommendations(&[failed, incomplete, valid]);
+
+        assert_eq!(recommendations.fastest.as_deref(), Some("valid"));
+        assert_eq!(recommendations.most_accurate.as_deref(), Some("valid"));
+        assert_eq!(recommendations.balanced.as_deref(), Some("valid"));
     }
 
     #[test]
-    fn balanced_excludes_models_outside_the_accuracy_window() {
+    fn exact_speed_ties_use_model_name_for_fastest() {
         let recommendations = recommendations(&[
-            full_result("accurate", 300.0, 0.30, 0.05, 500),
-            full_result("inaccurate-but-fast", 10.0, 0.01, 0.20, 50),
+            model_result("zeta", 100.0, 0.0100, 0.05, 46),
+            model_result("alpha", 100.0, 0.0100, 0.05, 2_925),
         ]);
-        assert_eq!(recommendations.balanced.as_deref(), Some("accurate"));
+
+        assert_eq!(recommendations.fastest.as_deref(), Some("alpha"));
+    }
+
+    #[test]
+    fn balanced_memory_and_speed_ties_use_model_name_deterministically() {
+        let recommendations = recommendations(&[
+            model_result("zeta", 100.0, 0.0100, 0.05, 100),
+            model_result("alpha", 100.0, 0.0100, 0.05, 100),
+        ]);
+
+        assert_eq!(recommendations.balanced.as_deref(), Some("alpha"));
     }
 
     // --- Delivered-text path (issue #271) -----------------------------------

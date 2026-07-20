@@ -527,7 +527,7 @@ export function PerformanceLab({ status }: { status: DictationStatus }) {
           </div>
 
           <p className="text-[11px] leading-relaxed text-stone-500 dark:text-stone-400">
-            WER counts changed, missing, and extra words against the known transcript. Normalized WER first ignores formatting and number/unit spelling (16 kHz = sixteen kilohertz, front end = frontend) so it reflects recognition, not formatting; raw WER is shown in parentheses. Delivered WER scores the text after the production transform pipeline (dev-vocab prompt for Whisper, then cleanup / correction / formatting) — what actually reaches the clipboard — again shown normalized with raw in parentheses. Accuracy ranking and the Accurate/Balanced picks use the normalized recognition number. Balanced means the fastest model within 2 accuracy points of the best result.
+            WER counts changed, missing, and extra words against the known transcript. Normalized WER first ignores formatting and number/unit spelling (16 kHz = sixteen kilohertz, front end = frontend) so it reflects recognition, not formatting; raw WER is shown in parentheses. Delivered WER scores the text after the production transform pipeline (dev-vocab prompt for Whisper, then cleanup / correction / formatting) — what actually reaches the clipboard — again shown normalized with raw in parentheses. Accuracy ranking and the Accurate/Balanced picks use the normalized recognition number. Fastest is the strict minimum duration-weighted speed. Balanced favors lower memory among models within 2 accuracy points and an inclusive 10% band of the fastest eligible speed.
           </p>
 
           <div className="space-y-2">
