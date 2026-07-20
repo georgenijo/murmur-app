@@ -472,7 +472,10 @@ fn within_tie_band(a: f64, b: f64) -> bool {
     if base <= 0.0 {
         return (a - b).abs() <= f64::EPSILON;
     }
-    (a - b).abs() / base <= REALTIME_FACTOR_TIE_BAND
+    // A tiny epsilon keeps the boundary inclusive of an intended-exact 10%
+    // delta despite binary floating-point representation error (e.g.
+    // 1.10 - 1.00 != 0.10 bit-for-bit).
+    (a - b).abs() / base <= REALTIME_FACTOR_TIE_BAND + 1e-9
 }
 
 /// Picks the model with the lowest `metric` value, then deterministically
