@@ -61,6 +61,12 @@ fluidaudio-rs = { git = "https://github.com/FluidInference/fluidaudio-rs", rev =
 rdev = { git = "https://github.com/georgenijo/rdev", rev = "9f510e406327b797eaf2acdc30adcda3dc1e1bb3", features = ["x11"] }
 whisper-rs = { version = "0.15", features = ["cuda"] }
 
+[dev-dependencies]
+# "test" feature only -- enables tauri::test::mock_app() for the headless
+# benchmark runner (tests/headless_benchmark.rs). Dev-dependency only: does
+# not affect release builds.
+tauri = { version = "2", features = ["test"] }
+
 [profile.release]
 panic = "abort"
 # Parallel codegen without LTO: release CI was dominated by fat LTO + CGU=1
