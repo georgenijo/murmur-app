@@ -14,11 +14,11 @@ Every record has a stable ID, enabled flag, revision, provenance, timestamps, on
 - `global`, `app { bundleId }`, or `project { bundleId, root }` scope
 - `manual`, `import`, `learned_correction`, or `code_scan` provenance
 
-Settings creates and edits manual records. Imported records retain their content and scope but use `import` provenance. The repository resolver is deterministic: exact normalized trigger, then project over app over global, manual over import over learned correction over code scan, newest update, then stable ID. Issue #246 does not connect that resolver to transcription, Correct and Teach, or voice-command execution.
+Settings creates and edits manual records. Imported records retain their content and scope but use `import` provenance. The repository resolver is deterministic: exact normalized trigger, then project over app over global, manual over import over learned correction over code scan, newest update, then stable ID. Voice Commands use explicitly marked replacement and snippet records during live transcription; other knowledge remains repository data until its owning feature consumes it.
 
 ## Schema and migrations
 
-SQLite `PRAGMA user_version` is the schema version. Version 1 creates metadata and normalized records. Version 2 adds lookup indexes and the FTS5 search table. Each ordered migration is transactional. Before migrating an older schema, Murmur creates and integrity-checks a SQLite backup, retaining the three newest backups.
+SQLite `PRAGMA user_version` is the schema version. Version 1 creates metadata and normalized records. Version 2 adds lookup indexes and the FTS5 search table. Version 3 adds optional typed Voice Command metadata and explicit clipboard-access state. Each ordered migration is transactional. Before migrating an older schema, Murmur creates and integrity-checks a SQLite backup, retaining the three newest backups.
 
 Connections enable foreign keys, WAL, `synchronous=FULL`, `secure_delete`, and a bounded busy timeout. Writes use optimistic record revisions, and destructive delete-all requires the current store revision.
 

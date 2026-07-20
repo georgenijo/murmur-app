@@ -377,6 +377,7 @@ mod tests {
             correction_matcher: None,
             ide_context_index: None,
             vocabulary_version: 0,
+            voice_commands: None,
             session_overrides: SessionOverrides::default(),
         }))
     }

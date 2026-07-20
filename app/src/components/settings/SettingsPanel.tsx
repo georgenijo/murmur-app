@@ -7,7 +7,7 @@ import {
   Settings, RecordingMode, DEFAULT_SETTINGS,
   AVAILABLE_MODEL_OPTIONS, DOUBLE_TAP_KEY_OPTIONS, RECORDING_MODE_OPTIONS,
   IDLE_TIMEOUT_OPTIONS, LANGUAGE_OPTIONS, WRITING_STYLE_OPTIONS,
-  AppProfile, VoiceCommand, WritingStyle, WritingStyleChoice, vocabularyPrompt,
+  AppProfile, WritingStyle, WritingStyleChoice, vocabularyPrompt,
 } from '../../lib/settings';
 import { Select } from '../ui/Select';
 import { SettingsSection } from './SettingsSection';
@@ -15,6 +15,7 @@ import { VocabScanStrip } from './VocabScanStrip';
 import { PerformanceLab } from './PerformanceLab';
 import { VocabularyAliasesEditor } from './VocabularyAliasesEditor';
 import { KnowledgeManager } from './KnowledgeManager';
+import { VoiceCommandsManager } from './VoiceCommandsManager';
 import { useVocabScan } from '../../lib/hooks/useVocabScan';
 import {
   modelDownloadLabel,
@@ -478,108 +479,6 @@ function AppProfilesEditor({ profiles, onChange }: {
             type="button"
             onClick={handleAdd}
             disabled={!bundleId.trim()}
-            className="shrink-0 px-3 py-2 rounded-lg text-xs font-medium border border-outline-variant/20 bg-surface-container-lowest text-on-surface-variant hover:bg-surface-container hover:text-primary transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            Add
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// Custom voice commands: user-defined phrase -> replacement pairs applied after
-// the built-in command set. Simple add/remove list.
-function VoiceCommandsEditor({ commands, onChange }: {
-  commands: VoiceCommand[];
-  onChange: (next: VoiceCommand[]) => void;
-}) {
-  const [phrase, setPhrase] = useState('');
-  const [replacement, setReplacement] = useState('');
-
-  const handleAdd = () => {
-    const trimmedPhrase = phrase.trim();
-    if (!trimmedPhrase) return;
-    if (commands.some((c) => c.phrase.toLowerCase() === trimmedPhrase.toLowerCase())) {
-      setPhrase('');
-      setReplacement('');
-      return;
-    }
-    onChange([...commands, { phrase: trimmedPhrase, replacement }]);
-    setPhrase('');
-    setReplacement('');
-  };
-
-  const handleRemove = (p: string) => {
-    onChange(commands.filter((c) => c.phrase !== p));
-  };
-
-  return (
-    <div className="mt-3">
-      <p className="mb-2 text-xs text-on-surface-variant">
-        Add your own spoken phrases. When you say the phrase it's replaced by the
-        text (case-insensitive). Runs after the built-in commands.
-      </p>
-
-      {commands.length > 0 && (
-        <ul className="mb-3 space-y-1.5">
-          {commands.map((c) => (
-            <li
-              key={c.phrase}
-              className="flex items-center gap-2 rounded-lg bg-surface-container-lowest px-2.5 py-2 shadow-sm"
-            >
-              <div className="min-w-0 flex-1">
-                <div className="text-xs font-medium text-on-surface truncate">
-                  “{c.phrase}”
-                </div>
-                <div className="text-xs font-mono text-on-surface-variant truncate">
-                  → {c.replacement || '(empty)'}
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => handleRemove(c.phrase)}
-                aria-label={`Remove voice command ${c.phrase}`}
-                className="shrink-0 rounded-md p-1 text-on-surface-variant transition-colors hover:bg-surface-container hover:text-error focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-              >
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-
-      <div className="space-y-2">
-        <input
-          type="text"
-          value={phrase}
-          onChange={(e) => setPhrase(e.target.value)}
-          placeholder="Spoken phrase (e.g. my email)"
-          autoComplete="off"
-          autoCorrect="off"
-          autoCapitalize="off"
-          spellCheck={false}
-          className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface placeholder:text-on-surface-variant focus:outline-none focus:ring-2 focus:ring-primary"
-        />
-        <div className="flex gap-2">
-          <input
-            type="text"
-            value={replacement}
-            onChange={(e) => setReplacement(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') handleAdd(); }}
-            placeholder="Replacement (e.g. me@example.com)"
-            autoComplete="off"
-            autoCorrect="off"
-            autoCapitalize="off"
-            spellCheck={false}
-            className="min-w-0 flex-1 rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface placeholder:text-on-surface-variant focus:outline-none focus:ring-2 focus:ring-primary"
-          />
-          <button
-            type="button"
-            onClick={handleAdd}
-            disabled={!phrase.trim()}
             className="shrink-0 px-3 py-2 rounded-lg text-xs font-medium border border-outline-variant/20 bg-surface-container-lowest text-on-surface-variant hover:bg-surface-container hover:text-primary transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             Add
@@ -1498,12 +1397,11 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
           </button>
         </div>
 
-        {settings.voiceCommandsEnabled && (
-          <VoiceCommandsEditor
-            commands={settings.voiceCommands}
-            onChange={(next) => onUpdateSettings({ voiceCommands: next })}
-          />
-        )}
+        <VoiceCommandsManager
+          active={isOpen && activeCat === 'output'}
+          globallyEnabled={settings.voiceCommandsEnabled}
+          profiles={settings.appProfiles}
+        />
         </SettingsSection>
 
         <SettingsSection pageId="profiles" activePage={activeCat} title="Per-App Profiles" subtitle="Paste and formatting per frontmost app">

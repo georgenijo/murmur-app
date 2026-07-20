@@ -5,6 +5,15 @@
 //! a pure string transform after transcription and is gated behind the
 //! `voiceCommandsEnabled` setting.
 
+use chrono::{DateTime, FixedOffset, Local};
+use std::collections::HashSet;
+
+use crate::knowledge_store::{
+    KnowledgeDraft, KnowledgeEntry, KnowledgePayload, KnowledgeScope, VoiceCommandKind,
+};
+
+const MAX_EXPANDED_SNIPPET_CHARS: usize = 65_536;
+
 pub(crate) const BUILTIN_COMMAND_PHRASES: &[&str] = &[
     "new paragraph",
     "new line",
@@ -15,6 +24,121 @@ pub(crate) const BUILTIN_COMMAND_PHRASES: &[&str] = &[
     "period",
     "comma",
 ];
+
+pub(crate) fn is_builtin_phrase(normalized_phrase: &str) -> bool {
+    BUILTIN_COMMAND_PHRASES
+        .iter()
+        .any(|phrase| crate::knowledge_store::normalize_key(phrase) == normalized_phrase)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedVoiceCommand {
+    pub id: String,
+    pub phrase: String,
+    pub command_type: VoiceCommandKind,
+    pub content: String,
+    pub allow_clipboard_read: bool,
+    pub app_scoped: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct VoiceCommandApplication {
+    pub text: String,
+    pub matched: bool,
+    pub clipboard_required: bool,
+    pub clipboard_read: bool,
+}
+
+pub(crate) trait VoiceCommandRuntime {
+    fn now(&self) -> DateTime<FixedOffset>;
+    fn clipboard_text(&self) -> Result<String, String>;
+}
+
+pub(crate) struct SystemVoiceCommandRuntime;
+
+impl VoiceCommandRuntime for SystemVoiceCommandRuntime {
+    fn now(&self) -> DateTime<FixedOffset> {
+        Local::now().fixed_offset()
+    }
+
+    fn clipboard_text(&self) -> Result<String, String> {
+        crate::injector::read_clipboard_text()
+    }
+}
+
+pub(crate) fn validate_snippet_template(
+    template: &str,
+    allow_clipboard_read: bool,
+) -> Result<(), String> {
+    let mut remaining = template;
+    while let Some(start) = remaining.find("{{") {
+        let after = &remaining[start + 2..];
+        let end = after
+            .find("}}")
+            .ok_or_else(|| "Snippet variable is missing its closing braces.".to_string())?;
+        let variable = after[..end].trim();
+        if !matches!(variable, "date" | "time" | "clipboard") {
+            return Err(format!(
+                "Unsupported snippet variable '{{{{{variable}}}}}'. Use date, time, or clipboard."
+            ));
+        }
+        if variable == "clipboard" && !allow_clipboard_read {
+            return Err(
+                "This snippet uses {{clipboard}}. Explicitly allow clipboard reading to save it."
+                    .to_string(),
+            );
+        }
+        remaining = &after[end + 2..];
+    }
+    if remaining.contains("}}") {
+        return Err("Snippet variable has closing braces without an opening pair.".to_string());
+    }
+    Ok(())
+}
+
+pub(crate) fn commands_from_knowledge(entries: Vec<KnowledgeEntry>) -> Vec<ResolvedVoiceCommand> {
+    let mut commands = Vec::<ResolvedVoiceCommand>::new();
+    for entry in entries {
+        let Some(metadata) = entry.voice_command else {
+            continue;
+        };
+        let (phrase, content) = match entry.payload {
+            KnowledgePayload::ReplacementRule {
+                source,
+                replacement,
+            } if metadata.command_type == VoiceCommandKind::TextReplacement => {
+                (source, replacement)
+            }
+            KnowledgePayload::Snippet { trigger, body }
+                if metadata.command_type == VoiceCommandKind::Snippet =>
+            {
+                (trigger, body)
+            }
+            _ => continue,
+        };
+        let app_scoped = matches!(entry.scope, KnowledgeScope::App { .. });
+        commands.push(ResolvedVoiceCommand {
+            id: entry.id,
+            phrase,
+            command_type: metadata.command_type,
+            content,
+            allow_clipboard_read: metadata.allow_clipboard_read,
+            app_scoped,
+        });
+    }
+    let app_phrases = commands
+        .iter()
+        .filter(|command| command.app_scoped)
+        .map(|command| crate::knowledge_store::normalize_key(&command.phrase))
+        .collect::<HashSet<_>>();
+    commands
+        .into_iter()
+        .filter(|command| {
+            command.app_scoped
+                || !app_phrases.contains(&crate::knowledge_store::normalize_key(&command.phrase))
+        })
+        .collect()
+}
 
 /// Apply the default voice-command map to `text`.
 ///
@@ -93,6 +217,7 @@ pub fn apply_voice_commands(text: &str, enabled: bool) -> String {
 /// *after* the built-ins, so a user can extend the vocabulary without breaking the
 /// defaults. Blank phrases are ignored. When `enabled` is false the text is
 /// returned unchanged.
+#[cfg(test)]
 pub fn apply_voice_commands_with_custom(
     text: &str,
     enabled: bool,
@@ -114,6 +239,165 @@ pub fn apply_voice_commands_with_custom(
         out = replace_phrase(&out, phrase, replacement);
     }
     out
+}
+
+pub(crate) fn apply_voice_commands_with_resolved(
+    text: &str,
+    enabled: bool,
+    commands: &[ResolvedVoiceCommand],
+    runtime: &dyn VoiceCommandRuntime,
+) -> VoiceCommandApplication {
+    if !enabled {
+        return VoiceCommandApplication {
+            text: text.to_string(),
+            matched: false,
+            clipboard_required: false,
+            clipboard_read: false,
+        };
+    }
+    let mut out = apply_voice_commands(text, true);
+    let mut matched = out != text;
+    let mut clipboard_required = false;
+    let mut clipboard_read = false;
+    let now = runtime.now();
+    for command in commands {
+        if !contains_phrase(&out, &command.phrase) {
+            continue;
+        }
+        matched = true;
+        let replacement = match command.command_type {
+            VoiceCommandKind::TextReplacement => Ok(command.content.clone()),
+            VoiceCommandKind::Snippet => {
+                let needs_clipboard = command.content.contains("{{clipboard}}");
+                clipboard_required |= needs_clipboard;
+                expand_snippet(command, &now, runtime).map(|(expanded, read)| {
+                    clipboard_read |= read;
+                    expanded
+                })
+            }
+        };
+        match replacement {
+            Ok(replacement) => {
+                out = replace_phrase(&out, &command.phrase, &replacement);
+            }
+            Err(_) => {
+                tracing::warn!(
+                    target: "pipeline",
+                    command_type = ?command.command_type,
+                    clipboard_required,
+                    "voice command expansion skipped"
+                );
+            }
+        }
+    }
+    VoiceCommandApplication {
+        text: out,
+        matched,
+        clipboard_required,
+        clipboard_read,
+    }
+}
+
+fn expand_snippet(
+    command: &ResolvedVoiceCommand,
+    now: &DateTime<FixedOffset>,
+    runtime: &dyn VoiceCommandRuntime,
+) -> Result<(String, bool), String> {
+    validate_snippet_template(&command.content, command.allow_clipboard_read)?;
+    let mut expanded = command
+        .content
+        .replace("{{date}}", &now.format("%Y-%m-%d").to_string())
+        .replace("{{time}}", &now.format("%H:%M").to_string());
+    let mut clipboard_read = false;
+    if expanded.contains("{{clipboard}}") {
+        if !command.allow_clipboard_read {
+            return Err("Clipboard reading is not allowed for this command.".to_string());
+        }
+        let clipboard = runtime.clipboard_text()?;
+        if clipboard.chars().count() > MAX_EXPANDED_SNIPPET_CHARS {
+            return Err("Clipboard text is too large for a snippet.".to_string());
+        }
+        expanded = expanded.replace("{{clipboard}}", &clipboard);
+        clipboard_read = true;
+    }
+    if expanded.chars().count() > MAX_EXPANDED_SNIPPET_CHARS {
+        return Err("Expanded snippet exceeds the 65,536-character limit.".to_string());
+    }
+    Ok((expanded, clipboard_read))
+}
+
+fn contains_phrase(text: &str, phrase: &str) -> bool {
+    let lower = text.to_lowercase();
+    let chars: Vec<char> = text.chars().collect();
+    let lower_chars: Vec<char> = lower.chars().collect();
+    let phrase_chars: Vec<char> = phrase.to_lowercase().chars().collect();
+    if phrase_chars.is_empty() || lower_chars.len() != chars.len() {
+        return false;
+    }
+    (0..chars.len()).any(|index| matches_at(&lower_chars, index, &phrase_chars))
+}
+
+pub(crate) fn preview_voice_command(
+    draft: KnowledgeDraft,
+    text: &str,
+    read_clipboard: bool,
+) -> Result<VoiceCommandApplication, String> {
+    let metadata = draft
+        .voice_command
+        .ok_or_else(|| "Preview requires a typed Voice Command.".to_string())?;
+    let (phrase, content) = match draft.payload {
+        KnowledgePayload::ReplacementRule {
+            source,
+            replacement,
+        } if metadata.command_type == VoiceCommandKind::TextReplacement => (source, replacement),
+        KnowledgePayload::Snippet { trigger, body }
+            if metadata.command_type == VoiceCommandKind::Snippet =>
+        {
+            validate_snippet_template(&body, metadata.allow_clipboard_read)?;
+            (trigger, body)
+        }
+        _ => {
+            return Err(
+                "Voice command type does not match its stored knowledge payload.".to_string(),
+            );
+        }
+    };
+    let command = ResolvedVoiceCommand {
+        id: draft.id.unwrap_or_else(|| "preview".to_string()),
+        phrase,
+        command_type: metadata.command_type,
+        content,
+        allow_clipboard_read: metadata.allow_clipboard_read,
+        app_scoped: matches!(draft.scope, KnowledgeScope::App { .. }),
+    };
+    if is_builtin_phrase(&crate::knowledge_store::normalize_key(&command.phrase)) {
+        return Err("That phrase is reserved by a built-in Voice Command.".to_string());
+    }
+    let runtime = PreviewVoiceCommandRuntime { read_clipboard };
+    Ok(apply_voice_commands_with_resolved(
+        text,
+        true,
+        &[command],
+        &runtime,
+    ))
+}
+
+struct PreviewVoiceCommandRuntime {
+    read_clipboard: bool,
+}
+
+impl VoiceCommandRuntime for PreviewVoiceCommandRuntime {
+    fn now(&self) -> DateTime<FixedOffset> {
+        Local::now().fixed_offset()
+    }
+
+    fn clipboard_text(&self) -> Result<String, String> {
+        if self.read_clipboard {
+            crate::injector::read_clipboard_text()
+        } else {
+            Err("Clipboard preview was not explicitly requested.".to_string())
+        }
+    }
 }
 
 /// Replace every word-boundary, case-insensitive occurrence of `phrase` in `text`
@@ -253,6 +537,50 @@ fn delete_previous_sentence(out: &mut String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
+    use std::cell::Cell;
+
+    struct FixedRuntime {
+        now: DateTime<FixedOffset>,
+        clipboard: Result<String, String>,
+        reads: Cell<u32>,
+    }
+
+    impl VoiceCommandRuntime for FixedRuntime {
+        fn now(&self) -> DateTime<FixedOffset> {
+            self.now
+        }
+
+        fn clipboard_text(&self) -> Result<String, String> {
+            self.reads.set(self.reads.get() + 1);
+            self.clipboard.clone()
+        }
+    }
+
+    fn fixed_runtime(clipboard: Result<&str, &str>) -> FixedRuntime {
+        let zone = FixedOffset::west_opt(5 * 60 * 60).unwrap();
+        FixedRuntime {
+            now: zone.with_ymd_and_hms(2026, 7, 20, 9, 7, 0).unwrap(),
+            clipboard: clipboard.map(str::to_string).map_err(str::to_string),
+            reads: Cell::new(0),
+        }
+    }
+
+    fn resolved(
+        phrase: &str,
+        command_type: VoiceCommandKind,
+        content: &str,
+        allow_clipboard_read: bool,
+    ) -> ResolvedVoiceCommand {
+        ResolvedVoiceCommand {
+            id: phrase.to_string(),
+            phrase: phrase.to_string(),
+            command_type,
+            content: content.to_string(),
+            allow_clipboard_read,
+            app_scoped: false,
+        }
+    }
 
     #[test]
     fn disabled_returns_text_unchanged() {
@@ -262,7 +590,10 @@ mod tests {
 
     #[test]
     fn new_line_inserts_newline() {
-        assert_eq!(apply_voice_commands("hello new line world", true), "hello\nworld");
+        assert_eq!(
+            apply_voice_commands("hello new line world", true),
+            "hello\nworld"
+        );
     }
 
     #[test]
@@ -292,7 +623,10 @@ mod tests {
 
     #[test]
     fn question_mark_attaches_to_prior_word() {
-        assert_eq!(apply_voice_commands("really question mark", true), "really?");
+        assert_eq!(
+            apply_voice_commands("really question mark", true),
+            "really?"
+        );
     }
 
     #[test]
@@ -305,7 +639,10 @@ mod tests {
 
     #[test]
     fn case_insensitive_matching() {
-        assert_eq!(apply_voice_commands("hello New Line world", true), "hello\nworld");
+        assert_eq!(
+            apply_voice_commands("hello New Line world", true),
+            "hello\nworld"
+        );
         assert_eq!(apply_voice_commands("done PERIOD", true), "done.");
     }
 
@@ -314,7 +651,10 @@ mod tests {
         // "newline" is one word — must not be split.
         assert_eq!(apply_voice_commands("newline", true), "newline");
         // "periodic" contains "period" but isn't the command.
-        assert_eq!(apply_voice_commands("periodic table", true), "periodic table");
+        assert_eq!(
+            apply_voice_commands("periodic table", true),
+            "periodic table"
+        );
         // "commatesh" likewise.
         assert_eq!(apply_voice_commands("commando", true), "commando");
     }
@@ -364,7 +704,9 @@ mod tests {
     }
 
     fn pairs(p: &[(&str, &str)]) -> Vec<(String, String)> {
-        p.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect()
+        p.iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect()
     }
 
     #[test]
@@ -420,5 +762,98 @@ mod tests {
             apply_voice_commands_with_custom("done period", true, &[]),
             "done."
         );
+    }
+
+    #[test]
+    fn multiline_snippet_renders_date_and_time_from_one_fixed_instant() {
+        let runtime = fixed_runtime(Ok("unused"));
+        let command = resolved(
+            "insert standup",
+            VoiceCommandKind::Snippet,
+            "Yesterday:\n- done\nToday {{date}} {{time}}:\n- ship",
+            false,
+        );
+        let applied =
+            apply_voice_commands_with_resolved("insert standup", true, &[command], &runtime);
+        assert_eq!(
+            applied.text,
+            "Yesterday:\n- done\nToday 2026-07-20 09:07:\n- ship"
+        );
+        assert!(applied.matched);
+        assert_eq!(runtime.reads.get(), 0);
+    }
+
+    #[test]
+    fn clipboard_is_read_only_after_a_permitted_phrase_matches() {
+        let runtime = fixed_runtime(Ok("alpha\nbeta"));
+        let command = resolved(
+            "paste note",
+            VoiceCommandKind::Snippet,
+            "Note:\n{{clipboard}}",
+            true,
+        );
+        let missed = apply_voice_commands_with_resolved(
+            "ordinary prose",
+            true,
+            &[command.clone()],
+            &runtime,
+        );
+        assert_eq!(missed.text, "ordinary prose");
+        assert_eq!(runtime.reads.get(), 0);
+
+        let applied = apply_voice_commands_with_resolved("paste note", true, &[command], &runtime);
+        assert_eq!(applied.text, "Note:\nalpha\nbeta");
+        assert!(applied.clipboard_required);
+        assert!(applied.clipboard_read);
+        assert_eq!(runtime.reads.get(), 1);
+    }
+
+    #[test]
+    fn unavailable_clipboard_fails_closed_to_the_spoken_phrase() {
+        let runtime = fixed_runtime(Err("unavailable"));
+        let command = resolved(
+            "paste note",
+            VoiceCommandKind::Snippet,
+            "{{clipboard}}",
+            true,
+        );
+        let applied = apply_voice_commands_with_resolved(
+            "before paste note after",
+            true,
+            &[command],
+            &runtime,
+        );
+        assert_eq!(applied.text, "before paste note after");
+        assert!(applied.matched);
+        assert!(!applied.clipboard_read);
+    }
+
+    #[test]
+    fn text_replacements_keep_variable_syntax_literal_and_allow_empty_output() {
+        let runtime = fixed_runtime(Ok("secret"));
+        let literal = resolved(
+            "today token",
+            VoiceCommandKind::TextReplacement,
+            "{{date}}",
+            false,
+        );
+        let empty = resolved("remove me", VoiceCommandKind::TextReplacement, "", false);
+        assert_eq!(
+            apply_voice_commands_with_resolved("today token", true, &[literal], &runtime).text,
+            "{{date}}"
+        );
+        assert_eq!(
+            apply_voice_commands_with_resolved("remove me", true, &[empty], &runtime).text,
+            ""
+        );
+        assert_eq!(runtime.reads.get(), 0);
+    }
+
+    #[test]
+    fn snippet_validation_rejects_unknown_or_implicit_clipboard_variables() {
+        assert!(validate_snippet_template("{{weather}}", false).is_err());
+        assert!(validate_snippet_template("{{clipboard}}", false).is_err());
+        assert!(validate_snippet_template("{{clipboard}}", true).is_ok());
+        assert!(validate_snippet_template("{{date", false).is_err());
     }
 }

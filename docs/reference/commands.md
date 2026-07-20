@@ -52,12 +52,13 @@ For event-based communication (Rust to frontend), see [events.md](events.md). Fo
 |---------|-----------|-------------|-------------|
 | `get_knowledge_store_status` | _(none)_ | `KnowledgeStoreStatus` | Returns ready/recovered/reinitialized/unavailable state, schema version, record count, store revision, and privacy-safe recovery information. |
 | `retry_knowledge_store` | _(none)_ | `KnowledgeStoreStatus` | Re-runs local initialization after an unavailable state. |
-| `list_knowledge` | `request: KnowledgeListRequest` | `Result<KnowledgeListResponse, String>` | Bounded search/filter page; defaults to 50 and caps at 100 records. |
+| `list_knowledge` | `request: KnowledgeListRequest` | `Result<KnowledgeListResponse, String>` | Bounded search/filter page, including an optional Voice Command filter; defaults to 50 and caps at 100 records. |
 | `get_knowledge` | `id: String` | `Result<KnowledgeEntry, String>` | Returns one local record by stable ID. |
-| `upsert_knowledge` | `draft: KnowledgeDraft` | `Result<KnowledgeEntry, String>` | Creates a manual record or edits one using its expected revision. |
+| `upsert_knowledge` | `draft: KnowledgeDraft` | `Result<KnowledgeEntry, String>` | Creates a manual record or edits one using its expected revision. Typed Voice Commands also validate payload/type, scope, built-ins, duplicate phrases, variables, clipboard permission, and vocabulary conflicts. |
 | `set_knowledge_enabled` | `id`, `enabled`, `expected_revision` | `Result<KnowledgeEntry, String>` | Enables/disables one record with optimistic concurrency. |
 | `delete_knowledge` | `id`, `expected_revision` | `Result<u64, String>` | Deletes one record and returns the new store revision. |
-| `resolve_knowledge` | `request: KnowledgeResolveRequest` | `Result<Option<KnowledgeEntry>, String>` | Deterministically resolves an exact trigger across applicable scopes. Not integrated into transcription or command execution. |
+| `resolve_knowledge` | `request: KnowledgeResolveRequest` | `Result<Option<KnowledgeEntry>, String>` | Deterministically resolves an exact trigger across applicable scopes. |
+| `preview_voice_command` | `request: VoiceCommandPreviewRequest` | `Result<VoiceCommandPreviewResponse, String>` | Runs the real local matcher and variable expansion without clipboard output or paste. Clipboard input requires both saved command permission and an explicit preview request. |
 | `export_knowledge_to_file` | `path: String` | `Result<u64, String>` | Atomically exports the local store to versioned JSON selected by the user. |
 | `inspect_knowledge_import` | `path: String` | `Result<KnowledgeImportSummary, String>` | Validates an import and reports new, duplicate, and conflicting records without writing. |
 | `import_knowledge_from_file` | `path: String` | `Result<KnowledgeImportResult, String>` | Atomically imports validated new records without overwriting local records. |

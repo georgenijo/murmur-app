@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 pub const EXPORT_FORMAT: &str = "murmur-personal-knowledge";
-pub const EXPORT_VERSION: u32 = 1;
+pub const EXPORT_VERSION: u32 = 2;
 pub const DEFAULT_PAGE_SIZE: u32 = 50;
 pub const MAX_PAGE_SIZE: u32 = 100;
 
@@ -11,6 +11,38 @@ pub enum KnowledgeKind {
     ReplacementRule,
     VocabularyTerm,
     Snippet,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VoiceCommandKind {
+    TextReplacement,
+    Snippet,
+}
+
+impl VoiceCommandKind {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::TextReplacement => "text_replacement",
+            Self::Snippet => "snippet",
+        }
+    }
+
+    pub(crate) fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "text_replacement" => Ok(Self::TextReplacement),
+            "snippet" => Ok(Self::Snippet),
+            _ => Err("Voice command has an unsupported type.".to_string()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceCommandMetadata {
+    pub command_type: VoiceCommandKind,
+    #[serde(default)]
+    pub allow_clipboard_read: bool,
 }
 
 impl KnowledgeKind {
@@ -151,6 +183,8 @@ pub struct KnowledgeEntry {
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
     pub revision: u64,
+    #[serde(default)]
+    pub voice_command: Option<VoiceCommandMetadata>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -161,6 +195,8 @@ pub struct KnowledgeDraft {
     pub payload: KnowledgePayload,
     pub enabled: bool,
     pub scope: KnowledgeScope,
+    #[serde(default)]
+    pub voice_command: Option<VoiceCommandMetadata>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -170,8 +206,27 @@ pub struct KnowledgeListRequest {
     pub kind: Option<KnowledgeKind>,
     pub enabled: Option<bool>,
     pub scope_kind: Option<String>,
+    pub voice_command: Option<bool>,
     pub limit: Option<u32>,
     pub offset: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceCommandPreviewRequest {
+    pub draft: KnowledgeDraft,
+    pub text: String,
+    #[serde(default)]
+    pub read_clipboard: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceCommandPreviewResponse {
+    pub output: String,
+    pub matched: bool,
+    pub clipboard_required: bool,
+    pub clipboard_read: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

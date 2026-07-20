@@ -84,7 +84,7 @@ The overlay registers status and transcript lifecycle listeners as one set befor
 
 `run_transcription_pipeline()` remains the single authoritative completion entry point. `start_native_recording` resolves one immutable `DictationContextSnapshot` from the frontmost bundle identifier and current configuration; every live stage receives that snapshot instead of re-reading mutable settings:
 
-1. Capture app identity, matched profile, effective settings, vocabulary version, commands, and deny-by-default context permissions at recording start
+1. Capture app identity, matched profile, effective settings, vocabulary version, repository-backed commands, and deny-by-default context permissions at recording start
 2. Confirm the snapshot's model preparation completed (or load synchronously as a fallback)
 3. Adopt a successfully finalized incremental Whisper transcript, or run the full-buffer backend fallback with the same snapshot
 4. Run the backend-neutral transcript transformation pipeline from the snapshot's stage settings and resources
@@ -112,6 +112,7 @@ File persistence, clipboard/paste, history, and stats are intentionally outside 
 See [Per-App Dictation Context](per-app-profiles.md) for resolver precedence, duplicate-profile compatibility, lifetime, and privacy boundaries.
 See [Spoken CLI Command Formatting](cli-command-formatting.md) for activation, grammar, local lexicon layering, and safety guarantees.
 See [Explicit Spoken Vocabulary Aliases](vocabulary-aliases.md) for migration, precedence, scope, validation, and privacy guarantees.
+See [Voice Commands 2.0](voice-commands.md) for typed replacements, multiline snippets, variables, app scopes, conflicts, and clipboard permission boundaries.
 See [Smart Formatting and Same-Utterance Backtracking](smart-formatting.md) for its explicit prose grammar, bounds, bypass rules, and privacy contract.
 See [Local IDE Symbols and `@file` Context](ide-context.md) for opt-in, scan boundaries, ambiguity, expiry, and privacy guarantees.
 
