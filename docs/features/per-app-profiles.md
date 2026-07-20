@@ -43,6 +43,12 @@ The snapshot contains only typed values used by the live pipeline:
 
 `AppState` stores the snapshot with its `recording_id`. Stop and processing paths can retrieve only the matching generation. Cleanup also checks the generation, so a stale pipeline cannot read or clear a newer recording's snapshot. Focus changes and settings changes after recording starts affect only later recordings.
 
+### Frontmost-app sampling
+
+At recording start, Murmur queries the native macOS `NSWorkspace` frontmost application first. An unavailable or empty native result is retried twice at 10 ms intervals, then the timeout-bounded System Events query is attempted once as a compatibility fallback. The nominal worst-case query budget is 270 ms: 20 ms of retry delay plus the fallback's 250 ms timeout.
+
+The first successful sample wins and is resolved into the immutable snapshot exactly once. If focus changes after a successful native sample, the original app remains active for that recording. If an early native sample is unavailable while the user switches apps, the first later successful native or fallback sample becomes active for the recording. If every query fails, Murmur resolves an unmatched global-only context; app-specific IDE/context reads remain disabled.
+
 ## Privacy boundary
 
 Context capture is deny-by-default. A profile may explicitly grant only its bounded local project index. The snapshot never grants reading:
@@ -56,6 +62,8 @@ This policy is separate from delivery. Murmur remains clipboard-first: the compl
 Writing styles also do not change the ASR model, language, vocabulary inputs, prompt, file-saving behavior, clipboard write, auto-paste timing, or destination. Style telemetry contains only the stable resolved enum plus the existing matched-profile boolean; bundle identifiers, labels, setting values, and transcript content are never logged.
 
 Vocabulary aliases use this same immutable context. Global aliases always apply. Typed app aliases require the matching snapshot bundle identifier; typed project aliases additionally require the matching profile's enabled local project context and configured root. Settings currently creates global aliases first. No alias path re-detects the frontmost app.
+
+Frontmost-app detection telemetry likewise contains only a numeric outcome code, retry count, numeric source code, and elapsed milliseconds. It never contains the detected bundle identifier, application name, profile label, project roots, or user content.
 
 ## Extension points
 
