@@ -21,7 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 - Long Whisper batch and file transcriptions now retain timestamp-based continuation, preventing an early end-of-text token from silently dropping the remaining audio while preserving single-segment decoding for short audio (#269). Multi-segment output is additionally guarded against words gluing together at segment joins.
-- The Performance Lab's `fastest`/`balanced` recommendations no longer flip between identical runs: ranking uses per-audio-second realtime factor with a 10% noise tie band, and `balanced` prefers lower-memory models among speed ties (#272).
+- Performance Lab recommendations now rank Fastest by the strict minimum duration-weighted realtime factor, while Balanced uses normalized WER within two accuracy points, an inclusive 10% speed band, then lower memory with deterministic ties (#272).
 - Per-app profile matching now uses the native macOS frontmost-application query with bounded retries and a timeout-bounded compatibility fallback, while preserving one immutable recording-start snapshot and privacy-safe detection telemetry (#265).
 
 ## [0.17.2] - 2026-07-19
