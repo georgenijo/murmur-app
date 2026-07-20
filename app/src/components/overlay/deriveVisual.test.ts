@@ -36,9 +36,6 @@ describe('deriveVisual', () => {
             );
             expect(visual.showTapMissedLabel).toBe(showHotkeyMiss);
             expect(visual.waveformVisible).toBe(status === 'recording');
-            expect(visual.isActive).toBe(
-              status === 'recording' || status === 'processing' || showCancelled || showHotkeyMiss,
-            );
           });
         }
       }

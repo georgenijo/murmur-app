@@ -1,4 +1,12 @@
+import { useEffect, useState } from 'react';
 import type { OverlayGeometry } from '../../lib/overlayGeometry';
+import type { DictationStatus } from '../../lib/types';
+
+function formatElapsed(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
 
 function PowerIcon({ stroke }: { stroke: string }) {
   return (
@@ -37,6 +45,8 @@ function SlidersIcon({ stroke }: { stroke: string }) {
 interface OverlayDropdownProps {
   geometry: OverlayGeometry;
   expanded: boolean;
+  status: DictationStatus;
+  showTapMissed: boolean;
   disabled: boolean;
   autoPaste: boolean;
   fileOutputEnabled: boolean;
@@ -45,10 +55,18 @@ interface OverlayDropdownProps {
   onOpenSettings: (e: React.MouseEvent) => void;
 }
 
-/** The three quick-settings buttons revealed on hover-expand. */
+/**
+ * The dropdown row revealed on hover-expand: the three quick-settings buttons
+ * (centered), plus a left-anchored status slot that carries content too wide for
+ * a wing — the recording `m:ss` timer (when recording) or the "Tap missed" label
+ * (during a hotkey-miss flash). The slot is absolutely positioned so the buttons
+ * stay centered regardless of it.
+ */
 export function OverlayDropdown({
   geometry,
   expanded,
+  status,
+  showTapMissed,
   disabled,
   autoPaste,
   fileOutputEnabled,
@@ -56,6 +74,18 @@ export function OverlayDropdown({
   onToggleAutoPaste,
   onOpenSettings,
 }: OverlayDropdownProps) {
+  const [elapsed, setElapsed] = useState(0);
+
+  // Track recording elapsed time for the inline timer. Only runs while the row
+  // is actually visible-and-recording, so no interval ticks when collapsed.
+  const recordingVisible = expanded && status === 'recording';
+  useEffect(() => {
+    if (!recordingVisible) { setElapsed(0); return; }
+    const start = Date.now();
+    setElapsed(0);
+    const id = setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 250);
+    return () => clearInterval(id);
+  }, [recordingVisible]);
   const effectiveAutoPaste = autoPaste && !fileOutputEnabled;
   const autoPastePaused = autoPaste && fileOutputEnabled;
   const autoPasteLabel = autoPastePaused
@@ -76,7 +106,7 @@ export function OverlayDropdown({
 
   return (
     <div
-      className="overlay-dropdown flex items-center justify-center gap-3"
+      className="overlay-dropdown relative flex items-center justify-center gap-3"
       role="group"
       aria-label="Quick settings"
       aria-hidden={!expanded}
@@ -89,6 +119,28 @@ export function OverlayDropdown({
         transitionDelay: expanded ? '100ms' : '0ms',
       }}
     >
+      {/* Left status slot — content too wide for a wing renders here, below the
+          notch. Recording timer takes precedence; the "Tap missed" label shows
+          during a hotkey-miss flash. Absolutely positioned so the buttons stay
+          centered. */}
+      {(status === 'recording' || showTapMissed) && (
+        <span
+          className="absolute left-[10px] top-0 bottom-[6px] flex items-center pointer-events-none"
+          aria-live={showTapMissed ? 'polite' : undefined}
+        >
+          {/* Priority mirrors deriveVisual's indicator: hotkey-miss beats recording. */}
+          {showTapMissed ? (
+            <span className="text-amber-300 font-medium" style={{ fontSize: 11 }}>
+              Tap missed
+            </span>
+          ) : (
+            <span className="text-white/60 tabular-nums" style={{ fontSize: 11 }}>
+              {formatElapsed(elapsed)}
+            </span>
+          )}
+        </span>
+      )}
+
       {/* Global disable */}
       <button
         type="button"

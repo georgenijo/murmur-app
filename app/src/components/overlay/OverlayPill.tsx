@@ -1,14 +1,7 @@
-import { useEffect, useState } from 'react';
 import type { OverlayGeometry } from '../../lib/overlayGeometry';
 import type { DictationStatus } from '../../lib/types';
 import { BAR_COUNT } from '../../lib/hooks/useWaveform';
 import type { OverlayVisual } from './deriveVisual';
-
-function formatElapsed(seconds: number): string {
-  const m = Math.floor(seconds / 60);
-  const s = seconds % 60;
-  return `${m}:${String(s).padStart(2, '0')}`;
-}
 
 interface OverlayPillProps {
   geometry: OverlayGeometry;
@@ -18,10 +11,14 @@ interface OverlayPillProps {
 }
 
 /**
- * Top-bar content: status indicator + inline timer + waveform. Purely
+ * Top-bar content: status indicator (left wing) + waveform (right wing). Purely
  * presentational — driven by the `visual` descriptor from `deriveVisual`.
- * Does not own the island container (sizing/hover/islandRef stay in
- * OverlayWidget.tsx, since they also govern the sibling dropdown).
+ *
+ * The wings are the only strips clear of the physical notch, so they hold ONLY
+ * these two narrow elements. Wider content (recording timer, "Tap missed" label)
+ * lives in the dropdown row, below notch height. Does not own the island
+ * container (sizing/hover/islandRef stay in OverlayWidget.tsx, since they also
+ * govern the sibling dropdown).
  */
 export function OverlayPill({
   geometry,
@@ -29,17 +26,6 @@ export function OverlayPill({
   status,
   barRefs,
 }: OverlayPillProps) {
-  const [elapsed, setElapsed] = useState(0);
-
-  // Track recording elapsed time for the inline timer (recording + hover only).
-  useEffect(() => {
-    if (status !== 'recording') { setElapsed(0); return; }
-    const start = Date.now();
-    setElapsed(0);
-    const id = setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 250);
-    return () => clearInterval(id);
-  }, [status]);
-
   const topH = geometry.collapsedH;
   const { indicator } = visual;
 
@@ -47,7 +33,7 @@ export function OverlayPill({
     <>
       {/* Top bar — the only draggable surface (keeps the dropdown buttons clickable) */}
       <div data-tauri-drag-region className="flex items-center" style={{ height: topH, paddingLeft: 10, paddingRight: 10 }}>
-        {/* Left side — mic icon (idle) or red dot (recording) or spinner (processing) or red X (cancelled), all same position */}
+        {/* Left wing — mic icon (idle) or red dot (recording) or spinner (processing) or red X (cancelled) or amber ! (hotkey miss), all same position */}
         <div className="shrink-0 w-3 h-3 flex items-center justify-center">
           {indicator.kind === 'cancelled' ? (
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
@@ -71,39 +57,26 @@ export function OverlayPill({
           )}
         </div>
 
-        {/* Recording time remains in the visible left wing, outside the physical notch. */}
-        {status === 'recording' && (
-          <span className="shrink-0 text-white/60 tabular-nums" style={{ marginLeft: 7, fontSize: 11 }}>
-            {formatElapsed(elapsed)}
-          </span>
-        )}
-
         {/* This spacer is intentionally the notch-obscured center region. */}
         <div className="flex-1" aria-hidden="true" />
 
-        {/* Right side — waveform (only when active) */}
-        {visual.showTapMissedLabel ? (
-          <span className="shrink-0 text-amber-300 text-[10px] font-medium">
-            Tap missed
-          </span>
-        ) : (
-          <div
-            className="flex items-center gap-[1.5px] h-4 shrink-0 transition-opacity duration-300"
-            style={{ opacity: visual.waveformVisible ? 1 : 0 }}
-          >
-            {Array.from({ length: BAR_COUNT }, (_, i) => (
-              <div
-                key={i}
-                ref={el => { barRefs.current[i] = el; }}
-                className="w-[2px] rounded-full bg-white/90"
-                style={{
-                  height: '2px',
-                  transition: `height ${status === 'recording' ? '50ms' : '300ms'} ease-out`,
-                }}
-              />
-            ))}
-          </div>
-        )}
+        {/* Right wing — waveform (only when recording) */}
+        <div
+          className="flex items-center gap-[1.5px] h-4 shrink-0 transition-opacity duration-300"
+          style={{ opacity: visual.waveformVisible ? 1 : 0 }}
+        >
+          {Array.from({ length: BAR_COUNT }, (_, i) => (
+            <div
+              key={i}
+              ref={el => { barRefs.current[i] = el; }}
+              className="w-[2px] rounded-full bg-white/90"
+              style={{
+                height: '2px',
+                transition: `height ${status === 'recording' ? '50ms' : '300ms'} ease-out`,
+              }}
+            />
+          ))}
+        </div>
       </div>
     </>
   );

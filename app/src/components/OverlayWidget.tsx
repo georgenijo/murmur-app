@@ -117,13 +117,11 @@ export function OverlayWidget() {
         onMouseLeave={onHoverEnd}
         style={{
           borderRadius: '0 0 12px 12px',
-          width: (expanded || visual.isActive)
-            ? geometry.pillActiveW
-            : geometry.pillIdleW,
+          // One constant island width in every state — the island IS the window.
+          // Only height animates (see OVERLAY_ISLAND_TRANSITION).
+          width: geometry.pillActiveW,
           height: topH + (expanded ? geometry.dropdownH : 0),
-          marginLeft: (expanded || visual.isActive)
-            ? geometry.pillMarginActive
-            : geometry.pillMarginIdle,
+          marginLeft: geometry.pillMarginActive,
           background: 'rgba(20, 20, 20, 0.92)',
           boxShadow: visual.showTapMissedLabel ? 'inset 0 -2px 0 rgba(245,158,11,0.9), 0 3px 16px rgba(245,158,11,0.22)' : 'none',
           backdropFilter: 'blur(40px)',
@@ -140,6 +138,8 @@ export function OverlayWidget() {
         <OverlayDropdown
           geometry={geometry}
           expanded={expanded}
+          status={status}
+          showTapMissed={visual.showTapMissedLabel}
           disabled={runtime.disabled}
           autoPaste={settingsMirror.autoPaste}
           fileOutputEnabled={settingsMirror.fileOutputEnabled}
