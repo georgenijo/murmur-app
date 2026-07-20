@@ -179,6 +179,7 @@ describe('active session readiness snapshot', () => {
     const recovered = partialTranscriptReducer(initial, {
       type: 'sessionSnapshot',
       payload: { recordingId: 12, status: 'recording' },
+      expectedEventGeneration: 0,
     });
     const updated = withPartial(recovered, 12, 'visible after snapshot recovery', 1);
 
@@ -187,6 +188,66 @@ describe('active session readiness snapshot', () => {
     expect(recovered.activeRecordingId).toBe(12);
     expect(updated.status).toBe('recording');
     expect(updated.text).toBe('visible after snapshot recovery');
+  });
+
+  it('rejects a recording snapshot that resolves after processing status', () => {
+    const initial = createPartialTranscriptState(true, 'small.en');
+    const processing = partialTranscriptReducer(initial, {
+      type: 'statusChanged',
+      status: 'processing',
+      eventGeneration: 1,
+    });
+    const lateSnapshot = partialTranscriptReducer(processing, {
+      type: 'sessionSnapshot',
+      payload: { recordingId: 12, status: 'recording' },
+      expectedEventGeneration: 0,
+    });
+
+    expect(processing.lifecycleEventGeneration).toBe(1);
+    expect(lateSnapshot).toBe(processing);
+    expect(lateSnapshot.status).toBe('processing');
+    expect(lateSnapshot.activeRecordingId).toBeNull();
+  });
+
+  it.each<PartialTranscriptClearReason>(['fallback', 'cancelled'])(
+    'rejects a recording snapshot that resolves after a %s clear',
+    (reason) => {
+      const initial = createPartialTranscriptState(true, 'small.en');
+      const cleared = partialTranscriptReducer(initial, {
+        type: 'sessionCleared',
+        payload: { ...session(12), reason },
+        eventGeneration: 1,
+      });
+      const lateSnapshot = partialTranscriptReducer(cleared, {
+        type: 'sessionSnapshot',
+        payload: { recordingId: 12, status: 'recording' },
+        expectedEventGeneration: 0,
+      });
+
+      expect(cleared.lifecycleEventGeneration).toBe(1);
+      expect(cleared.latestRecordingId).toBe(12);
+      expect(lateSnapshot).toBe(cleared);
+      expect(lateSnapshot.activeRecordingId).toBeNull();
+      expect(lateSnapshot.status).toBe('idle');
+    },
+  );
+
+  it('tombstones a clear received before its delayed session-start event', () => {
+    const initial = createPartialTranscriptState(true, 'small.en');
+    const cleared = partialTranscriptReducer(initial, {
+      type: 'sessionCleared',
+      payload: { ...session(12), reason: 'cancelled' },
+      eventGeneration: 1,
+    });
+    const lateStart = partialTranscriptReducer(cleared, {
+      type: 'sessionStarted',
+      payload: session(12),
+      eventGeneration: 2,
+    });
+
+    expect(cleared.latestRecordingId).toBe(12);
+    expect(lateStart.activeRecordingId).toBeNull();
+    expect(lateStart.lifecycleEventGeneration).toBe(2);
   });
 
   it('accepts only active recording or processing snapshots', () => {

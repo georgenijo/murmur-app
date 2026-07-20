@@ -1,4 +1,4 @@
-import { useEffect, useReducer } from 'react';
+import { useEffect, useReducer, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { flog } from '../log';
@@ -30,6 +30,7 @@ export interface PartialTranscriptClearedPayload extends RecordingSessionStarted
 
 export interface PartialTranscriptState {
   status: DictationStatus;
+  lifecycleEventGeneration: number;
   activeRecordingId: number | null;
   latestRecordingId: number | null;
   text: string;
@@ -57,12 +58,16 @@ export interface ActiveRecordingSessionSnapshot {
 }
 
 export type PartialTranscriptAction =
-  | { type: 'sessionStarted'; payload: RecordingSessionStartedPayload }
-  | { type: 'sessionSnapshot'; payload: ActiveRecordingSessionSnapshot }
-  | { type: 'statusChanged'; status: DictationStatus }
+  | { type: 'sessionStarted'; payload: RecordingSessionStartedPayload; eventGeneration?: number }
+  | {
+      type: 'sessionSnapshot';
+      payload: ActiveRecordingSessionSnapshot;
+      expectedEventGeneration: number;
+    }
+  | { type: 'statusChanged'; status: DictationStatus; eventGeneration?: number }
   | { type: 'partialReceived'; payload: PartialTranscriptPayload }
-  | { type: 'sessionCleared'; payload: PartialTranscriptClearedPayload }
-  | { type: 'settingsChanged'; enabled: boolean; model: string };
+  | { type: 'sessionCleared'; payload: PartialTranscriptClearedPayload; eventGeneration?: number }
+  | { type: 'settingsChanged'; enabled: boolean; model: string; eventGeneration?: number };
 
 export function createPartialTranscriptState(
   enabled: boolean,
@@ -70,6 +75,7 @@ export function createPartialTranscriptState(
 ): PartialTranscriptState {
   return {
     status: 'idle',
+    lifecycleEventGeneration: 0,
     activeRecordingId: null,
     latestRecordingId: null,
     text: '',
@@ -83,6 +89,19 @@ export function createPartialTranscriptState(
     lastEventRecordingId: null,
     lastEventChunkIndex: 0,
   };
+}
+
+function observeLifecycleEvent(
+  state: PartialTranscriptState,
+  eventGeneration?: number,
+): PartialTranscriptState {
+  if (
+    eventGeneration === undefined
+    || eventGeneration <= state.lifecycleEventGeneration
+  ) {
+    return state;
+  }
+  return { ...state, lifecycleEventGeneration: eventGeneration };
 }
 
 function clearSession(
@@ -103,18 +122,23 @@ export function partialTranscriptReducer(
   action: PartialTranscriptAction,
 ): PartialTranscriptState {
   switch (action.type) {
-    case 'sessionStarted':
+    case 'sessionStarted': {
+      const observed = observeLifecycleEvent(state, action.eventGeneration);
       if (
-        state.latestRecordingId !== null
-        && action.payload.recordingId <= state.latestRecordingId
+        observed.latestRecordingId !== null
+        && action.payload.recordingId <= observed.latestRecordingId
       ) {
-        return state;
+        return observed;
       }
       return {
-        ...clearSession(state, action.payload.recordingId),
+        ...clearSession(observed, action.payload.recordingId),
         latestRecordingId: action.payload.recordingId,
       };
+    }
     case 'sessionSnapshot': {
+      if (action.expectedEventGeneration !== state.lifecycleEventGeneration) {
+        return state;
+      }
       const { recordingId, status } = action.payload;
       if (state.latestRecordingId !== null && recordingId < state.latestRecordingId) {
         return state;
@@ -128,8 +152,12 @@ export function partialTranscriptReducer(
         status,
       };
     }
-    case 'statusChanged':
-      return state.status === action.status ? state : { ...state, status: action.status };
+    case 'statusChanged': {
+      const observed = observeLifecycleEvent(state, action.eventGeneration);
+      return observed.status === action.status
+        ? observed
+        : { ...observed, status: action.status };
+    }
     case 'partialReceived': {
       const { payload } = action;
       const decision = classifyPartialTranscriptEvent(state, payload);
@@ -153,20 +181,31 @@ export function partialTranscriptReducer(
         lastEventChunkIndex: payload.chunkIndex,
       };
     }
-    case 'sessionCleared':
-      return action.payload.recordingId === state.activeRecordingId
-        ? clearSession(state)
-        : state;
+    case 'sessionCleared': {
+      const observed = observeLifecycleEvent(state, action.eventGeneration);
+      const withTombstone = (
+        observed.latestRecordingId === null
+        || action.payload.recordingId > observed.latestRecordingId
+      )
+        ? { ...observed, latestRecordingId: action.payload.recordingId }
+        : observed;
+      return action.payload.recordingId === withTombstone.activeRecordingId
+        ? clearSession(withTombstone)
+        : withTombstone;
+    }
     case 'settingsChanged': {
-      if (action.model !== state.model) {
+      const observed = observeLifecycleEvent(state, action.eventGeneration);
+      if (action.model !== observed.model) {
         return {
-          ...clearSession(state),
+          ...clearSession(observed),
           enabled: action.enabled,
           model: action.model,
         };
       }
       return {
-        ...(action.enabled ? state : clearSession(state, state.activeRecordingId)),
+        ...(action.enabled
+          ? observed
+          : clearSession(observed, observed.activeRecordingId)),
         enabled: action.enabled,
       };
     }
@@ -246,13 +285,15 @@ export function isRecordingIdPayload(
 }
 
 export function usePartialTranscript(enabled: boolean, model: string) {
+  const lifecycleEventGenerationRef = useRef(0);
   const [state, dispatch] = useReducer(
     partialTranscriptReducer,
     createPartialTranscriptState(enabled, model),
   );
 
   useEffect(() => {
-    dispatch({ type: 'settingsChanged', enabled, model });
+    const eventGeneration = ++lifecycleEventGenerationRef.current;
+    dispatch({ type: 'settingsChanged', enabled, model, eventGeneration });
   }, [enabled, model]);
 
   useEffect(() => {
@@ -279,16 +320,18 @@ export function usePartialTranscript(enabled: boolean, model: string) {
       const registered = await Promise.all([
         listen<unknown>('recording-session-started', (event) => {
           if (isRecordingSessionStartedPayload(event.payload)) {
+            const eventGeneration = ++lifecycleEventGenerationRef.current;
             flog.info('overlay-preview', 'recording session selected', {
               recordingId: event.payload.recordingId,
               source: 'event',
             });
-            dispatch({ type: 'sessionStarted', payload: event.payload });
+            dispatch({ type: 'sessionStarted', payload: event.payload, eventGeneration });
           }
         }),
         listen<unknown>('recording-status-changed', (event) => {
           if (isDictationStatus(event.payload)) {
-            dispatch({ type: 'statusChanged', status: event.payload });
+            const eventGeneration = ++lifecycleEventGenerationRef.current;
+            dispatch({ type: 'statusChanged', status: event.payload, eventGeneration });
           }
         }),
         listen<unknown>('partial-transcript', (event) => {
@@ -298,17 +341,20 @@ export function usePartialTranscript(enabled: boolean, model: string) {
         }),
         listen<unknown>('partial-transcript-cleared', (event) => {
           if (isPartialTranscriptClearedPayload(event.payload)) {
+            const eventGeneration = ++lifecycleEventGenerationRef.current;
             flog.info('overlay-preview', 'partial session clear received', {
               recordingId: event.payload.recordingId,
               reason: event.payload.reason,
             });
-            dispatch({ type: 'sessionCleared', payload: event.payload });
+            dispatch({ type: 'sessionCleared', payload: event.payload, eventGeneration });
           }
         }),
         listen<unknown>('recording-cancelled', (event) => {
           if (isRecordingIdPayload(event.payload)) {
+            const eventGeneration = ++lifecycleEventGenerationRef.current;
             dispatch({
               type: 'sessionCleared',
+              eventGeneration,
               payload: {
                 contractVersion: PARTIAL_TRANSCRIPT_CONTRACT_VERSION,
                 recordingId: event.payload.recordingId,
@@ -319,8 +365,10 @@ export function usePartialTranscript(enabled: boolean, model: string) {
         }),
         listen<unknown>('transcription-complete', (event) => {
           if (isRecordingIdPayload(event.payload)) {
+            const eventGeneration = ++lifecycleEventGenerationRef.current;
             dispatch({
               type: 'sessionCleared',
+              eventGeneration,
               payload: {
                 contractVersion: PARTIAL_TRANSCRIPT_CONTRACT_VERSION,
                 recordingId: event.payload.recordingId,
@@ -339,14 +387,34 @@ export function usePartialTranscript(enabled: boolean, model: string) {
       flog.info('overlay-preview', 'listeners ready', { listenerCount: registered.length });
 
       try {
+        const expectedEventGeneration = lifecycleEventGenerationRef.current;
         const snapshot = await invoke<unknown>('get_active_recording_session');
-        if (!disposed && isActiveRecordingSessionSnapshot(snapshot)) {
+        const observedEventGeneration = lifecycleEventGenerationRef.current;
+        if (
+          !disposed
+          && isActiveRecordingSessionSnapshot(snapshot)
+          && observedEventGeneration === expectedEventGeneration
+        ) {
           flog.info('overlay-preview', 'recording session selected', {
             recordingId: snapshot.recordingId,
             status: snapshot.status,
             source: 'readiness_snapshot',
           });
-          dispatch({ type: 'sessionSnapshot', payload: snapshot });
+          dispatch({
+            type: 'sessionSnapshot',
+            payload: snapshot,
+            expectedEventGeneration,
+          });
+        } else if (
+          !disposed
+          && isActiveRecordingSessionSnapshot(snapshot)
+          && observedEventGeneration !== expectedEventGeneration
+        ) {
+          flog.info('overlay-preview', 'active session snapshot superseded', {
+            recordingId: snapshot.recordingId,
+            expectedEventGeneration,
+            observedEventGeneration,
+          });
         }
       } catch (error) {
         flog.warn('overlay-preview', 'active session reconciliation failed', {
