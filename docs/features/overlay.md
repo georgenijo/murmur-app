@@ -56,8 +56,24 @@ Width transitions over 400ms and height over 360ms, both using the spring curve 
 
 Hovering the pill expands it downward into a quick-settings dropdown. The dropdown is identical regardless of state — only the top bar differs.
 
-- **Expand** requires hover intent: the cursor must dwell on the island for `HOVER_OPEN_DWELL_MS` (150ms) before the card opens — grazing the notch does nothing. **Collapse** 300ms after `mouseLeave`.
-- Because a transparent overlay with cursor events enabled captures the mouse across its whole frame, the window is **dynamically resized** rather than pre-allocated tall — otherwise the idle overlay would create a click dead-zone below the notch. Expand grows the window first, then the card animates open; collapse animates the card closed, then shrinks the window ~380ms later so the dropdown is never clipped mid-transition.
+The entire expand/collapse and native-resize lifecycle is owned by one controller hook, `useOverlayExpansion` (`app/src/lib/hooks/useOverlayExpansion.ts`). Nothing else in the overlay calls `set_overlay_surface` or owns the dwell/collapse/shrink timers — the controller is the single writer to the native resize path.
+
+### Phase model
+
+The controller runs a four-phase state machine:
+
+| Phase | Meaning |
+|-------|---------|
+| `collapsed` | Pill only; window at collapsed height. |
+| `opening` | Grow requested; **awaiting the resize ack**. The dropdown is not revealed yet. |
+| `open` | Ack received; the dropdown is revealed (`expanded` CSS flag = `phase === 'open'`). Also spans the leave-delay. |
+| `closing` | Dropdown hidden immediately; the window stays tall until the close animation finishes, then shrinks. |
+
+- **Expand** requires hover intent: the cursor must dwell on the island for `HOVER_OPEN_DWELL_MS` (150ms) before opening — grazing the notch does nothing. **Collapse** begins 300ms after the cursor leaves.
+- **Acknowledged ordering:** because a transparent overlay with cursor events enabled captures the mouse across its whole frame, the window is **dynamically resized** rather than pre-allocated tall — otherwise the idle overlay would create a click dead-zone below the notch. Expand enqueues the grow, **awaits the ack from `set_overlay_surface`** (which returns the applied frame), and only then reveals the card, so CSS can never animate the dropdown into a window that has not yet grown. If the resize is rejected, the controller reverts to `collapsed` without revealing. Collapse hides the card immediately, then shrinks the window `SHRINK_DELAY_MS` later so the dropdown is never clipped mid-transition.
+- **Serialized surface writer:** all `set_overlay_surface` calls — hover grow/shrink *and* the below-notch preview-row sync — flow through one async queue with a generation counter. A newer request supersedes any queued or in-flight older one, and stale acks are dropped, so rapid enter/leave/enter can never apply an out-of-date resize. Re-entry while `closing` cancels the pending shrink and reopens cleanly.
+- **Motion tokens:** the transition durations/easings live in `app/src/lib/overlayMotion.ts` (width 400ms, height 360ms, spring `cubic-bezier(0.34,1.56,0.64,1)`, dwell 150ms, collapse-delay 300ms). `SHRINK_DELAY_MS` is **derived** as `OVERLAY_HEIGHT_MS + 20` (= 380ms) rather than a hand-tuned constant, so it can never drift from the height transition it guards. The island's `transition` string is templated from these tokens.
+- **Single gated poller:** the overlay is non-activating and sits above the menu bar, so macOS can miss DOM hover events. One 150ms interval branches on phase — strict entry bounds arm the dwell while `collapsed`/`closing`; padded exit bounds collapse the card while `open`. Ticks do **no IPC** (no `outerPosition`/`cursorPosition`) unless the overlay is visible (tracked via `overlay-visible-changed`, defaulting to visible on mount) *and* the app is not disabled. A display change (`overlay-geometry-changed`) is authoritative: it cancels timers, drops the queue generation, and forces `collapsed` (Rust has already resized the window to collapsed).
 - Only the **top bar** is a drag region (`data-tauri-drag-region`); the dropdown buttons are not, so they stay clickable.
 
 ### Dropdown controls
@@ -143,12 +159,12 @@ The observer is intentionally leaked (`std::mem::forget`) for app-lifetime obser
 
 | Command | Description |
 |---------|-------------|
-| `show_overlay` | Positions, sizes, and shows the overlay window. Re-enables mouse events. |
-| `hide_overlay` | Hides the overlay window. Gracefully handles missing window. |
-| `set_overlay_surface` | Composes the below-notch preview row and hover dropdown height independently. Width remains fixed and top anchored. Sizes derived from `geometry_for()`. |
+| `show_overlay` | Positions, sizes, and shows the overlay window. Re-enables mouse events. Emits `overlay-visible-changed(true)` after showing. |
+| `hide_overlay` | Hides the overlay window. Gracefully handles missing window. Emits `overlay-visible-changed(false)` after hiding. |
+| `set_overlay_surface` | Composes the below-notch preview row and hover dropdown height independently, then **returns the applied frame** as `AppliedSurface { windowW, windowH }`. The expansion controller awaits this value as the resize ack before revealing the dropdown. Width remains fixed and top anchored. Sizes derived from `geometry_for()`. |
 | `get_overlay_geometry` | Returns the current `OverlayGeometry` (never null) derived from the cached notch via `geometry_for()`. |
 
-`set_overlay_surface`, `set_overlay_expanded`, and `position_overlay_default` all size the window from `geometry_for()`, so they stay consistent.
+`set_overlay_surface` and `position_overlay_default` both size the window from `geometry_for()`, so they stay consistent.
 
 ## Events
 
@@ -159,7 +175,8 @@ The observer is intentionally leaked (`std::mem::forget`) for app-lifetime obser
 | `partial-transcript` | `{ contractVersion, recordingId, text, chunkIndex, processedAudioMs }` | Supplies cumulative in-memory provisional text for the active session only |
 | `partial-transcript-cleared` | `{ contractVersion, recordingId, reason }` | Session-scoped cleanup on cancellation, fallback, error, or finalization |
 | `audio-level` | Number (RMS 0.0-1.0) | Real-time audio level for waveform |
-| `overlay-geometry-changed` | `OverlayGeometry` | Display configuration changed; carries the recomputed geometry (never null) |
+| `overlay-geometry-changed` | `OverlayGeometry` | Display configuration changed; carries the recomputed geometry (never null). Authoritative reset for the expansion controller (forces `collapsed`). |
+| `overlay-visible-changed` | Boolean | Overlay window shown (`true`) / hidden (`false`); gates the expansion controller's cursor poller so it does no IPC while hidden |
 | `app-disabled-changed` | Boolean | Global-disable state changed (updates the top-bar mic + speaker-slash) |
 | `settings-changed` | (none) | Overlay-relevant settings changed in another window; listeners re-read localStorage |
 | `hotkey-tap-rejected` | `{ reason: "second_tap_expired", mode: "double_tap" \| "both" }` | Drives the opt-in amber timing-miss flash |

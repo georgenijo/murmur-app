@@ -178,7 +178,6 @@ pub fn run() {
             commands::tray::update_tray_icon,
             commands::overlay::show_overlay,
             commands::overlay::hide_overlay,
-            commands::overlay::set_overlay_expanded,
             commands::overlay::set_overlay_surface,
             commands::overlay::show_main_window,
             commands::overlay::get_overlay_geometry,

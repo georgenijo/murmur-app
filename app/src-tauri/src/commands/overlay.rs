@@ -1,5 +1,4 @@
 use crate::{MutexExt, State};
-#[cfg(target_os = "macos")]
 use tauri::Emitter;
 use tauri::Manager;
 
@@ -15,6 +14,16 @@ pub struct OverlayGeometry {
     pub pill_margin_active: f64,
     pub dropdown_h: f64,
     pub preview_row_h: f64,
+}
+
+/// The window frame `set_overlay_surface` actually applied. Returned so the
+/// frontend can treat the resolved value as an acknowledgment: CSS reveal only
+/// starts once the native window is known to have grown to this size.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AppliedSurface {
+    pub window_w: f64,
+    pub window_h: f64,
 }
 
 // Private geometry constants — the ONLY place these magic numbers live.
@@ -190,6 +199,8 @@ pub fn show_overlay(app: tauri::AppHandle, state: tauri::State<'_, State>) -> Re
                 position_overlay_default(&overlay, notch);
                 overlay.show().map_err(|e| e.to_string())?;
                 let _ = overlay.set_ignore_cursor_events(false);
+                // Tell the overlay it is visible so it can gate cursor polling.
+                let _ = app.emit("overlay-visible-changed", true);
                 Ok(())
             }
             None => {
@@ -200,57 +211,40 @@ pub fn show_overlay(app: tauri::AppHandle, state: tauri::State<'_, State>) -> Re
     }
 }
 
-/// Resize the overlay window for the hover-expand dropdown.
+/// Resize the overlay for independently composed preview and hover rows and
+/// return the applied frame as an acknowledgment.
 ///
-/// Grows the window height to `expanded_h` when expanded so the dropdown row
-/// has room, and restores it to `collapsed_h` when collapsed. All dimensions come
-/// from `geometry_for()`, the same source as `position_overlay_default`, so the
-/// collapsed size matches what `show_overlay` set. Only the size changes — the
-/// window stays anchored at y=0, so the extra height grows downward.
+/// The preview sits below the physical notch; the quick-settings row follows it.
+/// Keeping both dimensions explicit prevents either row from clipping the other.
+/// All dimensions come from `geometry_for()`, the same source as
+/// `position_overlay_default`, so the collapsed size matches what `show_overlay`
+/// set. Only the size changes — the window stays anchored at y=0, so the extra
+/// height grows downward.
+///
+/// Returning the `AppliedSurface` lets the expansion controller await this call
+/// and start the CSS reveal only once the native window is known to have grown,
+/// so the dropdown can never animate into a window that has not yet resized.
 ///
 /// We resize on hover rather than pre-allocating a tall window because a
 /// transparent overlay with cursor events enabled captures the mouse across its
 /// whole frame, which would create a click dead-zone below the notch when idle.
-#[tauri::command]
-pub fn set_overlay_expanded(app: tauri::AppHandle, state: tauri::State<'_, State>, expanded: bool) -> Result<(), String> {
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (&app, &state, expanded);
-        return Ok(());
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        let notch = *state.notch_info.lock_or_recover();
-        match app.get_webview_window("overlay") {
-            Some(overlay) => {
-                let g = geometry_for(notch);
-                let w = g.window_w;
-                let h = if expanded { g.expanded_h } else { g.collapsed_h };
-                overlay.set_size(tauri::LogicalSize::new(w, h)).map_err(|e| e.to_string())
-            }
-            None => {
-                tracing::warn!(target: "system", "set_overlay_expanded: overlay window not found — skipping");
-                Ok(())
-            }
-        }
-    }
-}
-
-/// Resize the overlay for independently composed preview and hover rows. The
-/// preview sits below the physical notch; the quick-settings row follows it.
-/// Keeping both dimensions explicit prevents either row from clipping the other.
 #[tauri::command]
 pub fn set_overlay_surface(
     app: tauri::AppHandle,
     state: tauri::State<'_, State>,
     expanded: bool,
     preview_visible: bool,
-) -> Result<(), String> {
+) -> Result<AppliedSurface, String> {
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (&app, &state, expanded, preview_visible);
-        return Ok(());
+        let _ = &app;
+        // Off macOS the window is never resized, but the controller still needs
+        // a resolved frame to treat as an ack. Report the geometry it would apply.
+        let g = geometry_for(*state.notch_info.lock_or_recover());
+        let window_h = g.collapsed_h
+            + if preview_visible { g.preview_row_h } else { 0.0 }
+            + if expanded { g.dropdown_h } else { 0.0 };
+        return Ok(AppliedSurface { window_w: g.window_w, window_h });
     }
 
     #[cfg(target_os = "macos")]
@@ -265,11 +259,12 @@ pub fn set_overlay_surface(
                     + if expanded { g.dropdown_h } else { 0.0 };
                 overlay
                     .set_size(tauri::LogicalSize::new(w, h))
-                    .map_err(|e| e.to_string())
+                    .map_err(|e| e.to_string())?;
+                Ok(AppliedSurface { window_w: w, window_h: h })
             }
             None => {
                 tracing::warn!(target: "system", "set_overlay_surface: overlay window not found — skipping");
-                Ok(())
+                Err("overlay window not found".to_string())
             }
         }
     }
@@ -297,7 +292,12 @@ pub fn show_main_window(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub fn hide_overlay(app: tauri::AppHandle) -> Result<(), String> {
     match app.get_webview_window("overlay") {
-        Some(overlay) => overlay.hide().map_err(|e| e.to_string()),
+        Some(overlay) => {
+            overlay.hide().map_err(|e| e.to_string())?;
+            // Tell the overlay it is hidden so it can stop cursor polling.
+            let _ = app.emit("overlay-visible-changed", false);
+            Ok(())
+        }
         None => {
             tracing::warn!(target: "system", "hide_overlay: overlay window not found — skipping");
             Ok(())
