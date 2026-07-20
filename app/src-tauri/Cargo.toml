@@ -1,6 +1,6 @@
 [package]
 name = "ui"
-version = "0.18.1"
+version = "0.18.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -63,11 +63,9 @@ whisper-rs = { version = "0.15", features = ["cuda"] }
 
 [profile.release]
 panic = "abort"
-# Parallel codegen without LTO: release CI was dominated by fat LTO + CGU=1
-# (cold Linux cargo ~11m). Hot paths are whisper/CUDA/Metal native code, so
-# Rust LTO bought little runtime while burning link time. Keep strip off so
-# Tauri can still patch the updater bundle-type marker after compilation.
-codegen-units = 16
-lto = false
+codegen-units = 1
+lto = true
 opt-level = "s"
+# Tauri patches an embedded bundle-type marker after compilation so the updater
+# can distinguish deb/AppImage packages. Full stripping removes that marker.
 strip = false
