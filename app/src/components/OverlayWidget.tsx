@@ -488,7 +488,7 @@ export function OverlayWidget() {
           top bar — the dropdown row is identical. */}
       <div
         ref={islandRef}
-        className="cursor-pointer select-none overflow-hidden"
+        className="overlay-island cursor-pointer select-none overflow-hidden"
         onMouseEnter={onHoverStart}
         onMouseMove={onHoverStart}
         onMouseLeave={onHoverEnd}
@@ -571,7 +571,10 @@ export function OverlayWidget() {
 
         {/* Quick-settings dropdown — revealed on hover (identical in idle/recording) */}
         <div
-          className="flex items-center justify-center gap-3"
+          className="overlay-dropdown flex items-center justify-center gap-3"
+          role="group"
+          aria-label="Quick settings"
+          aria-hidden={!expanded}
           style={{
             height: geometry.dropdownH,
             padding: '0 10px 6px',

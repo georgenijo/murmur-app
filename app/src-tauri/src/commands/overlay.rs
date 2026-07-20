@@ -20,6 +20,7 @@ pub struct OverlayGeometry {
 /// frontend can treat the resolved value as an acknowledgment: CSS reveal only
 /// starts once the native window is known to have grown to this size.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
 #[serde(rename_all = "camelCase")]
 pub struct AppliedSurface {
     pub window_w: f64,
@@ -46,6 +47,17 @@ fn geometry_for(notch: Option<(f64, f64)>) -> OverlayGeometry {
         pill_margin_idle: (window_w - pill_idle_w) / 2.0,
         pill_margin_active: 0.0,
         dropdown_h: DROPDOWN_H,
+    }
+}
+
+fn applied_surface_for(g: &OverlayGeometry, expanded: bool) -> AppliedSurface {
+    AppliedSurface {
+        window_w: g.window_w,
+        window_h: if expanded {
+            g.expanded_h
+        } else {
+            g.collapsed_h
+        },
     }
 }
 
@@ -217,14 +229,11 @@ pub fn show_overlay(app: tauri::AppHandle, state: tauri::State<'_, State>) -> Re
     }
 }
 
-/// Resize the overlay window for the hover-expand dropdown and return the
-/// applied frame as an acknowledgment.
-///
-/// Grows the window height to `expanded_h` when expanded so the dropdown row has
-/// room, and restores it to `collapsed_h` when collapsed. All dimensions come
-/// from `geometry_for()`, the same source as `position_overlay_default`, so the
-/// collapsed size matches what `show_overlay` set. Only the size changes — the
-/// window stays anchored at y=0, so the extra height grows downward.
+/// Resize the overlay for the hover dropdown and return the applied frame as an
+/// acknowledgment. All dimensions come from `geometry_for()`, the same source as
+/// `position_overlay_default`, so the collapsed size matches what `show_overlay`
+/// set. Only the size changes — the window stays anchored at y=0, so the extra
+/// height grows downward.
 ///
 /// Returning the `AppliedSurface` lets the expansion controller await this call
 /// and start the CSS reveal only once the native window is known to have grown,
@@ -245,8 +254,7 @@ pub fn set_overlay_expanded(
         // Off macOS the window is never resized, but the controller still needs
         // a resolved frame to treat as an ack. Report the geometry it would apply.
         let g = geometry_for(*state.notch_info.lock_or_recover());
-        let window_h = if expanded { g.expanded_h } else { g.collapsed_h };
-        return Ok(AppliedSurface { window_w: g.window_w, window_h });
+        return Ok(applied_surface_for(&g, expanded));
     }
 
     #[cfg(target_os = "macos")]
@@ -255,12 +263,11 @@ pub fn set_overlay_expanded(
         match app.get_webview_window("overlay") {
             Some(overlay) => {
                 let g = geometry_for(notch);
-                let w = g.window_w;
-                let h = if expanded { g.expanded_h } else { g.collapsed_h };
+                let applied = applied_surface_for(&g, expanded);
                 overlay
-                    .set_size(tauri::LogicalSize::new(w, h))
+                    .set_size(tauri::LogicalSize::new(applied.window_w, applied.window_h))
                     .map_err(|e| e.to_string())?;
-                Ok(AppliedSurface { window_w: w, window_h: h })
+                Ok(applied)
             }
             None => {
                 tracing::warn!(target: "system", "set_overlay_expanded: overlay window not found — skipping");
@@ -359,5 +366,40 @@ mod tests {
             .unwrap()
             .insert("extraField".into(), serde_json::json!(1));
         assert!(serde_json::from_value::<OverlayGeometry>(value).is_err());
+    }
+
+    #[test]
+    fn applied_surface_tracks_notched_and_fallback_geometry_states() {
+        let notched = geometry_for(Some((185.0, 32.0)));
+        assert_eq!(
+            applied_surface_for(&notched, false),
+            AppliedSurface {
+                window_w: 305.0,
+                window_h: 32.0,
+            }
+        );
+        assert_eq!(
+            applied_surface_for(&notched, true),
+            AppliedSurface {
+                window_w: 305.0,
+                window_h: 76.0,
+            }
+        );
+
+        let fallback = geometry_for(None);
+        assert_eq!(
+            applied_surface_for(&fallback, false),
+            AppliedSurface {
+                window_w: 200.0,
+                window_h: 37.0,
+            }
+        );
+        assert_eq!(
+            applied_surface_for(&fallback, true),
+            AppliedSurface {
+                window_w: 200.0,
+                window_h: 81.0,
+            }
+        );
     }
 }
