@@ -47,19 +47,11 @@ describe('useOverlayExpansion', () => {
   let root: Root | null = null;
   let current: OverlayExpansion;
   let surfaceCalls: SurfaceCall[];
-  let lastProps: { disabled?: boolean; withIsland?: boolean } = {};
   const listeners = new Map<string, (e: { payload: unknown }) => void>();
 
-  function Harness(props: { disabled?: boolean; withIsland?: boolean }) {
-    current = useOverlayExpansion({
-      disabled: props.disabled ?? false,
-    });
+  function Harness(props: { withIsland?: boolean }) {
+    current = useOverlayExpansion();
     return props.withIsland ? <div ref={current.islandRef} /> : null;
-  }
-
-  async function rerender(props: { disabled?: boolean; withIsland?: boolean }) {
-    lastProps = { ...lastProps, ...props };
-    await act(async () => { root!.render(<Harness {...lastProps} />); });
   }
 
   function emitEvent(event: string, payload: unknown) {
@@ -74,12 +66,11 @@ describe('useOverlayExpansion', () => {
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });
   }
 
-  async function mount(props: { disabled?: boolean; withIsland?: boolean } = {}) {
+  async function mount(props: { withIsland?: boolean } = {}) {
     // mount owns the root's whole lifecycle so beforeEach never leaks an empty
     // container. A prior mount (a test that re-mounts) is torn down first.
     if (root) { await act(async () => { root!.unmount(); }); }
     if (container) { container.remove(); }
-    lastProps = props;
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -122,7 +113,6 @@ describe('useOverlayExpansion', () => {
 
     root = null;
     container = null;
-    lastProps = {};
   });
 
   afterEach(async () => {
@@ -377,20 +367,9 @@ describe('useOverlayExpansion', () => {
     expect(surfaceCallCount()).toBe(before);
   });
 
-  it('poller performs no IPC while the overlay is hidden or the app is disabled (collapsed)', async () => {
-    // Disabled while collapsed → the entry detector is gated for battery.
-    await mount({ withIsland: true, disabled: true });
-    mocks.cursorPosition.mockClear();
-    mocks.outerPosition.mockClear();
-    const surfacesBefore = surfaceCallCount();
-    await act(async () => { vi.advanceTimersByTime(HOVER_OPEN_DWELL_MS * 4); });
-    await flush();
-    expect(mocks.cursorPosition).not.toHaveBeenCalled();
-    expect(mocks.outerPosition).not.toHaveBeenCalled();
-    expect(surfaceCallCount()).toBe(surfacesBefore);
-
-    // Enabled but hidden → still fully gated regardless of phase.
-    await rerender({ disabled: false });
+  it('poller performs no IPC while the overlay is hidden', async () => {
+    // Hidden → fully gated regardless of phase.
+    await mount({ withIsland: true });
     await act(async () => { emitEvent('overlay-visible-changed', false); });
     mocks.cursorPosition.mockClear();
     mocks.outerPosition.mockClear();
@@ -399,20 +378,28 @@ describe('useOverlayExpansion', () => {
     expect(mocks.cursorPosition).not.toHaveBeenCalled();
     expect(mocks.outerPosition).not.toHaveBeenCalled();
 
-    // Prove the gate is what stops it: visible + enabled → the poller does IPC.
+    // Prove visibility is what stops it: visible → the poller does IPC.
     await act(async () => { emitEvent('overlay-visible-changed', true); });
     await act(async () => { vi.advanceTimersByTime(HOVER_OPEN_DWELL_MS); });
     await flush();
     expect(mocks.cursorPosition).toHaveBeenCalled();
   });
 
-  it('blocks DOM hover entry while disabled as well as poller entry', async () => {
-    await mount({ disabled: true });
+  it('opens the dropdown on hover while disabled so the Enable control stays reachable', async () => {
+    // Global-disable must not gate the overlay expansion: the hover quick-settings
+    // card holds the "Enable Murmur" power button, so disabling Murmur must never
+    // remove its own re-enable affordance. (`disabled` is a global-disable state
+    // this hook no longer consumes — it drives Rust gating + visual dimming only.)
+    await mount({ withIsland: true });
     await act(async () => { current.onHoverStart(); });
-    await act(async () => { vi.advanceTimersByTime(HOVER_OPEN_DWELL_MS * 2); });
+    await act(async () => { vi.advanceTimersByTime(HOVER_OPEN_DWELL_MS); });
     await flush();
-    expect(current.phase).toBe('collapsed');
-    expect(surfaceCallCount()).toBe(0);
+    // Grow requested; resolve the surface ack to reveal the card.
+    const grow = surfaceCalls.find((c) => c.args.expanded);
+    expect(grow).toBeTruthy();
+    await act(async () => { grow!.resolve(APPLIED); });
+    await flush();
+    expect(current.phase).toBe('open');
   });
 
   it('drops a cursor result that resolves after the overlay becomes hidden', async () => {
@@ -439,11 +426,11 @@ describe('useOverlayExpansion', () => {
     expect(surfaceCalls.some((c) => c.args.expanded)).toBe(false);
   });
 
-  it('keeps the exit watchdog alive while open even when the app is disabled', async () => {
+  it('runs the exit watchdog while open to close the card after a missed mouseleave', async () => {
     // Cursor inside the (zero-sized jsdom) island bounds so the poller never
     // closes the card while we drive it open.
     mocks.cursorPosition.mockResolvedValue({ x: 0, y: 0 });
-    await mount({ withIsland: true, disabled: false });
+    await mount({ withIsland: true });
 
     // Open fully.
     await act(async () => { current.onHoverStart(); });
@@ -453,12 +440,9 @@ describe('useOverlayExpansion', () => {
     await flush();
     expect(current.phase).toBe('open');
 
-    // Disable the app while the dropdown is open (user clicks the Disable control),
-    // then a DOM mouseleave is missed and the cursor moves outside the card.
-    await rerender({ disabled: true });
+    // A DOM mouseleave is missed and the cursor moves outside the card — the poller
+    // is the safety net that must still detect the exit and collapse the card.
     mocks.cursorPosition.mockResolvedValue({ x: 9999, y: 9999 });
-
-    // The exit watchdog must still run and collapse the card despite `disabled`.
     await act(async () => { vi.advanceTimersByTime(HOVER_OPEN_DWELL_MS); });
     await flush();
     await act(async () => { vi.advanceTimersByTime(1); }); // fire the immediate close timer

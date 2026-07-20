@@ -10,6 +10,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **Performance Lab report export** — each saved benchmark report can now be copied as full JSON, saved to a configurable folder (default `Documents/Murmur`) under a self-identifying `benchmark-<version>-<machine>-<createdAt>.json` name, and its folder revealed in Finder. An optional auto-save writes every completed run to disk so reports survive the 10-slot in-app cap. All local, no network (#308).
 - **Local dictation evaluation harness** adds strict versioned fixtures, a deterministic no-hardware CI tier, an opt-in installed-model/audio tier, and machine-readable recognition/transformation/delivery reports through `murmur-eval` (#267).
 
+### Fixed
+- Disabling Murmur from the overlay no longer traps it disabled: the hover quick-settings card — which holds the "Enable Murmur" power button — now stays reachable while disabled, so the overlay's own control can turn Murmur back on. Previously the global-disable state gated off the overlay's hover-expand, leaving the tray "Disable Murmur" check item as the only way back.
+
 ## [0.19.0] - 2026-07-20
 
 ### Added

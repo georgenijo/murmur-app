@@ -58,11 +58,6 @@ function withSurfaceAckTimeout<T>(request: Promise<T>): Promise<T> {
   });
 }
 
-interface UseOverlayExpansionArgs {
-  /** Global-disable state — the cursor poller is gated off while disabled. */
-  disabled: boolean;
-}
-
 export interface OverlayExpansion {
   /** Current lifecycle phase. Drives re-renders. */
   phase: OverlayPhase;
@@ -86,7 +81,7 @@ export interface OverlayExpansion {
 // distinguish "the newer request won" from a real applied frame.
 const SUPERSEDED = Symbol('overlay-surface-superseded');
 
-export function useOverlayExpansion({ disabled }: UseOverlayExpansionArgs): OverlayExpansion {
+export function useOverlayExpansion(): OverlayExpansion {
   const [phase, setPhase] = useState<OverlayPhase>('collapsed');
 
   const phaseRef = useRef<OverlayPhase>('collapsed');
@@ -105,13 +100,10 @@ export function useOverlayExpansion({ disabled }: UseOverlayExpansionArgs): Over
   const desiredRef = useRef(false);
 
   // Inputs mirrored into refs for the always-on poller / async callbacks.
-  const disabledRef = useRef(disabled);
   const visibleRef = useRef(true); // default visible on mount, matches show_overlay ordering
   const reducedMotionRef = useRef(prefersReducedMotion());
   const interactionGenerationRef = useRef(0);
   const pollInFlightRef = useRef(false);
-
-  useEffect(() => { disabledRef.current = disabled; }, [disabled]);
 
   const setPhaseSync = useCallback((next: OverlayPhase) => {
     phaseRef.current = next;
@@ -212,7 +204,7 @@ export function useOverlayExpansion({ disabled }: UseOverlayExpansionArgs): Over
 
   // Grow the window first, then reveal the card once the resize is acknowledged.
   const open = useCallback(() => {
-    if (!visibleRef.current || disabledRef.current) return;
+    if (!visibleRef.current) return;
     const ph = phaseRef.current;
     if (ph === 'opening' || ph === 'open') return;
     clearCloseTimers();
@@ -248,7 +240,7 @@ export function useOverlayExpansion({ disabled }: UseOverlayExpansionArgs): Over
   // so grazing the notch no longer pops the dropdown. Also cancels any pending
   // close/shrink so re-entry keeps the card up (or reopens cleanly while closing).
   const onHoverStart = useCallback(() => {
-    if (!visibleRef.current || disabledRef.current) return;
+    if (!visibleRef.current) return;
     if (collapseTimerRef.current) { clearTimeout(collapseTimerRef.current); collapseTimerRef.current = null; }
     if (shrinkTimerRef.current) { clearTimeout(shrinkTimerRef.current); shrinkTimerRef.current = null; }
     const ph = phaseRef.current;
@@ -333,7 +325,9 @@ export function useOverlayExpansion({ disabled }: UseOverlayExpansionArgs): Over
   // The overlay is non-activating and sits above the menu bar, so macOS can miss
   // DOM hover events. One interval branches on phase: strict entry bounds + dwell
   // while collapsed/closing, padded exit bounds while open. Ticks do no IPC while
-  // the overlay is hidden, and skip the collapsed entry detector while disabled.
+  // the overlay is hidden. The poller runs regardless of global-disable so the
+  // hover quick-settings card — which holds the "Enable Murmur" control — stays
+  // reachable; disabling Murmur must never remove its own re-enable affordance.
   useEffect(() => {
     const currentWindow = getCurrentWindow();
     const intervalId = setInterval(async () => {
@@ -341,11 +335,6 @@ export function useOverlayExpansion({ disabled }: UseOverlayExpansionArgs): Over
       if (!visibleRef.current) return; // hidden: no IPC
       const ph = phaseRef.current;
       const pollGeneration = interactionGenerationRef.current;
-      // Disabled gates ONLY the collapsed entry detector (battery). The exit
-      // watchdog must stay alive during an active interaction: with the dropdown
-      // open, a missed DOM mouseleave — the exact failure this poller exists for —
-      // would otherwise leave the card stuck open after the user clicks Disable.
-      if (disabledRef.current && ph === 'collapsed') return;
       const island = islandRef.current;
       if (!island) return;
       if (ph === 'opening') return; // transient; nothing to poll
@@ -359,8 +348,7 @@ export function useOverlayExpansion({ disabled }: UseOverlayExpansionArgs): Over
         if (!mountedRef.current
           || !visibleRef.current
           || interactionGenerationRef.current !== pollGeneration
-          || phaseRef.current !== ph
-          || (disabledRef.current && ph === 'collapsed')) return;
+          || phaseRef.current !== ph) return;
         const scale = window.devicePixelRatio || 1;
         const rect = island.getBoundingClientRect();
 
