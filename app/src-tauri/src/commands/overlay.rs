@@ -14,6 +14,7 @@ pub struct OverlayGeometry {
     pub pill_margin_idle: f64,
     pub pill_margin_active: f64,
     pub dropdown_h: f64,
+    pub wing_w: f64,
 }
 
 /// The window frame `set_overlay_expanded` actually applied. Returned so the
@@ -58,6 +59,7 @@ fn geometry_for(notch: Option<(f64, f64)>) -> OverlayGeometry {
         pill_margin_idle: 0.0,
         pill_margin_active: 0.0,
         dropdown_h: DROPDOWN_H,
+        wing_w: WING,
     }
 }
 
@@ -333,6 +335,8 @@ mod tests {
             assert!(g.window_w >= g.pill_idle_w + g.pill_margin_idle);
             assert_eq!(g.expanded_h, g.collapsed_h + g.dropdown_h);
             assert!(g.pill_active_w >= g.pill_idle_w);
+            assert!(g.wing_w > 0.0);
+            assert!(g.window_w >= 2.0 * g.wing_w);
         }
     }
 
@@ -349,8 +353,9 @@ mod tests {
                 g.pill_margin_idle,
                 g.pill_margin_active,
                 g.dropdown_h,
+                g.wing_w,
             ),
-            (257.0, 32.0, 76.0, 257.0, 257.0, 0.0, 0.0, 44.0)
+            (257.0, 32.0, 76.0, 257.0, 257.0, 0.0, 0.0, 44.0, 36.0)
         );
     }
 

@@ -33,6 +33,7 @@ const notched: OverlayGeometry = {
   pillMarginIdle: 0,
   pillMarginActive: 0,
   dropdownH: 44,
+  wingW: 36,
 };
 
 const fallback: OverlayGeometry = {
@@ -44,6 +45,7 @@ const fallback: OverlayGeometry = {
   pillMarginIdle: 0,
   pillMarginActive: 0,
   dropdownH: 44,
+  wingW: 36,
 };
 
 function deferred<T>() {

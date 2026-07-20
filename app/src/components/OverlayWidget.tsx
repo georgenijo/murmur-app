@@ -13,6 +13,7 @@ import { OVERLAY_ISLAND_TRANSITION } from '../lib/overlayMotion';
 import { deriveVisual } from './overlay/deriveVisual';
 import { OverlayPill } from './overlay/OverlayPill';
 import { OverlayDropdown } from './overlay/OverlayDropdown';
+import { NotchCalibrationBand } from './overlay/NotchCalibrationBand';
 
 export function OverlayWidget() {
   const geometry = useOverlayGeometry();
@@ -116,6 +117,7 @@ export function OverlayWidget() {
         onMouseMove={onHoverStart}
         onMouseLeave={onHoverEnd}
         style={{
+          position: 'relative',
           borderRadius: '0 0 12px 12px',
           // One constant island width in every state — the island IS the window.
           // Only height animates (see OVERLAY_ISLAND_TRANSITION).
@@ -135,6 +137,7 @@ export function OverlayWidget() {
           status={status}
           barRefs={waveform.barRefs}
         />
+        <NotchCalibrationBand geometry={geometry} />
         <OverlayDropdown
           geometry={geometry}
           expanded={expanded}
