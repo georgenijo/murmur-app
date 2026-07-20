@@ -6,6 +6,11 @@ authors = ["you"]
 edition = "2021"
 default-run = "ui"
 
+[workspace]
+members = ["crates/local-llm-protocol", "sidecars/local-llm"]
+default-members = ["."]
+resolver = "2"
+
 [lib]
 name = "ui_lib"
 crate-type = ["lib", "cdylib", "staticlib"]

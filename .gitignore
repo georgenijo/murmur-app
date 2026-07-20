@@ -40,6 +40,7 @@ app/dist/
 app/tauri
 app/tsc
 app/ui@*
+app/src-tauri/binaries/murmur-llm-sidecar-*
 
 # Local-only notes, migrations, scratch work (not tracked)
 local/
