@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { OverlayGeometry } from '../../lib/overlayGeometry';
 import type { DictationStatus } from '../../lib/types';
 
@@ -75,15 +75,32 @@ export function OverlayDropdown({
   onOpenSettings,
 }: OverlayDropdownProps) {
   const [elapsed, setElapsed] = useState(0);
+  const recordingStartRef = useRef<number | null>(null);
 
-  // Track recording elapsed time for the inline timer. Only runs while the row
-  // is actually visible-and-recording, so no interval ticks when collapsed.
+  // Anchor the recording-start timestamp to the status->'recording' transition,
+  // independent of hover/expand. Recording commonly starts via hotkey while the
+  // card is collapsed; the user may hover much later, so elapsed must be measured
+  // from recording start — not from when the timer became visible.
+  useEffect(() => {
+    if (status === 'recording') {
+      recordingStartRef.current = Date.now();
+    } else {
+      recordingStartRef.current = null;
+      setElapsed(0);
+    }
+  }, [status]);
+
+  // Only tick the interval while the row is actually visible-and-recording (no
+  // ticks when collapsed), but always compute displayed elapsed from the anchor.
   const recordingVisible = expanded && status === 'recording';
   useEffect(() => {
-    if (!recordingVisible) { setElapsed(0); return; }
-    const start = Date.now();
-    setElapsed(0);
-    const id = setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 250);
+    if (!recordingVisible) return;
+    const tick = () => {
+      const start = recordingStartRef.current;
+      if (start != null) setElapsed(Math.floor((Date.now() - start) / 1000));
+    };
+    tick();
+    const id = setInterval(tick, 250);
     return () => clearInterval(id);
   }, [recordingVisible]);
   const effectiveAutoPaste = autoPaste && !fileOutputEnabled;
