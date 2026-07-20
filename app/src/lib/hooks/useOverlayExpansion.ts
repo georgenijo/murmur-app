@@ -261,36 +261,44 @@ export function useOverlayExpansion({
 
   // --- Display-change reset -------------------------------------------------
   // Rust repositions and resizes the overlay to collapsed on a display change, so
-  // this listener is authoritative: cancel timers, drop the queue generation
-  // (stale acks are ignored), and force `collapsed` without re-invoking a resize.
+  // this listener is authoritative: cancel timers and force `collapsed`. It then
+  // issues a corrective collapse THROUGH the writer rather than merely dropping
+  // the generation. A grow invoke already dispatched could otherwise be applied
+  // *after* Rust's reposition and re-grow the window, leaving a transparent
+  // expanded window (and a click dead-zone) until the next hover. pushSurface
+  // supersedes that straggler (dropping its ack) and serializes one idempotent
+  // collapse resize behind it, repairing the window state.
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | null = null;
     listen('overlay-geometry-changed', () => {
       clearAllTimers();
-      genRef.current += 1; // supersede any queued/in-flight surface writes
-      windowExpandedRef.current = false;
-      desiredRef.current = { expanded: false, previewVisible: previewRef.current };
       setPhaseSync('collapsed');
+      pushSurface(false);
     }).then((fn) => {
       if (cancelled) { fn(); } else { unlisten = fn; }
     });
     return () => { cancelled = true; unlisten?.(); };
-  }, [clearAllTimers, setPhaseSync]);
+  }, [clearAllTimers, setPhaseSync, pushSurface]);
 
   // --- Single cursor poller -------------------------------------------------
   // The overlay is non-activating and sits above the menu bar, so macOS can miss
   // DOM hover events. One interval branches on phase: strict entry bounds + dwell
-  // while collapsed/closing, padded exit bounds while open. Ticks do no IPC unless
-  // the overlay is visible and the app is enabled.
+  // while collapsed/closing, padded exit bounds while open. Ticks do no IPC while
+  // the overlay is hidden, and skip the collapsed entry detector while disabled.
   useEffect(() => {
     const currentWindow = getCurrentWindow();
     const intervalId = setInterval(async () => {
       if (!mountedRef.current) return;
-      if (!visibleRef.current || disabledRef.current) return; // gated: no IPC
+      if (!visibleRef.current) return; // hidden: no IPC
+      const ph = phaseRef.current;
+      // Disabled gates ONLY the collapsed entry detector (battery). The exit
+      // watchdog must stay alive during an active interaction: with the dropdown
+      // open, a missed DOM mouseleave — the exact failure this poller exists for —
+      // would otherwise leave the card stuck open after the user clicks Disable.
+      if (disabledRef.current && ph === 'collapsed') return;
       const island = islandRef.current;
       if (!island) return;
-      const ph = phaseRef.current;
       if (ph === 'opening') return; // transient; nothing to poll
       if (pollInFlightRef.current) return;
       pollInFlightRef.current = true;

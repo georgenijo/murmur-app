@@ -37,10 +37,11 @@ interface SurfaceCall {
 const APPLIED = { windowW: 305, windowH: 76 };
 
 describe('useOverlayExpansion', () => {
-  let container: HTMLDivElement;
-  let root: Root;
+  let container: HTMLDivElement | null = null;
+  let root: Root | null = null;
   let current: OverlayExpansion;
   let surfaceCalls: SurfaceCall[];
+  let lastProps: { previewRowVisible?: boolean; disabled?: boolean; withIsland?: boolean } = {};
   const listeners = new Map<string, (e: { payload: unknown }) => void>();
 
   function Harness(props: { previewRowVisible?: boolean; disabled?: boolean; withIsland?: boolean }) {
@@ -49,6 +50,11 @@ describe('useOverlayExpansion', () => {
       disabled: props.disabled ?? false,
     });
     return props.withIsland ? <div ref={current.islandRef} /> : null;
+  }
+
+  async function rerender(props: { previewRowVisible?: boolean; disabled?: boolean; withIsland?: boolean }) {
+    lastProps = { ...lastProps, ...props };
+    await act(async () => { root!.render(<Harness {...lastProps} />); });
   }
 
   function emitEvent(event: string, payload: unknown) {
@@ -64,11 +70,15 @@ describe('useOverlayExpansion', () => {
   }
 
   async function mount(props: { previewRowVisible?: boolean; disabled?: boolean; withIsland?: boolean } = {}) {
-    // Fresh root each mount so a test can unmount and re-mount cleanly.
+    // mount owns the root's whole lifecycle so beforeEach never leaks an empty
+    // container. A prior mount (a test that re-mounts) is torn down first.
+    if (root) { await act(async () => { root!.unmount(); }); }
+    if (container) { container.remove(); }
+    lastProps = props;
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
-    await act(async () => { root.render(<Harness {...props} />); });
+    await act(async () => { root!.render(<Harness {...props} />); });
     // Resolve the mount-time preview-sync resize so the serial writer is idle, then
     // reset the tracking array so each test's first surface call starts at index 0.
     await act(async () => {
@@ -104,14 +114,14 @@ describe('useOverlayExpansion', () => {
     mocks.outerPosition.mockReset();
     mocks.outerPosition.mockResolvedValue({ x: 0, y: 0 });
 
-    container = document.createElement('div');
-    document.body.appendChild(container);
-    root = createRoot(container);
+    root = null;
+    container = null;
+    lastProps = {};
   });
 
   afterEach(async () => {
-    await act(async () => { root.unmount(); });
-    container.remove();
+    if (root) { await act(async () => { root!.unmount(); }); root = null; }
+    if (container) { container.remove(); container = null; }
     vi.useRealTimers();
   });
 
@@ -255,7 +265,7 @@ describe('useOverlayExpansion', () => {
     expect(current.expanded).toBe(false);
   });
 
-  it('display change mid-open cancels timers and forces collapsed', async () => {
+  it('display change mid-open cancels timers, forces collapsed, and issues one corrective collapse', async () => {
     await mount();
     // Open fully.
     await act(async () => { current.onHoverStart(); });
@@ -264,10 +274,20 @@ describe('useOverlayExpansion', () => {
     await act(async () => { surfaceCalls.find((c) => c.args.expanded)!.resolve(APPLIED); });
     await flush();
     expect(current.phase).toBe('open');
+    surfaceCalls.length = 0;
 
     // Arm a close, then a display change arrives.
     await act(async () => { current.onHoverEnd(); });
     await act(async () => { emitEvent('overlay-geometry-changed', {}); });
+    await flush();
+    expect(current.phase).toBe('collapsed');
+
+    // Exactly one corrective collapse resize is enqueued — it supersedes any
+    // straggler grow that could re-grow the window after Rust's reposition.
+    const collapseWrites = surfaceCalls.filter((c) => !c.args.expanded);
+    expect(collapseWrites.length).toBe(1);
+    await act(async () => { collapseWrites[0].resolve(APPLIED); });
+    await flush();
     expect(current.phase).toBe('collapsed');
 
     // Timers were cancelled — advancing does not resurrect closing/shrink.
@@ -287,7 +307,8 @@ describe('useOverlayExpansion', () => {
     const pending = surfaceCalls.find((c) => c.args.expanded);
     const before = surfaceCallCount();
 
-    await act(async () => { root.unmount(); });
+    await act(async () => { root!.unmount(); });
+    root = null;
 
     // Nothing new should invoke after unmount, even as timers advance and the
     // in-flight ack resolves.
@@ -296,8 +317,8 @@ describe('useOverlayExpansion', () => {
     expect(surfaceCallCount()).toBe(before);
   });
 
-  it('poller performs no IPC while the overlay is hidden or the app is disabled', async () => {
-    // Disabled at mount → gated.
+  it('poller performs no IPC while the overlay is hidden or the app is disabled (collapsed)', async () => {
+    // Disabled while collapsed → the entry detector is gated for battery.
     await mount({ withIsland: true, disabled: true });
     mocks.cursorPosition.mockClear();
     mocks.outerPosition.mockClear();
@@ -308,10 +329,8 @@ describe('useOverlayExpansion', () => {
     expect(mocks.outerPosition).not.toHaveBeenCalled();
     expect(surfaceCallCount()).toBe(surfacesBefore);
 
-    // Re-mount enabled but hidden → still gated.
-    await act(async () => { root.unmount(); });
-    surfaceCalls = [];
-    await mount({ withIsland: true, disabled: false });
+    // Enabled but hidden → still fully gated regardless of phase.
+    await rerender({ disabled: false });
     await act(async () => { emitEvent('overlay-visible-changed', false); });
     mocks.cursorPosition.mockClear();
     mocks.outerPosition.mockClear();
@@ -325,6 +344,92 @@ describe('useOverlayExpansion', () => {
     await act(async () => { vi.advanceTimersByTime(HOVER_OPEN_DWELL_MS); });
     await flush();
     expect(mocks.cursorPosition).toHaveBeenCalled();
+  });
+
+  it('keeps the exit watchdog alive while open even when the app is disabled', async () => {
+    // Cursor inside the (zero-sized jsdom) island bounds so the poller never
+    // closes the card while we drive it open.
+    mocks.cursorPosition.mockResolvedValue({ x: 0, y: 0 });
+    await mount({ withIsland: true, disabled: false });
+
+    // Open fully.
+    await act(async () => { current.onHoverStart(); });
+    await act(async () => { vi.advanceTimersByTime(HOVER_OPEN_DWELL_MS); });
+    await flush();
+    await act(async () => { surfaceCalls.find((c) => c.args.expanded)!.resolve(APPLIED); });
+    await flush();
+    expect(current.phase).toBe('open');
+
+    // Disable the app while the dropdown is open (user clicks the Disable control),
+    // then a DOM mouseleave is missed and the cursor moves outside the card.
+    await rerender({ disabled: true });
+    mocks.cursorPosition.mockResolvedValue({ x: 9999, y: 9999 });
+
+    // The exit watchdog must still run and collapse the card despite `disabled`.
+    await act(async () => { vi.advanceTimersByTime(HOVER_OPEN_DWELL_MS); });
+    await flush();
+    await act(async () => { vi.advanceTimersByTime(1); }); // fire the immediate close timer
+    expect(current.phase).toBe('closing');
+  });
+
+  it('reveals via the superseding expanded write when the preview row toggles during opening', async () => {
+    await mount();
+
+    await act(async () => { current.onHoverStart(); });
+    await act(async () => { vi.advanceTimersByTime(HOVER_OPEN_DWELL_MS); });
+    await flush();
+    expect(current.phase).toBe('opening');
+    const growA = surfaceCalls.find((c) => c.args.expanded);
+    expect(growA).toBeTruthy();
+
+    // Preview row appears mid-opening → the writer enqueues a superseding grow
+    // that also carries previewVisible, queued behind the still-pending grow.
+    await rerender({ previewRowVisible: true });
+
+    // Resolving the ORIGINAL (now stale) grow must NOT reveal — an ack that is not
+    // the latest generation cannot flip to `open`.
+    await act(async () => { growA!.resolve(APPLIED); });
+    await flush();
+    expect(current.phase).toBe('opening');
+
+    // The superseding expanded write is now in flight and carries the preview flag.
+    const expandedWrites = surfaceCalls.filter((c) => c.args.expanded);
+    const growB = expandedWrites[expandedWrites.length - 1];
+    expect(growB.args.previewVisible).toBe(true);
+    // Reveal only ever happens on an expanded ack (reconcile gates on expanded),
+    // so a collapsed-surface ack could never have revealed here.
+    await act(async () => { growB.resolve(APPLIED); });
+    await flush();
+    expect(current.phase).toBe('open');
+  });
+
+  it('settles collapsed when the shrink resize is rejected during closing', async () => {
+    await mount();
+    // Open fully.
+    await act(async () => { current.onHoverStart(); });
+    await act(async () => { vi.advanceTimersByTime(HOVER_OPEN_DWELL_MS); });
+    await flush();
+    await act(async () => { surfaceCalls.find((c) => c.args.expanded)!.resolve(APPLIED); });
+    await flush();
+    expect(current.phase).toBe('open');
+    surfaceCalls.length = 0;
+
+    // Leave → closing → shrink enqueued.
+    await act(async () => { current.onHoverEnd(); });
+    await act(async () => { vi.advanceTimersByTime(COLLAPSE_DELAY_MS); });
+    expect(current.phase).toBe('closing');
+    await act(async () => { vi.advanceTimersByTime(SHRINK_DELAY_MS); });
+    await flush();
+    const shrink = surfaceCalls.find((c) => !c.args.expanded);
+    expect(shrink).toBeTruthy();
+
+    // Rejecting the shrink still settles the phase to `collapsed` (the dropdown is
+    // already hidden). The native window may not have physically shrunk, but the
+    // CSS/phase state stays consistent — matching the pre-refactor best effort.
+    await act(async () => { shrink!.reject(new Error('resize failed')); });
+    await flush();
+    expect(current.phase).toBe('collapsed');
+    expect(current.expanded).toBe(false);
   });
 });
 
