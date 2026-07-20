@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-This document lists all 30 registered Tauri commands exposed from the Rust backend to the frontend via `invoke()`. Commands are grouped by their source module under `app/src-tauri/src/`.
+This document lists the registered Tauri commands exposed from the Rust backend to the frontend via `invoke()`. Commands are grouped by their source module under `app/src-tauri/src/`.
 
 For event-based communication (Rust to frontend), see [events.md](events.md). For frontend hooks that call these commands, see [hooks.md](hooks.md).
 
@@ -45,6 +45,23 @@ For event-based communication (Rust to frontend), see [events.md](events.md). Fo
 | `clear_logs` | _(none)_ | `Result<(), String>` | Removes all log files (including rotated variants, JSONL event files, frontend logs) and clears the in-memory event ring buffer. |
 | `log_frontend` | `level: String`, `message: String` | `()` | Routes a frontend log message through the Rust tracing system. Accepts levels: `"INFO"`, `"WARN"`, `"ERROR"`. Messages appear in the structured event stream with `source="frontend"`. |
 | `open_log_viewer` | _(none)_ | `Result<(), String>` | Shows and focuses the `log-viewer` window. |
+
+## Personal Knowledge (`commands/knowledge.rs`)
+
+| Command | Parameters | Return Type | Description |
+|---------|-----------|-------------|-------------|
+| `get_knowledge_store_status` | _(none)_ | `KnowledgeStoreStatus` | Returns ready/recovered/reinitialized/unavailable state, schema version, record count, store revision, and privacy-safe recovery information. |
+| `retry_knowledge_store` | _(none)_ | `KnowledgeStoreStatus` | Re-runs local initialization after an unavailable state. |
+| `list_knowledge` | `request: KnowledgeListRequest` | `Result<KnowledgeListResponse, String>` | Bounded search/filter page; defaults to 50 and caps at 100 records. |
+| `get_knowledge` | `id: String` | `Result<KnowledgeEntry, String>` | Returns one local record by stable ID. |
+| `upsert_knowledge` | `draft: KnowledgeDraft` | `Result<KnowledgeEntry, String>` | Creates a manual record or edits one using its expected revision. |
+| `set_knowledge_enabled` | `id`, `enabled`, `expected_revision` | `Result<KnowledgeEntry, String>` | Enables/disables one record with optimistic concurrency. |
+| `delete_knowledge` | `id`, `expected_revision` | `Result<u64, String>` | Deletes one record and returns the new store revision. |
+| `resolve_knowledge` | `request: KnowledgeResolveRequest` | `Result<Option<KnowledgeEntry>, String>` | Deterministically resolves an exact trigger across applicable scopes. Not integrated into transcription or command execution. |
+| `export_knowledge_to_file` | `path: String` | `Result<u64, String>` | Atomically exports the local store to versioned JSON selected by the user. |
+| `inspect_knowledge_import` | `path: String` | `Result<KnowledgeImportSummary, String>` | Validates an import and reports new, duplicate, and conflicting records without writing. |
+| `import_knowledge_from_file` | `path: String` | `Result<KnowledgeImportResult, String>` | Atomically imports validated new records without overwriting local records. |
+| `delete_all_knowledge` | `expected_revision: u64` | `Result<u64, String>` | Deletes all records and in-store recovery artifacts after a revision-checked UI confirmation. |
 
 ## Models (`commands/models.rs`)
 

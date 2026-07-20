@@ -14,6 +14,7 @@ import { SettingsSection } from './SettingsSection';
 import { VocabScanStrip } from './VocabScanStrip';
 import { PerformanceLab } from './PerformanceLab';
 import { VocabularyAliasesEditor } from './VocabularyAliasesEditor';
+import { KnowledgeManager } from './KnowledgeManager';
 import { useVocabScan } from '../../lib/hooks/useVocabScan';
 import {
   modelDownloadLabel,
@@ -611,6 +612,7 @@ const SETTINGS_CATEGORIES = [
   { id: 'output', label: 'Output & Paste' },
   { id: 'profiles', label: 'Per-App Profiles' },
   { id: 'vocab', label: 'Vocabulary' },
+  { id: 'knowledge', label: 'Knowledge' },
   { id: 'performance', label: 'Performance' },
   { id: 'about', label: 'About' },
 ] as const;
@@ -1619,6 +1621,10 @@ export function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, sta
             </div>
           )}
         </div>
+        </SettingsSection>
+
+        <SettingsSection pageId="knowledge" activePage={activeCat} title="Knowledge" subtitle="Inspect and manage personal knowledge stored on this Mac">
+          <KnowledgeManager active={isOpen && activeCat === 'knowledge'} profiles={settings.appProfiles} />
         </SettingsSection>
 
         <SettingsSection pageId="performance" activePage={activeCat} title="Performance Lab" subtitle="Compare local transcription engines">

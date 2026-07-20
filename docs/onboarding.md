@@ -103,3 +103,7 @@ Release and dev builds write to the same local directory:
 [`features/log-viewer.md`](features/log-viewer.md) for the event architecture and
 [`tools/murmur-diag/README.md`](../tools/murmur-diag/README.md) for local MCP
 diagnostics.
+
+## Personal knowledge data
+
+Settings → Knowledge stores replacement rules, vocabulary terms, and snippets only on this Mac under the app data directory in `knowledge/knowledge.sqlite3`. Use the Knowledge page to inspect, edit, disable, export, import, or permanently delete this data. Knowledge content and selected file paths are excluded from logs. See [`features/personal-knowledge-store.md`](features/personal-knowledge-store.md) for migration, backup, and recovery behavior.
