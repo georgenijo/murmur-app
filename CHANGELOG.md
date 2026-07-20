@@ -10,22 +10,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **Explicit spoken vocabulary aliases** let users map exact recognized variants such as `Tori` and `Tory` to a canonical written term such as `Tauri`. Structured entries migrate existing vocabulary, validate ambiguity/cycles/command conflicts, run locally across every backend before fuzzy and CLI formatting, and include an in-memory Settings preview (#268).
 - Opt-in per-app **Local IDE symbols and `@file` context** builds a bounded memory-only index from user-selected roots, corrects unique project symbols, and canonicalizes explicitly triggered file mentions to root-relative text. It never reads screen, selection, or clipboard context; ambiguous or stale references stay unchanged, and reviewed CLI formatting remains authoritative (#253).
 - Per-app **Writing Styles** add explicit Inherit, Conversational, Polished prose, Code / technical, Verbatim, and Notes policies using only local deterministic transforms. Styles resolve once in the immutable recording context, never infer app type or capture app content, and preserve existing delivery behavior (#250).
-- Long Whisper recordings now show a session-scoped provisional transcript in the notch overlay after each reliable incremental chunk. The privacy-safe preview can be disabled in Settings; final clipboard and auto-paste delivery remain unchanged and occur exactly once after stop (#243).
 - **Spoken CLI command formatting** — likely npm/npx, Git, Cargo, Docker, kubectl, and other developer commands now receive deterministic local formatting for versions, flags, paths, operators, quotes, and small canonical aliases. Detection is prefix/trigger/profile bounded, project `package.json` names extend the local lexicon, and ordinary prose remains unchanged (#256).
 - Optional **Smart Formatting** turns clear spoken enumerations into lists, applies explicitly cued email/URL/symbol/quote/paragraph grammar, and handles bounded same-utterance restatements locally. It is independently controllable per app, bypasses CLI/code/verbatim contexts, leaves imported-file transcription raw, and keeps delivery final-only (#252).
 
 ### Changed
+- All supported backends now use one final-after-stop transcription path. The Whisper-only incremental worker, provisional overlay preview, preview setting, lifecycle events, reconciliation code, and incremental telemetry were removed; final clipboard, paste, file output, history, and stats delivery remains exactly once (#279).
 - Post-recognition cleanup, voice commands, and Smart Correction now run through one ordered, backend-neutral transformation pipeline with privacy-safe per-stage timing/change telemetry and explicit failure policy (#244).
 
 ### Fixed
-- Long Whisper batch and file transcriptions now retain timestamp-based continuation, preventing an early end-of-text token from silently dropping the remaining audio while preserving single-segment decoding for short streaming windows (#269).
-- Whisper live-preview updates now render in a clearly labeled row below the physical MacBook notch instead of behind it, with an always-visible recording timer, privacy-safe listener diagnostics, generation-guarded startup session/status reconciliation, and an explicit final-only state for Parakeet/Core ML (#266).
+- Long Whisper batch and file transcriptions now retain timestamp-based continuation, preventing an early end-of-text token from silently dropping the remaining audio while preserving single-segment decoding for short audio (#269).
 - Per-app profile matching now uses the native macOS frontmost-application query with bounded retries and a timeout-bounded compatibility fallback, while preserving one immutable recording-start snapshot and privacy-safe detection telemetry (#265).
 
 ## [0.17.2] - 2026-07-19
 
 ### Added
-- **True incremental Whisper transcription** — long Whisper dictations now process one bounded overlapping audio window at a time during recording and transcribe only the remaining tail after stop. The existing cached model is reused (no duplicate context), overlap reconciliation is deterministic, and any worker/VAD/session reliability failure falls back to the original authoritative full-buffer path (#129).
 - Optional **Hotkey Timing Feedback** flashes the overlay amber when a bare-modifier tap times out before its second tap in Double-Tap or Both mode. The setting is off by default, and intentional holds, modifier shortcuts, processing skips, and valid double-taps remain silent (#154).
 
 ### Changed

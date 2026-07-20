@@ -2,13 +2,13 @@ use super::TranscriptionBackend;
 use std::path::{Path, PathBuf};
 use std::sync::Once;
 use whisper_rs::{
-    FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
-    install_logging_hooks,
+    install_logging_hooks, FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters,
+    WhisperState,
 };
 
 static INIT_LOGGING: Once = Once::new();
 
-/// Short streaming windows benefit from a single untimestamped segment, while
+/// Short audio retains the established single-segment decode behavior, while
 /// longer batch decodes need Whisper's timestamp-based continuation after an
 /// early end-of-text token.
 const SINGLE_SEGMENT_MAX_SAMPLES: usize = 12 * super::WHISPER_SAMPLE_RATE as usize;
@@ -26,7 +26,9 @@ fn suppress_whisper_logs() {
 
 /// Build the app's primary models directory from a data dir root.
 fn app_models_dir(data_dir: &Path) -> PathBuf {
-    APP_MODELS_REL.iter().fold(data_dir.to_path_buf(), |p, s| p.join(s))
+    APP_MODELS_REL
+        .iter()
+        .fold(data_dir.to_path_buf(), |p, s| p.join(s))
 }
 
 /// Get all potential model directories to search.
@@ -247,8 +249,8 @@ impl TranscriptionBackend for WhisperBackend {
     }
 
     fn models_dir(&self) -> Result<PathBuf, String> {
-        let data_dir =
-            dirs::data_dir().ok_or_else(|| "Could not find application data directory".to_string())?;
+        let data_dir = dirs::data_dir()
+            .ok_or_else(|| "Could not find application data directory".to_string())?;
         Ok(app_models_dir(&data_dir))
     }
 
@@ -295,11 +297,10 @@ fn strip_punctuation(input: &str) -> String {
                 }
             }
             // Strip sentence and quotation punctuation
-            '.' | ',' | '!' | '?' | ';' | ':' | '"' | '\u{201C}' | '\u{201D}'
-            | '\u{2018}' | '\u{2014}' | '\u{2013}' | '\u{2026}'
-            | '\u{AB}' | '\u{BB}' | '\u{BF}' | '\u{A1}'
-            | '\u{3002}' | '\u{3001}' | '\u{FF01}' | '\u{FF1F}'
-            | '\u{30FB}' | '\u{300C}' | '\u{300D}' | '\u{300E}' | '\u{300F}' => result.push(' '),
+            '.' | ',' | '!' | '?' | ';' | ':' | '"' | '\u{201C}' | '\u{201D}' | '\u{2018}'
+            | '\u{2014}' | '\u{2013}' | '\u{2026}' | '\u{AB}' | '\u{BB}' | '\u{BF}' | '\u{A1}'
+            | '\u{3002}' | '\u{3001}' | '\u{FF01}' | '\u{FF1F}' | '\u{30FB}' | '\u{300C}'
+            | '\u{300D}' | '\u{300E}' | '\u{300F}' => result.push(' '),
             _ => result.push(c),
         }
     }
@@ -313,13 +314,13 @@ mod tests {
         should_use_single_segment, specific_model_exists, strip_punctuation,
         whisper_language_param, WhisperBackend, SINGLE_SEGMENT_MAX_SAMPLES,
     };
-    use crate::transcriber::{
-        chunking::WINDOW_SAMPLES, parse_wav_to_samples, TranscriptionBackend,
-    };
+    use crate::transcriber::{parse_wav_to_samples, TranscriptionBackend};
 
     #[test]
-    fn streaming_windows_keep_single_segment_mode() {
-        assert!(should_use_single_segment(WINDOW_SAMPLES));
+    fn short_batch_audio_keeps_single_segment_mode() {
+        assert!(should_use_single_segment(
+            10 * crate::transcriber::WHISPER_SAMPLE_RATE as usize
+        ));
     }
 
     #[test]
@@ -415,12 +416,18 @@ mod tests {
 
     #[test]
     fn strip_preserves_hyphen_in_compound() {
-        assert_eq!(strip_punctuation("It's state-of-the-art!"), "It's state-of-the-art");
+        assert_eq!(
+            strip_punctuation("It's state-of-the-art!"),
+            "It's state-of-the-art"
+        );
     }
 
     #[test]
     fn strip_unicode_dashes_and_ellipsis() {
-        assert_eq!(strip_punctuation("Hello\u{2026} world\u{2014}really?"), "Hello world really");
+        assert_eq!(
+            strip_punctuation("Hello\u{2026} world\u{2014}really?"),
+            "Hello world really"
+        );
     }
 
     #[test]
