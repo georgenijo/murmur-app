@@ -1,6 +1,7 @@
 //! Structured vocabulary entries and deterministic explicit spoken aliases.
 
 use crate::correction::{normalize_alias, CorrectionMatcher};
+use crate::knowledge_store::{KnowledgeEntry, KnowledgePayload, KnowledgeScope};
 use crate::state::{AppProfile, VocabularyEntry, VocabularyScope, VoiceCommand};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -22,10 +23,30 @@ impl CorrectionMatcherSet {
         fuzzy: bool,
         include_builtins: bool,
     ) -> Self {
+        Self::build_with_knowledge(
+            base_terms,
+            entries,
+            app_profiles,
+            &[],
+            fuzzy,
+            include_builtins,
+        )
+    }
+
+    pub(crate) fn build_with_knowledge(
+        base_terms: &[String],
+        entries: &[VocabularyEntry],
+        app_profiles: &[AppProfile],
+        knowledge: &[KnowledgeEntry],
+        fuzzy: bool,
+        include_builtins: bool,
+    ) -> Self {
         let global_entries = applicable_entries(entries, None, app_profiles);
+        let global_learned = applicable_learned_pairs(knowledge, None, None);
         let global = Arc::new(build_matcher(
             base_terms,
             &global_entries,
+            &global_learned,
             fuzzy,
             include_builtins,
         ));
@@ -42,14 +63,24 @@ impl CorrectionMatcherSet {
                 VocabularyScope::Global => {}
             }
         }
+        for entry in knowledge {
+            if let KnowledgeScope::App { bundle_id } | KnowledgeScope::Project { bundle_id, .. } =
+                &entry.scope
+            {
+                bundle_ids.insert(bundle_id.clone());
+            }
+        }
 
         let by_bundle_id = bundle_ids
             .into_iter()
             .map(|bundle_id| {
                 let applicable = applicable_entries(entries, Some(&bundle_id), app_profiles);
+                let project_root = unambiguous_project_root(&bundle_id, app_profiles);
+                let learned = applicable_learned_pairs(knowledge, Some(&bundle_id), project_root);
                 let matcher = Arc::new(build_matcher(
                     base_terms,
                     &applicable,
+                    &learned,
                     fuzzy,
                     include_builtins,
                 ));
@@ -74,6 +105,7 @@ impl CorrectionMatcherSet {
 fn build_matcher(
     base_terms: &[String],
     entries: &[&VocabularyEntry],
+    learned_pairs: &[(String, String)],
     fuzzy: bool,
     include_builtins: bool,
 ) -> CorrectionMatcher {
@@ -85,7 +117,50 @@ fn build_matcher(
             pairs.push((alias.trim().to_string(), entry.written.trim().to_string()));
         }
     }
-    CorrectionMatcher::build(&terms, &pairs, fuzzy, include_builtins)
+    CorrectionMatcher::build_with_learned(&terms, &pairs, learned_pairs, fuzzy, include_builtins)
+}
+
+fn unambiguous_project_root<'a>(
+    bundle_id: &str,
+    app_profiles: &'a [AppProfile],
+) -> Option<&'a str> {
+    app_profiles
+        .iter()
+        .find(|profile| profile.bundle_id == bundle_id && profile.ide_context_enabled)
+        .filter(|profile| profile.ide_project_roots.len() == 1)
+        .and_then(|profile| profile.ide_project_roots.first())
+        .map(String::as_str)
+}
+
+fn applicable_learned_pairs(
+    entries: &[KnowledgeEntry],
+    bundle_id: Option<&str>,
+    project_root: Option<&str>,
+) -> Vec<(String, String)> {
+    let mut seen = HashSet::new();
+    entries
+        .iter()
+        .filter(|entry| entry.enabled)
+        .filter(|entry| match &entry.scope {
+            KnowledgeScope::Global => true,
+            KnowledgeScope::App {
+                bundle_id: required,
+            } => bundle_id == Some(required.as_str()),
+            KnowledgeScope::Project {
+                bundle_id: required,
+                root,
+            } => bundle_id == Some(required.as_str()) && project_root == Some(root.as_str()),
+        })
+        .filter_map(|entry| match &entry.payload {
+            KnowledgePayload::ReplacementRule {
+                source,
+                replacement,
+            } if seen.insert(normalize_alias(source)) => {
+                Some((source.clone(), replacement.clone()))
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 fn applicable_entries<'a>(
@@ -347,6 +422,29 @@ pub(crate) fn validate_entries(
 mod tests {
     use super::*;
 
+    fn learned(
+        id: &str,
+        source: &str,
+        replacement: &str,
+        scope: KnowledgeScope,
+        provenance: crate::knowledge_store::KnowledgeProvenance,
+        updated_at_ms: i64,
+    ) -> KnowledgeEntry {
+        KnowledgeEntry {
+            id: id.to_string(),
+            payload: KnowledgePayload::ReplacementRule {
+                source: source.to_string(),
+                replacement: replacement.to_string(),
+            },
+            enabled: true,
+            scope,
+            provenance,
+            created_at_ms: updated_at_ms,
+            updated_at_ms,
+            revision: 1,
+        }
+    }
+
     fn entry(written: &str, aliases: &[&str]) -> VocabularyEntry {
         VocabularyEntry {
             id: written.to_string(),
@@ -355,6 +453,101 @@ mod tests {
             enabled: true,
             scope: VocabularyScope::Global,
         }
+    }
+
+    #[test]
+    fn explicit_aliases_outrank_learned_replacements() {
+        let explicit = entry("Tauri", &["Tori"]);
+        let learned = learned(
+            "learned",
+            "Tori",
+            "Tory",
+            KnowledgeScope::Global,
+            crate::knowledge_store::KnowledgeProvenance::LearnedCorrection,
+            2,
+        );
+        let set = CorrectionMatcherSet::build_with_knowledge(
+            &[],
+            &[explicit],
+            &[],
+            &[learned],
+            false,
+            false,
+        );
+        assert_eq!(set.select(None).apply("Tori works"), "Tauri works");
+    }
+
+    #[test]
+    fn learned_rules_use_project_app_global_precedence_and_fail_closed_for_multiple_roots() {
+        let mut profile = AppProfile {
+            bundle_id: "com.editor".to_string(),
+            label: "Editor".to_string(),
+            auto_paste_override: None,
+            cleanup_override: None,
+            cli_formatting_override: None,
+            smart_formatting_override: None,
+            writing_style: None,
+            ide_context_enabled: true,
+            ide_project_roots: vec!["/project".to_string()],
+        };
+        let knowledge = vec![
+            learned(
+                "project",
+                "use hook",
+                "projectHook",
+                KnowledgeScope::Project {
+                    bundle_id: "com.editor".to_string(),
+                    root: "/project".to_string(),
+                },
+                crate::knowledge_store::KnowledgeProvenance::LearnedCorrection,
+                3,
+            ),
+            learned(
+                "app",
+                "use hook",
+                "appHook",
+                KnowledgeScope::App {
+                    bundle_id: "com.editor".to_string(),
+                },
+                crate::knowledge_store::KnowledgeProvenance::LearnedCorrection,
+                2,
+            ),
+            learned(
+                "global",
+                "use hook",
+                "globalHook",
+                KnowledgeScope::Global,
+                crate::knowledge_store::KnowledgeProvenance::LearnedCorrection,
+                1,
+            ),
+        ];
+        let set = CorrectionMatcherSet::build_with_knowledge(
+            &[],
+            &[],
+            &[profile.clone()],
+            &knowledge,
+            false,
+            false,
+        );
+        assert_eq!(
+            set.select(Some("com.editor")).apply("use hook"),
+            "projectHook"
+        );
+        assert_eq!(
+            set.select(Some("com.other")).apply("use hook"),
+            "globalHook"
+        );
+
+        profile.ide_project_roots.push("/other".to_string());
+        let set = CorrectionMatcherSet::build_with_knowledge(
+            &[],
+            &[],
+            &[profile],
+            &knowledge,
+            false,
+            false,
+        );
+        assert_eq!(set.select(Some("com.editor")).apply("use hook"), "appHook");
     }
 
     #[test]
@@ -384,8 +577,7 @@ mod tests {
         let error = validate_entries(&[entry("LineBreak", &["new line"])], &[]).unwrap_err();
         assert!(error.contains("Voice Command"));
 
-        let duplicate = validate_entries(&[entry("Tauri", &["Tori", "tori"])], &[])
-            .unwrap_err();
+        let duplicate = validate_entries(&[entry("Tauri", &["Tori", "tori"])], &[]).unwrap_err();
         assert!(duplicate.contains("duplicated"));
     }
 

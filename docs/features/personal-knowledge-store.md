@@ -1,6 +1,6 @@
 # Personal Knowledge Store
 
-Murmur keeps reusable replacement rules, vocabulary terms, and snippets in a local SQLite database. The store is an issue-independent repository boundary: Settings can manage it now, while future transcription or command features may call the narrow resolver API separately.
+Murmur keeps reusable replacement rules, vocabulary terms, and snippets in a local SQLite database. The store remains an issue-independent repository boundary. Settings manages every record, while Correct and Teach creates explicitly confirmed learned replacement rules through a narrow command and Smart Correction consumes enabled replacement records through an immutable matcher snapshot.
 
 No knowledge record is uploaded, added to telemetry, or mirrored into `localStorage`. The database lives under the app data directory at `knowledge/knowledge.sqlite3`; its `backups/` and `quarantine/` directories are contained beneath the same root.
 
@@ -14,7 +14,7 @@ Every record has a stable ID, enabled flag, revision, provenance, timestamps, on
 - `global`, `app { bundleId }`, or `project { bundleId, root }` scope
 - `manual`, `import`, `learned_correction`, or `code_scan` provenance
 
-Settings creates and edits manual records. Imported records retain their content and scope but use `import` provenance. The repository resolver is deterministic: exact normalized trigger, then project over app over global, manual over import over learned correction over code scan, newest update, then stable ID. Issue #246 does not connect that resolver to transcription, Correct and Teach, or voice-command execution.
+Settings creates and edits manual records. Imported records retain their content and scope but use `import` provenance. The repository resolver is deterministic: exact normalized trigger, then project over app over global, manual over import over learned correction over code scan, newest update, then stable ID. Correct and Teach uses that order inside Smart Correction; Voice Commands remain a separate, earlier stage.
 
 ## Schema and migrations
 

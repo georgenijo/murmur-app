@@ -57,6 +57,7 @@ describe('Sonic Canvas component details', () => {
             duration: 3.1949375,
           }]}
           onClearHistory={vi.fn()}
+          onUpdateEntry={vi.fn()}
         />,
       );
     });
@@ -114,16 +115,31 @@ describe('Sonic Canvas component details', () => {
             duration: 3,
           }]}
           onClearHistory={onClearHistory}
+          onUpdateEntry={vi.fn()}
         />,
       );
     });
 
-    const [copyButton, clearButton] = Array.from(container.querySelectorAll('button'));
+    const copyButton = container.querySelector('[aria-label^="Copy transcription"]') as HTMLButtonElement;
+    const clearButton = Array.from(container.querySelectorAll('button')).find((candidate) => candidate.textContent === 'Clear History')!;
     await act(async () => copyButton.click());
     expect(writeText).toHaveBeenCalledWith('Keep every interaction working');
 
     await act(async () => clearButton.click());
     expect(onClearHistory).toHaveBeenCalledOnce();
     expect(localStorage.getItem('dictation-history')).toBeNull();
+  });
+
+  it('offers Correct and Teach only on the newest history entry', async () => {
+    await act(async () => {
+      root.render(<HistoryPanel entries={[
+        { id: 'older', text: 'older transcript', timestamp: 1, duration: 1 },
+        { id: 'newer', text: 'newest transcript', timestamp: 2, duration: 1 },
+      ]} onClearHistory={vi.fn()} onUpdateEntry={vi.fn()} />);
+    });
+    const actions = Array.from(container.querySelectorAll('button')).filter((candidate) => candidate.textContent === 'Correct and Teach');
+    expect(actions).toHaveLength(1);
+    await act(async () => actions[0].click());
+    expect((container.querySelector('[aria-label="Corrected transcript"]') as HTMLTextAreaElement).value).toBe('newest transcript');
   });
 });

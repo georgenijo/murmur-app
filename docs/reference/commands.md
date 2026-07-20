@@ -57,11 +57,19 @@ For event-based communication (Rust to frontend), see [events.md](events.md). Fo
 | `upsert_knowledge` | `draft: KnowledgeDraft` | `Result<KnowledgeEntry, String>` | Creates a manual record or edits one using its expected revision. |
 | `set_knowledge_enabled` | `id`, `enabled`, `expected_revision` | `Result<KnowledgeEntry, String>` | Enables/disables one record with optimistic concurrency. |
 | `delete_knowledge` | `id`, `expected_revision` | `Result<u64, String>` | Deletes one record and returns the new store revision. |
-| `resolve_knowledge` | `request: KnowledgeResolveRequest` | `Result<Option<KnowledgeEntry>, String>` | Deterministically resolves an exact trigger across applicable scopes. Not integrated into transcription or command execution. |
+| `resolve_knowledge` | `request: KnowledgeResolveRequest` | `Result<Option<KnowledgeEntry>, String>` | Deterministically resolves an exact trigger across applicable scopes. Enabled replacement records also feed the immutable Smart Correction matcher. |
 | `export_knowledge_to_file` | `path: String` | `Result<u64, String>` | Atomically exports the local store to versioned JSON selected by the user. |
 | `inspect_knowledge_import` | `path: String` | `Result<KnowledgeImportSummary, String>` | Validates an import and reports new, duplicate, and conflicting records without writing. |
 | `import_knowledge_from_file` | `path: String` | `Result<KnowledgeImportResult, String>` | Atomically imports validated new records without overwriting local records. |
 | `delete_all_knowledge` | `expected_revision: u64` | `Result<u64, String>` | Deletes all records and in-store recovery artifacts after a revision-checked UI confirmation. |
+
+## Correct and Teach (`commands/correct_and_teach.rs`)
+
+| Command | Parameters | Return Type | Description |
+|---------|-----------|-------------|-------------|
+| `propose_learned_correction` | `request: CorrectionProposalRequest` | `CorrectionProposalOutcome` | Computes one bounded local diff and stores only an ephemeral reviewed proposal. It never writes knowledge. |
+| `confirm_learned_correction` | `proposal_id`, `scope` | `Result<KnowledgeEntry, String>` | Persists the exact reviewed replacement with `learned_correction` provenance and refreshes the next matcher generation. |
+| `discard_learned_correction_proposal` | `proposal_id` | `()` | Discards the matching ephemeral proposal without persistence. |
 
 ## Models (`commands/models.rs`)
 

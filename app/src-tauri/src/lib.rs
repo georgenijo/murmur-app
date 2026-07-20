@@ -6,6 +6,7 @@ mod benchmark;
 mod cleanup;
 mod cli_command;
 mod commands;
+mod correct_and_teach;
 mod correction;
 mod dictation_context;
 mod file_output;
@@ -77,6 +78,7 @@ pub(crate) struct State {
     pub(crate) app_state: AppState,
     pub(crate) benchmark: std::sync::Arc<benchmark::BenchmarkCoordinator>,
     pub(crate) knowledge: knowledge_store::KnowledgeStore,
+    pub(crate) correct_and_teach: correct_and_teach::CorrectAndTeachState,
     /// Cached notch dimensions (notch_width, menu_bar_height) from setup (main thread).
     pub(crate) notch_info: Mutex<Option<(f64, f64)>>,
 }
@@ -132,6 +134,7 @@ pub fn run() {
             app_state: AppState::default(),
             benchmark: std::sync::Arc::new(benchmark::BenchmarkCoordinator::new()),
             knowledge: knowledge_store::KnowledgeStore::default(),
+            correct_and_teach: correct_and_teach::CorrectAndTeachState::default(),
             notch_info: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
@@ -151,6 +154,9 @@ pub fn run() {
             commands::recording::get_ide_context_status,
             commands::recording::refresh_ide_context,
             commands::recording::clear_ide_context,
+            commands::correct_and_teach::propose_learned_correction,
+            commands::correct_and_teach::confirm_learned_correction,
+            commands::correct_and_teach::discard_learned_correction_proposal,
             commands::permissions::open_system_preferences,
             commands::permissions::check_accessibility_permission,
             commands::permissions::request_accessibility_permission,
@@ -216,6 +222,11 @@ pub fn run() {
 
             let knowledge_root = app.path().app_data_dir()?.join("knowledge");
             let knowledge_status = app.state::<State>().knowledge.initialize(knowledge_root);
+            if knowledge_status.availability != knowledge_store::StoreAvailability::Unavailable {
+                if let Err(error) = commands::knowledge::refresh_correction_rules(&app.state::<State>()) {
+                    tracing::warn!(target: "system", error, "initial knowledge correction matcher refresh failed");
+                }
+            }
             tracing::info!(
                 target: "system",
                 availability = ?knowledge_status.availability,

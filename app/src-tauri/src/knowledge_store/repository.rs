@@ -237,6 +237,84 @@ impl KnowledgeRepository {
         self.get(&id)
     }
 
+    pub fn create_learned_replacement(
+        &self,
+        source: String,
+        replacement: String,
+        scope: KnowledgeScope,
+    ) -> Result<KnowledgeEntry, String> {
+        let payload = KnowledgePayload::ReplacementRule {
+            source: source.trim().to_string(),
+            replacement: replacement.trim().to_string(),
+        };
+        validate_payload(&payload)?;
+        validate_scope(&scope)?;
+
+        let connection = self.open_checked()?;
+        for existing in entries_with_kind(&connection, KnowledgeKind::ReplacementRule)? {
+            let KnowledgePayload::ReplacementRule {
+                source: existing_source,
+                replacement: existing_replacement,
+            } = &existing.payload
+            else {
+                continue;
+            };
+            if normalize_key(existing_source) != normalize_key(&source) || existing.scope != scope {
+                continue;
+            }
+            if existing.enabled && existing_replacement == replacement.trim() {
+                return Ok(existing);
+            }
+            return Err(
+                "A replacement rule already uses this phrase and scope. Review or edit it in Knowledge before teaching another."
+                    .to_string(),
+            );
+        }
+        if record_count(&connection)? >= MAX_ENTRIES {
+            return Err(
+                "The personal knowledge store has reached its 10,000-record limit.".to_string(),
+            );
+        }
+        drop(connection);
+
+        let mut connection = self.open_checked()?;
+        let transaction = connection.transaction().map_err(db_error)?;
+        let timestamp = now_ms();
+        let id: String = transaction
+            .query_row("SELECT lower(hex(randomblob(16)))", [], |row| row.get(0))
+            .map_err(db_error)?;
+        transaction
+            .execute(
+                "INSERT INTO knowledge_entries(id, kind, trigger_text, normalized_trigger, content_text, aliases_json, enabled, scope_kind, app_bundle_id, project_root, provenance, created_at_ms, updated_at_ms, revision) VALUES (?, 'replacement_rule', ?, ?, ?, '[]', 1, ?, ?, ?, 'learned_correction', ?, ?, 1)",
+                params![
+                    id,
+                    source.trim(),
+                    normalize_key(&source),
+                    replacement.trim(),
+                    scope.kind(),
+                    scope.bundle_id(),
+                    scope.root(),
+                    timestamp,
+                    timestamp,
+                ],
+            )
+            .map_err(db_error)?;
+        refresh_fts(&transaction, &id)?;
+        bump_store_revision(&transaction)?;
+        transaction.commit().map_err(db_error)?;
+        self.get(&id)
+    }
+
+    pub fn enabled_replacement_rules(&self) -> Result<Vec<KnowledgeEntry>, String> {
+        let connection = self.open_checked()?;
+        let mut entries = entries_with_kind(&connection, KnowledgeKind::ReplacementRule)?
+            .into_iter()
+            .filter(|entry| entry.enabled)
+            .collect::<Vec<_>>();
+        entries.sort_by(|left, right| compare_precedence(right, left));
+        Ok(entries)
+    }
+
     pub fn set_enabled(
         &self,
         id: &str,

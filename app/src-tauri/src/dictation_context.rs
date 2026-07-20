@@ -101,6 +101,10 @@ pub struct DeliverySettings {
 pub struct DictationContextSnapshot {
     pub app: ActiveAppIdentity,
     pub matched_profile: Option<MatchedAppProfile>,
+    /// A project is teachable only when the explicitly opted-in matching
+    /// profile identifies exactly one root. Multiple configured roots are not
+    /// treated as an invented active-project signal.
+    pub teaching_project_root: Option<String>,
     pub transcription: TranscriptionSettings,
     pub transformations: TransformationSettings,
     pub delivery: DeliverySettings,
@@ -207,6 +211,10 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
         writing_style: profile.writing_style,
         ide_context_enabled: profile.ide_context_enabled,
     });
+    let teaching_project_root = explicit_profile
+        .filter(|profile| profile.ide_context_enabled && profile.ide_project_roots.len() == 1)
+        .and_then(|profile| profile.ide_project_roots.first())
+        .cloned();
     let custom_vocab = crate::vocabulary_alias::has_applicable_entries(
         &global.vocabulary_entries,
         inputs.bundle_id,
@@ -228,6 +236,7 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
             bundle_id: inputs.bundle_id.map(str::to_string),
         },
         matched_profile,
+        teaching_project_root,
         transcription: TranscriptionSettings {
             model_name: global.model_name.clone(),
             language: global.language.clone(),
@@ -678,6 +687,7 @@ mod tests {
         assert!(opted_in.transformations.ide_context_enabled);
         assert!(!opted_in.transformations.smart_formatting_enabled);
         assert!(opted_in.context_capture.local_project_index);
+        assert_eq!(opted_in.teaching_project_root.as_deref(), Some("/explicit/project"));
         assert!(!opted_in.context_capture.surrounding_screen_text);
         assert!(!opted_in.context_capture.selected_text);
         assert!(!opted_in.context_capture.clipboard);
@@ -693,6 +703,16 @@ mod tests {
             ide_named_but_unconfigured.context_capture,
             ContextCapturePermissions::default()
         );
+
+        global.app_profiles[0]
+            .ide_project_roots
+            .push("/another/project".to_string());
+        let ambiguous = resolve_test(
+            &global,
+            Some("com.example.Editor"),
+            SessionOverrides::default(),
+        );
+        assert!(ambiguous.teaching_project_root.is_none());
     }
 
     #[test]
