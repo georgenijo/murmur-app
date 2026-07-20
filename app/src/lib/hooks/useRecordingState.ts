@@ -5,9 +5,10 @@ import { isDictationStatus } from '../types';
 import type { DictationStatus } from '../types';
 import { updateStats } from '../stats';
 import { flog } from '../log';
+import type { TeachingContext } from '../correctAndTeach';
 
 interface UseRecordingStateProps {
-  addEntry: (text: string, duration: number, source?: 'recording' | 'file', sourceName?: string) => void;
+  addEntry: (text: string, duration: number, source?: 'recording' | 'file', sourceName?: string, teachingContext?: TeachingContext) => void;
   microphone: string;
 }
 
@@ -135,17 +136,17 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | null = null;
-    listen<{ text: string; duration: number }>('transcription-complete', (event) => {
+    listen<{ text: string; duration: number; teachingContext?: TeachingContext }>('transcription-complete', (event) => {
       flog.info('recording', 'transcription-complete event', {
         textLen: event.payload.text?.length, duration: event.payload.duration,
         isStopping: isStoppingRef.current,
       });
       // Single source of truth for history entries — always handle here,
       // never in handleStop, to avoid race-condition duplicates.
-      const { text, duration } = event.payload;
+      const { text, duration, teachingContext } = event.payload;
       if (text) {
         setTranscription(text);
-        addEntry(text, duration);
+        addEntry(text, duration, 'recording', undefined, teachingContext);
         updateStats(text, duration);
         setStatsVersion(v => v + 1);
       }

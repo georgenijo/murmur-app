@@ -165,7 +165,7 @@ export function KnowledgeManager({ active, profiles }: Props) {
           <div>
             <p className="text-sm font-medium text-on-surface">Personal knowledge</p>
             <p className="mt-1 max-w-xl text-xs text-on-surface-variant">
-              Manage local replacement rules, vocabulary, reusable snippets, and the records used by Voice Commands. Voice-enabled records are applied locally during live transcription.
+              Manage local replacement rules, vocabulary, reusable snippets, and Voice Command records. Voice-enabled records run locally during live transcription; other enabled replacements run through Smart Correction with deterministic scope and provenance precedence.
             </p>
           </div>
           <button type="button" onClick={() => setEditing(null)} disabled={unavailable} className="rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-on-primary disabled:opacity-40">Create knowledge</button>

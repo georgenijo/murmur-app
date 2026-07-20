@@ -255,7 +255,10 @@ fn parse_vocab_terms(s: &str) -> Vec<String> {
 /// and store it in `app_state.correction_matcher`. Called on settings-change (in
 /// `configure_dictation`) — never per-utterance. `dictation` is the already-held
 /// lock guard; the matcher is stored under a separate leaf mutex.
-fn rebuild_correction_matcher(app_state: &AppState, dictation: &crate::state::DictationState) {
+pub(crate) fn rebuild_correction_matcher(
+    app_state: &AppState,
+    dictation: &crate::state::DictationState,
+) {
     let code_enabled = dictation.code_vocab_enabled;
     let mut terms = Vec::new();
     if code_enabled {
@@ -274,10 +277,12 @@ fn rebuild_correction_matcher(app_state: &AppState, dictation: &crate::state::Di
             }
         }
     }
-    let matcher = crate::vocabulary_alias::CorrectionMatcherSet::build(
+    let knowledge = app_state.knowledge_replacements.lock_or_recover().clone();
+    let matcher = crate::vocabulary_alias::CorrectionMatcherSet::build_with_knowledge(
         &terms,
         &dictation.vocabulary_entries,
         &dictation.app_profiles,
+        &knowledge,
         dictation.correction_fuzzy,
         // Gate the std* abbrev builtins on the dev-context (code-vocab) signal.
         code_enabled,
@@ -2151,14 +2156,17 @@ pub async fn stop_native_recording(
     // its history even when recording was initiated from the overlay).
     let recording_secs = samples.len() / 16_000;
     if !text.is_empty() {
-        let _ = app_handle.emit(
-            "transcription-complete",
-            serde_json::json!({
-                "recordingId": rid,
-                "text": text,
-                "duration": recording_secs
-            }),
+        let teaching_context = crate::correct_and_teach::teaching_context(
+            context.app.bundle_id.as_deref(),
+            context.matched_profile.as_ref().map(|profile| profile.label.as_str()),
+            context.teaching_project_root.as_deref(),
         );
+        let _ = app_handle.emit("transcription-complete", serde_json::json!({
+            "recordingId": rid,
+            "text": text,
+            "duration": recording_secs,
+            "teachingContext": teaching_context
+        }));
     }
 
     Ok(serde_json::json!({

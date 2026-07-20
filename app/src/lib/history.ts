@@ -1,4 +1,6 @@
 /** Where a history entry's text came from. */
+import type { TeachingContext } from './correctAndTeach';
+
 export type HistorySource = 'recording' | 'file';
 
 export interface HistoryEntry {
@@ -11,6 +13,8 @@ export interface HistoryEntry {
   source?: HistorySource;
   /** For file transcriptions, the source file's base name (for display). */
   sourceName?: string;
+  /** Local recording-start scope metadata used only for explicit teaching. */
+  teachingContext?: TeachingContext;
 }
 
 const STORAGE_KEY = 'dictation-history';
@@ -44,6 +48,7 @@ export function addHistoryEntry(
   duration: number,
   source: HistorySource = 'recording',
   sourceName?: string,
+  teachingContext?: TeachingContext,
 ): HistoryEntry[] {
   const newEntry: HistoryEntry = {
     id: Date.now().toString(),
@@ -52,8 +57,17 @@ export function addHistoryEntry(
     duration,
     source,
     ...(sourceName ? { sourceName } : {}),
+    ...(teachingContext ? { teachingContext } : {}),
   };
   return [...entries, newEntry].slice(-MAX_ENTRIES);
+}
+
+export function updateHistoryEntry(
+  entries: HistoryEntry[],
+  id: string,
+  text: string,
+): HistoryEntry[] {
+  return entries.map((entry) => entry.id === id ? { ...entry, text } : entry);
 }
 
 export function clearHistory(): void {

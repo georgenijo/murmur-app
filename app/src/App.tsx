@@ -124,7 +124,7 @@ function App() {
     window.addEventListener('focus', check);
     return () => window.removeEventListener('focus', check);
   }, []);
-  const { historyEntries, addEntry, clearHistory } = useHistoryManagement();
+  const { historyEntries, addEntry, updateEntry, clearHistory } = useHistoryManagement();
   const {
     status, recordingDuration, error: recordingError,
     handleStart, handleStop, toggleRecording, statsVersion,
@@ -246,6 +246,7 @@ function App() {
               <TranscriptionView
                 historyEntries={historyEntries}
                 onClearHistory={clearHistory}
+                onUpdateHistoryEntry={updateEntry}
               />
 
               {error && (

@@ -96,6 +96,23 @@ impl KnowledgeStore {
         Ok(entry)
     }
 
+    pub fn create_learned_replacement(
+        &self,
+        source: String,
+        replacement: String,
+        scope: KnowledgeScope,
+    ) -> Result<KnowledgeEntry, String> {
+        let entry = self.with_repository(|repository| {
+            repository.create_learned_replacement(source, replacement, scope)
+        })?;
+        self.refresh_status();
+        Ok(entry)
+    }
+
+    pub fn enabled_replacement_rules(&self) -> Result<Vec<KnowledgeEntry>, String> {
+        self.with_repository(KnowledgeRepository::enabled_replacement_rules)
+    }
+
     pub fn set_enabled(
         &self,
         id: &str,
@@ -280,6 +297,64 @@ mod tests {
         assert!(!reopened.get(&created.id).unwrap().enabled);
         assert!(reopened.delete(&created.id, disabled.revision).is_ok());
         assert_eq!(reopened.status().record_count, 0);
+    }
+
+    #[test]
+    fn learned_replacements_require_an_explicit_create_and_keep_provenance() {
+        let (_temp, store) = store();
+        let learned = store
+            .create_learned_replacement(
+                "use recording state".to_string(),
+                "useRecordingState".to_string(),
+                KnowledgeScope::Global,
+            )
+            .unwrap();
+        assert_eq!(learned.provenance, KnowledgeProvenance::LearnedCorrection);
+        assert_eq!(
+            store.enabled_replacement_rules().unwrap(),
+            vec![learned.clone()]
+        );
+
+        let duplicate = store
+            .create_learned_replacement(
+                " Use   Recording State ".to_string(),
+                "useRecordingState".to_string(),
+                KnowledgeScope::Global,
+            )
+            .unwrap();
+        assert_eq!(duplicate.id, learned.id);
+        assert!(store
+            .create_learned_replacement(
+                "use recording state".to_string(),
+                "differentValue".to_string(),
+                KnowledgeScope::Global,
+            )
+            .unwrap_err()
+            .contains("already uses"));
+    }
+
+    #[test]
+    fn voice_command_replacements_never_enter_smart_correction_or_masquerade_as_learned() {
+        let (_temp, store) = store();
+        let command = store
+            .upsert_manual(voice_command(
+                "my signature",
+                "Regards, George",
+                VoiceCommandKind::TextReplacement,
+                KnowledgeScope::Global,
+            ))
+            .unwrap();
+        assert!(command.voice_command.is_some());
+        assert!(store.enabled_replacement_rules().unwrap().is_empty());
+
+        let error = store
+            .create_learned_replacement(
+                "my signature".to_string(),
+                "Regards, George".to_string(),
+                KnowledgeScope::Global,
+            )
+            .unwrap_err();
+        assert!(error.contains("Voice Command"));
     }
 
     #[test]

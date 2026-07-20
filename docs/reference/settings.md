@@ -96,7 +96,7 @@ Aliases are limited to 16 per entry and values to 256 characters. Ambiguous alia
 
 Settings → Knowledge manages a separate local SQLite store for replacement rules, vocabulary terms, and snippets. It is not part of the `Settings` object or `localStorage`. Users can search and filter bounded pages, inspect scope/provenance, create and edit records, enable/disable them, export/import a versioned JSON file, delete individual records, and delete all records with typed confirmation.
 
-The store reports recovered, reinitialized, and unavailable states visibly. This management surface does not apply records to transcription or execute snippet triggers. See [Personal Knowledge Store](../features/personal-knowledge-store.md).
+The store reports recovered, reinitialized, and unavailable states visibly. Enabled replacement rules apply through Smart Correction; snippet triggers remain inert until their separate Voice Commands integration. See [Personal Knowledge Store](../features/personal-knowledge-store.md) and [Correct and Teach](../features/correct-and-teach.md).
 
 ## Per-App Profiles
 

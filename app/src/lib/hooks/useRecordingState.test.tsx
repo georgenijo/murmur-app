@@ -114,7 +114,11 @@ describe('useRecordingState transition ordering', () => {
     });
     mocks.stopRecording.mockImplementationOnce(async () => {
       mocks.listeners.get('transcription-complete')?.({
-        payload: { text: 'one final transcript', duration: 12 },
+        payload: {
+          text: 'one final transcript',
+          duration: 12,
+          teachingContext: { appBundleId: 'com.example.Editor', appLabel: 'Editor' },
+        },
       });
       return {
         type: 'transcription',
@@ -127,7 +131,13 @@ describe('useRecordingState transition ordering', () => {
     await act(async () => current.handleStop());
 
     expect(mocks.addEntry).toHaveBeenCalledTimes(1);
-    expect(mocks.addEntry).toHaveBeenCalledWith('one final transcript', 12);
+    expect(mocks.addEntry).toHaveBeenCalledWith(
+      'one final transcript',
+      12,
+      'recording',
+      undefined,
+      { appBundleId: 'com.example.Editor', appLabel: 'Editor' },
+    );
     expect(mocks.updateStats).toHaveBeenCalledTimes(1);
     expect(mocks.updateStats).toHaveBeenCalledWith('one final transcript', 12);
     expect(current.transcription).toBe('one final transcript');
