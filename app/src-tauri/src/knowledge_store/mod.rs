@@ -2,6 +2,7 @@ mod migrations;
 mod repository;
 mod types;
 
+pub(crate) use repository::normalize_key;
 pub use repository::{InitializationOutcome, KnowledgeRepository};
 pub use types::*;
 
@@ -138,6 +139,27 @@ impl KnowledgeStore {
         self.with_repository(|repository| repository.resolve(request))
     }
 
+    pub fn voice_commands_for_context(
+        &self,
+        bundle_id: Option<&str>,
+    ) -> Result<Vec<KnowledgeEntry>, String> {
+        self.with_repository(|repository| repository.voice_commands_for_context(bundle_id))
+    }
+
+    pub fn all_voice_commands(&self) -> Result<Vec<KnowledgeEntry>, String> {
+        self.with_repository(KnowledgeRepository::all_voice_commands)
+    }
+
+    pub fn migrate_legacy_voice_commands(
+        &self,
+        commands: &[(String, String)],
+    ) -> Result<u64, String> {
+        let inserted =
+            self.with_repository(|repository| repository.migrate_legacy_voice_commands(commands))?;
+        self.refresh_status();
+        Ok(inserted)
+    }
+
     pub fn export_to_file(&self, path: &Path) -> Result<u64, String> {
         self.with_repository(|repository| repository.export_to_file(path))
     }
@@ -210,6 +232,35 @@ mod tests {
             },
             enabled: true,
             scope,
+            voice_command: None,
+        }
+    }
+
+    fn voice_command(
+        phrase: &str,
+        content: &str,
+        command_type: VoiceCommandKind,
+        scope: KnowledgeScope,
+    ) -> KnowledgeDraft {
+        KnowledgeDraft {
+            id: None,
+            expected_revision: None,
+            payload: match command_type {
+                VoiceCommandKind::TextReplacement => KnowledgePayload::ReplacementRule {
+                    source: phrase.to_string(),
+                    replacement: content.to_string(),
+                },
+                VoiceCommandKind::Snippet => KnowledgePayload::Snippet {
+                    trigger: phrase.to_string(),
+                    body: content.to_string(),
+                },
+            },
+            enabled: true,
+            scope,
+            voice_command: Some(VoiceCommandMetadata {
+                command_type,
+                allow_clipboard_read: false,
+            }),
         }
     }
 
@@ -280,6 +331,30 @@ mod tests {
             )
             .unwrap_err()
             .contains("already uses"));
+    }
+
+    #[test]
+    fn voice_command_replacements_never_enter_smart_correction_or_masquerade_as_learned() {
+        let (_temp, store) = store();
+        let command = store
+            .upsert_manual(voice_command(
+                "my signature",
+                "Regards, George",
+                VoiceCommandKind::TextReplacement,
+                KnowledgeScope::Global,
+            ))
+            .unwrap();
+        assert!(command.voice_command.is_some());
+        assert!(store.enabled_replacement_rules().unwrap().is_empty());
+
+        let error = store
+            .create_learned_replacement(
+                "my signature".to_string(),
+                "Regards, George".to_string(),
+                KnowledgeScope::Global,
+            )
+            .unwrap_err();
+        assert!(error.contains("Voice Command"));
     }
 
     #[test]
@@ -355,6 +430,123 @@ mod tests {
     }
 
     #[test]
+    fn voice_command_conflicts_are_scope_aware_and_builtins_are_reserved() {
+        let (_temp, store) = store();
+        store
+            .upsert_manual(voice_command(
+                "my signature",
+                "Global",
+                VoiceCommandKind::TextReplacement,
+                KnowledgeScope::Global,
+            ))
+            .unwrap();
+        assert!(store
+            .upsert_manual(voice_command(
+                "MY   SIGNATURE",
+                "Duplicate",
+                VoiceCommandKind::Snippet,
+                KnowledgeScope::Global,
+            ))
+            .unwrap_err()
+            .contains("already exists"));
+        store
+            .upsert_manual(voice_command(
+                "my signature",
+                "Mail only",
+                VoiceCommandKind::Snippet,
+                KnowledgeScope::App {
+                    bundle_id: "com.apple.mail".to_string(),
+                },
+            ))
+            .unwrap();
+        assert!(store
+            .upsert_manual(voice_command(
+                "new line",
+                "reserved",
+                VoiceCommandKind::TextReplacement,
+                KnowledgeScope::Global,
+            ))
+            .unwrap_err()
+            .contains("built-in"));
+
+        let mail = crate::voice_commands::commands_from_knowledge(
+            store
+                .voice_commands_for_context(Some("com.apple.mail"))
+                .unwrap(),
+        );
+        assert_eq!(mail.len(), 1);
+        assert_eq!(mail[0].content, "Mail only");
+        assert!(mail[0].app_scoped);
+        let notes = crate::voice_commands::commands_from_knowledge(
+            store
+                .voice_commands_for_context(Some("com.apple.Notes"))
+                .unwrap(),
+        );
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].content, "Global");
+    }
+
+    #[test]
+    fn legacy_voice_command_migration_is_idempotent_and_preserves_literal_pairs() {
+        let (_temp, store) = store();
+        let legacy = vec![
+            ("first command".to_string(), "One".to_string()),
+            ("remove phrase".to_string(), "".to_string()),
+            ("new line".to_string(), "never ran".to_string()),
+        ];
+        assert_eq!(store.migrate_legacy_voice_commands(&legacy).unwrap(), 3);
+        assert_eq!(store.migrate_legacy_voice_commands(&legacy).unwrap(), 0);
+        let entries = store.voice_commands_for_context(None).unwrap();
+        assert_eq!(entries.len(), 2, "built-in collision migrates disabled");
+        assert_eq!(entries[0].id, "legacy-voice-command-00000000");
+        assert_eq!(entries[1].id, "legacy-voice-command-00000001");
+        assert!(matches!(
+            &entries[1].payload,
+            KnowledgePayload::ReplacementRule { replacement, .. } if replacement.is_empty()
+        ));
+        assert_eq!(store.status().record_count, 3);
+    }
+
+    #[test]
+    fn legacy_voice_command_migration_never_silently_drops_existing_pairs() {
+        let (temp, store) = store();
+        store
+            .upsert_manual(replacement("seed", "record", KnowledgeScope::Global))
+            .unwrap();
+        let export = temp.path().join("collision.json");
+        store.export_to_file(&export).unwrap();
+        let mut bundle: KnowledgeExport =
+            serde_json::from_slice(&std::fs::read(&export).unwrap()).unwrap();
+        bundle.entries[0].id = "legacy-voice-command-00000000".to_string();
+        std::fs::write(&export, serde_json::to_vec_pretty(&bundle).unwrap()).unwrap();
+        let revision = store.status().store_revision;
+        store.delete_all(revision).unwrap();
+        store.import_from_file(&export).unwrap();
+
+        let long_replacement = "r".repeat(4_097);
+        let long_phrase = "p".repeat(257);
+        let legacy = vec![
+            ("collision command".to_string(), long_replacement.clone()),
+            (long_phrase.clone(), "still migrated".to_string()),
+        ];
+        assert_eq!(store.migrate_legacy_voice_commands(&legacy).unwrap(), 2);
+        let entries = store.all_voice_commands().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_ne!(entries[0].id, "legacy-voice-command-00000000");
+        assert!(matches!(
+            &entries[0].payload,
+            KnowledgePayload::ReplacementRule { source, replacement }
+                if source == "collision command" && replacement == &long_replacement
+        ));
+        assert!(matches!(
+            &entries[1].payload,
+            KnowledgePayload::ReplacementRule { source, replacement }
+                if source == &long_phrase && replacement == "still migrated"
+        ));
+        assert_eq!(store.status().record_count, 3);
+    }
+
+    #[test]
     fn migrates_v1_with_backup_and_recovers_only_inside_store_root() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("knowledge");
@@ -362,14 +554,12 @@ mod tests {
         std::fs::create_dir_all(root.join("quarantine")).unwrap();
         let db = root.join("knowledge.sqlite3");
         let mut connection = Connection::open(&db).unwrap();
-        migrations::migrate(&mut connection).unwrap();
-        connection.pragma_update(None, "user_version", 1).unwrap();
-        connection.execute_batch("DROP TABLE knowledge_fts; DROP INDEX knowledge_entries_listing; DROP INDEX knowledge_entries_resolution; DROP INDEX knowledge_entries_scope;").unwrap();
+        migrations::migrate_to_for_test(&mut connection, 1).unwrap();
         drop(connection);
 
         let store = KnowledgeStore::default();
         let status = store.initialize(root.clone());
-        assert_eq!(status.schema_version, 2);
+        assert_eq!(status.schema_version, 3);
         assert_eq!(
             std::fs::read_dir(root.join("backups"))
                 .unwrap()

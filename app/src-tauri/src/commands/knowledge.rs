@@ -48,6 +48,29 @@ pub fn upsert_knowledge(
     draft: KnowledgeDraft,
     state: tauri::State<'_, State>,
 ) -> Result<KnowledgeEntry, String> {
+    if draft.voice_command.is_some() {
+        let mut commands = state
+            .knowledge
+            .all_voice_commands()?
+            .into_iter()
+            .filter(|entry| draft.id.as_deref() != Some(entry.id.as_str()))
+            .map(|entry| {
+                let (phrase, replacement, _) = entry.payload.storage_parts();
+                crate::state::VoiceCommand {
+                    phrase,
+                    replacement,
+                }
+            })
+            .collect::<Vec<_>>();
+        let (phrase, replacement, _) = draft.payload.storage_parts();
+        commands.push(crate::state::VoiceCommand {
+            phrase,
+            replacement,
+        });
+        let dictation = state.app_state.dictation.lock_or_recover();
+        crate::vocabulary_alias::validate_entries(&dictation.vocabulary_entries, &commands)?;
+        drop(dictation);
+    }
     let entry = state.knowledge.upsert_manual(draft)?;
     refresh_correction_rules(&state)?;
     Ok(entry)
@@ -84,6 +107,23 @@ pub fn resolve_knowledge(
     state: tauri::State<'_, State>,
 ) -> Result<Option<KnowledgeEntry>, String> {
     state.knowledge.resolve(request)
+}
+
+#[tauri::command]
+pub fn preview_voice_command(
+    request: VoiceCommandPreviewRequest,
+) -> Result<VoiceCommandPreviewResponse, String> {
+    let application = crate::voice_commands::preview_voice_command(
+        request.draft,
+        &request.text,
+        request.read_clipboard,
+    )?;
+    Ok(VoiceCommandPreviewResponse {
+        output: application.text,
+        matched: application.matched,
+        clipboard_required: application.clipboard_required,
+        clipboard_read: application.clipboard_read,
+    })
 }
 
 #[tauri::command]

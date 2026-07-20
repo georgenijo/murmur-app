@@ -9,8 +9,35 @@ pub fn propose_learned_correction(
 ) -> CorrectionProposalOutcome {
     let original_chars = request.original_text.chars().count() as u64;
     let corrected_chars = request.corrected_text.chars().count() as u64;
+    let bundle_id = request
+        .teaching_context
+        .as_ref()
+        .and_then(|context| context.app_bundle_id.as_deref());
+    let knowledge_voice_command_phrases = match state
+        .knowledge
+        .voice_commands_for_context(bundle_id)
+    {
+        Ok(entries) => entries
+            .into_iter()
+            .map(|entry| entry.payload.storage_parts().0)
+            .collect::<Vec<_>>(),
+        Err(error) => {
+            tracing::warn!(
+                target: "system",
+                error,
+                "correct_and_teach voice command conflict check unavailable"
+            );
+            return CorrectionProposalOutcome::Unsafe {
+                reason: "Personal knowledge is unavailable, so Murmur cannot safely review a reusable rule right now."
+                    .to_string(),
+            };
+        }
+    };
     let dictation = state.app_state.dictation.lock_or_recover();
-    let outcome = state.correct_and_teach.propose(request, &dictation);
+    let outcome =
+        state
+            .correct_and_teach
+            .propose(request, &dictation, &knowledge_voice_command_phrases);
     tracing::info!(
         target: "pipeline",
         original_chars,

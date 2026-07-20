@@ -79,6 +79,7 @@ impl CorrectAndTeachState {
         &self,
         request: CorrectionProposalRequest,
         dictation: &DictationState,
+        knowledge_voice_command_phrases: &[String],
     ) -> CorrectionProposalOutcome {
         // Starting any new review invalidates the previous capability, even if
         // this request turns out to be unsafe. Only the proposal currently on
@@ -89,7 +90,11 @@ impl CorrectAndTeachState {
             Err(reason) => return CorrectionProposalOutcome::Unsafe { reason },
         };
 
-        if conflicts_with_voice_command(&candidate.source, dictation) {
+        if conflicts_with_voice_command(
+            &candidate.source,
+            dictation,
+            knowledge_voice_command_phrases,
+        ) {
             return CorrectionProposalOutcome::Unsafe {
                 reason: "That phrase is reserved by Voice Commands, so Murmur will not learn a competing correction.".to_string(),
             };
@@ -335,7 +340,11 @@ fn count_occurrences(haystack: &[Token<'_>], needle: &[Token<'_>]) -> usize {
         .count()
 }
 
-fn conflicts_with_voice_command(source: &str, dictation: &DictationState) -> bool {
+fn conflicts_with_voice_command(
+    source: &str,
+    dictation: &DictationState,
+    knowledge_voice_command_phrases: &[String],
+) -> bool {
     let normalized = normalize(source);
     crate::voice_commands::BUILTIN_COMMAND_PHRASES
         .iter()
@@ -344,6 +353,9 @@ fn conflicts_with_voice_command(source: &str, dictation: &DictationState) -> boo
             .voice_command_pairs
             .iter()
             .any(|command| normalize(&command.phrase) == normalized)
+        || knowledge_voice_command_phrases
+            .iter()
+            .any(|phrase| normalize(phrase) == normalized)
 }
 
 fn available_scopes(
@@ -497,6 +509,7 @@ mod tests {
                 }),
             },
             &dictation,
+            &[],
         );
         let CorrectionProposalOutcome::Proposal { scope_options, .. } = outcome else {
             panic!("expected proposal")
@@ -517,6 +530,7 @@ mod tests {
                 }),
             },
             &dictation,
+            &[],
         );
         let CorrectionProposalOutcome::Proposal { scope_options, .. } = outcome else {
             panic!("expected proposal")
@@ -534,6 +548,20 @@ mod tests {
                 teaching_context: None,
             },
             &DictationState::default(),
+            &[],
+        );
+        assert!(
+            matches!(outcome, CorrectionProposalOutcome::Unsafe { reason } if reason.contains("Voice Commands"))
+        );
+
+        let outcome = state.propose(
+            CorrectionProposalRequest {
+                original_text: "my signature".to_string(),
+                corrected_text: "Regards, George".to_string(),
+                teaching_context: None,
+            },
+            &DictationState::default(),
+            &["my signature".to_string()],
         );
         assert!(
             matches!(outcome, CorrectionProposalOutcome::Unsafe { reason } if reason.contains("Voice Commands"))
@@ -550,6 +578,7 @@ mod tests {
                 teaching_context: None,
             },
             &DictationState::default(),
+            &[],
         );
         let CorrectionProposalOutcome::Proposal { proposal_id, .. } = outcome else {
             panic!("expected proposal")
@@ -583,6 +612,7 @@ mod tests {
                 teaching_context: None,
             },
             &DictationState::default(),
+            &[],
         );
         assert!(matches!(
             outcome,
@@ -610,6 +640,7 @@ mod tests {
                 teaching_context: None,
             },
             &DictationState::default(),
+            &[],
         );
         assert!(matches!(
             unsafe_outcome,

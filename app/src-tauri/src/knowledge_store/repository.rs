@@ -124,6 +124,13 @@ impl KnowledgeRepository {
             where_parts.push("e.scope_kind = ?".to_string());
             values.push(Value::Text(scope.to_string()));
         }
+        if let Some(voice_command) = request.voice_command {
+            where_parts.push(if voice_command {
+                "e.voice_command_kind IS NOT NULL".to_string()
+            } else {
+                "e.voice_command_kind IS NULL".to_string()
+            });
+        }
 
         let where_clause = if where_parts.is_empty() {
             String::new()
@@ -142,7 +149,8 @@ impl KnowledgeRepository {
         let sql = format!(
             "SELECT e.id, e.kind, e.trigger_text, e.content_text, e.aliases_json, e.enabled, \
              e.scope_kind, e.app_bundle_id, e.project_root, e.provenance, e.created_at_ms, \
-             e.updated_at_ms, e.revision FROM knowledge_entries e {joins}{where_clause} \
+             e.updated_at_ms, e.revision, e.voice_command_kind, e.voice_command_clipboard \
+             FROM knowledge_entries e {joins}{where_clause} \
              ORDER BY e.updated_at_ms DESC, e.id ASC LIMIT ? OFFSET ?"
         );
         let mut page_values = values;
@@ -168,7 +176,7 @@ impl KnowledgeRepository {
         let connection = self.open_checked()?;
         connection
             .query_row(
-                "SELECT id, kind, trigger_text, content_text, aliases_json, enabled, scope_kind, app_bundle_id, project_root, provenance, created_at_ms, updated_at_ms, revision FROM knowledge_entries WHERE id = ?",
+                "SELECT id, kind, trigger_text, content_text, aliases_json, enabled, scope_kind, app_bundle_id, project_root, provenance, created_at_ms, updated_at_ms, revision, voice_command_kind, voice_command_clipboard FROM knowledge_entries WHERE id = ?",
                 [id],
                 row_to_entry,
             )
@@ -178,12 +186,29 @@ impl KnowledgeRepository {
     pub fn upsert_manual(&self, draft: KnowledgeDraft) -> Result<KnowledgeEntry, String> {
         validate_payload(&draft.payload)?;
         validate_scope(&draft.scope)?;
+        validate_voice_command(&draft.payload, &draft.scope, draft.voice_command.as_ref())?;
         let mut connection = self.open_checked()?;
         let transaction = connection.transaction().map_err(db_error)?;
+        if draft.voice_command.is_some() {
+            validate_voice_command_conflicts_tx(
+                &transaction,
+                &draft.payload.storage_parts().0,
+                &draft.scope,
+                draft.id.as_deref(),
+            )?;
+        }
         let timestamp = now_ms();
         let (trigger, content, aliases) = draft.payload.storage_parts();
         let aliases_json = serde_json::to_string(&aliases).map_err(|_| validation_error())?;
         let normalized = normalize_key(&trigger);
+        let voice_command_kind = draft
+            .voice_command
+            .as_ref()
+            .map(|voice| voice.command_type.as_str());
+        let voice_command_clipboard = draft
+            .voice_command
+            .as_ref()
+            .is_some_and(|voice| voice.allow_clipboard_read);
         let id = match draft.id.as_deref() {
             Some(id) => {
                 validate_id(id)?;
@@ -192,11 +217,11 @@ impl KnowledgeRepository {
                 })?;
                 let changed = transaction
                     .execute(
-                        "UPDATE knowledge_entries SET kind=?, trigger_text=?, normalized_trigger=?, content_text=?, aliases_json=?, enabled=?, scope_kind=?, app_bundle_id=?, project_root=?, updated_at_ms=?, revision=revision+1 WHERE id=? AND revision=?",
+                        "UPDATE knowledge_entries SET kind=?, trigger_text=?, normalized_trigger=?, content_text=?, aliases_json=?, enabled=?, scope_kind=?, app_bundle_id=?, project_root=?, updated_at_ms=?, revision=revision+1, voice_command_kind=?, voice_command_clipboard=? WHERE id=? AND revision=?",
                         params![
                             draft.payload.kind().as_str(), trigger, normalized, content, aliases_json,
                             draft.enabled, draft.scope.kind(), draft.scope.bundle_id(), draft.scope.root(),
-                            timestamp, id, revision_to_i64(expected)?,
+                            timestamp, voice_command_kind, voice_command_clipboard, id, revision_to_i64(expected)?,
                         ],
                     )
                     .map_err(db_error)?;
@@ -220,11 +245,11 @@ impl KnowledgeRepository {
                     .map_err(db_error)?;
                 transaction
                     .execute(
-                        "INSERT INTO knowledge_entries(id, kind, trigger_text, normalized_trigger, content_text, aliases_json, enabled, scope_kind, app_bundle_id, project_root, provenance, created_at_ms, updated_at_ms, revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?, 1)",
+                        "INSERT INTO knowledge_entries(id, kind, trigger_text, normalized_trigger, content_text, aliases_json, enabled, scope_kind, app_bundle_id, project_root, provenance, created_at_ms, updated_at_ms, revision, voice_command_kind, voice_command_clipboard) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?, 1, ?, ?)",
                         params![
                             id, draft.payload.kind().as_str(), trigger, normalized, content, aliases_json,
                             draft.enabled, draft.scope.kind(), draft.scope.bundle_id(), draft.scope.root(),
-                            timestamp, timestamp,
+                            timestamp, timestamp, voice_command_kind, voice_command_clipboard,
                         ],
                     )
                     .map_err(db_error)?;
@@ -262,6 +287,12 @@ impl KnowledgeRepository {
             };
             if normalize_key(existing_source) != normalize_key(&source) || existing.scope != scope {
                 continue;
+            }
+            if existing.voice_command.is_some() {
+                return Err(
+                    "A Voice Command already uses this phrase and scope. Review it in Voice Commands before teaching another correction."
+                        .to_string(),
+                );
             }
             if existing.enabled && existing_replacement == replacement.trim() {
                 return Ok(existing);
@@ -306,7 +337,7 @@ impl KnowledgeRepository {
         let connection = self.open_checked()?;
         let mut entries = entries_with_kind(&connection, KnowledgeKind::ReplacementRule)?
             .into_iter()
-            .filter(|entry| entry.enabled)
+            .filter(|entry| entry.enabled && entry.voice_command.is_none())
             .collect::<Vec<_>>();
         entries.sort_by(|left, right| compare_precedence(right, left));
         Ok(entries)
@@ -387,6 +418,102 @@ impl KnowledgeRepository {
         Ok(matches.into_iter().next())
     }
 
+    pub fn voice_commands_for_context(
+        &self,
+        bundle_id: Option<&str>,
+    ) -> Result<Vec<KnowledgeEntry>, String> {
+        let connection = self.open_checked()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id, kind, trigger_text, content_text, aliases_json, enabled, scope_kind, app_bundle_id, project_root, provenance, created_at_ms, updated_at_ms, revision, voice_command_kind, voice_command_clipboard \
+                 FROM knowledge_entries WHERE enabled=1 AND voice_command_kind IS NOT NULL \
+                 AND (scope_kind='global' OR (scope_kind='app' AND app_bundle_id=?)) \
+                 ORDER BY created_at_ms ASC, id ASC",
+            )
+            .map_err(db_error)?;
+        let entries = statement
+            .query_map([bundle_id], row_to_entry)
+            .map_err(db_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(db_error)?;
+        Ok(entries)
+    }
+
+    pub fn all_voice_commands(&self) -> Result<Vec<KnowledgeEntry>, String> {
+        let connection = self.open_checked()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id, kind, trigger_text, content_text, aliases_json, enabled, scope_kind, app_bundle_id, project_root, provenance, created_at_ms, updated_at_ms, revision, voice_command_kind, voice_command_clipboard \
+                 FROM knowledge_entries WHERE voice_command_kind IS NOT NULL \
+                 ORDER BY created_at_ms ASC, id ASC",
+            )
+            .map_err(db_error)?;
+        let entries = statement
+            .query_map([], row_to_entry)
+            .map_err(db_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(db_error)?;
+        Ok(entries)
+    }
+
+    pub fn migrate_legacy_voice_commands(
+        &self,
+        commands: &[(String, String)],
+    ) -> Result<u64, String> {
+        let mut connection = self.open_checked()?;
+        let transaction = connection.transaction().map_err(db_error)?;
+        let migrated: i64 = transaction
+            .query_row(
+                "SELECT value FROM knowledge_meta WHERE key='legacy_voice_commands_migrated'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(db_error)?;
+        if migrated != 0 {
+            return Ok(0);
+        }
+        let timestamp = now_ms();
+        let mut inserted = 0_u64;
+        for (index, (phrase, replacement)) in commands.iter().enumerate() {
+            let phrase = phrase.trim();
+            if phrase.is_empty() {
+                continue;
+            }
+            // Legacy settings never imposed the repository editor's newer
+            // trigger/content limits. Grandfather those local pairs so an
+            // upgrade cannot silently change behavior, while keeping the
+            // stricter bounds for every newly created or imported command.
+            let base_id = format!("legacy-voice-command-{index:08}");
+            let mut id = base_id.clone();
+            let mut collision = 0_u32;
+            while entry_by_id_tx(&transaction, &id)?.is_some() {
+                collision = collision.saturating_add(1);
+                id = format!("{base_id}-migrated-{collision:04}");
+            }
+            let enabled = !crate::voice_commands::is_builtin_phrase(&normalize_key(phrase));
+            transaction
+                .execute(
+                    "INSERT INTO knowledge_entries(id, kind, trigger_text, normalized_trigger, content_text, aliases_json, enabled, scope_kind, app_bundle_id, project_root, provenance, created_at_ms, updated_at_ms, revision, voice_command_kind, voice_command_clipboard) \
+                     VALUES (?, 'replacement_rule', ?, ?, ?, '[]', ?, 'global', NULL, NULL, 'manual', ?, ?, 1, 'text_replacement', 0)",
+                    params![id, phrase, normalize_key(phrase), replacement, enabled, timestamp, timestamp],
+                )
+                .map_err(db_error)?;
+            refresh_fts(&transaction, &id)?;
+            inserted += 1;
+        }
+        transaction
+            .execute(
+                "UPDATE knowledge_meta SET value=1 WHERE key='legacy_voice_commands_migrated'",
+                [],
+            )
+            .map_err(db_error)?;
+        if inserted > 0 {
+            bump_store_revision(&transaction)?;
+        }
+        transaction.commit().map_err(db_error)?;
+        Ok(inserted)
+    }
+
     pub fn export_to_file(&self, path: &Path) -> Result<u64, String> {
         let entries = self.all_entries()?;
         let bundle = KnowledgeExport {
@@ -437,6 +564,14 @@ impl KnowledgeRepository {
                     );
                 }
                 continue;
+            }
+            if entry.voice_command.is_some() {
+                validate_voice_command_conflicts_tx(
+                    &transaction,
+                    &entry.payload.storage_parts().0,
+                    &entry.scope,
+                    None,
+                )?;
             }
             insert_imported(&transaction, entry)?;
             imported += 1;
@@ -508,7 +643,7 @@ impl KnowledgeRepository {
     fn all_entries(&self) -> Result<Vec<KnowledgeEntry>, String> {
         let connection = self.open_checked()?;
         let mut statement = connection
-            .prepare("SELECT id, kind, trigger_text, content_text, aliases_json, enabled, scope_kind, app_bundle_id, project_root, provenance, created_at_ms, updated_at_ms, revision FROM knowledge_entries ORDER BY kind ASC, normalized_trigger ASC, scope_kind ASC, id ASC")
+            .prepare("SELECT id, kind, trigger_text, content_text, aliases_json, enabled, scope_kind, app_bundle_id, project_root, provenance, created_at_ms, updated_at_ms, revision, voice_command_kind, voice_command_clipboard FROM knowledge_entries ORDER BY kind ASC, normalized_trigger ASC, scope_kind ASC, id ASC")
             .map_err(db_error)?;
         let entries = statement
             .query_map([], row_to_entry)
@@ -641,6 +776,15 @@ fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<KnowledgeEntry> {
         _ => return Err(rusqlite::Error::InvalidQuery),
     };
     let provenance: String = row.get(9)?;
+    let voice_command_kind: Option<String> = row.get(13)?;
+    let voice_command = match voice_command_kind {
+        Some(kind) => Some(VoiceCommandMetadata {
+            command_type: VoiceCommandKind::parse(&kind)
+                .map_err(|_| rusqlite::Error::InvalidQuery)?,
+            allow_clipboard_read: row.get(14)?,
+        }),
+        None => None,
+    };
     Ok(KnowledgeEntry {
         id: row.get(0)?,
         payload,
@@ -657,6 +801,7 @@ fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<KnowledgeEntry> {
                 Box::new(error),
             )
         })?,
+        voice_command,
     })
 }
 
@@ -670,7 +815,7 @@ fn validate_payload(payload: &KnowledgePayload) -> Result<(), String> {
     }
     match payload {
         KnowledgePayload::ReplacementRule { .. } => {
-            if content.trim().is_empty() || content.chars().count() > MAX_REPLACEMENT_CHARS {
+            if content.chars().count() > MAX_REPLACEMENT_CHARS {
                 return Err("Replacement text must be between 1 and 4,096 characters.".to_string());
             }
         }
@@ -713,6 +858,88 @@ fn validate_scope(scope: &KnowledgeScope) -> Result<(), String> {
         return Err(
             "Knowledge scope identifiers must be between 1 and 4,096 characters.".to_string(),
         );
+    }
+    Ok(())
+}
+
+fn validate_voice_command(
+    payload: &KnowledgePayload,
+    scope: &KnowledgeScope,
+    voice_command: Option<&VoiceCommandMetadata>,
+) -> Result<(), String> {
+    let Some(voice_command) = voice_command else {
+        if matches!(payload, KnowledgePayload::ReplacementRule { replacement, .. } if replacement.trim().is_empty())
+        {
+            return Err("Replacement text must be between 1 and 4,096 characters.".to_string());
+        }
+        return Ok(());
+    };
+    if matches!(scope, KnowledgeScope::Project { .. }) {
+        return Err("Voice commands support global or per-app scope.".to_string());
+    }
+    match (voice_command.command_type, payload) {
+        (VoiceCommandKind::TextReplacement, KnowledgePayload::ReplacementRule { .. }) => {}
+        (VoiceCommandKind::Snippet, KnowledgePayload::Snippet { body, .. }) => {
+            crate::voice_commands::validate_snippet_template(
+                body,
+                voice_command.allow_clipboard_read,
+            )?;
+        }
+        _ => {
+            return Err(
+                "Voice command type does not match its stored knowledge payload.".to_string(),
+            );
+        }
+    }
+    if voice_command.allow_clipboard_read && voice_command.command_type != VoiceCommandKind::Snippet
+    {
+        return Err("Only snippet commands can request clipboard access.".to_string());
+    }
+    Ok(())
+}
+
+fn validate_voice_command_conflicts_tx(
+    transaction: &rusqlite::Transaction<'_>,
+    trigger: &str,
+    scope: &KnowledgeScope,
+    editing_id: Option<&str>,
+) -> Result<(), String> {
+    let normalized = normalize_key(trigger);
+    if crate::voice_commands::is_builtin_phrase(&normalized) {
+        return Err("That phrase is reserved by a built-in Voice Command.".to_string());
+    }
+    let mut statement = transaction
+        .prepare(
+            "SELECT id, scope_kind, app_bundle_id FROM knowledge_entries \
+             WHERE voice_command_kind IS NOT NULL AND normalized_trigger=?",
+        )
+        .map_err(db_error)?;
+    let rows = statement
+        .query_map([normalized], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .map_err(db_error)?;
+    for row in rows {
+        let (id, scope_kind, bundle_id) = row.map_err(db_error)?;
+        if editing_id == Some(id.as_str()) {
+            continue;
+        }
+        let same_scope = match scope {
+            KnowledgeScope::Global => scope_kind == "global",
+            KnowledgeScope::App {
+                bundle_id: required,
+            } => scope_kind == "app" && bundle_id.as_deref() == Some(required.as_str()),
+            KnowledgeScope::Project { .. } => false,
+        };
+        if same_scope {
+            return Err(
+                "A Voice Command with that phrase already exists in this scope.".to_string(),
+            );
+        }
     }
     Ok(())
 }
@@ -879,7 +1106,7 @@ fn read_import(path: &Path) -> Result<KnowledgeExport, String> {
         .map_err(|_| "Murmur could not read the selected knowledge import.".to_string())?;
     let bundle: KnowledgeExport = serde_json::from_slice(&bytes)
         .map_err(|_| "The selected file is not a valid Murmur knowledge export.".to_string())?;
-    if bundle.format != EXPORT_FORMAT || bundle.version != EXPORT_VERSION {
+    if bundle.format != EXPORT_FORMAT || !matches!(bundle.version, 1 | EXPORT_VERSION) {
         return Err(
             "The selected knowledge export format is not supported by this Murmur build."
                 .to_string(),
@@ -893,6 +1120,7 @@ fn read_import(path: &Path) -> Result<KnowledgeExport, String> {
         validate_id(&entry.id)?;
         validate_payload(&entry.payload)?;
         validate_scope(&entry.scope)?;
+        validate_voice_command(&entry.payload, &entry.scope, entry.voice_command.as_ref())?;
         if !ids.insert(entry.id.clone()) {
             return Err("The import contains duplicate record IDs.".to_string());
         }
@@ -901,7 +1129,10 @@ fn read_import(path: &Path) -> Result<KnowledgeExport, String> {
 }
 
 fn semantic_equal(left: &KnowledgeEntry, right: &KnowledgeEntry) -> bool {
-    left.payload == right.payload && left.scope == right.scope && left.enabled == right.enabled
+    left.payload == right.payload
+        && left.scope == right.scope
+        && left.enabled == right.enabled
+        && left.voice_command == right.voice_command
 }
 
 fn semantic_duplicate(connection: &Connection, entry: &KnowledgeEntry) -> Result<bool, String> {
@@ -915,7 +1146,7 @@ fn semantic_duplicate_tx(
     transaction: &rusqlite::Transaction<'_>,
     entry: &KnowledgeEntry,
 ) -> Result<bool, String> {
-    let mut statement = transaction.prepare("SELECT id, kind, trigger_text, content_text, aliases_json, enabled, scope_kind, app_bundle_id, project_root, provenance, created_at_ms, updated_at_ms, revision FROM knowledge_entries WHERE kind=?").map_err(db_error)?;
+    let mut statement = transaction.prepare("SELECT id, kind, trigger_text, content_text, aliases_json, enabled, scope_kind, app_bundle_id, project_root, provenance, created_at_ms, updated_at_ms, revision, voice_command_kind, voice_command_clipboard FROM knowledge_entries WHERE kind=?").map_err(db_error)?;
     let candidates = statement
         .query_map([entry.payload.kind().as_str()], row_to_entry)
         .map_err(db_error)?
@@ -941,7 +1172,7 @@ fn entries_with_kind(
     connection: &Connection,
     kind: KnowledgeKind,
 ) -> Result<Vec<KnowledgeEntry>, String> {
-    let mut statement = connection.prepare("SELECT id, kind, trigger_text, content_text, aliases_json, enabled, scope_kind, app_bundle_id, project_root, provenance, created_at_ms, updated_at_ms, revision FROM knowledge_entries WHERE kind=?").map_err(db_error)?;
+    let mut statement = connection.prepare("SELECT id, kind, trigger_text, content_text, aliases_json, enabled, scope_kind, app_bundle_id, project_root, provenance, created_at_ms, updated_at_ms, revision, voice_command_kind, voice_command_clipboard FROM knowledge_entries WHERE kind=?").map_err(db_error)?;
     let entries = statement
         .query_map([kind.as_str()], row_to_entry)
         .map_err(db_error)?
@@ -951,14 +1182,14 @@ fn entries_with_kind(
 }
 
 fn entry_by_id(connection: &Connection, id: &str) -> Result<Option<KnowledgeEntry>, String> {
-    connection.query_row("SELECT id, kind, trigger_text, content_text, aliases_json, enabled, scope_kind, app_bundle_id, project_root, provenance, created_at_ms, updated_at_ms, revision FROM knowledge_entries WHERE id=?", [id], row_to_entry).optional().map_err(db_error)
+    connection.query_row("SELECT id, kind, trigger_text, content_text, aliases_json, enabled, scope_kind, app_bundle_id, project_root, provenance, created_at_ms, updated_at_ms, revision, voice_command_kind, voice_command_clipboard FROM knowledge_entries WHERE id=?", [id], row_to_entry).optional().map_err(db_error)
 }
 
 fn entry_by_id_tx(
     transaction: &rusqlite::Transaction<'_>,
     id: &str,
 ) -> Result<Option<KnowledgeEntry>, String> {
-    transaction.query_row("SELECT id, kind, trigger_text, content_text, aliases_json, enabled, scope_kind, app_bundle_id, project_root, provenance, created_at_ms, updated_at_ms, revision FROM knowledge_entries WHERE id=?", [id], row_to_entry).optional().map_err(db_error)
+    transaction.query_row("SELECT id, kind, trigger_text, content_text, aliases_json, enabled, scope_kind, app_bundle_id, project_root, provenance, created_at_ms, updated_at_ms, revision, voice_command_kind, voice_command_clipboard FROM knowledge_entries WHERE id=?", [id], row_to_entry).optional().map_err(db_error)
 }
 
 fn insert_imported(
@@ -969,8 +1200,8 @@ fn insert_imported(
     let (trigger, content, aliases) = entry.payload.storage_parts();
     let aliases_json = serde_json::to_string(&aliases).map_err(|_| validation_error())?;
     transaction.execute(
-        "INSERT INTO knowledge_entries(id, kind, trigger_text, normalized_trigger, content_text, aliases_json, enabled, scope_kind, app_bundle_id, project_root, provenance, created_at_ms, updated_at_ms, revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'import', ?, ?, 1)",
-        params![entry.id, entry.payload.kind().as_str(), trigger, normalize_key(&trigger), content, aliases_json, entry.enabled, entry.scope.kind(), entry.scope.bundle_id(), entry.scope.root(), entry.created_at_ms, entry.updated_at_ms],
+        "INSERT INTO knowledge_entries(id, kind, trigger_text, normalized_trigger, content_text, aliases_json, enabled, scope_kind, app_bundle_id, project_root, provenance, created_at_ms, updated_at_ms, revision, voice_command_kind, voice_command_clipboard) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'import', ?, ?, 1, ?, ?)",
+        params![entry.id, entry.payload.kind().as_str(), trigger, normalize_key(&trigger), content, aliases_json, entry.enabled, entry.scope.kind(), entry.scope.bundle_id(), entry.scope.root(), entry.created_at_ms, entry.updated_at_ms, entry.voice_command.as_ref().map(|voice| voice.command_type.as_str()), entry.voice_command.as_ref().is_some_and(|voice| voice.allow_clipboard_read)],
     ).map_err(db_error)?;
     refresh_fts(transaction, &entry.id)
 }

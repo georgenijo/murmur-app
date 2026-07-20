@@ -51,7 +51,7 @@ export function useKnowledge(request: KnowledgeListRequest, active: boolean) {
     } finally {
       setLoading(false);
     }
-  }, [active, request.enabled, request.kind, request.query, request.scopeKind]);
+  }, [active, request.enabled, request.kind, request.query, request.scopeKind, request.voiceCommand]);
 
   const loadMore = useCallback(async () => {
     if (loading || nextOffset === null) return;
@@ -68,7 +68,7 @@ export function useKnowledge(request: KnowledgeListRequest, active: boolean) {
     } finally {
       setLoading(false);
     }
-  }, [loading, nextOffset, request.enabled, request.kind, request.query, request.scopeKind]);
+  }, [loading, nextOffset, request.enabled, request.kind, request.query, request.scopeKind, request.voiceCommand]);
 
   useEffect(() => { void refresh(); }, [refresh]);
 

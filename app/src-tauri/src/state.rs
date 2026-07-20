@@ -275,10 +275,6 @@ pub struct AppState {
     /// Short-lived local project indexes for explicitly opted-in app profiles.
     /// Contents (symbols and root-relative filenames) are never serialized.
     pub ide_context: Mutex<crate::ide_context::IdeContextStore>,
-    /// At most one bounded incremental Whisper worker is attached to the active
-    /// recording. The handle owns no audio; it snapshots one fixed-size window
-    /// at a time and stores only reconciled text and timing counters.
-    pub streaming_session: tokio::sync::Mutex<Option<crate::streaming::StreamingSession>>,
 }
 
 impl AppState {
@@ -360,7 +356,6 @@ impl Default for AppState {
             correction_matcher: Mutex::new(None),
             knowledge_replacements: Mutex::new(Arc::new(Vec::new())),
             ide_context: Mutex::new(crate::ide_context::IdeContextStore::default()),
-            streaming_session: tokio::sync::Mutex::new(None),
         }
     }
 }
@@ -382,6 +377,7 @@ mod tests {
             correction_matcher: None,
             ide_context_index: None,
             vocabulary_version: 0,
+            voice_commands: None,
             session_overrides: SessionOverrides::default(),
         }))
     }

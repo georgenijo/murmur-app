@@ -49,7 +49,7 @@ The visible pill width adjusts based on recording state and hover:
 
 The full overlay window width is `notchWidth + 120` (60px expansion per side), with the visible content area sized within that.
 
-Height matches the menu bar height from notch detection. A provisional preview adds a 30px row below the physical notch, and hover independently adds `EXPANDED_DROP` (44px) for the dropdown. These rows compose, so neither clips the other. The overlay is horizontally centered at the top of the screen (y=0).
+Height matches the menu bar height from notch detection. Hover is the only dynamic height change and adds `EXPANDED_DROP` (44px) for the dropdown. The overlay is horizontally centered at the top of the screen (y=0).
 
 Width transitions over 400ms and height over 360ms, both using the spring curve `cubic-bezier(0.34, 1.56, 0.64, 1)`.
 
@@ -83,10 +83,10 @@ The overlay has three visual states driven by `recording-status-changed` Tauri e
 Small mic SVG icon at 40% white opacity. Compact width.
 
 ### Recording
-Expanded width. The red pulsing dot and elapsed timer occupy the visible left wing, while the animated 7-bar waveform occupies the right. The physical notch obscures the center of the top bar, so long Whisper recordings render the latest suffix of cumulative incremental text in a clearly labeled `Provisional` row immediately below it. The preview is one line and has pointer events disabled.
+Expanded width. The red pulsing dot and elapsed timer occupy the visible left wing, while the animated 7-bar waveform occupies the right. No transcript text is displayed while recording.
 
 ### Processing
-Same expanded width. Spinning circle on the left; the waveform is hidden (visible only while recording). A provisional preview may remain visible until the authoritative final result completes, then clears.
+Same expanded width. Spinning circle on the left; the waveform is hidden (visible only while recording). No transcript text is displayed while processing.
 
 ### Hotkey Timing Miss (optional)
 
@@ -146,7 +146,7 @@ The observer is intentionally leaked (`std::mem::forget`) for app-lifetime obser
 |---------|-------------|
 | `show_overlay` | Positions, sizes, and shows the overlay window. Re-enables mouse events. |
 | `hide_overlay` | Hides the overlay window. Gracefully handles missing window. |
-| `set_overlay_surface` | Composes the below-notch preview row and hover dropdown height independently. Width remains fixed and top anchored. |
+| `set_overlay_expanded` | Adds or removes the hover dropdown height while keeping the window top anchored. |
 | `get_notch_info` | Returns cached `{ notch_width, notch_height }` or `null`. |
 
 ## Events
@@ -154,9 +154,6 @@ The observer is intentionally leaked (`std::mem::forget`) for app-lifetime obser
 | Event | Payload | Description |
 |-------|---------|-------------|
 | `recording-status-changed` | String | Drives visual state transitions |
-| `recording-session-started` | `{ contractVersion, recordingId }` | Selects the active session and clears any older preview |
-| `partial-transcript` | `{ contractVersion, recordingId, text, chunkIndex, processedAudioMs }` | Supplies cumulative in-memory provisional text for the active session only |
-| `partial-transcript-cleared` | `{ contractVersion, recordingId, reason }` | Session-scoped cleanup on cancellation, fallback, error, or finalization |
 | `audio-level` | Number (RMS 0.0-1.0) | Real-time audio level for waveform |
 | `notch-info-changed` | `{ notch_width, notch_height }` or `null` | Display configuration changed |
 | `app-disabled-changed` | Boolean | Global-disable state changed (updates the top-bar mic + speaker-slash) |
@@ -165,12 +162,6 @@ The observer is intentionally leaked (`std::mem::forget`) for app-lifetime obser
 | `open-settings` | (none) | Overlay gear asks the main window to open the Settings panel |
 
 The entire overlay surface is a Tauri drag region (`data-tauri-drag-region`), allowing the user to reposition it. Overlay position save/restore is currently disabled (TODO: re-enable after notch positioning is stable).
-
-## Live transcript preview
-
-`liveTranscriptPreview` is a local Settings boolean and defaults to enabled. Turning it off clears visible provisional text immediately and ignores further partial updates while disabled. The overlay tracks the active `recordingId`, rejects stale or out-of-order chunks, and clears on cancellation, incremental fallback, final completion, model change, error, or a newer recording. Status and transcript listeners register together before a privacy-safe active-session snapshot reconciles both the session ID and active status, so a WebView mounting during recording cannot remain visually idle after missing startup events. A monotonic lifecycle generation discards the snapshot if a status, session, clear/cancel, completion, or settings event arrives while the command is in flight, preventing stale recovery from reactivating a finished session. Diagnostics contain only listener readiness, event counts, IDs, match decisions, chunk indexes, and clear reasons—never provisional text.
-
-Live preview is available only for Whisper models. When Parakeet or Core ML is selected, Settings disables the preview control with an unavailable explanation, and an active recording shows a `Final only` status instead of silently waiting for updates that backend cannot produce.
 
 ## Transparent window caveat
 

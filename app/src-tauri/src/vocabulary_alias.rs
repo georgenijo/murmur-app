@@ -443,6 +443,7 @@ mod tests {
             created_at_ms: updated_at_ms,
             updated_at_ms,
             revision: 1,
+            voice_command: None,
         }
     }
 

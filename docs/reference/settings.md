@@ -59,7 +59,6 @@ Both the Rust-side `DictationState::default()` and the frontend default use `bas
 | `recordingMode` | `RecordingMode` | `'hold_down'` | `'hold_down'`, `'double_tap'`, `'both'` | How recording is triggered via keyboard. Hold-down: press-and-hold to record. Double-tap: double-tap to start, single-tap to stop. Both: combined mode with deferred hold promotion. |
 | `doubleTapKey` | `DoubleTapKey` | `'shift_l'` | `'shift_l'` (Shift), `'alt_l'` (Option), `'ctrl_r'` (Control) | The modifier key used for recording triggers. Used by all three recording modes as the trigger key. Label in the settings UI changes based on `recordingMode`. |
 | `hotkeyMissFeedback` | `boolean` | `false` | `true` / `false` | In Double-Tap or Both mode, briefly flashes the overlay amber when the 400ms second-tap window expires. It does not fire for holds, modifier shortcuts, processing skips, or successful gestures. Frontend/overlay only. |
-| `liveTranscriptPreview` | `boolean` | `true` | `true` / `false` | Shows session-scoped provisional Whisper text below the physical notch during long recordings. Parakeet/Core ML are final-only and surface that limitation explicitly. Provisional text remains memory-only and never enters delivery, history, files, stats, or logs. |
 | `vadSensitivity` | `number` | `50` | 0-100, step 5 in UI | Voice Activity Detection sensitivity. Higher values keep more audio; lower values trim silence more aggressively. The backend converts this to a threshold: `1.0 - (sensitivity / 100.0)`. Clamped to 0-100 by the backend. |
 
 ### Recording Mode Details
@@ -105,6 +104,12 @@ The store reports recovered, reinitialized, and unavailable states visibly. Enab
 `cliFormattingOverride` uses the immutable recording-start context. `true` enables profile-mode CLI recognition, `false` disables implicit CLI formatting for that app, and `null` keeps conservative automatic recognition. An explicit spoken `command` trigger remains available in every mode.
 
 At recording start, the backend resolves one immutable context using global settings → matching style → matching profile fine-tuning → one-session overrides. Settings or focus changes during recording apply only to the next session. Explicit IDE opt-in also disables Smart Formatting for that recording and can capture only the matching profile's fresh local index. See [Per-App Dictation Context](../features/per-app-profiles.md) and [Local IDE Symbols and `@file` Context](../features/ide-context.md).
+
+## Voice Commands
+
+`voiceCommandsEnabled` remains the global execution switch. Legacy `voiceCommands` pairs in `dictation-settings` are migration-only compatibility input: Rust imports them once into the personal knowledge store as global `text_replacement` commands, while retaining the old in-memory path if the store is unavailable.
+
+New text replacements and snippets are Rust-owned knowledge records rather than localStorage settings. They support global/app scope, enabled state, multiline snippet bodies, deterministic `{{date}}` / `{{time}}`, and explicitly granted `{{clipboard}}`. See [Voice Commands 2.0](../features/voice-commands.md).
 
 ---
 
