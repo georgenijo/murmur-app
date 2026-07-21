@@ -235,6 +235,7 @@ pub fn run() {
             transform_flow::retry_transform_instruction,
             transform_flow::approve_transform,
             transform_flow::cancel_transform,
+            transform_flow::undo_transform_and_close,
             commands::knowledge::get_knowledge_store_status,
             commands::knowledge::retry_knowledge_store,
             commands::knowledge::list_knowledge,

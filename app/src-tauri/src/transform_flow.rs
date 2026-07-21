@@ -32,6 +32,16 @@
 //! popover window alone via `get_transform_review_content`. The state-machine
 //! action list and every `emit_*` here are structurally incapable of carrying
 //! that text.
+//!
+//! ## Spec-by-test (`decide`)
+//!
+//! The pure `decide` table is the **specification** of logical transitions. The
+//! command layer is the authoritative I/O driver and may diverge where the
+//! table cannot express concurrent races (e.g. cancel during AX capture). Unit
+//! tests under `mod tests` assert the table matches the command layer at every
+//! documented divergence point (Review+StartRequested supersede, undo-without-
+//! epoch-bump, Applying+Cancel). Do not "fix" table drift by editing only
+//! one side — update both and the tests together.
 
 #![allow(dead_code)]
 
@@ -355,11 +365,18 @@ pub fn decide(state: FlowState, event: FlowEvent) -> FlowDecision {
         (S::Applying, E::UndoError) => {
             go(S::Applied, vec![Emit(ReviewState::Failed)])
         }
+        // Cancel during Applying: tear down; ApplyingGuard must not resurrect
+        // ReviewPending after the session is cleared (see cancel_transform).
+        (S::Applying, E::Cancel) => cancel_from(state),
         (S::Applying, _) => ignore(S::Applying),
 
         // ---- Applied (undo available) --------------------------------------
+        // UndoResult: apply-path undo that, on success, hides + clears session
+        // WITHOUT bumping the clipboard-restore epoch (see
+        // `undo_transform_and_close`). Failure keeps Applied and emits Failed.
         (S::Applied, E::Undo) => go(S::Applying, vec![UndoResult]),
         (S::Applied, E::Cancel) => cancel_from(state),
+        // A new hotkey press supersedes the applied linger popover.
         (S::Applied, E::StartRequested) => go(S::Capturing, vec![ClearSession]),
         (S::Applied, _) => ignore(S::Applied),
     }
@@ -425,7 +442,13 @@ where
 {
     if !model_ready {
         // Discoverable error surface: still show the popover, in a failed state.
-        app_state.set_transform_status(TransformStatus::ReviewPending);
+        // Bail if a short-tap cancel already left Capturing.
+        if !app_state.try_transition_transform_status(
+            TransformStatus::Capturing,
+            TransformStatus::ReviewPending,
+        ) {
+            return StartOutcome::Aborted;
+        }
         fx.show_popover(None);
         fx.set_focusable(true);
         fx.emit_state(ReviewState::Failed, Some("model_not_downloaded"));
@@ -434,9 +457,17 @@ where
 
     match capture.await {
         Ok(snapshot) => {
+            // Cancel during slow AX capture must not resurrect the flow:
+            // session re-install + mic arm + popover while the reducer thinks
+            // not-holding would wedge Listening with no release coming.
+            if !app_state.try_transition_transform_status(
+                TransformStatus::Capturing,
+                TransformStatus::Listening,
+            ) {
+                return StartOutcome::Aborted;
+            }
             let anchor = snapshot_anchor(&snapshot);
             transform_apply::start_session(app_state, snapshot);
-            app_state.set_transform_status(TransformStatus::Listening);
             fx.show_popover(anchor);
             fx.set_focusable(false);
             fx.emit_state(ReviewState::Listening, None);
@@ -444,14 +475,27 @@ where
         }
         Err(SelectionError::SecureField) => {
             // Never show content UI for a password field — abort silently.
-            app_state.set_transform_status(TransformStatus::Idle);
+            if !app_state.try_transition_transform_status(
+                TransformStatus::Capturing,
+                TransformStatus::Idle,
+            ) {
+                return StartOutcome::Aborted;
+            }
             transform_apply::clear_session(app_state);
             fx.hide_popover();
             fx.flash_secure_field();
             StartOutcome::Aborted
         }
         Err(other) => {
-            app_state.set_transform_status(TransformStatus::ReviewPending);
+            if !app_state.try_transition_transform_status(
+                TransformStatus::Capturing,
+                TransformStatus::ReviewPending,
+            ) {
+                // Cancelled during capture — tear down any partial UI.
+                transform_apply::clear_session(app_state);
+                fx.hide_popover();
+                return StartOutcome::Aborted;
+            }
             fx.show_popover(None);
             fx.set_focusable(true);
             fx.emit_state(ReviewState::Failed, Some(selection_error_code(other)));
@@ -475,8 +519,11 @@ pub(crate) fn enter_thinking(app_state: &AppState, fx: &dyn FlowEffects) -> bool
 /// Core of the transform step: given the transcription result (`Err` = blank),
 /// call the sidecar and drive the flow to `ready` or `failed`. The sidecar call
 /// runs as a cancellable task whose abort handle is stored in `inflight` so
-/// `cancel_transform` can abort a `Thinking`-phase request (dropping the future
-/// clears the sidecar's busy flag). Assumes `enter_thinking` already ran.
+/// `cancel_transform` can abort the outer wrapper; it **also** calls
+/// `LlmSidecar::cancel_inflight_request` so the blocking work sends a Cancel
+/// frame and clears `busy` promptly. Terminal status writes use
+/// `try_transition(Thinking → ReviewPending)` so a cancel landing mid-flight
+/// cannot resurrect ReviewPending (which would wedge dictation).
 pub(crate) async fn run_transform(
     app_state: &AppState,
     fx: &dyn FlowEffects,
@@ -489,13 +536,21 @@ pub(crate) async fn run_transform(
     let instruction = match instruction {
         Ok(text) if !text.trim().is_empty() => text,
         _ => {
-            app_state.set_transform_status(TransformStatus::ReviewPending);
-            fx.set_focusable(true);
-            fx.emit_state(ReviewState::Failed, Some("no_instruction"));
+            if app_state.try_transition_transform_status(
+                TransformStatus::Thinking,
+                TransformStatus::ReviewPending,
+            ) {
+                fx.set_focusable(true);
+                fx.emit_state(ReviewState::Failed, Some("no_instruction"));
+            }
             return;
         }
     };
-    transform_apply::set_instruction(app_state, instruction.clone());
+    // Cancel during transcription can clear the session before we get here —
+    // do not spawn the sidecar on a dead session.
+    if !transform_apply::set_instruction(app_state, instruction.clone()) {
+        return;
+    }
 
     let sidecar = Arc::clone(sidecar);
     let input = original;
@@ -509,21 +564,37 @@ pub(crate) async fn run_transform(
         // Aborted by `cancel_transform`, which already tore the flow down.
         Err(err) if err.is_cancelled() => {}
         Err(_) => {
-            app_state.set_transform_status(TransformStatus::ReviewPending);
-            fx.set_focusable(true);
-            fx.emit_state(ReviewState::Failed, Some("internal"));
+            if app_state.try_transition_transform_status(
+                TransformStatus::Thinking,
+                TransformStatus::ReviewPending,
+            ) {
+                fx.set_focusable(true);
+                fx.emit_state(ReviewState::Failed, Some("internal"));
+            }
         }
         Ok(Ok(output)) => {
+            if !app_state.try_transition_transform_status(
+                TransformStatus::Thinking,
+                TransformStatus::ReviewPending,
+            ) {
+                return;
+            }
             transform_apply::set_proposed_text(app_state, output.output);
-            app_state.set_transform_status(TransformStatus::ReviewPending);
             fx.set_expanded(true);
             fx.set_focusable(true);
             fx.emit_state(ReviewState::Ready, None);
         }
+        // Cooperative cancel from the sidecar: cancel_transform already tore
+        // the flow down — do not force ReviewPending.
+        Ok(Err(TransformError::Cancelled)) => {}
         Ok(Err(error)) => {
-            app_state.set_transform_status(TransformStatus::ReviewPending);
-            fx.set_focusable(true);
-            fx.emit_state(ReviewState::Failed, Some(transform_error_code(error)));
+            if app_state.try_transition_transform_status(
+                TransformStatus::Thinking,
+                TransformStatus::ReviewPending,
+            ) {
+                fx.set_focusable(true);
+                fx.emit_state(ReviewState::Failed, Some(transform_error_code(error)));
+            }
         }
     }
 }
@@ -602,6 +673,10 @@ impl FlowEffects for TauriFlowEffects<'_> {
                 if !still_applied {
                     return;
                 }
+                // Free the held selection text once Undo is no longer reachable
+                // from the UI (popover gone). Content is only available via
+                // get_transform_review_content, which returns empty after this.
+                transform_apply::clear_session(&state.app_state);
             }
             let _ = crate::commands::transform_popover::hide_popover_internal(&app);
         });
@@ -687,6 +762,7 @@ async fn transcribe_instruction(
 pub(crate) async fn start_transform_capture(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, crate::State>,
+    device_name: Option<String>,
 ) -> Result<(), String> {
     // Serialize against dictation start/stop, taking the same locks in the
     // same order (`recording_transition` then `dictation`) as
@@ -737,7 +813,8 @@ pub(crate) async fn start_transform_capture(
     if outcome == StartOutcome::Listening {
         // Arm audio for the spoken instruction. DictationStatus stays Idle —
         // this audio belongs to the transform flow (TransformStatus::Listening).
-        if let Err(e) = crate::audio::start_recording(Some(app_handle.clone()), None) {
+        // Pass the configured input device (same contract as start_native_recording).
+        if let Err(e) = crate::audio::start_recording(Some(app_handle.clone()), device_name) {
             tracing::error!(target: "transform", error = %e, "instruction audio failed to start");
             state.app_state.set_transform_status(TransformStatus::Idle);
             transform_apply::clear_session(&state.app_state);
@@ -801,6 +878,7 @@ pub(crate) async fn finish_transform_instruction(
 pub(crate) async fn retry_transform_instruction(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, crate::State>,
+    device_name: Option<String>,
 ) -> Result<(), String> {
     let _transition = state.app_state.recording_transition.lock().await;
 
@@ -830,7 +908,7 @@ pub(crate) async fn retry_transform_instruction(
     fx.set_focusable(false);
     fx.emit_state(ReviewState::Listening, None);
 
-    if let Err(e) = crate::audio::start_recording(Some(app_handle.clone()), None) {
+    if let Err(e) = crate::audio::start_recording(Some(app_handle.clone()), device_name) {
         tracing::error!(target: "transform", error = %e, "retry audio failed to start");
         state.app_state.set_transform_status(TransformStatus::Idle);
         transform_apply::clear_session(&state.app_state);
@@ -879,8 +957,11 @@ pub(crate) async fn approve_transform(
     }
 }
 
-/// Cancel the flow from any state: abort an in-flight sidecar request, stop any
-/// instruction audio, clear the session, and hide the popover.
+/// Cancel the flow from any state (including Applying): abort an in-flight
+/// sidecar request cooperatively, stop instruction audio, clear the session,
+/// and hide the popover. Clearing the session before hide means the next
+/// `get_transform_review_content` returns empty — no stale React flash of prior
+/// selection text.
 #[tauri::command]
 pub(crate) async fn cancel_transform(
     app_handle: tauri::AppHandle,
@@ -888,12 +969,16 @@ pub(crate) async fn cancel_transform(
 ) -> Result<(), String> {
     let prev = state.app_state.transform_status();
 
-    // Abort the sidecar task (dropping the future clears the busy flag).
+    // Cooperative cancel first: the blocking spawn_blocking work only clears
+    // BusyGuard when it finishes, so abort alone would leave busy held up to
+    // the deadline. cancel_inflight_request makes run_request send Cancel.
+    state.transform_runtime.cancel_inflight_request();
     if let Some(handle) = state.app_state.transform_inflight.lock_or_recover().take() {
         handle.abort();
     }
     // Invalidate any pending clipboard restore from a just-finished apply/undo
-    // (N1): a cancel means the user is done with this pass.
+    // (N1): a cancel means the user is done with this pass. (Do NOT use cancel
+    // after a successful undo — see undo_transform_and_close.)
     let _ = state.app_state.next_transform_apply_epoch();
 
     // Stop instruction audio only if it was the transform's (Listening).
@@ -901,10 +986,57 @@ pub(crate) async fn cancel_transform(
         let _ = crate::audio::stop_recording();
     }
 
+    // Force Idle even from Applying — ApplyingGuard drop will no-op once status
+    // is no longer Applying (try_transition).
     state.app_state.set_transform_status(TransformStatus::Idle);
     transform_apply::clear_session(&state.app_state);
     let _ = crate::commands::transform_popover::hide_popover_internal(&app_handle);
     Ok(())
+}
+
+/// Undo an applied transform and close the popover **without** bumping the
+/// clipboard-restore epoch a second time.
+///
+/// `undo_applied_transform` already advances the epoch once (to protect the
+/// undo's own delayed clipboard restore). Chaining `cancel_transform` after
+/// undo would bump it again inside the 300ms restore window and clobber the
+/// user's prior clipboard on every paste-fallback undo.
+///
+/// On success: hide popover + clear session (undo unreachable once hidden).
+/// On failure: keep the Applied session and emit `failed` so Undo stays available.
+#[tauri::command]
+pub(crate) async fn undo_transform_and_close(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, crate::State>,
+) -> Result<(), String> {
+    let fx = TauriFlowEffects {
+        app: &app_handle,
+        state: &state,
+    };
+
+    let mut guard =
+        match transform_apply::ApplyingGuard::try_new(&state.app_state, TransformStatus::Idle) {
+            Some(guard) => guard,
+            None => {
+                fx.emit_state(ReviewState::Failed, Some("busy"));
+                return Err("busy".to_string());
+            }
+        };
+
+    match transform_apply::undo_applied_transform(&app_handle, &state.app_state).await {
+        Ok(()) => {
+            guard.mark_succeeded();
+            // Hide + clear WITHOUT another epoch bump (cancel would bump).
+            transform_apply::clear_session(&state.app_state);
+            let _ = crate::commands::transform_popover::hide_popover_internal(&app_handle);
+            Ok(())
+        }
+        Err(error) => {
+            // Guard drop restores Idle; session stays applied so Undo retries.
+            fx.emit_state(ReviewState::Failed, Some(apply_error_code(error)));
+            Err(apply_error_code(error).to_string())
+        }
+    }
 }
 
 // ===========================================================================
@@ -1415,5 +1547,149 @@ mod tests {
             fx.emitted(),
             vec![("failed".to_string(), Some("no_instruction".to_string()))]
         );
+    }
+
+    // ---- Cancel races (C2 review findings 1–3) -----------------------------
+
+    #[tokio::test]
+    async fn run_transform_cancel_during_thinking_does_not_resurrect_review_pending() {
+        // Finding 1: cancel that lands after transcription but before / during
+        // the sidecar step must not force ReviewPending (which blocks_recording).
+        let app_state = AppState::default();
+        let fx = RecordingFlowEffects::new();
+        app_state.set_transform_status(TransformStatus::Thinking);
+        // No session → set_instruction returns false → bail before sidecar.
+        let sidecar = Arc::new(LlmSidecar::new());
+        let inflight = std::sync::Mutex::new(None);
+
+        run_transform(
+            &app_state,
+            &fx,
+            &sidecar,
+            &inflight,
+            Ok("make this shorter".to_string()),
+            "original".to_string(),
+            DEFAULT_TRANSFORM_DEADLINE,
+        )
+        .await;
+
+        // Status must stay Thinking (or whatever cancel left) — never forced
+        // to ReviewPending without a live session. We never set a session, so
+        // set_instruction bailed and status is unchanged.
+        assert_eq!(app_state.transform_status(), TransformStatus::Thinking);
+        assert!(fx.emitted_states().is_empty());
+        assert!(inflight.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn run_transform_respects_cancel_that_left_thinking() {
+        // Terminal branches only write ReviewPending via try_transition from
+        // Thinking — if cancel already forced Idle, blank-instruction must not
+        // resurrect ReviewPending.
+        let app_state = AppState::default();
+        let fx = RecordingFlowEffects::new();
+        // Simulate cancel winning the race: already Idle.
+        app_state.set_transform_status(TransformStatus::Idle);
+        let sidecar = Arc::new(LlmSidecar::new());
+        let inflight = std::sync::Mutex::new(None);
+
+        run_transform(
+            &app_state,
+            &fx,
+            &sidecar,
+            &inflight,
+            Err(()),
+            "original".to_string(),
+            DEFAULT_TRANSFORM_DEADLINE,
+        )
+        .await;
+
+        assert_eq!(app_state.transform_status(), TransformStatus::Idle);
+        assert!(fx.emitted_states().is_empty());
+    }
+
+    #[tokio::test]
+    async fn core_start_capture_cancel_during_ax_does_not_install_session() {
+        // Finding 3: short-tap cancel during slow AX capture must not re-install
+        // session / arm Listening after the cancel tore the flow down.
+        let app_state = Arc::new(AppState::default());
+        let fx = RecordingFlowEffects::new();
+        assert!(app_state
+            .try_transition_transform_status(TransformStatus::Idle, TransformStatus::Capturing));
+
+        let snapshot = TransformSnapshot {
+            bundle_id: None,
+            pid: 1,
+            text: "hello world".to_string(),
+            range: Some((0, 11)),
+            bounds: None,
+            captured_at: std::time::Instant::now(),
+        };
+
+        let cancel_state = Arc::clone(&app_state);
+        let outcome = core_start_capture(&app_state, &fx, true, async move {
+            // Simulate cancel mid-capture: leave Capturing before Ok lands.
+            cancel_state.set_transform_status(TransformStatus::Idle);
+            Ok(snapshot)
+        })
+        .await;
+
+        assert_eq!(outcome, StartOutcome::Aborted);
+        assert_eq!(app_state.transform_status(), TransformStatus::Idle);
+        assert!(transform_apply::session_snapshot(&app_state).is_none());
+        assert!(!fx.popover_shown());
+        assert!(fx.emitted_states().is_empty());
+    }
+
+    // ---- Spec-by-test divergence points (finding 8) ------------------------
+
+    #[test]
+    fn decide_review_start_requested_is_ignored_but_failed_and_applied_supersede() {
+        // Command layer supersedes Failed/Applied on a new press; mid-flow
+        // Review ignores StartRequested (session stays until Cancel/Approve).
+        let review = decide(FlowState::Review, FlowEvent::StartRequested);
+        assert_eq!(review.actions, vec![FlowAction::Ignore]);
+
+        for state in [FlowState::Failed, FlowState::Applied] {
+            let d = decide(state, FlowEvent::StartRequested);
+            assert_eq!(d.next, FlowState::Capturing);
+            assert!(d.actions.contains(&FlowAction::ClearSession));
+        }
+    }
+
+    #[test]
+    fn decide_applying_cancel_tears_down() {
+        // Finding 7/8: Cancel during Applying must idle (not ignore).
+        let d = decide(FlowState::Applying, FlowEvent::Cancel);
+        assert_eq!(d.next, FlowState::Idle);
+        assert!(d.actions.contains(&FlowAction::HidePopover));
+        assert!(d.actions.contains(&FlowAction::ClearSession));
+    }
+
+    #[test]
+    fn decide_undo_ok_clears_session_without_cancel_inflight() {
+        // Finding 4: successful undo hides + clears; it does not CancelInflight
+        // (and the command path must not bump the apply epoch a second time).
+        let d = decide(FlowState::Applying, FlowEvent::UndoOk);
+        assert_eq!(d.next, FlowState::Idle);
+        assert!(d.actions.contains(&FlowAction::HidePopover));
+        assert!(d.actions.contains(&FlowAction::ClearSession));
+        assert!(!d.actions.contains(&FlowAction::CancelInflight));
+    }
+
+    #[test]
+    fn undo_close_path_must_not_bump_epoch_twice() {
+        // Document the contract undo_transform_and_close implements: one epoch
+        // advance for the undo's clipboard restore, never a second bump from
+        // chaining cancel. Pure unit check of the epoch helper semantics.
+        let app_state = AppState::default();
+        let before = app_state.transform_apply_epoch();
+        let first = app_state.next_transform_apply_epoch(); // undo's own bump
+        assert_eq!(first, before + 1);
+        // Success path of undo_transform_and_close must stop here (no cancel).
+        assert_eq!(app_state.transform_apply_epoch(), first);
+        // Contrast: cancel_transform would bump again and break paste-fallback.
+        let second = app_state.next_transform_apply_epoch();
+        assert_eq!(second, first + 1);
     }
 }

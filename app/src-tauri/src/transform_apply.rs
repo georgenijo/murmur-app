@@ -696,12 +696,17 @@ impl<'a> ApplyingGuard<'a> {
 
 impl Drop for ApplyingGuard<'_> {
     fn drop(&mut self) {
+        // Only leave Applying if we still own it. A concurrent cancel may have
+        // already forced Idle + cleared the session; overwriting that with
+        // ReviewPending would strand `blocks_recording` with no session.
         let target = if self.succeeded {
             TransformStatus::Idle
         } else {
             self.prior_status
         };
-        self.app_state.set_transform_status(target);
+        let _ = self
+            .app_state
+            .try_transition_transform_status(TransformStatus::Applying, target);
     }
 }
 
