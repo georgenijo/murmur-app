@@ -74,6 +74,7 @@ export function KnowledgeEditorModal({ entry, profiles, onClose, onSave }: Props
     if (kind === 'replacement_rule') setPayload({ kind, source: '', replacement: '' });
     if (kind === 'vocabulary_term') setPayload({ kind, written: '', aliases: [] });
     if (kind === 'snippet') setPayload({ kind, trigger: '', body: '' });
+    if (kind === 'transform') setPayload({ kind, name: '', instruction: '' });
   };
 
   const buildScope = (): KnowledgeScope | null => {
@@ -94,6 +95,9 @@ export function KnowledgeEditorModal({ entry, profiles, onClose, onSave }: Props
     }
     if (payload.kind === 'snippet' && (!payload.trigger.trim() || !payload.body.trim())) {
       return 'Enter both the spoken trigger and snippet body.';
+    }
+    if (payload.kind === 'transform' && (!payload.name.trim() || !payload.instruction.trim())) {
+      return 'Enter both the spoken transform name and instruction.';
     }
     if (!buildScope()) return scope.kind === 'project'
       ? 'Project scope requires an app bundle ID and project root.'
@@ -164,6 +168,7 @@ export function KnowledgeEditorModal({ entry, profiles, onClose, onSave }: Props
               <option value="replacement_rule">Replacement rule</option>
               <option value="vocabulary_term">Vocabulary term</option>
               <option value="snippet">Snippet</option>
+              <option value="transform">Transform</option>
             </select>
           </label>
 
@@ -195,6 +200,16 @@ export function KnowledgeEditorModal({ entry, profiles, onClose, onSave }: Props
               </label>
               <label className="block text-xs font-medium text-on-surface">Snippet body
                 <textarea aria-label="Snippet body" value={payload.body} onChange={(event) => setPayload({ ...payload, body: event.target.value })} className={`${inputClass} mt-1 min-h-24 resize-y font-mono`} maxLength={16_384} />
+              </label>
+            </div>
+          )}
+          {payload.kind === 'transform' && (
+            <div className="space-y-3">
+              <label className="block text-xs font-medium text-on-surface">Spoken name
+                <input aria-label="Spoken name" value={payload.name} onChange={(event) => setPayload({ ...payload, name: event.target.value })} className={`${inputClass} mt-1`} maxLength={256} />
+              </label>
+              <label className="block text-xs font-medium text-on-surface">Instruction
+                <textarea aria-label="Transform instruction" value={payload.instruction} onChange={(event) => setPayload({ ...payload, instruction: event.target.value })} className={`${inputClass} mt-1 min-h-24 resize-y`} maxLength={16_384} />
               </label>
             </div>
           )}

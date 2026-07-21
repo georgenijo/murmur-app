@@ -23,6 +23,7 @@ vi.mock('./KnowledgeManager', () => ({ KnowledgeManager: () => <div>Knowledge ma
 vi.mock('./PerformanceLab', () => ({ PerformanceLab: () => <div>Performance lab</div> }));
 vi.mock('./VocabularyAliasesEditor', () => ({ VocabularyAliasesEditor: () => <div>Vocabulary editor</div> }));
 vi.mock('./VoiceCommandsManager', () => ({ VoiceCommandsManager: () => <div>Voice commands editor</div> }));
+vi.mock('./TransformsManager', () => ({ TransformsManager: () => <div>Transforms manager</div> }));
 vi.mock('./VocabScanStrip', () => ({ VocabScanStrip: () => <div>Vocabulary scan</div> }));
 
 describe('SettingsPanel information architecture', () => {
@@ -59,9 +60,9 @@ describe('SettingsPanel information architecture', () => {
     container.remove();
   });
 
-  it('renders exactly six ordered pages with Recording selected first', () => {
+  it('renders ordered pages with Recording selected first (includes Transform)', () => {
     expect(SETTINGS_CATEGORIES.map((category) => category.label)).toEqual([
-      'Recording', 'Transcription', 'Text & Vocabulary', 'Delivery', 'Performance', 'General',
+      'Recording', 'Transcription', 'Transform', 'Text & Vocabulary', 'Delivery', 'Performance', 'General',
     ]);
     const nav = container.querySelector('nav[aria-label="Settings pages"]') as HTMLElement;
     expect(Array.from(nav.querySelectorAll('button')).slice(1).map((button) => button.textContent)).toEqual(SETTINGS_CATEGORIES.map((category) => category.label));
