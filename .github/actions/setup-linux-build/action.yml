@@ -135,6 +135,8 @@ runs:
     # build that predates LINUXDEPLOY_EXCLUDED_LIBRARIES. Seed Tauri's tool cache
     # with a checksum-pinned upstream build so the runner-only CUDA driver stub
     # is available for dependency resolution but cannot enter the AppImage.
+    # Also pre-seed the AppImage plugin and type2 runtime so bundling does not
+    # hit the network mid-job (~0–2m saved on cold packaging).
     - name: Install driver-stub-aware linuxdeploy
       shell: bash
       run: |
@@ -145,6 +147,25 @@ runs:
         curl --fail --location --retry 3 "$LINUXDEPLOY_URL" --output "$LINUXDEPLOY_PATH"
         echo "$LINUXDEPLOY_SHA256  $LINUXDEPLOY_PATH" | sha256sum --check --strict
         chmod +x "$LINUXDEPLOY_PATH"
+
+        PLUGIN_URL="https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-x86_64.AppImage"
+        PLUGIN_SHA256="1da16a46fa5e058ae740e7c35ed0d36d86cb869ac9cc8a5fd9a1847d7978d99a"
+        PLUGIN_PATH="$HOME/.cache/tauri/linuxdeploy-plugin-appimage-x86_64.AppImage"
+        curl --fail --location --retry 3 "$PLUGIN_URL" --output "$PLUGIN_PATH"
+        echo "$PLUGIN_SHA256  $PLUGIN_PATH" | sha256sum --check --strict
+        chmod +x "$PLUGIN_PATH"
+
+        # appimagetool type2 runtime — seed XDG cache so packaging skips download
+        RUNTIME_URL="https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64"
+        RUNTIME_SHA256="1cc49bcf1e2ccd593c379adb17c9f85a36d619088296504de95b1d06215aebbf"
+        RUNTIME_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/appimageify"
+        mkdir -p "$RUNTIME_DIR"
+        RUNTIME_PATH="$RUNTIME_DIR/runtime-x86_64"
+        curl --fail --location --retry 3 "$RUNTIME_URL" --output "$RUNTIME_PATH"
+        echo "$RUNTIME_SHA256  $RUNTIME_PATH" | sha256sum --check --strict
+        chmod +x "$RUNTIME_PATH" || true
+
+        echo "$HOME/.cache/tauri" >> "$GITHUB_PATH"
 
     - name: Save CUDA toolkit cache
       if: steps.cuda-cache.outputs.cache-hit != 'true' && inputs.cuda-cache-save-if == 'true'
