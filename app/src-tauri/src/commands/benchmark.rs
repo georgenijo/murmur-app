@@ -58,6 +58,10 @@ pub async fn run_benchmark(
             });
         }
     }
+    // Only one heavy inference runtime may be resident: stop any local-LLM
+    // helper before benchmarking (fail-fast no-op while a transform is in
+    // flight). The benchmark slot is already claimed above.
+    state.transform_runtime.shutdown();
     let guard = BenchmarkRunGuard(coordinator.clone());
     super::models::ensure_vad_model(&app_handle)
         .await

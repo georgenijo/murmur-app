@@ -133,8 +133,10 @@ pub async fn download_transform_model(
         size_bytes = size,
         "transform_model_installed"
     );
+    // Dedicated channel so this never collides with the whisper/parakeet
+    // downloader UI on the shared "download-progress" event.
     let _ = app_handle.emit(
-        "download-progress",
+        "transform-model-download-progress",
         serde_json::json!({ "received": size, "total": size, "phase": "installed" }),
     );
     Ok(())
@@ -175,6 +177,12 @@ async fn stream_verified_download(
         .await
         .map_err(|e| format!("Failed to create partial file: {}", e))?;
 
+    // Throttle progress emits so a 1.1 GB stream doesn't flood the UI: emit on
+    // each whole-percent advance or at most every 250ms, on a dedicated channel
+    // that never collides with the whisper/parakeet downloader.
+    let mut last_emit = std::time::Instant::now();
+    let mut last_pct: u64 = u64::MAX;
+
     let mut stream = response.bytes_stream();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| format!("Download error: {}", e))?;
@@ -186,10 +194,18 @@ async fn stream_verified_download(
         file.write_all(&chunk)
             .await
             .map_err(|e| format!("Failed to write partial file: {}", e))?;
-        let _ = app_handle.emit(
-            "download-progress",
-            serde_json::json!({ "received": received, "total": total, "phase": "downloading" }),
-        );
+
+        let pct = received.saturating_mul(100) / total.max(1);
+        let now = std::time::Instant::now();
+        if pct != last_pct || now.duration_since(last_emit) >= std::time::Duration::from_millis(250)
+        {
+            last_pct = pct;
+            last_emit = now;
+            let _ = app_handle.emit(
+                "transform-model-download-progress",
+                serde_json::json!({ "received": received, "total": total, "phase": "downloading" }),
+            );
+        }
     }
 
     file.flush()

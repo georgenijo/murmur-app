@@ -131,6 +131,20 @@ fn main() {
                     "slow_ack_cancel" | "slow_ignore_cancel" => {
                         // Never send a Result; wait for the Cancel below.
                     }
+                    "wrong_nonce_on_result" => {
+                        // Well-formed Result frame but with a mismatched session
+                        // nonce — the supervisor must reject every frame's nonce.
+                        let result = HelperMessage::Result {
+                            protocol: PROTOCOL_NAME.to_string(),
+                            version: PROTOCOL_VERSION,
+                            session_nonce: "WRONG-NONCE".to_string(),
+                            request_id,
+                            output: "mock-output".to_string(),
+                            finish_reason: FinishReason::Stop,
+                            output_tokens: 3,
+                        };
+                        let _ = write_frame(&mut stdout, &result);
+                    }
                     _ => {
                         if let Ok(ms) = std::env::var("MOCK_DELAY_MS") {
                             if let Ok(ms) = ms.parse::<u64>() {

@@ -342,7 +342,10 @@ fn rss_action(bytes: u64) -> RssAction {
 
 /// Explicit configuration used by integration tests to drive the supervisor
 /// against the protocol mock helper. Not part of any stable external API.
+/// `allow(dead_code)`: in a release build without `llm-test-support`, `for_test`
+/// is compiled out so these fields are never read there.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct TestSpawnConfig {
     pub helper_path: PathBuf,
     pub model_path: PathBuf,
@@ -359,6 +362,8 @@ pub struct TestSpawnConfig {
 
 enum SpawnPlan {
     Production,
+    // Only constructed by `for_test`, which is compiled out of release builds.
+    #[allow(dead_code)]
     Test(TestSpawnConfig),
 }
 
@@ -392,6 +397,9 @@ impl SpawnPlan {
         // debug and tests inherit it for diagnosis.
         cfg!(debug_assertions)
     }
+    // Only referenced by the equally-gated env-injection loop; compiled out of
+    // release builds so the scenario-env path is not present at all there.
+    #[cfg(any(debug_assertions, feature = "llm-test-support"))]
     fn scenario_env(&self) -> &[(String, String)] {
         match self {
             Self::Production => &[],
@@ -423,11 +431,29 @@ impl SpawnPlan {
             Self::Test(c) => Ok(c.model_path.clone()),
         }
     }
+
+    /// Remove a corrupt / wrong-content published model so status reports
+    /// `not_downloaded` and the user can re-download. Production only — a test
+    /// fixture model is never touched.
+    fn cleanup_bad_model(&self) {
+        if let Self::Production = self {
+            if let Some(dir) = transform_models_root().map(|r| r.join(TRANSFORM_MODEL_SHA256)) {
+                let _ = std::fs::remove_dir_all(&dir);
+            }
+        }
+    }
 }
 
-/// Resolve the exact helper executable: the bundled `externalBin` sitting next
-/// to the app binary when packaged, else the dev build product under
-/// `target/{debug,release}/`.
+/// Resolve the exact helper executable. Production resolves ONLY the bundled
+/// `externalBin` sitting next to the app binary (`Contents/MacOS/…`), honoring
+/// the ADR requirement to start the exact pinned nested executable — no `..`
+/// probing that could reach an unpinned path. A debug-only fallback covers the
+/// dev layout where the app ran from an unusual cwd.
+///
+/// NOTE: path pinning is necessary but not sufficient. Before shipping, the
+/// packaging integration (#312 PR-A3/C2) must additionally validate the helper
+/// against its fixed designated requirement via `SecStaticCodeCheckValidity`
+/// (ADR threat table "Helper replacement" row). See `spawn_and_handshake`.
 fn resolve_helper_path() -> Result<PathBuf, TransformError> {
     let exe = std::env::current_exe().map_err(|_| TransformError::SpawnFailed)?;
     let dir = exe.parent().ok_or(TransformError::SpawnFailed)?;
@@ -437,7 +463,9 @@ fn resolve_helper_path() -> Result<PathBuf, TransformError> {
     if primary.is_file() {
         return Ok(primary);
     }
-    // Dev fallback: the app ran from an unusual cwd; probe sibling profiles.
+    // Dev-only fallback: probe sibling target profiles. Never compiled into a
+    // release binary, so a packaged app resolves only the pinned sibling path.
+    #[cfg(debug_assertions)]
     for profile in ["debug", "release"] {
         let candidate = dir.join("..").join(profile).join(HELPER_BIN_NAME);
         if candidate.is_file() {
@@ -500,6 +528,21 @@ mod supported {
         child: Option<Child>,
         breaker: Breaker,
         last_activity: Instant,
+        /// Latched once we log an RSS warning, so the reaper warns once per
+        /// crossing rather than every 30s tick. Cleared when RSS drops back.
+        rss_warned: bool,
+    }
+
+    /// RAII guard that clears the in-flight `busy` flag on drop. It is moved
+    /// into the `spawn_blocking` closure so `busy` is released when the blocking
+    /// work finishes on EVERY path — including when the async future is dropped
+    /// (e.g. a `tokio::time::timeout` wrapper) mid-request. A blocking task is
+    /// never cancelled, so its guard always drops.
+    struct BusyGuard(Arc<LlmSidecar>);
+    impl Drop for BusyGuard {
+        fn drop(&mut self) {
+            self.0.busy.store(false, Ordering::Release);
+        }
     }
 
     pub struct LlmSidecar {
@@ -514,6 +557,10 @@ mod supported {
             Self::with_plan(SpawnPlan::Production)
         }
 
+        /// Test-only constructor allowing scenario env injection into the child.
+        /// Excluded from release builds (`debug_assertions` off, feature off) so
+        /// the env-injection path is not linkable in a shipped binary.
+        #[cfg(any(debug_assertions, feature = "llm-test-support"))]
         pub fn for_test(config: TestSpawnConfig) -> Self {
             Self::with_plan(SpawnPlan::Test(config))
         }
@@ -527,6 +574,7 @@ mod supported {
                     child: None,
                     breaker: Breaker::default(),
                     last_activity: Instant::now(),
+                    rss_warned: false,
                 }),
             }
         }
@@ -584,6 +632,10 @@ mod supported {
             {
                 return Err(TransformError::Busy);
             }
+            // Own the busy flag from here. Moving this guard into the blocking
+            // closure guarantees `busy` clears when the blocking work ends even
+            // if this async future is dropped at the `.await` below.
+            let busy_guard = BusyGuard(Arc::clone(self));
 
             // Bucket sizes up front so no raw length leaves this frame.
             let instruction_bucket = size_bucket(instruction.len());
@@ -594,10 +646,10 @@ mod supported {
             let input = input.to_string();
             let started = Instant::now();
             let join = tokio::task::spawn_blocking(move || {
+                let _busy = busy_guard;
                 this.transform_blocking(&instruction, &input, deadline)
             })
             .await;
-            self.busy.store(false, Ordering::Release);
 
             let result = match join {
                 Ok(r) => r,
@@ -646,6 +698,14 @@ mod supported {
                 self.guard().release_asr();
                 match self.spawn_and_handshake(&model_path) {
                     Ok(child) => inner.child = Some(child),
+                    Err(TransformError::ModelMismatch) => {
+                        // A corrupt / wrong-content model at the ready path. Remove
+                        // it (production only) so status reports not_downloaded and
+                        // the user can re-download. Not a helper fault → no breaker
+                        // trip; the file is gone so this cannot loop.
+                        self.plan.cleanup_bad_model();
+                        return Err(TransformError::ModelMismatch);
+                    }
                     Err(err) => {
                         inner.breaker.record_failure(Instant::now());
                         return Err(err);
@@ -665,8 +725,11 @@ mod supported {
                     Ok(out)
                 }
                 RequestOutcome::HelperError(err) => {
-                    // Helper is still healthy; keep it for reuse.
+                    // The frame is well-formed so the helper is kept for reuse,
+                    // but a helper that errors every request must not respawn
+                    // indefinitely — count it toward the crash circuit breaker.
                     inner.last_activity = Instant::now();
+                    inner.breaker.record_failure(Instant::now());
                     Err(err)
                 }
                 RequestOutcome::TimedOutKeepChild => {
@@ -690,6 +753,7 @@ mod supported {
                 }
                 RequestOutcome::OutputInvalid => {
                     kill_child(inner.child.take());
+                    inner.breaker.record_failure(Instant::now());
                     Err(TransformError::OutputInvalid)
                 }
             }
@@ -705,6 +769,13 @@ mod supported {
             let helper_path = self.plan.helper_path()?;
             let raw_fd = model_file.as_raw_fd();
 
+            // TODO(#312 PR-A3/C2 packaging integration): before spawn, validate
+            // `helper_path` with `SecStaticCodeCheckValidity` against the fixed
+            // designated requirement (identifier
+            // `com.localdictation.local-llm-sidecar`, matching Team ID, hardened
+            // runtime). Path pinning alone does not defend the ADR threat-model
+            // "Helper replacement" row — this is a hard gate for the signed,
+            // notarized build and must land before shipping the runtime.
             let mut command = std::process::Command::new(&helper_path);
             command
                 .current_dir("/")
@@ -716,14 +787,19 @@ mod supported {
                     std::process::Stdio::null()
                 });
             command.env_clear();
+            // Scenario env is injected only in test-support builds; production
+            // spawns with a strictly empty environment.
+            #[cfg(any(debug_assertions, feature = "llm-test-support"))]
             for (k, v) in self.plan.scenario_env() {
                 command.env(k, v);
             }
 
-            // Hand the verified model over as inherited read-only fd 3. `dup2`
-            // clears FD_CLOEXEC on the new fd, but is a no-op (leaving CLOEXEC
-            // set) when oldfd already equals 3 — so clear it explicitly. No
-            // request-controlled args and no other inherited descriptors.
+            // Hand the verified model over as inherited read-only fd 3, then
+            // close every other inherited descriptor above fd 3 so only
+            // stdin/stdout/stderr and the model fd survive exec. `dup2` clears
+            // FD_CLOEXEC on the new fd, but is a no-op (leaving CLOEXEC set) when
+            // oldfd already equals 3 — so clear it explicitly. Only
+            // async-signal-safe libc calls run here. No request-controlled args.
             unsafe {
                 command.pre_exec(move || {
                     if raw_fd != MODEL_FD && libc::dup2(raw_fd, MODEL_FD) < 0 {
@@ -731,6 +807,14 @@ mod supported {
                     }
                     if libc::fcntl(MODEL_FD, libc::F_SETFD, 0) < 0 {
                         return Err(std::io::Error::last_os_error());
+                    }
+                    let max_fd = libc::getdtablesize();
+                    let mut fd = MODEL_FD + 1;
+                    while fd < max_fd {
+                        // Ignore EBADF and other errors: closing unused fds is
+                        // best-effort hardening, not a correctness dependency.
+                        libc::close(fd);
+                        fd += 1;
                     }
                     Ok(())
                 });
@@ -777,7 +861,7 @@ mod supported {
                 limits: ProtocolLimits::default(),
             };
             if write_frame(&mut stdin, &hello).is_err() {
-                let _ = proc.kill();
+                kill_and_reap(&mut proc);
                 return Err(TransformError::HandshakeFailed);
             }
 
@@ -786,7 +870,7 @@ mod supported {
             loop {
                 let now = Instant::now();
                 if now >= deadline_at {
-                    let _ = proc.kill();
+                    kill_and_reap(&mut proc);
                     return Err(TransformError::HandshakeFailed);
                 }
                 match rx.recv_timeout(deadline_at - now) {
@@ -803,7 +887,7 @@ mod supported {
                             || model.sha256 != sha
                             || model.size_bytes != size
                         {
-                            let _ = proc.kill();
+                            kill_and_reap(&mut proc);
                             return Err(TransformError::HandshakeFailed);
                         }
                         return Ok(Child {
@@ -816,7 +900,7 @@ mod supported {
                         });
                     }
                     Ok(_) | Err(RecvTimeoutError::Disconnected) => {
-                        let _ = proc.kill();
+                        kill_and_reap(&mut proc);
                         return Err(TransformError::HandshakeFailed);
                     }
                     Err(RecvTimeoutError::Timeout) => continue,
@@ -830,61 +914,85 @@ mod supported {
             if self.busy.load(Ordering::Acquire) {
                 return;
             }
-            let mut inner = match self.inner.try_lock() {
-                Ok(g) => g,
-                Err(_) => return,
-            };
-            let Some(child) = inner.child.as_ref() else {
-                return;
-            };
-            let pid = child.pid;
+            // Decide under a short lock; do any blocking shutdown after release.
+            let (idle_child, kill_now) = {
+                let mut inner = match self.inner.try_lock() {
+                    Ok(g) => g,
+                    Err(_) => return,
+                };
+                let Some(child) = inner.child.as_ref() else {
+                    return;
+                };
+                let pid = child.pid;
 
-            if let Some(bytes) = child_rss_bytes(pid) {
-                match rss_action(bytes) {
-                    RssAction::Ok => {}
-                    RssAction::Warn => {
-                        tracing::warn!(
-                            target: "pipeline",
-                            rss_mb = bytes / (1024 * 1024),
-                            "llm_sidecar_rss_warn"
-                        );
-                    }
-                    RssAction::Kill => {
-                        tracing::warn!(
-                            target: "pipeline",
-                            rss_mb = bytes / (1024 * 1024),
-                            "llm_sidecar_rss_kill"
-                        );
-                        kill_child(inner.child.take());
-                        return;
+                let mut kill = false;
+                if let Some(bytes) = child_rss_bytes(pid) {
+                    match rss_action(bytes) {
+                        RssAction::Ok => inner.rss_warned = false,
+                        RssAction::Warn => {
+                            // Log once per crossing, not every tick.
+                            if !inner.rss_warned {
+                                tracing::warn!(
+                                    target: "pipeline",
+                                    rss_mb = bytes / (1024 * 1024),
+                                    "llm_sidecar_rss_warn"
+                                );
+                                inner.rss_warned = true;
+                            }
+                        }
+                        RssAction::Kill => {
+                            tracing::warn!(
+                                target: "pipeline",
+                                rss_mb = bytes / (1024 * 1024),
+                                "llm_sidecar_rss_kill"
+                            );
+                            kill = true;
+                        }
                     }
                 }
-            }
 
-            if inner.last_activity.elapsed() >= self.plan.idle_after() {
-                let grace = self.plan.cancel_grace();
-                let child = inner.child.take();
-                shutdown_child(child, grace);
+                if kill {
+                    (inner.child.take(), true)
+                } else if inner.last_activity.elapsed() >= self.plan.idle_after() {
+                    (inner.child.take(), false)
+                } else {
+                    return;
+                }
+            };
+
+            if kill_now {
+                kill_child(idle_child);
+            } else {
+                shutdown_child(idle_child, self.plan.cancel_grace());
                 tracing::info!(target: "pipeline", "llm_sidecar_idle_unload");
             }
         }
 
         /// Reset the crash circuit breaker and drop any resident helper.
+        /// Fail-fast when a transform is running: it owns the child and will
+        /// idle-unload on its own; the breaker is not disabled while it runs.
         pub fn reset(&self) {
-            let mut inner = self.lock();
-            inner.breaker.reset();
-            let grace = self.plan.cancel_grace();
-            let child = inner.child.take();
-            shutdown_child(child, grace);
+            let child = match self.inner.try_lock() {
+                Ok(mut inner) => {
+                    inner.breaker.reset();
+                    inner.child.take()
+                }
+                Err(_) => return,
+            };
+            shutdown_child(child, self.plan.cancel_grace());
             tracing::info!(target: "pipeline", "llm_sidecar_reset");
         }
 
-        /// Stop the helper (used before recording / removing the model).
+        /// Stop the helper (used before recording / file transcription /
+        /// benchmark, and on model removal). Takes the child out under a short
+        /// lock, then shuts it down outside the lock. Fail-fast (a no-op) when a
+        /// transform is in flight — the guard never blocks behind a ≤31s request.
         pub fn shutdown(&self) {
-            let mut inner = self.lock();
-            let grace = self.plan.cancel_grace();
-            let child = inner.child.take();
-            shutdown_child(child, grace);
+            let child = match self.inner.try_lock() {
+                Ok(mut inner) => inner.child.take(),
+                Err(_) => return,
+            };
+            shutdown_child(child, self.plan.cancel_grace());
         }
     }
 
@@ -896,6 +1004,44 @@ mod supported {
         Crashed,
         Protocol,
         OutputInvalid,
+    }
+
+    /// The ADR requires the protocol name, version, and per-process session
+    /// nonce on EVERY frame. Validate before acting on any helper message; a
+    /// mismatch is a protocol violation that fails closed.
+    fn helper_frame_valid(message: &HelperMessage, nonce: &str) -> bool {
+        let (protocol, version, session_nonce) = match message {
+            HelperMessage::Ready {
+                protocol,
+                version,
+                session_nonce,
+                ..
+            }
+            | HelperMessage::Result {
+                protocol,
+                version,
+                session_nonce,
+                ..
+            }
+            | HelperMessage::Cancelled {
+                protocol,
+                version,
+                session_nonce,
+                ..
+            }
+            | HelperMessage::Error {
+                protocol,
+                version,
+                session_nonce,
+                ..
+            }
+            | HelperMessage::Stopped {
+                protocol,
+                version,
+                session_nonce,
+            } => (protocol, version, session_nonce),
+        };
+        protocol == PROTOCOL_NAME && *version == PROTOCOL_VERSION && session_nonce == nonce
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -931,37 +1077,58 @@ mod supported {
                 return cancel_and_settle(child, request_id, plan.cancel_grace());
             }
             match child.events.recv_timeout(deadline_at - now) {
-                Ok(HelperEvent::Frame(HelperMessage::Result {
-                    request_id: got,
-                    output,
-                    finish_reason,
-                    output_tokens,
-                    ..
-                })) => {
-                    if got != request_id {
+                Ok(HelperEvent::Frame(frame)) => {
+                    if !helper_frame_valid(&frame, &child.session_nonce) {
                         return RequestOutcome::Protocol;
                     }
-                    if output.len() > MAX_OUTPUT_BYTES
-                        || output_tokens > MAX_OUTPUT_TOKENS
-                        || output.contains('\0')
-                    {
-                        return RequestOutcome::OutputInvalid;
+                    match frame {
+                        HelperMessage::Result {
+                            request_id: got,
+                            output,
+                            finish_reason,
+                            output_tokens,
+                            ..
+                        } => {
+                            if got != request_id {
+                                return RequestOutcome::Protocol;
+                            }
+                            if output.len() > MAX_OUTPUT_BYTES
+                                || output_tokens > MAX_OUTPUT_TOKENS
+                                || output.contains('\0')
+                            {
+                                return RequestOutcome::OutputInvalid;
+                            }
+                            return RequestOutcome::Ok(TransformOutput {
+                                output,
+                                finish_reason,
+                                output_tokens,
+                            });
+                        }
+                        HelperMessage::Error {
+                            code,
+                            request_id: err_request_id,
+                            ..
+                        } => {
+                            // An Error may omit the request id, but if present it
+                            // must name the in-flight request.
+                            if let Some(id) = err_request_id {
+                                if id != request_id {
+                                    return RequestOutcome::Protocol;
+                                }
+                            }
+                            return RequestOutcome::HelperError(TransformError::from_helper_code(
+                                code,
+                            ));
+                        }
+                        // A stray cancelled/late frame: ignore and keep waiting.
+                        HelperMessage::Cancelled { .. } => continue,
+                        // Ready/Stopped mid-request: fail closed.
+                        HelperMessage::Ready { .. } | HelperMessage::Stopped { .. } => {
+                            return RequestOutcome::Protocol
+                        }
                     }
-                    return RequestOutcome::Ok(TransformOutput {
-                        output,
-                        finish_reason,
-                        output_tokens,
-                    });
                 }
-                Ok(HelperEvent::Frame(HelperMessage::Error { code, .. })) => {
-                    return RequestOutcome::HelperError(TransformError::from_helper_code(code));
-                }
-                // A stray cancelled/late frame: ignore and keep waiting.
-                Ok(HelperEvent::Frame(HelperMessage::Cancelled { .. })) => continue,
-                // Ready/Stopped mid-request or any violation: fail closed.
-                Ok(HelperEvent::Frame(HelperMessage::Ready { .. }))
-                | Ok(HelperEvent::Frame(HelperMessage::Stopped { .. }))
-                | Ok(HelperEvent::ProtocolViolation) => return RequestOutcome::Protocol,
+                Ok(HelperEvent::ProtocolViolation) => return RequestOutcome::Protocol,
                 Ok(HelperEvent::Exited) | Err(RecvTimeoutError::Disconnected) => {
                     return RequestOutcome::Crashed
                 }
@@ -988,14 +1155,16 @@ mod supported {
                 return RequestOutcome::TimedOutKilled;
             }
             match child.events.recv_timeout(grace_at - now) {
-                Ok(HelperEvent::Frame(HelperMessage::Cancelled { request_id: got, .. }))
-                    if got == request_id =>
-                {
+                Ok(HelperEvent::Frame(frame)) => {
+                    // Even during cancellation, a frame with the wrong nonce /
+                    // protocol is a violation — kill rather than trust it.
+                    if !helper_frame_valid(&frame, &child.session_nonce) {
+                        return RequestOutcome::TimedOutKilled;
+                    }
+                    // A matching Cancelled, or any other well-formed frame,
+                    // proves the helper is responsive: cancellation confirmed.
                     return RequestOutcome::TimedOutKeepChild;
                 }
-                // A late Result / other frame during the grace window: the helper
-                // is responsive, so treat cancellation as confirmed and keep it.
-                Ok(HelperEvent::Frame(_)) => return RequestOutcome::TimedOutKeepChild,
                 Ok(HelperEvent::Exited)
                 | Ok(HelperEvent::ProtocolViolation)
                 | Err(RecvTimeoutError::Disconnected) => return RequestOutcome::TimedOutKilled,
@@ -1004,10 +1173,15 @@ mod supported {
         }
     }
 
+    /// Kill a raw process handle and reap it so it never lingers as a zombie.
+    fn kill_and_reap(proc: &mut std::process::Child) {
+        let _ = proc.kill();
+        let _ = proc.wait();
+    }
+
     fn kill_child(child: Option<Child>) {
         if let Some(mut child) = child {
-            let _ = child.proc.kill();
-            let _ = child.proc.wait();
+            kill_and_reap(&mut child.proc);
         }
     }
 
@@ -1072,6 +1246,7 @@ impl LlmSidecar {
         Self::with_plan(SpawnPlan::Production)
     }
 
+    #[cfg(any(debug_assertions, feature = "llm-test-support"))]
     pub fn for_test(config: TestSpawnConfig) -> Self {
         Self::with_plan(SpawnPlan::Test(config))
     }

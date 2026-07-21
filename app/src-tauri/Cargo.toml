@@ -15,6 +15,12 @@ resolver = "2"
 name = "ui_lib"
 crate-type = ["lib", "cdylib", "staticlib"]
 
+[features]
+# Exposes LlmSidecar::for_test + scenario env injection into the local-LLM
+# helper. Off by default so the injection path is not linkable in a release
+# binary (debug_assertions also enables it for the standard test build).
+llm-test-support = []
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

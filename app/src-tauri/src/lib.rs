@@ -447,6 +447,15 @@ pub fn run() {
                 }
             }
         }
+
+        // App-exit teardown: stop any resident local-LLM helper so it never
+        // outlives the app (no-op when no child is running).
+        #[cfg(target_os = "macos")]
+        if let RunEvent::Exit = &_event {
+            if let Some(state) = _app_handle.try_state::<State>() {
+                state.transform_runtime.shutdown();
+            }
+        }
     });
 }
 

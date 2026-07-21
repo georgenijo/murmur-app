@@ -812,6 +812,10 @@ pub async fn process_audio(
     audio_data: String,
     state: tauri::State<'_, State>,
 ) -> Result<serde_json::Value, String> {
+    // Only one heavy inference runtime may be resident: stop any local-LLM
+    // helper before recording. Fail-fast no-op while a transform is in flight —
+    // the is_transform_busy guard below then refuses this recording.
+    state.transform_runtime.shutdown();
     let rid = {
         let mut dictation = state.app_state.dictation.lock_or_recover();
         // Same mutual exclusion as start_native_recording: this legacy base64
@@ -1928,6 +1932,10 @@ pub async fn start_native_recording(
         tracing::info!(target: "pipeline", "start_native_recording: app disabled — ignoring");
         return Ok(serde_json::json!({ "type": "app_disabled", "state": "idle" }));
     }
+    // Stop any resident local-LLM helper before recording (fail-fast no-op
+    // while a transform is in flight; the is_transform_busy guard below then
+    // refuses this recording).
+    state.transform_runtime.shutdown();
     // Check and update status in one lock; assign recording ID in the same
     // critical section so no concurrent cancel/start can slip between them.
     let rid = {
@@ -2331,6 +2339,10 @@ pub async fn transcribe_file(
     {
         return Err("Already transcribing a file.".to_string());
     }
+    // Only one heavy inference runtime may be resident: stop any local-LLM
+    // helper before running the file transcription (fail-fast no-op while a
+    // transform is in flight).
+    state.transform_runtime.shutdown();
     let _file_guard = FileTranscribeGuard {
         app_state: &state.app_state,
         app_handle: Some(app_handle.clone()),

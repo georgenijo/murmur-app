@@ -186,6 +186,52 @@ async fn one_transform_in_flight_rejects_the_second() {
 }
 
 #[tokio::test]
+async fn wrong_nonce_on_result_frame_fails_closed() {
+    let fixture = fixture_model();
+    let sidecar = sidecar("wrong_nonce_on_result", &fixture);
+    let err = run_transform(&sidecar, Duration::from_secs(5))
+        .await
+        .unwrap_err();
+    // Every frame's nonce is validated, not just the Ready handshake.
+    assert_eq!(err, TransformError::Protocol);
+    assert!(!sidecar.has_live_child());
+}
+
+#[tokio::test]
+async fn dropping_the_transform_future_clears_busy_and_does_not_wedge() {
+    let fixture = fixture_model();
+    // Happy path with a delayed Result so the request is still in flight when
+    // the future is dropped.
+    let sidecar = Arc::new(LlmSidecar::for_test(config_with(
+        "happy",
+        &fixture,
+        vec![("MOCK_DELAY_MS".to_string(), "400".to_string())],
+    )));
+
+    {
+        // Drop the transform future well before the delayed Result arrives.
+        let fut = run_transform(&sidecar, Duration::from_secs(5));
+        let dropped = tokio::time::timeout(Duration::from_millis(50), fut).await;
+        assert!(dropped.is_err(), "future should be cancelled by the timeout");
+    }
+
+    // The blocking task keeps running and must clear `busy` when it finishes.
+    let mut cleared = false;
+    for _ in 0..100 {
+        if !sidecar.is_transform_busy() {
+            cleared = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(cleared, "busy flag wedged after the future was dropped");
+
+    // And the supervisor is not bricked: a fresh transform proceeds.
+    let out = run_transform(&sidecar, Duration::from_secs(5)).await.unwrap();
+    assert_eq!(out.output, "mock-output");
+}
+
+#[tokio::test]
 async fn checksum_mismatch_model_refuses_to_spawn() {
     let fixture = fixture_model();
     let mut config = config_with("happy", &fixture, vec![]);
