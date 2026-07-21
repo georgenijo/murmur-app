@@ -1,6 +1,6 @@
 use rusqlite::{Connection, Transaction};
 
-pub const LATEST_SCHEMA_VERSION: u32 = 3;
+pub const LATEST_SCHEMA_VERSION: u32 = 4;
 
 pub fn migrate(connection: &mut Connection) -> Result<(), String> {
     migrate_through(connection, LATEST_SCHEMA_VERSION)
@@ -101,6 +101,61 @@ fn apply(transaction: &Transaction<'_>, version: u32) -> Result<(), String> {
                 ALTER TABLE knowledge_entries ADD COLUMN voice_command_clipboard INTEGER NOT NULL DEFAULT 0
                     CHECK(voice_command_clipboard IN (0, 1));
                 INSERT INTO knowledge_meta(key, value) VALUES ('legacy_voice_commands_migrated', 0);
+                CREATE INDEX knowledge_entries_voice_commands
+                    ON knowledge_entries(voice_command_kind, enabled, scope_kind, app_bundle_id, created_at_ms, id);
+                "#,
+            )
+            .map_err(db_error),
+        // #312 D1: allow KnowledgeKind::Transform. SQLite cannot ALTER a CHECK
+        // constraint, so rebuild knowledge_entries with the expanded kind set.
+        4 => transaction
+            .execute_batch(
+                r#"
+                CREATE TABLE knowledge_entries_v4 (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    kind TEXT NOT NULL CHECK(kind IN ('replacement_rule', 'vocabulary_term', 'snippet', 'transform')),
+                    trigger_text TEXT NOT NULL,
+                    normalized_trigger TEXT NOT NULL,
+                    content_text TEXT NOT NULL,
+                    aliases_json TEXT NOT NULL DEFAULT '[]',
+                    enabled INTEGER NOT NULL CHECK(enabled IN (0, 1)),
+                    scope_kind TEXT NOT NULL CHECK(scope_kind IN ('global', 'app', 'project')),
+                    app_bundle_id TEXT,
+                    project_root TEXT,
+                    provenance TEXT NOT NULL CHECK(provenance IN ('manual', 'code_scan', 'learned_correction', 'import')),
+                    created_at_ms INTEGER NOT NULL,
+                    updated_at_ms INTEGER NOT NULL,
+                    revision INTEGER NOT NULL CHECK(revision > 0),
+                    voice_command_kind TEXT
+                        CHECK(voice_command_kind IN ('text_replacement', 'snippet')),
+                    voice_command_clipboard INTEGER NOT NULL DEFAULT 0
+                        CHECK(voice_command_clipboard IN (0, 1)),
+                    CHECK(
+                        (scope_kind = 'global' AND app_bundle_id IS NULL AND project_root IS NULL)
+                        OR (scope_kind = 'app' AND app_bundle_id IS NOT NULL AND project_root IS NULL)
+                        OR (scope_kind = 'project' AND app_bundle_id IS NOT NULL AND project_root IS NOT NULL)
+                    )
+                );
+                INSERT INTO knowledge_entries_v4 (
+                    id, kind, trigger_text, normalized_trigger, content_text, aliases_json,
+                    enabled, scope_kind, app_bundle_id, project_root, provenance,
+                    created_at_ms, updated_at_ms, revision,
+                    voice_command_kind, voice_command_clipboard
+                )
+                SELECT
+                    id, kind, trigger_text, normalized_trigger, content_text, aliases_json,
+                    enabled, scope_kind, app_bundle_id, project_root, provenance,
+                    created_at_ms, updated_at_ms, revision,
+                    voice_command_kind, voice_command_clipboard
+                FROM knowledge_entries;
+                DROP TABLE knowledge_entries;
+                ALTER TABLE knowledge_entries_v4 RENAME TO knowledge_entries;
+                CREATE INDEX knowledge_entries_listing
+                    ON knowledge_entries(updated_at_ms DESC, id ASC);
+                CREATE INDEX knowledge_entries_resolution
+                    ON knowledge_entries(kind, enabled, normalized_trigger, scope_kind, app_bundle_id, project_root);
+                CREATE INDEX knowledge_entries_scope
+                    ON knowledge_entries(scope_kind, app_bundle_id, project_root);
                 CREATE INDEX knowledge_entries_voice_commands
                     ON knowledge_entries(voice_command_kind, enabled, scope_kind, app_bundle_id, created_at_ms, id);
                 "#,

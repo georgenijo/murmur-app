@@ -304,9 +304,9 @@ export const DOUBLE_TAP_KEY_OPTIONS: { value: DoubleTapKey; label: string }[] = 
   { value: 'ctrl_r', label: 'Control' },
 ];
 
-/** No settings UI consumes this yet (Phase D of issue #312) — kept alongside
- * `DOUBLE_TAP_KEY_OPTIONS` so the allow-list used by migration/validation has
- * a single source of truth ready for when the picker ships. */
+/** Allow-list of transform hold-key options, shared by the Settings Transform
+ * section's picker (issue #312 D1) and migration/validation, so both draw from
+ * a single source of truth. Kept alongside `DOUBLE_TAP_KEY_OPTIONS`. */
 export const TRANSFORM_KEY_OPTIONS: { value: TransformKey; label: string }[] = [
   { value: 'alt_r', label: 'Right Option' },
   { value: 'ctrl_l', label: 'Left Control' },

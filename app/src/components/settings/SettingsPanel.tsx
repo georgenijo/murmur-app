@@ -10,8 +10,10 @@ import {
   IDLE_TIMEOUT_OPTIONS,
   LANGUAGE_OPTIONS,
   RECORDING_MODE_OPTIONS,
+  TRANSFORM_KEY_OPTIONS,
   type RecordingMode,
   type Settings,
+  type TransformKey,
   vocabularyPrompt,
 } from '../../lib/settings';
 import { useVocabScan } from '../../lib/hooks/useVocabScan';
@@ -21,6 +23,17 @@ import {
   modelDownloadPercent,
   type ModelDownloadProgress,
 } from '../../lib/modelDownload';
+import {
+  downloadTransformModel,
+  removeTransformModel,
+  resetTransformRuntime,
+  setTransformKey,
+  startTransformListener,
+  stopTransformListener,
+  TRANSFORM_MODEL_SIZE_LABEL,
+  transformModelStatus,
+  type TransformModelStatus,
+} from '../../lib/transformSettings';
 import type { DictationStatus } from '../../lib/types';
 import type { UpdateStatus } from '../../lib/updater';
 import { Select } from '../ui/Select';
@@ -28,6 +41,7 @@ import { AppOverridesEditor } from './AppOverridesEditor';
 import { KnowledgeManager } from './KnowledgeManager';
 import { PerformanceLab } from './PerformanceLab';
 import { SettingsSection } from './SettingsSection';
+import { TransformsManager } from './TransformsManager';
 import { VocabScanStrip } from './VocabScanStrip';
 import { VocabularyAliasesEditor } from './VocabularyAliasesEditor';
 import { VoiceCommandsManager } from './VoiceCommandsManager';
@@ -138,6 +152,7 @@ interface SettingsPanelProps {
 export const SETTINGS_CATEGORIES = [
   { id: 'recording', label: 'Recording' },
   { id: 'transcription', label: 'Transcription' },
+  { id: 'transform', label: 'Transform' },
   { id: 'text-vocabulary', label: 'Text & Vocabulary' },
   { id: 'delivery', label: 'Delivery' },
   { id: 'performance', label: 'Performance' },
@@ -271,6 +286,108 @@ export function SettingsPanel({
     invoke<string[]>('list_audio_devices').then(setAudioDevices).catch(() => setAudioDevices([]));
   }, [isOpen]);
 
+  // ---- Transform model block (#312 D1) ------------------------------------
+  const [transformModel, setTransformModel] = useState<TransformModelStatus | null>(null);
+  const [transformModelBusy, setTransformModelBusy] = useState(false);
+  const [transformModelError, setTransformModelError] = useState<string | null>(null);
+  // Shortcut-picker failures get their own error line, separate from the model
+  // block's error slot (#312 D1 round-2 finding 8).
+  const [transformKeyError, setTransformKeyError] = useState<string | null>(null);
+  const [transformDownloadPct, setTransformDownloadPct] = useState<number | null>(null);
+
+  const refreshTransformModel = useCallback(async () => {
+    try {
+      setTransformModel(await transformModelStatus());
+    } catch {
+      setTransformModel(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isOpen || activeCat !== 'transform') return;
+    void refreshTransformModel();
+  }, [isOpen, activeCat, refreshTransformModel]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    let unlisten: (() => void) | null = null;
+    listen<{ received?: number; total?: number }>(
+      'transform-model-download-progress',
+      (event) => {
+        const { received = 0, total = 0 } = event.payload;
+        if (total > 0) setTransformDownloadPct(Math.min(100, Math.round((received / total) * 100)));
+        else setTransformDownloadPct(null);
+      },
+    )
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => {});
+    return () => {
+      unlisten?.();
+    };
+  }, [isOpen]);
+
+  const updateTransformHoldKey = async (next: TransformKey | null) => {
+    setTransformKeyError(null);
+    try {
+      if (next === null) {
+        await stopTransformListener();
+        onUpdateSettings({ transformHoldKey: null });
+        return;
+      }
+      await setTransformKey(next);
+      await startTransformListener(next);
+      onUpdateSettings({ transformHoldKey: next });
+    } catch (e) {
+      setTransformKeyError(String(e));
+    }
+  };
+
+  const downloadTransform = async () => {
+    setTransformModelBusy(true);
+    setTransformModelError(null);
+    setTransformDownloadPct(0);
+    try {
+      await downloadTransformModel();
+      await refreshTransformModel();
+    } catch (e) {
+      setTransformModelError(String(e));
+    } finally {
+      setTransformModelBusy(false);
+      setTransformDownloadPct(null);
+    }
+  };
+
+  const removeTransform = async () => {
+    if (!window.confirm('Remove the on-device transform model (~1.1 GB)? You can re-download it later.')) {
+      return;
+    }
+    setTransformModelBusy(true);
+    setTransformModelError(null);
+    try {
+      await removeTransformModel();
+      await refreshTransformModel();
+    } catch (e) {
+      setTransformModelError(String(e));
+    } finally {
+      setTransformModelBusy(false);
+    }
+  };
+
+  const resetTransform = async () => {
+    setTransformModelBusy(true);
+    setTransformModelError(null);
+    try {
+      await resetTransformRuntime();
+      await refreshTransformModel();
+    } catch (e) {
+      setTransformModelError(String(e));
+    } finally {
+      setTransformModelBusy(false);
+    }
+  };
+
   const isRecording = status !== 'idle';
   const isDoubleTap = settings.recordingMode === 'double_tap';
   const isBoth = settings.recordingMode === 'both';
@@ -362,6 +479,127 @@ export function SettingsPanel({
               <p className="mt-1 text-xs text-on-surface-variant">{keyHelp}</p>
             </div>
             {(isDoubleTap || isBoth) && <SettingToggle title="Hotkey Timing Feedback" description="Flash the overlay when a tap misses the double-tap window." checked={settings.hotkeyMissFeedback} onChange={() => onUpdateSettings({ hotkeyMissFeedback: !settings.hotkeyMissFeedback })} />}
+          </SettingsSection>
+
+          <SettingsSection pageId="transform" activePage={activeCat} title="Transform" subtitle="Selected-text rewrite with a local on-device model">
+            <div className="rounded-xl border border-primary/20 bg-primary/5 p-3">
+              <p className="text-sm font-medium text-on-surface">Local only · Apple Silicon</p>
+              <p className="mt-1 text-xs text-on-surface-variant">
+                Hold a dedicated shortcut, speak an instruction, and review a proposed rewrite before
+                anything is written. The model stays on-device ({TRANSFORM_MODEL_SIZE_LABEL} download).
+                Never auto-applies.
+              </p>
+            </div>
+            <SettingToggle
+              title="Enable Transform Shortcut"
+              description="Hold the transform key while text is selected to capture a rewrite instruction."
+              checked={settings.transformHoldKey !== null}
+              onChange={() => {
+                void updateTransformHoldKey(
+                  settings.transformHoldKey === null ? 'alt_r' : null,
+                );
+              }}
+            />
+            {settings.transformHoldKey !== null && (
+              <div className="ml-3 space-y-2 border-l border-outline-variant/30 pl-3">
+                <label className="mb-1 block text-sm font-medium text-on-surface">Hold key</label>
+                <Select
+                  value={settings.transformHoldKey}
+                  onChange={(value) => {
+                    void updateTransformHoldKey(value as TransformKey);
+                  }}
+                  items={TRANSFORM_KEY_OPTIONS}
+                />
+                <p className="text-xs text-on-surface-variant">
+                  Dictation hold keys are rejected. Right Option / Left Control / Right Shift only.
+                </p>
+                {transformKeyError && (
+                  <p className="text-xs text-error">{transformKeyError}</p>
+                )}
+                {accessibilityGranted === false && (
+                  <div className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+                    <span>Accessibility permission is required for transform capture and apply.</span>
+                    <button type="button" onClick={requestAccessibility} className="ml-auto underline">Grant</button>
+                  </div>
+                )}
+              </div>
+            )}
+            <div className="border-t border-outline-variant/20 pt-4">
+              <h2 className="text-sm font-medium text-on-surface">On-device model</h2>
+              <p className="mt-1 mb-3 text-xs text-on-surface-variant">
+                Qwen2.5-1.5B Instruct (Q4_K_M), {TRANSFORM_MODEL_SIZE_LABEL}. Downloaded to
+                Application Support; verified by size and SHA-256. Apple Silicon only.
+              </p>
+              {transformModel && (
+                <p className="mb-2 text-xs text-on-surface-variant" data-testid="transform-model-status">
+                  Status:{' '}
+                  {transformModel.state === 'ready'
+                    ? 'Ready'
+                    : transformModel.state === 'downloading'
+                      ? 'Downloading…'
+                      : 'Not downloaded'}
+                </p>
+              )}
+              {transformDownloadPct !== null && (
+                <div className="mb-2">
+                  <div className="mb-1 flex justify-between text-xs text-on-surface-variant">
+                    <span>Downloading transform model</span>
+                    <span>{transformDownloadPct}%</span>
+                  </div>
+                  <div className="h-1.5 overflow-hidden rounded-full bg-surface-container-highest">
+                    <div
+                      className="h-full rounded-full bg-primary transition-all duration-200"
+                      style={{ width: `${transformDownloadPct}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+              {transformModelError && (
+                <p className="mb-2 text-xs text-error">{transformModelError}</p>
+              )}
+              <div className="flex flex-wrap gap-2">
+                {transformModel?.state !== 'ready' && (
+                  <button
+                    type="button"
+                    disabled={transformModelBusy || transformModel?.state === 'downloading'}
+                    onClick={() => void downloadTransform()}
+                    className="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-on-primary disabled:opacity-50"
+                  >
+                    {transformModelBusy || transformModel?.state === 'downloading' ? 'Working…' : 'Download'}
+                  </button>
+                )}
+                {transformModel?.state === 'ready' && (
+                  <button
+                    type="button"
+                    disabled={transformModelBusy}
+                    onClick={() => void removeTransform()}
+                    className="rounded-lg border border-outline-variant/30 px-3 py-1.5 text-xs font-medium text-on-surface-variant disabled:opacity-50"
+                  >
+                    Remove
+                  </button>
+                )}
+                {transformModel?.runtimeDisabled && (
+                  <button
+                    type="button"
+                    disabled={transformModelBusy}
+                    onClick={() => void resetTransform()}
+                    className="rounded-lg border border-outline-variant/30 px-3 py-1.5 text-xs font-medium text-on-surface-variant disabled:opacity-50"
+                    title="Clear the circuit breaker if the transform runtime was disabled after repeated faults"
+                  >
+                    Reset runtime
+                  </button>
+                )}
+              </div>
+              {transformModel?.runtimeDisabled && (
+                <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">
+                  The transform runtime was disabled after repeated faults. Reset it to try again.
+                </p>
+              )}
+            </div>
+            <div className="border-t border-outline-variant/20 pt-4">
+              <h2 className="mb-1 text-sm font-medium text-on-surface">Saved transforms</h2>
+              <TransformsManager active={isOpen && activeCat === 'transform'} />
+            </div>
           </SettingsSection>
 
           <SettingsSection pageId="transcription" activePage={activeCat} title="Transcription" subtitle="Model, language, and runtime lifecycle">

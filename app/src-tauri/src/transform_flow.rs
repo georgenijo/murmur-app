@@ -362,8 +362,13 @@ pub fn decide(state: FlowState, event: FlowEvent) -> FlowDecision {
             vec![SetFocusable(true), Emit(ReviewState::Failed)],
         ),
         (S::Applying, E::UndoOk) => go(S::Idle, vec![HidePopover, ClearSession]),
+        // Undo-failure UX (item 12): stay Applied and re-emit Applied — NOT
+        // Failed — so the Undo button stays reachable and the applied text is
+        // never stranded un-undoable. The command layer carries the undo error
+        // code on this `applied` emit (spec-by-test:
+        // `decide_undo_error_keeps_applied_and_undo_reachable`).
         (S::Applying, E::UndoError) => {
-            go(S::Applied, vec![Emit(ReviewState::Failed)])
+            go(S::Applied, vec![Emit(ReviewState::Applied)])
         }
         // Cancel during Applying: tear down; ApplyingGuard must not resurrect
         // ReviewPending after the session is cleared (see cancel_transform).
@@ -528,7 +533,7 @@ pub(crate) async fn run_transform(
     app_state: &AppState,
     fx: &dyn FlowEffects,
     sidecar: &Arc<LlmSidecar>,
-    inflight: &std::sync::Mutex<Option<tokio::task::AbortHandle>>,
+    inflight: &std::sync::Mutex<Option<(tokio::task::AbortHandle, crate::llm_sidecar::CancelToken)>>,
     instruction: Result<String, ()>,
     original: String,
     deadline: Duration,
@@ -555,8 +560,18 @@ pub(crate) async fn run_transform(
     let sidecar = Arc::clone(sidecar);
     let input = original;
     let instr = instruction;
-    let join = tokio::spawn(async move { sidecar.transform(&instr, &input, deadline).await });
-    *inflight.lock_or_recover() = Some(join.abort_handle());
+    // Per-request cancel token (item 11): created here, before the spawn, and
+    // handed to the sidecar for exactly this request. `transform` registers it
+    // as the in-flight token, so `cancel_transform`'s
+    // `cancel_inflight_request()` cooperatively cancels ONLY this request —
+    // never a neighbouring one. Its lifetime tracks the AbortHandle stored just
+    // below (both cleared when the request settles).
+    let cancel = crate::llm_sidecar::CancelToken::new();
+    let join = tokio::spawn({
+        let cancel = cancel.clone();
+        async move { sidecar.transform(&instr, &input, deadline, cancel).await }
+    });
+    *inflight.lock_or_recover() = Some((join.abort_handle(), cancel));
     let joined = join.await;
     *inflight.lock_or_recover() = None;
 
@@ -603,6 +618,19 @@ pub(crate) async fn run_transform(
 // Production effects: real Tauri emission + popover window commands.
 // ===========================================================================
 
+/// Content-free "the popover was hidden by the backend" signal (item 13).
+///
+/// Backend-initiated hides (short-tap cancel, linger auto-hide, audio-start
+/// teardown, secure-field/capture aborts) never go through the popover's own
+/// Cancel/Undo buttons, so the popover webview keeps whatever review content it
+/// last fetched and could flash it on the NEXT show. This bare event tells the
+/// review driver to reset its content to `EMPTY_REVIEW_CONTENT`. Privacy: the
+/// payload is empty — no state text, no error, nothing.
+fn emit_transform_hidden(app: &tauri::AppHandle) {
+    use tauri::Emitter;
+    let _ = app.emit("transform-review-hidden", ());
+}
+
 pub(crate) struct TauriFlowEffects<'a> {
     pub app: &'a tauri::AppHandle,
     pub state: &'a crate::State,
@@ -636,6 +664,9 @@ impl FlowEffects for TauriFlowEffects<'_> {
 
     fn hide_popover(&self) {
         let _ = crate::commands::transform_popover::hide_popover_internal(self.app);
+        // A backend-driven hide (e.g. secure-field / capture-error abort in
+        // core_start_capture) must reset the popover's stale content (item 13).
+        emit_transform_hidden(self.app);
     }
 
     fn set_focusable(&self, focusable: bool) {
@@ -679,6 +710,8 @@ impl FlowEffects for TauriFlowEffects<'_> {
                 transform_apply::clear_session(&state.app_state);
             }
             let _ = crate::commands::transform_popover::hide_popover_internal(&app);
+            // Linger auto-hide is backend-initiated — reset stale content (item 13).
+            emit_transform_hidden(&app);
         });
     }
 }
@@ -799,7 +832,7 @@ pub(crate) async fn start_transform_capture(
         return Ok(());
     }
 
-    let model_ready = crate::commands::transform_model::transform_model_status().state
+    let model_ready = crate::commands::transform_model::transform_model_state()
         == crate::commands::transform_model::TransformModelState::Ready;
 
     let fx = TauriFlowEffects {
@@ -819,7 +852,26 @@ pub(crate) async fn start_transform_capture(
             state.app_state.set_transform_status(TransformStatus::Idle);
             transform_apply::clear_session(&state.app_state);
             let _ = crate::commands::transform_popover::hide_popover_internal(&app_handle);
+            emit_transform_hidden(&app_handle);
             return Err(e);
+        }
+        // Mic-leak window (item 10): `cancel_transform` is lock-free and does
+        // not take `recording_transition`, so a short-tap cancel can land
+        // between `core_start_capture` returning Listening and the mic actually
+        // coming up here. At that instant the cancel saw `is_recording() ==
+        // false` and did NOT stop anything, so without this re-check the mic
+        // would stay live with status no longer Listening. Re-verify and tear
+        // down if the flow was cancelled out from under us.
+        if state.app_state.transform_status() != TransformStatus::Listening {
+            if crate::audio::is_recording() {
+                let _ = crate::audio::stop_recording();
+            }
+            // cancel_transform already cleared the session / hid the popover;
+            // repeat the teardown idempotently so no half-state survives.
+            transform_apply::clear_session(&state.app_state);
+            let _ = crate::commands::transform_popover::hide_popover_internal(&app_handle);
+            emit_transform_hidden(&app_handle);
+            return Ok(());
         }
     }
     Ok(())
@@ -859,7 +911,10 @@ pub(crate) async fn finish_transform_instruction(
         }
     };
 
-    let instruction = transcribe_instruction(&app_handle, &state, &samples).await;
+    let instruction = match transcribe_instruction(&app_handle, &state, &samples).await {
+        Ok(raw) => Ok(expand_instruction(&state, &raw)),
+        Err(()) => Err(()),
+    };
     run_transform(
         &state.app_state,
         &fx,
@@ -871,6 +926,45 @@ pub(crate) async fn finish_transform_instruction(
     )
     .await;
     Ok(())
+}
+
+/// Expand a transcribed instruction when it names a built-in preset or a
+/// saved `KnowledgeKind::Transform`. Otherwise the raw transcript is the
+/// instruction (free-form spoken rewrite request). Never logs the text.
+fn expand_instruction(state: &crate::State, spoken: &str) -> String {
+    if let Some(preset) = crate::transform_presets::resolve_preset(spoken) {
+        return preset.to_string();
+    }
+    if let Some(saved) = resolve_saved_transform(state, spoken) {
+        return saved;
+    }
+    spoken.to_string()
+}
+
+/// Case-insensitive match of a spoken name against enabled global/app
+/// Transform knowledge entries. Returns the instruction body, not the name.
+fn resolve_saved_transform(state: &crate::State, spoken: &str) -> Option<String> {
+    use crate::knowledge_store::{KnowledgeKind, KnowledgeListRequest, KnowledgePayload};
+
+    let request = KnowledgeListRequest {
+        kind: Some(KnowledgeKind::Transform),
+        enabled: Some(true),
+        limit: Some(100),
+        ..Default::default()
+    };
+    let response = state.knowledge.list(request).ok()?;
+    let key = crate::transform_presets::normalize(spoken);
+    if key.is_empty() {
+        return None;
+    }
+    for entry in response.entries {
+        if let KnowledgePayload::Transform { name, instruction } = entry.payload {
+            if crate::transform_presets::normalize(&name) == key {
+                return Some(instruction);
+            }
+        }
+    }
+    None
 }
 
 /// Retry: re-arm listening for a NEW instruction on the SAME frozen snapshot.
@@ -893,6 +987,7 @@ pub(crate) async fn retry_transform_instruction(
     if transform_apply::session_snapshot(&state.app_state).is_none() {
         state.app_state.set_transform_status(TransformStatus::Idle);
         let _ = crate::commands::transform_popover::hide_popover_internal(&app_handle);
+        emit_transform_hidden(&app_handle);
         return Ok(());
     }
 
@@ -913,7 +1008,19 @@ pub(crate) async fn retry_transform_instruction(
         state.app_state.set_transform_status(TransformStatus::Idle);
         transform_apply::clear_session(&state.app_state);
         let _ = crate::commands::transform_popover::hide_popover_internal(&app_handle);
+        emit_transform_hidden(&app_handle);
         return Err(e);
+    }
+    // Same mic-leak re-check as start_transform_capture (item 10): a cancel
+    // that raced in during audio startup must not leave the mic live.
+    if state.app_state.transform_status() != TransformStatus::Listening {
+        if crate::audio::is_recording() {
+            let _ = crate::audio::stop_recording();
+        }
+        transform_apply::clear_session(&state.app_state);
+        let _ = crate::commands::transform_popover::hide_popover_internal(&app_handle);
+        emit_transform_hidden(&app_handle);
+        return Ok(());
     }
     Ok(())
 }
@@ -973,7 +1080,11 @@ pub(crate) async fn cancel_transform(
     // BusyGuard when it finishes, so abort alone would leave busy held up to
     // the deadline. cancel_inflight_request makes run_request send Cancel.
     state.transform_runtime.cancel_inflight_request();
-    if let Some(handle) = state.app_state.transform_inflight.lock_or_recover().take() {
+    if let Some((handle, token)) = state.app_state.transform_inflight.lock_or_recover().take() {
+        // Direct token cancel closes the pre-registration window: even if the
+        // request hasn't registered with the sidecar slot yet, its own token
+        // is already cancelled by the time the blocking loop first polls it.
+        token.cancel();
         handle.abort();
     }
     // Invalidate any pending clipboard restore from a just-finished apply/undo
@@ -991,6 +1102,9 @@ pub(crate) async fn cancel_transform(
     state.app_state.set_transform_status(TransformStatus::Idle);
     transform_apply::clear_session(&state.app_state);
     let _ = crate::commands::transform_popover::hide_popover_internal(&app_handle);
+    // Backend-initiated hide (short-tap cancel, mid-hold cleanup, or the
+    // popover's own Cancel button all route here): reset stale content (item 13).
+    emit_transform_hidden(&app_handle);
     Ok(())
 }
 
@@ -1003,7 +1117,8 @@ pub(crate) async fn cancel_transform(
 /// user's prior clipboard on every paste-fallback undo.
 ///
 /// On success: hide popover + clear session (undo unreachable once hidden).
-/// On failure: keep the Applied session and emit `failed` so Undo stays available.
+/// On failure: keep the Applied session and re-emit `applied` with the error code
+/// so the popover shows the failure inline and Undo stays available.
 #[tauri::command]
 pub(crate) async fn undo_transform_and_close(
     app_handle: tauri::AppHandle,
@@ -1029,11 +1144,22 @@ pub(crate) async fn undo_transform_and_close(
             // Hide + clear WITHOUT another epoch bump (cancel would bump).
             transform_apply::clear_session(&state.app_state);
             let _ = crate::commands::transform_popover::hide_popover_internal(&app_handle);
+            emit_transform_hidden(&app_handle);
             Ok(())
         }
         Err(error) => {
-            // Guard drop restores Idle; session stays applied so Undo retries.
-            fx.emit_state(ReviewState::Failed, Some(apply_error_code(error)));
+            // Undo-failure UX (item 12): the guard drop restores Idle and the
+            // session stays applied, so Undo is still valid. Emitting `failed`
+            // here would strand the user on a popover with NO Undo button and a
+            // dead Retry — the applied text would become permanently
+            // un-undoable. Instead re-emit `applied` carrying the error code so
+            // the Applied UI (Undo button) stays reachable while surfacing the
+            // failure. Privacy: state event stays {state, errorCode} only.
+            fx.emit_state(ReviewState::Applied, Some(apply_error_code(error)));
+            // Re-arm the linger so the error window is deterministic: the
+            // approve-time timer may be about to fire (hiding the popover
+            // ~instantly) or may have no-op'd mid-undo (leaving it up forever).
+            fx.schedule_linger_hide();
             Err(apply_error_code(error).to_string())
         }
     }
@@ -1675,6 +1801,22 @@ mod tests {
         assert!(d.actions.contains(&FlowAction::HidePopover));
         assert!(d.actions.contains(&FlowAction::ClearSession));
         assert!(!d.actions.contains(&FlowAction::CancelInflight));
+    }
+
+    #[test]
+    fn decide_undo_error_keeps_applied_and_undo_reachable() {
+        // Item 12: a failed undo must NOT drop to Failed (whose UI has no Undo
+        // button and a dead Retry) — it stays Applied and re-emits Applied so
+        // the Undo button remains reachable and the applied text is never
+        // stranded un-undoable. The command layer (undo_transform_and_close)
+        // carries the undo error code on this `applied` emit.
+        let d = decide(FlowState::Applying, FlowEvent::UndoError);
+        assert_eq!(d.next, FlowState::Applied);
+        assert!(d.actions.contains(&FlowAction::Emit(ReviewState::Applied)));
+        assert!(!d.actions.contains(&FlowAction::Emit(ReviewState::Failed)));
+        // The session is NOT cleared — Undo stays valid.
+        assert!(!d.actions.contains(&FlowAction::ClearSession));
+        assert!(!d.actions.contains(&FlowAction::HidePopover));
     }
 
     #[test]

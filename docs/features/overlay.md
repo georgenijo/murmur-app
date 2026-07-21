@@ -125,7 +125,11 @@ The overlay runs in a separate window with no shared React context. Writes go th
 
 ## Visual States
 
-The overlay's top-bar indicator is a pure function of status + two transient flags + global-disable (`deriveVisual()`); `status` itself is driven by the `recording-status-changed` event.
+The overlay's top-bar indicator is a pure function of status + transient flags + global-disable (`deriveVisual()`); `status` itself is driven by the `recording-status-changed` event.
+
+### Transform indicators (issue #312)
+
+While a selected-text transform is in **Thinking** (sidecar running), the overlay can show a **transforming…** indicator (`deriveVisual` priority: cancelled > secure-field flash > hotkey-miss > recording > processing > transforming > idle). Secure/password fields refused by the transform capture path emit a content-free `transform-secure-field` flash via `useOverlayRuntime` — no selection text is ever read or shown.
 
 ### Idle
 Small mic SVG icon at 40% white opacity (dimmed further to 15% when globally disabled). Compact width.

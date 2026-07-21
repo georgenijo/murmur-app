@@ -354,7 +354,7 @@ pub struct AppState {
     /// inner `spawn_blocking` work finishes. Callers must also invoke
     /// `LlmSidecar::cancel_inflight_request` so the blocking loop sends a
     /// protocol Cancel and settles promptly (see `cancel_transform`).
-    pub transform_inflight: Mutex<Option<tokio::task::AbortHandle>>,
+    pub transform_inflight: Mutex<Option<(tokio::task::AbortHandle, crate::llm_sidecar::CancelToken)>>,
 }
 
 impl AppState {

@@ -107,6 +107,7 @@ export function deriveReviewState(input: ReviewStateInput): ReviewViewModel {
       return {
         ...baseViewModel(state, instruction),
         showUndo: true,
+        errorMessage: errorCode ? errorMessageFor(errorCode) : null,
       };
 
     default: {

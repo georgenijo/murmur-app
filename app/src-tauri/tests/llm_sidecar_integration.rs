@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ui_lib::llm_sidecar::{
-    model_file_digest, LlmSidecar, TestSpawnConfig, TransformError, TransformOutput,
+    model_file_digest, CancelToken, LlmSidecar, TestSpawnConfig, TransformError, TransformOutput,
 };
 
 fn helper_path() -> PathBuf {
@@ -63,8 +63,14 @@ async fn run_transform(
     sidecar: &Arc<LlmSidecar>,
     deadline: Duration,
 ) -> Result<TransformOutput, TransformError> {
+    // A fresh per-request cancel token (item 11): each request scopes its own.
     sidecar
-        .transform("Rewrite this politely.", "gimme the report", deadline)
+        .transform(
+            "Rewrite this politely.",
+            "gimme the report",
+            deadline,
+            CancelToken::new(),
+        )
         .await
 }
 
@@ -232,6 +238,7 @@ async fn cooperative_cancel_mid_request_helper_receives_cancel_and_busy_clears()
             "Rewrite this politely.",
             "gimme the report",
             Duration::from_secs(30),
+            CancelToken::new(),
         )
         .await
     });
@@ -248,6 +255,8 @@ async fn cooperative_cancel_mid_request_helper_receives_cancel_and_busy_clears()
     assert!(claimed, "transform never became busy");
 
     let started = std::time::Instant::now();
+    // Cancel the CURRENT in-flight request via the supervisor entry point;
+    // internally it flips only the in-flight request's per-request token.
     sidecar.cancel_inflight_request();
     let err = handle.await.unwrap().unwrap_err();
     assert_eq!(err, TransformError::Cancelled);
@@ -313,4 +322,36 @@ async fn checksum_mismatch_model_refuses_to_spawn() {
     assert_eq!(err, TransformError::ModelMismatch);
     // The helper was never launched.
     assert!(!sidecar.has_live_child());
+}
+
+#[tokio::test]
+async fn a_stale_cancel_does_not_leak_into_the_next_request() {
+    // Item 11: the cancel signal is a per-request token, not a supervisor-wide
+    // flag. A request that has already finished can have its (now-stale) token
+    // cancelled with NO effect on the next request, which carries a fresh
+    // token and must run to completion. With the old shared `cancel_requested`
+    // flag this class of leak/wipe was possible; per-request tokens rule it out.
+    let fixture = fixture_model();
+    let sidecar = sidecar("happy", &fixture);
+
+    let token_n = CancelToken::new();
+    let out = sidecar
+        .transform("instr", "input", Duration::from_secs(5), token_n.clone())
+        .await
+        .unwrap();
+    assert_eq!(out.output, "mock-output");
+
+    // Cancel the finished request's token, and hit the supervisor entry point
+    // (whose in-flight slot was cleared on completion, so it is a no-op now).
+    token_n.cancel();
+    sidecar.cancel_inflight_request();
+
+    // The NEXT request has a fresh, un-cancelled token and must succeed.
+    let token_next = CancelToken::new();
+    let out2 = sidecar
+        .transform("instr", "input", Duration::from_secs(5), token_next)
+        .await
+        .unwrap();
+    assert_eq!(out2.output, "mock-output");
+    assert!(sidecar.has_live_child());
 }

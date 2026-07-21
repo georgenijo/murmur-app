@@ -6,6 +6,18 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 ---
 
+## 2026-07-20: Selected-text transform Phase D wrap (#312)
+
+**Decision:** Ship settings + presets + docs for local selected-text transform without expanding scope into AX webview special-cases. Built-in presets (Shorten / Bullets / Professional / Fix grammar / Casual) and user-defined `KnowledgeKind::Transform` names expand in `finish_transform_instruction` before the sidecar runs. Settings owns hold-key wiring, model download/remove/reset, and saved-transform CRUD. Cursor-chat and similar webviews remain best-effort (documented limitation, not a blocker). Native smoke and issue acceptance checkboxes stay a separate pass on a built `.app`.
+
+**Rationale:** Phases A–C delivered the signed sidecar, AX capture/apply, review popover, and end-to-end flow. Phase D only exposes configuration and documents the contract; dogfood follow-ups must not grow apply semantics or link llama into the app crate.
+
+**Status:** active
+
+**References:** issue #312; ADR `2026-07-20-signed-local-llm-sidecar.md`; `docs/features/selected-text-transform.md`; branches `issue/312-transform-flow`, `issue/312-transform-settings`.
+
+---
+
 ## 2026-07-20: Overlay geometry & lifecycle contract locked (#280)
 
 **Decision:** Five locked outcomes of the overlay architecture review (issue #280; PRs #290, #299, #301):

@@ -37,6 +37,7 @@ Read these before working on a feature:
 - **[docs/features/per-app-profiles.md](docs/features/per-app-profiles.md)** — Immutable per-recording context, profile precedence, privacy boundaries
 - **[docs/features/ide-context.md](docs/features/ide-context.md)** — Opt-in local IDE index, @file grammar, path/privacy boundaries
 - **[docs/features/voice-commands.md](docs/features/voice-commands.md)** — Typed replacements, multiline snippets, safe variables, scopes, and clipboard permission
+- **[docs/features/selected-text-transform.md](docs/features/selected-text-transform.md)** — Local selected-text rewrite (hold key, sidecar LLM, review popover, approve/undo)
 - **[docs/features/evaluation-harness.md](docs/features/evaluation-harness.md)** — Versioned local fixtures, deterministic CI, opt-in hardware evaluation, reports, and deletion
 - **[docs/decisions/DECISIONS.md](docs/decisions/DECISIONS.md)** — Running log of architectural/scope decisions (newest first)
 
@@ -55,9 +56,16 @@ Read these before working on a feature:
 | `commands/models.rs` | Model download pipeline and existence checks |
 | `commands/tray.rs` | Tray icon rendering (`make_tray_icon_data`, `update_tray_icon`) |
 | `commands/overlay.rs` | Notch detection, `OverlayGeometry` contract (`geometry_for()`), `set_overlay_expanded`, show/hide/show-main-window commands |
-| `keyboard.rs` | Hold-down and double-tap detectors, shared rdev listener thread |
+| `commands/transform_model.rs` | Transform LLM model download/status/remove/reset |
+| `commands/transform_popover.rs` | Transform review window geometry + show/hide/focusable |
+| `keyboard.rs` | Hold-down, double-tap, and transform-hold detectors; shared rdev listener thread |
 | `audio.rs` | cpal capture, mono conversion, 16kHz resampling |
 | `transcriber/` | whisper-rs model loading and inference |
+| `selection.rs` | AX selection capture for transform (secure-field fail-closed) |
+| `transform_apply.rs` | Approve/undo write-back (only path that writes to the target app) |
+| `transform_flow.rs` | End-to-end transform orchestrator + Tauri commands |
+| `transform_presets.rs` | Built-in spoken transform presets (Shorten/Bullets/…) |
+| `llm_sidecar.rs` | Host supervisor for signed local-LLM helper (no in-process llama) |
 | `smart_formatting.rs` | Deterministic prose formatting and same-utterance backtracking |
 | `ide_context.rs` | Memory-only bounded IDE symbol and root-relative file index |
 | `injector.rs` | Clipboard (arboard) + auto-paste (osascript) |
@@ -95,8 +103,15 @@ Read these before working on a feature:
 | `lib/hooks/useOverlaySettingsMirror.ts` | Overlay's localStorage settings snapshot + quick-control actions |
 | `lib/hooks/useRecordingControls.ts` | Overlay click/double-click disambiguation, locked mode |
 | `lib/hooks/useWaveform.ts` | Overlay audio-level listener + rAF waveform bar animation |
+| `lib/hooks/useTransformFlow.ts` | Main-window transform hold-key driver |
+| `lib/hooks/useTransformReviewDriver.ts` | Review popover state + approve/retry/cancel/undo |
+| `lib/transformSettings.ts` | Transform model + listener command wrappers |
+| `lib/transformFlow.ts` | Pure reducer for transform press/release |
+| `lib/transformReview.ts` | Review state/error types + content guards |
 | `components/onboarding/OnboardingFlow.tsx` | First-launch setup assistant (permissions + model wizard) |
-| `components/settings/SettingsPanel.tsx` | Settings UI with mode switching |
+| `components/settings/SettingsPanel.tsx` | Settings UI with mode switching (incl. Transform page) |
+| `components/settings/TransformsManager.tsx` | Saved transform CRUD UI |
+| `components/transform-review/` | Review popover UI (diff, actions, mock driver) |
 | `components/log-viewer/LogViewerApp.tsx` | Structured event viewer with Events + Metrics tabs |
 | `components/overlay/deriveVisual.ts` | Pure: overlay top-bar indicator + flash-priority derivation |
 | `components/overlay/OverlayPill.tsx` | Overlay top bar (presentational) |
