@@ -831,6 +831,12 @@ pub async fn process_audio(
             tracing::warn!(target: "pipeline", "process_audio: blocked — transform in progress");
             return Err("Cannot process audio while a transform is in progress.".to_string());
         }
+        // Mutual exclusion with the local-LLM transform runtime: only one heavy
+        // inference runtime may be resident. Refuse while a transform is active.
+        if state.transform_runtime.is_transform_busy() {
+            tracing::warn!(target: "pipeline", "process_audio: blocked — transform runtime busy");
+            return Err("Cannot process audio while a text transform is in progress.".to_string());
+        }
         if dictation.status != DictationStatus::Idle {
             return Err("Cannot process audio while live dictation is active.".to_string());
         }
@@ -1948,6 +1954,15 @@ pub async fn start_native_recording(
         // same as the two guards above.
         if state.app_state.transform_status().blocks_recording() {
             tracing::warn!(target: "pipeline", "start_native_recording: blocked — transform in progress");
+            return Ok(serde_json::json!({
+                "type": "busy_transforming",
+                "state": "idle"
+            }));
+        }
+        // Only one heavy inference runtime may be resident: refuse to record
+        // while a local-LLM transform is in flight (supervisor busy).
+        if state.transform_runtime.is_transform_busy() {
+            tracing::warn!(target: "pipeline", "start_native_recording: blocked — transform runtime busy");
             return Ok(serde_json::json!({
                 "type": "busy_transforming",
                 "state": "idle"

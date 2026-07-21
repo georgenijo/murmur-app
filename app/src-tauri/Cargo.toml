@@ -51,6 +51,12 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 aho-corasick = "1"
 libc = "0.2"
 rusqlite = { version = "0.40.1", default-features = false, features = ["backup", "bundled"] }
+# Local-LLM sidecar supervisor (#312): the app links ONLY the protocol crate,
+# never llama-cpp-2. sha2 verifies the pinned transform model before spawn and
+# while streaming its download; sysinfo reads the child helper's RSS by pid.
+murmur-local-llm-protocol = { path = "crates/local-llm-protocol" }
+sha2 = "0.10"
+sysinfo = { version = "0.33", default-features = false, features = ["system"] }
 
 [dev-dependencies]
 tempfile = "3"

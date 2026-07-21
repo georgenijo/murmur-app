@@ -1,0 +1,1221 @@
+//! Host-side supervisor for the signed local-LLM sidecar (#312).
+//!
+//! The app links **only** `murmur-local-llm-protocol`; it never links
+//! `llama-cpp-2`. This module owns the child helper process lifecycle: it
+//! verifies the pinned model file, spawns the helper with an empty environment
+//! and the model handed over as inherited read-only fd 3, drives protocol v1
+//! over piped stdin/stdout, and enforces every app-side limit, deadline,
+//! cancellation, crash circuit-breaker, RSS ceiling, and idle-unload rule from
+//! the ADR (docs/decisions/2026-07-20-signed-local-llm-sidecar.md).
+//!
+//! Privacy: no instruction / input / output text ever reaches logs, telemetry,
+//! or error strings. Only durations, bucketed sizes, token counts, and stable
+//! enums are recorded.
+
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
+
+use murmur_local_llm_protocol::{ErrorCode, FinishReason};
+
+// ---------------------------------------------------------------------------
+// Immutable catalog pins (single source of truth, shared with the installer).
+// ---------------------------------------------------------------------------
+
+/// Stable catalog identifier for the only v1 transform model.
+pub const TRANSFORM_MODEL_ID: &str = "qwen2.5-1.5b-instruct-q4_k_m";
+/// Model filename as published by the pinned Hugging Face revision.
+pub const TRANSFORM_MODEL_FILENAME: &str = "qwen2.5-1.5b-instruct-q4_k_m.gguf";
+/// Exact byte size the download and the pre-spawn verifier both enforce.
+pub const TRANSFORM_MODEL_SIZE_BYTES: u64 = 1_117_320_736;
+/// Lowercase hex SHA-256 the download and the pre-spawn verifier both enforce.
+pub const TRANSFORM_MODEL_SHA256: &str =
+    "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e";
+/// Immutable Hugging Face repository revision the model is fetched from.
+pub const TRANSFORM_MODEL_REVISION: &str = "dd26da440ef0330c47919d1ecae0966d24022222";
+/// Compile-time download URL pinned to the immutable revision above.
+pub const TRANSFORM_MODEL_URL: &str = "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/dd26da440ef0330c47919d1ecae0966d24022222/qwen2.5-1.5b-instruct-q4_k_m.gguf";
+
+/// Executable base name of the signed helper, as an `externalBin` and in dev.
+pub const HELPER_BIN_NAME: &str = "murmur-llm-sidecar";
+
+/// RSS ceiling below which the helper runs unremarked (2 GiB).
+const RSS_WARN_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// RSS ceiling above which the helper is force-killed (3 GiB).
+const RSS_KILL_BYTES: u64 = 3 * 1024 * 1024 * 1024;
+
+// ---------------------------------------------------------------------------
+// Public error / output types (portable across all targets).
+// ---------------------------------------------------------------------------
+
+/// Successful transform result: text plus bounded metadata only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransformOutput {
+    pub output: String,
+    pub finish_reason: FinishReason,
+    pub output_tokens: u32,
+}
+
+/// Stable supervisor error enum. Mirrors the protocol `ErrorCode` and adds
+/// supervisor-level variants. Every `Display` string is a fixed label — it
+/// never embeds instruction, input, output, model path, or raw stderr.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransformError {
+    /// Local-LLM runtime is not supported on this platform.
+    Unsupported,
+    /// The pinned transform model is not installed.
+    NotDownloaded,
+    /// The circuit breaker has disabled the runtime until an explicit reset.
+    Disabled,
+    /// A transform is already in flight (one-in-flight rule).
+    Busy,
+    /// Instruction / input / deadline exceeded an app-side limit.
+    InvalidRequest,
+    /// A heavy ASR runtime (recording / benchmark / file transcription) is active.
+    HeavyRuntimeActive,
+    /// The helper executable could not be launched.
+    SpawnFailed,
+    /// The hello/ready handshake failed (nonce, protocol, or model mismatch).
+    HandshakeFailed,
+    /// The installed model file failed size / SHA-256 / regular-file checks.
+    ModelMismatch,
+    /// The deadline elapsed; the helper was cancelled and killed if unresponsive.
+    Timeout,
+    /// The request was cancelled cooperatively.
+    Cancelled,
+    /// The helper process died unexpectedly.
+    Crashed,
+    /// The helper returned output that violated protocol invariants.
+    OutputInvalid,
+    /// The helper spoke a malformed or out-of-contract frame.
+    Protocol,
+    /// The helper reported a resource-limit failure.
+    ResourceLimit,
+    /// An internal supervisor fault.
+    Internal,
+}
+
+impl TransformError {
+    /// Stable machine label for telemetry (no free-form text).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unsupported => "unsupported",
+            Self::NotDownloaded => "notDownloaded",
+            Self::Disabled => "disabled",
+            Self::Busy => "busy",
+            Self::InvalidRequest => "invalidRequest",
+            Self::HeavyRuntimeActive => "heavyRuntimeActive",
+            Self::SpawnFailed => "spawnFailed",
+            Self::HandshakeFailed => "handshakeFailed",
+            Self::ModelMismatch => "modelMismatch",
+            Self::Timeout => "timeout",
+            Self::Cancelled => "cancelled",
+            Self::Crashed => "crashed",
+            Self::OutputInvalid => "outputInvalid",
+            Self::Protocol => "protocol",
+            Self::ResourceLimit => "resourceLimit",
+            Self::Internal => "internal",
+        }
+    }
+
+    /// Map a protocol `ErrorCode` reported by a healthy helper onto the stable
+    /// supervisor enum.
+    fn from_helper_code(code: ErrorCode) -> Self {
+        match code {
+            ErrorCode::DeadlineExceeded => Self::Timeout,
+            ErrorCode::Cancelled => Self::Cancelled,
+            ErrorCode::OutputInvalid => Self::OutputInvalid,
+            ErrorCode::ResourceLimit => Self::ResourceLimit,
+            ErrorCode::Busy => Self::Busy,
+            ErrorCode::ModelMismatch | ErrorCode::ModelLoadFailed => Self::ModelMismatch,
+            ErrorCode::InvalidFrame | ErrorCode::InvalidMessage | ErrorCode::ProtocolMismatch => {
+                Self::Protocol
+            }
+            ErrorCode::RuntimeUnavailable | ErrorCode::Internal => Self::Internal,
+        }
+    }
+}
+
+impl std::fmt::Display for TransformError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::error::Error for TransformError {}
+
+/// Bounded size bucket for telemetry. Never records exact lengths.
+pub fn size_bucket(len: usize) -> &'static str {
+    match len {
+        0 => "0",
+        1..=256 => "le256",
+        257..=1024 => "le1k",
+        1025..=4096 => "le4k",
+        4097..=16384 => "le16k",
+        _ => "gt16k",
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Mutual-exclusion bridge into the ASR runtime (injected by the host).
+// ---------------------------------------------------------------------------
+
+/// The supervisor is decoupled from Tauri via this bridge so it stays unit
+/// testable. The production implementation lives in `lib.rs` and forwards into
+/// `AppState` / `ModelRuntimeManager`.
+pub trait HostGuard: Send + Sync {
+    /// Return `Some(reason)` when a heavy ASR runtime is active and a transform
+    /// must be refused. Reason is a stable enum label for telemetry.
+    fn heavy_runtime_active(&self) -> Option<&'static str>;
+    /// Release the ASR model (via the existing `MemoryPressure` unload path)
+    /// before the helper spawns, so only one heavy runtime is ever resident.
+    fn release_asr(&self);
+}
+
+/// Default no-op bridge (tests, and before the host installs the real one).
+struct NoopHostGuard;
+impl HostGuard for NoopHostGuard {
+    fn heavy_runtime_active(&self) -> Option<&'static str> {
+        None
+    }
+    fn release_asr(&self) {}
+}
+
+// ---------------------------------------------------------------------------
+// Model path helpers + pre-spawn verification (portable / unix).
+// ---------------------------------------------------------------------------
+
+/// Root of the hash-versioned transform-model store, beneath the app models dir.
+pub fn transform_models_root() -> Option<PathBuf> {
+    dirs::data_dir().map(|d| {
+        d.join("local-dictation")
+            .join("models")
+            .join("transform-llm")
+    })
+}
+
+/// Absolute path the installed, verified model publishes to.
+pub fn installed_model_path() -> Option<PathBuf> {
+    Some(
+        transform_models_root()?
+            .join(TRANSFORM_MODEL_SHA256)
+            .join(TRANSFORM_MODEL_FILENAME),
+    )
+}
+
+/// Stream a file and return `(size_bytes, sha256_hex)`. Used by the installer
+/// and by tests to derive pins for a fixture model.
+pub fn model_file_digest(path: &Path) -> std::io::Result<(u64, String)> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0_u8; 1024 * 1024];
+    let mut size = 0_u64;
+    loop {
+        let n = file.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        size += n as u64;
+        hasher.update(&buffer[..n]);
+    }
+    Ok((size, format!("{:x}", hasher.finalize())))
+}
+
+/// Open the model with `O_NOFOLLOW`, verify it is a regular file of exactly
+/// `expected_size` bytes hashing to `expected_sha` (lowercase hex), then rewind
+/// it to offset 0 so the inherited fd 3 starts at the beginning. Returns the
+/// open, verified, rewound handle ready to be handed to the child.
+#[cfg(unix)]
+fn open_and_verify_model(
+    path: &Path,
+    expected_size: u64,
+    expected_sha: &str,
+) -> Result<std::fs::File, TransformError> {
+    use sha2::{Digest, Sha256};
+    use std::io::{Read, Seek, SeekFrom};
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|_| TransformError::ModelMismatch)?;
+
+    let metadata = file.metadata().map_err(|_| TransformError::ModelMismatch)?;
+    if !metadata.is_file() || metadata.len() != expected_size {
+        return Err(TransformError::ModelMismatch);
+    }
+
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0_u8; 1024 * 1024];
+    loop {
+        let n = file.read(&mut buffer).map_err(|_| TransformError::ModelMismatch)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buffer[..n]);
+    }
+    let actual = format!("{:x}", hasher.finalize());
+    if actual != expected_sha {
+        return Err(TransformError::ModelMismatch);
+    }
+
+    file.seek(SeekFrom::Start(0))
+        .map_err(|_| TransformError::ModelMismatch)?;
+    Ok(file)
+}
+
+#[cfg(not(unix))]
+fn open_and_verify_model(
+    _path: &Path,
+    _expected_size: u64,
+    _expected_sha: &str,
+) -> Result<std::fs::File, TransformError> {
+    Err(TransformError::Unsupported)
+}
+
+// ---------------------------------------------------------------------------
+// Crash circuit breaker (pure, unit tested).
+// ---------------------------------------------------------------------------
+
+/// Three faults inside a rolling ten-minute window disable the runtime until an
+/// explicit `reset_transform_runtime`.
+#[derive(Default)]
+struct Breaker {
+    failures: Vec<std::time::Instant>,
+    /// Latched once the threshold is crossed; only `reset` clears it.
+    disabled: bool,
+}
+
+const BREAKER_WINDOW: Duration = Duration::from_secs(10 * 60);
+const BREAKER_THRESHOLD: usize = 3;
+
+impl Breaker {
+    fn record_failure(&mut self, now: std::time::Instant) {
+        self.failures
+            .retain(|t| now.duration_since(*t) < BREAKER_WINDOW);
+        self.failures.push(now);
+        if self.failures.len() >= BREAKER_THRESHOLD {
+            self.disabled = true;
+        }
+    }
+
+    fn is_disabled(&mut self, now: std::time::Instant) -> bool {
+        self.failures
+            .retain(|t| now.duration_since(*t) < BREAKER_WINDOW);
+        self.disabled
+    }
+
+    fn reset(&mut self) {
+        self.failures.clear();
+        self.disabled = false;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RSS policy (pure, unit tested).
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RssAction {
+    Ok,
+    Warn,
+    Kill,
+}
+
+fn rss_action(bytes: u64) -> RssAction {
+    if bytes >= RSS_KILL_BYTES {
+        RssAction::Kill
+    } else if bytes >= RSS_WARN_BYTES {
+        RssAction::Warn
+    } else {
+        RssAction::Ok
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Spawn plan: production pins/paths vs. an explicit test configuration.
+// ---------------------------------------------------------------------------
+
+/// Explicit configuration used by integration tests to drive the supervisor
+/// against the protocol mock helper. Not part of any stable external API.
+#[derive(Debug, Clone)]
+pub struct TestSpawnConfig {
+    pub helper_path: PathBuf,
+    pub model_path: PathBuf,
+    pub model_size: u64,
+    pub model_sha256: String,
+    /// Scenario env vars for the mock. The production path always `env_clear`s
+    /// with no extra vars; this exists solely so tests can steer the mock.
+    pub scenario_env: Vec<(String, String)>,
+    pub request_slack: Duration,
+    pub cancel_grace: Duration,
+    pub handshake_timeout: Duration,
+    pub idle_after: Duration,
+}
+
+enum SpawnPlan {
+    Production,
+    Test(TestSpawnConfig),
+}
+
+impl SpawnPlan {
+    fn cancel_grace(&self) -> Duration {
+        match self {
+            Self::Production => Duration::from_millis(250),
+            Self::Test(c) => c.cancel_grace,
+        }
+    }
+    fn request_slack(&self) -> Duration {
+        match self {
+            Self::Production => Duration::from_millis(1000),
+            Self::Test(c) => c.request_slack,
+        }
+    }
+    fn handshake_timeout(&self) -> Duration {
+        match self {
+            Self::Production => Duration::from_secs(30),
+            Self::Test(c) => c.handshake_timeout,
+        }
+    }
+    fn idle_after(&self) -> Duration {
+        match self {
+            Self::Production => Duration::from_secs(5 * 60),
+            Self::Test(c) => c.idle_after,
+        }
+    }
+    fn stderr_inherit(&self) -> bool {
+        // Release suppresses helper stderr (no sensitive crash artifacts);
+        // debug and tests inherit it for diagnosis.
+        cfg!(debug_assertions)
+    }
+    fn scenario_env(&self) -> &[(String, String)] {
+        match self {
+            Self::Production => &[],
+            Self::Test(c) => &c.scenario_env,
+        }
+    }
+    fn pins(&self) -> (u64, &str) {
+        match self {
+            Self::Production => (TRANSFORM_MODEL_SIZE_BYTES, TRANSFORM_MODEL_SHA256),
+            Self::Test(c) => (c.model_size, c.model_sha256.as_str()),
+        }
+    }
+    fn helper_path(&self) -> Result<PathBuf, TransformError> {
+        match self {
+            Self::Production => resolve_helper_path(),
+            Self::Test(c) => Ok(c.helper_path.clone()),
+        }
+    }
+    fn model_path(&self) -> Result<PathBuf, TransformError> {
+        match self {
+            Self::Production => {
+                let path = installed_model_path().ok_or(TransformError::NotDownloaded)?;
+                if path.is_file() {
+                    Ok(path)
+                } else {
+                    Err(TransformError::NotDownloaded)
+                }
+            }
+            Self::Test(c) => Ok(c.model_path.clone()),
+        }
+    }
+}
+
+/// Resolve the exact helper executable: the bundled `externalBin` sitting next
+/// to the app binary when packaged, else the dev build product under
+/// `target/{debug,release}/`.
+fn resolve_helper_path() -> Result<PathBuf, TransformError> {
+    let exe = std::env::current_exe().map_err(|_| TransformError::SpawnFailed)?;
+    let dir = exe.parent().ok_or(TransformError::SpawnFailed)?;
+    // Packaged (Contents/MacOS/murmur-llm-sidecar) and the common dev layout
+    // (target/<profile>/murmur-llm-sidecar) both put the helper next to the app.
+    let primary = dir.join(HELPER_BIN_NAME);
+    if primary.is_file() {
+        return Ok(primary);
+    }
+    // Dev fallback: the app ran from an unusual cwd; probe sibling profiles.
+    for profile in ["debug", "release"] {
+        let candidate = dir.join("..").join(profile).join(HELPER_BIN_NAME);
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+    Err(TransformError::SpawnFailed)
+}
+
+// ---------------------------------------------------------------------------
+// Unique per-process identifiers (no external crate).
+// ---------------------------------------------------------------------------
+
+fn unique_id(prefix: &str) -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{prefix}-{}-{nanos}-{n}", std::process::id())
+}
+
+// ===========================================================================
+// Supported platform: full supervisor.
+// ===========================================================================
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+mod supported {
+    use super::*;
+    use murmur_local_llm_protocol::{
+        read_frame, write_frame, FrameError, HelperMessage, HostMessage, ModelIdentity,
+        ProtocolLimits, HostMessage::Cancel as HostCancel, MAX_INPUT_BYTES, MAX_INSTRUCTION_BYTES,
+        MAX_OUTPUT_BYTES, MAX_OUTPUT_TOKENS, MAX_DEADLINE_MS, PROTOCOL_NAME, PROTOCOL_VERSION,
+    };
+    use std::sync::mpsc::{Receiver, RecvTimeoutError};
+    use std::sync::Mutex;
+    use std::time::Instant;
+
+    /// Events surfaced by the stdout reader thread.
+    enum HelperEvent {
+        Frame(HelperMessage),
+        /// Clean EOF / process exit (incomplete header on a closed pipe).
+        Exited,
+        /// A malformed, oversized, or truncated frame — fail closed and kill.
+        ProtocolViolation,
+    }
+
+    struct Child {
+        proc: std::process::Child,
+        stdin: std::process::ChildStdin,
+        events: Receiver<HelperEvent>,
+        session_nonce: String,
+        pid: u32,
+        /// Keeps the verified model fd alive for the process lifetime.
+        _model_file: std::fs::File,
+    }
+
+    struct Inner {
+        child: Option<Child>,
+        breaker: Breaker,
+        last_activity: Instant,
+    }
+
+    pub struct LlmSidecar {
+        plan: SpawnPlan,
+        host_guard: OnceLock<Arc<dyn HostGuard>>,
+        busy: AtomicBool,
+        inner: Mutex<Inner>,
+    }
+
+    impl LlmSidecar {
+        pub fn new() -> Self {
+            Self::with_plan(SpawnPlan::Production)
+        }
+
+        pub fn for_test(config: TestSpawnConfig) -> Self {
+            Self::with_plan(SpawnPlan::Test(config))
+        }
+
+        fn with_plan(plan: SpawnPlan) -> Self {
+            Self {
+                plan,
+                host_guard: OnceLock::new(),
+                busy: AtomicBool::new(false),
+                inner: Mutex::new(Inner {
+                    child: None,
+                    breaker: Breaker::default(),
+                    last_activity: Instant::now(),
+                }),
+            }
+        }
+
+        pub fn set_host_guard(&self, guard: Arc<dyn HostGuard>) {
+            let _ = self.host_guard.set(guard);
+        }
+
+        fn guard(&self) -> &dyn HostGuard {
+            match self.host_guard.get() {
+                Some(g) => g.as_ref(),
+                None => &NoopHostGuard,
+            }
+        }
+
+        fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
+            self.inner.lock().unwrap_or_else(|p| p.into_inner())
+        }
+
+        /// True while a transform is in flight. Recording paths guard on this so
+        /// ASR never starts over a resident transform runtime.
+        pub fn is_transform_busy(&self) -> bool {
+            self.busy.load(Ordering::Acquire)
+        }
+
+        /// Test-support: whether a helper process is currently resident. Not
+        /// part of any stable external API.
+        pub fn has_live_child(&self) -> bool {
+            self.lock().child.is_some()
+        }
+
+        /// Async transform facade. Serializes to one in-flight request via a
+        /// busy flag (queue-reject: a second concurrent call gets `Busy`).
+        pub async fn transform(
+            self: &Arc<Self>,
+            instruction: &str,
+            input: &str,
+            deadline: Duration,
+        ) -> Result<TransformOutput, TransformError> {
+            // App-side limit enforcement (defence in depth over the helper).
+            if instruction.len() > MAX_INSTRUCTION_BYTES
+                || input.len() > MAX_INPUT_BYTES
+                || instruction.contains('\0')
+                || input.contains('\0')
+                || deadline.is_zero()
+                || deadline > Duration::from_millis(MAX_DEADLINE_MS)
+            {
+                return Err(TransformError::InvalidRequest);
+            }
+
+            if self
+                .busy
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
+                return Err(TransformError::Busy);
+            }
+
+            // Bucket sizes up front so no raw length leaves this frame.
+            let instruction_bucket = size_bucket(instruction.len());
+            let input_bucket = size_bucket(input.len());
+
+            let this = Arc::clone(self);
+            let instruction = instruction.to_string();
+            let input = input.to_string();
+            let started = Instant::now();
+            let join = tokio::task::spawn_blocking(move || {
+                this.transform_blocking(&instruction, &input, deadline)
+            })
+            .await;
+            self.busy.store(false, Ordering::Release);
+
+            let result = match join {
+                Ok(r) => r,
+                Err(_) => Err(TransformError::Internal),
+            };
+
+            // Telemetry: enums, durations, buckets, token counts only.
+            let elapsed_ms = started.elapsed().as_millis() as u64;
+            let (outcome, output_tokens) = match &result {
+                Ok(out) => ("ok", out.output_tokens),
+                Err(err) => (err.as_str(), 0),
+            };
+            tracing::info!(
+                target: "pipeline",
+                outcome,
+                duration_ms = elapsed_ms,
+                instruction_bucket,
+                input_bucket,
+                output_tokens,
+                "llm_transform"
+            );
+            result
+        }
+
+        fn transform_blocking(
+            &self,
+            instruction: &str,
+            input: &str,
+            deadline: Duration,
+        ) -> Result<TransformOutput, TransformError> {
+            let mut inner = self.lock();
+
+            if inner.breaker.is_disabled(Instant::now()) {
+                return Err(TransformError::Disabled);
+            }
+            if let Some(_reason) = self.guard().heavy_runtime_active() {
+                return Err(TransformError::HeavyRuntimeActive);
+            }
+
+            // Verify the model exists before touching the helper.
+            let model_path = self.plan.model_path()?;
+
+            // Lazy spawn. Release the ASR model first so only one heavy runtime
+            // is ever resident (mutual exclusion, ADR "Lifecycle and resources").
+            if inner.child.is_none() {
+                self.guard().release_asr();
+                match self.spawn_and_handshake(&model_path) {
+                    Ok(child) => inner.child = Some(child),
+                    Err(err) => {
+                        inner.breaker.record_failure(Instant::now());
+                        return Err(err);
+                    }
+                }
+            }
+
+            let request_id = unique_id("req");
+            let outcome = {
+                let child = inner.child.as_mut().expect("child present");
+                run_request(child, &request_id, instruction, input, deadline, &self.plan)
+            };
+
+            match outcome {
+                RequestOutcome::Ok(out) => {
+                    inner.last_activity = Instant::now();
+                    Ok(out)
+                }
+                RequestOutcome::HelperError(err) => {
+                    // Helper is still healthy; keep it for reuse.
+                    inner.last_activity = Instant::now();
+                    Err(err)
+                }
+                RequestOutcome::TimedOutKeepChild => {
+                    // Cancel was cooperatively confirmed; helper cleared context.
+                    inner.last_activity = Instant::now();
+                    Err(TransformError::Timeout)
+                }
+                RequestOutcome::TimedOutKilled => {
+                    kill_child(inner.child.take());
+                    Err(TransformError::Timeout)
+                }
+                RequestOutcome::Crashed => {
+                    kill_child(inner.child.take());
+                    inner.breaker.record_failure(Instant::now());
+                    Err(TransformError::Crashed)
+                }
+                RequestOutcome::Protocol => {
+                    kill_child(inner.child.take());
+                    inner.breaker.record_failure(Instant::now());
+                    Err(TransformError::Protocol)
+                }
+                RequestOutcome::OutputInvalid => {
+                    kill_child(inner.child.take());
+                    Err(TransformError::OutputInvalid)
+                }
+            }
+        }
+
+        fn spawn_and_handshake(&self, model_path: &Path) -> Result<Child, TransformError> {
+            use std::os::unix::io::AsRawFd;
+            use std::os::unix::process::CommandExt;
+            use murmur_local_llm_protocol::MODEL_FD;
+
+            let (size, sha) = self.plan.pins();
+            let model_file = open_and_verify_model(model_path, size, sha)?;
+            let helper_path = self.plan.helper_path()?;
+            let raw_fd = model_file.as_raw_fd();
+
+            let mut command = std::process::Command::new(&helper_path);
+            command
+                .current_dir("/")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(if self.plan.stderr_inherit() {
+                    std::process::Stdio::inherit()
+                } else {
+                    std::process::Stdio::null()
+                });
+            command.env_clear();
+            for (k, v) in self.plan.scenario_env() {
+                command.env(k, v);
+            }
+
+            // Hand the verified model over as inherited read-only fd 3. `dup2`
+            // clears FD_CLOEXEC on the new fd, but is a no-op (leaving CLOEXEC
+            // set) when oldfd already equals 3 — so clear it explicitly. No
+            // request-controlled args and no other inherited descriptors.
+            unsafe {
+                command.pre_exec(move || {
+                    if raw_fd != MODEL_FD && libc::dup2(raw_fd, MODEL_FD) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    if libc::fcntl(MODEL_FD, libc::F_SETFD, 0) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+
+            let mut proc = command.spawn().map_err(|_| TransformError::SpawnFailed)?;
+            let pid = proc.id();
+            let mut stdin = proc.stdin.take().ok_or(TransformError::SpawnFailed)?;
+            let stdout = proc.stdout.take().ok_or(TransformError::SpawnFailed)?;
+
+            // Reader thread: classifies frames, protocol violations, and EOF.
+            let (tx, rx) = std::sync::mpsc::channel::<HelperEvent>();
+            std::thread::spawn(move || {
+                let mut stdout = stdout;
+                loop {
+                    match read_frame::<HelperMessage>(&mut stdout) {
+                        Ok(frame) => {
+                            if tx.send(HelperEvent::Frame(frame)).is_err() {
+                                break;
+                            }
+                        }
+                        Err(FrameError::IncompleteHeader) => {
+                            let _ = tx.send(HelperEvent::Exited);
+                            break;
+                        }
+                        Err(_) => {
+                            let _ = tx.send(HelperEvent::ProtocolViolation);
+                            break;
+                        }
+                    }
+                }
+            });
+
+            let session_nonce = unique_id("nonce");
+            let hello = HostMessage::Hello {
+                protocol: PROTOCOL_NAME.to_string(),
+                version: PROTOCOL_VERSION,
+                session_nonce: session_nonce.clone(),
+                model: ModelIdentity {
+                    id: TRANSFORM_MODEL_ID.to_string(),
+                    sha256: sha.to_string(),
+                    size_bytes: size,
+                },
+                limits: ProtocolLimits::default(),
+            };
+            if write_frame(&mut stdin, &hello).is_err() {
+                let _ = proc.kill();
+                return Err(TransformError::HandshakeFailed);
+            }
+
+            // Await Ready within the handshake / model-load deadline.
+            let deadline_at = Instant::now() + self.plan.handshake_timeout();
+            loop {
+                let now = Instant::now();
+                if now >= deadline_at {
+                    let _ = proc.kill();
+                    return Err(TransformError::HandshakeFailed);
+                }
+                match rx.recv_timeout(deadline_at - now) {
+                    Ok(HelperEvent::Frame(HelperMessage::Ready {
+                        protocol,
+                        version,
+                        session_nonce: got_nonce,
+                        model,
+                        ..
+                    })) => {
+                        if protocol != PROTOCOL_NAME
+                            || version != PROTOCOL_VERSION
+                            || got_nonce != session_nonce
+                            || model.sha256 != sha
+                            || model.size_bytes != size
+                        {
+                            let _ = proc.kill();
+                            return Err(TransformError::HandshakeFailed);
+                        }
+                        return Ok(Child {
+                            proc,
+                            stdin,
+                            events: rx,
+                            session_nonce,
+                            pid,
+                            _model_file: model_file,
+                        });
+                    }
+                    Ok(_) | Err(RecvTimeoutError::Disconnected) => {
+                        let _ = proc.kill();
+                        return Err(TransformError::HandshakeFailed);
+                    }
+                    Err(RecvTimeoutError::Timeout) => continue,
+                }
+            }
+        }
+
+        /// Periodic maintenance: RSS ceiling + idle unload. Driven by the host
+        /// heartbeat. Skips while a transform is in flight.
+        pub fn maintenance_tick(&self) {
+            if self.busy.load(Ordering::Acquire) {
+                return;
+            }
+            let mut inner = match self.inner.try_lock() {
+                Ok(g) => g,
+                Err(_) => return,
+            };
+            let Some(child) = inner.child.as_ref() else {
+                return;
+            };
+            let pid = child.pid;
+
+            if let Some(bytes) = child_rss_bytes(pid) {
+                match rss_action(bytes) {
+                    RssAction::Ok => {}
+                    RssAction::Warn => {
+                        tracing::warn!(
+                            target: "pipeline",
+                            rss_mb = bytes / (1024 * 1024),
+                            "llm_sidecar_rss_warn"
+                        );
+                    }
+                    RssAction::Kill => {
+                        tracing::warn!(
+                            target: "pipeline",
+                            rss_mb = bytes / (1024 * 1024),
+                            "llm_sidecar_rss_kill"
+                        );
+                        kill_child(inner.child.take());
+                        return;
+                    }
+                }
+            }
+
+            if inner.last_activity.elapsed() >= self.plan.idle_after() {
+                let grace = self.plan.cancel_grace();
+                let child = inner.child.take();
+                shutdown_child(child, grace);
+                tracing::info!(target: "pipeline", "llm_sidecar_idle_unload");
+            }
+        }
+
+        /// Reset the crash circuit breaker and drop any resident helper.
+        pub fn reset(&self) {
+            let mut inner = self.lock();
+            inner.breaker.reset();
+            let grace = self.plan.cancel_grace();
+            let child = inner.child.take();
+            shutdown_child(child, grace);
+            tracing::info!(target: "pipeline", "llm_sidecar_reset");
+        }
+
+        /// Stop the helper (used before recording / removing the model).
+        pub fn shutdown(&self) {
+            let mut inner = self.lock();
+            let grace = self.plan.cancel_grace();
+            let child = inner.child.take();
+            shutdown_child(child, grace);
+        }
+    }
+
+    enum RequestOutcome {
+        Ok(TransformOutput),
+        HelperError(TransformError),
+        TimedOutKeepChild,
+        TimedOutKilled,
+        Crashed,
+        Protocol,
+        OutputInvalid,
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_request(
+        child: &mut Child,
+        request_id: &str,
+        instruction: &str,
+        input: &str,
+        deadline: Duration,
+        plan: &SpawnPlan,
+    ) -> RequestOutcome {
+        let transform = HostMessage::Transform {
+            protocol: PROTOCOL_NAME.to_string(),
+            version: PROTOCOL_VERSION,
+            session_nonce: child.session_nonce.clone(),
+            request_id: request_id.to_string(),
+            instruction: instruction.to_string(),
+            input: input.to_string(),
+            max_output_tokens: MAX_OUTPUT_TOKENS,
+            deadline_ms: deadline.as_millis() as u64,
+        };
+        if write_frame(&mut child.stdin, &transform).is_err() {
+            return RequestOutcome::Crashed;
+        }
+
+        // Wait the deadline plus a small slack so a healthy helper can self-report
+        // DeadlineExceeded before we escalate to a cooperative cancel.
+        let wait = deadline + plan.request_slack();
+        let deadline_at = Instant::now() + wait;
+        loop {
+            let now = Instant::now();
+            if now >= deadline_at {
+                return cancel_and_settle(child, request_id, plan.cancel_grace());
+            }
+            match child.events.recv_timeout(deadline_at - now) {
+                Ok(HelperEvent::Frame(HelperMessage::Result {
+                    request_id: got,
+                    output,
+                    finish_reason,
+                    output_tokens,
+                    ..
+                })) => {
+                    if got != request_id {
+                        return RequestOutcome::Protocol;
+                    }
+                    if output.len() > MAX_OUTPUT_BYTES
+                        || output_tokens > MAX_OUTPUT_TOKENS
+                        || output.contains('\0')
+                    {
+                        return RequestOutcome::OutputInvalid;
+                    }
+                    return RequestOutcome::Ok(TransformOutput {
+                        output,
+                        finish_reason,
+                        output_tokens,
+                    });
+                }
+                Ok(HelperEvent::Frame(HelperMessage::Error { code, .. })) => {
+                    return RequestOutcome::HelperError(TransformError::from_helper_code(code));
+                }
+                // A stray cancelled/late frame: ignore and keep waiting.
+                Ok(HelperEvent::Frame(HelperMessage::Cancelled { .. })) => continue,
+                // Ready/Stopped mid-request or any violation: fail closed.
+                Ok(HelperEvent::Frame(HelperMessage::Ready { .. }))
+                | Ok(HelperEvent::Frame(HelperMessage::Stopped { .. }))
+                | Ok(HelperEvent::ProtocolViolation) => return RequestOutcome::Protocol,
+                Ok(HelperEvent::Exited) | Err(RecvTimeoutError::Disconnected) => {
+                    return RequestOutcome::Crashed
+                }
+                Err(RecvTimeoutError::Timeout) => continue,
+            }
+        }
+    }
+
+    /// Cooperative cancel: send a Cancel frame, wait `grace` for a Cancelled
+    /// confirmation, then kill if the helper never confirms.
+    fn cancel_and_settle(child: &mut Child, request_id: &str, grace: Duration) -> RequestOutcome {
+        let cancel = HostCancel {
+            protocol: PROTOCOL_NAME.to_string(),
+            version: PROTOCOL_VERSION,
+            session_nonce: child.session_nonce.clone(),
+            request_id: request_id.to_string(),
+        };
+        let _ = write_frame(&mut child.stdin, &cancel);
+
+        let grace_at = Instant::now() + grace;
+        loop {
+            let now = Instant::now();
+            if now >= grace_at {
+                return RequestOutcome::TimedOutKilled;
+            }
+            match child.events.recv_timeout(grace_at - now) {
+                Ok(HelperEvent::Frame(HelperMessage::Cancelled { request_id: got, .. }))
+                    if got == request_id =>
+                {
+                    return RequestOutcome::TimedOutKeepChild;
+                }
+                // A late Result / other frame during the grace window: the helper
+                // is responsive, so treat cancellation as confirmed and keep it.
+                Ok(HelperEvent::Frame(_)) => return RequestOutcome::TimedOutKeepChild,
+                Ok(HelperEvent::Exited)
+                | Ok(HelperEvent::ProtocolViolation)
+                | Err(RecvTimeoutError::Disconnected) => return RequestOutcome::TimedOutKilled,
+                Err(RecvTimeoutError::Timeout) => continue,
+            }
+        }
+    }
+
+    fn kill_child(child: Option<Child>) {
+        if let Some(mut child) = child {
+            let _ = child.proc.kill();
+            let _ = child.proc.wait();
+        }
+    }
+
+    fn shutdown_child(child: Option<Child>, grace: Duration) {
+        let Some(mut child) = child else {
+            return;
+        };
+        let shutdown = HostMessage::Shutdown {
+            protocol: PROTOCOL_NAME.to_string(),
+            version: PROTOCOL_VERSION,
+            session_nonce: child.session_nonce.clone(),
+        };
+        let _ = write_frame(&mut child.stdin, &shutdown);
+        let deadline = Instant::now() + grace;
+        loop {
+            match child.proc.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) => {
+                    if Instant::now() >= deadline {
+                        let _ = child.proc.kill();
+                        let _ = child.proc.wait();
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(_) => {
+                    let _ = child.proc.kill();
+                    let _ = child.proc.wait();
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Read a child process RSS in bytes by pid via sysinfo.
+    fn child_rss_bytes(pid: u32) -> Option<u64> {
+        use sysinfo::{Pid, ProcessesToUpdate, System};
+        let mut system = System::new();
+        let target = Pid::from_u32(pid);
+        system.refresh_processes(ProcessesToUpdate::Some(&[target]), true);
+        system.process(target).map(|p| p.memory())
+    }
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub use supported::LlmSidecar;
+
+// ===========================================================================
+// Unsupported platforms: uniform stub reporting Unsupported.
+// ===========================================================================
+
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+pub struct LlmSidecar {
+    host_guard: OnceLock<Arc<dyn HostGuard>>,
+    busy: AtomicBool,
+    _plan: SpawnPlan,
+}
+
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+impl LlmSidecar {
+    pub fn new() -> Self {
+        Self::with_plan(SpawnPlan::Production)
+    }
+
+    pub fn for_test(config: TestSpawnConfig) -> Self {
+        Self::with_plan(SpawnPlan::Test(config))
+    }
+
+    fn with_plan(plan: SpawnPlan) -> Self {
+        Self {
+            host_guard: OnceLock::new(),
+            busy: AtomicBool::new(false),
+            _plan: plan,
+        }
+    }
+
+    pub fn set_host_guard(&self, guard: Arc<dyn HostGuard>) {
+        let _ = self.host_guard.set(guard);
+    }
+
+    pub fn is_transform_busy(&self) -> bool {
+        self.busy.load(Ordering::Acquire)
+    }
+
+    pub fn has_live_child(&self) -> bool {
+        false
+    }
+
+    pub async fn transform(
+        self: &Arc<Self>,
+        _instruction: &str,
+        _input: &str,
+        _deadline: Duration,
+    ) -> Result<TransformOutput, TransformError> {
+        Err(TransformError::Unsupported)
+    }
+
+    pub fn maintenance_tick(&self) {}
+    pub fn reset(&self) {}
+    pub fn shutdown(&self) {}
+}
+
+impl Default for LlmSidecar {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ===========================================================================
+// Unit tests (portable + supported-platform).
+// ===========================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn catalog_constants_are_internally_consistent() {
+        assert_eq!(TRANSFORM_MODEL_SHA256.len(), 64);
+        assert!(TRANSFORM_MODEL_SHA256
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert_eq!(TRANSFORM_MODEL_REVISION.len(), 40);
+        assert!(TRANSFORM_MODEL_URL.contains(TRANSFORM_MODEL_REVISION));
+        assert!(TRANSFORM_MODEL_URL.ends_with(TRANSFORM_MODEL_FILENAME));
+        assert_eq!(TRANSFORM_MODEL_SIZE_BYTES, 1_117_320_736);
+        // The published model path is hash-versioned beneath the app models dir.
+        if let Some(path) = installed_model_path() {
+            assert!(path.to_string_lossy().contains(TRANSFORM_MODEL_SHA256));
+            assert!(path.ends_with(TRANSFORM_MODEL_FILENAME));
+        }
+    }
+
+    #[test]
+    fn size_buckets_are_monotonic_and_bounded() {
+        assert_eq!(size_bucket(0), "0");
+        assert_eq!(size_bucket(256), "le256");
+        assert_eq!(size_bucket(257), "le1k");
+        assert_eq!(size_bucket(4096), "le4k");
+        assert_eq!(size_bucket(16384), "le16k");
+        assert_eq!(size_bucket(16385), "gt16k");
+    }
+
+    #[test]
+    fn rss_policy_thresholds() {
+        assert_eq!(rss_action(0), RssAction::Ok);
+        assert_eq!(rss_action(RSS_WARN_BYTES - 1), RssAction::Ok);
+        assert_eq!(rss_action(RSS_WARN_BYTES), RssAction::Warn);
+        assert_eq!(rss_action(RSS_KILL_BYTES - 1), RssAction::Warn);
+        assert_eq!(rss_action(RSS_KILL_BYTES), RssAction::Kill);
+    }
+
+    #[test]
+    fn breaker_opens_after_three_failures_and_resets() {
+        let mut breaker = Breaker::default();
+        let now = std::time::Instant::now();
+        assert!(!breaker.is_disabled(now));
+        breaker.record_failure(now);
+        breaker.record_failure(now);
+        assert!(!breaker.is_disabled(now));
+        breaker.record_failure(now);
+        assert!(breaker.is_disabled(now));
+        breaker.reset();
+        assert!(!breaker.is_disabled(now));
+    }
+
+    #[test]
+    fn breaker_prunes_failures_outside_the_window() {
+        let mut breaker = Breaker::default();
+        let base = std::time::Instant::now();
+        breaker.record_failure(base);
+        breaker.record_failure(base);
+        // A third failure more than ten minutes later prunes the first two.
+        let later = base + BREAKER_WINDOW + Duration::from_secs(1);
+        breaker.record_failure(later);
+        assert!(!breaker.is_disabled(later));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn model_verification_accepts_exact_pins_and_rejects_mismatches() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("murmur-llm-verify-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("model.bin");
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(b"deterministic fixture model bytes").unwrap();
+        f.sync_all().unwrap();
+        drop(f);
+
+        let (size, sha) = model_file_digest(&path).unwrap();
+        // Exact pins verify and leave the handle rewound to offset 0.
+        let mut handle = open_and_verify_model(&path, size, &sha).unwrap();
+        use std::io::Read;
+        let mut first = [0_u8; 4];
+        handle.read_exact(&mut first).unwrap();
+        assert_eq!(&first, b"dete");
+
+        // Wrong hash and wrong size both fail closed.
+        let wrong_sha = "0".repeat(64);
+        assert_eq!(
+            open_and_verify_model(&path, size, &wrong_sha).unwrap_err(),
+            TransformError::ModelMismatch
+        );
+        assert_eq!(
+            open_and_verify_model(&path, size + 1, &sha).unwrap_err(),
+            TransformError::ModelMismatch
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
