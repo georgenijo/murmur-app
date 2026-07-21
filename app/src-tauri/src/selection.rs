@@ -49,7 +49,7 @@ pub struct Rect {
 ///
 /// NEVER serialize this wholesale to the frontend and NEVER log `text` — only
 /// length buckets and outcome enums (see `length_bucket`, `log_capture_outcome`).
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct TransformSnapshot {
     pub bundle_id: Option<String>,
     pub pid: i32,
@@ -57,6 +57,23 @@ pub struct TransformSnapshot {
     pub range: Option<(usize, usize)>,
     pub bounds: Option<Rect>,
     pub captured_at: Instant,
+}
+
+impl std::fmt::Debug for TransformSnapshot {
+    /// Manual impl instead of `#[derive(Debug)]`: the never-log rule on
+    /// `text` (see the module doc comment) needs to be structural, not just a
+    /// convention every future call site has to remember. Prints the length
+    /// bucket instead of the raw text.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TransformSnapshot")
+            .field("bundle_id", &self.bundle_id)
+            .field("pid", &self.pid)
+            .field("text_length_bucket", &length_bucket(self.text.len()))
+            .field("range", &self.range)
+            .field("bounds", &self.bounds)
+            .field("captured_at", &self.captured_at)
+            .finish()
+    }
 }
 
 /// Reasons `capture_selection` can fail. Every variant is loggable on its own
@@ -142,6 +159,30 @@ fn is_secure_subrole(subrole: &str) -> bool {
 /// but some apps surface the secure marker only on `AXRole`.
 fn is_secure_role(role: &str) -> bool {
     matches!(role.trim(), "AXSecureTextField")
+}
+
+/// `kAXErrorNoValue` (ApplicationServices/HIServices `AXError.h`) — the
+/// element genuinely has no value for the requested attribute.
+const AX_ERROR_NO_VALUE: i32 = -25212;
+/// `kAXErrorAttributeUnsupported` — the attribute doesn't apply to this
+/// element at all.
+const AX_ERROR_ATTRIBUTE_UNSUPPORTED: i32 = -25205;
+/// `kAXErrorCannotComplete` — generic failure. Notably what the 25ms
+/// messaging timeout (`AX_QUERY_TIMEOUT_SECONDS` in `native`) surfaces as.
+/// This is NOT benign: an ambiguous timeout must fail closed, never be read
+/// as "no subrole/role".
+const AX_ERROR_CANNOT_COMPLETE: i32 = -25204;
+
+/// Classify a raw `AXError` status code returned when reading `AXSubrole` or
+/// `AXRole` during the secure-field check, deciding whether it's safe to
+/// continue past that check. Fails closed: only "the element has no value
+/// for this attribute" and "this attribute doesn't apply to this element" are
+/// benign — every other status, including the query timeout, must abort the
+/// capture (`SelectionError::AxUnavailable`) rather than silently fall
+/// through to reading the selection. Pure so it's unit-testable without
+/// Accessibility permission or a running AX server.
+fn is_benign_role_query_error(status: i32) -> bool {
+    matches!(status, AX_ERROR_NO_VALUE | AX_ERROR_ATTRIBUTE_UNSUPPORTED)
 }
 
 /// Pure classification of a raw AX text read into either "usable" (`Ok`) or a
@@ -326,23 +367,42 @@ mod native {
         Ok(())
     }
 
-    /// Copy an attribute value (Copy Rule — caller owns and must release it).
-    fn copy_attribute(element: AXUIElementRef, name: &str) -> Result<CFGuard, SelectionError> {
-        let attr = cfstring(name)?;
+    /// Copy an attribute value (Copy Rule — caller owns and must release it),
+    /// returning the raw `AXError` status code on failure so callers that
+    /// need to distinguish "benign" (no value / attribute unsupported) from
+    /// "fatal" (e.g. the messaging timeout) errors can do so — see
+    /// `super::is_benign_role_query_error`.
+    fn copy_attribute_raw(element: AXUIElementRef, name: &str) -> Result<CFGuard, i32> {
+        let attr = cfstring(name).map_err(|_| super::AX_ERROR_CANNOT_COMPLETE)?;
         let mut value: CFTypeRef = std::ptr::null();
         let status = unsafe { AXUIElementCopyAttributeValue(element, attr.0, &mut value) };
         if status != AX_SUCCESS || value.is_null() {
             if !value.is_null() {
                 unsafe { CFRelease(value) };
             }
-            return Err(SelectionError::AxUnavailable);
+            return Err(status);
         }
         Ok(CFGuard(value))
+    }
+
+    /// Copy an attribute value (Copy Rule — caller owns and must release it).
+    fn copy_attribute(element: AXUIElementRef, name: &str) -> Result<CFGuard, SelectionError> {
+        copy_attribute_raw(element, name).map_err(|_| SelectionError::AxUnavailable)
     }
 
     fn copy_attribute_string(element: AXUIElementRef, name: &str) -> Result<String, SelectionError> {
         let value = copy_attribute(element, name)?;
         cfstring_to_string(value.0)
+    }
+
+    /// Like `copy_attribute_string`, but preserves the raw `AXError` status
+    /// code on failure instead of collapsing it to `SelectionError`. Used only
+    /// by the secure-field checks in `capture_selection_native`, which must
+    /// fail closed on anything other than a benign "no value"/"unsupported"
+    /// status (see `super::is_benign_role_query_error`).
+    fn copy_attribute_string_status(element: AXUIElementRef, name: &str) -> Result<String, i32> {
+        let value = copy_attribute_raw(element, name)?;
+        cfstring_to_string(value.0).map_err(|_| super::AX_ERROR_CANNOT_COMPLETE)
     }
 
     fn decode_range(value: CFTypeRef) -> Option<(usize, usize)> {
@@ -434,16 +494,29 @@ mod native {
         let focused = copy_attribute(app, "AXFocusedUIElement")?;
         set_timeout(focused.0)?;
 
-        // FIRST: secure-field check. A positive match reads NOTHING else.
-        if let Ok(subrole) = copy_attribute_string(focused.0, "AXSubrole") {
-            if is_secure_subrole(&subrole) {
-                return Err(SelectionError::SecureField);
+        // FIRST: secure-field check. A positive match reads NOTHING else. Fails
+        // closed: an AX error here (including the 25ms messaging timeout) is
+        // NOT treated as "no subrole/role" — only a benign "no value"/
+        // "attribute unsupported" status is safe to continue past. Any other
+        // error aborts the capture entirely (`AxUnavailable`) rather than
+        // silently falling through to read the selection.
+        match copy_attribute_string_status(focused.0, "AXSubrole") {
+            Ok(subrole) => {
+                if is_secure_subrole(&subrole) {
+                    return Err(SelectionError::SecureField);
+                }
             }
+            Err(status) if super::is_benign_role_query_error(status) => {}
+            Err(_) => return Err(SelectionError::AxUnavailable),
         }
-        if let Ok(role) = copy_attribute_string(focused.0, "AXRole") {
-            if is_secure_role(&role) {
-                return Err(SelectionError::SecureField);
+        match copy_attribute_string_status(focused.0, "AXRole") {
+            Ok(role) => {
+                if is_secure_role(&role) {
+                    return Err(SelectionError::SecureField);
+                }
             }
+            Err(status) if super::is_benign_role_query_error(status) => {}
+            Err(_) => return Err(SelectionError::AxUnavailable),
         }
 
         let text = copy_attribute_string(focused.0, "AXSelectedText").unwrap_or_default();
@@ -546,6 +619,39 @@ mod tests {
         for (error, expected) in cases {
             assert_eq!(error.as_str(), expected);
         }
+    }
+
+    #[test]
+    fn benign_role_query_errors_allow_continuing() {
+        assert!(is_benign_role_query_error(AX_ERROR_NO_VALUE));
+        assert!(is_benign_role_query_error(AX_ERROR_ATTRIBUTE_UNSUPPORTED));
+    }
+
+    #[test]
+    fn other_role_query_errors_fail_closed() {
+        // The messaging timeout must NOT be treated as benign — this is the
+        // exact fail-open bug this classification exists to prevent.
+        assert!(!is_benign_role_query_error(AX_ERROR_CANNOT_COMPLETE));
+        assert!(!is_benign_role_query_error(-1));
+        assert!(!is_benign_role_query_error(i32::MIN));
+        assert!(!is_benign_role_query_error(i32::MAX));
+    }
+
+    #[test]
+    fn transform_snapshot_debug_redacts_text_but_keeps_length_bucket() {
+        let snapshot = TransformSnapshot {
+            bundle_id: Some("com.example.app".to_string()),
+            pid: 123,
+            text: "super secret selection text".to_string(),
+            range: Some((0, 5)),
+            bounds: None,
+            captured_at: Instant::now(),
+        };
+        let debug = format!("{:?}", snapshot);
+        assert!(!debug.contains("super secret selection text"));
+        assert!(!debug.contains("secret"));
+        assert!(debug.contains("17-64"));
+        assert!(debug.contains("com.example.app"));
     }
 
     #[test]

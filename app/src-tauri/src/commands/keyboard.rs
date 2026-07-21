@@ -75,6 +75,13 @@ pub fn get_app_disabled() -> bool {
 
 #[tauri::command]
 pub fn start_transform_listener(app_handle: tauri::AppHandle, hotkey: String) -> Result<(), String> {
+    if keyboard::is_dictation_key_id(&hotkey) {
+        tracing::error!(target: "keyboard", "start_transform_listener: rejected dictation key '{}'", hotkey);
+        return Err(format!(
+            "'{}' is reserved for the dictation hotkey and cannot be used as the transform hotkey.",
+            hotkey
+        ));
+    }
     if !injector::is_accessibility_enabled() {
         return Err("Accessibility permission is required. Please grant it in System Settings.".to_string());
     }
@@ -90,7 +97,14 @@ pub fn stop_transform_listener() {
 }
 
 #[tauri::command]
-pub fn set_transform_key(app_handle: tauri::AppHandle, hotkey: String) {
+pub fn set_transform_key(app_handle: tauri::AppHandle, hotkey: String) -> Result<(), String> {
+    if keyboard::is_dictation_key_id(&hotkey) {
+        tracing::error!(target: "keyboard", "set_transform_key: rejected dictation key '{}'", hotkey);
+        return Err(format!(
+            "'{}' is reserved for the dictation hotkey and cannot be used as the transform hotkey.",
+            hotkey
+        ));
+    }
     let should_release = keyboard::set_transform_key(&hotkey);
     if should_release {
         let _ = app_handle.emit("transform-key-released", ());
@@ -98,4 +112,5 @@ pub fn set_transform_key(app_handle: tauri::AppHandle, hotkey: String) {
     } else {
         tracing::info!(target: "keyboard", "Transform key updated to: {}", hotkey);
     }
+    Ok(())
 }

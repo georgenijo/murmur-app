@@ -1943,6 +1943,16 @@ pub async fn start_native_recording(
                 "state": "idle"
             }));
         }
+        // Refuse while a transform pass (issue #312) holds the shared Whisper
+        // backend / clipboard / AX surface. Checked under the dictation lock,
+        // same as the two guards above.
+        if state.app_state.transform_status().blocks_recording() {
+            tracing::warn!(target: "pipeline", "start_native_recording: blocked — transform in progress");
+            return Ok(serde_json::json!({
+                "type": "busy_transforming",
+                "state": "idle"
+            }));
+        }
         match dictation.status {
             DictationStatus::Recording => {
                 tracing::warn!(target: "pipeline", "start_native_recording: already recording");
@@ -2315,6 +2325,11 @@ pub async fn transcribe_file(
         let dictation = state.app_state.dictation.lock_or_recover();
         if state.benchmark.is_running() {
             return Err("Wait for the benchmark to finish before transcribing a file.".to_string());
+        }
+        // Transform's Thinking phase (issue #312) will share this same Whisper
+        // backend, so it must be mutually exclusive with file transcription too.
+        if state.app_state.transform_status().blocks_recording() {
+            return Err("Wait for the transform to finish before transcribing a file.".to_string());
         }
         if dictation.status != DictationStatus::Idle {
             return Err(

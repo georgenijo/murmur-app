@@ -26,7 +26,7 @@ impl Default for DictationStatus {
 /// recording/processing and a transform pass are independent activities that
 /// each need to know about (and block) the other, not a shared state machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum TransformStatus {
     Idle,
     /// Reading the AX selection (`selection::capture_selection`).
@@ -48,6 +48,11 @@ impl Default for TransformStatus {
 }
 
 impl TransformStatus {
+    /// Human-readable event/telemetry string (see `log_capture_outcome`-style
+    /// callers in `selection.rs`). Not called from production code yet — the
+    /// transform pipeline that would log these phase transitions lands in a
+    /// later PR in the #312 series; exercised directly by tests until then.
+    #[allow(dead_code)]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Idle => "idle",
@@ -393,6 +398,11 @@ impl AppState {
     }
 
     /// Set the transform pipeline phase. Independent of `dictation.status`.
+    /// Not called from production code yet — the transform pipeline that
+    /// drives these phase transitions (capture -> listen -> think -> review ->
+    /// apply) lands in a later PR in the #312 series; exercised directly by
+    /// tests until then.
+    #[allow(dead_code)]
     pub fn set_transform_status(&self, status: TransformStatus) {
         *self.transform_status.lock_or_recover() = status;
     }
@@ -543,6 +553,29 @@ mod tests {
 
         state.dictation.lock_or_recover().status = DictationStatus::Idle;
         assert_eq!(state.transform_status(), TransformStatus::Thinking);
+    }
+
+    #[test]
+    fn transform_status_serde_form_matches_as_str() {
+        // Regression guard: `#[serde(rename_all = "snake_case")]` must produce
+        // the same wire string as `as_str()` for every variant. Before this
+        // fix, `rename_all = "lowercase"` serialized `ReviewPending` as
+        // "reviewpending", diverging from `as_str()`'s "review_pending".
+        for status in [
+            TransformStatus::Idle,
+            TransformStatus::Capturing,
+            TransformStatus::Listening,
+            TransformStatus::Thinking,
+            TransformStatus::ReviewPending,
+            TransformStatus::Applying,
+        ] {
+            let serialized = serde_json::to_string(&status).unwrap();
+            let expected = format!("\"{}\"", status.as_str());
+            assert_eq!(
+                serialized, expected,
+                "serde form of {status:?} must match as_str()"
+            );
+        }
     }
 
     #[test]
