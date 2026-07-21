@@ -20,6 +20,47 @@ use std::time::Duration;
 use murmur_local_llm_protocol::{ErrorCode, FinishReason};
 
 // ---------------------------------------------------------------------------
+// Per-request cooperative cancel token (#312 C2 follow-up, item 11).
+// ---------------------------------------------------------------------------
+
+/// A cooperative cancel signal scoped to exactly ONE transform request.
+///
+/// This replaces the earlier supervisor-wide `cancel_requested` flag, which was
+/// reset at each request start (`self.cancel_requested.store(false)`) and could
+/// therefore have a legitimate cancel WIPED by the next request's reset — or,
+/// symmetrically, leak a stale cancel into the next request. A fresh token is
+/// created per request in `transform_flow::run_transform` (before the spawn)
+/// and registered for the request's lifetime; canceling it can only ever affect
+/// the exact request it was created for. Cheap to clone (a shared
+/// `Arc<AtomicBool>`).
+#[derive(Clone, Default)]
+pub struct CancelToken(Arc<AtomicBool>);
+
+impl CancelToken {
+    /// A fresh, un-cancelled token.
+    pub fn new() -> Self {
+        Self(Arc::new(AtomicBool::new(false)))
+    }
+
+    /// Request cooperative cancellation for this request.
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    /// Whether cancellation has been requested for this request.
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+
+    /// Identity check: clones of the same token compare equal; distinct tokens
+    /// do not. Lets the in-flight slot be cleared only when it still holds our
+    /// token (a later request may already have replaced it).
+    fn is_same(&self, other: &CancelToken) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Immutable catalog pins (single source of truth, shared with the installer).
 // ---------------------------------------------------------------------------
 
@@ -544,15 +585,23 @@ mod supported {
         rss_warned: bool,
     }
 
-    /// RAII guard that clears the in-flight `busy` flag on drop. It is moved
-    /// into the `spawn_blocking` closure so `busy` is released when the blocking
-    /// work finishes on EVERY path — including when the async future is dropped
-    /// (e.g. a `tokio::time::timeout` wrapper) mid-request. A blocking task is
-    /// never cancelled, so its guard always drops.
-    struct BusyGuard(Arc<LlmSidecar>);
+    /// RAII guard that clears the in-flight `busy` flag AND the per-request
+    /// cancel slot on drop. It is moved into the `spawn_blocking` closure so
+    /// both are released when the blocking work finishes on EVERY path —
+    /// including when the async future is dropped (e.g. a `tokio::time::timeout`
+    /// wrapper) mid-request. A blocking task is never cancelled, so its guard
+    /// always drops.
+    struct BusyGuard {
+        sidecar: Arc<LlmSidecar>,
+        cancel: CancelToken,
+    }
     impl Drop for BusyGuard {
         fn drop(&mut self) {
-            self.0.busy.store(false, Ordering::Release);
+            // Clear our per-request cancel slot (only if it still holds our
+            // token) BEFORE releasing busy, so a cancel arriving after busy
+            // frees can never land on the wrong (already-finished) request.
+            self.sidecar.clear_inflight_cancel(&self.cancel);
+            self.sidecar.busy.store(false, Ordering::Release);
         }
     }
 
@@ -560,11 +609,12 @@ mod supported {
         plan: SpawnPlan,
         host_guard: OnceLock<Arc<dyn HostGuard>>,
         busy: AtomicBool,
-        /// Set by [`Self::cancel_inflight_request`] so the blocking
-        /// `run_request` loop can send a cooperative Cancel frame instead of
-        /// waiting out the full deadline (BusyGuard only drops when that work
-        /// finishes — aborting the outer tokio task alone does not clear busy).
-        cancel_requested: AtomicBool,
+        /// The in-flight request's cancel token, registered for the duration of
+        /// one `transform` call and cleared by its `BusyGuard`. Per-request (not
+        /// supervisor-wide): [`Self::cancel_inflight_request`] cancels ONLY the
+        /// token currently in flight, so a cancel can never wipe or leak into a
+        /// neighbouring request. `None` between requests → cancel is a no-op.
+        inflight_cancel: Mutex<Option<CancelToken>>,
         inner: Mutex<Inner>,
     }
 
@@ -586,7 +636,7 @@ mod supported {
                 plan,
                 host_guard: OnceLock::new(),
                 busy: AtomicBool::new(false),
-                cancel_requested: AtomicBool::new(false),
+                inflight_cancel: Mutex::new(None),
                 inner: Mutex::new(Inner {
                     child: None,
                     breaker: Breaker::default(),
@@ -619,14 +669,45 @@ mod supported {
 
         /// Request cooperative cancel of the in-flight transform (if any).
         ///
-        /// The blocking `run_request` loop observes this flag, sends a protocol
-        /// Cancel frame, and settles via the same cancel-then-kill dance used
-        /// for deadline expiry. Dropping the outer async future alone does
-        /// **not** clear `busy` — only the blocking work finishing does — so
-        /// callers that abort a `tokio::spawn` wrapper must also call this
-        /// (see `cancel_transform`).
+        /// Cancels ONLY the request currently in flight — it flips that
+        /// request's own [`CancelToken`], never a shared flag — so a cancel can
+        /// never affect the next request. The blocking `run_request` loop
+        /// observes the token, sends a protocol Cancel frame, and settles via
+        /// the same cancel-then-kill dance used for deadline expiry. Dropping
+        /// the outer async future alone does **not** clear `busy` — only the
+        /// blocking work finishing does — so callers that abort a
+        /// `tokio::spawn` wrapper must also call this (see `cancel_transform`).
+        /// A no-op when no request is in flight (`inflight_cancel` is `None`).
         pub fn cancel_inflight_request(&self) {
-            self.cancel_requested.store(true, Ordering::Release);
+            if let Some(token) = self
+                .inflight_cancel
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_ref()
+            {
+                token.cancel();
+            }
+        }
+
+        /// Register the in-flight request's cancel token (called once per
+        /// request, before the blocking work starts).
+        fn set_inflight_cancel(&self, token: CancelToken) {
+            *self
+                .inflight_cancel
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()) = Some(token);
+        }
+
+        /// Clear the in-flight slot, but only if it still holds `token` — a
+        /// later request may already have replaced it.
+        fn clear_inflight_cancel(&self, token: &CancelToken) {
+            let mut slot = self
+                .inflight_cancel
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            if slot.as_ref().map(|t| t.is_same(token)).unwrap_or(false) {
+                *slot = None;
+            }
         }
 
         /// Test-support: whether a helper process is currently resident. Not
@@ -642,6 +723,7 @@ mod supported {
             instruction: &str,
             input: &str,
             deadline: Duration,
+            cancel: CancelToken,
         ) -> Result<TransformOutput, TransformError> {
             // App-side limit enforcement (defence in depth over the helper).
             if instruction.len() > MAX_INSTRUCTION_BYTES
@@ -661,12 +743,20 @@ mod supported {
             {
                 return Err(TransformError::Busy);
             }
-            // Own the busy flag from here. Moving this guard into the blocking
-            // closure guarantees `busy` clears when the blocking work ends even
-            // if this async future is dropped at the `.await` below.
-            let busy_guard = BusyGuard(Arc::clone(self));
-            // Clear any stale cancel signal from a prior request.
-            self.cancel_requested.store(false, Ordering::Release);
+            // Register this request's cancel token so cancel_inflight_request()
+            // reaches exactly THIS request. No stale-flag reset is needed (the
+            // token is fresh per request), so a concurrent cancel can never be
+            // wiped. Cleared by the BusyGuard drop below.
+            self.set_inflight_cancel(cancel.clone());
+            // Own the busy flag + cancel slot from here. Moving this guard into
+            // the blocking closure guarantees both clear when the blocking work
+            // ends even if this async future is dropped at the `.await` below.
+            // No `.await` sits between the busy claim and this move, so there is
+            // no window where busy is held without its guard.
+            let busy_guard = BusyGuard {
+                sidecar: Arc::clone(self),
+                cancel: cancel.clone(),
+            };
 
             // Bucket sizes up front so no raw length leaves this frame.
             let instruction_bucket = size_bucket(instruction.len());
@@ -678,7 +768,7 @@ mod supported {
             let started = Instant::now();
             let join = tokio::task::spawn_blocking(move || {
                 let _busy = busy_guard;
-                this.transform_blocking(&instruction, &input, deadline)
+                this.transform_blocking(&instruction, &input, deadline, &cancel)
             })
             .await;
 
@@ -710,6 +800,7 @@ mod supported {
             instruction: &str,
             input: &str,
             deadline: Duration,
+            cancel: &CancelToken,
         ) -> Result<TransformOutput, TransformError> {
             let mut inner = self.lock();
 
@@ -754,7 +845,7 @@ mod supported {
                     input,
                     deadline,
                     &self.plan,
-                    &self.cancel_requested,
+                    cancel,
                 )
             };
 
@@ -1116,7 +1207,7 @@ mod supported {
         input: &str,
         deadline: Duration,
         plan: &SpawnPlan,
-        cancel_requested: &AtomicBool,
+        cancel: &CancelToken,
     ) -> RequestOutcome {
         let transform = HostMessage::Transform {
             protocol: PROTOCOL_NAME.to_string(),
@@ -1138,7 +1229,7 @@ mod supported {
         let deadline_at = Instant::now() + wait;
         loop {
             // User cancel (e.g. Esc / short-tap) wins over the deadline wait.
-            if cancel_requested.load(Ordering::Acquire) {
+            if cancel.is_cancelled() {
                 return cancel_and_settle(
                     child,
                     request_id,
@@ -1155,8 +1246,8 @@ mod supported {
                     CancelReason::Deadline,
                 );
             }
-            // Poll in short slices so a cancel_requested flag is observed
-            // promptly even when the helper is silent.
+            // Poll in short slices so a cancel token flip is observed promptly
+            // even when the helper is silent.
             let slice = (deadline_at - now).min(Duration::from_millis(50));
             match child.events.recv_timeout(slice) {
                 Ok(HelperEvent::Frame(frame)) => {
@@ -1335,7 +1426,6 @@ pub use supported::LlmSidecar;
 pub struct LlmSidecar {
     host_guard: OnceLock<Arc<dyn HostGuard>>,
     busy: AtomicBool,
-    cancel_requested: AtomicBool,
     _plan: SpawnPlan,
 }
 
@@ -1354,7 +1444,6 @@ impl LlmSidecar {
         Self {
             host_guard: OnceLock::new(),
             busy: AtomicBool::new(false),
-            cancel_requested: AtomicBool::new(false),
             _plan: plan,
         }
     }
@@ -1367,9 +1456,8 @@ impl LlmSidecar {
         self.busy.load(Ordering::Acquire)
     }
 
-    pub fn cancel_inflight_request(&self) {
-        self.cancel_requested.store(true, Ordering::Release);
-    }
+    /// No runtime here, so nothing is ever in flight — a no-op.
+    pub fn cancel_inflight_request(&self) {}
 
     pub fn has_live_child(&self) -> bool {
         false
@@ -1380,6 +1468,7 @@ impl LlmSidecar {
         _instruction: &str,
         _input: &str,
         _deadline: Duration,
+        _cancel: CancelToken,
     ) -> Result<TransformOutput, TransformError> {
         Err(TransformError::Unsupported)
     }
@@ -1418,6 +1507,26 @@ mod tests {
             assert!(path.to_string_lossy().contains(TRANSFORM_MODEL_SHA256));
             assert!(path.ends_with(TRANSFORM_MODEL_FILENAME));
         }
+    }
+
+    #[test]
+    fn cancel_token_is_scoped_per_instance() {
+        // The per-request cancel token is the core of item 11: two distinct
+        // tokens are independent, and clones of one share its state. This is
+        // what makes a cancel for request N unable to affect request N+1.
+        let a = CancelToken::new();
+        let b = CancelToken::new();
+        assert!(!a.is_cancelled() && !b.is_cancelled());
+
+        a.cancel();
+        assert!(a.is_cancelled(), "cancelling A must flip A");
+        assert!(!b.is_cancelled(), "cancelling A must NOT flip B (per-request)");
+
+        // A clone observes the same cancellation; identity holds across clones.
+        let a2 = a.clone();
+        assert!(a2.is_cancelled());
+        assert!(a.is_same(&a2));
+        assert!(!a.is_same(&b));
     }
 
     #[test]
