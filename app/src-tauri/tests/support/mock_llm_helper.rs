@@ -21,8 +21,8 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use murmur_local_llm_protocol::{
-    read_frame, write_frame, FinishReason, HelperMessage, HostMessage, ModelIdentity, MODEL_FD,
-    PROTOCOL_NAME, PROTOCOL_VERSION,
+    read_frame, write_frame, ErrorCode, FinishReason, HelperMessage, HostMessage, ModelIdentity,
+    MODEL_FD, PROTOCOL_NAME, PROTOCOL_VERSION,
 };
 
 fn scenario() -> String {
@@ -130,6 +130,18 @@ fn main() {
                     }
                     "slow_ack_cancel" | "slow_ignore_cancel" => {
                         // Never send a Result; wait for the Cancel below.
+                    }
+                    "error_deadline_on_transform" => {
+                        // A self-reported DeadlineExceeded: a designed outcome the
+                        // supervisor maps to Timeout and must NOT count as a fault.
+                        let error = HelperMessage::Error {
+                            protocol: PROTOCOL_NAME.to_string(),
+                            version: PROTOCOL_VERSION,
+                            session_nonce: session_nonce.clone(),
+                            request_id: Some(request_id),
+                            code: ErrorCode::DeadlineExceeded,
+                        };
+                        let _ = write_frame(&mut stdout, &error);
                     }
                     "wrong_nonce_on_result" => {
                         // Well-formed Result frame but with a mismatched session

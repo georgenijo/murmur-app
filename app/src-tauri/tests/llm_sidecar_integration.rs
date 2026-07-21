@@ -130,6 +130,27 @@ async fn crash_reports_crashed_and_trips_circuit_breaker() {
 }
 
 #[tokio::test]
+async fn helper_deadline_errors_do_not_trip_the_breaker() {
+    let fixture = fixture_model();
+    let sidecar = sidecar("error_deadline_on_transform", &fixture);
+    // Three self-reported DeadlineExceeded outcomes in the window are a designed
+    // result, not a fault: the runtime must stay enabled.
+    for _ in 0..3 {
+        let err = run_transform(&sidecar, Duration::from_secs(5))
+            .await
+            .unwrap_err();
+        assert_eq!(err, TransformError::Timeout);
+        // The helper is healthy and kept for reuse.
+        assert!(sidecar.has_live_child());
+    }
+    // A fourth attempt still runs (Timeout), never short-circuited as Disabled.
+    let err = run_transform(&sidecar, Duration::from_secs(5))
+        .await
+        .unwrap_err();
+    assert_eq!(err, TransformError::Timeout);
+}
+
+#[tokio::test]
 async fn malformed_frame_fails_closed_and_kills() {
     let fixture = fixture_model();
     let sidecar = sidecar("malformed_on_transform", &fixture);

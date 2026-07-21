@@ -78,8 +78,12 @@ pub enum TransformError {
     SpawnFailed,
     /// The hello/ready handshake failed (nonce, protocol, or model mismatch).
     HandshakeFailed,
-    /// The installed model file failed size / SHA-256 / regular-file checks.
+    /// The installed model file failed size / SHA-256 / regular-file checks —
+    /// its content is wrong, so it is removed and re-download is required.
     ModelMismatch,
+    /// The model file could not be read (open / metadata / read I/O error). A
+    /// transient failure that fails closed WITHOUT deleting the model.
+    ModelUnreadable,
     /// The deadline elapsed; the helper was cancelled and killed if unresponsive.
     Timeout,
     /// The request was cancelled cooperatively.
@@ -109,6 +113,7 @@ impl TransformError {
             Self::SpawnFailed => "spawnFailed",
             Self::HandshakeFailed => "handshakeFailed",
             Self::ModelMismatch => "modelMismatch",
+            Self::ModelUnreadable => "modelUnreadable",
             Self::Timeout => "timeout",
             Self::Cancelled => "cancelled",
             Self::Crashed => "crashed",
@@ -238,13 +243,17 @@ fn open_and_verify_model(
     use std::io::{Read, Seek, SeekFrom};
     use std::os::unix::fs::OpenOptionsExt;
 
+    // I/O failures (open incl. O_NOFOLLOW ELOOP, metadata, read, seek) are
+    // transient/environmental → ModelUnreadable (fail closed, keep the model).
+    // Only a wrong size / hash / non-regular file is a content mismatch →
+    // ModelMismatch (the caller removes it so it can be re-downloaded).
     let mut file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW)
         .open(path)
-        .map_err(|_| TransformError::ModelMismatch)?;
+        .map_err(|_| TransformError::ModelUnreadable)?;
 
-    let metadata = file.metadata().map_err(|_| TransformError::ModelMismatch)?;
+    let metadata = file.metadata().map_err(|_| TransformError::ModelUnreadable)?;
     if !metadata.is_file() || metadata.len() != expected_size {
         return Err(TransformError::ModelMismatch);
     }
@@ -252,7 +261,9 @@ fn open_and_verify_model(
     let mut hasher = Sha256::new();
     let mut buffer = vec![0_u8; 1024 * 1024];
     loop {
-        let n = file.read(&mut buffer).map_err(|_| TransformError::ModelMismatch)?;
+        let n = file
+            .read(&mut buffer)
+            .map_err(|_| TransformError::ModelUnreadable)?;
         if n == 0 {
             break;
         }
@@ -264,7 +275,7 @@ fn open_and_verify_model(
     }
 
     file.seek(SeekFrom::Start(0))
-        .map_err(|_| TransformError::ModelMismatch)?;
+        .map_err(|_| TransformError::ModelUnreadable)?;
     Ok(file)
 }
 
@@ -725,11 +736,15 @@ mod supported {
                     Ok(out)
                 }
                 RequestOutcome::HelperError(err) => {
-                    // The frame is well-formed so the helper is kept for reuse,
-                    // but a helper that errors every request must not respawn
-                    // indefinitely — count it toward the crash circuit breaker.
+                    // The frame is well-formed so the helper is kept for reuse.
+                    // A helper that faults every request must not respawn forever,
+                    // so most errors count toward the breaker — but a self-reported
+                    // DeadlineExceeded (Timeout) or Cancelled is a designed outcome,
+                    // not a runtime fault, and must never disable the runtime.
                     inner.last_activity = Instant::now();
-                    inner.breaker.record_failure(Instant::now());
+                    if !matches!(err, TransformError::Timeout | TransformError::Cancelled) {
+                        inner.breaker.record_failure(Instant::now());
+                    }
                     Err(err)
                 }
                 RequestOutcome::TimedOutKeepChild => {
