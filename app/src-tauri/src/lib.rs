@@ -22,6 +22,7 @@ mod knowledge_store;
 mod model_runtime;
 mod platform;
 mod resource_monitor;
+mod selection;
 mod smart_formatting;
 mod state;
 pub mod telemetry;
