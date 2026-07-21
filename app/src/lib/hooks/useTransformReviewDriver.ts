@@ -62,6 +62,7 @@ export function useTransformReviewDriver(enabled: boolean): ReviewDriverResult {
       if (cancelled) return;
       setContent(EMPTY_REVIEW_CONTENT);
       setErrorCode(null);
+      setState('listening');
     })
       .then((fn) => {
         if (cancelled) fn();

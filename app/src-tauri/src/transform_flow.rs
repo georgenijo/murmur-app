@@ -533,7 +533,7 @@ pub(crate) async fn run_transform(
     app_state: &AppState,
     fx: &dyn FlowEffects,
     sidecar: &Arc<LlmSidecar>,
-    inflight: &std::sync::Mutex<Option<tokio::task::AbortHandle>>,
+    inflight: &std::sync::Mutex<Option<(tokio::task::AbortHandle, crate::llm_sidecar::CancelToken)>>,
     instruction: Result<String, ()>,
     original: String,
     deadline: Duration,
@@ -567,10 +567,11 @@ pub(crate) async fn run_transform(
     // never a neighbouring one. Its lifetime tracks the AbortHandle stored just
     // below (both cleared when the request settles).
     let cancel = crate::llm_sidecar::CancelToken::new();
-    let join = tokio::spawn(async move {
-        sidecar.transform(&instr, &input, deadline, cancel).await
+    let join = tokio::spawn({
+        let cancel = cancel.clone();
+        async move { sidecar.transform(&instr, &input, deadline, cancel).await }
     });
-    *inflight.lock_or_recover() = Some(join.abort_handle());
+    *inflight.lock_or_recover() = Some((join.abort_handle(), cancel));
     let joined = join.await;
     *inflight.lock_or_recover() = None;
 
@@ -1079,7 +1080,11 @@ pub(crate) async fn cancel_transform(
     // BusyGuard when it finishes, so abort alone would leave busy held up to
     // the deadline. cancel_inflight_request makes run_request send Cancel.
     state.transform_runtime.cancel_inflight_request();
-    if let Some(handle) = state.app_state.transform_inflight.lock_or_recover().take() {
+    if let Some((handle, token)) = state.app_state.transform_inflight.lock_or_recover().take() {
+        // Direct token cancel closes the pre-registration window: even if the
+        // request hasn't registered with the sidecar slot yet, its own token
+        // is already cancelled by the time the blocking loop first polls it.
+        token.cancel();
         handle.abort();
     }
     // Invalidate any pending clipboard restore from a just-finished apply/undo
@@ -1112,7 +1117,8 @@ pub(crate) async fn cancel_transform(
 /// user's prior clipboard on every paste-fallback undo.
 ///
 /// On success: hide popover + clear session (undo unreachable once hidden).
-/// On failure: keep the Applied session and emit `failed` so Undo stays available.
+/// On failure: keep the Applied session and re-emit `applied` with the error code
+/// so the popover shows the failure inline and Undo stays available.
 #[tauri::command]
 pub(crate) async fn undo_transform_and_close(
     app_handle: tauri::AppHandle,

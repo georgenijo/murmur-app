@@ -854,7 +854,7 @@ fn validate_payload(payload: &KnowledgePayload) -> Result<(), String> {
         KnowledgePayload::Transform { .. } => {
             if content.is_empty() {
                 return Err(
-                    "Transform instructions must be between 1 and 65,536 characters.".to_string(),
+                    "Transform instructions must be 1 to 4,096 bytes.".to_string(),
                 );
             }
             // The local-LLM sidecar protocol caps instruction bytes at
