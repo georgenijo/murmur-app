@@ -19,17 +19,21 @@
 //! clipboard before anything else happens**, so the user never loses the
 //! transform result even if every write path below fails. The user's
 //! pre-apply clipboard contents are captured (best-effort) before that write
-//! so they can be put back later.
+//! so they can be put back later. This house-rule write REPLACES whatever was
+//! on the clipboard, including non-text contents (an image, a file reference)
+//! that `read_clipboard_text` cannot capture and therefore cannot restore —
+//! accepted as the cost of the clipboard-first guarantee, same as
+//! `inject_text`'s.
 //!
 //! What happens to that saved original afterward depends on whether the
 //! proposed text actually reached the document:
 //!
 //! | Outcome | Original clipboard | Rationale |
 //! |---|---|---|
-//! | AX set succeeded (confirmed or unverified) | Restored | Text landed in the document — the clipboard no longer needs to be the sole record of it. |
-//! | AX set failed, Cmd+V paste succeeded | Restored (after ~300ms) | Same reasoning, one hop later. The delay lets the synthetic keystroke actually land before we overwrite what the target app may still be reading from the pasteboard. |
+//! | AX set succeeded (confirmed or unverified) | Restored immediately | Text landed in the document — the clipboard no longer needs to be the sole record of it. Synchronous, no delay needed. |
+//! | AX set failed, Cmd+V paste succeeded | Restored after ~300ms, off the main thread | Same reasoning, one hop later. The delay lets the synthetic keystroke actually land before we overwrite what the target app may still be reading from the pasteboard; it runs on a background task (`tokio::task::spawn_blocking`), never blocking the main thread the AX/paste work ran on. |
 //! | Target gone / selection changed under us | **Not restored** — proposed text stays in the clipboard | We deliberately did not touch the document; the user's only path to the transform result is now a manual paste. |
-//! | AX set failed and the paste fallback also failed | **Not restored** — proposed text stays in the clipboard | Same reasoning: nothing landed, so the clipboard is the fallback delivery mechanism. `transform-apply-failed` fires so the frontend can show the banner. |
+//! | AX set failed and the paste fallback also failed (or was skipped — target gone right before pasting) | **Not restored** — proposed text stays in the clipboard | Same reasoning: nothing landed, so the clipboard is the fallback delivery mechanism. `transform-apply-failed` fires so the frontend can show the banner. |
 //!
 //! In short: restore the original clipboard whenever the proposed text is
 //! believed to have reached the document by *some* mechanism; leave the
@@ -49,6 +53,57 @@
 //! non-success status from the attribute-set call routes to the paste
 //! fallback — the two are handled identically because the recovery action is
 //! identical.
+//!
+//! Before committing to the paste, two more checks run right at that point
+//! (not reusing anything computed earlier, since both can go stale in the
+//! tens-to-hundreds of milliseconds an AX round-trip takes):
+//! - **Already written?** The AX write's own messaging timeout (100ms — see
+//!   below) can fire before the target finishes applying it, reporting
+//!   failure for a write that lands moments later. Re-reading the selection
+//!   right before pasting and finding the replacement already there reports
+//!   `AppliedVia::AxUnverified` and skips the paste, avoiding a double
+//!   insert.
+//! - **Still frontmost?** The initial frontmost check (at the top of
+//!   `apply_text_to_target`, after activation) is ~100-150ms stale by the
+//!   time the paste fallback is considered — plenty of time for the user to
+//!   switch apps. A fresh, lightweight re-check (no re-activation, no sleep)
+//!   catches that; a mismatch fails closed as `ApplyError::TargetGone`
+//!   instead of posting Cmd+V into whatever is now frontmost.
+//!
+//! ## Apply vs. undo: the selection range is not interchangeable
+//!
+//! `snapshot.range` is the range **the original text** occupied at capture
+//! time. `apply_transform` restores that range as-is, because the document
+//! still holds the original text (untouched) while `TransformStatus` sits at
+//! `ReviewPending` — this is also why `apply_transform` re-verifies the
+//! restored (or current) selection's *content* against `snapshot.text` before
+//! writing (below), not just its position: `ReviewPending` is user-paced, so
+//! the document may have been edited since capture.
+//!
+//! `undo_applied_transform`, however, is restoring the range **the proposed
+//! text** now occupies — which is a different length whenever the proposed
+//! text isn't exactly as long as the original (in UTF-16 code units, the unit
+//! AX ranges use). Reusing `snapshot.range`'s original length for undo would
+//! restore a selection sized for text that's no longer there: too short
+//! (proposed longer than original) leaves residue after the write; too long
+//! (proposed shorter) spills into whatever document text follows and undo
+//! then overwrites it. `range_len_for` computes the correct length for each
+//! direction instead of assuming the original's.
+//!
+//! Both directions also require the destination content to match what's
+//! expected (`expected_current`) before writing — never overwrite based on
+//! range alone.
+//!
+//! ## Session identity (generation counter)
+//!
+//! Each `TransformSession` (`start_session`) is stamped with a monotonic
+//! `generation`. `apply_transform`/`undo_applied_transform` capture it when
+//! they read the session and pass it to `set_applied`, which only mutates the
+//! CURRENT session if its generation still matches. This closes a race where
+//! a slow in-flight apply/undo (main-thread AX work, or the backgrounded
+//! clipboard restore) completes after the user has already started a new
+//! transform pass — without the check, that stale completion would flip
+//! `applied` on a session it no longer belongs to.
 
 #![allow(dead_code)]
 
@@ -66,14 +121,18 @@ pub struct TransformSession {
     pub snapshot: crate::selection::TransformSnapshot,
     pub proposed: Option<String>,
     pub applied: bool,
+    /// Monotonic id stamped at `start_session` time. See the module doc
+    /// comment's "Session identity" section.
+    pub generation: u64,
 }
 
 impl TransformSession {
-    pub fn new(snapshot: crate::selection::TransformSnapshot) -> Self {
+    pub fn new(snapshot: crate::selection::TransformSnapshot, generation: u64) -> Self {
         Self {
             snapshot,
             proposed: None,
             applied: false,
+            generation,
         }
     }
 }
@@ -84,7 +143,8 @@ impl TransformSession {
 /// Start a new session for a freshly captured selection, replacing whatever
 /// session (if any) was active. There is only ever one active session.
 pub fn start_session(app_state: &AppState, snapshot: crate::selection::TransformSnapshot) {
-    *app_state.transform_session.lock_or_recover() = Some(TransformSession::new(snapshot));
+    let generation = app_state.next_transform_session_generation();
+    *app_state.transform_session.lock_or_recover() = Some(TransformSession::new(snapshot, generation));
 }
 
 /// Fill in (or replace) the proposed replacement text for the active session.
@@ -109,18 +169,26 @@ pub fn session_snapshot(app_state: &AppState) -> Option<TransformSession> {
 
 /// Clear the active session unconditionally. Called at the two invalidation
 /// points B1 already established: the start of a new dictation recording
-/// (`commands::recording::start_native_recording`) and the start of a new
-/// transform pass (the transform hotkey press in `keyboard.rs`). Returns
-/// whether a session was actually present to clear.
+/// (`commands::recording::start_native_recording`, only once a recording is
+/// actually about to start) and the start of a new transform pass (the
+/// transform hotkey press in `keyboard.rs`, gated there on `TransformStatus`
+/// being `Idle`/`ReviewPending` so a mid-flight pass can't be clobbered).
+/// Returns whether a session was actually present to clear.
 pub fn clear_session(app_state: &AppState) -> bool {
     app_state.transform_session.lock_or_recover().take().is_some()
 }
 
-/// Mark the active session as applied (or not). Internal — used by
-/// `apply_transform`/`undo_transform` after a successful write.
-fn set_applied(app_state: &AppState, applied: bool) {
+/// Mark the active session as applied (or not) — but only if `generation`
+/// still matches the current session's. A mismatch means the session that
+/// was applied/undone has since been replaced or cleared (see the module doc
+/// comment's "Session identity" section); mutating it now would corrupt a
+/// session this call no longer has anything to do with, so it silently
+/// no-ops instead.
+fn set_applied(app_state: &AppState, applied: bool, generation: u64) {
     if let Some(active) = app_state.transform_session.lock_or_recover().as_mut() {
-        active.applied = applied;
+        if active.generation == generation {
+            active.applied = applied;
+        }
     }
 }
 
@@ -133,9 +201,11 @@ pub enum AppliedVia {
     /// back confirmed the change landed.
     Ax,
     /// `AXUIElementSetAttributeValue` succeeded but verify-after-write did
-    /// not confirm it (mismatch, or the attribute isn't readable at all).
-    /// Applied but unconfirmed — deliberately not an error (see step 4 of the
-    /// module doc comment).
+    /// not confirm it (mismatch, or the attribute isn't readable at all), OR
+    /// the set call reported failure but a re-read right before the paste
+    /// fallback showed the replacement already in place (its messaging
+    /// timeout can fire before the target finishes applying it). Applied but
+    /// unconfirmed — deliberately not an error.
     AxUnverified,
     /// The AX set was refused/unsupported by the target, so the existing
     /// Cmd+V paste machinery (`injector::simulate_paste`) was used instead.
@@ -161,7 +231,7 @@ pub enum ApplyError {
     Unsupported,
     /// `TransformStatus` was not in the state required for the requested
     /// action (`ReviewPending` for apply, `Idle` with `session.applied` for
-    /// undo).
+    /// undo), or a concurrent apply/undo already claimed the transition.
     Busy,
     /// No active `TransformSession`.
     NoSession,
@@ -175,13 +245,16 @@ pub enum ApplyError {
     /// Clipboard access failed before the house-rule write — nothing was
     /// attempted past this point.
     ClipboardUnavailable,
-    /// The target app is no longer frontmost (activation failed to bring it
-    /// back, or a different app took over). Fails closed: the document is
-    /// never touched. Text stays in the clipboard.
+    /// The target app is no longer frontmost — either the initial check
+    /// (activation failed to bring it back, or a different app took over)
+    /// or the fresh re-check taken immediately before the paste fallback.
+    /// Fails closed: the document is never touched. Text stays in the
+    /// clipboard.
     TargetGone,
-    /// The original selection range could not be restored and the current
-    /// selection no longer matches what was captured — fails closed rather
-    /// than risk overwriting text the user never selected.
+    /// Neither restoring the original selection range nor falling back to
+    /// the current selection produced content matching what was expected —
+    /// fails closed rather than risk overwriting text the user never
+    /// selected (or edited since capture, during `ReviewPending`).
     SelectionChanged,
     /// Both the AX write and the Cmd+V paste fallback failed.
     PasteFailed,
@@ -233,22 +306,59 @@ pub enum AxWriteAttempt {
     Failed,
 }
 
+/// Outcome of the checks run immediately before committing to the Cmd+V
+/// paste fallback (only reached when `ax_write == AxWriteAttempt::Failed`).
+/// See the module doc comment's "Why every AX write failure falls back to
+/// paste" section for what each check catches and why it's re-run fresh
+/// rather than reusing anything computed earlier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrePasteCheck {
+    /// A re-read of the selection already shows the replacement text in
+    /// place — the AX set call actually succeeded despite reporting failure.
+    /// Report `AppliedVia::AxUnverified` and skip the paste to avoid a
+    /// double insert.
+    AlreadyWritten,
+    /// The target app is no longer frontmost by the time we're about to
+    /// paste. Fails closed.
+    TargetGone,
+    /// Neither of the above — safe to attempt the paste fallback.
+    Proceed,
+}
+
+/// Decision table for the pre-paste checks. Pure — no I/O — so it's covered
+/// directly by `tests::pre_paste_check_table`.
+pub fn decide_pre_paste_check(already_written: bool, still_frontmost: bool) -> PrePasteCheck {
+    if already_written {
+        PrePasteCheck::AlreadyWritten
+    } else if !still_frontmost {
+        PrePasteCheck::TargetGone
+    } else {
+        PrePasteCheck::Proceed
+    }
+}
+
 /// Step 2+3 guard: decide whether it's safe to proceed to the attribute-set
 /// call at all, given whether the target app is still frontmost and whether
-/// the original selection range/content could be re-established. Pure — no
-/// I/O — so it is covered directly by `tests::pre_write_guard_table`.
+/// the selection's CONTENT (after whichever range-restore attempt was made)
+/// matches what's expected. Pure — no I/O — so it is covered directly by
+/// `tests::pre_write_guard_table`.
+///
+/// `range_restore_succeeded` is retained in the signature for symmetry with
+/// how the native caller naturally computes things (and to keep the existing
+/// decision-table test's shape), but no longer independently changes the
+/// outcome: the content check is unconditional now — even after a
+/// successful range restore, the read-back selection must still match
+/// `current_selection_matches_expected`, since `ReviewPending` is user-paced
+/// and the document may have been edited since capture.
 pub fn decide_pre_write_guard(
     target_is_frontmost: bool,
-    range_restore_succeeded: bool,
-    current_selection_matches_snapshot: bool,
+    _range_restore_succeeded: bool,
+    current_selection_matches_expected: bool,
 ) -> Result<(), ApplyError> {
     if !target_is_frontmost {
         return Err(ApplyError::TargetGone);
     }
-    if range_restore_succeeded {
-        return Ok(());
-    }
-    if current_selection_matches_snapshot {
+    if current_selection_matches_expected {
         Ok(())
     } else {
         Err(ApplyError::SelectionChanged)
@@ -263,6 +373,7 @@ pub fn decide_apply_outcome(
     pre_write_guard: Result<(), ApplyError>,
     ax_write: AxWriteAttempt,
     ax_verify_matched: Option<bool>,
+    pre_paste_check: PrePasteCheck,
     paste_attempted: bool,
     paste_succeeded: bool,
 ) -> (Result<AppliedVia, ApplyError>, ClipboardOutcome) {
@@ -277,13 +388,19 @@ pub fn decide_apply_outcome(
             };
             (Ok(via), ClipboardOutcome::RestoreOriginal)
         }
-        AxWriteAttempt::Failed => {
-            if paste_attempted && paste_succeeded {
-                (Ok(AppliedVia::Paste), ClipboardOutcome::RestoreOriginal)
-            } else {
-                (Err(ApplyError::PasteFailed), ClipboardOutcome::LeaveProposed)
+        AxWriteAttempt::Failed => match pre_paste_check {
+            PrePasteCheck::AlreadyWritten => {
+                (Ok(AppliedVia::AxUnverified), ClipboardOutcome::RestoreOriginal)
             }
-        }
+            PrePasteCheck::TargetGone => (Err(ApplyError::TargetGone), ClipboardOutcome::LeaveProposed),
+            PrePasteCheck::Proceed => {
+                if paste_attempted && paste_succeeded {
+                    (Ok(AppliedVia::Paste), ClipboardOutcome::RestoreOriginal)
+                } else {
+                    (Err(ApplyError::PasteFailed), ClipboardOutcome::LeaveProposed)
+                }
+            }
+        },
         AxWriteAttempt::NotAttempted => {
             // The guard was Ok (otherwise we'd have hit the early return
             // above), so reaching here would mean the guard passed but the
@@ -295,42 +412,110 @@ pub fn decide_apply_outcome(
     }
 }
 
+/// Length, in UTF-16 code units, of `text` — the unit AX text ranges use
+/// (`AXSelectedTextRange`'s `CFRange.length`, exactly as
+/// `selection.rs::decode_range` reads it from the native API without
+/// reinterpretation). See the module doc comment's "Apply vs. undo" section
+/// for why `apply_transform` and `undo_applied_transform` must each pass a
+/// DIFFERENT string here rather than reusing `snapshot.range`'s original
+/// length for both directions.
+pub fn range_len_for(text: &str) -> usize {
+    text.encode_utf16().count()
+}
+
 /// Delay before restoring the user's original clipboard contents after the
 /// Cmd+V paste fallback. Cmd+V is an asynchronous keystroke through the HID
 /// event queue and the target app's own event loop; overwriting the
-/// clipboard immediately risks racing the app's own paste-read. No such
-/// delay is needed on the AX path — `AXUIElementSetAttributeValue` is
-/// synchronous.
+/// clipboard immediately risks racing the app's own paste-read. Runs on a
+/// background task (`tokio::task::spawn_blocking`), never on the main thread
+/// — `arboard`'s clipboard access needs no particular thread, so there's no
+/// reason to block the UI for it. No such delay (or backgrounding) is needed
+/// on the AX path — `AXUIElementSetAttributeValue` is synchronous, so that
+/// restore happens inline, immediately.
 const PASTE_CLIPBOARD_RESTORE_DELAY_MS: u64 = 300;
 
-/// Delay after re-activating the target app before attempting the paste
-/// fallback, mirroring `inject_text`'s default focus-settle delay.
+/// Delay after re-activating the target app before checking whether it
+/// became frontmost, mirroring `inject_text`'s default focus-settle delay.
+/// Runs on the main thread (activation itself is a main-thread-only AppKit
+/// call) but is small relative to the paste-restore delay above, which is
+/// why only the latter was moved off it.
 const ACTIVATION_SETTLE_MS: u64 = 50;
 
 /// Pure pre-flight validation for `apply_transform`: does a session exist,
 /// is it not already applied, and does it have proposed text? Factored out
 /// of `apply_transform` so the session-lifecycle rules are unit-testable
-/// without an `AppHandle` (real or mock) at all. Returns the text to write
-/// and the snapshot to write it against.
-fn validate_apply(session: &Option<TransformSession>) -> Result<(String, crate::selection::TransformSnapshot), ApplyError> {
+/// without an `AppHandle` (real or mock) at all. Returns the text to write,
+/// the snapshot to write it against, and the session's generation (for the
+/// later `set_applied` call).
+fn validate_apply(
+    session: &Option<TransformSession>,
+) -> Result<(String, crate::selection::TransformSnapshot, u64), ApplyError> {
     let session = session.as_ref().ok_or(ApplyError::NoSession)?;
     if session.applied {
         return Err(ApplyError::AlreadyApplied);
     }
     let text = session.proposed.clone().ok_or(ApplyError::NoProposedText)?;
-    Ok((text, session.snapshot.clone()))
+    Ok((text, session.snapshot.clone(), session.generation))
 }
 
 /// Pure pre-flight validation for `undo_transform`: does a session exist and
 /// is it currently applied? A second call after a successful undo (which
 /// flips `applied` back to `false`) is rejected here — this is what makes
-/// double-undo a hard error rather than a silent no-op.
-fn validate_undo(session: &Option<TransformSession>) -> Result<crate::selection::TransformSnapshot, ApplyError> {
+/// double-undo a hard error rather than a silent no-op. Returns the
+/// snapshot, the currently-applied proposed text (what's now in the
+/// document — see the module doc comment's "Apply vs. undo" section), and
+/// the session's generation.
+fn validate_undo(
+    session: &Option<TransformSession>,
+) -> Result<(crate::selection::TransformSnapshot, String, u64), ApplyError> {
     let session = session.as_ref().ok_or(ApplyError::NoSession)?;
     if !session.applied {
         return Err(ApplyError::NotApplied);
     }
-    Ok(session.snapshot.clone())
+    // Invariant: `applied` only ever becomes true after a successful
+    // `apply_transform`, which requires `proposed` to be `Some` — but guard
+    // defensively rather than trust that invariant across future changes.
+    let proposed = session.proposed.clone().ok_or(ApplyError::NoProposedText)?;
+    Ok((session.snapshot.clone(), proposed, session.generation))
+}
+
+/// Shared engine behind `apply_transform` and `undo_applied_transform`: both
+/// are "write `replacement` into the range currently occupied by
+/// `expected_current`, of length `range_len` starting at `range_start`" —
+/// they differ only in which text is which (see each caller), and in what
+/// happens to `session.applied` afterward (handled by the caller, not here).
+///
+/// Dispatches the AX/clipboard work to the main thread exactly once and
+/// returns as soon as it completes; any delayed clipboard restore is
+/// scheduled on a background task rather than awaited here, so this future
+/// resolves promptly instead of blocking on the ~300ms paste-restore delay.
+#[cfg(target_os = "macos")]
+async fn run_apply(
+    app_handle: &tauri::AppHandle,
+    pid: i32,
+    range_start: Option<usize>,
+    range_len: usize,
+    expected_current: String,
+    replacement: String,
+) -> Result<AppliedVia, ApplyError> {
+    let (tx, rx) = tokio::sync::oneshot::channel::<native::NativeApplyOutcome>();
+    app_handle
+        .run_on_main_thread(move || {
+            let outcome =
+                native::apply_text_to_target(pid, range_start, range_len, &expected_current, &replacement);
+            let _ = tx.send(outcome);
+        })
+        .map_err(|_| ApplyError::Unsupported)?;
+    let outcome = rx.await.map_err(|_| ApplyError::Unsupported)?;
+
+    if let Some(original) = outcome.pending_clipboard_restore {
+        tokio::task::spawn_blocking(move || {
+            std::thread::sleep(std::time::Duration::from_millis(PASTE_CLIPBOARD_RESTORE_DELAY_MS));
+            let _ = crate::injector::write_clipboard_text(&original);
+        });
+    }
+
+    outcome.result
 }
 
 /// Apply the active session's proposed text to the target document.
@@ -343,27 +528,26 @@ pub async fn apply_transform(
     app_state: &AppState,
 ) -> Result<AppliedVia, ApplyError> {
     let session = session_snapshot(app_state);
-    let (text, snapshot) = validate_apply(&session)?;
+    let (text, snapshot, generation) = validate_apply(&session)?;
 
     #[cfg(target_os = "macos")]
     {
-        let (tx, rx) = tokio::sync::oneshot::channel::<Result<AppliedVia, ApplyError>>();
-        app_handle
-            .run_on_main_thread(move || {
-                let result = native::apply_text_to_target(&snapshot, &text);
-                let _ = tx.send(result);
-            })
-            .map_err(|_| ApplyError::Unsupported)?;
-        let result = rx.await.unwrap_or(Err(ApplyError::Unsupported));
+        let range_start = snapshot.range.map(|(start, _)| start);
+        // Apply: the document still holds the ORIGINAL text (untouched, per
+        // `ReviewPending` being user-paced) — the range to restore is sized
+        // for `snapshot.text`, not the proposed replacement.
+        let range_len = range_len_for(&snapshot.text);
+        let expected_current = snapshot.text.clone();
+        let result = run_apply(app_handle, snapshot.pid, range_start, range_len, expected_current, text).await;
         if result.is_ok() {
-            set_applied(app_state, true);
+            set_applied(app_state, true, generation);
         }
         result
     }
 
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (app_handle, text, snapshot);
+        let _ = (app_handle, text, snapshot, generation);
         Err(ApplyError::Unsupported)
     }
 }
@@ -382,50 +566,84 @@ pub async fn undo_applied_transform(
     app_state: &AppState,
 ) -> Result<(), ApplyError> {
     let session = session_snapshot(app_state);
-    let snapshot = validate_undo(&session)?;
-    let original = snapshot.text.clone();
+    let (snapshot, proposed, generation) = validate_undo(&session)?;
 
     #[cfg(target_os = "macos")]
     {
-        let (tx, rx) = tokio::sync::oneshot::channel::<Result<AppliedVia, ApplyError>>();
-        app_handle
-            .run_on_main_thread(move || {
-                let result = native::apply_text_to_target(&snapshot, &original);
-                let _ = tx.send(result);
-            })
-            .map_err(|_| ApplyError::Unsupported)?;
-        let result = rx.await.unwrap_or(Err(ApplyError::Unsupported));
+        let range_start = snapshot.range.map(|(start, _)| start);
+        // Undo: the document currently holds the PROPOSED text (that's what
+        // `apply_transform` wrote there) — the range to restore must be
+        // sized for `proposed`, NOT `snapshot.range`'s original length. See
+        // the module doc comment's "Apply vs. undo" section; this is exactly
+        // the bug this parametrization fixes.
+        let range_len = range_len_for(&proposed);
+        let original = snapshot.text.clone();
+        let result = run_apply(app_handle, snapshot.pid, range_start, range_len, proposed, original).await;
         result.map(|_| {
-            set_applied(app_state, false);
+            set_applied(app_state, false, generation);
         })
     }
 
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (app_handle, snapshot, original);
+        let _ = (app_handle, snapshot, proposed, generation);
         Err(ApplyError::Unsupported)
     }
 }
 
-/// RAII guard: sets `TransformStatus::Applying` for its lifetime and always
-/// resets to `Idle` on drop (both the success and the error path go back to
-/// Idle — unlike `IdleGuard` in `commands/recording.rs`, there is no
-/// "disarm" case here, since neither apply nor undo ever hands the pipeline
-/// off to something else that would keep it busy).
+/// RAII guard around the `TransformStatus::Applying` window.
+///
+/// Construction (`try_new`) atomically transitions from a required `from`
+/// status to `Applying` under a single lock acquisition (`AppState::
+/// try_transition_transform_status`) — closing the check-then-act race two
+/// concurrent `apply_transform_result`/`undo_transform` command invocations
+/// could otherwise hit (both observing the same starting status before
+/// either flips it).
+///
+/// On drop, the status goes to `Idle` if the operation succeeded
+/// (`mark_succeeded`), or back to the ORIGINAL `from` status otherwise. This
+/// means a failed `apply_transform_result` lands back on `ReviewPending`
+/// rather than `Idle` — deliberately, so the frontend can offer a Retry
+/// action instead of the review popover having nowhere to go back to. A
+/// failed `undo_transform` lands back on `Idle`, which is also its own
+/// precondition, so retrying undo needs no special case.
 pub struct ApplyingGuard<'a> {
     app_state: &'a AppState,
+    prior_status: TransformStatus,
+    succeeded: bool,
 }
 
 impl<'a> ApplyingGuard<'a> {
-    pub fn new(app_state: &'a AppState) -> Self {
-        app_state.set_transform_status(TransformStatus::Applying);
-        Self { app_state }
+    /// Attempt the `from -> Applying` transition. Returns `None` if the
+    /// current status isn't `from` — the caller should treat that as
+    /// `ApplyError::Busy` rather than proceeding.
+    pub fn try_new(app_state: &'a AppState, from: TransformStatus) -> Option<Self> {
+        if app_state.try_transition_transform_status(from, TransformStatus::Applying) {
+            Some(Self {
+                app_state,
+                prior_status: from,
+                succeeded: false,
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Mark the operation as having succeeded — on drop the status goes to
+    /// `Idle` instead of back to `prior_status`.
+    pub fn mark_succeeded(&mut self) {
+        self.succeeded = true;
     }
 }
 
 impl Drop for ApplyingGuard<'_> {
     fn drop(&mut self) {
-        self.app_state.set_transform_status(TransformStatus::Idle);
+        let target = if self.succeeded {
+            TransformStatus::Idle
+        } else {
+            self.prior_status
+        };
+        self.app_state.set_transform_status(target);
     }
 }
 
@@ -437,12 +655,18 @@ pub async fn apply_transform_result(
 ) -> Result<String, String> {
     use tauri::Emitter;
 
-    if state.app_state.transform_status() != TransformStatus::ReviewPending {
-        return Err("No transform result is awaiting review.".to_string());
-    }
-    let _guard = ApplyingGuard::new(&state.app_state);
+    let mut guard = match ApplyingGuard::try_new(&state.app_state, TransformStatus::ReviewPending) {
+        Some(guard) => guard,
+        None => {
+            let _ = app_handle.emit("transform-apply-failed", ApplyError::Busy.as_str());
+            return Err(ApplyError::Busy.as_str().to_string());
+        }
+    };
     match apply_transform(&app_handle, &state.app_state).await {
-        Ok(via) => Ok(via.as_str().to_string()),
+        Ok(via) => {
+            guard.mark_succeeded();
+            Ok(via.as_str().to_string())
+        }
         Err(error) => {
             let _ = app_handle.emit("transform-apply-failed", error.as_str());
             Err(error.as_str().to_string())
@@ -459,12 +683,18 @@ pub async fn undo_transform(
 ) -> Result<(), String> {
     use tauri::Emitter;
 
-    if state.app_state.transform_status() != TransformStatus::Idle {
-        return Err("Cannot undo while another transform action is in progress.".to_string());
-    }
-    let _guard = ApplyingGuard::new(&state.app_state);
+    let mut guard = match ApplyingGuard::try_new(&state.app_state, TransformStatus::Idle) {
+        Some(guard) => guard,
+        None => {
+            let _ = app_handle.emit("transform-apply-failed", ApplyError::Busy.as_str());
+            return Err(ApplyError::Busy.as_str().to_string());
+        }
+    };
     match undo_applied_transform(&app_handle, &state.app_state).await {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            guard.mark_succeeded();
+            Ok(())
+        }
         Err(error) => {
             let _ = app_handle.emit("transform-apply-failed", error.as_str());
             Err(error.as_str().to_string())
@@ -482,10 +712,8 @@ mod native {
     //! this PR.
 
     use super::{
-        AppliedVia, ApplyError, AxWriteAttempt, ClipboardOutcome, ACTIVATION_SETTLE_MS,
-        PASTE_CLIPBOARD_RESTORE_DELAY_MS,
+        AppliedVia, ApplyError, AxWriteAttempt, ClipboardOutcome, PrePasteCheck, ACTIVATION_SETTLE_MS,
     };
-    use crate::selection::TransformSnapshot;
     use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication, NSWorkspace};
     use std::ffi::{c_char, c_void, CStr, CString};
     use std::thread;
@@ -527,7 +755,16 @@ mod native {
     }
 
     const AX_SUCCESS: i32 = 0;
-    const AX_QUERY_TIMEOUT_SECONDS: f32 = 0.025;
+    /// Messaging timeout for every AX call in this module. Deliberately
+    /// higher than `selection.rs`'s 25ms: that figure was tuned for the
+    /// fail-closed READ side, where an ambiguous ("did it time out, or does
+    /// the element have no value?") status must abort rather than guess. The
+    /// write side has no such ambiguity to worry about — a timeout here just
+    /// needs the target enough time to actually finish applying the write
+    /// before we (wrongly) treat it as failed and fall back to pasting a
+    /// second copy (see `decide_pre_paste_check`'s `AlreadyWritten` case,
+    /// which also catches whatever timeouts still slip through).
+    const AX_WRITE_TIMEOUT_SECONDS: f32 = 0.1;
     const UTF8_ENCODING: u32 = 0x0800_0100;
     // kAXValueCFRangeType from the AXValueType enum (ApplicationServices /
     // HIServices AXValue.h) — same constant `selection.rs` uses to decode.
@@ -584,7 +821,7 @@ mod native {
     }
 
     fn set_timeout(element: AXUIElementRef) -> bool {
-        unsafe { AXUIElementSetMessagingTimeout(element, AX_QUERY_TIMEOUT_SECONDS) == AX_SUCCESS }
+        unsafe { AXUIElementSetMessagingTimeout(element, AX_WRITE_TIMEOUT_SECONDS) == AX_SUCCESS }
     }
 
     fn copy_attribute(element: AXUIElementRef, name: &str) -> Option<CFGuard> {
@@ -603,8 +840,12 @@ mod native {
     /// Copy `AXFocusedUIElement` of the application identified by `pid`
     /// (NOT necessarily the frontmost app — the caller has already checked
     /// that separately). Returns owned guards for both the application and
-    /// focused-element AX references so callers can chain further calls
-    /// before either is released.
+    /// focused-element AX references. Called exactly ONCE per
+    /// `apply_text_to_target` invocation — every subsequent read/write/range
+    /// operation is threaded through the same `focused` reference (the
+    /// `_of` functions below) rather than re-resolving
+    /// `AXFocusedUIElement`, so the field verified is guaranteed to be the
+    /// field written even if focus were to shift mid-call.
     fn focused_element(pid: i32) -> Option<(CFGuard, CFGuard)> {
         let app = unsafe { AXUIElementCreateApplication(pid) };
         if app.is_null() {
@@ -621,19 +862,15 @@ mod native {
         Some((app_guard, focused))
     }
 
-    /// Read `AXSelectedText` of the currently focused element of `pid`.
-    fn read_selected_text(pid: i32) -> Option<String> {
-        let (_app, focused) = focused_element(pid)?;
-        let value = copy_attribute(focused.0, "AXSelectedText")?;
+    /// Read `AXSelectedText` of an already-resolved focused element.
+    fn read_selected_text_of(focused: AXUIElementRef) -> Option<String> {
+        let value = copy_attribute(focused, "AXSelectedText")?;
         cfstring_to_string(value.0)
     }
 
-    /// Write `text` into `AXSelectedText` of the currently focused element of
-    /// `pid`. Returns whether the set call reported success.
-    fn write_selected_text(pid: i32, text: &str) -> bool {
-        let Some((_app, focused)) = focused_element(pid) else {
-            return false;
-        };
+    /// Write `text` into `AXSelectedText` of an already-resolved focused
+    /// element. Returns whether the set call reported success.
+    fn write_selected_text_of(focused: AXUIElementRef, text: &str) -> bool {
         let Some(value) = cfstring(text) else {
             return false;
         };
@@ -643,18 +880,15 @@ mod native {
         let Some(attr) = cfstring("AXSelectedText") else {
             return false;
         };
-        let status = unsafe { AXUIElementSetAttributeValue(focused.0, attr.0, value.0) };
+        let status = unsafe { AXUIElementSetAttributeValue(focused, attr.0, value.0) };
         status == AX_SUCCESS
     }
 
-    /// Restore the originally captured selection range via
+    /// Restore a selection range on an already-resolved focused element via
     /// `AXSelectedTextRange`. Best-effort — returns whether it succeeded so
     /// the caller can fall back to the "current selection still matches"
     /// check per the module doc comment.
-    fn restore_selection_range(pid: i32, range: (usize, usize)) -> bool {
-        let Some((_app, focused)) = focused_element(pid) else {
-            return false;
-        };
+    fn restore_selection_range_of(focused: AXUIElementRef, range: (usize, usize)) -> bool {
         let (start, end) = range;
         let cf_range = CFRange {
             location: start as CFIndex,
@@ -673,9 +907,20 @@ mod native {
         let Some(attr) = cfstring("AXSelectedTextRange") else {
             return false;
         };
-        let status =
-            unsafe { AXUIElementSetAttributeValue(focused.0, attr.0, value_guard.0) };
+        let status = unsafe { AXUIElementSetAttributeValue(focused, attr.0, value_guard.0) };
         status == AX_SUCCESS
+    }
+
+    /// Lightweight frontmost check: no activation attempt, no settle delay.
+    /// Used both as the tail of `activate_and_check_frontmost` and, on its
+    /// own, for the pre-paste re-check — the earlier
+    /// `activate_and_check_frontmost` result is up to ~100-150ms stale by
+    /// the time the paste fallback is considered.
+    fn is_frontmost(pid: i32) -> bool {
+        NSWorkspace::sharedWorkspace()
+            .frontmostApplication()
+            .map(|app| app.processIdentifier() == pid)
+            .unwrap_or(false)
     }
 
     /// Re-activate the app owning `pid` and verify it is frontmost afterward.
@@ -687,90 +932,157 @@ mod native {
             target.activateWithOptions(NSApplicationActivationOptions::empty());
         }
         thread::sleep(Duration::from_millis(ACTIVATION_SETTLE_MS));
-        NSWorkspace::sharedWorkspace()
-            .frontmostApplication()
-            .map(|app| app.processIdentifier() == pid)
-            .unwrap_or(false)
+        is_frontmost(pid)
     }
 
-    /// Native implementation of the apply/undo write path. `text` is whatever
-    /// should end up in the document — the proposed replacement for
-    /// `apply_transform`, or `snapshot.text` (the original) for
-    /// `undo_transform`. Must run on the main thread (same constraint as
-    /// `inject_text`'s focus query and `capture_selection_native`).
+    /// Result of `apply_text_to_target`. Carries a pending clipboard restore
+    /// separately from `result` so the caller (`run_apply`, off the main
+    /// thread) can schedule the ~300ms-delayed restore on a background task
+    /// instead of this (main-thread) function sleeping for it — see the
+    /// module doc comment's clipboard policy table.
+    pub(super) struct NativeApplyOutcome {
+        pub result: Result<AppliedVia, ApplyError>,
+        /// `Some(original)` only when the Cmd+V paste fallback succeeded and
+        /// the caller must restore `original` to the clipboard after the
+        /// delay. `None` when there's nothing to restore, or when the
+        /// restore already happened inline (AX path — synchronous, no delay
+        /// needed).
+        pub pending_clipboard_restore: Option<String>,
+    }
+
+    /// Native implementation of the apply/undo write path. `replacement` is
+    /// whatever should end up in the document; `expected_current` is what
+    /// must currently occupy the selection (by content, not just position)
+    /// for the write to proceed at all. Must run on the main thread (same
+    /// constraint as `inject_text`'s focus query and
+    /// `capture_selection_native`).
     pub(super) fn apply_text_to_target(
-        snapshot: &TransformSnapshot,
-        text: &str,
-    ) -> Result<AppliedVia, ApplyError> {
-        // House rule: the proposed/undo text is written to the clipboard
+        pid: i32,
+        range_start: Option<usize>,
+        range_len: usize,
+        expected_current: &str,
+        replacement: &str,
+    ) -> NativeApplyOutcome {
+        // House rule: the replacement text is written to the clipboard
         // FIRST, unconditionally, before anything else is attempted. The
         // user must never lose it regardless of what happens next.
         let original_clipboard = crate::injector::read_clipboard_text().ok();
-        crate::injector::write_clipboard_text(text).map_err(|_| ApplyError::ClipboardUnavailable)?;
+        if crate::injector::write_clipboard_text(replacement).is_err() {
+            return NativeApplyOutcome {
+                result: Err(ApplyError::ClipboardUnavailable),
+                pending_clipboard_restore: None,
+            };
+        }
 
-        let target_is_frontmost = activate_and_check_frontmost(snapshot.pid);
-        let range_restore_succeeded = target_is_frontmost
-            && snapshot
-                .range
-                .map(|range| restore_selection_range(snapshot.pid, range))
-                .unwrap_or(false);
-        let current_selection_matches_snapshot = target_is_frontmost
-            && !range_restore_succeeded
-            && read_selected_text(snapshot.pid)
-                .map(|current| current == snapshot.text)
-                .unwrap_or(false);
+        let target_is_frontmost = activate_and_check_frontmost(pid);
+
+        // Fetch the focused element ONCE (finding: re-fetching per call could
+        // let restore/read/write silently operate on different elements if
+        // focus shifted mid-call).
+        let focused = if target_is_frontmost {
+            focused_element(pid)
+        } else {
+            None
+        };
+
+        let range_restore_succeeded = focused
+            .as_ref()
+            .zip(range_start)
+            .map(|((_app, el), start)| restore_selection_range_of(el.0, (start, start + range_len)))
+            .unwrap_or(false);
+
+        // Content check is unconditional: even after a successful range
+        // restore, the read-back selection must equal `expected_current`
+        // before writing (`ReviewPending` is user-paced; the document may
+        // have changed since capture).
+        let current_selection_matches_expected = focused
+            .as_ref()
+            .and_then(|(_app, el)| read_selected_text_of(el.0))
+            .map(|current| current == expected_current)
+            .unwrap_or(false);
 
         let pre_write_guard = super::decide_pre_write_guard(
             target_is_frontmost,
             range_restore_succeeded,
-            current_selection_matches_snapshot,
+            current_selection_matches_expected,
         );
 
-        let ax_write = match pre_write_guard {
-            Err(_) => AxWriteAttempt::NotAttempted,
-            Ok(()) => {
-                if write_selected_text(snapshot.pid, text) {
+        let ax_write = match (&pre_write_guard, focused.as_ref()) {
+            (Ok(()), Some((_app, el))) => {
+                if write_selected_text_of(el.0, replacement) {
                     AxWriteAttempt::Succeeded
                 } else {
                     AxWriteAttempt::Failed
                 }
             }
+            _ => AxWriteAttempt::NotAttempted,
         };
 
         let ax_verify_matched = if ax_write == AxWriteAttempt::Succeeded {
             Some(
-                read_selected_text(snapshot.pid)
-                    .map(|readback| readback == text)
+                focused
+                    .as_ref()
+                    .and_then(|(_app, el)| read_selected_text_of(el.0))
+                    .map(|readback| readback == replacement)
                     .unwrap_or(false),
             )
         } else {
             None
         };
 
-        let (paste_attempted, paste_succeeded) = if ax_write == AxWriteAttempt::Failed {
-            (true, crate::injector::simulate_paste().is_ok())
+        let (pre_paste_check, paste_attempted, paste_succeeded) = if ax_write == AxWriteAttempt::Failed {
+            let already_written = focused
+                .as_ref()
+                .and_then(|(_app, el)| read_selected_text_of(el.0))
+                .map(|current| current == replacement)
+                .unwrap_or(false);
+            // Fresh, lightweight re-check right before pasting — no
+            // re-activation, no sleep; the initial `target_is_frontmost`
+            // check above is stale by the time we get here.
+            let still_frontmost = is_frontmost(pid);
+            let check = super::decide_pre_paste_check(already_written, still_frontmost);
+            match check {
+                PrePasteCheck::Proceed => (check, true, crate::injector::simulate_paste().is_ok()),
+                _ => (check, false, false),
+            }
         } else {
-            (false, false)
+            (PrePasteCheck::Proceed, false, false) // unused unless ax_write == Failed
         };
 
         let (result, clipboard_outcome) = super::decide_apply_outcome(
             pre_write_guard,
             ax_write,
             ax_verify_matched,
+            pre_paste_check,
             paste_attempted,
             paste_succeeded,
         );
 
-        if clipboard_outcome == ClipboardOutcome::RestoreOriginal {
-            if matches!(result, Ok(AppliedVia::Paste)) {
-                thread::sleep(Duration::from_millis(PASTE_CLIPBOARD_RESTORE_DELAY_MS));
-            }
-            if let Some(original) = original_clipboard {
-                let _ = crate::injector::write_clipboard_text(&original);
+        match clipboard_outcome {
+            ClipboardOutcome::LeaveProposed => NativeApplyOutcome {
+                result,
+                pending_clipboard_restore: None,
+            },
+            ClipboardOutcome::RestoreOriginal => {
+                if matches!(result, Ok(AppliedVia::Paste)) {
+                    // Delayed restore — handed to the caller to run off the
+                    // main thread; do NOT sleep here.
+                    NativeApplyOutcome {
+                        result,
+                        pending_clipboard_restore: original_clipboard,
+                    }
+                } else {
+                    // AX path: synchronous, no delay needed — restore inline.
+                    if let Some(original) = original_clipboard {
+                        let _ = crate::injector::write_clipboard_text(&original);
+                    }
+                    NativeApplyOutcome {
+                        result,
+                        pending_clipboard_restore: None,
+                    }
+                }
             }
         }
-
-        result
     }
 }
 
@@ -817,6 +1129,18 @@ mod tests {
     }
 
     #[test]
+    fn start_session_stamps_an_increasing_generation() {
+        let state = AppState::default();
+        start_session(&state, snapshot());
+        let first_generation = session_snapshot(&state).unwrap().generation;
+
+        start_session(&state, snapshot());
+        let second_generation = session_snapshot(&state).unwrap().generation;
+
+        assert!(second_generation > first_generation);
+    }
+
+    #[test]
     fn set_proposed_text_requires_an_active_session() {
         let state = AppState::default();
         assert!(!set_proposed_text(&state, "hello".to_string()));
@@ -856,8 +1180,37 @@ mod tests {
     #[test]
     fn set_applied_is_a_no_op_without_a_session() {
         let state = AppState::default();
-        set_applied(&state, true); // must not panic
+        set_applied(&state, true, 1); // must not panic
         assert!(session_snapshot(&state).is_none());
+    }
+
+    #[test]
+    fn set_applied_no_ops_when_generation_does_not_match_current_session() {
+        // Models a slow in-flight apply/undo completing AFTER the user has
+        // already started a new transform pass (issue #312 PR-B2 review,
+        // finding #5): the stale completion's `set_applied` call must not
+        // corrupt the session that replaced it.
+        let state = AppState::default();
+        start_session(&state, snapshot());
+        let stale_generation = session_snapshot(&state).unwrap().generation;
+
+        // A new session starts (e.g. the user re-pressed the transform
+        // hotkey) before the stale call lands.
+        start_session(&state, snapshot());
+        let current_generation = session_snapshot(&state).unwrap().generation;
+        assert_ne!(stale_generation, current_generation);
+
+        set_applied(&state, true, stale_generation);
+        assert!(
+            !session_snapshot(&state).unwrap().applied,
+            "set_applied with a stale generation must not mutate the current session"
+        );
+
+        set_applied(&state, true, current_generation);
+        assert!(
+            session_snapshot(&state).unwrap().applied,
+            "set_applied with the current generation must still work"
+        );
     }
 
     // `apply_transform`/`undo_transform` dispatch to `run_on_main_thread` on
@@ -882,7 +1235,7 @@ mod tests {
 
     #[test]
     fn apply_requires_proposed_text() {
-        let session = Some(TransformSession::new(snapshot()));
+        let session = Some(TransformSession::new(snapshot(), 1));
         assert!(matches!(
             validate_apply(&session),
             Err(ApplyError::NoProposedText)
@@ -891,7 +1244,7 @@ mod tests {
 
     #[test]
     fn apply_rejects_an_already_applied_session() {
-        let mut session = TransformSession::new(snapshot());
+        let mut session = TransformSession::new(snapshot(), 1);
         session.proposed = Some("proposed".to_string());
         session.applied = true;
         assert!(matches!(
@@ -902,11 +1255,13 @@ mod tests {
 
     #[test]
     fn apply_accepts_a_fresh_session_with_proposed_text() {
-        let mut session = TransformSession::new(snapshot());
+        let mut session = TransformSession::new(snapshot(), 7);
         session.proposed = Some("proposed".to_string());
-        let (text, resolved_snapshot) = validate_apply(&Some(session)).expect("should validate");
+        let (text, resolved_snapshot, generation) =
+            validate_apply(&Some(session)).expect("should validate");
         assert_eq!(text, "proposed");
         assert_eq!(resolved_snapshot.text, "original text");
+        assert_eq!(generation, 7);
     }
 
     #[test]
@@ -916,7 +1271,7 @@ mod tests {
 
     #[test]
     fn undo_requires_the_session_to_be_applied() {
-        let mut session = TransformSession::new(snapshot());
+        let mut session = TransformSession::new(snapshot(), 1);
         session.proposed = Some("proposed".to_string());
         assert!(matches!(
             validate_undo(&Some(session)),
@@ -926,10 +1281,14 @@ mod tests {
 
     #[test]
     fn undo_accepts_an_applied_session() {
-        let mut session = TransformSession::new(snapshot());
+        let mut session = TransformSession::new(snapshot(), 9);
         session.proposed = Some("proposed".to_string());
         session.applied = true;
-        assert!(validate_undo(&Some(session)).is_ok());
+        let (resolved_snapshot, proposed, generation) =
+            validate_undo(&Some(session)).expect("should validate");
+        assert_eq!(resolved_snapshot.text, "original text");
+        assert_eq!(proposed, "proposed");
+        assert_eq!(generation, 9);
     }
 
     #[test]
@@ -937,7 +1296,7 @@ mod tests {
         // First undo (modeled directly, since the native write path isn't
         // exercised here) flips `applied` back to false; a second validation
         // against that same post-undo session must reject it.
-        let mut session = TransformSession::new(snapshot());
+        let mut session = TransformSession::new(snapshot(), 1);
         session.proposed = Some("proposed".to_string());
         session.applied = true;
         assert!(validate_undo(&Some(session.clone())).is_ok());
@@ -967,7 +1326,7 @@ mod tests {
         let state = AppState::default();
         start_session(&state, snapshot());
         set_proposed_text(&state, "proposed".to_string());
-        set_applied(&state, true);
+        set_applied(&state, true, session_snapshot(&state).unwrap().generation);
         clear_session(&state);
         assert!(session_snapshot(&state).is_none());
     }
@@ -1000,6 +1359,58 @@ mod tests {
         assert_eq!(AppliedVia::Paste.as_str(), "paste");
     }
 
+    // -- ApplyingGuard: atomic transition + restore-prior-status-on-failure --
+
+    #[test]
+    fn applying_guard_try_new_requires_the_exact_from_status() {
+        let state = AppState::default();
+        assert!(state.transform_status() == TransformStatus::Idle);
+        assert!(ApplyingGuard::try_new(&state, TransformStatus::ReviewPending).is_none());
+        assert_eq!(state.transform_status(), TransformStatus::Idle);
+    }
+
+    #[test]
+    fn applying_guard_sets_applying_and_restores_prior_status_on_drop_by_default() {
+        let state = AppState::default();
+        state.set_transform_status(TransformStatus::ReviewPending);
+        {
+            let guard = ApplyingGuard::try_new(&state, TransformStatus::ReviewPending)
+                .expect("should transition");
+            assert_eq!(state.transform_status(), TransformStatus::Applying);
+            drop(guard);
+        }
+        // No mark_succeeded() call -- modeling a failed apply -- so drop
+        // restores ReviewPending, enabling a Retry.
+        assert_eq!(state.transform_status(), TransformStatus::ReviewPending);
+    }
+
+    #[test]
+    fn applying_guard_lands_idle_when_marked_succeeded() {
+        let state = AppState::default();
+        state.set_transform_status(TransformStatus::ReviewPending);
+        {
+            let mut guard = ApplyingGuard::try_new(&state, TransformStatus::ReviewPending)
+                .expect("should transition");
+            guard.mark_succeeded();
+        }
+        assert_eq!(state.transform_status(), TransformStatus::Idle);
+    }
+
+    #[test]
+    fn applying_guard_second_concurrent_attempt_is_rejected() {
+        // Two "concurrent" apply_transform_result calls both trying the same
+        // ReviewPending -> Applying transition: only one may succeed.
+        let state = AppState::default();
+        state.set_transform_status(TransformStatus::ReviewPending);
+        let first = ApplyingGuard::try_new(&state, TransformStatus::ReviewPending);
+        assert!(first.is_some());
+        let second = ApplyingGuard::try_new(&state, TransformStatus::ReviewPending);
+        assert!(
+            second.is_none(),
+            "a second concurrent apply must not also claim the transition"
+        );
+    }
+
     // -- Pure decision-table tests --
 
     #[test]
@@ -1008,8 +1419,12 @@ mod tests {
         let cases: &[((bool, bool, bool), Result<(), ApplyError>)] = &[
             ((false, false, false), Err(ApplyError::TargetGone)),
             ((false, true, true), Err(ApplyError::TargetGone)), // frontmost check wins even if everything else looks fine
-            ((true, true, false), Ok(())),
             ((true, true, true), Ok(())),
+            // Range restore succeeded, but the read-back content does NOT
+            // match what was expected (e.g. the document was edited during
+            // `ReviewPending`) -- content-verify is unconditional now, so
+            // this fails closed instead of trusting the range restore alone.
+            ((true, true, false), Err(ApplyError::SelectionChanged)),
             ((true, false, true), Ok(())),
             ((true, false, false), Err(ApplyError::SelectionChanged)),
         ];
@@ -1023,12 +1438,31 @@ mod tests {
     }
 
     #[test]
+    fn pre_paste_check_table() {
+        // (already_written, still_frontmost) -> expected
+        let cases: &[((bool, bool), PrePasteCheck)] = &[
+            ((true, true), PrePasteCheck::AlreadyWritten),
+            ((true, false), PrePasteCheck::AlreadyWritten), // already-written check wins regardless of frontmost
+            ((false, false), PrePasteCheck::TargetGone),
+            ((false, true), PrePasteCheck::Proceed),
+        ];
+        for ((already_written, still_frontmost), expected) in cases.iter().copied() {
+            assert_eq!(
+                decide_pre_paste_check(already_written, still_frontmost),
+                expected,
+                "already_written={already_written} still_frontmost={still_frontmost}"
+            );
+        }
+    }
+
+    #[test]
     fn apply_decision_table() {
         struct Case {
             name: &'static str,
             guard: Result<(), ApplyError>,
             ax_write: AxWriteAttempt,
             ax_verify_matched: Option<bool>,
+            pre_paste_check: PrePasteCheck,
             paste_attempted: bool,
             paste_succeeded: bool,
             expected_result: Result<AppliedVia, ApplyError>,
@@ -1041,6 +1475,7 @@ mod tests {
                 guard: Err(ApplyError::TargetGone),
                 ax_write: AxWriteAttempt::NotAttempted,
                 ax_verify_matched: None,
+                pre_paste_check: PrePasteCheck::Proceed,
                 paste_attempted: false,
                 paste_succeeded: false,
                 expected_result: Err(ApplyError::TargetGone),
@@ -1051,6 +1486,7 @@ mod tests {
                 guard: Err(ApplyError::SelectionChanged),
                 ax_write: AxWriteAttempt::NotAttempted,
                 ax_verify_matched: None,
+                pre_paste_check: PrePasteCheck::Proceed,
                 paste_attempted: false,
                 paste_succeeded: false,
                 expected_result: Err(ApplyError::SelectionChanged),
@@ -1061,6 +1497,7 @@ mod tests {
                 guard: Ok(()),
                 ax_write: AxWriteAttempt::Succeeded,
                 ax_verify_matched: Some(true),
+                pre_paste_check: PrePasteCheck::Proceed,
                 paste_attempted: false,
                 paste_succeeded: false,
                 expected_result: Ok(AppliedVia::Ax),
@@ -1071,6 +1508,7 @@ mod tests {
                 guard: Ok(()),
                 ax_write: AxWriteAttempt::Succeeded,
                 ax_verify_matched: Some(false),
+                pre_paste_check: PrePasteCheck::Proceed,
                 paste_attempted: false,
                 paste_succeeded: false,
                 expected_result: Ok(AppliedVia::AxUnverified),
@@ -1081,6 +1519,7 @@ mod tests {
                 guard: Ok(()),
                 ax_write: AxWriteAttempt::Succeeded,
                 ax_verify_matched: None,
+                pre_paste_check: PrePasteCheck::Proceed,
                 paste_attempted: false,
                 paste_succeeded: false,
                 expected_result: Ok(AppliedVia::AxUnverified),
@@ -1091,6 +1530,7 @@ mod tests {
                 guard: Ok(()),
                 ax_write: AxWriteAttempt::Failed,
                 ax_verify_matched: None,
+                pre_paste_check: PrePasteCheck::Proceed,
                 paste_attempted: true,
                 paste_succeeded: true,
                 expected_result: Ok(AppliedVia::Paste),
@@ -1101,9 +1541,32 @@ mod tests {
                 guard: Ok(()),
                 ax_write: AxWriteAttempt::Failed,
                 ax_verify_matched: None,
+                pre_paste_check: PrePasteCheck::Proceed,
                 paste_attempted: true,
                 paste_succeeded: false,
                 expected_result: Err(ApplyError::PasteFailed),
+                expected_clipboard: ClipboardOutcome::LeaveProposed,
+            },
+            Case {
+                name: "AX set fails, but a re-read shows it already landed -> unverified, no paste (double-apply guard)",
+                guard: Ok(()),
+                ax_write: AxWriteAttempt::Failed,
+                ax_verify_matched: None,
+                pre_paste_check: PrePasteCheck::AlreadyWritten,
+                paste_attempted: false,
+                paste_succeeded: false,
+                expected_result: Ok(AppliedVia::AxUnverified),
+                expected_clipboard: ClipboardOutcome::RestoreOriginal,
+            },
+            Case {
+                name: "AX set fails, target no longer frontmost right before pasting -> TargetGone, no paste",
+                guard: Ok(()),
+                ax_write: AxWriteAttempt::Failed,
+                ax_verify_matched: None,
+                pre_paste_check: PrePasteCheck::TargetGone,
+                paste_attempted: false,
+                paste_succeeded: false,
+                expected_result: Err(ApplyError::TargetGone),
                 expected_clipboard: ClipboardOutcome::LeaveProposed,
             },
         ];
@@ -1113,11 +1576,52 @@ mod tests {
                 case.guard,
                 case.ax_write,
                 case.ax_verify_matched,
+                case.pre_paste_check,
                 case.paste_attempted,
                 case.paste_succeeded,
             );
             assert_eq!(result, case.expected_result, "case: {}", case.name);
             assert_eq!(clipboard, case.expected_clipboard, "case: {}", case.name);
         }
+    }
+
+    // -- range_len_for: apply-vs-undo length mismatch table --
+
+    #[test]
+    fn range_len_for_table() {
+        let cases: &[(&str, usize)] = &[
+            ("", 0),
+            ("hi", 2),
+            ("hello there, how are you", 24),
+            // Multi-byte / astral: UTF-16 code units, not bytes or `char`s.
+            // '\u{e9}' (é) is 1 UTF-16 unit despite being 2 UTF-8 bytes;
+            // '\u{1f600}' (an emoji) is a surrogate pair -- 2 UTF-16 units
+            // despite being 1 `char`.
+            ("caf\u{e9}", 4),
+            ("\u{1f600}", 2),
+        ];
+        for (text, expected) in cases.iter().copied() {
+            assert_eq!(range_len_for(text), expected, "text={text:?}");
+        }
+    }
+
+    #[test]
+    fn apply_and_undo_use_different_range_lengths_when_text_length_changes() {
+        // This is exactly the bug finding #1 fixes: undo must NOT reuse the
+        // original snapshot range's length when the proposed text is a
+        // different length -- it needs the length of whatever text is
+        // CURRENTLY in the document (the proposed text), not the original.
+        let original = "hi";
+        let proposed = "hello there, how are you";
+
+        let apply_range_len = range_len_for(original);
+        let undo_range_len = range_len_for(proposed);
+
+        assert_eq!(apply_range_len, 2);
+        assert_eq!(undo_range_len, 24);
+        assert_ne!(
+            apply_range_len, undo_range_len,
+            "apply and undo must compute range length from DIFFERENT source text"
+        );
     }
 }

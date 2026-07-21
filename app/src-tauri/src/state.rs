@@ -335,6 +335,9 @@ pub struct AppState {
     /// accessed through those, not locked directly, everywhere except
     /// `transform_apply.rs` itself.
     pub transform_session: Mutex<Option<crate::transform_apply::TransformSession>>,
+    /// Monotonic generation counter stamped onto every new `TransformSession`
+    /// (issue #312 PR-B2). See `next_transform_session_generation`.
+    pub transform_session_generation: AtomicU64,
 }
 
 impl AppState {
@@ -404,13 +407,35 @@ impl AppState {
     }
 
     /// Set the transform pipeline phase. Independent of `dictation.status`.
-    /// Not called from production code yet — the transform pipeline that
-    /// drives these phase transitions (capture -> listen -> think -> review ->
-    /// apply) lands in a later PR in the #312 series; exercised directly by
-    /// tests until then.
-    #[allow(dead_code)]
     pub fn set_transform_status(&self, status: TransformStatus) {
         *self.transform_status.lock_or_recover() = status;
+    }
+
+    /// Atomically check-and-set the transform pipeline phase: transitions to
+    /// `to` only if the current phase is exactly `from`, returning whether it
+    /// did. Both the read and the write happen under a single lock
+    /// acquisition, closing the TOCTOU window a separate
+    /// `transform_status() == X` check followed by `set_transform_status(Y)`
+    /// would leave open between two concurrent `apply_transform_result`/
+    /// `undo_transform` command invocations (issue #312 PR-B2 review).
+    pub fn try_transition_transform_status(&self, from: TransformStatus, to: TransformStatus) -> bool {
+        let mut status = self.transform_status.lock_or_recover();
+        if *status == from {
+            *status = to;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Next generation id for a new `TransformSession` (issue #312 PR-B2).
+    /// Monotonically increasing so a `set_applied` call that was dispatched
+    /// against an OLDER session (e.g. a slow main-thread apply still
+    /// in-flight when the user starts a new transform pass) can detect it no
+    /// longer applies and no-op instead of mutating the session that replaced
+    /// it.
+    pub fn next_transform_session_generation(&self) -> u64 {
+        self.transform_session_generation.fetch_add(1, Ordering::SeqCst) + 1
     }
 }
 
@@ -433,6 +458,7 @@ impl Default for AppState {
             ide_context: Mutex::new(crate::ide_context::IdeContextStore::default()),
             transform_status: Mutex::new(TransformStatus::default()),
             transform_session: Mutex::new(None),
+            transform_session_generation: AtomicU64::new(0),
         }
     }
 }
@@ -523,6 +549,36 @@ mod tests {
             state.set_transform_status(status);
             assert_eq!(state.transform_status(), status);
         }
+    }
+
+    #[test]
+    fn try_transition_transform_status_only_succeeds_when_current_matches_from() {
+        let state = AppState::default();
+        assert_eq!(state.transform_status(), TransformStatus::Idle);
+
+        // Wrong `from` -- no transition, status untouched.
+        assert!(!state.try_transition_transform_status(
+            TransformStatus::ReviewPending,
+            TransformStatus::Applying
+        ));
+        assert_eq!(state.transform_status(), TransformStatus::Idle);
+
+        // Correct `from` -- transitions and reports success.
+        assert!(state.try_transition_transform_status(TransformStatus::Idle, TransformStatus::Capturing));
+        assert_eq!(state.transform_status(), TransformStatus::Capturing);
+
+        // A second call with the same `from` now fails -- status already moved on,
+        // modeling two concurrent callers racing for the same transition.
+        assert!(!state.try_transition_transform_status(TransformStatus::Idle, TransformStatus::Capturing));
+        assert_eq!(state.transform_status(), TransformStatus::Capturing);
+    }
+
+    #[test]
+    fn transform_session_generation_is_monotonic() {
+        let state = AppState::default();
+        assert_eq!(state.next_transform_session_generation(), 1);
+        assert_eq!(state.next_transform_session_generation(), 2);
+        assert_eq!(state.next_transform_session_generation(), 3);
     }
 
     #[test]
