@@ -219,6 +219,53 @@ async fn wrong_nonce_on_result_frame_fails_closed() {
 }
 
 #[tokio::test]
+async fn cooperative_cancel_mid_request_helper_receives_cancel_and_busy_clears() {
+    // Finding 2: cancel_inflight_request must send a protocol Cancel, settle
+    // the blocking loop, and clear busy promptly — aborting only the outer
+    // tokio future is not enough (BusyGuard lives in spawn_blocking).
+    let fixture = fixture_model();
+    let sidecar = sidecar("slow_honor_cancel", &fixture);
+
+    let s = Arc::clone(&sidecar);
+    let handle = tokio::spawn(async move {
+        s.transform(
+            "Rewrite this politely.",
+            "gimme the report",
+            Duration::from_secs(30),
+        )
+        .await
+    });
+
+    // Wait until the in-flight slot is claimed.
+    let mut claimed = false;
+    for _ in 0..100 {
+        if sidecar.is_transform_busy() {
+            claimed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(claimed, "transform never became busy");
+
+    let started = std::time::Instant::now();
+    sidecar.cancel_inflight_request();
+    let err = handle.await.unwrap().unwrap_err();
+    assert_eq!(err, TransformError::Cancelled);
+    // Must clear well under the 30s deadline (cancel grace is ~150ms).
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "busy did not clear promptly after cooperative cancel: {:?}",
+        started.elapsed()
+    );
+    assert!(!sidecar.is_transform_busy());
+    // Helper acknowledged Cancel, so it stays resident (same as deadline cancel
+    // on slow_ack_cancel). A second Transform against this mock scenario would
+    // hang again — reusability of the supervisor after cancel is covered by
+    // the happy-path round-trip and dropping_the_transform_future tests.
+    assert!(sidecar.has_live_child());
+}
+
+#[tokio::test]
 async fn dropping_the_transform_future_clears_busy_and_does_not_wedge() {
     let fixture = fixture_model();
     // Happy path with a delayed Result so the request is still in flight when

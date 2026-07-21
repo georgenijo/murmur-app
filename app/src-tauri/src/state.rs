@@ -349,8 +349,11 @@ pub struct AppState {
     /// Abort handle for the in-flight sidecar transform task (issue #312
     /// PR-C2). `finish_transform_instruction` spawns the `sidecar.transform`
     /// future as a task and stores its abort handle here so `cancel_transform`
-    /// can cancel a `Thinking`-phase request cooperatively — dropping the
-    /// future clears the sidecar's busy flag (see `llm_sidecar::BusyGuard`).
+    /// can abort the outer `tokio::spawn` wrapper. **Dropping that future does
+    /// not clear the sidecar's busy flag** — `BusyGuard` only drops when the
+    /// inner `spawn_blocking` work finishes. Callers must also invoke
+    /// `LlmSidecar::cancel_inflight_request` so the blocking loop sends a
+    /// protocol Cancel and settles promptly (see `cancel_transform`).
     pub transform_inflight: Mutex<Option<tokio::task::AbortHandle>>,
 }
 

@@ -560,6 +560,11 @@ mod supported {
         plan: SpawnPlan,
         host_guard: OnceLock<Arc<dyn HostGuard>>,
         busy: AtomicBool,
+        /// Set by [`Self::cancel_inflight_request`] so the blocking
+        /// `run_request` loop can send a cooperative Cancel frame instead of
+        /// waiting out the full deadline (BusyGuard only drops when that work
+        /// finishes — aborting the outer tokio task alone does not clear busy).
+        cancel_requested: AtomicBool,
         inner: Mutex<Inner>,
     }
 
@@ -581,6 +586,7 @@ mod supported {
                 plan,
                 host_guard: OnceLock::new(),
                 busy: AtomicBool::new(false),
+                cancel_requested: AtomicBool::new(false),
                 inner: Mutex::new(Inner {
                     child: None,
                     breaker: Breaker::default(),
@@ -609,6 +615,18 @@ mod supported {
         /// ASR never starts over a resident transform runtime.
         pub fn is_transform_busy(&self) -> bool {
             self.busy.load(Ordering::Acquire)
+        }
+
+        /// Request cooperative cancel of the in-flight transform (if any).
+        ///
+        /// The blocking `run_request` loop observes this flag, sends a protocol
+        /// Cancel frame, and settles via the same cancel-then-kill dance used
+        /// for deadline expiry. Dropping the outer async future alone does
+        /// **not** clear `busy` — only the blocking work finishing does — so
+        /// callers that abort a `tokio::spawn` wrapper must also call this
+        /// (see `cancel_transform`).
+        pub fn cancel_inflight_request(&self) {
+            self.cancel_requested.store(true, Ordering::Release);
         }
 
         /// Test-support: whether a helper process is currently resident. Not
@@ -647,6 +665,8 @@ mod supported {
             // closure guarantees `busy` clears when the blocking work ends even
             // if this async future is dropped at the `.await` below.
             let busy_guard = BusyGuard(Arc::clone(self));
+            // Clear any stale cancel signal from a prior request.
+            self.cancel_requested.store(false, Ordering::Release);
 
             // Bucket sizes up front so no raw length leaves this frame.
             let instruction_bucket = size_bucket(instruction.len());
@@ -727,7 +747,15 @@ mod supported {
             let request_id = unique_id("req");
             let outcome = {
                 let child = inner.child.as_mut().expect("child present");
-                run_request(child, &request_id, instruction, input, deadline, &self.plan)
+                run_request(
+                    child,
+                    &request_id,
+                    instruction,
+                    input,
+                    deadline,
+                    &self.plan,
+                    &self.cancel_requested,
+                )
             };
 
             match outcome {
@@ -755,6 +783,15 @@ mod supported {
                 RequestOutcome::TimedOutKilled => {
                     kill_child(inner.child.take());
                     Err(TransformError::Timeout)
+                }
+                RequestOutcome::CancelledKeepChild => {
+                    // User cancel confirmed; helper stays resident for reuse.
+                    inner.last_activity = Instant::now();
+                    Err(TransformError::Cancelled)
+                }
+                RequestOutcome::CancelledKilled => {
+                    kill_child(inner.child.take());
+                    Err(TransformError::Cancelled)
                 }
                 RequestOutcome::Crashed => {
                     kill_child(inner.child.take());
@@ -1016,9 +1053,21 @@ mod supported {
         HelperError(TransformError),
         TimedOutKeepChild,
         TimedOutKilled,
+        /// User-triggered cooperative cancel confirmed; helper stays resident.
+        CancelledKeepChild,
+        /// User-triggered cancel; helper unresponsive and was killed.
+        CancelledKilled,
         Crashed,
         Protocol,
         OutputInvalid,
+    }
+
+    /// Why `cancel_and_settle` was invoked — maps keep/kill onto the matching
+    /// timeout vs user-cancel `RequestOutcome` variants.
+    #[derive(Clone, Copy)]
+    enum CancelReason {
+        Deadline,
+        User,
     }
 
     /// The ADR requires the protocol name, version, and per-process session
@@ -1067,6 +1116,7 @@ mod supported {
         input: &str,
         deadline: Duration,
         plan: &SpawnPlan,
+        cancel_requested: &AtomicBool,
     ) -> RequestOutcome {
         let transform = HostMessage::Transform {
             protocol: PROTOCOL_NAME.to_string(),
@@ -1087,11 +1137,28 @@ mod supported {
         let wait = deadline + plan.request_slack();
         let deadline_at = Instant::now() + wait;
         loop {
+            // User cancel (e.g. Esc / short-tap) wins over the deadline wait.
+            if cancel_requested.load(Ordering::Acquire) {
+                return cancel_and_settle(
+                    child,
+                    request_id,
+                    plan.cancel_grace(),
+                    CancelReason::User,
+                );
+            }
             let now = Instant::now();
             if now >= deadline_at {
-                return cancel_and_settle(child, request_id, plan.cancel_grace());
+                return cancel_and_settle(
+                    child,
+                    request_id,
+                    plan.cancel_grace(),
+                    CancelReason::Deadline,
+                );
             }
-            match child.events.recv_timeout(deadline_at - now) {
+            // Poll in short slices so a cancel_requested flag is observed
+            // promptly even when the helper is silent.
+            let slice = (deadline_at - now).min(Duration::from_millis(50));
+            match child.events.recv_timeout(slice) {
                 Ok(HelperEvent::Frame(frame)) => {
                     if !helper_frame_valid(&frame, &child.session_nonce) {
                         return RequestOutcome::Protocol;
@@ -1154,7 +1221,12 @@ mod supported {
 
     /// Cooperative cancel: send a Cancel frame, wait `grace` for a Cancelled
     /// confirmation, then kill if the helper never confirms.
-    fn cancel_and_settle(child: &mut Child, request_id: &str, grace: Duration) -> RequestOutcome {
+    fn cancel_and_settle(
+        child: &mut Child,
+        request_id: &str,
+        grace: Duration,
+        reason: CancelReason,
+    ) -> RequestOutcome {
         let cancel = HostCancel {
             protocol: PROTOCOL_NAME.to_string(),
             version: PROTOCOL_VERSION,
@@ -1163,26 +1235,37 @@ mod supported {
         };
         let _ = write_frame(&mut child.stdin, &cancel);
 
+        let (keep, kill) = match reason {
+            CancelReason::Deadline => (
+                RequestOutcome::TimedOutKeepChild,
+                RequestOutcome::TimedOutKilled,
+            ),
+            CancelReason::User => (
+                RequestOutcome::CancelledKeepChild,
+                RequestOutcome::CancelledKilled,
+            ),
+        };
+
         let grace_at = Instant::now() + grace;
         loop {
             let now = Instant::now();
             if now >= grace_at {
-                return RequestOutcome::TimedOutKilled;
+                return kill;
             }
             match child.events.recv_timeout(grace_at - now) {
                 Ok(HelperEvent::Frame(frame)) => {
                     // Even during cancellation, a frame with the wrong nonce /
                     // protocol is a violation — kill rather than trust it.
                     if !helper_frame_valid(&frame, &child.session_nonce) {
-                        return RequestOutcome::TimedOutKilled;
+                        return kill;
                     }
                     // A matching Cancelled, or any other well-formed frame,
                     // proves the helper is responsive: cancellation confirmed.
-                    return RequestOutcome::TimedOutKeepChild;
+                    return keep;
                 }
                 Ok(HelperEvent::Exited)
                 | Ok(HelperEvent::ProtocolViolation)
-                | Err(RecvTimeoutError::Disconnected) => return RequestOutcome::TimedOutKilled,
+                | Err(RecvTimeoutError::Disconnected) => return kill,
                 Err(RecvTimeoutError::Timeout) => continue,
             }
         }
@@ -1252,6 +1335,7 @@ pub use supported::LlmSidecar;
 pub struct LlmSidecar {
     host_guard: OnceLock<Arc<dyn HostGuard>>,
     busy: AtomicBool,
+    cancel_requested: AtomicBool,
     _plan: SpawnPlan,
 }
 
@@ -1270,6 +1354,7 @@ impl LlmSidecar {
         Self {
             host_guard: OnceLock::new(),
             busy: AtomicBool::new(false),
+            cancel_requested: AtomicBool::new(false),
             _plan: plan,
         }
     }
@@ -1280,6 +1365,10 @@ impl LlmSidecar {
 
     pub fn is_transform_busy(&self) -> bool {
         self.busy.load(Ordering::Acquire)
+    }
+
+    pub fn cancel_inflight_request(&self) {
+        self.cancel_requested.store(true, Ordering::Release);
     }
 
     pub fn has_live_child(&self) -> bool {
