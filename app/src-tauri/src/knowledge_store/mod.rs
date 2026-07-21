@@ -616,4 +616,288 @@ mod tests {
         assert!(!message.contains("private-secret"));
         assert!(!message.contains(temp.path().to_string_lossy().as_ref()));
     }
+
+    fn transform_draft(name: &str, instruction: &str) -> KnowledgeDraft {
+        KnowledgeDraft {
+            id: None,
+            expected_revision: None,
+            payload: KnowledgePayload::Transform {
+                name: name.to_string(),
+                instruction: instruction.to_string(),
+            },
+            enabled: true,
+            scope: KnowledgeScope::Global,
+            voice_command: None,
+        }
+    }
+
+    #[test]
+    fn transform_instructions_over_the_protocol_byte_limit_are_rejected() {
+        let (_temp, store) = store();
+        let oversized = "x".repeat(5_000);
+        let error = store
+            .upsert_manual(transform_draft("too long", &oversized))
+            .unwrap_err();
+        assert!(
+            error.contains("4096") || error.to_lowercase().contains("byte"),
+            "expected a byte-limit message, got: {error}"
+        );
+
+        // A right-at-the-limit instruction (in bytes) still saves fine.
+        let at_limit = "y".repeat(murmur_local_llm_protocol::MAX_INSTRUCTION_BYTES);
+        assert!(store
+            .upsert_manual(transform_draft("right at limit", &at_limit))
+            .is_ok());
+    }
+
+    #[test]
+    fn saving_an_exact_duplicate_transform_name_is_rejected_but_editing_self_is_allowed() {
+        let (_temp, store) = store();
+        let first = store
+            .upsert_manual(transform_draft("Meeting Notes", "Rewrite as bullet notes."))
+            .unwrap();
+
+        // Same normalized name (case + whitespace-insensitive) is rejected.
+        let error = store
+            .upsert_manual(transform_draft("meeting   notes", "Something else."))
+            .unwrap_err();
+        assert!(error.contains("already exists"));
+
+        // Punctuation-only differences also collide (shares the preset normalize()).
+        let error = store
+            .upsert_manual(transform_draft("Meeting Notes!", "Something else."))
+            .unwrap_err();
+        assert!(error.contains("already exists"));
+
+        // Editing the same record with its own (unchanged) name is fine.
+        let mut draft = transform_draft("Meeting Notes", "Updated instruction.");
+        draft.id = Some(first.id.clone());
+        draft.expected_revision = Some(first.revision);
+        assert!(store.upsert_manual(draft).is_ok());
+
+        // A distinct name is unaffected.
+        assert!(store
+            .upsert_manual(transform_draft("standup summary", "Summarize as a standup update."))
+            .is_ok());
+    }
+
+    #[test]
+    fn transform_entries_export_import_round_trip_at_current_version() {
+        let (temp, store) = store();
+        let transform = store
+            .upsert_manual(transform_draft(
+                "meeting notes",
+                "Rewrite as concise meeting notes with action items.",
+            ))
+            .unwrap();
+
+        let export = temp.path().join("transform-export.json");
+        store.export_to_file(&export).unwrap();
+        let bundle: KnowledgeExport =
+            serde_json::from_slice(&std::fs::read(&export).unwrap()).unwrap();
+        assert_eq!(bundle.version, EXPORT_VERSION);
+        assert_eq!(bundle.version, 3, "store convention bumped for #312 round 2");
+        assert!(bundle
+            .entries
+            .iter()
+            .any(|entry| matches!(entry.payload, KnowledgePayload::Transform { .. })));
+
+        let revision = store.status().store_revision;
+        store.delete_all(revision).unwrap();
+        assert_eq!(store.status().record_count, 0);
+
+        let imported = store.import_from_file(&export).unwrap();
+        assert_eq!(imported.imported, 1);
+        let restored = store.get(&transform.id).unwrap();
+        assert_eq!(restored.payload, transform.payload);
+        assert_eq!(restored.provenance, KnowledgeProvenance::Import);
+    }
+
+    #[test]
+    fn import_rejects_a_newer_export_version_with_the_clean_message_not_a_serde_error() {
+        let (temp, store) = store();
+        let bundle = KnowledgeExport {
+            format: EXPORT_FORMAT.to_string(),
+            version: 4,
+            exported_at_ms: 0,
+            entries: Vec::new(),
+        };
+        let path = temp.path().join("future-version.json");
+        std::fs::write(&path, serde_json::to_vec(&bundle).unwrap()).unwrap();
+        let error = store.import_from_file(&path).unwrap_err();
+        assert_eq!(
+            error,
+            "The selected knowledge export format is not supported by this Murmur build."
+        );
+    }
+
+    #[test]
+    fn import_still_accepts_legacy_version_1_and_2_bundles() {
+        let (temp, store) = store();
+        let mut bundle = KnowledgeExport {
+            format: EXPORT_FORMAT.to_string(),
+            version: 1,
+            exported_at_ms: 0,
+            entries: vec![KnowledgeEntry {
+                id: "legacy-entry-00000001".to_string(),
+                payload: KnowledgePayload::ReplacementRule {
+                    source: "hello".to_string(),
+                    replacement: "hi".to_string(),
+                },
+                enabled: true,
+                scope: KnowledgeScope::Global,
+                provenance: KnowledgeProvenance::Manual,
+                created_at_ms: 1,
+                updated_at_ms: 1,
+                revision: 1,
+                voice_command: None,
+            }],
+        };
+        let v1_path = temp.path().join("v1-export.json");
+        std::fs::write(&v1_path, serde_json::to_vec(&bundle).unwrap()).unwrap();
+        assert_eq!(store.import_from_file(&v1_path).unwrap().imported, 1);
+
+        bundle.version = 2;
+        bundle.entries[0].id = "legacy-entry-00000002".to_string();
+        // Distinct payload so this isn't treated as a semantic duplicate of
+        // the v1 entry already imported above (import dedupes by payload +
+        // scope + enabled + voice_command, independent of ID).
+        bundle.entries[0].payload = KnowledgePayload::ReplacementRule {
+            source: "goodbye".to_string(),
+            replacement: "bye".to_string(),
+        };
+        let v2_path = temp.path().join("v2-export.json");
+        std::fs::write(&v2_path, serde_json::to_vec(&bundle).unwrap()).unwrap();
+        assert_eq!(store.import_from_file(&v2_path).unwrap().imported, 1);
+    }
+
+    /// Data-carrying v3 -> v4 migration test (issue #312 round 2 D1 fix #4).
+    /// Migration 4 rebuilds `knowledge_entries` from scratch (SQLite cannot
+    /// ALTER a CHECK constraint) to widen the `kind` set for
+    /// `KnowledgeKind::Transform`. Seed one row of every kind that already
+    /// existed at v3 — including voice-command columns populated — then
+    /// migrate and assert every row/field survives losslessly and every
+    /// index (from v2 and v3) is recreated on the rebuilt table.
+    #[test]
+    fn schema_v3_to_v4_migration_is_lossless_and_recreates_every_index() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("knowledge");
+        std::fs::create_dir_all(root.join("backups")).unwrap();
+        std::fs::create_dir_all(root.join("quarantine")).unwrap();
+        let db = root.join("knowledge.sqlite3");
+        let mut connection = Connection::open(&db).unwrap();
+        migrations::migrate_to_for_test(&mut connection, 3).unwrap();
+
+        let now = 1_700_000_000_000_i64;
+        connection
+            .execute(
+                "INSERT INTO knowledge_entries(id, kind, trigger_text, normalized_trigger, content_text, aliases_json, enabled, scope_kind, app_bundle_id, project_root, provenance, created_at_ms, updated_at_ms, revision, voice_command_kind, voice_command_clipboard) VALUES ('replacement-1', 'replacement_rule', 'use hook', 'use hook', 'useHook', '[]', 1, 'global', NULL, NULL, 'manual', ?1, ?1, 1, NULL, 0)",
+                rusqlite::params![now],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO knowledge_entries(id, kind, trigger_text, normalized_trigger, content_text, aliases_json, enabled, scope_kind, app_bundle_id, project_root, provenance, created_at_ms, updated_at_ms, revision, voice_command_kind, voice_command_clipboard) VALUES ('vocab-1', 'vocabulary_term', 'Tori', 'tori', '', '[\"Tory\",\"Tori\"]', 1, 'app', 'com.editor', NULL, 'manual', ?1, ?1, 1, NULL, 0)",
+                rusqlite::params![now],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO knowledge_entries(id, kind, trigger_text, normalized_trigger, content_text, aliases_json, enabled, scope_kind, app_bundle_id, project_root, provenance, created_at_ms, updated_at_ms, revision, voice_command_kind, voice_command_clipboard) VALUES ('snippet-1', 'snippet', 'sign off', 'sign off', 'Regards, George', '[]', 1, 'project', 'com.editor', '/project', 'manual', ?1, ?1, 1, NULL, 0)",
+                rusqlite::params![now],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO knowledge_entries(id, kind, trigger_text, normalized_trigger, content_text, aliases_json, enabled, scope_kind, app_bundle_id, project_root, provenance, created_at_ms, updated_at_ms, revision, voice_command_kind, voice_command_clipboard) VALUES ('voice-1', 'replacement_rule', 'my signature', 'my signature', 'Regards, George', '[]', 1, 'global', NULL, NULL, 'manual', ?1, ?1, 1, 'text_replacement', 1)",
+                rusqlite::params![now],
+            )
+            .unwrap();
+        drop(connection);
+
+        let store = KnowledgeStore::default();
+        let status = store.initialize(root.clone());
+        assert_eq!(status.availability, StoreAvailability::Ready);
+        assert_eq!(status.schema_version, 4);
+        assert_eq!(status.record_count, 4);
+
+        let replacement = store.get("replacement-1").unwrap();
+        assert_eq!(
+            replacement.payload,
+            KnowledgePayload::ReplacementRule {
+                source: "use hook".to_string(),
+                replacement: "useHook".to_string(),
+            }
+        );
+        assert_eq!(replacement.scope, KnowledgeScope::Global);
+        assert_eq!(replacement.created_at_ms, now);
+        assert_eq!(replacement.updated_at_ms, now);
+        assert!(replacement.voice_command.is_none());
+
+        let vocab = store.get("vocab-1").unwrap();
+        assert_eq!(
+            vocab.payload,
+            KnowledgePayload::VocabularyTerm {
+                written: "Tori".to_string(),
+                aliases: vec!["Tory".to_string(), "Tori".to_string()],
+            }
+        );
+        assert_eq!(
+            vocab.scope,
+            KnowledgeScope::App {
+                bundle_id: "com.editor".to_string()
+            }
+        );
+
+        let snippet = store.get("snippet-1").unwrap();
+        assert_eq!(
+            snippet.payload,
+            KnowledgePayload::Snippet {
+                trigger: "sign off".to_string(),
+                body: "Regards, George".to_string(),
+            }
+        );
+        assert_eq!(
+            snippet.scope,
+            KnowledgeScope::Project {
+                bundle_id: "com.editor".to_string(),
+                root: "/project".to_string(),
+            }
+        );
+
+        let voice = store.get("voice-1").unwrap();
+        assert_eq!(
+            voice.voice_command,
+            Some(VoiceCommandMetadata {
+                command_type: VoiceCommandKind::TextReplacement,
+                allow_clipboard_read: true,
+            })
+        );
+
+        // Migration 4 rebuilds knowledge_entries (DROP + rename), so every
+        // index defined at v2 and v3 must be recreated, not just the new
+        // columns/CHECK constraint.
+        let connection = Connection::open(&db).unwrap();
+        let mut statement = connection
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='knowledge_entries' ORDER BY name",
+            )
+            .unwrap();
+        let indexes: Vec<String> = statement
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        for expected in [
+            "knowledge_entries_listing",
+            "knowledge_entries_resolution",
+            "knowledge_entries_scope",
+            "knowledge_entries_voice_commands",
+        ] {
+            assert!(
+                indexes.iter().any(|name| name == expected),
+                "missing index {expected}, have: {indexes:?}"
+            );
+        }
+    }
 }

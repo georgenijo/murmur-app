@@ -197,6 +197,9 @@ impl KnowledgeRepository {
                 draft.id.as_deref(),
             )?;
         }
+        if let KnowledgePayload::Transform { name, .. } = &draft.payload {
+            validate_transform_name_conflict_tx(&transaction, name, draft.id.as_deref())?;
+        }
         let timestamp = now_ms();
         let (trigger, content, aliases) = draft.payload.storage_parts();
         let aliases_json = serde_json::to_string(&aliases).map_err(|_| validation_error())?;
@@ -849,10 +852,21 @@ fn validate_payload(payload: &KnowledgePayload) -> Result<(), String> {
             }
         }
         KnowledgePayload::Transform { .. } => {
-            if content.is_empty() || content.chars().count() > MAX_SNIPPET_CHARS {
+            if content.is_empty() {
                 return Err(
                     "Transform instructions must be between 1 and 65,536 characters.".to_string(),
                 );
+            }
+            // The local-LLM sidecar protocol caps instruction bytes at
+            // MAX_INSTRUCTION_BYTES (4096); enforce the same bound (bytes,
+            // not chars) here so an oversized saved transform is rejected at
+            // save time instead of saving fine and always failing later with
+            // an opaque invalid_request (issue #312 round 2 D1 fix #3).
+            if content.len() > murmur_local_llm_protocol::MAX_INSTRUCTION_BYTES {
+                return Err(format!(
+                    "Transform instructions must be at most {} bytes.",
+                    murmur_local_llm_protocol::MAX_INSTRUCTION_BYTES
+                ));
             }
         }
     }
@@ -950,6 +964,40 @@ fn validate_voice_command_conflicts_tx(
             return Err(
                 "A Voice Command with that phrase already exists in this scope.".to_string(),
             );
+        }
+    }
+    Ok(())
+}
+
+/// Reject an exact duplicate saved-transform name (issue #312 round 2 D1
+/// fix #5). Uses the same normalization as preset matching and
+/// `transform_flow::resolve_saved_transform` (case- and punctuation-
+/// insensitive) so two names that would be indistinguishable when spoken
+/// cannot both be saved. Preset-name/alias shadowing is intentionally NOT
+/// rejected here — it is only a UI-level warning, since a saved transform
+/// with that name is still valid data (it is simply unreachable by voice
+/// until renamed or the preset changes).
+fn validate_transform_name_conflict_tx(
+    transaction: &rusqlite::Transaction<'_>,
+    name: &str,
+    editing_id: Option<&str>,
+) -> Result<(), String> {
+    let normalized = crate::transform_presets::normalize(name);
+    if normalized.is_empty() {
+        return Ok(());
+    }
+    for existing in entries_with_kind(transaction, KnowledgeKind::Transform)? {
+        if editing_id == Some(existing.id.as_str()) {
+            continue;
+        }
+        if let KnowledgePayload::Transform {
+            name: existing_name,
+            ..
+        } = &existing.payload
+        {
+            if crate::transform_presets::normalize(existing_name) == normalized {
+                return Err("A saved transform with that name already exists.".to_string());
+            }
         }
     }
     Ok(())
@@ -1117,7 +1165,7 @@ fn read_import(path: &Path) -> Result<KnowledgeExport, String> {
         .map_err(|_| "Murmur could not read the selected knowledge import.".to_string())?;
     let bundle: KnowledgeExport = serde_json::from_slice(&bytes)
         .map_err(|_| "The selected file is not a valid Murmur knowledge export.".to_string())?;
-    if bundle.format != EXPORT_FORMAT || !matches!(bundle.version, 1 | EXPORT_VERSION) {
+    if bundle.format != EXPORT_FORMAT || !matches!(bundle.version, 1 | 2 | 3) {
         return Err(
             "The selected knowledge export format is not supported by this Murmur build."
                 .to_string(),

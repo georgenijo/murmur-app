@@ -1,7 +1,12 @@
 use serde::{Deserialize, Serialize};
 
 pub const EXPORT_FORMAT: &str = "murmur-personal-knowledge";
-pub const EXPORT_VERSION: u32 = 2;
+/// Bumped 2 -> 3 for issue #312 round 2: v3 bundles can carry
+/// `KnowledgeKind::Transform` entries (the store convention is to bump this
+/// whenever the payload shape space expands). Import still accepts older
+/// bundles (version 1 and 2) since their entries are a strict subset of the
+/// current `KnowledgePayload` variants.
+pub const EXPORT_VERSION: u32 = 3;
 pub const DEFAULT_PAGE_SIZE: u32 = 50;
 pub const MAX_PAGE_SIZE: u32 = 100;
 
