@@ -1992,6 +1992,15 @@ pub async fn start_native_recording(
                 }));
             }
             DictationStatus::Idle => {
+                // A new recording invalidates any stale transform session
+                // (issue #312 PR-B2) — the guards above already ensure no
+                // transform is in progress, but a completed one (applied or
+                // not) must not survive into the recording that's about to
+                // start. Only reached here, AFTER the Recording/Processing
+                // early-returns above, so a redundant start call while a
+                // recording is already in flight can never wipe a session a
+                // pending undo still needs.
+                crate::transform_apply::clear_session(&state.app_state);
                 let rid = state.app_state.next_recording_id();
                 dictation.status = DictationStatus::Recording;
                 rid
