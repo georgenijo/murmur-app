@@ -20,6 +20,24 @@ VERSION = 1
 MODEL_FD = 3
 MAX_FRAME = 64 * 1024
 
+# Signed-catalog identity of the only v1 model (see the signed-local-LLM ADR).
+# Used by --skip-model to drive the helper's descriptor check without shipping
+# the 1.1 GB GGUF into CI.
+CATALOG_SIZE = 1_117_320_736
+CATALOG_SHA256 = "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e"
+
+
+def _limits() -> dict[str, int]:
+    return {
+        "maxFrameBytes": 65536,
+        "maxInstructionBytes": 4096,
+        "maxInputBytes": 16384,
+        "maxOutputBytes": 16384,
+        "maxOutputTokens": 2048,
+        "maxContextTokens": 8192,
+        "maxDeadlineMs": 30000,
+    }
+
 
 def frame(payload: dict[str, object]) -> bytes:
     body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
@@ -63,16 +81,126 @@ def hash_fd(fd: int) -> tuple[int, str]:
     return metadata.st_size, digest.hexdigest()
 
 
+def run_skip_model(helper: Path, model_id: str, evidence: Path | None) -> int:
+    """Prove spawn + failure-closed descriptor handling without the real model.
+
+    A bogus, tiny fd 3 is inherited while the hello frame advertises the signed
+    catalog identity. The helper must reject the descriptor identity mismatch and
+    exit non-zero WITHOUT ever emitting a `ready` frame. This exercises the signed
+    sandboxed binary's ability to spawn and its fail-closed model verification
+    while deferring the full Metal/inference proof (which needs the cached model).
+    """
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(prefix="murmur-bogus-model-", delete=True) as bogus:
+        bogus.write(b"not the real gguf model")
+        bogus.flush()
+        model_fd = os.open(bogus.name, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            if model_fd != MODEL_FD:
+                os.dup2(model_fd, MODEL_FD, inheritable=True)
+                os.close(model_fd)
+                model_fd = MODEL_FD
+            os.set_inheritable(model_fd, True)
+
+            process = subprocess.Popen(
+                [str(helper)],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                close_fds=True,
+                pass_fds=(model_fd,),
+                env={},
+                cwd="/",
+            )
+            assert process.stdin is not None and process.stdout is not None
+            nonce = "skip-model-failure-closed-probe"
+            hello = {
+                "type": "hello",
+                "protocol": PROTOCOL,
+                "version": VERSION,
+                "sessionNonce": nonce,
+                "model": {
+                    "id": model_id,
+                    "sha256": CATALOG_SHA256,
+                    "sizeBytes": CATALOG_SIZE,
+                },
+                "limits": _limits(),
+            }
+            process.stdin.write(frame(hello))
+            process.stdin.flush()
+
+            emitted_ready = False
+            try:
+                first = read_frame(process.stdout, 30.0)
+                emitted_ready = first.get("type") == "ready"
+            except (EOFError, TimeoutError):
+                first = None
+
+            if emitted_ready:
+                raise SystemExit(
+                    "sidecar emitted 'ready' for a mismatched descriptor; fail-closed broken"
+                )
+
+            try:
+                process.wait(timeout=10.0)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                raise SystemExit("sidecar did not exit after descriptor rejection")
+            if process.returncode == 0:
+                raise SystemExit(
+                    f"sidecar exited 0 despite descriptor mismatch: frame={first!r}"
+                )
+
+            evidence_payload = {
+                "schema_version": 1,
+                "sandboxed_helper": str(helper),
+                "mode": "skip-model",
+                "model_id": model_id,
+                "expected_size": CATALOG_SIZE,
+                "expected_sha256": CATALOG_SHA256,
+                "emitted_ready": False,
+                "helper_exit_code": process.returncode,
+                "helper_first_frame": first,
+                "fixed_inference": "deferred (needs cached model)",
+                "protocol_version": VERSION,
+                "result": "failed-closed-as-expected",
+            }
+            if evidence:
+                evidence.parent.mkdir(parents=True, exist_ok=True)
+                evidence.write_text(
+                    json.dumps(evidence_payload, indent=2, sort_keys=True) + "\n"
+                )
+            print(json.dumps(evidence_payload, sort_keys=True))
+        finally:
+            os.close(model_fd)
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--helper", type=Path, required=True)
-    parser.add_argument("--model", type=Path, required=True)
+    parser.add_argument("--model", type=Path)
     parser.add_argument("--model-id", default="qwen2.5-1.5b-instruct-q4_k_m")
-    parser.add_argument("--expected-size", type=int, required=True)
-    parser.add_argument("--expected-sha256", required=True)
+    parser.add_argument("--expected-size", type=int)
+    parser.add_argument("--expected-sha256")
+    parser.add_argument(
+        "--skip-model",
+        action="store_true",
+        help="prove spawn + fail-closed descriptor rejection without the real model",
+    )
     parser.add_argument("--evidence", type=Path)
     args = parser.parse_args()
     helper = args.helper.resolve()
+
+    if args.skip_model:
+        return run_skip_model(helper, args.model_id, args.evidence)
+
+    if args.model is None or args.expected_size is None or args.expected_sha256 is None:
+        raise SystemExit(
+            "--model, --expected-size, and --expected-sha256 are required "
+            "unless --skip-model is set"
+        )
     model = args.model.resolve()
 
     model_fd = os.open(model, os.O_RDONLY | os.O_NOFOLLOW)
