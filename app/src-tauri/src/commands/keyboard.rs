@@ -65,3 +65,37 @@ fn sync_tray_disabled_item(disabled: bool) {
 pub fn get_app_disabled() -> bool {
     keyboard::is_app_disabled()
 }
+
+// -- Transform hotkey (issue #312, PR-B1) --
+//
+// A second, independent hold-down shortcut coexisting with the dictation
+// listener on the same shared rdev thread (see `keyboard::TRANSFORM_DETECTOR`
+// / `keyboard::ensure_listener_thread_spawned`). No mode parameter — the
+// transform hotkey is always hold-down.
+
+#[tauri::command]
+pub fn start_transform_listener(app_handle: tauri::AppHandle, hotkey: String) -> Result<(), String> {
+    if !injector::is_accessibility_enabled() {
+        return Err("Accessibility permission is required. Please grant it in System Settings.".to_string());
+    }
+    keyboard::start_transform_listener(app_handle, &hotkey);
+    tracing::info!(target: "keyboard", "Transform listener started: key={}", hotkey);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn stop_transform_listener() {
+    keyboard::stop_transform_listener();
+    tracing::info!(target: "keyboard", "Transform listener stopped");
+}
+
+#[tauri::command]
+pub fn set_transform_key(app_handle: tauri::AppHandle, hotkey: String) {
+    let should_release = keyboard::set_transform_key(&hotkey);
+    if should_release {
+        let _ = app_handle.emit("transform-key-released", ());
+        tracing::info!(target: "keyboard", "Transform key changed while held — emitted released; updated to: {}", hotkey);
+    } else {
+        tracing::info!(target: "keyboard", "Transform key updated to: {}", hotkey);
+    }
+}
