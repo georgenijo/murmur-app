@@ -23,6 +23,18 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 ---
 
+## 2026-07-20: Local LLMs require a signed, sandboxed macOS-arm64 sidecar
+
+**Decision:** Issue #312 (originally #300, superseded) proposes a purpose-built macOS 14 Apple Silicon helper using an exactly pinned static llama.cpp/Metal runtime, a single hash-pinned Qwen2.5 1.5B Q4_K_M model, bounded stdin/stdout IPC, a verified inherited model descriptor, and dedicated App Sandbox entitlements. The helper has no network, files-by-path, shell, tools, clipboard, accessibility, automation, app group, XPC, or cloud fallback. Linux reports the capability as unsupported.
+
+**Rationale:** The active 2026-06-23 decision proves in-process Whisper + llama.cpp is unsafe because their ggml ABIs collide. Tauri's stock macOS signer also applies one entitlement set to the app and external binaries, so a repository-owned no-sign/finalize path is required to preserve a stricter helper sandbox. The design is accepted only after the inherited-descriptor/Metal and split-entitlement signing gates pass, followed by a signed/notarized/quarantined non-publishing rehearsal.
+
+**Status:** proposed — see [ADR](2026-07-20-signed-local-llm-sidecar.md)
+
+**References:** issue #312 (originally #300, superseded); unblocks #312 phases B–D (originally #254).
+
+---
+
 ## 2026-06-23: In-process Tier 3 abandoned (ggml ABI clash); deferred to a sidecar
 
 **Decision:** Tiers 1–2 (no-LLM post-model correction) ship as planned. Tier 3 (local-LLM cleanup) is NOT shipped in-process — the `llama-cpp-2` integration and dormant settings/module were removed from the app crate. Tier 3 is deferred to a future sidecar-process design. This supersedes the Tier-3 portion of the entry below (Tiers 1–2 portion still stands).
