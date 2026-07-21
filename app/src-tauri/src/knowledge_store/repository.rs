@@ -762,6 +762,10 @@ fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<KnowledgeEntry> {
             trigger,
             body: content,
         },
+        "transform" => KnowledgePayload::Transform {
+            name: trigger,
+            instruction: content,
+        },
         _ => return Err(rusqlite::Error::InvalidQuery),
     };
     let scope = match scope_kind.as_str() {
@@ -842,6 +846,13 @@ fn validate_payload(payload: &KnowledgePayload) -> Result<(), String> {
         KnowledgePayload::Snippet { .. } => {
             if content.is_empty() || content.chars().count() > MAX_SNIPPET_CHARS {
                 return Err("Snippet bodies must be between 1 and 65,536 characters.".to_string());
+            }
+        }
+        KnowledgePayload::Transform { .. } => {
+            if content.is_empty() || content.chars().count() > MAX_SNIPPET_CHARS {
+                return Err(
+                    "Transform instructions must be between 1 and 65,536 characters.".to_string(),
+                );
             }
         }
     }

@@ -859,7 +859,10 @@ pub(crate) async fn finish_transform_instruction(
         }
     };
 
-    let instruction = transcribe_instruction(&app_handle, &state, &samples).await;
+    let instruction = match transcribe_instruction(&app_handle, &state, &samples).await {
+        Ok(raw) => Ok(expand_instruction(&state, &raw)),
+        Err(()) => Err(()),
+    };
     run_transform(
         &state.app_state,
         &fx,
@@ -871,6 +874,56 @@ pub(crate) async fn finish_transform_instruction(
     )
     .await;
     Ok(())
+}
+
+/// Expand a transcribed instruction when it names a built-in preset or a
+/// saved `KnowledgeKind::Transform`. Otherwise the raw transcript is the
+/// instruction (free-form spoken rewrite request). Never logs the text.
+fn expand_instruction(state: &crate::State, spoken: &str) -> String {
+    if let Some(preset) = crate::transform_presets::resolve_preset(spoken) {
+        return preset.to_string();
+    }
+    if let Some(saved) = resolve_saved_transform(state, spoken) {
+        return saved;
+    }
+    spoken.to_string()
+}
+
+/// Case-insensitive match of a spoken name against enabled global/app
+/// Transform knowledge entries. Returns the instruction body, not the name.
+fn resolve_saved_transform(state: &crate::State, spoken: &str) -> Option<String> {
+    use crate::knowledge_store::{KnowledgeKind, KnowledgeListRequest, KnowledgePayload};
+
+    let request = KnowledgeListRequest {
+        kind: Some(KnowledgeKind::Transform),
+        enabled: Some(true),
+        limit: Some(100),
+        ..Default::default()
+    };
+    let response = state.knowledge.list(request).ok()?;
+    let key = spoken
+        .trim()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    if key.is_empty() {
+        return None;
+    }
+    for entry in response.entries {
+        if let KnowledgePayload::Transform { name, instruction } = entry.payload {
+            let name_key = name
+                .trim()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_ascii_lowercase();
+            if name_key == key {
+                return Some(instruction);
+            }
+        }
+    }
+    None
 }
 
 /// Retry: re-arm listening for a NEW instruction on the SAME frozen snapshot.

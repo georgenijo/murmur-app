@@ -11,6 +11,9 @@ pub enum KnowledgeKind {
     ReplacementRule,
     VocabularyTerm,
     Snippet,
+    /// User-defined selected-text transform (issue #312 D1): spoken name expands
+    /// to a full rewrite instruction before the local LLM runs.
+    Transform,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,6 +54,7 @@ impl KnowledgeKind {
             Self::ReplacementRule => "replacement_rule",
             Self::VocabularyTerm => "vocabulary_term",
             Self::Snippet => "snippet",
+            Self::Transform => "transform",
         }
     }
 }
@@ -147,6 +151,11 @@ pub enum KnowledgePayload {
         trigger: String,
         body: String,
     },
+    /// Named transform instruction for the selected-text flow (#312 D1).
+    Transform {
+        name: String,
+        instruction: String,
+    },
 }
 
 impl KnowledgePayload {
@@ -155,6 +164,7 @@ impl KnowledgePayload {
             Self::ReplacementRule { .. } => KnowledgeKind::ReplacementRule,
             Self::VocabularyTerm { .. } => KnowledgeKind::VocabularyTerm,
             Self::Snippet { .. } => KnowledgeKind::Snippet,
+            Self::Transform { .. } => KnowledgeKind::Transform,
         }
     }
 
@@ -168,6 +178,9 @@ impl KnowledgePayload {
                 (written.clone(), String::new(), aliases.clone())
             }
             Self::Snippet { trigger, body } => (trigger.clone(), body.clone(), Vec::new()),
+            Self::Transform { name, instruction } => {
+                (name.clone(), instruction.clone(), Vec::new())
+            }
         }
     }
 }

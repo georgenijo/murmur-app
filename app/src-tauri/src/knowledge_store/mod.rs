@@ -559,7 +559,7 @@ mod tests {
 
         let store = KnowledgeStore::default();
         let status = store.initialize(root.clone());
-        assert_eq!(status.schema_version, 3);
+        assert_eq!(status.schema_version, 4);
         assert_eq!(
             std::fs::read_dir(root.join("backups"))
                 .unwrap()

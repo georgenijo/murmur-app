@@ -31,6 +31,7 @@ pub mod transcriber;
 mod transcript_transform;
 mod transform_apply;
 pub mod transform_flow;
+mod transform_presets;
 mod vad;
 mod vocab;
 mod vocabulary_alias;
