@@ -17,6 +17,7 @@ describe('loadSettings', () => {
       ...DEFAULT_SETTINGS,
       model: 'tiny.en' as const,
       doubleTapKey: 'alt_l' as const,
+      transformHoldKey: 'alt_r' as const,
       language: 'es',
       autoPaste: true,
       autoPasteDelayMs: 230,
@@ -197,6 +198,39 @@ describe('loadSettings', () => {
     delete legacy.smartFormattingEnabled;
     localStorage.setItem('dictation-settings', JSON.stringify(legacy));
     expect(loadSettings().smartFormattingEnabled).toBe(false);
+  });
+
+  it('defaults transformHoldKey to disabled (null) when absent from a pre-feature blob', () => {
+    const legacy = { ...DEFAULT_SETTINGS } as Record<string, unknown>;
+    delete legacy.transformHoldKey;
+    localStorage.setItem('dictation-settings', JSON.stringify(legacy));
+    expect(loadSettings().transformHoldKey).toBeNull();
+  });
+
+  it('preserves a valid stored transformHoldKey', () => {
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      transformHoldKey: 'ctrl_l',
+    }));
+    expect(loadSettings().transformHoldKey).toBe('ctrl_l');
+  });
+
+  it('coerces an unrecognised or malformed transformHoldKey back to disabled', () => {
+    for (const bad of ['shift_l', 'not_a_key', 42, {}, true]) {
+      localStorage.setItem('dictation-settings', JSON.stringify({
+        ...DEFAULT_SETTINGS,
+        transformHoldKey: bad,
+      }));
+      expect(loadSettings().transformHoldKey).toBeNull();
+    }
+  });
+
+  it('explicit null transformHoldKey stays disabled', () => {
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      transformHoldKey: null,
+    }));
+    expect(loadSettings().transformHoldKey).toBeNull();
   });
 
   it('preserves legacy custom Voice Command pairs for one-time Rust migration', () => {
