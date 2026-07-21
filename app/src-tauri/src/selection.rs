@@ -246,6 +246,7 @@ pub async fn capture_selection(
             // Clean "no AX selection" + a known frontmost app: try the
             // clipboard fallback off the main thread (it sleeps while polling).
             (Err(SelectionError::NoSelection), Some((pid, bundle_id))) => {
+                tracing::info!(target: "transform", "AX reported no selection — attempting clipboard fallback");
                 tokio::task::spawn_blocking(move || {
                     clipboard_fallback::capture_via_clipboard(pid, bundle_id)
                 })

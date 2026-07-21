@@ -460,7 +460,12 @@ where
         return StartOutcome::Aborted;
     }
 
-    match capture.await {
+    let capture_result = capture.await;
+    // Content-free outcome log (issue #329): only length buckets and error
+    // enums — this was previously never wired, leaving capture failures
+    // (e.g. browser AX gaps) invisible in the logs.
+    crate::selection::log_capture_outcome(&capture_result);
+    match capture_result {
         Ok(snapshot) => {
             // Cancel during slow AX capture must not resurrect the flow:
             // session re-install + mic arm + popover while the reducer thinks
@@ -1115,25 +1120,23 @@ pub(crate) async fn cancel_transform(
     Ok(())
 }
 
-/// Dismiss a review parked on FAILURE — `ReviewPending` with no proposed text
-/// in the session (a ready review always has one: `run_transform`'s Ok arm
-/// stores the proposal inside the same `Thinking -> ReviewPending` transition
-/// that emits `ready`). Returns `true` if the flow was torn down to `Idle`.
+/// Dismiss a review parked at `ReviewPending` — failed OR ready — so the
+/// dictation key always wins. Returns `true` if the flow was torn down to
+/// `Idle`.
 ///
-/// Used by `start_native_recording` (issue #327): a failed review popover holds
-/// nothing user-approvable, so pressing the dictation key auto-dismisses it and
-/// records, instead of refusing until the user manually dismisses the popover.
-/// A ready review (proposal present) — including an apply-failure that kept its
-/// proposal so Retry/Undo stay reachable — still blocks recording as before.
-/// The `try_transition` keeps this race-safe against a concurrent retry
+/// Used by `start_native_recording`. Issue #327 introduced this for FAILED
+/// reviews only (nothing user-approvable at stake); issue #329 extended it to
+/// READY reviews on explicit user request: pressing the dictation key with an
+/// Approve/Retry popover up is an unambiguous "I'm done with this proposal,
+/// record instead" — refusing to record until the popover was manually
+/// dismissed read as the mic being broken. The unaccepted proposal is
+/// discarded, exactly as if the user had pressed Cancel/Esc first.
+///
+/// Active phases (Capturing/Listening/Thinking/Applying) still block: they
+/// hold the mic, the sidecar, or the AX write path. The `try_transition`
+/// keeps this race-safe against a concurrent retry
 /// (`ReviewPending -> Listening`): exactly one side wins.
-pub(crate) fn dismiss_failed_review(app_state: &AppState, fx: &dyn FlowEffects) -> bool {
-    let has_proposal = transform_apply::session_snapshot(app_state)
-        .map(|s| s.proposed.is_some())
-        .unwrap_or(false);
-    if has_proposal {
-        return false;
-    }
+pub(crate) fn dismiss_review_for_recording(app_state: &AppState, fx: &dyn FlowEffects) -> bool {
     if !app_state.try_transition_transform_status(
         TransformStatus::ReviewPending,
         TransformStatus::Idle,
@@ -1689,7 +1692,7 @@ mod tests {
         assert!(fx.popover_shown());
     }
 
-    // ---- dismiss_failed_review (issue #327) --------------------------------
+    // ---- dismiss_review_for_recording (issues #327, #329) ------------------
 
     fn snapshot_for_dismiss_tests() -> TransformSnapshot {
         TransformSnapshot {
@@ -1703,7 +1706,7 @@ mod tests {
     }
 
     #[test]
-    fn dismiss_failed_review_tears_down_proposal_less_review() {
+    fn dismiss_review_tears_down_failed_review() {
         // A failed review: ReviewPending with a session but no proposed text
         // (sidecar crash / no_instruction / capture error all land here).
         let app_state = AppState::default();
@@ -1711,40 +1714,43 @@ mod tests {
         transform_apply::start_session(&app_state, snapshot_for_dismiss_tests());
         app_state.set_transform_status(TransformStatus::ReviewPending);
 
-        assert!(dismiss_failed_review(&app_state, &fx));
+        assert!(dismiss_review_for_recording(&app_state, &fx));
         assert_eq!(app_state.transform_status(), TransformStatus::Idle);
         assert!(transform_apply::session_snapshot(&app_state).is_none());
         assert!(!fx.popover_shown());
     }
 
     #[test]
-    fn dismiss_failed_review_tears_down_sessionless_review() {
+    fn dismiss_review_tears_down_sessionless_review() {
         // model_not_downloaded fails before any session is started.
         let app_state = AppState::default();
         let fx = RecordingFlowEffects::new();
         app_state.set_transform_status(TransformStatus::ReviewPending);
 
-        assert!(dismiss_failed_review(&app_state, &fx));
+        assert!(dismiss_review_for_recording(&app_state, &fx));
         assert_eq!(app_state.transform_status(), TransformStatus::Idle);
     }
 
     #[test]
-    fn dismiss_failed_review_keeps_ready_review_blocking() {
-        // A ready review (proposal present) holds user-approvable work — it
-        // must NOT be dismissed implicitly by the dictation key.
+    fn dismiss_review_tears_down_ready_review_discarding_proposal() {
+        // Issue #329: pressing the dictation key with an Approve/Retry popover
+        // up is "I'm done with this proposal — record instead". The review is
+        // dismissed and the unaccepted proposal discarded, exactly as if the
+        // user had pressed Cancel first.
         let app_state = AppState::default();
         let fx = RecordingFlowEffects::new();
         transform_apply::start_session(&app_state, snapshot_for_dismiss_tests());
         assert!(transform_apply::set_proposed_text(&app_state, "HELLO".to_string()));
         app_state.set_transform_status(TransformStatus::ReviewPending);
 
-        assert!(!dismiss_failed_review(&app_state, &fx));
-        assert_eq!(app_state.transform_status(), TransformStatus::ReviewPending);
-        assert!(transform_apply::session_snapshot(&app_state).is_some());
+        assert!(dismiss_review_for_recording(&app_state, &fx));
+        assert_eq!(app_state.transform_status(), TransformStatus::Idle);
+        assert!(transform_apply::session_snapshot(&app_state).is_none());
+        assert!(!fx.popover_shown());
     }
 
     #[test]
-    fn dismiss_failed_review_ignores_non_review_states() {
+    fn dismiss_review_ignores_active_transform_phases() {
         let app_state = AppState::default();
         let fx = RecordingFlowEffects::new();
         for status in [
@@ -1756,7 +1762,7 @@ mod tests {
         ] {
             app_state.set_transform_status(status);
             assert!(
-                !dismiss_failed_review(&app_state, &fx),
+                !dismiss_review_for_recording(&app_state, &fx),
                 "{:?} must not be dismissed",
                 status
             );
