@@ -11,6 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **Local dictation evaluation harness** adds strict versioned fixtures, a deterministic no-hardware CI tier, an opt-in installed-model/audio tier, and machine-readable recognition/transformation/delivery reports through `murmur-eval` (#267).
 
 ### Fixed
+- A failed transform review popover (sidecar crash, blank instruction, capture error, missing model) no longer blocks dictation until manually dismissed: pressing the dictation key now auto-dismisses the failed review — which holds nothing user-approvable — and records. A ready review with a pending proposal still blocks, so unaccepted work is never destroyed implicitly (#327).
 - Disabling Murmur from the overlay no longer traps it disabled: the hover quick-settings card — which holds the "Enable Murmur" power button — now stays reachable while disabled, so the overlay's own control can turn Murmur back on. Previously the global-disable state gated off the overlay's hover-expand, leaving the tray "Disable Murmur" check item as the only way back.
 
 ## [0.19.0] - 2026-07-20

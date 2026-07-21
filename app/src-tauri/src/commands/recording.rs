@@ -1932,6 +1932,20 @@ pub async fn start_native_recording(
         tracing::info!(target: "pipeline", "start_native_recording: app disabled — ignoring");
         return Ok(serde_json::json!({ "type": "app_disabled", "state": "idle" }));
     }
+    // A transform review parked on FAILURE (ReviewPending with no proposed
+    // text) holds nothing user-approvable — auto-dismiss it so the dictation
+    // key just works instead of silently refusing until the user manually
+    // dismisses the failed popover (issue #327). A ready review still blocks
+    // via the transform_status guard below.
+    {
+        let fx = crate::transform_flow::TauriFlowEffects {
+            app: &app_handle,
+            state: &state,
+        };
+        if crate::transform_flow::dismiss_failed_review(&state.app_state, &fx) {
+            tracing::info!(target: "pipeline", "start_native_recording: auto-dismissed failed transform review");
+        }
+    }
     // Stop any resident local-LLM helper before recording (fail-fast no-op
     // while a transform is in flight; the is_transform_busy guard below then
     // refuses this recording).
