@@ -88,6 +88,44 @@ class ReleaseArtifactTests(unittest.TestCase):
         with self.assertRaisesRegex(ArtifactError, "artifact names differ"):
             validate_release(self.artifacts, SHA, RUN_ID)
 
+    HELPER = {
+        "sha256": "a" * 64,
+        "architecture": "arm64",
+        "designated_requirement": (
+            'identifier "com.localdictation.local-llm-sidecar" and anchor apple generic'
+        ),
+        "team_id": "ABCDE12345",
+        "entitlement_sha256": "b" * 64,
+    }
+
+    def _rerecord_macos_with_helper(self, helper: dict) -> None:
+        macos = self.artifacts / "macos"
+        (macos / "provenance.json").unlink()
+        create_provenance("macos", "darwin-aarch64", macos, SHA, RUN_ID, helper=helper)
+
+    def test_helper_provenance_recorded_and_validated(self) -> None:
+        self._rerecord_macos_with_helper(self.HELPER)
+        result = validate_release(self.artifacts, SHA, RUN_ID, require_macos_helper=True)
+        self.assertEqual(result["platforms"]["macos"]["helper"], self.HELPER)
+
+    def test_require_macos_helper_fails_without_block(self) -> None:
+        with self.assertRaisesRegex(ArtifactError, "missing the required local-LLM helper"):
+            validate_release(self.artifacts, SHA, RUN_ID, require_macos_helper=True)
+
+    def test_helper_wrong_architecture_fails_closed(self) -> None:
+        with self.assertRaisesRegex(ArtifactError, "architecture must be arm64"):
+            self._rerecord_macos_with_helper({**self.HELPER, "architecture": "x86_64"})
+
+    def test_helper_bad_entitlement_digest_fails_closed(self) -> None:
+        with self.assertRaisesRegex(ArtifactError, "entitlement_sha256"):
+            self._rerecord_macos_with_helper({**self.HELPER, "entitlement_sha256": "short"})
+
+    def test_helper_provenance_rejected_for_linux(self) -> None:
+        linux = self.artifacts / "linux"
+        (linux / "provenance.json").unlink()
+        with self.assertRaisesRegex(ArtifactError, "only recorded for macos"):
+            create_provenance("linux", "linux-x86_64", linux, SHA, RUN_ID, helper=self.HELPER)
+
 
 if __name__ == "__main__":
     unittest.main()

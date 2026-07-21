@@ -13,6 +13,14 @@ from typing import Any
 
 SCHEMA_VERSION = 1
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+HELPER_FIELDS = (
+    "sha256",
+    "architecture",
+    "designated_requirement",
+    "team_id",
+    "entitlement_sha256",
+)
 PLATFORM_SUFFIXES = {
     "macos": (".dmg", ".app.tar.gz", ".app.tar.gz.sig"),
     "linux": (".deb", ".AppImage", ".AppImage.sig"),
@@ -77,12 +85,37 @@ def _signature_text(path: Path) -> str:
     return value
 
 
+def _require_helper(helper: dict[str, Any]) -> dict[str, Any]:
+    """Validate the shape of the local-LLM helper provenance block.
+
+    The signed-local-LLM ADR requires provenance to additionally record the
+    helper hash, architecture, designated requirement, Team ID, and entitlement
+    digest. This checks internal consistency; the workflow that records it proves
+    those values against the finalized bundle.
+    """
+    if not isinstance(helper, dict):
+        raise ArtifactError("helper provenance must be an object")
+    missing = [field for field in HELPER_FIELDS if not str(helper.get(field, "")).strip()]
+    if missing:
+        raise ArtifactError(f"helper provenance is missing fields: {missing}")
+    if not SHA256_RE.fullmatch(str(helper["sha256"])):
+        raise ArtifactError("helper sha256 must be a 64-character hex digest")
+    if not SHA256_RE.fullmatch(str(helper["entitlement_sha256"])):
+        raise ArtifactError("helper entitlement_sha256 must be a 64-character hex digest")
+    if str(helper["architecture"]) != "arm64":
+        raise ArtifactError(
+            f"helper architecture must be arm64, got {helper['architecture']!r}"
+        )
+    return {field: str(helper[field]) for field in HELPER_FIELDS}
+
+
 def create_provenance(
     platform: str,
     platform_key: str,
     root: Path,
     commit_sha: str,
     run_id: str | int,
+    helper: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if platform not in PLATFORM_SUFFIXES:
         raise ArtifactError(f"unsupported platform: {platform}")
@@ -123,6 +156,10 @@ def create_provenance(
             for path in files
         ],
     }
+    if helper is not None:
+        if platform != "macos":
+            raise ArtifactError("helper provenance is only recorded for macos")
+        payload["helper"] = _require_helper(helper)
     (root / "provenance.json").write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
@@ -134,6 +171,7 @@ def validate_platform(
     root: Path,
     expected_sha: str,
     expected_run_id: str | int,
+    require_helper: bool = False,
 ) -> dict[str, Any]:
     expected_sha = _require_sha(expected_sha, "expected commit SHA")
     expected_run_id = _require_run_id(expected_run_id)
@@ -187,6 +225,14 @@ def validate_platform(
     if updater not in files or signature not in files:
         raise ArtifactError(f"{platform} updater files are absent from the artifact set")
 
+    helper = payload.get("helper")
+    if helper is not None:
+        payload["helper"] = _require_helper(helper)
+    elif require_helper:
+        raise ArtifactError(
+            f"{platform} provenance is missing the required local-LLM helper block"
+        )
+
     payload["signature"] = _signature_text(signature)
     return payload
 
@@ -196,10 +242,15 @@ def validate_release(
     expected_sha: str,
     expected_run_id: str | int,
     output: Path | None = None,
+    require_macos_helper: bool = False,
 ) -> dict[str, Any]:
     platforms = {
         platform: validate_platform(
-            platform, artifacts_root / platform, expected_sha, expected_run_id
+            platform,
+            artifacts_root / platform,
+            expected_sha,
+            expected_run_id,
+            require_helper=(require_macos_helper and platform == "macos"),
         )
         for platform in ("macos", "linux")
     }
@@ -297,12 +348,22 @@ def _parser() -> argparse.ArgumentParser:
     record.add_argument("--artifacts", type=Path, required=True)
     record.add_argument("--commit-sha", required=True)
     record.add_argument("--run-id", required=True)
+    record.add_argument("--helper-sha256")
+    record.add_argument("--helper-arch")
+    record.add_argument("--helper-designated-requirement")
+    record.add_argument("--helper-team-id")
+    record.add_argument("--helper-entitlement-sha256")
 
     validate = subparsers.add_parser("validate")
     validate.add_argument("--artifacts", type=Path, required=True)
     validate.add_argument("--expected-sha", required=True)
     validate.add_argument("--expected-run-id", required=True)
     validate.add_argument("--output", type=Path, required=True)
+    validate.add_argument(
+        "--require-macos-helper",
+        action="store_true",
+        help="fail unless the macOS provenance records the local-LLM helper block",
+    )
 
     manifests = subparsers.add_parser("manifests")
     manifests.add_argument("--validated", type=Path, required=True)
@@ -314,16 +375,35 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _helper_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
+    provided = {
+        "sha256": args.helper_sha256,
+        "architecture": args.helper_arch,
+        "designated_requirement": args.helper_designated_requirement,
+        "team_id": args.helper_team_id,
+        "entitlement_sha256": args.helper_entitlement_sha256,
+    }
+    supplied = {key: value for key, value in provided.items() if value}
+    if not supplied:
+        return None
+    if len(supplied) != len(provided):
+        missing = sorted(set(provided) - set(supplied))
+        raise ArtifactError(f"incomplete helper provenance arguments: missing {missing}")
+    return supplied
+
+
 def main() -> None:
     args = _parser().parse_args()
     try:
         if args.command == "record":
+            helper = _helper_from_args(args)
             payload = create_provenance(
                 args.platform,
                 args.platform_key,
                 args.artifacts,
                 args.commit_sha,
                 args.run_id,
+                helper=helper,
             )
             print(
                 f"recorded {args.platform} provenance for {payload['commit_sha']} "
@@ -331,7 +411,11 @@ def main() -> None:
             )
         elif args.command == "validate":
             payload = validate_release(
-                args.artifacts, args.expected_sha, args.expected_run_id, args.output
+                args.artifacts,
+                args.expected_sha,
+                args.expected_run_id,
+                args.output,
+                require_macos_helper=args.require_macos_helper,
             )
             print(
                 f"validated immutable release artifacts for {payload['commit_sha']} "
