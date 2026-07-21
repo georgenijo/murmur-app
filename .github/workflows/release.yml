@@ -341,6 +341,7 @@ jobs:
             --artifacts artifacts \
             --expected-sha '${{ needs.resolve.outputs.source-sha }}' \
             --expected-run-id '${{ needs.resolve.outputs.artifact-run-id }}' \
+            --require-macos-helper \
             --output validated-release.json
 
       - name: Report non-publishing promotion rehearsal
