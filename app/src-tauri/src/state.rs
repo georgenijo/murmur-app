@@ -21,6 +21,57 @@ impl Default for DictationStatus {
     }
 }
 
+/// Status of the AX-selection transform pipeline (issue #312). Deliberately a
+/// separate field on `AppState`, NOT a `DictationStatus` variant — dictation
+/// recording/processing and a transform pass are independent activities that
+/// each need to know about (and block) the other, not a shared state machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TransformStatus {
+    Idle,
+    /// Reading the AX selection (`selection::capture_selection`).
+    Capturing,
+    /// Selection captured; waiting for a follow-up spoken instruction.
+    Listening,
+    /// Running the transform (LLM call or equivalent) on the captured text.
+    Thinking,
+    /// Transform result is ready and awaiting user confirmation/edit.
+    ReviewPending,
+    /// Writing the accepted result back (clipboard/injection).
+    Applying,
+}
+
+impl Default for TransformStatus {
+    fn default() -> Self {
+        Self::Idle
+    }
+}
+
+impl TransformStatus {
+    /// Human-readable event/telemetry string (see `log_capture_outcome`-style
+    /// callers in `selection.rs`). Not called from production code yet — the
+    /// transform pipeline that would log these phase transitions lands in a
+    /// later PR in the #312 series; exercised directly by tests until then.
+    #[allow(dead_code)]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Capturing => "capturing",
+            Self::Listening => "listening",
+            Self::Thinking => "thinking",
+            Self::ReviewPending => "review_pending",
+            Self::Applying => "applying",
+        }
+    }
+
+    /// Whether this status should block starting a new dictation recording.
+    /// Only `Idle` allows recording to start — every other transform phase is
+    /// actively using the shared pipeline/clipboard/AX surface.
+    pub fn blocks_recording(self) -> bool {
+        self != Self::Idle
+    }
+}
+
 /// Per-app dictation profile. When the frontmost macOS app's bundle id matches
 /// `bundle_id`, each `*_override` (when `Some`) replaces the corresponding global
 /// setting in the immutable recording-start snapshot. `None` means "no override
@@ -275,6 +326,9 @@ pub struct AppState {
     /// Short-lived local project indexes for explicitly opted-in app profiles.
     /// Contents (symbols and root-relative filenames) are never serialized.
     pub ide_context: Mutex<crate::ide_context::IdeContextStore>,
+    /// Current phase of the AX-selection transform pipeline (issue #312).
+    /// Independent of `dictation.status` — see `TransformStatus`'s doc comment.
+    pub transform_status: Mutex<TransformStatus>,
 }
 
 impl AppState {
@@ -337,6 +391,21 @@ impl AppState {
     pub fn is_cancelled(&self, id: u64) -> bool {
         self.cancelled_id.load(Ordering::SeqCst) >= id
     }
+
+    /// Current transform pipeline phase. Independent of `dictation.status`.
+    pub fn transform_status(&self) -> TransformStatus {
+        *self.transform_status.lock_or_recover()
+    }
+
+    /// Set the transform pipeline phase. Independent of `dictation.status`.
+    /// Not called from production code yet — the transform pipeline that
+    /// drives these phase transitions (capture -> listen -> think -> review ->
+    /// apply) lands in a later PR in the #312 series; exercised directly by
+    /// tests until then.
+    #[allow(dead_code)]
+    pub fn set_transform_status(&self, status: TransformStatus) {
+        *self.transform_status.lock_or_recover() = status;
+    }
 }
 
 impl Default for AppState {
@@ -356,6 +425,7 @@ impl Default for AppState {
             correction_matcher: Mutex::new(None),
             knowledge_replacements: Mutex::new(Arc::new(Vec::new())),
             ide_context: Mutex::new(crate::ide_context::IdeContextStore::default()),
+            transform_status: Mutex::new(TransformStatus::default()),
         }
     }
 }
@@ -423,5 +493,103 @@ mod tests {
             state.active_context(1).unwrap().transcription.model_name,
             "base.en"
         );
+    }
+
+    #[test]
+    fn transform_status_defaults_to_idle_and_does_not_block_recording() {
+        let state = AppState::default();
+        assert_eq!(state.transform_status(), TransformStatus::Idle);
+        assert!(!state.transform_status().blocks_recording());
+    }
+
+    #[test]
+    fn transform_status_setter_getter_roundtrip() {
+        let state = AppState::default();
+        for status in [
+            TransformStatus::Capturing,
+            TransformStatus::Listening,
+            TransformStatus::Thinking,
+            TransformStatus::ReviewPending,
+            TransformStatus::Applying,
+            TransformStatus::Idle,
+        ] {
+            state.set_transform_status(status);
+            assert_eq!(state.transform_status(), status);
+        }
+    }
+
+    #[test]
+    fn every_non_idle_transform_status_blocks_recording_start() {
+        for status in [
+            TransformStatus::Capturing,
+            TransformStatus::Listening,
+            TransformStatus::Thinking,
+            TransformStatus::ReviewPending,
+            TransformStatus::Applying,
+        ] {
+            assert!(
+                status.blocks_recording(),
+                "{status:?} should block a new recording from starting"
+            );
+        }
+        assert!(!TransformStatus::Idle.blocks_recording());
+    }
+
+    #[test]
+    fn dictation_status_and_transform_status_are_independent_fields() {
+        // "vice versa": neither status field's mutation affects the other —
+        // they are two independent activities tracked on the same AppState,
+        // not variants of a single shared state machine.
+        let state = AppState::default();
+
+        state.dictation.lock_or_recover().status = DictationStatus::Recording;
+        assert_eq!(state.transform_status(), TransformStatus::Idle);
+
+        state.set_transform_status(TransformStatus::Thinking);
+        assert_eq!(
+            state.dictation.lock_or_recover().status,
+            DictationStatus::Recording
+        );
+
+        state.dictation.lock_or_recover().status = DictationStatus::Idle;
+        assert_eq!(state.transform_status(), TransformStatus::Thinking);
+    }
+
+    #[test]
+    fn transform_status_serde_form_matches_as_str() {
+        // Regression guard: `#[serde(rename_all = "snake_case")]` must produce
+        // the same wire string as `as_str()` for every variant. Before this
+        // fix, `rename_all = "lowercase"` serialized `ReviewPending` as
+        // "reviewpending", diverging from `as_str()`'s "review_pending".
+        for status in [
+            TransformStatus::Idle,
+            TransformStatus::Capturing,
+            TransformStatus::Listening,
+            TransformStatus::Thinking,
+            TransformStatus::ReviewPending,
+            TransformStatus::Applying,
+        ] {
+            let serialized = serde_json::to_string(&status).unwrap();
+            let expected = format!("\"{}\"", status.as_str());
+            assert_eq!(
+                serialized, expected,
+                "serde form of {status:?} must match as_str()"
+            );
+        }
+    }
+
+    #[test]
+    fn transform_status_telemetry_strings_are_stable_and_content_free() {
+        let cases = [
+            (TransformStatus::Idle, "idle"),
+            (TransformStatus::Capturing, "capturing"),
+            (TransformStatus::Listening, "listening"),
+            (TransformStatus::Thinking, "thinking"),
+            (TransformStatus::ReviewPending, "review_pending"),
+            (TransformStatus::Applying, "applying"),
+        ];
+        for (status, expected) in cases {
+            assert_eq!(status.as_str(), expected);
+        }
     }
 }

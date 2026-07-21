@@ -22,6 +22,7 @@ mod knowledge_store;
 mod model_runtime;
 mod platform;
 mod resource_monitor;
+mod selection;
 mod smart_formatting;
 mod state;
 pub mod telemetry;
@@ -175,6 +176,10 @@ pub fn run() {
             commands::keyboard::set_keyboard_recording,
             commands::keyboard::set_app_disabled,
             commands::keyboard::get_app_disabled,
+            commands::keyboard::start_transform_listener,
+            commands::keyboard::stop_transform_listener,
+            commands::keyboard::set_transform_key,
+            commands::recording::transform_status,
             commands::knowledge::get_knowledge_store_status,
             commands::knowledge::retry_knowledge_store,
             commands::knowledge::list_knowledge,

@@ -827,6 +827,10 @@ pub async fn process_audio(
             tracing::warn!(target: "pipeline", "process_audio: blocked — benchmark in progress");
             return Err("Cannot process audio while a benchmark is in progress.".to_string());
         }
+        if state.app_state.transform_status().blocks_recording() {
+            tracing::warn!(target: "pipeline", "process_audio: blocked — transform in progress");
+            return Err("Cannot process audio while a transform is in progress.".to_string());
+        }
         if dictation.status != DictationStatus::Idle {
             return Err("Cannot process audio while live dictation is active.".to_string());
         }
@@ -930,6 +934,13 @@ pub async fn get_status(state: tauri::State<'_, State>) -> Result<serde_json::Va
         "model": dictation.model_name,
         "language": dictation.language
     }))
+}
+
+/// Current phase of the AX-selection transform pipeline (issue #312).
+/// Independent of `get_status`'s dictation state — see `TransformStatus`.
+#[tauri::command]
+pub fn transform_status(state: tauri::State<'_, State>) -> crate::state::TransformStatus {
+    state.app_state.transform_status()
 }
 
 /// Privacy-safe shape for configuration telemetry. User-entered values (profile
@@ -1932,6 +1943,16 @@ pub async fn start_native_recording(
                 "state": "idle"
             }));
         }
+        // Refuse while a transform pass (issue #312) holds the shared Whisper
+        // backend / clipboard / AX surface. Checked under the dictation lock,
+        // same as the two guards above.
+        if state.app_state.transform_status().blocks_recording() {
+            tracing::warn!(target: "pipeline", "start_native_recording: blocked — transform in progress");
+            return Ok(serde_json::json!({
+                "type": "busy_transforming",
+                "state": "idle"
+            }));
+        }
         match dictation.status {
             DictationStatus::Recording => {
                 tracing::warn!(target: "pipeline", "start_native_recording: already recording");
@@ -2304,6 +2325,11 @@ pub async fn transcribe_file(
         let dictation = state.app_state.dictation.lock_or_recover();
         if state.benchmark.is_running() {
             return Err("Wait for the benchmark to finish before transcribing a file.".to_string());
+        }
+        // Transform's Thinking phase (issue #312) will share this same Whisper
+        // backend, so it must be mutually exclusive with file transcription too.
+        if state.app_state.transform_status().blocks_recording() {
+            return Err("Wait for the transform to finish before transcribing a file.".to_string());
         }
         if dictation.status != DictationStatus::Idle {
             return Err(

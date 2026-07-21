@@ -503,12 +503,38 @@ fn now_unix_ms() -> u64 {
         .as_millis() as u64
 }
 
-/// Map hotkey string from settings to rdev Key
+/// Hotkey ids reserved for the dictation listener (`DoubleTapKey` in
+/// settings.ts). The transform hotkey commands (`start_transform_listener`,
+/// `set_transform_key` in `commands/keyboard.rs`) reject these so the two key
+/// sets stay disjoint at the Rust boundary too, not just in the TS type —
+/// `hotkey_to_rdev_key` below accepts either set with no id-ownership check
+/// of its own.
+pub const DICTATION_KEY_IDS: &[&str] = &["shift_l", "alt_l", "ctrl_r"];
+
+/// Whether `hotkey` is one of the ids reserved for the dictation listener
+/// (see `DICTATION_KEY_IDS`). Pure so it's unit-testable without a listener
+/// or `tauri::AppHandle`.
+pub fn is_dictation_key_id(hotkey: &str) -> bool {
+    DICTATION_KEY_IDS.contains(&hotkey)
+}
+
+/// Map hotkey string from settings to rdev Key.
+///
+/// `shift_l` / `alt_l` / `ctrl_r` back the dictation hotkey (`DoubleTapKey` in
+/// settings.ts). `alt_r` / `ctrl_l` / `shift_r` back the independent transform
+/// hotkey (`TransformKey`, issue #312) — same function since both listeners
+/// share this mapping. The two id sets are kept disjoint by convention plus
+/// an explicit `is_dictation_key_id` check at the transform command boundary
+/// (see `commands/keyboard.rs`) — nothing here would reject the overlap on
+/// its own.
 fn hotkey_to_rdev_key(hotkey: &str) -> Option<Key> {
     match hotkey {
         "shift_l" => Some(Key::ShiftLeft),
         "alt_l" => Some(Key::Alt),
         "ctrl_r" => Some(Key::ControlRight),
+        "shift_r" => Some(Key::ShiftRight),
+        "alt_r" => Some(Key::AltGr),
+        "ctrl_l" => Some(Key::ControlLeft),
         _ => None,
     }
 }
@@ -696,6 +722,24 @@ static ACTIVE_MODE: Mutex<DetectorMode> = Mutex::new(DetectorMode::DoubleTap);
 static DOUBLE_TAP_DETECTOR: Mutex<Option<DoubleTapDetector>> = Mutex::new(None);
 static HOLD_DOWN_DETECTOR: Mutex<Option<HoldDownDetector>> = Mutex::new(None);
 
+// -- Transform hotkey (issue #312) --
+//
+// A second, independent hold-down detector for the "transform" shortcut
+// (AX selected-text capture + LLM transform, PR-B1). It reuses the plain
+// `HoldDownDetector` state machine but is entirely separate from the
+// dictation detectors above: its own target key, its own Mutex, its own
+// active flag. It is fed from the SAME shared rdev callback (see the
+// `TRANSFORM_DETECTOR` handling block in `start_listener`'s callback) so no
+// second `rdev::listen()` thread is ever spawned — rdev only tolerates one
+// listener per process. Starting/stopping the transform listener never
+// touches `DOUBLE_TAP_DETECTOR` / `HOLD_DOWN_DETECTOR` or `ACTIVE_MODE`.
+static TRANSFORM_DETECTOR: Mutex<Option<HoldDownDetector>> = Mutex::new(None);
+/// Gates transform-detector processing independent of `LISTENER_ACTIVE`
+/// (which only reflects the dictation listener). Lets the transform hotkey
+/// work even if, hypothetically, it were started before the dictation
+/// listener.
+static TRANSFORM_ACTIVE: AtomicBool = AtomicBool::new(false);
+
 /// Start the keyboard listener. Spawns the rdev listener thread if not already running.
 /// If already running, just updates the target key, mode, and re-enables.
 ///
@@ -779,6 +823,15 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
     LAST_RDEV_CALLBACK_AT_MS.store(now_unix_ms(), Ordering::SeqCst);
     LAST_TAP_SILENCE_WARNING_AT_MS.store(0, Ordering::SeqCst);
 
+    ensure_listener_thread_spawned(app_handle);
+}
+
+/// Spawn the single shared `rdev::listen()` thread if it hasn't been spawned
+/// yet (idempotent — rdev only tolerates one listener per process). Both the
+/// dictation listener (`start_listener`) and the transform hotkey
+/// (`start_transform_listener`) call this; whichever runs first wins the
+/// spawn, the other is a no-op via the `compare_exchange` guard.
+fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
     // Only spawn the thread once
     if LISTENER_THREAD_SPAWNED
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -798,7 +851,11 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
             tracing::info!(target: "keyboard", "rdev listener thread started");
 
             let callback = move |event: Event| {
-                if !LISTENER_ACTIVE.load(Ordering::SeqCst) {
+                // The dictation listener (LISTENER_ACTIVE) and the transform
+                // hotkey (TRANSFORM_ACTIVE) are independent; either one being
+                // active is enough to keep processing events on this thread.
+                if !LISTENER_ACTIVE.load(Ordering::SeqCst) && !TRANSFORM_ACTIVE.load(Ordering::SeqCst)
+                {
                     return;
                 }
                 LAST_RDEV_CALLBACK_AT_MS.store(now_unix_ms(), Ordering::SeqCst);
@@ -834,6 +891,18 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
                             d.last_fired_at = Some(Instant::now());
                         }
                     }
+                    // Also reset the transform detector (issue #312) — this
+                    // branch returns before the transform block below runs, so
+                    // without this the detector could be left mid-hold (stale
+                    // `Held` state) across an Escape, exactly like the
+                    // dictation detectors above would be without their resets.
+                    {
+                        let mut det = TRANSFORM_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
+                        if let Some(d) = det.as_mut() {
+                            d.reset();
+                            d.last_stopped_at = Some(Instant::now());
+                        }
+                    }
                     // Invalidate pending hold-promotion timers
                     HOLD_PROMOTED.store(false, Ordering::SeqCst);
                     HOLD_PRESS_COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -844,6 +913,48 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
                 }
 
                 if APP_DISABLED.load(Ordering::SeqCst) {
+                    return;
+                }
+
+                // Transform hotkey (issue #312): an independent hold-down
+                // detector fed unconditionally of `mode`/dictation state, since
+                // it targets a distinct key from the dictation hotkey and has
+                // its own start/stop lifecycle. Runs on every event so it keeps
+                // working across dictation mode switches. Not gated by
+                // IS_PROCESSING — the transform shortcut targets already-typed
+                // text and its use is independent of live dictation.
+                //
+                // Gated by TRANSFORM_ACTIVE so that `set_transform_key` alone
+                // (which arms TRANSFORM_DETECTOR with a target key but does not
+                // start the listener) can never cause event emission — only
+                // `start_transform_listener` flips TRANSFORM_ACTIVE. Without
+                // this gate, a stray `set_transform_key` call before the
+                // listener starts would let the detector fire silently.
+                if TRANSFORM_ACTIVE.load(Ordering::SeqCst) {
+                    let transform_result = {
+                        let mut det = TRANSFORM_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
+                        if let Some(d) = det.as_mut() {
+                            d.handle_event(&event.event_type)
+                        } else {
+                            HoldDownEvent::None
+                        }
+                    };
+                    match transform_result {
+                        HoldDownEvent::Start => {
+                            let _ = handle.emit("transform-key-pressed", ());
+                        }
+                        HoldDownEvent::Stop => {
+                            let _ = handle.emit("transform-key-released", ());
+                        }
+                        HoldDownEvent::None => {}
+                    }
+                }
+
+                // The dictation dispatch below is only relevant while the
+                // dictation listener itself is active (it may be false here if
+                // only the transform hotkey brought this callback past the top
+                // gate).
+                if !LISTENER_ACTIVE.load(Ordering::SeqCst) {
                     return;
                 }
 
@@ -1150,6 +1261,71 @@ pub fn set_recording_state(recording: bool) {
     if let Some(d) = det.as_mut() {
         d.recording = recording;
     }
+}
+
+// -- Transform hotkey lifecycle (issue #312, PR-B1) --
+//
+// Independent of `start_listener` / `stop_listener` / `set_target_key` above:
+// none of these three functions touch `DOUBLE_TAP_DETECTOR`, `HOLD_DOWN_DETECTOR`,
+// `ACTIVE_MODE`, or `LISTENER_ACTIVE`.
+
+/// Start (or reconfigure) the transform hold-down detector and ensure the
+/// shared rdev thread is running. Safe to call whether or not the dictation
+/// listener has been started — spawning is idempotent (see
+/// `ensure_listener_thread_spawned`).
+pub fn start_transform_listener(app_handle: tauri::AppHandle, hotkey: &str) {
+    let target = hotkey_to_rdev_key(hotkey);
+    {
+        let mut det = TRANSFORM_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
+        match det.as_mut() {
+            Some(d) => {
+                let _ = d.set_target(target);
+            }
+            None => {
+                let mut d = HoldDownDetector::new();
+                let _ = d.set_target(target);
+                *det = Some(d);
+            }
+        }
+    }
+    TRANSFORM_ACTIVE.store(true, Ordering::SeqCst);
+    ensure_listener_thread_spawned(app_handle);
+}
+
+/// Disable the transform hotkey (target key cleared, detector reset). Leaves
+/// the shared rdev thread and the dictation listener untouched — dictation
+/// keeps working exactly as before this was ever called.
+pub fn stop_transform_listener() {
+    TRANSFORM_ACTIVE.store(false, Ordering::SeqCst);
+    let mut det = TRANSFORM_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(d) = det.as_mut() {
+        let _ = d.set_target(None);
+        d.reset();
+    }
+}
+
+/// Update the transform target key without stopping the detector. Returns
+/// `true` if the detector was mid-hold (caller should emit
+/// `transform-key-released`), mirroring `set_target_key`'s hold-down contract.
+pub fn set_transform_key(hotkey: &str) -> bool {
+    let target = hotkey_to_rdev_key(hotkey);
+    let mut det = TRANSFORM_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
+    match det.as_mut() {
+        Some(d) => d.set_target(target),
+        None => {
+            let mut d = HoldDownDetector::new();
+            let was_held = d.set_target(target);
+            *det = Some(d);
+            was_held
+        }
+    }
+}
+
+/// Whether the transform hotkey is currently enabled (a listener was started
+/// and not since stopped). Test/diagnostic surface only.
+#[cfg(test)]
+pub(crate) fn is_transform_active() -> bool {
+    TRANSFORM_ACTIVE.load(Ordering::SeqCst)
 }
 
 #[cfg(test)]
@@ -1488,6 +1664,16 @@ mod tests {
         assert_eq!(hotkey_to_rdev_key("alt_l"), Some(Key::Alt));
         assert_eq!(hotkey_to_rdev_key("ctrl_r"), Some(Key::ControlRight));
         assert_eq!(hotkey_to_rdev_key("unknown"), None);
+    }
+
+    #[test]
+    fn transform_hotkey_string_mapping() {
+        // TransformKey ids (settings.ts) — distinct from the dictation
+        // DoubleTapKey ids above, so both hotkeys can be configured at once
+        // without colliding on the same physical key.
+        assert_eq!(hotkey_to_rdev_key("shift_r"), Some(Key::ShiftRight));
+        assert_eq!(hotkey_to_rdev_key("alt_r"), Some(Key::AltGr));
+        assert_eq!(hotkey_to_rdev_key("ctrl_l"), Some(Key::ControlLeft));
     }
 
     #[test]
@@ -1996,5 +2182,185 @@ mod tests {
 
         // Restore
         set_app_disabled(false);
+    }
+
+    // -- Transform hotkey tests (issue #312, PR-B1) --
+    //
+    // These exercise the module-level wiring (`set_transform_key`,
+    // `stop_transform_listener`, the `TRANSFORM_DETECTOR`/`TRANSFORM_ACTIVE`
+    // statics) directly, without going through `start_transform_listener`
+    // (which needs a real `tauri::AppHandle` to spawn the rdev thread and so
+    // isn't exercised by these pure unit tests). The underlying state machine
+    // (`HoldDownDetector`) is already covered exhaustively by the
+    // `hold_*` tests above — these confirm the transform wiring reuses it
+    // correctly and stays isolated from the dictation detectors.
+
+    /// Reset all transform-related global state to a known baseline so tests
+    /// don't leak state into each other (tests run --test-threads=1, but order
+    /// is not guaranteed).
+    fn reset_transform_state() {
+        TRANSFORM_ACTIVE.store(false, Ordering::SeqCst);
+        let mut det = TRANSFORM_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
+        *det = None;
+    }
+
+    #[test]
+    fn dictation_key_ids_are_rejected_for_transform() {
+        assert!(is_dictation_key_id("shift_l"));
+        assert!(is_dictation_key_id("alt_l"));
+        assert!(is_dictation_key_id("ctrl_r"));
+        // The transform key set must remain distinct.
+        assert!(!is_dictation_key_id("shift_r"));
+        assert!(!is_dictation_key_id("alt_r"));
+        assert!(!is_dictation_key_id("ctrl_l"));
+        assert!(!is_dictation_key_id("not_a_real_key"));
+        assert!(!is_dictation_key_id(""));
+    }
+
+    #[test]
+    fn transform_set_key_arms_detector_independent_of_active_flag() {
+        reset_transform_state();
+        assert!(!is_transform_active());
+
+        // set_transform_key alone (no start_transform_listener) should still
+        // arm the detector with a target key; TRANSFORM_ACTIVE is untouched —
+        // mirrors set_target_key's relationship to LISTENER_ACTIVE.
+        let was_held = set_transform_key("alt_l");
+        assert!(!was_held);
+        assert!(!is_transform_active());
+
+        {
+            let det = TRANSFORM_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
+            assert_eq!(det.as_ref().unwrap().target_key, Some(Key::Alt));
+        }
+
+        reset_transform_state();
+    }
+
+    #[test]
+    fn transform_detector_starts_and_stops_like_hold_down() {
+        reset_transform_state();
+        set_transform_key("ctrl_r");
+
+        let start = {
+            let mut det = TRANSFORM_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
+            det.as_mut()
+                .unwrap()
+                .handle_event(&press(Key::ControlRight))
+        };
+        assert_eq!(start, HoldDownEvent::Start);
+
+        let stop = {
+            let mut det = TRANSFORM_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
+            det.as_mut()
+                .unwrap()
+                .handle_event(&release(Key::ControlRight))
+        };
+        assert_eq!(stop, HoldDownEvent::Stop);
+
+        reset_transform_state();
+    }
+
+    #[test]
+    fn transform_key_change_while_held_reports_should_release() {
+        reset_transform_state();
+        set_transform_key("shift_l");
+        {
+            let mut det = TRANSFORM_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
+            let started = det.as_mut().unwrap().handle_event(&press(Key::ShiftLeft));
+            assert_eq!(started, HoldDownEvent::Start);
+        }
+
+        // Changing key while held should report `true` so the command layer
+        // emits transform-key-released, exactly like update_keyboard_key does
+        // for the dictation hotkey.
+        let should_release = set_transform_key("alt_l");
+        assert!(should_release);
+
+        reset_transform_state();
+    }
+
+    #[test]
+    fn stop_transform_listener_clears_active_and_resets_detector() {
+        reset_transform_state();
+        set_transform_key("shift_l");
+        TRANSFORM_ACTIVE.store(true, Ordering::SeqCst);
+        {
+            let mut det = TRANSFORM_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
+            det.as_mut().unwrap().handle_event(&press(Key::ShiftLeft));
+        }
+
+        stop_transform_listener();
+
+        assert!(!is_transform_active());
+        {
+            let det = TRANSFORM_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
+            let d = det.as_ref().unwrap();
+            assert_eq!(d.state, HoldState::Idle);
+            assert_eq!(d.target_key, None);
+        }
+
+        reset_transform_state();
+    }
+
+    #[test]
+    fn transform_detector_is_isolated_from_dictation_detectors() {
+        reset_transform_state();
+        set_transform_key("ctrl_r");
+
+        // Prime the dictation hold-down detector on a DIFFERENT key.
+        {
+            let mut det = HOLD_DOWN_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
+            let d = det.get_or_insert_with(HoldDownDetector::new);
+            let _ = d.set_target(Some(Key::ShiftLeft));
+        }
+
+        // Press the transform key — must not start the dictation detector.
+        {
+            let mut det = TRANSFORM_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
+            let started = det
+                .as_mut()
+                .unwrap()
+                .handle_event(&press(Key::ControlRight));
+            assert_eq!(started, HoldDownEvent::Start);
+        }
+        {
+            let det = HOLD_DOWN_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
+            assert_eq!(det.as_ref().unwrap().state, HoldState::Idle);
+        }
+
+        // Press the dictation key — must not affect the transform detector.
+        {
+            let mut det = HOLD_DOWN_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
+            let started = det.as_mut().unwrap().handle_event(&press(Key::ShiftLeft));
+            assert_eq!(started, HoldDownEvent::Start);
+        }
+        {
+            let det = TRANSFORM_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
+            assert_eq!(det.as_ref().unwrap().state, HoldState::Held);
+        }
+
+        // Clean up both.
+        {
+            let mut det = HOLD_DOWN_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
+            det.as_mut().unwrap().reset();
+        }
+        reset_transform_state();
+    }
+
+    #[test]
+    fn no_transform_target_key_never_fires() {
+        reset_transform_state();
+        // Detector exists but with no target key set (e.g. "unset" hotkey).
+        set_transform_key("not_a_real_key");
+        {
+            let mut det = TRANSFORM_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
+            let result = det
+                .as_mut()
+                .unwrap()
+                .handle_event(&press(Key::ControlRight));
+            assert_eq!(result, HoldDownEvent::None);
+        }
+        reset_transform_state();
     }
 }

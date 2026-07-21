@@ -2,6 +2,15 @@ export type RecordingMode = 'hold_down' | 'double_tap' | 'both';
 
 export type DoubleTapKey = 'shift_l' | 'alt_l' | 'ctrl_r';
 
+/**
+ * Independent hotkey for the AX-selection transform shortcut (issue #312).
+ * Deliberately a distinct id set from `DoubleTapKey` (same `<modifier>_<side>`
+ * naming style) rather than reusing it verbatim: the transform key is meant
+ * to coexist with whichever dictation hotkey is configured, so the default
+ * options live on the opposite side of the keyboard.
+ */
+export type TransformKey = 'alt_r' | 'ctrl_l' | 'shift_r';
+
 export type WritingStyle =
   | 'conversational'
   | 'polished'
@@ -186,6 +195,9 @@ const MAX_SAMPLE_TERMS = 50;
 export interface Settings {
   model: ModelOption;
   doubleTapKey: DoubleTapKey;
+  /** Independent transform-shortcut hotkey (issue #312). `null` = disabled;
+   * no settings UI exposes this yet. */
+  transformHoldKey: TransformKey | null;
   language: string;
   autoPaste: boolean;
   autoPasteDelayMs: number;
@@ -292,6 +304,15 @@ export const DOUBLE_TAP_KEY_OPTIONS: { value: DoubleTapKey; label: string }[] = 
   { value: 'ctrl_r', label: 'Control' },
 ];
 
+/** No settings UI consumes this yet (Phase D of issue #312) — kept alongside
+ * `DOUBLE_TAP_KEY_OPTIONS` so the allow-list used by migration/validation has
+ * a single source of truth ready for when the picker ships. */
+export const TRANSFORM_KEY_OPTIONS: { value: TransformKey; label: string }[] = [
+  { value: 'alt_r', label: 'Right Option' },
+  { value: 'ctrl_l', label: 'Left Control' },
+  { value: 'shift_r', label: 'Right Shift' },
+];
+
 export const RECORDING_MODE_OPTIONS: { value: RecordingMode; label: string }[] = [
   { value: 'hold_down', label: 'Hold Down' },
   { value: 'double_tap', label: 'Double-Tap' },
@@ -328,6 +349,8 @@ export const DEFAULT_SETTINGS: Settings = {
   // Whisper and sherpa selections remain valid and are never force-migrated.
   model: defaultModelForPlatform(runtimePlatform),
   doubleTapKey: 'shift_l',
+  // Disabled by default — no settings UI to configure it yet (Phase D).
+  transformHoldKey: null,
   // 'auto' lets Whisper auto-detect the spoken language ("just works"); the
   // non-Whisper models may auto-detect or ignore this value.
   language: 'auto',
@@ -462,6 +485,20 @@ export function loadSettings(): Settings {
       const validLanguages = new Set<string>(LANGUAGE_OPTIONS.map((o) => o.value));
       if (typeof parsed.language !== 'string' || !validLanguages.has(parsed.language)) {
         parsed.language = DEFAULT_SETTINGS.language;
+      }
+
+      // transformHoldKey: `null` (disabled) or one of TRANSFORM_KEY_OPTIONS.
+      // Anything else — including an absent field on pre-feature blobs, or a
+      // tampered/unrecognised id — coerces back to disabled rather than
+      // silently arming an unexpected shortcut.
+      {
+        const validTransformKeys = new Set<string>(TRANSFORM_KEY_OPTIONS.map((o) => o.value));
+        if (
+          parsed.transformHoldKey !== null
+          && (typeof parsed.transformHoldKey !== 'string' || !validTransformKeys.has(parsed.transformHoldKey))
+        ) {
+          parsed.transformHoldKey = DEFAULT_SETTINGS.transformHoldKey;
+        }
       }
 
       // outputDir feeds a filesystem path on the Rust side — coerce anything
