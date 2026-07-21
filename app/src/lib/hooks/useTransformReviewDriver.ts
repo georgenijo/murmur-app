@@ -102,15 +102,38 @@ export function useTransformReviewDriver(enabled: boolean): ReviewDriverResult {
     return () => window.clearInterval(id);
   }, [enabled, state]);
 
+  // PR-C2: wire the popover actions to the real transform-flow commands. The
+  // backend owns the state machine and emits the follow-up `transform-state-
+  // changed` events; these calls never carry any review text.
   const cancel = useCallback(() => {
-    invoke('hide_transform_popover').catch((e) => {
-      flog.warn('transform-review', 'hide_transform_popover failed', { error: String(e) });
+    invoke('cancel_transform').catch((e) => {
+      flog.warn('transform-review', 'cancel_transform failed', { error: String(e) });
     });
   }, []);
-  // PR-C2: wire these to real transform commands once the sidecar exists.
-  const retry = useCallback(() => {}, []);
-  const approve = useCallback(() => {}, []);
-  const undo = useCallback(() => {}, []);
+  const retry = useCallback(() => {
+    invoke('retry_transform_instruction').catch((e) => {
+      flog.warn('transform-review', 'retry_transform_instruction failed', { error: String(e) });
+    });
+  }, []);
+  const approve = useCallback(() => {
+    invoke('approve_transform').catch((e) => {
+      flog.warn('transform-review', 'approve_transform failed', { error: String(e) });
+    });
+  }, []);
+  const undo = useCallback(() => {
+    // Undo the applied write, then tear the popover down (brief confirmation is
+    // the applied-state UI already on screen). `cancel_transform` clears the
+    // session and hides the popover once undo has run.
+    invoke('undo_transform')
+      .catch((e) => {
+        flog.warn('transform-review', 'undo_transform failed', { error: String(e) });
+      })
+      .finally(() => {
+        invoke('cancel_transform').catch((e) => {
+          flog.warn('transform-review', 'cancel_transform after undo failed', { error: String(e) });
+        });
+      });
+  }, []);
 
   return { state, errorCode, content, thinkingElapsedMs, cancel, retry, approve, undo };
 }

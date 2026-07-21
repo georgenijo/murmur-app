@@ -8,9 +8,11 @@ import type { DictationStatus } from '../../lib/types';
  */
 export type OverlayIndicator =
   | { kind: 'cancelled' }
+  | { kind: 'secureField' }
   | { kind: 'hotkeyMiss' }
   | { kind: 'recording' }
   | { kind: 'processing' }
+  | { kind: 'transforming' }
   | { kind: 'idle'; dimmed: boolean };
 
 export interface OverlayVisual {
@@ -35,26 +37,38 @@ export interface OverlayVisual {
  *   showCancelled ? X : showHotkeyMiss ? ! : status==='recording' ? dot
  *     : status==='processing' ? spinner : mic (dimmed if disabled)
  *
- * Priority: cancelled > hotkey-miss > recording > processing > idle. (Since
- * `status` is a single enum value, recording and processing can never both be
- * true, so their relative order does not change behavior — only idle's
- * position at the end, after both, matters.)
+ * Priority: cancelled > secure-field flash > hotkey-miss > recording >
+ * processing > transforming > idle. (Since `status` is a single enum value,
+ * recording and processing can never both be true, so their relative order
+ * does not change behavior — only idle's position at the end, after both,
+ * matters.)
+ *
+ * `transforming` and `showSecureField` (issue #312 PR-C2) are the transform
+ * flow's two overlay affordances: the "transforming…" indicator shown while
+ * the local LLM is thinking, and a brief flash when a password/secure field is
+ * refused. Both default off so the dictation call sites are unchanged.
  */
 export function deriveVisual(
   status: DictationStatus,
   showCancelled: boolean,
   showHotkeyMiss: boolean,
   disabled: boolean,
+  transforming: boolean = false,
+  showSecureField: boolean = false,
 ): OverlayVisual {
   const indicator: OverlayIndicator = showCancelled
     ? { kind: 'cancelled' }
-    : showHotkeyMiss
-      ? { kind: 'hotkeyMiss' }
-      : status === 'recording'
-        ? { kind: 'recording' }
-        : status === 'processing'
-          ? { kind: 'processing' }
-          : { kind: 'idle', dimmed: disabled };
+    : showSecureField
+      ? { kind: 'secureField' }
+      : showHotkeyMiss
+        ? { kind: 'hotkeyMiss' }
+        : status === 'recording'
+          ? { kind: 'recording' }
+          : status === 'processing'
+            ? { kind: 'processing' }
+            : transforming
+              ? { kind: 'transforming' }
+              : { kind: 'idle', dimmed: disabled };
 
   return {
     indicator,

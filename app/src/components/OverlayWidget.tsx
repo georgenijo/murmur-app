@@ -27,6 +27,10 @@ export function OverlayWidget() {
   const [disabled, setDisabled] = useState(false);
   const [showHotkeyMiss, setShowHotkeyMiss] = useState(false);
   const [status, setStatus] = useState<DictationStatus>('idle');
+  // True while the local-LLM transform is thinking (issue #312 PR-C2). Driven
+  // by the broadcast `transform-state-changed` event; the overlay is a
+  // separate webview so it listens directly.
+  const [transforming, setTransforming] = useState(false);
   const hotkeyMissFeedbackRef = useRef(false);
   const statusRef = useRef<DictationStatus>('idle');
 
@@ -48,7 +52,28 @@ export function OverlayWidget() {
     status, statusRef, disabledRef: runtime.disabledRef, expandedRef,
   });
 
-  const visual = deriveVisual(status, runtime.showCancelled, runtime.showHotkeyMiss, runtime.disabled);
+  const visual = deriveVisual(
+    status,
+    runtime.showCancelled,
+    runtime.showHotkeyMiss,
+    runtime.disabled,
+    transforming,
+    runtime.showSecureField,
+  );
+
+  // Track the transform flow's thinking phase for the overlay indicator.
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    listen<unknown>('transform-state-changed', (event) => {
+      const payload = event.payload as { state?: unknown } | null;
+      const state = payload && typeof payload === 'object' ? payload.state : undefined;
+      setTransforming(state === 'thinking');
+    }).then((fn) => {
+      if (cancelled) { fn(); } else { unlisten = fn; }
+    });
+    return () => { cancelled = true; unlisten?.(); };
+  }, []);
 
   // Log mount/unmount.
   useEffect(() => {
