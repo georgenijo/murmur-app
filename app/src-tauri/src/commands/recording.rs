@@ -827,6 +827,10 @@ pub async fn process_audio(
             tracing::warn!(target: "pipeline", "process_audio: blocked — benchmark in progress");
             return Err("Cannot process audio while a benchmark is in progress.".to_string());
         }
+        if state.app_state.transform_status().blocks_recording() {
+            tracing::warn!(target: "pipeline", "process_audio: blocked — transform in progress");
+            return Err("Cannot process audio while a transform is in progress.".to_string());
+        }
         if dictation.status != DictationStatus::Idle {
             return Err("Cannot process audio while live dictation is active.".to_string());
         }
@@ -930,6 +934,13 @@ pub async fn get_status(state: tauri::State<'_, State>) -> Result<serde_json::Va
         "model": dictation.model_name,
         "language": dictation.language
     }))
+}
+
+/// Current phase of the AX-selection transform pipeline (issue #312).
+/// Independent of `get_status`'s dictation state — see `TransformStatus`.
+#[tauri::command]
+pub fn transform_status(state: tauri::State<'_, State>) -> crate::state::TransformStatus {
+    state.app_state.transform_status()
 }
 
 /// Privacy-safe shape for configuration telemetry. User-entered values (profile

@@ -176,6 +176,7 @@ pub fn run() {
             commands::keyboard::set_keyboard_recording,
             commands::keyboard::set_app_disabled,
             commands::keyboard::get_app_disabled,
+            commands::recording::transform_status,
             commands::knowledge::get_knowledge_store_status,
             commands::knowledge::retry_knowledge_store,
             commands::knowledge::list_knowledge,
