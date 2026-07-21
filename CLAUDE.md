@@ -5,11 +5,18 @@ Privacy-first macOS voice-to-text app. Tauri 2 (Rust + React), local whisper.cpp
 ## Commands
 
 ```bash
+python3 scripts/build_local_llm_sidecar.py  # Build the macOS local-LLM sidecar FIRST (see note)
 cd app && npm run tauri dev        # Dev with hot reload
 cd app && npm run tauri build      # Production .app and .dmg
 cd app/src-tauri && cargo test -- --test-threads=1  # Rust unit tests
 cd app && npx tsc --noEmit         # TypeScript check
 ```
+
+> **macOS note:** `tauri.macos.conf.json` declares the `murmur-llm-sidecar` externalBin, so
+> on macOS `tauri dev`/`tauri build` fail on a fresh clone until the sidecar binary exists at
+> `app/src-tauri/binaries/murmur-llm-sidecar-aarch64-apple-darwin`. Run
+> `python3 scripts/build_local_llm_sidecar.py` once first (it is a no-op on non-arm64-macOS).
+> The binary is gitignored; release CI builds it before bundling.
 
 ## Docs
 

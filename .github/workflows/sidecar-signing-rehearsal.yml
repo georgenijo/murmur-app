@@ -1,0 +1,283 @@
+name: Sidecar Signing Rehearsal
+
+# Non-publishing rehearsal of the signed local-LLM sidecar packaging chain
+# (Stage 0 gate 2 of the signed-local-LLM ADR). It builds the sidecar, builds the
+# app unsigned, finalizes it with per-binary entitlements, strictly verifies both
+# binaries, notarizes + staples, rebuilds the DMG and updater archive from the
+# finalized app, then quarantines, launches, and probes the sandboxed helper.
+#
+# It NEVER publishes: no release is created, no asset is uploaded to a release,
+# and no updater manifest is generated. All evidence is uploaded only as
+# workflow artifacts for inspection.
+
+on:
+  workflow_dispatch:
+    inputs:
+      download_model:
+        description: >-
+          Download the 1.1GB Qwen GGUF and run the full descriptor + Metal proof.
+          Default false: the rehearsal proves helper spawn + fail-closed
+          descriptor rejection without the model. The full Metal proof also needs
+          a Metal-capable runner.
+        type: boolean
+        default: false
+  # Pre-merge iteration used a push trigger scoped to the feature branch
+  # (workflow_dispatch is only registered once this file reaches the default
+  # branch). Gate-2 evidence was produced by run 29793936645; the trigger is
+  # re-commented now that dispatch takes over from main.
+  # push:
+  #   branches: [issue/312-sidecar-release]
+
+concurrency:
+  group: sidecar-rehearsal-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  rehearse-macos:
+    runs-on: macos-latest
+    env:
+      MODEL_ID: qwen2.5-1.5b-instruct-q4_k_m
+      MODEL_SIZE: "1117320736"
+      MODEL_SHA256: 6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e
+      MODEL_URL: >-
+        https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/dd26da440ef0330c47919d1ecae0966d24022222/qwen2.5-1.5b-instruct-q4_k_m.gguf
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        run: cd app && npm ci
+
+      - name: Prepare evidence directory
+        run: mkdir -p "$RUNNER_TEMP/rehearsal-evidence"
+
+      - name: Locate clang runtime for ggml-metal symbol resolution
+        run: |
+          CLANG_RT=$(find /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang \
+            -name "libclang_rt.osx.a" 2>/dev/null | sort -V | tail -1)
+          if [ -z "$CLANG_RT" ]; then
+            echo "ERROR: libclang_rt.osx.a not found"
+            exit 1
+          fi
+          echo "RUSTFLAGS=-C link-arg=$CLANG_RT -C link-arg=-mmacosx-version-min=14.0 -C link-arg=-Wl,-rpath,/usr/lib/swift" >> "$GITHUB_ENV"
+
+      - name: Build local-LLM sidecar
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "14.0"
+          CMAKE_OSX_DEPLOYMENT_TARGET: "14.0"
+          CMAKE_C_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
+          CMAKE_CXX_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
+        run: python3 scripts/build_local_llm_sidecar.py --release
+
+      - name: Import Developer ID certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [ -n "$APPLE_CERTIFICATE" ] && [ -n "$APPLE_CERTIFICATE_PASSWORD" ] || {
+            echo "ERROR: APPLE_CERTIFICATE and APPLE_CERTIFICATE_PASSWORD must be set"; exit 1; }
+          KEYCHAIN="$RUNNER_TEMP/murmur-signing.keychain-db"
+          KEYCHAIN_PASSWORD=$(openssl rand -hex 16)
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          CERT="$RUNNER_TEMP/certificate.p12"
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$CERT"
+          security import "$CERT" -k "$KEYCHAIN" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychain -d user -s "$KEYCHAIN" login.keychain-db
+          rm -f "$CERT"
+
+      - name: Build unsigned application
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "14.0"
+          CMAKE_OSX_DEPLOYMENT_TARGET: "14.0"
+          CMAKE_C_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
+          CMAKE_CXX_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: cd app && npx tauri build --no-sign --bundles app --verbose
+
+      - name: Finalize bundle with per-binary entitlements
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          [ -n "$APPLE_SIGNING_IDENTITY" ] && [ -n "$APPLE_TEAM_ID" ] || {
+            echo "ERROR: APPLE_SIGNING_IDENTITY and APPLE_TEAM_ID must be set"; exit 1; }
+          BUNDLE_MACOS=app/src-tauri/target/release/bundle/macos
+          APP=$(find "$BUNDLE_MACOS" -maxdepth 1 -name '*.app' -print -quit)
+          echo "APP=$APP" >> "$GITHUB_ENV"
+          python3 scripts/finalize_macos_bundle.py \
+            --app "$APP" \
+            --identity "$APPLE_SIGNING_IDENTITY" \
+            --main-entitlements app/src-tauri/entitlements.plist \
+            --helper-entitlements app/src-tauri/local-llm-sidecar.entitlements.plist \
+            --expected-team-id "$APPLE_TEAM_ID" \
+            | tee "$RUNNER_TEMP/rehearsal-evidence/finalize.log"
+
+      - name: Strict verification of both binaries
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          LOG="$RUNNER_TEMP/rehearsal-evidence/verification.log"
+          EXEC=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")
+          MAIN="$APP/Contents/MacOS/$EXEC"
+          HELPER="$APP/Contents/MacOS/murmur-llm-sidecar"
+          {
+            echo "## codesign --verify --deep --strict"
+            codesign --verify --deep --strict --verbose=2 "$APP" 2>&1
+
+            echo "## helper signature"
+            codesign -dvv "$HELPER" 2>&1
+            echo "## helper entitlements"
+            codesign -d --entitlements :- --xml "$HELPER" 2>/dev/null
+            echo "## main entitlements"
+            codesign -d --entitlements :- --xml "$MAIN" 2>/dev/null
+          } | tee "$LOG"
+
+          # arm64-only helper.
+          test "$(lipo -archs "$HELPER" | tr -d ' \n')" = "arm64"
+          # Hardened runtime on both binaries.
+          codesign -dvv "$HELPER" 2>&1 | grep -qi 'flags=.*runtime'
+          codesign -dvv "$MAIN" 2>&1 | grep -qi 'flags=.*runtime'
+          # Fixed helper identifier and shared Team ID.
+          codesign -dvv "$HELPER" 2>&1 | grep -q 'Identifier=com.localdictation.local-llm-sidecar'
+          codesign -dvv "$HELPER" 2>&1 | grep -q "TeamIdentifier=$APPLE_TEAM_ID"
+          codesign -dvv "$MAIN" 2>&1 | grep -q "TeamIdentifier=$APPLE_TEAM_ID"
+          # Helper is sandboxed; main is not.
+          codesign -d --entitlements :- --xml "$HELPER" 2>/dev/null | grep -q 'com.apple.security.app-sandbox'
+          if codesign -d --entitlements :- --xml "$HELPER" 2>/dev/null | grep -q 'device.microphone'; then
+            echo "ERROR: helper must not carry microphone entitlement"; exit 1
+          fi
+          if codesign -d --entitlements :- --xml "$MAIN" 2>/dev/null | grep -q 'app-sandbox'; then
+            echo "ERROR: main app must remain unsandboxed"; exit 1
+          fi
+          echo "strict verification passed" | tee -a "$LOG"
+
+      - name: Notarize, staple, and rebuild DMG + updater archive
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          SIGNING_KEYCHAIN: ${{ runner.temp }}/murmur-signing.keychain-db
+        run: |
+          set -euo pipefail
+          for VAR in APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID TAURI_SIGNING_PRIVATE_KEY; do
+            [ -n "${!VAR}" ] || { echo "ERROR: $VAR must be set"; exit 1; }
+          done
+          VERSION=$(python3 -c "import json;print(json.load(open('app/src-tauri/tauri.conf.json'))['version'])")
+          # Apple/Tauri secrets are read from the environment by the script, not
+          # passed as argv.
+          python3 scripts/notarize_and_repackage_macos.py \
+            --app "$APP" \
+            --app-dir app \
+            --identity "$APPLE_SIGNING_IDENTITY" \
+            --version "$VERSION" \
+            --arch aarch64 \
+            --dmg-out app/src-tauri/target/release/bundle/dmg \
+            | tee "$RUNNER_TEMP/rehearsal-evidence/repackage.json"
+
+      - name: Assess Gatekeeper, quarantine, and launch
+        run: |
+          set -euo pipefail
+          LOG="$RUNNER_TEMP/rehearsal-evidence/launch.log"
+          {
+            echo "## stapler validate"
+            xcrun stapler validate "$APP"
+            echo "## spctl assess"
+            spctl --assess --type execute -vvv "$APP"
+          } | tee "$LOG"
+
+          # Quarantine the notarized+stapled app, then launch it through
+          # LaunchServices/Gatekeeper (`open`, not a direct exec) so the quarantine
+          # assessment path is actually exercised. `open -W` blocks until the app
+          # exits; if it stays alive for 5s the wrapper is still running.
+          xattr -w com.apple.quarantine "0081;$(printf '%x' "$(date +%s)");SidecarRehearsal;" "$APP"
+          open -W "$APP" &
+          OPEN_PID=$!
+          for i in 1 2 3 4 5; do
+            sleep 1
+            if ! kill -0 "$OPEN_PID" 2>/dev/null; then
+              echo "ERROR: quarantined app failed to launch or exited within ${i}s" | tee -a "$LOG"
+              wait "$OPEN_PID" 2>/dev/null || true
+              exit 1
+            fi
+          done
+          echo "quarantined app launched via LaunchServices and alive for 5s" | tee -a "$LOG"
+          EXEC=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")
+          osascript -e "tell application \"$EXEC\" to quit" 2>/dev/null || pkill -f "$APP" 2>/dev/null || true
+          kill "$OPEN_PID" 2>/dev/null || true
+          wait "$OPEN_PID" 2>/dev/null || true
+
+      - name: Download model for full descriptor proof
+        if: ${{ inputs.download_model }}
+        run: |
+          set -euo pipefail
+          MODEL="$RUNNER_TEMP/$MODEL_ID.gguf"
+          curl --fail --location --silent --show-error --output "$MODEL" "$MODEL_URL"
+          ACTUAL_SIZE=$(stat -f%z "$MODEL")
+          ACTUAL_SHA=$(shasum -a 256 "$MODEL" | awk '{print $1}')
+          if [ "$ACTUAL_SIZE" != "$MODEL_SIZE" ] || [ "$ACTUAL_SHA" != "$MODEL_SHA256" ]; then
+            echo "ERROR: downloaded model does not match the signed catalog identity"
+            exit 1
+          fi
+          echo "MODEL_PATH=$MODEL" >> "$GITHUB_ENV"
+
+      - name: Probe sandboxed helper (fail-closed, model-gated Metal proof)
+        run: |
+          set -euo pipefail
+          HELPER="$APP/Contents/MacOS/murmur-llm-sidecar"
+          EVIDENCE="$RUNNER_TEMP/rehearsal-evidence/descriptor-probe.json"
+          if [ "${{ inputs.download_model }}" = "true" ]; then
+            echo "Running full descriptor + Metal proof against the cached model"
+            python3 scripts/probe_local_llm_descriptor.py \
+              --helper "$HELPER" \
+              --model "$MODEL_PATH" \
+              --model-id "$MODEL_ID" \
+              --expected-size "$MODEL_SIZE" \
+              --expected-sha256 "$MODEL_SHA256" \
+              --evidence "$EVIDENCE"
+          else
+            echo "Running spawn + fail-closed proof without the 1.1GB model"
+            echo "(full descriptor + Metal proof requires download_model=true and a Metal-capable runner)"
+            python3 scripts/probe_local_llm_descriptor.py \
+              --helper "$HELPER" \
+              --skip-model \
+              --model-id "$MODEL_ID" \
+              --evidence "$EVIDENCE"
+          fi
+
+      - name: Upload rehearsal evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sidecar-signing-rehearsal-${{ github.sha }}
+          path: ${{ runner.temp }}/rehearsal-evidence
+          if-no-files-found: warn
+          retention-days: 14
+          overwrite: true
+
+      - name: Delete signing keychain
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/murmur-signing.keychain-db" 2>/dev/null || true

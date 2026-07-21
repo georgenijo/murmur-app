@@ -29,7 +29,7 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 **Rationale:** The active 2026-06-23 decision proves in-process Whisper + llama.cpp is unsafe because their ggml ABIs collide. Tauri's stock macOS signer also applies one entitlement set to the app and external binaries, so a repository-owned no-sign/finalize path is required to preserve a stricter helper sandbox. The design is accepted only after the inherited-descriptor/Metal and split-entitlement signing gates pass, followed by a signed/notarized/quarantined non-publishing rehearsal.
 
-**Status:** proposed — see [ADR](2026-07-20-signed-local-llm-sidecar.md)
+**Status:** active — ADR accepted 2026-07-21 after the CI signing rehearsal (run 29793936645) delivered the outstanding notarization/staple/Gatekeeper/probe evidence; see [ADR](2026-07-20-signed-local-llm-sidecar.md)
 
 **References:** issue #312 (originally #300, superseded); unblocks #312 phases B–D (originally #254).
 

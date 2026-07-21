@@ -91,6 +91,17 @@ jobs:
         with:
           workspaces: app/src-tauri
 
+      - name: Stub sidecar externalBin for compile checks
+        # tauri.macos.conf.json declares the local-LLM helper as an externalBin,
+        # and Tauri's build script requires the file to exist even for cargo
+        # check/test. This job never bundles or ships anything - the release
+        # pipeline builds and signs the real helper - so an empty stub satisfies
+        # the resource check without spending ~10 min compiling llama.cpp here.
+        run: |
+          mkdir -p app/src-tauri/binaries
+          : > app/src-tauri/binaries/murmur-llm-sidecar-aarch64-apple-darwin
+          chmod +x app/src-tauri/binaries/murmur-llm-sidecar-aarch64-apple-darwin
+
       - name: Compile check
         env:
           MACOSX_DEPLOYMENT_TARGET: "14.0"

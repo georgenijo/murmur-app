@@ -1,6 +1,6 @@
 # ADR: Signed local-LLM sidecar runtime
 
-- Status: Proposed; acceptance is gated on the Stage 0 proofs below
+- Status: Accepted (2026-07-21) — both Stage 0 gates passed. Gate 1: local fd-descriptor + Metal proof (2026-07-20, Apple M4). Gate 2: trusted non-publishing CI rehearsal run 29793936645 — app and DMG notarization Accepted (submissions 528f5cb5-2485-4651-bea0-843725ac84c7, 83225a76-1cf9-49b7-bcaf-a6964853e976), stapled + quarantined app passes Gatekeeper (`spctl`: Notarized Developer ID), sandboxed helper descriptor probe fails closed (controlled exit 70)
 - Date: 2026-07-20
 - Issue: #312 (originally #300, superseded)
 - Unblocks: #312 phases B–D (originally #254)

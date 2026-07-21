@@ -126,24 +126,104 @@ jobs:
           fi
           echo "RUSTFLAGS=-C link-arg=$CLANG_RT -C link-arg=-mmacosx-version-min=14.0 -C link-arg=-Wl,-rpath,/usr/lib/swift" >> "$GITHUB_ENV"
 
-      - name: Build, sign, and notarize
-        uses: tauri-apps/tauri-action@v0
+      - name: Build local-LLM sidecar
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MACOSX_DEPLOYMENT_TARGET: "14.0"
           CMAKE_OSX_DEPLOYMENT_TARGET: "14.0"
           CMAKE_C_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
           CMAKE_CXX_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
+        run: |
+          # RUSTFLAGS (libclang_rt for ggml-metal symbols) is already exported by
+          # the previous step; the sidecar links the same Metal ggml backend and
+          # needs it too. The script places the arm64 binary at the target-triple
+          # path Tauri's macOS externalBin overlay expects.
+          python3 scripts/build_local_llm_sidecar.py --release
+
+      - name: Import Developer ID certificate
+        env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [ -n "$APPLE_CERTIFICATE" ] && [ -n "$APPLE_CERTIFICATE_PASSWORD" ] || {
+            echo "ERROR: APPLE_CERTIFICATE and APPLE_CERTIFICATE_PASSWORD must be set"; exit 1; }
+          KEYCHAIN="$RUNNER_TEMP/murmur-signing.keychain-db"
+          KEYCHAIN_PASSWORD=$(openssl rand -hex 16)
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          CERT="$RUNNER_TEMP/certificate.p12"
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$CERT"
+          security import "$CERT" -k "$KEYCHAIN" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychain -d user -s "$KEYCHAIN" login.keychain-db
+          rm -f "$CERT"
+
+      - name: Build unsigned application
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "14.0"
+          CMAKE_OSX_DEPLOYMENT_TARGET: "14.0"
+          CMAKE_C_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
+          CMAKE_CXX_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          # Tauri applies one entitlement file to the main binary and every
+          # externalBin, so its stock signing cannot give the helper its stricter
+          # sandbox-only entitlements. Build unsigned; the repository-owned
+          # finalizer signs nested code inside-out afterwards. Only the .app
+          # bundle is produced here; the DMG and updater archive are rebuilt from
+          # the finalized, notarized app in the next step.
+          cd app && npx tauri build --no-sign --bundles app --verbose
+
+      - name: Finalize, notarize, and repackage
+        env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          projectPath: app
+          SIGNING_KEYCHAIN: ${{ runner.temp }}/murmur-signing.keychain-db
+        run: |
+          set -euo pipefail
+          for VAR in APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID TAURI_SIGNING_PRIVATE_KEY; do
+            [ -n "${!VAR}" ] || { echo "ERROR: $VAR must be set"; exit 1; }
+          done
+          BUNDLE_MACOS=app/src-tauri/target/release/bundle/macos
+          APP=$(find "$BUNDLE_MACOS" -maxdepth 1 -name '*.app' -print -quit)
+          if [ -z "$APP" ]; then
+            echo "ERROR: unsigned application bundle is missing"
+            exit 1
+          fi
+          VERSION=$(python3 -c "import json,sys;print(json.load(open('app/src-tauri/tauri.conf.json'))['version'])")
+
+          # Sign nested code inside-out with per-binary entitlements and fail
+          # closed unless strict verification passes (helper sandbox entitlement,
+          # arm64, hardened runtime, fixed identifier, shared Team ID).
+          python3 scripts/finalize_macos_bundle.py \
+            --app "$APP" \
+            --identity "$APPLE_SIGNING_IDENTITY" \
+            --main-entitlements app/src-tauri/entitlements.plist \
+            --helper-entitlements app/src-tauri/local-llm-sidecar.entitlements.plist \
+            --expected-team-id "$APPLE_TEAM_ID"
+
+          # Notarize + staple the finalized app, then rebuild the DMG and the
+          # updater .app.tar.gz (+ Ed25519 signature) FROM that finalized app.
+          # Apple/Tauri secrets are read from the environment by the script.
+          python3 scripts/notarize_and_repackage_macos.py \
+            --app "$APP" \
+            --app-dir app \
+            --identity "$APPLE_SIGNING_IDENTITY" \
+            --version "$VERSION" \
+            --arch aarch64 \
+            --dmg-out app/src-tauri/target/release/bundle/dmg
+
+          # Mirror the rehearsal's Gatekeeper evidence on the release path.
+          xcrun stapler validate "$APP"
+          spctl --assess --type execute -vvv "$APP"
 
       - name: Smoke test signed application
         run: |
@@ -173,6 +253,7 @@ jobs:
       - name: Stage immutable macOS artifacts
         env:
           SOURCE_SHA: ${{ needs.context.outputs.source-sha }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           mkdir -p release-artifacts
           find app/src-tauri/target/release/bundle/dmg -maxdepth 1 -type f -name '*.dmg' \
@@ -182,12 +263,36 @@ jobs:
             -exec cp {} release-artifacts/ \;
           ARCH=$(uname -m)
           [ "$ARCH" = "arm64" ] && ARCH=aarch64
+
+          # Record local-LLM helper provenance from the finalized bundle: hash,
+          # architecture, designated requirement, Team ID, and entitlement digest.
+          APP=$(find app/src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)
+          HELPER="$APP/Contents/MacOS/murmur-llm-sidecar"
+          if [ ! -f "$HELPER" ]; then
+            echo "ERROR: finalized bundle is missing the local-LLM helper"
+            exit 1
+          fi
+          HELPER_SHA=$(shasum -a 256 "$HELPER" | awk '{print $1}')
+          HELPER_ARCH=$(lipo -archs "$HELPER" | tr -d ' \n')
+          HELPER_DR=$(codesign -d -r- "$HELPER" 2>&1 | sed -n 's/^#* *designated => //p')
+          if [ -z "$HELPER_DR" ]; then
+            echo "ERROR: could not read the helper designated requirement"
+            exit 1
+          fi
+          codesign -d --entitlements :- --xml "$HELPER" > "$RUNNER_TEMP/helper-entitlements.xml" 2>/dev/null
+          HELPER_ENT_SHA=$(shasum -a 256 "$RUNNER_TEMP/helper-entitlements.xml" | awk '{print $1}')
+
           python3 scripts/release_artifacts.py record \
             --platform macos \
             --platform-key "darwin-${ARCH}" \
             --artifacts release-artifacts \
             --commit-sha "$SOURCE_SHA" \
-            --run-id "$GITHUB_RUN_ID"
+            --run-id "$GITHUB_RUN_ID" \
+            --helper-sha256 "$HELPER_SHA" \
+            --helper-arch "$HELPER_ARCH" \
+            --helper-designated-requirement "$HELPER_DR" \
+            --helper-team-id "$APPLE_TEAM_ID" \
+            --helper-entitlement-sha256 "$HELPER_ENT_SHA"
 
       - name: Upload immutable macOS artifacts
         uses: actions/upload-artifact@v4
@@ -206,6 +311,11 @@ jobs:
             echo "- restore hit: \`${{ steps.rust-cache.outputs.cache-hit || 'false' }}\`"
             echo "- write authorized: \`${{ needs.context.outputs.cache-write }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Delete signing keychain
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/murmur-signing.keychain-db" 2>/dev/null || true
 
   release-linux:
     needs: context
