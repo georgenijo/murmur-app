@@ -84,6 +84,11 @@ Settings → **Transform**:
 - Model status / Download / Remove / Reset runtime
 - Saved transforms CRUD (`KnowledgeKind::Transform`) plus built-in presets: Shorten, Bullets, Professional, Fix grammar, Casual. Instructions are capped at `MAX_INSTRUCTION_BYTES` (4096 bytes); exact duplicate saved names are rejected, and a name colliding with a preset (name or alias) is shadowed — see [Instruction expansion and name precedence](#instruction-expansion-and-name-precedence)
 
+## Threading
+
+- The popover's `NSWindow` treatment (level, `_setPreventsActivation:`, shadow) is raw AppKit and **must** run on the main thread — macOS 26 hard-traps (`EXC_BREAKPOINT`, "Must only be used from the main thread") on off-main `NSWindow` mutation. The flow's effects run in async command context (tokio worker), so `native_window::set_window_level_and_activation` dispatches the raw calls through `run_on_main_thread`, matching the AX write paths in `selection.rs` / `injector` / `transform_apply.rs`. Tauri's own window methods (`set_size`/`set_position`/`show`/`hide`/`set_focus`) already hop to main internally.
+- Native smoke canary for this crash class: **press the transform hold key on a built `.app`** (not `?mock=1`, not `tauri dev`). It exercises the real off-main window path and reproduced #325 immediately.
+
 ## Related modules
 
 | Area | Path |
