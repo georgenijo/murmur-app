@@ -901,24 +901,13 @@ fn resolve_saved_transform(state: &crate::State, spoken: &str) -> Option<String>
         ..Default::default()
     };
     let response = state.knowledge.list(request).ok()?;
-    let key = spoken
-        .trim()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_ascii_lowercase();
+    let key = crate::transform_presets::normalize(spoken);
     if key.is_empty() {
         return None;
     }
     for entry in response.entries {
         if let KnowledgePayload::Transform { name, instruction } = entry.payload {
-            let name_key = name
-                .trim()
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" ")
-                .to_ascii_lowercase();
-            if name_key == key {
+            if crate::transform_presets::normalize(&name) == key {
                 return Some(instruction);
             }
         }
