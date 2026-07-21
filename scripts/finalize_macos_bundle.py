@@ -47,20 +47,52 @@ def sign(
     run(command)
 
 
-def sign_nested_code(app: Path, identity: str) -> None:
-    frameworks = app / "Contents" / "Frameworks"
-    if not frameworks.is_dir():
+# Mach-O magic numbers (thin 32/64-bit both endiannesses, and fat/universal).
+_MACHO_MAGICS = {
+    b"\xcf\xfa\xed\xfe",  # 64-bit, little-endian (arm64/x86_64)
+    b"\xce\xfa\xed\xfe",  # 32-bit, little-endian
+    b"\xfe\xed\xfa\xcf",  # 64-bit, big-endian
+    b"\xfe\xed\xfa\xce",  # 32-bit, big-endian
+    b"\xca\xfe\xba\xbe",  # fat/universal, big-endian
+    b"\xbe\xba\xfe\xca",  # fat/universal, little-endian
+}
+
+
+def _is_macho(path: Path) -> bool:
+    try:
+        with path.open("rb") as handle:
+            return handle.read(4) in _MACHO_MAGICS
+    except OSError:
+        return False
+
+
+def sign_nested_code(app: Path, identity: str, exclude: set[Path]) -> None:
+    """Sign every nested Mach-O in the bundle inside-out (deepest first).
+
+    Notarization rejects any nested Mach-O that is ad-hoc/unsigned or lacks the
+    hardened runtime or a secure timestamp, so this scans the whole bundle by
+    Mach-O magic (not only ``Contents/Frameworks`` by extension) and signs each
+    with Developer ID + hardened runtime + secure timestamp. The main executable
+    and the helper are excluded here because they are signed immediately after
+    with their own per-binary entitlements and identifiers.
+    """
+    contents = app / "Contents"
+    if not contents.is_dir():
         return
-    candidates = sorted(
-        (
-            path
-            for path in frameworks.rglob("*")
-            if path.is_file() and (path.suffix in {".dylib", ".so"} or path.parent.suffix == ".framework")
-        ),
-        key=lambda path: len(path.parts),
-        reverse=True,
-    )
-    for path in candidates:
+    excluded = {path.resolve() for path in exclude}
+    candidates = {
+        path
+        for path in contents.rglob("*")
+        if path.is_file()
+        and not path.is_symlink()
+        and path.resolve() not in excluded
+        and (
+            path.suffix in {".dylib", ".so"}
+            or path.parent.suffix == ".framework"
+            or _is_macho(path)
+        )
+    }
+    for path in sorted(candidates, key=lambda path: len(path.parts), reverse=True):
         sign(path, identity, None)
 
 
@@ -101,7 +133,7 @@ def main() -> int:
     if not main_binary.is_file() or main_binary == helper:
         raise SystemExit("app bundle has an invalid main executable")
 
-    sign_nested_code(app, args.identity)
+    sign_nested_code(app, args.identity, exclude={helper, main_binary})
     sign(helper, args.identity, args.helper_entitlements, HELPER_IDENTIFIER)
     sign(main_binary, args.identity, args.main_entitlements)
     sign(app, args.identity, args.main_entitlements)

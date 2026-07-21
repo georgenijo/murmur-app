@@ -90,7 +90,20 @@ def store_notary_profile(apple_id: str, team_id: str, password: str, keychain: s
     run(command, input=password + "\n")
 
 
-def notarize(archive: Path, keychain: str) -> None:
+def _fetch_notary_log(submission_id: str, keychain: str) -> str:
+    """Fetch the per-file notarization log (paths + reasons, no secrets).
+
+    Runs without ``check`` so a failed fetch still returns whatever the tool
+    printed instead of masking the real rejection.
+    """
+    command = ["xcrun", "notarytool", "log", submission_id, "--keychain-profile", NOTARY_PROFILE]
+    if keychain:
+        command += ["--keychain", keychain]
+    result = subprocess.run(command, text=True, capture_output=True)
+    return (result.stdout or "") + (result.stderr or "")
+
+
+def notarize(archive: Path, keychain: str) -> str:
     command = [
         "xcrun",
         "notarytool",
@@ -105,9 +118,20 @@ def notarize(archive: Path, keychain: str) -> None:
     if keychain:
         command += ["--keychain", keychain]
     output = run(command)
-    status = json.loads(output).get("status")
+    result = json.loads(output)
+    submission_id = str(result.get("id") or "")
+    status = result.get("status")
     if status != "Accepted":
-        raise SystemExit(f"notarization was not accepted: status={status!r}")
+        # Surface Apple's per-file rejection reasons for this submission. The log
+        # JSON lists offending paths and issue messages and carries no secrets.
+        if submission_id:
+            print(f"notarization log for submission {submission_id}:")
+            print(_fetch_notary_log(submission_id, keychain))
+        raise SystemExit(
+            f"notarization was not accepted: status={status!r} id={submission_id!r}"
+        )
+    print(f"notarization accepted: submission {submission_id} for {archive.name}")
+    return submission_id
 
 
 def staple(target: Path) -> None:
