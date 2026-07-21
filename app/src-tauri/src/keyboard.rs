@@ -19,7 +19,7 @@ use rdev::{listen, Event, EventType, Key};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 /// Max duration a single tap can be held before it's rejected
 const MAX_HOLD_DURATION_MS: u128 = 200;
@@ -941,6 +941,23 @@ fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                     };
                     match transform_result {
                         HoldDownEvent::Start => {
+                            // A new transform pass invalidates any stale session
+                            // (issue #312 PR-B2) left over from a previous
+                            // capture/review/apply — this is the earliest point
+                            // in the transform lifecycle, before capture even runs.
+                            // Gated on TransformStatus being Idle or ReviewPending:
+                            // if a transform is actively mid-flight (Capturing/
+                            // Listening/Thinking/Applying), a stray or racing
+                            // hotkey press must not blow away the session that
+                            // pass owns out from under it.
+                            let app_state = &handle.state::<crate::State>().app_state;
+                            if matches!(
+                                app_state.transform_status(),
+                                crate::state::TransformStatus::Idle
+                                    | crate::state::TransformStatus::ReviewPending
+                            ) {
+                                crate::transform_apply::clear_session(app_state);
+                            }
                             let _ = handle.emit("transform-key-pressed", ());
                         }
                         HoldDownEvent::Stop => {

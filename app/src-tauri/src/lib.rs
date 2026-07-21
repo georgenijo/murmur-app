@@ -29,6 +29,7 @@ mod state;
 pub mod telemetry;
 pub mod transcriber;
 mod transcript_transform;
+mod transform_apply;
 mod vad;
 mod vocab;
 mod vocabulary_alias;
@@ -226,6 +227,8 @@ pub fn run() {
             commands::keyboard::stop_transform_listener,
             commands::keyboard::set_transform_key,
             commands::recording::transform_status,
+            transform_apply::apply_transform_result,
+            transform_apply::undo_transform,
             commands::knowledge::get_knowledge_store_status,
             commands::knowledge::retry_knowledge_store,
             commands::knowledge::list_knowledge,

@@ -9,6 +9,20 @@ pub(crate) fn read_clipboard_text() -> Result<String, String> {
         .map_err(|_| "Clipboard does not currently contain readable text.".to_string())
 }
 
+/// Write `text` to the clipboard. Factored out of `inject_text` so the
+/// transform apply/undo path (`transform_apply.rs`, issue #312 PR-B2) can
+/// reuse the exact same clipboard-write primitive — both the initial
+/// house-rule write (proposed text, before anything else is attempted) and
+/// the later restore of the user's original clipboard contents — instead of
+/// duplicating the `arboard` call.
+pub(crate) fn write_clipboard_text(text: &str) -> Result<(), String> {
+    let mut clipboard =
+        Clipboard::new().map_err(|e| format!("Failed to access clipboard: {}", e))?;
+    clipboard
+        .set_text(text)
+        .map_err(|e| format!("Failed to copy to clipboard: {}", e))
+}
+
 /// Copy text to clipboard and optionally simulate Cmd+V paste.
 /// `delay_ms` controls the pause before pasting (window focus settling).
 /// On paste failure, retries once after a 100ms backoff.
@@ -22,12 +36,8 @@ pub fn inject_text(text: &str, auto_paste: bool, delay_ms: u64) -> Result<(), St
         return Ok(());
     }
 
-    let mut clipboard = Clipboard::new()
-        .map_err(|e| format!("Failed to access clipboard: {}", e))?;
-
     // Copy transcription to clipboard
-    clipboard.set_text(text)
-        .map_err(|e| format!("Failed to copy to clipboard: {}", e))?;
+    write_clipboard_text(text)?;
     let clipboard_ms = inject_started.elapsed().as_millis() as u64;
     tracing::info!(target: "pipeline", "inject_text: text copied to clipboard");
 
@@ -109,8 +119,13 @@ pub fn inject_text(text: &str, auto_paste: bool, delay_ms: u64) -> Result<(), St
 /// Simulate Cmd+V using native CoreGraphics events. Event posting itself has no
 /// failure result, but construction can fail; in that case retain the proven
 /// System Events path as a compatibility fallback.
+///
+/// `pub(crate)` (rather than private) so the transform apply/undo fallback
+/// path (`transform_apply.rs`, issue #312 PR-B2) can reuse this exact
+/// primitive after its own AX write attempt fails, instead of duplicating
+/// the CGEvent/osascript machinery.
 #[cfg(target_os = "macos")]
-fn simulate_paste() -> Result<(), String> {
+pub(crate) fn simulate_paste() -> Result<(), String> {
     match simulate_paste_native() {
         Ok(()) => {
             tracing::info!(target: "pipeline", "simulate_paste: native CGEvent completed");
