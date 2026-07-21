@@ -1,0 +1,42 @@
+{
+  "anchored": {
+    "selectionBounds": { "x": 560, "y": 300, "width": 120, "height": 20 },
+    "screenFrame": { "x": 0, "y": 25, "width": 1440, "height": 875 },
+    "output": {
+      "compact":  { "x": 460, "y": 328, "width": 320, "height": 76,  "flipped": false },
+      "expanded": { "x": 410, "y": 328, "width": 420, "height": 220, "flipped": false }
+    }
+  },
+  "flippedAbove": {
+    "selectionBounds": { "x": 560, "y": 850, "width": 120, "height": 20 },
+    "screenFrame": { "x": 0, "y": 25, "width": 1440, "height": 875 },
+    "output": {
+      "compact":  { "x": 460, "y": 766, "width": 320, "height": 76,  "flipped": true },
+      "expanded": { "x": 410, "y": 622, "width": 420, "height": 220, "flipped": true }
+    }
+  },
+  "clampedLeft": {
+    "selectionBounds": { "x": 20, "y": 300, "width": 40, "height": 20 },
+    "screenFrame": { "x": 0, "y": 25, "width": 1440, "height": 875 },
+    "output": {
+      "compact":  { "x": 0, "y": 328, "width": 320, "height": 76,  "flipped": false },
+      "expanded": { "x": 0, "y": 328, "width": 420, "height": 220, "flipped": false }
+    }
+  },
+  "clampedRight": {
+    "selectionBounds": { "x": 1400, "y": 300, "width": 30, "height": 20 },
+    "screenFrame": { "x": 0, "y": 25, "width": 1440, "height": 875 },
+    "output": {
+      "compact":  { "x": 1120, "y": 328, "width": 320, "height": 76,  "flipped": false },
+      "expanded": { "x": 1020, "y": 328, "width": 420, "height": 220, "flipped": false }
+    }
+  },
+  "centeredFallback": {
+    "selectionBounds": null,
+    "screenFrame": { "x": 0, "y": 25, "width": 1440, "height": 875 },
+    "output": {
+      "compact":  { "x": 560, "y": 319.5, "width": 320, "height": 76,  "flipped": false },
+      "expanded": { "x": 510, "y": 247.5, "width": 420, "height": 220, "flipped": false }
+    }
+  }
+}

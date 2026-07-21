@@ -45,6 +45,21 @@
         "minHeight": 400,
         "center": true,
         "visible": false
+      },
+      {
+        "label": "transform-review",
+        "title": "",
+        "url": "transform-review.html",
+        "width": 320,
+        "height": 76,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "visible": false,
+        "focus": false,
+        "shadow": true
       }
     ],
     "macOSPrivateApi": true,
