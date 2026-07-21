@@ -210,12 +210,12 @@ fn classify_selection(text: &str) -> Result<(), SelectionError> {
 /// dispatching to the main thread at all.
 ///
 /// Clipboard fallback (issue #329): Chromium/Electron webviews (Brave, Chrome,
-/// Slack, …) often expose no `AXSelectedText` even with a live visible
-/// selection, so a clean AX `NoSelection` falls back to a simulated Cmd+C
-/// against a sentinel-primed clipboard (see `clipboard_fallback`). The
-/// fallback runs ONLY for `NoSelection` — by that point the secure-field
-/// checks have passed benignly. Every other error (`SecureField`,
-/// `AxUnavailable`, `AccessibilityDenied`) stays fail-closed with no fallback.
+/// Slack, …) often expose no `AXSelectedText` — or fail/time out the AX
+/// queries entirely — even with a live visible selection. `NoSelection` and
+/// `AxUnavailable` fall back to a simulated Cmd+C against a sentinel-primed
+/// clipboard (see `clipboard_fallback` and the safety rationale at the match
+/// arm below). `SecureField` and `AccessibilityDenied` stay fail-closed with
+/// no fallback.
 pub async fn capture_selection(
     app_handle: &tauri::AppHandle,
 ) -> Result<TransformSnapshot, SelectionError> {
@@ -243,15 +243,38 @@ pub async fn capture_selection(
             .unwrap_or((Err(SelectionError::AxUnavailable), None));
 
         match (ax_result, frontmost) {
-            // Clean "no AX selection" + a known frontmost app: try the
+            // AX couldn't produce a selection + a known frontmost app: try the
             // clipboard fallback off the main thread (it sleeps while polling).
-            (Err(SelectionError::NoSelection), Some((pid, bundle_id))) => {
-                tracing::info!(target: "transform", "AX reported no selection — attempting clipboard fallback");
+            //
+            // `NoSelection`: the secure-field checks passed benignly and the
+            // element simply exposes no `AXSelectedText`.
+            //
+            // `AxUnavailable`: the AX queries themselves failed — Chromium
+            // browsers routinely time out the 25ms messaging deadline or fail
+            // the focused-element query outright (the same -25204/-25212
+            // behavior documented in `injector::focused_field_state`), so the
+            // secure-field check never completed. Falling back is still safe:
+            // the fallback only simulates the user's own Cmd+C gesture and
+            // reads nothing via AX. Secure fields refuse Copy system-wide
+            // (NSSecureTextField disables it at the framework level; browsers
+            // block password-field copy), so against a secure field the
+            // sentinel never changes and the fallback times out — it can fail,
+            // never leak. `AccessibilityDenied` and a positively detected
+            // `SecureField` stay hard-blocked with no fallback.
+            (
+                Err(err @ (SelectionError::NoSelection | SelectionError::AxUnavailable)),
+                Some((pid, bundle_id)),
+            ) => {
+                tracing::info!(
+                    target: "transform",
+                    ax_outcome = err.as_str(),
+                    "AX capture incomplete — attempting clipboard fallback"
+                );
                 tokio::task::spawn_blocking(move || {
                     clipboard_fallback::capture_via_clipboard(pid, bundle_id)
                 })
                 .await
-                .unwrap_or(Err(SelectionError::NoSelection))
+                .unwrap_or(Err(err))
             }
             (result, _) => result,
         }
@@ -264,10 +287,12 @@ pub async fn capture_selection(
     }
 }
 
-/// Clipboard-based selection capture, used ONLY when the AX path returned a
-/// clean `NoSelection` (issue #329) — i.e. the secure-field checks already
-/// passed benignly and the focused element simply doesn't expose
-/// `AXSelectedText` (Chromium/Electron webviews are the main case).
+/// Clipboard-based selection capture (issue #329), used when the AX path
+/// returned `NoSelection` (secure-field checks passed benignly, no
+/// `AXSelectedText` exposed) or `AxUnavailable` (AX queries failed/timed out —
+/// Chromium/Electron webviews are the main case; see the safety rationale at
+/// the `capture_selection` match arm: this only reproduces the user's own
+/// Cmd+C gesture, which secure fields refuse system-wide).
 ///
 /// Strategy: snapshot the current clipboard text, overwrite it with a unique
 /// sentinel, post a synthetic Cmd+C, and poll until the clipboard no longer
