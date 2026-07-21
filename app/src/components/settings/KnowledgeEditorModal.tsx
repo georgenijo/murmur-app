@@ -7,6 +7,11 @@ import type {
   KnowledgePayload,
   KnowledgeScope,
 } from '../../lib/knowledge';
+import {
+  byteLength,
+  MAX_TRANSFORM_INSTRUCTION_BYTES,
+  presetShadowWarning,
+} from './TransformsManager';
 
 interface Props {
   entry: KnowledgeEntry | null;
@@ -98,6 +103,12 @@ export function KnowledgeEditorModal({ entry, profiles, onClose, onSave }: Props
     }
     if (payload.kind === 'transform' && (!payload.name.trim() || !payload.instruction.trim())) {
       return 'Enter both the spoken transform name and instruction.';
+    }
+    if (payload.kind === 'transform') {
+      const bytes = byteLength(payload.instruction.trim());
+      if (bytes > MAX_TRANSFORM_INSTRUCTION_BYTES) {
+        return `Instruction is ${bytes} bytes; the limit is ${MAX_TRANSFORM_INSTRUCTION_BYTES}. Shorten it and try again.`;
+      }
     }
     if (!buildScope()) return scope.kind === 'project'
       ? 'Project scope requires an app bundle ID and project root.'
@@ -208,8 +219,30 @@ export function KnowledgeEditorModal({ entry, profiles, onClose, onSave }: Props
               <label className="block text-xs font-medium text-on-surface">Spoken name
                 <input aria-label="Spoken name" value={payload.name} onChange={(event) => setPayload({ ...payload, name: event.target.value })} className={`${inputClass} mt-1`} maxLength={256} />
               </label>
-              <label className="block text-xs font-medium text-on-surface">Instruction
+              {(() => {
+                const warning = presetShadowWarning(payload.name);
+                return warning ? (
+                  <p className="text-xs text-amber-600 dark:text-amber-400">{warning}</p>
+                ) : null;
+              })()}
+              <label className="block text-xs font-medium text-on-surface">
+                <span className="flex items-baseline justify-between">
+                  <span>Instruction</span>
+                  <span
+                    className={
+                      byteLength(payload.instruction) > MAX_TRANSFORM_INSTRUCTION_BYTES
+                        ? 'font-normal text-red-600 dark:text-red-400'
+                        : 'font-normal text-on-surface-variant'
+                    }
+                  >
+                    {byteLength(payload.instruction)} / {MAX_TRANSFORM_INSTRUCTION_BYTES} bytes
+                  </span>
+                </span>
                 <textarea aria-label="Transform instruction" value={payload.instruction} onChange={(event) => setPayload({ ...payload, instruction: event.target.value })} className={`${inputClass} mt-1 min-h-24 resize-y`} maxLength={16_384} />
+                <span className="mt-1 block font-normal text-on-surface-variant">
+                  Presets shadow saved transforms with the same spoken name — presets always run
+                  first.
+                </span>
               </label>
             </div>
           )}
