@@ -62,7 +62,14 @@
 //!   failure for a write that lands moments later. Re-reading the selection
 //!   right before pasting and finding the replacement already there reports
 //!   `AppliedVia::AxUnverified` and skips the paste, avoiding a double
-//!   insert.
+//!   insert. Known gap: this only catches it if the selection is still
+//!   there to re-read. Some target apps COLLAPSE the selection to an
+//!   insertion-point caret right after a programmatic text replacement
+//!   (rather than keeping the new text selected) — `AXSelectedText` then
+//!   reads back empty, `already_written` evaluates `false`, and the paste
+//!   fallback still fires, producing a double insert. Not closed by this
+//!   PR; a future revision could widen the re-read to the surrounding text
+//!   range instead of only the current selection.
 //! - **Still frontmost?** The initial frontmost check (at the top of
 //!   `apply_text_to_target`, after activation) is ~100-150ms stale by the
 //!   time the paste fallback is considered — plenty of time for the user to
@@ -93,6 +100,19 @@
 //! Both directions also require the destination content to match what's
 //! expected (`expected_current`) before writing — never overwrite based on
 //! range alone.
+//!
+//! Known gap: some target apps normalize text on the way in — straight
+//! quotes rewritten to smart/curly quotes, or Unicode NFC normalization —
+//! so what `AXSelectedText` reads back after a write isn't always
+//! byte-identical to what was written. `apply_transform`'s own
+//! verify-after-write already surfaces this: a normalizing target reports
+//! `AppliedVia::AxUnverified` rather than the clean `Ax` match, and that's
+//! the leading indicator to watch for. `undo_applied_transform`'s
+//! `expected_current` check compares against the proposed text exactly as
+//! Murmur wrote it, so on a normalizing target it will not match what's
+//! actually in the document — undo then fails closed as
+//! `ApplyError::SelectionChanged` rather than risk overwriting text that
+//! only differs by normalization. Not solved by this PR.
 //!
 //! ## Session identity (generation counter)
 //!
