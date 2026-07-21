@@ -229,18 +229,55 @@ pub async fn capture_selection(
             Result<TransformSnapshot, SelectionError>,
             Option<(i32, Option<String>)>,
         );
-        let (tx, rx) = tokio::sync::oneshot::channel::<AxReply>();
-        app_handle
-            .run_on_main_thread(move || {
-                let _ = tx.send((
-                    native::capture_selection_native(),
-                    native::frontmost_pid_bundle(),
-                ));
-            })
-            .map_err(|_| SelectionError::AxUnavailable)?;
-        let (ax_result, frontmost) = rx
-            .await
-            .unwrap_or((Err(SelectionError::AxUnavailable), None));
+        // Chromium builds its accessibility tree lazily: the FIRST AX queries
+        // against a Chromium app fail or time out, and the very act of
+        // querying flips its "assistive client present" switch and starts the
+        // tree build. Observed live on Brave (issue #329): three presses
+        // failed with ax_unavailable, the fourth succeeded with full
+        // range+bounds. So retry the AX capture a couple of times with a
+        // warm-up gap before falling back — the retries run while the user is
+        // still holding the key/speaking, so the latency is invisible, and an
+        // AX capture is strictly better than the clipboard fallback (it has
+        // range + bounds for anchoring and AX write-back).
+        const AX_ATTEMPTS: u32 = 3;
+        const AX_RETRY_GAP: std::time::Duration = std::time::Duration::from_millis(250);
+
+        let mut ax_result = Err(SelectionError::AxUnavailable);
+        let mut frontmost: Option<(i32, Option<String>)> = None;
+        for attempt in 0..AX_ATTEMPTS {
+            if attempt > 0 {
+                tokio::time::sleep(AX_RETRY_GAP).await;
+            }
+            let (tx, rx) = tokio::sync::oneshot::channel::<AxReply>();
+            app_handle
+                .run_on_main_thread(move || {
+                    let _ = tx.send((
+                        native::capture_selection_native(),
+                        native::frontmost_pid_bundle(),
+                    ));
+                })
+                .map_err(|_| SelectionError::AxUnavailable)?;
+            let (result, fm) = rx
+                .await
+                .unwrap_or((Err(SelectionError::AxUnavailable), None));
+            ax_result = result;
+            frontmost = fm;
+            match ax_result {
+                // Retry only the two "AX couldn't produce a selection" cases —
+                // success and the fail-closed errors (SecureField,
+                // AccessibilityDenied, TooLarge) are final.
+                Err(SelectionError::NoSelection) | Err(SelectionError::AxUnavailable) => {
+                    if attempt + 1 < AX_ATTEMPTS {
+                        tracing::info!(
+                            target: "transform",
+                            attempt = attempt + 1,
+                            "AX capture incomplete — retrying after warm-up gap"
+                        );
+                    }
+                }
+                _ => break,
+            }
+        }
 
         match (ax_result, frontmost) {
             // AX couldn't produce a selection + a known frontmost app: try the
@@ -293,6 +330,14 @@ pub async fn capture_selection(
 /// Chromium/Electron webviews are the main case; see the safety rationale at
 /// the `capture_selection` match arm: this only reproduces the user's own
 /// Cmd+C gesture, which secure fields refuse system-wide).
+///
+/// Known limitation: capture runs while the user physically holds the
+/// transform key, and some apps (observed: Brave) read the hardware modifier
+/// state rather than the synthetic event's flags — seeing Cmd+Opt+C instead
+/// of Cmd+C, which is not Copy. The AX retry loop in `capture_selection` is
+/// therefore the primary browser path (Chromium's AX tree warms after the
+/// first queries); this fallback is the last resort for genuinely AX-less
+/// targets whose copy handling honors the event flags.
 ///
 /// Strategy: snapshot the current clipboard text, overwrite it with a unique
 /// sentinel, post a synthetic Cmd+C, and poll until the clipboard no longer
