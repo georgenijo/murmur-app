@@ -29,7 +29,10 @@ export type ReviewErrorCode =
   | 'ax_unavailable'
   | 'accessibility_denied'
   | 'target_gone'
-  | 'selection_changed';
+  | 'selection_changed'
+  | 'clipboard_unavailable'
+  | 'paste_failed'
+  | 'not_applied';
 
 const REVIEW_STATES: readonly ReviewState[] = [
   'listening', 'thinking', 'ready', 'failed', 'applied',
@@ -39,6 +42,7 @@ const REVIEW_ERROR_CODES: readonly ReviewErrorCode[] = [
   'model_not_downloaded', 'model_unreadable', 'timeout', 'output_invalid', 'crashed',
   'disabled', 'busy', 'no_instruction', 'no_selection', 'too_large', 'ax_unavailable',
   'accessibility_denied', 'target_gone', 'selection_changed',
+  'clipboard_unavailable', 'paste_failed', 'not_applied',
 ];
 
 export function isReviewState(v: unknown): v is ReviewState {
@@ -65,6 +69,9 @@ export const REVIEW_ERROR_COPY: Record<ReviewErrorCode, string> = {
   accessibility_denied: 'Accessibility permission required',
   target_gone: 'The target app changed — original text untouched',
   selection_changed: 'The selection changed — nothing was overwritten',
+  clipboard_unavailable: "Couldn't reach the clipboard — try Undo again",
+  paste_failed: "Couldn't undo the change — try Undo again",
+  not_applied: 'Nothing to undo',
 };
 
 /**

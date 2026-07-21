@@ -133,6 +133,40 @@ describe('useTransformReviewDriver (real driver)', () => {
     expect(names).toContain('cancel_transform');
   });
 
+  it('clears content on a backend-initiated transform-review-hidden signal', async () => {
+    mocks.invoke.mockResolvedValue(CONTENT);
+
+    function Harness() {
+      current = useTransformReviewDriver(true);
+      return null;
+    }
+
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // Populate content via a normal state change first.
+    await act(async () => {
+      mocks.listeners['transform-state-changed']?.({ payload: { state: 'ready' } });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(current!.content).toEqual(CONTENT);
+
+    // A backend-initiated hide (item 13) must reset the stale content so it
+    // cannot flash on the next show.
+    expect(mocks.listeners['transform-review-hidden']).toBeDefined();
+    await act(async () => {
+      mocks.listeners['transform-review-hidden']?.({ payload: null });
+      await Promise.resolve();
+    });
+
+    expect(current!.content).toEqual({ instruction: '', original: '', proposed: '' });
+    expect(current!.errorCode).toBeNull();
+  });
+
   it('undo uses undo_transform_and_close and does not chain cancel_transform', async () => {
     mocks.invoke.mockResolvedValue(undefined);
 
