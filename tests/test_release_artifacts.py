@@ -92,7 +92,8 @@ class ReleaseArtifactTests(unittest.TestCase):
         "sha256": "a" * 64,
         "architecture": "arm64",
         "designated_requirement": (
-            'identifier "com.localdictation.local-llm-sidecar" and anchor apple generic'
+            'identifier "com.localdictation.local-llm-sidecar" and anchor apple generic '
+            'and certificate leaf[subject.OU] = "ABCDE12345"'
         ),
         "team_id": "ABCDE12345",
         "entitlement_sha256": "b" * 64,
@@ -100,7 +101,7 @@ class ReleaseArtifactTests(unittest.TestCase):
 
     def _rerecord_macos_with_helper(self, helper: dict) -> None:
         macos = self.artifacts / "macos"
-        (macos / "provenance.json").unlink()
+        (macos / "provenance.json").unlink(missing_ok=True)
         create_provenance("macos", "darwin-aarch64", macos, SHA, RUN_ID, helper=helper)
 
     def test_helper_provenance_recorded_and_validated(self) -> None:
@@ -125,6 +126,36 @@ class ReleaseArtifactTests(unittest.TestCase):
         (linux / "provenance.json").unlink()
         with self.assertRaisesRegex(ArtifactError, "only recorded for macos"):
             create_provenance("linux", "linux-x86_64", linux, SHA, RUN_ID, helper=self.HELPER)
+
+    def test_helper_bad_team_id_fails_closed(self) -> None:
+        with self.assertRaisesRegex(ArtifactError, "team_id must be a 10-character"):
+            self._rerecord_macos_with_helper({**self.HELPER, "team_id": "abcde12345"})
+        with self.assertRaisesRegex(ArtifactError, "team_id must be a 10-character"):
+            self._rerecord_macos_with_helper({**self.HELPER, "team_id": "SHORT"})
+
+    def test_helper_adhoc_cdhash_designated_requirement_rejected(self) -> None:
+        with self.assertRaisesRegex(ArtifactError, "designated_requirement must pin"):
+            self._rerecord_macos_with_helper(
+                {**self.HELPER, "designated_requirement": 'cdhash H"deadbeefcafe"'}
+            )
+
+    def test_helper_designated_requirement_wrong_team_rejected(self) -> None:
+        dr = (
+            'identifier "com.localdictation.local-llm-sidecar" and anchor apple generic '
+            'and certificate leaf[subject.OU] = "ZZZZZ99999"'
+        )
+        with self.assertRaisesRegex(ArtifactError, "designated_requirement must pin"):
+            self._rerecord_macos_with_helper({**self.HELPER, "designated_requirement": dr})
+
+    def test_validate_rejects_helper_block_on_linux(self) -> None:
+        # A helper block must never appear on a non-macos platform, even if a
+        # provenance file is hand-edited to smuggle one in.
+        linux = self.artifacts / "linux"
+        payload = json.loads((linux / "provenance.json").read_text())
+        payload["helper"] = self.HELPER
+        (linux / "provenance.json").write_text(json.dumps(payload))
+        with self.assertRaisesRegex(ArtifactError, "must not carry a helper block"):
+            validate_release(self.artifacts, SHA, RUN_ID)
 
 
 if __name__ == "__main__":

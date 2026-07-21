@@ -14,6 +14,8 @@ from typing import Any
 SCHEMA_VERSION = 1
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+TEAM_ID_RE = re.compile(r"^[A-Z0-9]{10}$")
+HELPER_IDENTIFIER = "com.localdictation.local-llm-sidecar"
 HELPER_FIELDS = (
     "sha256",
     "architecture",
@@ -105,6 +107,26 @@ def _require_helper(helper: dict[str, Any]) -> dict[str, Any]:
     if str(helper["architecture"]) != "arm64":
         raise ArtifactError(
             f"helper architecture must be arm64, got {helper['architecture']!r}"
+        )
+
+    team_id = str(helper["team_id"])
+    if not TEAM_ID_RE.fullmatch(team_id):
+        raise ArtifactError(f"helper team_id must be a 10-character Apple Team ID, got {team_id!r}")
+
+    # The designated requirement must pin the fixed helper identifier to a real
+    # Apple-anchored Developer ID certificate for this exact Team ID. This rejects
+    # bare-cdhash ad-hoc requirements, which carry no identity or anchor.
+    dr = str(helper["designated_requirement"])
+    required_clauses = (
+        f'identifier "{HELPER_IDENTIFIER}"',
+        "anchor apple generic",
+        "subject.OU",
+    )
+    missing_clauses = [clause for clause in required_clauses if clause not in dr]
+    if missing_clauses or f'"{team_id}"' not in dr:
+        raise ArtifactError(
+            "helper designated_requirement must pin the fixed identifier, an Apple "
+            f"anchor, and subject.OU = {team_id!r}; got {dr!r}"
         )
     return {field: str(helper[field]) for field in HELPER_FIELDS}
 
@@ -227,6 +249,8 @@ def validate_platform(
 
     helper = payload.get("helper")
     if helper is not None:
+        if platform != "macos":
+            raise ArtifactError(f"{platform} provenance must not carry a helper block")
         payload["helper"] = _require_helper(helper)
     elif require_helper:
         raise ArtifactError(

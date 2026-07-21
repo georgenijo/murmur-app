@@ -17,6 +17,19 @@ rehearsal share one implementation:
 
 It never weakens ``finalize_macos_bundle.py``; that finalizer must already have
 run and verified the bundle before this script is invoked.
+
+Secret handling: Apple and Tauri credentials are read from the environment, never
+passed as command-line arguments (which would be visible in ``ps`` and could leak
+into a raised traceback). The app-specific password is stored once into a
+notarytool keychain profile (fed on stdin), and every ``notarytool submit`` then
+references only the profile name. The Tauri updater signer reads its key and
+password from ``TAURI_PRIVATE_KEY`` / ``TAURI_PRIVATE_KEY_PASSWORD`` in the child
+environment. On failure, subprocess output is dropped and only the leading,
+non-sensitive part of the argv is surfaced.
+
+Required environment: ``APPLE_ID``, ``APPLE_PASSWORD``, ``APPLE_TEAM_ID``,
+``TAURI_SIGNING_PRIVATE_KEY``. Optional: ``TAURI_SIGNING_PRIVATE_KEY_PASSWORD``
+and ``SIGNING_KEYCHAIN`` (path to the keychain that holds the notary profile).
 """
 
 from __future__ import annotations
@@ -30,34 +43,71 @@ import subprocess
 import tempfile
 
 
-def run(command: list[str], *, cwd: Path | None = None, env: dict | None = None) -> str:
-    result = subprocess.run(
-        command, cwd=cwd, env=env, text=True, check=True, capture_output=True
-    )
+NOTARY_PROFILE = "MurmurNotary"
+
+
+def run(
+    command: list[str],
+    *,
+    cwd: Path | None = None,
+    env: dict | None = None,
+    input: str | None = None,
+) -> str:
+    try:
+        result = subprocess.run(
+            command,
+            cwd=cwd,
+            env=env,
+            input=input,
+            text=True,
+            check=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        # Never surface captured output (may echo a secret) and never let the
+        # chained CalledProcessError (which holds the full argv) reach the
+        # traceback. Show only the leading, non-sensitive part of the command.
+        raise SystemExit(
+            f"command failed (exit {exc.returncode}): {' '.join(command[:3])}"
+        ) from None
     return result.stdout
 
 
-def notarize(archive: Path, apple_id: str, password: str, team_id: str) -> None:
-    output = run(
-        [
-            "xcrun",
-            "notarytool",
-            "submit",
-            str(archive),
-            "--apple-id",
-            apple_id,
-            "--password",
-            password,
-            "--team-id",
-            team_id,
-            "--wait",
-            "--output-format",
-            "json",
-        ]
-    )
+def store_notary_profile(apple_id: str, team_id: str, password: str, keychain: str) -> None:
+    command = [
+        "xcrun",
+        "notarytool",
+        "store-credentials",
+        NOTARY_PROFILE,
+        "--apple-id",
+        apple_id,
+        "--team-id",
+        team_id,
+    ]
+    if keychain:
+        command += ["--keychain", keychain]
+    # The app-specific password is fed on stdin so it never appears in argv/ps.
+    run(command, input=password + "\n")
+
+
+def notarize(archive: Path, keychain: str) -> None:
+    command = [
+        "xcrun",
+        "notarytool",
+        "submit",
+        str(archive),
+        "--keychain-profile",
+        NOTARY_PROFILE,
+        "--wait",
+        "--output-format",
+        "json",
+    ]
+    if keychain:
+        command += ["--keychain", keychain]
+    output = run(command)
     status = json.loads(output).get("status")
     if status != "Accepted":
-        raise SystemExit(f"notarization was not accepted: status={status!r} ({output})")
+        raise SystemExit(f"notarization was not accepted: status={status!r}")
 
 
 def staple(target: Path) -> None:
@@ -112,26 +162,31 @@ def build_updater_archive(app: Path) -> Path:
     return tarball
 
 
-def tauri_sign(tarball: Path, app_dir: Path, key: str, key_password: str) -> Path:
+def tauri_sign(tarball: Path, app_dir: Path) -> Path:
+    # The signer subcommand reads TAURI_PRIVATE_KEY / TAURI_PRIVATE_KEY_PASSWORD
+    # from the environment, so the key never appears in argv/ps. Map the release
+    # build's TAURI_SIGNING_* names onto the signer's names.
+    env = os.environ.copy()
+    env["TAURI_PRIVATE_KEY"] = os.environ["TAURI_SIGNING_PRIVATE_KEY"]
+    env["TAURI_PRIVATE_KEY_PASSWORD"] = os.environ.get(
+        "TAURI_SIGNING_PRIVATE_KEY_PASSWORD", ""
+    )
     run(
-        [
-            "npx",
-            "--no-install",
-            "tauri",
-            "signer",
-            "sign",
-            "--private-key",
-            key,
-            "--password",
-            key_password,
-            str(tarball),
-        ],
+        ["npx", "--no-install", "tauri", "signer", "sign", str(tarball)],
         cwd=app_dir,
+        env=env,
     )
     signature = Path(f"{tarball}.sig")
     if not signature.is_file():
         raise SystemExit(f"updater signature was not produced: {signature}")
     return signature
+
+
+def _require_env(name: str) -> str:
+    value = os.environ.get(name, "")
+    if not value:
+        raise SystemExit(f"missing required environment variable: {name}")
+    return value
 
 
 def main() -> int:
@@ -142,35 +197,39 @@ def main() -> int:
     parser.add_argument("--version", required=True)
     parser.add_argument("--arch", default="aarch64")
     parser.add_argument("--dmg-out", type=Path, required=True)
-    parser.add_argument("--apple-id", required=True)
-    parser.add_argument("--apple-password", required=True)
-    parser.add_argument("--team-id", required=True)
-    parser.add_argument("--tauri-signing-key", required=True)
-    parser.add_argument("--tauri-signing-password", default="")
     args = parser.parse_args()
+
+    # Secrets come from the environment, never argv.
+    apple_id = _require_env("APPLE_ID")
+    apple_password = _require_env("APPLE_PASSWORD")
+    team_id = _require_env("APPLE_TEAM_ID")
+    _require_env("TAURI_SIGNING_PRIVATE_KEY")
+    keychain = os.environ.get("SIGNING_KEYCHAIN", "")
 
     app = args.app.resolve()
     if not app.is_dir():
         raise SystemExit(f"app bundle not found: {app}")
 
+    # Store the app-specific password once into a notarytool keychain profile so
+    # the repeated submit calls carry only the profile name.
+    store_notary_profile(apple_id, team_id, apple_password, keychain)
+
     # 1. Notarize and staple the finalized app.
     with tempfile.TemporaryDirectory(prefix="murmur-notarize-") as tmp:
         app_zip = Path(tmp) / f"{app.stem}.zip"
         run(["ditto", "-c", "-k", "--keepParent", str(app), str(app_zip)])
-        notarize(app_zip, args.apple_id, args.apple_password, args.team_id)
+        notarize(app_zip, keychain)
     staple(app)
 
     # 2. DMG built from the stapled app, then signed, notarized, and stapled.
     dmg = build_dmg(app, args.version, args.arch, args.dmg_out.resolve())
     codesign_dmg(dmg, args.identity)
-    notarize(dmg, args.apple_id, args.apple_password, args.team_id)
+    notarize(dmg, keychain)
     staple(dmg)
 
     # 3. Updater archive + Ed25519 signature from the stapled app.
     tarball = build_updater_archive(app)
-    signature = tauri_sign(
-        tarball, args.app_dir.resolve(), args.tauri_signing_key, args.tauri_signing_password
-    )
+    signature = tauri_sign(tarball, args.app_dir.resolve())
 
     print(
         json.dumps(
