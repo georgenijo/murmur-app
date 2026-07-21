@@ -21,12 +21,12 @@ on:
           a Metal-capable runner.
         type: boolean
         default: false
-  # Push trigger scoped to the feature branch: workflow_dispatch is only
-  # registered once this file reaches the default branch, so pre-merge rehearsal
-  # runs (the ADR Stage 0 gate-2 evidence) fire on push instead. Remove or keep
-  # commented after merge; dispatch takes over from main.
-  push:
-    branches: [issue/312-sidecar-release]
+  # Pre-merge iteration used a push trigger scoped to the feature branch
+  # (workflow_dispatch is only registered once this file reaches the default
+  # branch). Gate-2 evidence was produced by run 29793936645; the trigger is
+  # re-commented now that dispatch takes over from main.
+  # push:
+  #   branches: [issue/312-sidecar-release]
 
 concurrency:
   group: sidecar-rehearsal-${{ github.ref }}
