@@ -21,9 +21,12 @@ on:
           a Metal-capable runner.
         type: boolean
         default: false
-  # Uncomment to iterate on this workflow directly from the feature branch:
-  # push:
-  #   branches: [issue/312-sidecar-release]
+  # Push trigger scoped to the feature branch: workflow_dispatch is only
+  # registered once this file reaches the default branch, so pre-merge rehearsal
+  # runs (the ADR Stage 0 gate-2 evidence) fire on push instead. Remove or keep
+  # commented after merge; dispatch takes over from main.
+  push:
+    branches: [issue/312-sidecar-release]
 
 concurrency:
   group: sidecar-rehearsal-${{ github.ref }}
