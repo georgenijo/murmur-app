@@ -11,6 +11,8 @@
 //! - `malformed_on_transform` — emit an invalid-JSON frame
 //! - `oversized_on_transform` — emit a length prefix over the 64 KiB frame cap
 //! - `slow_ack_cancel`     — never Result; reply Cancelled to a Cancel
+//! - `slow_honor_cancel`   — alias of `slow_ack_cancel` (cancel-honoring slow path
+//!                           for host-side cooperative-cancel tests)
 //! - `slow_ignore_cancel`  — never Result; ignore Cancel (forces a kill)
 //!
 //! The real supervisor spawns with `env_clear`, so these vars only exist for the
@@ -128,7 +130,7 @@ fn main() {
                         let _ = stdout.write_all(b"xx");
                         let _ = stdout.flush();
                     }
-                    "slow_ack_cancel" | "slow_ignore_cancel" => {
+                    "slow_ack_cancel" | "slow_honor_cancel" | "slow_ignore_cancel" => {
                         // Never send a Result; wait for the Cancel below.
                     }
                     "error_deadline_on_transform" => {
@@ -177,7 +179,7 @@ fn main() {
                 }
             }
             HostMessage::Cancel { request_id, .. } => {
-                if scenario == "slow_ack_cancel" {
+                if scenario == "slow_ack_cancel" || scenario == "slow_honor_cancel" {
                     let cancelled = HelperMessage::Cancelled {
                         protocol: PROTOCOL_NAME.to_string(),
                         version: PROTOCOL_VERSION,

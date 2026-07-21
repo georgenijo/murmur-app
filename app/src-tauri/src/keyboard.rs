@@ -951,12 +951,27 @@ fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                             // hotkey press must not blow away the session that
                             // pass owns out from under it.
                             let app_state = &handle.state::<crate::State>().app_state;
-                            if matches!(
-                                app_state.transform_status(),
-                                crate::state::TransformStatus::Idle
-                                    | crate::state::TransformStatus::ReviewPending
-                            ) {
-                                crate::transform_apply::clear_session(app_state);
+                            // N2 (B2 review): every session clear must be paired
+                            // with the matching status transition so the status
+                            // is never left stranded at ReviewPending with no
+                            // session. From Idle, just clear (status already
+                            // Idle). From ReviewPending, atomically move
+                            // ReviewPending -> Idle and only then clear — a
+                            // mid-flight pass (Capturing/Listening/Thinking/
+                            // Applying) is left untouched.
+                            match app_state.transform_status() {
+                                crate::state::TransformStatus::Idle => {
+                                    crate::transform_apply::clear_session(app_state);
+                                }
+                                crate::state::TransformStatus::ReviewPending => {
+                                    if app_state.try_transition_transform_status(
+                                        crate::state::TransformStatus::ReviewPending,
+                                        crate::state::TransformStatus::Idle,
+                                    ) {
+                                        crate::transform_apply::clear_session(app_state);
+                                    }
+                                }
+                                _ => {}
                             }
                             let _ = handle.emit("transform-key-pressed", ());
                         }

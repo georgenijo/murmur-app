@@ -1,0 +1,125 @@
+import { useEffect, useRef } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
+import { DEFAULT_SETTINGS } from '../settings';
+import { flog } from '../log';
+import {
+  INITIAL_TRANSFORM_FLOW_STATE,
+  reduceTransformFlow,
+  type TransformFlowInput,
+  type TransformFlowState,
+} from '../transformFlow';
+
+interface UseTransformFlowProps {
+  /** transformHoldKey configured AND hotkeys armed. */
+  enabled: boolean;
+  initialized: boolean;
+  accessibilityGranted: boolean | null;
+  /** The configured transform hotkey (one of TransformKey), or null=disabled. */
+  transformHoldKey: string | null;
+  /** Selected microphone device id (same contract as start_native_recording). */
+  microphone?: string;
+}
+
+/**
+ * Main-window driver for the AX-selection transform flow (issue #312 PR-C2).
+ *
+ * Mirrors `useHoldDownToggle`'s listen-and-call-command pattern: it starts the
+ * independent transform rdev listener, subscribes to `transform-key-pressed` /
+ * `transform-key-released`, and turns that press/release stream into the flow
+ * commands via the pure `reduceTransformFlow` reducer (double-press ignore,
+ * short-tap cancel, and missing-release tolerance — see that module).
+ *
+ * Always call this hook (gate its *effects* on `enabled`, per the Rules of
+ * Hooks) — same discipline as the dictation hotkey hooks. The popover window
+ * drives Approve/Retry/Cancel/Undo separately (`useTransformReviewDriver`).
+ */
+export function useTransformFlow({
+  enabled,
+  initialized,
+  accessibilityGranted,
+  transformHoldKey,
+  microphone,
+}: UseTransformFlowProps) {
+  const stateRef = useRef<TransformFlowState>(INITIAL_TRANSFORM_FLOW_STATE);
+  const microphoneRef = useRef(microphone);
+  useEffect(() => {
+    microphoneRef.current = microphone;
+  }, [microphone]);
+
+  useEffect(() => {
+    if (!enabled || !initialized || !accessibilityGranted || !transformHoldKey) return;
+
+    let cancelled = false;
+    let unlistenPressed: (() => void) | null = null;
+    let unlistenReleased: (() => void) | null = null;
+
+    const deviceNameArg = () => {
+      const mic = microphoneRef.current;
+      return mic && mic !== DEFAULT_SETTINGS.microphone ? mic : null;
+    };
+
+    const dispatch = (input: TransformFlowInput) => {
+      const step = reduceTransformFlow(stateRef.current, input);
+      stateRef.current = step.state;
+      if (step.ignored) {
+        flog.info('transform-flow', 'input ignored', { reason: step.ignored, input: input.type });
+        return;
+      }
+      if (step.command) {
+        const args =
+          step.command === 'start_transform_capture'
+            ? { deviceName: deviceNameArg() }
+            : undefined;
+        invoke(step.command, args).catch((e) => {
+          flog.warn('transform-flow', 'command failed', { command: step.command, error: String(e) });
+        });
+      }
+    };
+
+    const setup = async () => {
+      // A (re)start of the listener resets the reducer — a hold that lost its
+      // release event (listener torn down mid-hold) must not wedge the next press.
+      // If we were mid-hold, cancel the backend so Listening + live mic is not
+      // left running with no release coming (C2 finding 5).
+      if (stateRef.current.holding) {
+        invoke('cancel_transform').catch(() => {});
+      }
+      stateRef.current = INITIAL_TRANSFORM_FLOW_STATE;
+
+      unlistenPressed = await listen('transform-key-pressed', () => {
+        dispatch({ type: 'pressed', now: Date.now() });
+      });
+      if (cancelled) { unlistenPressed(); return; }
+
+      unlistenReleased = await listen('transform-key-released', () => {
+        dispatch({ type: 'released', now: Date.now() });
+      });
+      if (cancelled) { unlistenPressed(); unlistenReleased(); return; }
+
+      try {
+        await invoke('start_transform_listener', { hotkey: transformHoldKey });
+        if (cancelled) {
+          invoke('stop_transform_listener').catch(() => {});
+        }
+      } catch (err) {
+        flog.warn('transform-flow', 'failed to start transform listener', { error: String(err) });
+      }
+    };
+
+    setup();
+
+    return () => {
+      cancelled = true;
+      unlistenPressed?.();
+      unlistenReleased?.();
+      invoke('stop_transform_listener').catch(() => {});
+      // Mid-hold cleanup: backend is Listening with a live mic and no release
+      // will arrive after the listener stops — cancel so we do not wedge.
+      if (stateRef.current.holding) {
+        invoke('cancel_transform').catch(() => {});
+        stateRef.current = INITIAL_TRANSFORM_FLOW_STATE;
+      }
+    };
+  }, [enabled, initialized, accessibilityGranted, transformHoldKey]);
+}

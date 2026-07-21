@@ -30,6 +30,7 @@ pub mod telemetry;
 pub mod transcriber;
 mod transcript_transform;
 mod transform_apply;
+pub mod transform_flow;
 mod vad;
 mod vocab;
 mod vocabulary_alias;
@@ -229,6 +230,12 @@ pub fn run() {
             commands::recording::transform_status,
             transform_apply::apply_transform_result,
             transform_apply::undo_transform,
+            transform_flow::start_transform_capture,
+            transform_flow::finish_transform_instruction,
+            transform_flow::retry_transform_instruction,
+            transform_flow::approve_transform,
+            transform_flow::cancel_transform,
+            transform_flow::undo_transform_and_close,
             commands::knowledge::get_knowledge_store_status,
             commands::knowledge::retry_knowledge_store,
             commands::knowledge::list_knowledge,

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { DEFAULT_SETTINGS, loadSettings } from '../settings';
 import { flog } from '../log';
 import {
   EMPTY_REVIEW_CONTENT,
@@ -22,18 +23,21 @@ export interface ReviewDriverResult {
   undo: () => void;
 }
 
+function deviceNameArg(): string | null {
+  try {
+    const mic = loadSettings().microphone;
+    return mic && mic !== DEFAULT_SETTINGS.microphone ? mic : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * The real (non-mock) driver: subscribes to the `transform-state-changed`
  * event and fetches text content via `get_transform_review_content` whenever
  * the state changes. `errorCode` is carried on the event itself; instruction/
  * original/proposed text is fetched separately by command so it is never
  * broadcast as an event payload (it may be sensitive selected text).
- *
- * PR-C2 wires the real backend to emit `transform-state-changed` and to
- * populate `get_transform_review_content`; it will also add the real
- * cancel/retry/approve/undo commands. For PR-C1, `cancel` hides the popover
- * (the one native effect already wired) and `retry`/`approve`/`undo` are
- * no-ops — there is no backend transform pipeline yet to drive.
  *
  * Always call this hook (gate its *effects* on `enabled`, per the Rules of
  * Hooks) — same pattern as `useHoldDownToggle`/`useDoubleTapToggle`.
@@ -102,15 +106,39 @@ export function useTransformReviewDriver(enabled: boolean): ReviewDriverResult {
     return () => window.clearInterval(id);
   }, [enabled, state]);
 
+  // PR-C2: wire the popover actions to the real transform-flow commands. The
+  // backend owns the state machine and emits the follow-up `transform-state-
+  // changed` events; these calls never carry any review text.
   const cancel = useCallback(() => {
-    invoke('hide_transform_popover').catch((e) => {
-      flog.warn('transform-review', 'hide_transform_popover failed', { error: String(e) });
+    // Clear local content immediately so a subsequent show cannot flash stale
+    // selection text before the next get_transform_review_content resolves.
+    setContent(EMPTY_REVIEW_CONTENT);
+    invoke('cancel_transform').catch((e) => {
+      flog.warn('transform-review', 'cancel_transform failed', { error: String(e) });
     });
   }, []);
-  // PR-C2: wire these to real transform commands once the sidecar exists.
-  const retry = useCallback(() => {}, []);
-  const approve = useCallback(() => {}, []);
-  const undo = useCallback(() => {}, []);
+  const retry = useCallback(() => {
+    invoke('retry_transform_instruction', { deviceName: deviceNameArg() }).catch((e) => {
+      flog.warn('transform-review', 'retry_transform_instruction failed', { error: String(e) });
+    });
+  }, []);
+  const approve = useCallback(() => {
+    invoke('approve_transform').catch((e) => {
+      flog.warn('transform-review', 'approve_transform failed', { error: String(e) });
+    });
+  }, []);
+  const undo = useCallback(() => {
+    // Flow-level undo: hides + clears session on success WITHOUT a second
+    // epoch bump (chaining cancel_transform would clobber paste-fallback
+    // clipboard restore inside the 300ms window — C2 finding 4).
+    invoke('undo_transform_and_close')
+      .then(() => {
+        setContent(EMPTY_REVIEW_CONTENT);
+      })
+      .catch((e) => {
+        flog.warn('transform-review', 'undo_transform_and_close failed', { error: String(e) });
+      });
+  }, []);
 
   return { state, errorCode, content, thinkingElapsedMs, cancel, retry, approve, undo };
 }
