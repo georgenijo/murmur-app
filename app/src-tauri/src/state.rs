@@ -329,6 +329,12 @@ pub struct AppState {
     /// Current phase of the AX-selection transform pipeline (issue #312).
     /// Independent of `dictation.status` — see `TransformStatus`'s doc comment.
     pub transform_status: Mutex<TransformStatus>,
+    /// The single active transform session (captured selection + proposed
+    /// replacement + applied flag), if any (issue #312, PR-B2). See
+    /// `transform_apply::TransformSession` and its setter/getter helpers —
+    /// accessed through those, not locked directly, everywhere except
+    /// `transform_apply.rs` itself.
+    pub transform_session: Mutex<Option<crate::transform_apply::TransformSession>>,
 }
 
 impl AppState {
@@ -426,6 +432,7 @@ impl Default for AppState {
             knowledge_replacements: Mutex::new(Arc::new(Vec::new())),
             ide_context: Mutex::new(crate::ide_context::IdeContextStore::default()),
             transform_status: Mutex::new(TransformStatus::default()),
+            transform_session: Mutex::new(None),
         }
     }
 }
