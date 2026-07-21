@@ -144,7 +144,13 @@ function App() {
   // Independent AX-selection transform hotkey (issue #312). Enabled only when
   // the user has configured a transform key; drives capture -> instruction ->
   // review via the transform-review popover window.
-  useTransformFlow({ enabled: hotkeysArmed && settings.transformHoldKey !== null, initialized, accessibilityGranted, transformHoldKey: settings.transformHoldKey });
+  useTransformFlow({
+    enabled: hotkeysArmed && settings.transformHoldKey !== null,
+    initialized,
+    accessibilityGranted,
+    transformHoldKey: settings.transformHoldKey,
+    microphone: settings.microphone,
+  });
   const { showAbout, setShowAbout } = useShowAboutListener();
   const updater = useAutoUpdater();
 

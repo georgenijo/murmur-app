@@ -132,4 +132,29 @@ describe('useTransformReviewDriver (real driver)', () => {
     expect(names).toContain('retry_transform_instruction');
     expect(names).toContain('cancel_transform');
   });
+
+  it('undo uses undo_transform_and_close and does not chain cancel_transform', async () => {
+    mocks.invoke.mockResolvedValue(undefined);
+
+    function Harness() {
+      current = useTransformReviewDriver(true);
+      return null;
+    }
+
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      current!.undo();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const names = mocks.invoke.mock.calls.map((c) => c[0]);
+    expect(names).toContain('undo_transform_and_close');
+    expect(names).not.toContain('cancel_transform');
+    expect(names).not.toContain('undo_transform');
+  });
 });

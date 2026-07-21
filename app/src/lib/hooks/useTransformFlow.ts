@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { DEFAULT_SETTINGS } from '../settings';
 import { flog } from '../log';
 import {
   INITIAL_TRANSFORM_FLOW_STATE,
@@ -16,6 +17,8 @@ interface UseTransformFlowProps {
   accessibilityGranted: boolean | null;
   /** The configured transform hotkey (one of TransformKey), or null=disabled. */
   transformHoldKey: string | null;
+  /** Selected microphone device id (same contract as start_native_recording). */
+  microphone?: string;
 }
 
 /**
@@ -36,8 +39,13 @@ export function useTransformFlow({
   initialized,
   accessibilityGranted,
   transformHoldKey,
+  microphone,
 }: UseTransformFlowProps) {
   const stateRef = useRef<TransformFlowState>(INITIAL_TRANSFORM_FLOW_STATE);
+  const microphoneRef = useRef(microphone);
+  useEffect(() => {
+    microphoneRef.current = microphone;
+  }, [microphone]);
 
   useEffect(() => {
     if (!enabled || !initialized || !accessibilityGranted || !transformHoldKey) return;
@@ -45,6 +53,11 @@ export function useTransformFlow({
     let cancelled = false;
     let unlistenPressed: (() => void) | null = null;
     let unlistenReleased: (() => void) | null = null;
+
+    const deviceNameArg = () => {
+      const mic = microphoneRef.current;
+      return mic && mic !== DEFAULT_SETTINGS.microphone ? mic : null;
+    };
 
     const dispatch = (input: TransformFlowInput) => {
       const step = reduceTransformFlow(stateRef.current, input);
@@ -54,7 +67,11 @@ export function useTransformFlow({
         return;
       }
       if (step.command) {
-        invoke(step.command).catch((e) => {
+        const args =
+          step.command === 'start_transform_capture'
+            ? { deviceName: deviceNameArg() }
+            : undefined;
+        invoke(step.command, args).catch((e) => {
           flog.warn('transform-flow', 'command failed', { command: step.command, error: String(e) });
         });
       }
@@ -63,6 +80,11 @@ export function useTransformFlow({
     const setup = async () => {
       // A (re)start of the listener resets the reducer — a hold that lost its
       // release event (listener torn down mid-hold) must not wedge the next press.
+      // If we were mid-hold, cancel the backend so Listening + live mic is not
+      // left running with no release coming (C2 finding 5).
+      if (stateRef.current.holding) {
+        invoke('cancel_transform').catch(() => {});
+      }
       stateRef.current = INITIAL_TRANSFORM_FLOW_STATE;
 
       unlistenPressed = await listen('transform-key-pressed', () => {
@@ -92,6 +114,12 @@ export function useTransformFlow({
       unlistenPressed?.();
       unlistenReleased?.();
       invoke('stop_transform_listener').catch(() => {});
+      // Mid-hold cleanup: backend is Listening with a live mic and no release
+      // will arrive after the listener stops — cancel so we do not wedge.
+      if (stateRef.current.holding) {
+        invoke('cancel_transform').catch(() => {});
+        stateRef.current = INITIAL_TRANSFORM_FLOW_STATE;
+      }
     };
   }, [enabled, initialized, accessibilityGranted, transformHoldKey]);
 }
