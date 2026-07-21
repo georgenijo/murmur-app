@@ -149,26 +149,19 @@ pub(crate) fn register_screen_change_observer(app_handle: tauri::AppHandle) {
 pub(crate) fn register_screen_change_observer(_app_handle: tauri::AppHandle) {}
 
 /// Raise the overlay window above the menu bar so it overlaps the notch.
+/// Also prevents clicking the overlay from activating the app (which would
+/// unhide the main window) — see `native_window::set_window_level_and_activation`,
+/// shared with the transform review popover.
 #[cfg(target_os = "macos")]
 fn raise_window_above_menubar(overlay: &tauri::WebviewWindow) {
-    // NSMainMenuWindowLevel = 24, so +1 = 25 puts us just above the menu bar.
-    // This is what boring.notch and mew-notch use.
-    let raw = overlay.ns_window();
-    if let Ok(ptr) = raw {
+    super::native_window::set_window_level_and_activation(
+        overlay,
+        super::native_window::ABOVE_MENU_BAR_LEVEL,
+        true,
+    );
+    if let Ok(ptr) = overlay.ns_window() {
         let ns_window: &objc2_app_kit::NSWindow = unsafe { &*(ptr.cast()) };
-        ns_window.setLevel(25);
         ns_window.setHasShadow(false);
-        // Prevent clicking the overlay from activating the app (which unhides the main window).
-        // Private API — macOSPrivateApi is already enabled in tauri.conf.json.
-        // Tested on macOS 15 (Sequoia). Guard with respondsToSelector in case Apple
-        // removes this in a future version.
-        let sel = objc2::sel!(_setPreventsActivation:);
-        let responds: bool = unsafe { objc2::msg_send![ns_window, respondsToSelector: sel] };
-        if responds {
-            let _: () = unsafe { objc2::msg_send![ns_window, _setPreventsActivation: true] };
-        } else {
-            tracing::warn!(target: "system", "_setPreventsActivation: not available on this macOS version");
-        }
     }
 }
 

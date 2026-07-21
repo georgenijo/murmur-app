@@ -1,0 +1,10 @@
+{
+  "$schema": "https://schemas.tauri.app/config/2/capability",
+  "identifier": "transform-review",
+  "description": "Capability for the transform review popover window",
+  "windows": ["transform-review"],
+  "permissions": [
+    "core:event:default",
+    "core:default"
+  ]
+}

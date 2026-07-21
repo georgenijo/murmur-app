@@ -88,6 +88,10 @@ pub(crate) struct State {
     pub(crate) correct_and_teach: correct_and_teach::CorrectAndTeachState,
     /// Cached notch dimensions (notch_width, menu_bar_height) from setup (main thread).
     pub(crate) notch_info: Mutex<Option<(f64, f64)>>,
+    /// The selection-bounds anchor from the most recent `show_transform_popover`
+    /// call, so `set_transform_popover_expanded` can resize/reposition for a
+    /// new size class without the caller re-supplying the anchor.
+    pub(crate) transform_popover_anchor: Mutex<Option<commands::transform_popover::Rect>>,
 }
 
 /// WebKitGTK environment defaults applied on Linux before GTK/webkit init.
@@ -140,6 +144,7 @@ pub fn run() {
             knowledge: knowledge_store::KnowledgeStore::default(),
             correct_and_teach: correct_and_teach::CorrectAndTeachState::default(),
             notch_info: Mutex::new(None),
+            transform_popover_anchor: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             commands::recording::init_dictation,
@@ -215,6 +220,12 @@ pub fn run() {
             commands::overlay::set_overlay_expanded,
             commands::overlay::show_main_window,
             commands::overlay::get_overlay_geometry,
+            commands::transform_popover::get_transform_popover_geometry,
+            commands::transform_popover::show_transform_popover,
+            commands::transform_popover::hide_transform_popover,
+            commands::transform_popover::set_transform_popover_expanded,
+            commands::transform_popover::set_transform_popover_focusable,
+            commands::transform_popover::get_transform_review_content,
             telemetry::get_event_history,
             telemetry::clear_event_history,
             resource_monitor::get_resource_usage
@@ -286,6 +297,11 @@ pub fn run() {
             // Listen for display config changes (monitor plug/unplug, lid open/close)
             // to re-detect notch info and reposition the overlay.
             commands::overlay::register_screen_change_observer(app.handle().clone());
+
+            // Overwrite the transform-review window's initial size from Rust's
+            // COMPACT_W/COMPACT_H so tauri.conf.json's matching literal is only
+            // ever a startup-flash guard, never the source of truth.
+            commands::transform_popover::apply_initial_compact_size(app.handle());
 
             // Restore tray icon (removed by PR #63 overlay work).
             let idle_icon_data = commands::tray::make_tray_icon_data();

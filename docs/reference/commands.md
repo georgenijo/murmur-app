@@ -96,6 +96,20 @@ For event-based communication (Rust to frontend), see [events.md](events.md). Fo
 | `set_overlay_expanded` | `expanded: bool` | `Result<AppliedSurface, String>` | Resizes the overlay window between the collapsed and expanded frames (top-anchored), returning the applied frame `{windowW, windowH}` as a resize acknowledgment. The frontend's expansion controller awaits this before revealing the dropdown, so CSS never animates into a window that has not yet grown. |
 | `show_main_window` | _(none)_ | `Result<(), String>` | Shows and focuses the main app window. Used by the overlay's gear button instead of frontend window APIs, avoiding broad window permissions in the overlay webview. |
 
+## Transform Review Popover (`commands/transform_popover.rs`)
+
+Issue #312 PR-C1: UI scaffolding for the animated review popover, driven by a
+mock in the frontend until PR-C2 wires the real sidecar/transform backend.
+
+| Command | Parameters | Return Type | Description |
+|---------|-----------|-------------|-------------|
+| `get_transform_popover_geometry` | `anchor: Option<Rect>` | `TransformPopoverGeometry` | Returns `{compact, expanded}` boxes resolved against `anchor` (selection bounds) and the active screen's visible frame — anchored 8px below, flipped above when the bottom would clip, clamped horizontally, or centered at 38% screen height with no anchor. Pure `popover_geometry_for()` asserted by a checked-in fixture (cargo test + vitest, mirroring the overlay geometry contract). |
+| `show_transform_popover` | `anchor: Option<Rect>` | `Result<(), String>` | Resizes/positions the popover window to the `compact` box (the popover always opens into `listening`), applies the non-activating window treatment (shared with the overlay via `commands/native_window.rs`), and shows it. Caches `anchor` in `State` for `set_transform_popover_expanded`. |
+| `hide_transform_popover` | _(none)_ | `Result<(), String>` | Hides the popover window. |
+| `set_transform_popover_expanded` | `expanded: bool` | `Result<PopoverBox, String>` | Resizes/repositions the popover to the `expanded` (ready/failed) or `compact` (listening/thinking) box, against the anchor cached by the last `show_transform_popover` call, and returns the applied box as an acknowledgment. Not part of the PR-C1 issue's literal command list — added so Rust stays the sole author of every popover pixel across state transitions, mirroring `set_overlay_expanded`'s `AppliedSurface` return so the caller can gate CSS on the resolved frame. |
+| `set_transform_popover_focusable` | `focusable: bool` | `Result<(), String>` | Toggles whether the popover can take key focus. `false` during listening/thinking (never steal focus from the source app); `true` at ready/failed so Enter/Esc/Cmd+R reach the webview. |
+| `get_transform_review_content` | _(none)_ | `TransformReviewContent` | Returns `{instruction, original, proposed}`. Stubbed to empty strings for PR-C1 — PR-C2 wires this to the real transform pipeline. Fetched by the popover window on every `transform-state-changed` event rather than broadcast in the event payload, since this text may be sensitive. |
+
 ## Telemetry (`telemetry.rs`)
 
 | Command | Parameters | Return Type | Description |

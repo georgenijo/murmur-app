@@ -116,7 +116,8 @@ body.overlay-window {
   }
 
   .overlay-island,
-  .overlay-dropdown {
+  .overlay-dropdown,
+  .transform-review-surface {
     transition-duration: 0ms !important;
     transition-delay: 0ms !important;
   }
