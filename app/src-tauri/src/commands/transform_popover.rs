@@ -270,6 +270,21 @@ pub(crate) fn show_popover_internal(
     anchor: Option<Rect>,
 ) -> Result<(), String> {
     *state.transform_popover_anchor.lock_or_recover() = anchor;
+    // Sticky main-window visibility snapshot (issue #329): record it at the
+    // FIRST show of a pass only — `set_focusable_internal`'s activation guard
+    // reads this instead of a per-call snapshot, so rapid repeated presses
+    // can't observe a transiently-surfaced main window and disable the guard.
+    // Cleared in `hide_popover_internal`.
+    {
+        let mut was_visible = state.transform_main_was_visible.lock_or_recover();
+        if was_visible.is_none() {
+            *was_visible = Some(
+                app.get_webview_window("main")
+                    .map(|w| w.is_visible().unwrap_or(false))
+                    .unwrap_or(false),
+            );
+        }
+    }
     match app.get_webview_window("transform-review") {
         Some(window) => {
             let screen_frame = active_screen_visible_frame(app, state);
@@ -301,6 +316,12 @@ pub fn hide_transform_popover(app: tauri::AppHandle) -> Result<(), String> {
 
 /// Non-command core of `hide_transform_popover` (issue #312 PR-C2).
 pub(crate) fn hide_popover_internal(app: &tauri::AppHandle) -> Result<(), String> {
+    // The pass is over — drop the sticky main-visibility snapshot so the next
+    // pass re-records it (issue #329). Via `try_state` rather than a `state`
+    // parameter so the many existing call sites keep their signature.
+    if let Some(state) = app.try_state::<State>() {
+        *state.transform_main_was_visible.lock_or_recover() = None;
+    }
     match app.get_webview_window("transform-review") {
         Some(window) => window.hide().map_err(|e| e.to_string()),
         None => {
@@ -388,10 +409,23 @@ pub(crate) fn set_focusable_internal(app: &tauri::AppHandle, focusable: bool) ->
             apply_popover_window_treatment(&window, !focusable);
             if focusable {
                 let main_window = app.get_webview_window("main");
-                let main_was_hidden = main_window
-                    .as_ref()
-                    .map(|w| !w.is_visible().unwrap_or(true))
-                    .unwrap_or(false);
+                // Issue #329: use the sticky flow-start snapshot recorded by
+                // `show_popover_internal`, not a per-call one. Under rapid
+                // repeated presses, a per-call snapshot can be taken while a
+                // previous `set_focus` has transiently surfaced the main
+                // window — recording "visible" and disabling the re-hide
+                // guard, which leaks the main window onto the screen. Fall
+                // back to a per-call snapshot only if no show recorded one.
+                let main_was_hidden = app
+                    .try_state::<State>()
+                    .and_then(|s| *s.transform_main_was_visible.lock_or_recover())
+                    .map(|was_visible| !was_visible)
+                    .unwrap_or_else(|| {
+                        main_window
+                            .as_ref()
+                            .map(|w| !w.is_visible().unwrap_or(true))
+                            .unwrap_or(false)
+                    });
 
                 let _ = window.set_focus();
 

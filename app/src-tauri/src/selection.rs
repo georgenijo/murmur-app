@@ -208,6 +208,14 @@ fn classify_selection(text: &str) -> Result<(), SelectionError> {
 ///
 /// Checks Accessibility up front (fail fast with a distinct error) before
 /// dispatching to the main thread at all.
+///
+/// Clipboard fallback (issue #329): Chromium/Electron webviews (Brave, Chrome,
+/// Slack, …) often expose no `AXSelectedText` even with a live visible
+/// selection, so a clean AX `NoSelection` falls back to a simulated Cmd+C
+/// against a sentinel-primed clipboard (see `clipboard_fallback`). The
+/// fallback runs ONLY for `NoSelection` — by that point the secure-field
+/// checks have passed benignly. Every other error (`SecureField`,
+/// `AxUnavailable`, `AccessibilityDenied`) stays fail-closed with no fallback.
 pub async fn capture_selection(
     app_handle: &tauri::AppHandle,
 ) -> Result<TransformSnapshot, SelectionError> {
@@ -217,20 +225,177 @@ pub async fn capture_selection(
 
     #[cfg(target_os = "macos")]
     {
-        let (tx, rx) =
-            tokio::sync::oneshot::channel::<Result<TransformSnapshot, SelectionError>>();
+        type AxReply = (
+            Result<TransformSnapshot, SelectionError>,
+            Option<(i32, Option<String>)>,
+        );
+        let (tx, rx) = tokio::sync::oneshot::channel::<AxReply>();
         app_handle
             .run_on_main_thread(move || {
-                let _ = tx.send(native::capture_selection_native());
+                let _ = tx.send((
+                    native::capture_selection_native(),
+                    native::frontmost_pid_bundle(),
+                ));
             })
             .map_err(|_| SelectionError::AxUnavailable)?;
-        rx.await.unwrap_or(Err(SelectionError::AxUnavailable))
+        let (ax_result, frontmost) = rx
+            .await
+            .unwrap_or((Err(SelectionError::AxUnavailable), None));
+
+        match (ax_result, frontmost) {
+            // Clean "no AX selection" + a known frontmost app: try the
+            // clipboard fallback off the main thread (it sleeps while polling).
+            (Err(SelectionError::NoSelection), Some((pid, bundle_id))) => {
+                tokio::task::spawn_blocking(move || {
+                    clipboard_fallback::capture_via_clipboard(pid, bundle_id)
+                })
+                .await
+                .unwrap_or(Err(SelectionError::NoSelection))
+            }
+            (result, _) => result,
+        }
     }
 
     #[cfg(not(target_os = "macos"))]
     {
         let _ = app_handle;
         Err(SelectionError::AxUnavailable)
+    }
+}
+
+/// Clipboard-based selection capture, used ONLY when the AX path returned a
+/// clean `NoSelection` (issue #329) — i.e. the secure-field checks already
+/// passed benignly and the focused element simply doesn't expose
+/// `AXSelectedText` (Chromium/Electron webviews are the main case).
+///
+/// Strategy: snapshot the current clipboard text, overwrite it with a unique
+/// sentinel, post a synthetic Cmd+C, and poll until the clipboard no longer
+/// holds the sentinel (or a 300ms deadline passes — with nothing selected,
+/// Cmd+C is a no-op and the sentinel never changes). The user's original
+/// clipboard text is restored afterwards. Limitations, documented in the
+/// feature doc: a non-text clipboard (image/file) cannot be snapshotted by
+/// `arboard` and therefore cannot be restored, and the captured snapshot has
+/// no AX range/bounds (the popover centers; apply uses the paste fallback).
+#[cfg(target_os = "macos")]
+mod clipboard_fallback {
+    use super::{SelectionError, TransformSnapshot};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{Duration, Instant};
+
+    const POLL_INTERVAL: Duration = Duration::from_millis(20);
+    const POLL_DEADLINE: Duration = Duration::from_millis(300);
+
+    static CAPTURE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    /// Unique-per-attempt sentinel. Never derived from clipboard or selection
+    /// content — safe to compare, never logged with content around it.
+    fn sentinel() -> String {
+        format!(
+            "murmur-transform-capture-{}-{}",
+            std::process::id(),
+            CAPTURE_COUNTER.fetch_add(1, Ordering::Relaxed)
+        )
+    }
+
+    /// Post a synthetic Cmd+C, mirroring `injector`'s Cmd+V CGEvent shape
+    /// (down, 3ms hardware-like gap, up).
+    fn post_copy_keystroke() -> Result<(), String> {
+        use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation, KeyCode};
+        use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+
+        let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
+            .map_err(|_| "could not create CGEvent source".to_string())?;
+        let key_down = CGEvent::new_keyboard_event(source.clone(), KeyCode::ANSI_C, true)
+            .map_err(|_| "could not create Cmd+C key-down event".to_string())?;
+        let key_up = CGEvent::new_keyboard_event(source, KeyCode::ANSI_C, false)
+            .map_err(|_| "could not create Cmd+C key-up event".to_string())?;
+        key_down.set_flags(CGEventFlags::CGEventFlagCommand);
+        key_up.set_flags(CGEventFlags::CGEventFlagCommand);
+        key_down.post(CGEventTapLocation::HID);
+        std::thread::sleep(Duration::from_millis(3));
+        key_up.post(CGEventTapLocation::HID);
+        Ok(())
+    }
+
+    /// Poll `read` until it returns text that is not `sentinel`, up to
+    /// `deadline`. Injected reader so the loop is unit-testable without a real
+    /// clipboard.
+    pub(super) fn poll_for_selection<F>(
+        sentinel: &str,
+        mut read: F,
+        deadline: Duration,
+        interval: Duration,
+    ) -> Option<String>
+    where
+        F: FnMut() -> Result<String, String>,
+    {
+        let started = Instant::now();
+        loop {
+            if let Ok(text) = read() {
+                if text != sentinel {
+                    return Some(text);
+                }
+            }
+            if started.elapsed() >= deadline {
+                return None;
+            }
+            std::thread::sleep(interval);
+        }
+    }
+
+    pub(super) fn capture_via_clipboard(
+        pid: i32,
+        bundle_id: Option<String>,
+    ) -> Result<TransformSnapshot, SelectionError> {
+        let original = crate::injector::read_clipboard_text().ok();
+        let sentinel = sentinel();
+        if crate::injector::write_clipboard_text(&sentinel).is_err() {
+            return Err(SelectionError::NoSelection);
+        }
+
+        let copied = match post_copy_keystroke() {
+            Ok(()) => poll_for_selection(
+                &sentinel,
+                || crate::injector::read_clipboard_text(),
+                POLL_DEADLINE,
+                POLL_INTERVAL,
+            ),
+            Err(_) => None,
+        };
+
+        // Restore the user's clipboard. If the original was non-text (image/
+        // file) there is nothing to restore; on a failed capture at least
+        // clear our sentinel rather than leaving it behind.
+        match &original {
+            Some(text) => {
+                let _ = crate::injector::write_clipboard_text(text);
+            }
+            None => {
+                if copied.is_none() {
+                    let _ = crate::injector::write_clipboard_text("");
+                }
+            }
+        }
+
+        let text = copied.ok_or(SelectionError::NoSelection)?;
+        super::classify_selection(&text)?;
+        tracing::info!(
+            target: "transform",
+            outcome = "ok",
+            via = "clipboard_fallback",
+            length_bucket = super::length_bucket(text.len()),
+            "selection captured via clipboard fallback"
+        );
+        Ok(TransformSnapshot {
+            bundle_id,
+            pid,
+            text,
+            // No AX range/bounds from a clipboard capture: the popover
+            // centers (anchor None) and apply uses the paste fallback.
+            range: None,
+            bounds: None,
+            captured_at: Instant::now(),
+        })
     }
 }
 
@@ -477,6 +642,17 @@ mod native {
         decode_rect(CFGuard(value).0)
     }
 
+    /// Frontmost app's (pid, bundle id), read on the main thread alongside the
+    /// AX capture so the clipboard fallback (issue #329) can attribute its
+    /// snapshot without touching NSWorkspace off the main thread.
+    pub(super) fn frontmost_pid_bundle() -> Option<(i32, Option<String>)> {
+        let frontmost = NSWorkspace::sharedWorkspace().frontmostApplication()?;
+        Some((
+            frontmost.processIdentifier(),
+            frontmost.bundleIdentifier().map(|value| value.to_string()),
+        ))
+    }
+
     pub(super) fn capture_selection_native() -> Result<TransformSnapshot, SelectionError> {
         let frontmost = NSWorkspace::sharedWorkspace()
             .frontmostApplication()
@@ -652,6 +828,56 @@ mod tests {
         assert!(!debug.contains("secret"));
         assert!(debug.contains("17-64"));
         assert!(debug.contains("com.example.app"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn clipboard_poll_returns_first_non_sentinel_text() {
+        use std::time::Duration;
+        let reads = std::cell::RefCell::new(vec![
+            Ok("SENTINEL".to_string()),
+            Ok("SENTINEL".to_string()),
+            Ok("copied selection".to_string()),
+        ]);
+        let result = super::clipboard_fallback::poll_for_selection(
+            "SENTINEL",
+            || reads.borrow_mut().remove(0),
+            Duration::from_millis(500),
+            Duration::from_millis(1),
+        );
+        assert_eq!(result, Some("copied selection".to_string()));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn clipboard_poll_times_out_when_sentinel_never_changes() {
+        use std::time::Duration;
+        // Nothing selected: Cmd+C is a no-op, the sentinel never changes, and
+        // the poll must time out rather than return the sentinel as "text".
+        let result = super::clipboard_fallback::poll_for_selection(
+            "SENTINEL",
+            || Ok("SENTINEL".to_string()),
+            Duration::from_millis(20),
+            Duration::from_millis(1),
+        );
+        assert_eq!(result, None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn clipboard_poll_survives_transient_read_errors() {
+        use std::time::Duration;
+        let reads = std::cell::RefCell::new(vec![
+            Err("busy".to_string()),
+            Ok("copied".to_string()),
+        ]);
+        let result = super::clipboard_fallback::poll_for_selection(
+            "SENTINEL",
+            || reads.borrow_mut().remove(0),
+            Duration::from_millis(500),
+            Duration::from_millis(1),
+        );
+        assert_eq!(result, Some("copied".to_string()));
     }
 
     #[test]

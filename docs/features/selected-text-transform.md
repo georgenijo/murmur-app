@@ -62,6 +62,10 @@ preset name or alias.
 | Best-effort (paste fallback) | Many browsers, Slack, Electron shells | Capture often works; apply may paste-replace; clipboard is saved/restored with an epoch guard |
 | Documented limitation | Cursor chat / other webview editors | Best-effort only — webview accessibility is incomplete. Not a blocker for #312; file follow-ups rather than scope-creeping AX work |
 
+### Clipboard capture fallback (#329)
+
+Chromium/Electron webviews (Brave, Chrome, Slack, …) often expose no `AXSelectedText` even with a live visible selection. When the AX capture returns a **clean `NoSelection`** — meaning the secure-field checks already passed benignly — capture falls back to: snapshot clipboard text → overwrite with a unique sentinel → synthetic Cmd+C → poll until the clipboard is no longer the sentinel (300ms deadline; with nothing selected Cmd+C is a no-op and the fallback times out) → restore the user's clipboard. The fallback never runs for `SecureField`, `AxUnavailable`, or `AccessibilityDenied` (fail closed). Limitations: a non-text clipboard (image/file) cannot be snapshotted by `arboard` and is not restored; the snapshot has no AX range/bounds, so the popover centers and apply uses the paste fallback. Logging stays content-free (`via="clipboard_fallback"` + length bucket only).
+
 ## Failure semantics
 
 - Any sidecar crash, timeout, protocol violation, model mismatch, or malformed output → popover **failed**, original selection **untouched**, dictation unaffected once busy clears.

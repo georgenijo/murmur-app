@@ -59,6 +59,7 @@ export function OverlayWidget() {
     runtime.disabled,
     transforming,
     runtime.showSecureField,
+    runtime.showTransformBusy,
   );
 
   // Track the transform flow's thinking phase for the overlay indicator.

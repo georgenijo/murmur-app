@@ -12,6 +12,8 @@ import {
 const CANCELLED_FLASH_MS = 800;
 /** How long the secure-field refusal flash shows (issue #312 PR-C2). */
 const SECURE_FIELD_FLASH_MS = 800;
+/** How long the transform-busy refusal flash shows (issue #329). */
+const TRANSFORM_BUSY_FLASH_MS = 800;
 
 export interface UseOverlayRuntimeArgs {
   /** Current dictation status (reactive value, not just a ref). */
@@ -37,6 +39,12 @@ export interface OverlayRuntime {
   showHotkeyMiss: boolean;
   /** Brief flash when a secure/password field was refused (issue #312). */
   showSecureField: boolean;
+  /**
+   * Brief flash when a transform keypress was refused because dictation /
+   * benchmark / file transcription / a mid-flight transform owns the pipeline
+   * (issue #329).
+   */
+  showTransformBusy: boolean;
   disabled: boolean;
   setDisabled: (value: boolean) => void;
   /** Ref mirror of `disabled`, read synchronously by useRecordingControls. */
@@ -63,6 +71,7 @@ export function useOverlayRuntime({
 }: UseOverlayRuntimeArgs): OverlayRuntime {
   const [showCancelled, setShowCancelled] = useState(false);
   const [showSecureField, setShowSecureField] = useState(false);
+  const [showTransformBusy, setShowTransformBusy] = useState(false);
   const disabledRef = useRef(disabled);
   const hotkeyMissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -161,6 +170,29 @@ export function useOverlayRuntime({
     };
   }, []);
 
+  // Brief flash when a transform keypress was refused because something else
+  // owns the pipeline (issue #329). Mirrors the secure-field flash mechanism.
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    listen('transform-busy', () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      setShowTransformBusy(true);
+      timeoutId = setTimeout(() => {
+        if (!cancelled) setShowTransformBusy(false);
+        timeoutId = null;
+      }, TRANSFORM_BUSY_FLASH_MS);
+    }).then((fn) => {
+      if (cancelled) { fn(); } else { unlisten = fn; }
+    });
+    return () => {
+      cancelled = true;
+      if (timeoutId) clearTimeout(timeoutId);
+      unlisten?.();
+    };
+  }, []);
+
   // Subscribe to app-disabled-changed events from Rust
   useEffect(() => {
     let cancelled = false;
@@ -174,5 +206,5 @@ export function useOverlayRuntime({
     return () => { cancelled = true; unlisten?.(); };
   }, [setDisabled]);
 
-  return { showCancelled, showSecureField, showHotkeyMiss, disabled, setDisabled, disabledRef };
+  return { showCancelled, showSecureField, showTransformBusy, showHotkeyMiss, disabled, setDisabled, disabledRef };
 }

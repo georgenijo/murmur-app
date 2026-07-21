@@ -829,6 +829,13 @@ pub(crate) async fn start_transform_capture(
         }
     };
     if !claimed {
+        // The press was refused because dictation / a benchmark / a file
+        // transcription / a mid-flight transform owns the pipeline. Silently
+        // eating the keypress reads as "the app is broken" (issue #329) —
+        // flash the overlay instead. Content-free payload, like
+        // `transform-secure-field`.
+        use tauri::Emitter;
+        let _ = app_handle.emit("transform-busy", ());
         return Ok(());
     }
 
