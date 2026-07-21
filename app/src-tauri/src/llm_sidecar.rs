@@ -617,6 +617,14 @@ mod supported {
             self.busy.load(Ordering::Acquire)
         }
 
+        /// True once the circuit breaker has latched disabled after repeated
+        /// faults (cleared only by `reset`). Surfaced in the model status so the
+        /// settings UI can show the Reset button + notice only when it matters
+        /// (#312 D1 round-2 finding 7).
+        pub fn runtime_disabled(&self) -> bool {
+            self.lock().breaker.disabled
+        }
+
         /// Request cooperative cancel of the in-flight transform (if any).
         ///
         /// The blocking `run_request` loop observes this flag, sends a protocol
@@ -1365,6 +1373,10 @@ impl LlmSidecar {
 
     pub fn is_transform_busy(&self) -> bool {
         self.busy.load(Ordering::Acquire)
+    }
+
+    pub fn runtime_disabled(&self) -> bool {
+        false
     }
 
     pub fn cancel_inflight_request(&self) {

@@ -799,7 +799,7 @@ pub(crate) async fn start_transform_capture(
         return Ok(());
     }
 
-    let model_ready = crate::commands::transform_model::transform_model_status().state
+    let model_ready = crate::commands::transform_model::transform_model_state()
         == crate::commands::transform_model::TransformModelState::Ready;
 
     let fx = TauriFlowEffects {

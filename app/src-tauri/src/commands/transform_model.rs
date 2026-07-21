@@ -38,6 +38,10 @@ pub struct TransformModelStatus {
     pub path: Option<String>,
     pub size_bytes: u64,
     pub sha256: &'static str,
+    /// True once the sidecar circuit breaker has latched disabled after repeated
+    /// faults. The settings UI shows the Reset button + notice only when this is
+    /// set (#312 D1 round-2 finding 7).
+    pub runtime_disabled: bool,
 }
 
 /// A published model of exactly the pinned size is considered ready. The full
@@ -52,10 +56,22 @@ fn model_is_ready() -> Option<std::path::PathBuf> {
     }
 }
 
+/// Resolve the download lifecycle state without needing app state. Shared by
+/// the command wrapper and internal callers (e.g. `transform_flow`).
+pub(crate) fn transform_model_state() -> TransformModelState {
+    if model_is_ready().is_some() {
+        TransformModelState::Ready
+    } else if DOWNLOADING.load(Ordering::Acquire) {
+        TransformModelState::Downloading
+    } else {
+        TransformModelState::NotDownloaded
+    }
+}
+
 #[tauri::command]
-pub fn transform_model_status() -> TransformModelStatus {
+pub fn transform_model_status(state: tauri::State<'_, State>) -> TransformModelStatus {
     let ready = model_is_ready();
-    let state = if ready.is_some() {
+    let model_state = if ready.is_some() {
         TransformModelState::Ready
     } else if DOWNLOADING.load(Ordering::Acquire) {
         TransformModelState::Downloading
@@ -63,10 +79,11 @@ pub fn transform_model_status() -> TransformModelStatus {
         TransformModelState::NotDownloaded
     };
     TransformModelStatus {
-        state,
+        state: model_state,
         path: ready.map(|p| p.to_string_lossy().into_owned()),
         size_bytes: TRANSFORM_MODEL_SIZE_BYTES,
         sha256: TRANSFORM_MODEL_SHA256,
+        runtime_disabled: state.transform_runtime.runtime_disabled(),
     }
 }
 
@@ -250,10 +267,19 @@ mod tests {
 
     #[test]
     fn status_shape_carries_only_bounded_metadata() {
-        let status = transform_model_status();
+        // Build the status directly (the command needs app state); the point of
+        // this test is the serialized shape, not the live runtime.
+        let status = TransformModelStatus {
+            state: transform_model_state(),
+            path: None,
+            size_bytes: TRANSFORM_MODEL_SIZE_BYTES,
+            sha256: TRANSFORM_MODEL_SHA256,
+            runtime_disabled: false,
+        };
         let json = serde_json::to_string(&status).unwrap();
         assert!(json.contains("sha256"));
         assert!(json.contains("sizeBytes"));
+        assert!(json.contains("runtimeDisabled"));
         // No URL, revision, or free-form text leaks into the status payload.
         assert!(!json.contains("huggingface"));
     }
