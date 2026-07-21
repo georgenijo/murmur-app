@@ -290,6 +290,9 @@ export function SettingsPanel({
   const [transformModel, setTransformModel] = useState<TransformModelStatus | null>(null);
   const [transformModelBusy, setTransformModelBusy] = useState(false);
   const [transformModelError, setTransformModelError] = useState<string | null>(null);
+  // Shortcut-picker failures get their own error line, separate from the model
+  // block's error slot (#312 D1 round-2 finding 8).
+  const [transformKeyError, setTransformKeyError] = useState<string | null>(null);
   const [transformDownloadPct, setTransformDownloadPct] = useState<number | null>(null);
 
   const refreshTransformModel = useCallback(async () => {
@@ -308,12 +311,10 @@ export function SettingsPanel({
   useEffect(() => {
     if (!isOpen) return;
     let unlisten: (() => void) | null = null;
-    listen<{ downloadedBytes?: number; totalBytes?: number; received?: number; total?: number }>(
+    listen<{ received?: number; total?: number }>(
       'transform-model-download-progress',
       (event) => {
-        const p = event.payload;
-        const received = p.downloadedBytes ?? p.received ?? 0;
-        const total = p.totalBytes ?? p.total ?? 0;
+        const { received = 0, total = 0 } = event.payload;
         if (total > 0) setTransformDownloadPct(Math.min(100, Math.round((received / total) * 100)));
         else setTransformDownloadPct(null);
       },
@@ -328,6 +329,7 @@ export function SettingsPanel({
   }, [isOpen]);
 
   const updateTransformHoldKey = async (next: TransformKey | null) => {
+    setTransformKeyError(null);
     try {
       if (next === null) {
         await stopTransformListener();
@@ -338,7 +340,7 @@ export function SettingsPanel({
       await startTransformListener(next);
       onUpdateSettings({ transformHoldKey: next });
     } catch (e) {
-      setTransformModelError(String(e));
+      setTransformKeyError(String(e));
     }
   };
 
@@ -511,6 +513,9 @@ export function SettingsPanel({
                 <p className="text-xs text-on-surface-variant">
                   Dictation hold keys are rejected. Right Option / Left Control / Right Shift only.
                 </p>
+                {transformKeyError && (
+                  <p className="text-xs text-error">{transformKeyError}</p>
+                )}
                 {accessibilityGranted === false && (
                   <div className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
                     <span>Accessibility permission is required for transform capture and apply.</span>
@@ -556,11 +561,11 @@ export function SettingsPanel({
                 {transformModel?.state !== 'ready' && (
                   <button
                     type="button"
-                    disabled={transformModelBusy}
+                    disabled={transformModelBusy || transformModel?.state === 'downloading'}
                     onClick={() => void downloadTransform()}
                     className="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-on-primary disabled:opacity-50"
                   >
-                    {transformModelBusy ? 'Working…' : 'Download'}
+                    {transformModelBusy || transformModel?.state === 'downloading' ? 'Working…' : 'Download'}
                   </button>
                 )}
                 {transformModel?.state === 'ready' && (
@@ -573,16 +578,23 @@ export function SettingsPanel({
                     Remove
                   </button>
                 )}
-                <button
-                  type="button"
-                  disabled={transformModelBusy}
-                  onClick={() => void resetTransform()}
-                  className="rounded-lg border border-outline-variant/30 px-3 py-1.5 text-xs font-medium text-on-surface-variant disabled:opacity-50"
-                  title="Clear the circuit breaker if the transform runtime was disabled after repeated faults"
-                >
-                  Reset runtime
-                </button>
+                {transformModel?.runtimeDisabled && (
+                  <button
+                    type="button"
+                    disabled={transformModelBusy}
+                    onClick={() => void resetTransform()}
+                    className="rounded-lg border border-outline-variant/30 px-3 py-1.5 text-xs font-medium text-on-surface-variant disabled:opacity-50"
+                    title="Clear the circuit breaker if the transform runtime was disabled after repeated faults"
+                  >
+                    Reset runtime
+                  </button>
+                )}
               </div>
+              {transformModel?.runtimeDisabled && (
+                <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">
+                  The transform runtime was disabled after repeated faults. Reset it to try again.
+                </p>
+              )}
             </div>
             <div className="border-t border-outline-variant/20 pt-4">
               <h2 className="mb-1 text-sm font-medium text-on-surface">Saved transforms</h2>

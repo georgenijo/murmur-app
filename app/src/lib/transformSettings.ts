@@ -9,11 +9,17 @@ export interface TransformModelStatus {
   path: string | null;
   sizeBytes: number;
   sha256: string;
+  /** True when the sidecar circuit breaker has disabled the runtime after
+   *  repeated faults; the Reset button + notice are only shown then (#312 D1
+   *  round-2 finding 7). */
+  runtimeDisabled: boolean;
 }
 
+/** Matches the Rust `transform-model-download-progress` event payload
+ *  (`{ received, total, phase }` in `commands/transform_model.rs`). */
 export interface TransformModelDownloadProgress {
-  downloadedBytes: number;
-  totalBytes: number;
+  received: number;
+  total: number;
 }
 
 export async function transformModelStatus(): Promise<TransformModelStatus> {
