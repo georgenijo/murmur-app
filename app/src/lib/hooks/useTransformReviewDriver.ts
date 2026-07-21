@@ -6,6 +6,7 @@ import {
   EMPTY_REVIEW_CONTENT,
   isTransformReviewContent,
   isTransformStateChangedEvent,
+  normalizeReviewErrorCode,
 } from '../transformReview';
 import type { ReviewErrorCode, ReviewState, TransformReviewContent } from '../transformReview';
 
@@ -55,7 +56,7 @@ export function useTransformReviewDriver(enabled: boolean): ReviewDriverResult {
         return;
       }
       setState(event.payload.state);
-      setErrorCode(event.payload.errorCode ?? null);
+      setErrorCode(normalizeReviewErrorCode(event.payload.errorCode));
 
       invoke<unknown>('get_transform_review_content')
         .then((value) => {
@@ -71,10 +72,14 @@ export function useTransformReviewDriver(enabled: boolean): ReviewDriverResult {
             flog.warn('transform-review', 'get_transform_review_content failed', { error: String(e) });
           }
         });
-    }).then((fn) => {
-      if (cancelled) fn();
-      else unlisten = fn;
-    });
+    })
+      .then((fn) => {
+        if (cancelled) fn();
+        else unlisten = fn;
+      })
+      .catch((e) => {
+        flog.error('transform-review', 'listen(transform-state-changed) failed', { error: String(e) });
+      });
 
     return () => {
       cancelled = true;

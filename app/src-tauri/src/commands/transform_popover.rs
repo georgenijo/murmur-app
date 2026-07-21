@@ -52,6 +52,13 @@ pub struct TransformPopoverGeometry {
 
 // Private geometry constants — the ONLY place these magic numbers live, same
 // discipline as `overlay::geometry_for`'s WING/DROPDOWN_H constants.
+//
+// `tauri.conf.json`'s `transform-review` window also declares an initial
+// 320x76 (matching COMPACT_W/COMPACT_H) so the window doesn't flash at some
+// other size before `apply_initial_compact_size` below runs in `setup()` —
+// if these constants ever change, update that literal too (or, cheaper,
+// just confirm `apply_initial_compact_size` is still wired into `setup()`,
+// since that call is the actual source of truth at runtime).
 const COMPACT_W: f64 = 320.0;
 const COMPACT_H: f64 = 76.0;
 const EXPANDED_W: f64 = 420.0;
@@ -128,15 +135,47 @@ const FALLBACK_SCREEN_W: f64 = 1440.0;
 const FALLBACK_SCREEN_H: f64 = 900.0;
 const FALLBACK_MENU_BAR_H: f64 = 25.0;
 
+/// Pure conversion from one monitor's physical geometry to the logical,
+/// top-left-origin `Rect` the rest of this file works in.
+///
+/// `position`/`size` are in *physical* pixels and relative to the full
+/// multi-display virtual screen space (which can be negative, e.g. a display
+/// placed to the left of/above the primary one) — both must be divided by
+/// the monitor's own `scale_factor` to land in the same logical coordinate
+/// space `Rect`/`LogicalPosition` use everywhere else here. The menu bar /
+/// notch band is only ever reserved on the *primary* display, so `menu_bar_h`
+/// is subtracted only when `is_primary_monitor` is true — never
+/// unconditionally to whichever monitor the window happens to currently be
+/// on (which would misplace/misclip the popover on secondary displays, and
+/// make negative-coordinate displays unreachable since `x`/`y` were
+/// previously hardcoded to originate at 0).
+fn visible_frame_for_monitor(
+    position: (f64, f64),
+    size: (f64, f64),
+    scale_factor: f64,
+    is_primary_monitor: bool,
+    menu_bar_h: f64,
+) -> Rect {
+    let x = position.0 / scale_factor;
+    let y = position.1 / scale_factor;
+    let width = size.0 / scale_factor;
+    let height = size.1 / scale_factor;
+    let inset = if is_primary_monitor { menu_bar_h } else { 0.0 };
+    Rect { x, y: y + inset, width, height: (height - inset).max(0.0) }
+}
+
 /// The active screen's visible frame (excluding the cached menu bar / notch
-/// height), in the same top-left-origin logical coordinates as `Rect`.
+/// height, applied only when that screen is the primary one), in the same
+/// top-left-origin logical coordinates as `Rect`.
 ///
 /// Reuses `State.notch_info` (cached on the main thread at setup) for the
 /// menu bar height instead of calling NSScreen directly here, since Tauri
-/// commands are not guaranteed to run on the main thread. Screen width/height
-/// come from the transform-review (or overlay) window's current monitor,
+/// commands are not guaranteed to run on the main thread. Screen geometry
+/// comes from the transform-review (or overlay) window's current monitor,
 /// following the existing precedent in `overlay::show_overlay` of querying
-/// `current_monitor()` from within a command handler.
+/// `current_monitor()` from within a command handler. "Primary" is decided
+/// by comparing physical positions against `AppHandle::primary_monitor()`
+/// (`Monitor` has no `PartialEq`/id to compare directly).
 fn active_screen_visible_frame(app: &tauri::AppHandle, state: &State) -> Rect {
     let menu_bar_h = state
         .notch_info
@@ -151,11 +190,20 @@ fn active_screen_visible_frame(app: &tauri::AppHandle, state: &State) -> Rect {
 
     match monitor {
         Some(monitor) => {
-            let size = monitor.size();
-            let sf = monitor.scale_factor();
-            let width = size.width as f64 / sf;
-            let height = (size.height as f64 / sf - menu_bar_h).max(0.0);
-            Rect { x: 0.0, y: menu_bar_h, width, height }
+            let is_primary = app
+                .primary_monitor()
+                .ok()
+                .flatten()
+                .map(|primary| primary.position() == monitor.position())
+                .unwrap_or(false);
+
+            visible_frame_for_monitor(
+                (monitor.position().x as f64, monitor.position().y as f64),
+                (monitor.size().width as f64, monitor.size().height as f64),
+                monitor.scale_factor(),
+                is_primary,
+                menu_bar_h,
+            )
         }
         None => Rect {
             x: 0.0,
@@ -247,45 +295,72 @@ pub fn hide_transform_popover(app: tauri::AppHandle) -> Result<(), String> {
 /// `show_transform_popover` call. Not part of the PR-C1 issue's literal
 /// command list — added so Rust stays the sole author of every popover pixel
 /// across state transitions too, not just on initial show. Mirrors
-/// `overlay::set_overlay_expanded`'s shape; PR-C2's real state machine is
-/// expected to call this alongside emitting `transform-state-changed`.
+/// `overlay::set_overlay_expanded`'s shape (returning the applied box as an
+/// acknowledgment): PR-C2's real state machine is expected to call this
+/// alongside emitting `transform-state-changed`, and can gate its CSS reveal
+/// on the resolved frame the same way `useOverlayExpansion` awaits
+/// `AppliedSurface` before revealing the dropdown.
 #[tauri::command]
 pub fn set_transform_popover_expanded(
     app: tauri::AppHandle,
     state: tauri::State<'_, State>,
     expanded: bool,
-) -> Result<(), String> {
+) -> Result<PopoverBox, String> {
     let anchor = *state.transform_popover_anchor.lock_or_recover();
+    let screen_frame = active_screen_visible_frame(&app, &state);
+    let geometry = popover_geometry_for(anchor, screen_frame);
+    let target = if expanded { geometry.expanded } else { geometry.compact };
+
     match app.get_webview_window("transform-review") {
         Some(window) => {
-            let screen_frame = active_screen_visible_frame(&app, &state);
-            let geometry = popover_geometry_for(anchor, screen_frame);
-            let target = if expanded { geometry.expanded } else { geometry.compact };
             window
                 .set_size(tauri::LogicalSize::new(target.width, target.height))
                 .map_err(|e| e.to_string())?;
             window
                 .set_position(tauri::LogicalPosition::new(target.x, target.y))
                 .map_err(|e| e.to_string())?;
-            Ok(())
         }
         None => {
             tracing::warn!(target: "system", "set_transform_popover_expanded: transform-review window not found — skipping");
-            Ok(())
         }
     }
+    Ok(target)
 }
 
 /// Toggle whether the popover can take key focus. `false` during
 /// listening/thinking (never steal focus from the source app mid-instruction);
 /// `true` at ready/failed, when Enter/Esc/Cmd+R need to reach the webview.
+///
+/// `set_focus()` activates the app, and activating the app can unhide/raise
+/// the main window even though it is a distinct NSWindow from the popover —
+/// the same documented hazard as `overlay::raise_window_above_menubar`'s note
+/// ("prevents clicking the overlay from activating the app (which would
+/// unhide the main window)"). Guard against it here too: snapshot the main
+/// window's visibility before focusing, and if activation surfaced it,
+/// re-hide it immediately after — the popover still gets key focus, the main
+/// window never gets a chance to visibly flash on screen.
 #[tauri::command]
 pub fn set_transform_popover_focusable(app: tauri::AppHandle, focusable: bool) -> Result<(), String> {
     match app.get_webview_window("transform-review") {
         Some(window) => {
             apply_popover_window_treatment(&window, !focusable);
             if focusable {
+                let main_window = app.get_webview_window("main");
+                let main_was_hidden = main_window
+                    .as_ref()
+                    .map(|w| !w.is_visible().unwrap_or(true))
+                    .unwrap_or(false);
+
                 let _ = window.set_focus();
+
+                if main_was_hidden {
+                    if let Some(main) = main_window {
+                        if main.is_visible().unwrap_or(false) {
+                            tracing::info!(target: "system", "set_transform_popover_focusable: focusing activated the app and surfaced the main window — re-hiding");
+                            let _ = main.hide();
+                        }
+                    }
+                }
             }
             Ok(())
         }
@@ -312,6 +387,25 @@ pub struct TransformReviewContent {
 #[tauri::command]
 pub fn get_transform_review_content() -> TransformReviewContent {
     TransformReviewContent::default()
+}
+
+/// Overwrite the transform-review window's size from `COMPACT_W`/`COMPACT_H`
+/// at startup, called once from `setup()`. Makes Rust the actual source of
+/// truth for the window's initial size at runtime rather than relying on
+/// `tauri.conf.json`'s literal (320x76) staying manually in sync with these
+/// constants — that literal only needs to be *close enough* to avoid a
+/// visible flash before this runs.
+pub(crate) fn apply_initial_compact_size(app: &tauri::AppHandle) {
+    match app.get_webview_window("transform-review") {
+        Some(window) => {
+            if let Err(e) = window.set_size(tauri::LogicalSize::new(COMPACT_W, COMPACT_H)) {
+                tracing::warn!(target: "system", "apply_initial_compact_size: set_size failed: {}", e);
+            }
+        }
+        None => {
+            tracing::warn!(target: "system", "apply_initial_compact_size: transform-review window not found — skipping");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -411,6 +505,8 @@ mod tests {
             clamped_right: Case,
             #[serde(rename = "centeredFallback")]
             centered_fallback: Case,
+            #[serde(rename = "nonPrimaryDisplay")]
+            non_primary_display: Case,
         }
         let f: Fixture = serde_json::from_str(include_str!(
             "../../../src/components/transform-review/transform-popover-geometry.fixture.json"
@@ -423,12 +519,50 @@ mod tests {
             f.clamped_left,
             f.clamped_right,
             f.centered_fallback,
+            f.non_primary_display,
         ] {
             assert_eq!(
                 popover_geometry_for(case.selection_bounds, case.screen_frame),
                 case.output
             );
         }
+    }
+
+    // --- active_screen_visible_frame's pure core ---------------------------
+    //
+    // `visible_frame_for_monitor` is the pure conversion at the heart of
+    // `active_screen_visible_frame`: physical monitor position/size -> logical
+    // `Rect`, with the menu-bar/notch inset applied only for the primary
+    // monitor. These cases cover the exact regression this fixes: a monitor
+    // placed at a negative or non-zero x offset (secondary display to the
+    // left/right of the primary one).
+
+    #[test]
+    fn visible_frame_applies_inset_only_on_primary_monitor() {
+        let primary = visible_frame_for_monitor((0.0, 0.0), (2880.0, 1800.0), 2.0, true, 25.0);
+        assert_eq!(primary, Rect { x: 0.0, y: 25.0, width: 1440.0, height: 875.0 });
+
+        // Secondary display to the left of the primary one, at physical
+        // x=-1920 (a common real-world negative-coordinate arrangement).
+        // Logical scale factor 1.0 (non-Retina secondary), no menu bar.
+        let secondary_left =
+            visible_frame_for_monitor((-1920.0, 0.0), (1920.0, 1080.0), 1.0, false, 25.0);
+        assert_eq!(
+            secondary_left,
+            Rect { x: -1920.0, y: 0.0, width: 1920.0, height: 1080.0 }
+        );
+    }
+
+    #[test]
+    fn visible_frame_converts_physical_position_and_size_by_scale_factor() {
+        // Secondary display to the right of the primary one, at physical
+        // x=2560 with a 2x scale factor — logical x must be 1280, not 2560.
+        let secondary_right =
+            visible_frame_for_monitor((2560.0, 0.0), (3840.0, 2160.0), 2.0, false, 25.0);
+        assert_eq!(
+            secondary_right,
+            Rect { x: 1280.0, y: 0.0, width: 1920.0, height: 1080.0 }
+        );
     }
 
     #[test]

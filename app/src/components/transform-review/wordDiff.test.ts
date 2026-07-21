@@ -63,6 +63,35 @@ describe('computeWordDiff', () => {
     expect(reconstructedOriginal).toBe(original);
     expect(reconstructedProposed).toBe(proposed);
   });
+
+  it('degrades to a single removed-run + single added-run beyond the token cap, and stays fast', () => {
+    const original = Array.from({ length: 10_000 }, (_, i) => `orig${i}`).join(' ');
+    const proposed = Array.from({ length: 10_000 }, (_, i) => `new${i}`).join(' ');
+
+    const start = performance.now();
+    const diff = computeWordDiff(original, proposed);
+    const elapsedMs = performance.now() - start;
+
+    // Degraded shape: exactly one removed token (the whole original) and one
+    // added token (the whole proposed) — no per-word LCS attempted.
+    expect(diff).toEqual([
+      { kind: 'removed', text: original },
+      { kind: 'added', text: proposed },
+    ]);
+    // A real O(n*m) LCS over 10k x 10k tokens would take seconds; the
+    // degraded path must stay well under that.
+    expect(elapsedMs).toBeLessThan(500);
+  });
+
+  it('still uses the real LCS diff comfortably under the cap', () => {
+    // tokenize() keeps whitespace as its own tokens, so 999 words is
+    // 999 + 998 separators = 1997 tokens/side — under the 2000 cap.
+    const words = Array.from({ length: 999 }, (_, i) => `word${i}`);
+    const original = words.join(' ');
+    const proposed = words.join(' ');
+    const diff = computeWordDiff(original, proposed);
+    expect(diff.every((t) => t.kind === 'same')).toBe(true);
+  });
 });
 
 describe('pickDiffLayout', () => {

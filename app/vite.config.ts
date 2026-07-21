@@ -27,6 +27,7 @@ export default defineConfig(async () => ({
         main: resolve(__dirname, "index.html"),
         overlay: resolve(__dirname, "overlay.html"),
         "log-viewer": resolve(__dirname, "log-viewer.html"),
+        "transform-review": resolve(__dirname, "transform-review.html"),
       },
     },
   },

@@ -4,6 +4,8 @@ import { useTransformReviewDriver } from '../../lib/hooks/useTransformReviewDriv
 import { isMockReviewEnabled, useMockReviewDriver } from '../../lib/hooks/useTransformReviewMockDriver';
 import {
   REVIEW_APPROVE_PULSE_MS,
+  REVIEW_APPROVE_PULSE_SCALE,
+  REVIEW_APPROVE_PULSE_TRANSITION,
   REVIEW_DISMISS_MS,
   REVIEW_DISMISS_TRANSITION,
   REVIEW_ENTRANCE_FROM_SCALE,
@@ -71,7 +73,17 @@ export function TransformReviewApp() {
     }, REVIEW_DISMISS_MS);
   }, []);
 
-  const handleCancel = useCallback(() => dismissThen(driver.cancel), [dismissThen, driver]);
+  // Destructure the stable callbacks out of `driver` for the dep arrays below
+  // rather than depending on `driver` itself: both drivers return a fresh
+  // object literal every render, so depending on the whole object would make
+  // `handleCancel`/`handleApprove`/`handleRetry` (and, transitively, the
+  // keydown effect below) re-created and re-subscribed on every render even
+  // though `cancel`/`approve`/`retry` are themselves referentially stable
+  // (`useCallback(..., [])` in both `useTransformReviewDriver` and
+  // `useTransformReviewMockDriver`).
+  const { cancel, approve, retry } = driver;
+
+  const handleCancel = useCallback(() => dismissThen(cancel), [dismissThen, cancel]);
 
   const handleApprove = useCallback(() => {
     if (!vm.approveEnabled) return;
@@ -79,13 +91,13 @@ export function TransformReviewApp() {
       setPulsing(true);
       window.setTimeout(() => setPulsing(false), REVIEW_APPROVE_PULSE_MS);
     }
-    driver.approve();
-  }, [driver, vm.approveEnabled]);
+    approve();
+  }, [approve, vm.approveEnabled]);
 
   const handleRetry = useCallback(() => {
     if (!vm.retryEnabled) return;
-    driver.retry();
-  }, [driver, vm.retryEnabled]);
+    retry();
+  }, [retry, vm.retryEnabled]);
 
   // --- Keyboard: Enter=approve, Esc=cancel, Cmd+R=retry — ready/failed only. ---
   useEffect(() => {
@@ -115,10 +127,22 @@ export function TransformReviewApp() {
   const scale = dismissing
     ? REVIEW_DISMISS_TO_SCALE
     : pulsing
-      ? 1.01
+      ? REVIEW_APPROVE_PULSE_SCALE
       : mounted
         ? 1
         : REVIEW_ENTRANCE_FROM_SCALE;
+
+  // Exactly one transition string per render — never concatenate these (see
+  // `REVIEW_APPROVE_PULSE_TRANSITION`'s note): CSS keeps only the LAST
+  // `transform`/`opacity` term when a property is declared twice in one
+  // `transition` value, so composing e.g. the entrance transition together
+  // with the pulse transition silently made every `transform` run at the
+  // pulse's 90ms instead of the entrance's 160ms.
+  const transition = dismissing
+    ? REVIEW_DISMISS_TRANSITION
+    : pulsing
+      ? REVIEW_APPROVE_PULSE_TRANSITION
+      : REVIEW_ENTRANCE_TRANSITION;
 
   return (
     <div
@@ -131,9 +155,7 @@ export function TransformReviewApp() {
         boxShadow: '0 8px 32px rgba(0,0,0,0.35)',
         opacity: dismissing ? 0 : mounted ? 1 : 0,
         transform: `scale(${scale})`,
-        transition: dismissing
-          ? REVIEW_DISMISS_TRANSITION
-          : `${REVIEW_ENTRANCE_TRANSITION}, transform ${REVIEW_APPROVE_PULSE_MS}ms ease-out`,
+        transition,
       }}
     >
       <ReviewChip vm={vm} />

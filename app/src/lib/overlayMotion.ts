@@ -57,6 +57,8 @@ export const REVIEW_DISMISS_TO_SCALE = 0.98;
 
 /** Short commit pulse on the diff area when Approve is pressed. */
 export const REVIEW_APPROVE_PULSE_MS = 90;
+/** Peak scale of the approve pulse (a barely-there "commit" nudge). */
+export const REVIEW_APPROVE_PULSE_SCALE = 1.01;
 
 /** How long the transient "applied" state stays up before auto-dismissing. */
 export const REVIEW_APPLIED_AUTO_DISMISS_MS = 4000;
@@ -75,3 +77,14 @@ export const REVIEW_ENTRANCE_TRANSITION =
   `transform ${REVIEW_ENTRANCE_MS}ms ${REVIEW_ENTRANCE_EASE}, opacity ${REVIEW_ENTRANCE_MS}ms ${REVIEW_ENTRANCE_EASE}`;
 export const REVIEW_DISMISS_TRANSITION =
   `transform ${REVIEW_DISMISS_MS}ms ${REVIEW_DISMISS_EASE}, opacity ${REVIEW_DISMISS_MS}ms ${REVIEW_DISMISS_EASE}`;
+/**
+ * Approve pulse: `transform`-only (no `opacity` term) so composing it
+ * alongside `REVIEW_ENTRANCE_TRANSITION`/`REVIEW_DISMISS_TRANSITION` never
+ * needs to redeclare the same property twice — CSS's "last transition for a
+ * given property wins" rule previously made the entrance's 160ms `transform`
+ * silently lose to this pulse's 90ms whenever both were listed together.
+ * Callers pick ONE of these three transition strings per render, never
+ * concatenate them.
+ */
+export const REVIEW_APPROVE_PULSE_TRANSITION =
+  `transform ${REVIEW_APPROVE_PULSE_MS}ms ${REVIEW_ENTRANCE_EASE}`;

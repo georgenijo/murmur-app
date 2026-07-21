@@ -21,6 +21,7 @@ const cases: Array<[string, Case]> = [
   ['clampedLeft', fixture.clampedLeft as Case],
   ['clampedRight', fixture.clampedRight as Case],
   ['centeredFallback', fixture.centeredFallback as Case],
+  ['nonPrimaryDisplay', fixture.nonPrimaryDisplay as Case],
 ];
 
 /**
@@ -83,6 +84,32 @@ describe('transform popover geometry contract fixture', () => {
     expect(fixture.centeredFallback.output).toEqual({
       compact: { x: 560, y: 319.5, width: 320, height: 76, flipped: false },
       expanded: { x: 510, y: 247.5, width: 420, height: 220, flipped: false },
+    });
+  });
+
+  it('locks the clamped-left case values', () => {
+    expect(fixture.clampedLeft.output).toEqual({
+      compact: { x: 0, y: 328, width: 320, height: 76, flipped: false },
+      expanded: { x: 0, y: 328, width: 420, height: 220, flipped: false },
+    });
+  });
+
+  it('locks the clamped-right case values', () => {
+    expect(fixture.clampedRight.output).toEqual({
+      compact: { x: 1120, y: 328, width: 320, height: 76, flipped: false },
+      expanded: { x: 1020, y: 328, width: 420, height: 220, flipped: false },
+    });
+  });
+
+  it('locks the non-primary-display case values (negative-origin screen frame)', () => {
+    // Regression coverage for a secondary display placed to the left of the
+    // primary one (negative x) with no menu bar/notch inset — the visible
+    // frame's own x/y must flow straight through into the resolved box
+    // instead of the popover assuming it always originates at (0, 0).
+    expect(fixture.nonPrimaryDisplay.screenFrame.x).toBeLessThan(0);
+    expect(fixture.nonPrimaryDisplay.output).toEqual({
+      compact: { x: -1300, y: 528, width: 320, height: 76, flipped: false },
+      expanded: { x: -1350, y: 528, width: 420, height: 220, flipped: false },
     });
   });
 });

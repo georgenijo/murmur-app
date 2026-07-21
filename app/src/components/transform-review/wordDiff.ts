@@ -15,6 +15,16 @@ export type DiffLayout = 'unified' | 'side-by-side';
 const SIDE_BY_SIDE_THRESHOLD_CHARS = 200;
 
 /**
+ * Above this many tokens per side, the O(n*m) LCS table (and the O(n+m)
+ * backtrack through it) gets expensive enough to jank the popover — a single
+ * 2000x2000 table is 4M cells, and review text can in principle be an entire
+ * pasted document. Beyond the cap we skip the table entirely and degrade to
+ * a single removed-run + single added-run (no attempt at a "smart" diff),
+ * which is O(n+m) and always fast regardless of input size.
+ */
+const MAX_DIFF_TOKENS_PER_SIDE = 2000;
+
+/**
  * Split on runs of whitespace, keeping the whitespace itself as tokens so
  * diffed output preserves original spacing exactly.
  */
@@ -37,6 +47,10 @@ export function computeWordDiff(original: string, proposed: string): DiffToken[]
   const m = b.length;
 
   if (n === 0 && m === 0) return [];
+
+  if (n > MAX_DIFF_TOKENS_PER_SIDE || m > MAX_DIFF_TOKENS_PER_SIDE) {
+    return computeDegradedDiff(a, b);
+  }
 
   // dp[i][j] = length of the LCS of a[i..] and b[j..].
   const dp: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
@@ -70,6 +84,19 @@ export function computeWordDiff(original: string, proposed: string): DiffToken[]
     tokens.push({ kind: 'added', text: b[j] });
     j++;
   }
+  return tokens;
+}
+
+/**
+ * Degraded shape for inputs beyond `MAX_DIFF_TOKENS_PER_SIDE`: the entire
+ * original as one `removed` run followed by the entire proposed as one
+ * `added` run. Still round-trips exactly (same reconstruction invariant the
+ * real LCS diff guarantees) — just without word-level granularity.
+ */
+function computeDegradedDiff(a: string[], b: string[]): DiffToken[] {
+  const tokens: DiffToken[] = [];
+  if (a.length > 0) tokens.push({ kind: 'removed', text: a.join('') });
+  if (b.length > 0) tokens.push({ kind: 'added', text: b.join('') });
   return tokens;
 }
 

@@ -51,14 +51,29 @@ export interface TransformStateChangedEvent {
   errorCode?: ReviewErrorCode;
 }
 
+/**
+ * Only `state` gates whether this is a well-formed event. An unrecognized
+ * `errorCode` (e.g. a newer error code this frontend build doesn't know
+ * about yet) is a benign version-skew case, not a malformed event — it must
+ * not invalidate the whole `transform-state-changed` event, or the popover
+ * gets stuck rendering its prior state forever. Read `errorCode` back out
+ * via `normalizeReviewErrorCode`, which coerces anything unrecognized to
+ * `null` rather than trusting it directly.
+ */
 export function isTransformStateChangedEvent(v: unknown): v is TransformStateChangedEvent {
   if (typeof v !== 'object' || v === null) return false;
   const o = v as Record<string, unknown>;
-  if (!isReviewState(o.state)) return false;
-  if ('errorCode' in o && o.errorCode !== undefined && !isReviewErrorCode(o.errorCode)) {
-    return false;
-  }
-  return true;
+  return isReviewState(o.state);
+}
+
+/**
+ * Coerce a raw `errorCode` value to a known `ReviewErrorCode`, or `null` if
+ * it is absent or unrecognized. Falling back to `null` (rather than
+ * rejecting the event) keeps `deriveReviewState`'s "Something went wrong"
+ * fallback message reachable instead of leaving the popover stuck.
+ */
+export function normalizeReviewErrorCode(v: unknown): ReviewErrorCode | null {
+  return isReviewErrorCode(v) ? v : null;
 }
 
 /** Return value of the `get_transform_review_content` command. */
@@ -83,3 +98,32 @@ export const EMPTY_REVIEW_CONTENT: TransformReviewContent = {
   original: '',
   proposed: '',
 };
+
+/**
+ * Mirrors Rust's `commands::transform_popover::PopoverBox` — the applied
+ * window frame `set_transform_popover_expanded` resolves to and returns as
+ * an acknowledgment (same `AppliedSurface`-style contract as
+ * `useOverlayExpansion`'s overlay resize path). Exported here so PR-C2's
+ * state-machine driver can gate its CSS reveal on the resolved frame instead
+ * of guessing the popover's size from the size-class alone.
+ */
+export interface PopoverBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  /** True when the box was placed above the selection to avoid clipping below. */
+  flipped: boolean;
+}
+
+export function isPopoverBox(v: unknown): v is PopoverBox {
+  if (typeof v !== 'object' || v === null) return false;
+  const o = v as Record<string, unknown>;
+  return (
+    typeof o.x === 'number'
+    && typeof o.y === 'number'
+    && typeof o.width === 'number'
+    && typeof o.height === 'number'
+    && typeof o.flipped === 'boolean'
+  );
+}

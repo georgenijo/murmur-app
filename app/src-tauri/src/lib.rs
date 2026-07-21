@@ -293,6 +293,11 @@ pub fn run() {
             // to re-detect notch info and reposition the overlay.
             commands::overlay::register_screen_change_observer(app.handle().clone());
 
+            // Overwrite the transform-review window's initial size from Rust's
+            // COMPACT_W/COMPACT_H so tauri.conf.json's matching literal is only
+            // ever a startup-flash guard, never the source of truth.
+            commands::transform_popover::apply_initial_compact_size(app.handle());
+
             // Restore tray icon (removed by PR #63 overlay work).
             let idle_icon_data = commands::tray::make_tray_icon_data();
             let show_item = MenuItemBuilder::with_id("show", "Show Murmur").build(app)?;
