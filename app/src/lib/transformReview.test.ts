@@ -38,6 +38,14 @@ describe('normalizeReviewErrorCode', () => {
     expect(normalizeReviewErrorCode('model_not_downloaded')).toBe('model_not_downloaded');
   });
 
+  it('recognizes undo-path apply error codes (item 12)', () => {
+    // The undo-failure UX re-emits `applied` carrying these codes; they must
+    // normalize through so a real undo error is not coerced to null.
+    expect(normalizeReviewErrorCode('clipboard_unavailable')).toBe('clipboard_unavailable');
+    expect(normalizeReviewErrorCode('paste_failed')).toBe('paste_failed');
+    expect(normalizeReviewErrorCode('not_applied')).toBe('not_applied');
+  });
+
   it('coerces unknown or missing error codes to null', () => {
     expect(normalizeReviewErrorCode('some_future_code')).toBeNull();
     expect(normalizeReviewErrorCode(undefined)).toBeNull();

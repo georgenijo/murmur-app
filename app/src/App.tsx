@@ -14,6 +14,7 @@ import { useHistoryManagement } from './lib/hooks/useHistoryManagement';
 import { useRecordingState } from './lib/hooks/useRecordingState';
 import { useHoldDownToggle } from './lib/hooks/useHoldDownToggle';
 import { useDoubleTapToggle } from './lib/hooks/useDoubleTapToggle';
+import { useTransformFlow } from './lib/hooks/useTransformFlow';
 import { useCombinedToggle } from './lib/hooks/useCombinedToggle';
 import { useShowAboutListener } from './lib/hooks/useShowAboutListener';
 import { useOverlaySettingsSync } from './lib/hooks/useOverlaySettingsSync';
@@ -140,6 +141,16 @@ function App() {
   useDoubleTapToggle({ enabled: hotkeysArmed && settings.recordingMode === 'double_tap', initialized, accessibilityGranted, doubleTapKey: settings.doubleTapKey, status, onToggle: toggleRecording });
   useCombinedToggle({ enabled: hotkeysArmed && settings.recordingMode === 'both', initialized, accessibilityGranted, triggerKey: settings.doubleTapKey, status, onStart: handleStart, onStop: handleStop, onToggle: toggleRecording });
   useEscapeCancel({ status, enabled: hotkeysArmed && initialized && accessibilityGranted === true });
+  // Independent AX-selection transform hotkey (issue #312). Enabled only when
+  // the user has configured a transform key; drives capture -> instruction ->
+  // review via the transform-review popover window.
+  useTransformFlow({
+    enabled: hotkeysArmed && settings.transformHoldKey !== null,
+    initialized,
+    accessibilityGranted,
+    transformHoldKey: settings.transformHoldKey,
+    microphone: settings.microphone,
+  });
   const { showAbout, setShowAbout } = useShowAboutListener();
   const updater = useAutoUpdater();
 

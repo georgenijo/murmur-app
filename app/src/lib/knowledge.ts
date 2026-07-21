@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 
-export type KnowledgeKind = 'replacement_rule' | 'vocabulary_term' | 'snippet';
+export type KnowledgeKind = 'replacement_rule' | 'vocabulary_term' | 'snippet' | 'transform';
 export type KnowledgeProvenance = 'manual' | 'code_scan' | 'learned_correction' | 'import';
 export type KnowledgeAvailability = 'ready' | 'recovered' | 'reinitialized' | 'unavailable';
 export type VoiceCommandKind = 'text_replacement' | 'snippet';
@@ -18,7 +18,8 @@ export type KnowledgeScope =
 export type KnowledgePayload =
   | { kind: 'replacement_rule'; source: string; replacement: string }
   | { kind: 'vocabulary_term'; written: string; aliases: string[] }
-  | { kind: 'snippet'; trigger: string; body: string };
+  | { kind: 'snippet'; trigger: string; body: string }
+  | { kind: 'transform'; name: string; instruction: string };
 
 export interface KnowledgeEntry {
   id: string;
@@ -137,6 +138,7 @@ export function payloadTitle(payload: KnowledgePayload): string {
     case 'replacement_rule': return payload.source;
     case 'vocabulary_term': return payload.written;
     case 'snippet': return payload.trigger;
+    case 'transform': return payload.name;
   }
 }
 
@@ -145,6 +147,7 @@ export function payloadDetail(payload: KnowledgePayload): string {
     case 'replacement_rule': return payload.replacement;
     case 'vocabulary_term': return payload.aliases.join(', ') || 'No spoken aliases';
     case 'snippet': return payload.body;
+    case 'transform': return payload.instruction;
   }
 }
 

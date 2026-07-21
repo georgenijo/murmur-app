@@ -10,18 +10,39 @@
 
 export type ReviewState = 'listening' | 'thinking' | 'ready' | 'failed' | 'applied';
 
+// Kept in sync with the Rust code producers in `transform_flow.rs`
+// (`selection_error_code` / `transform_error_code` / `apply_error_code`). Any
+// code the backend emits that is NOT listed here degrades gracefully to the
+// generic "Something went wrong" copy via `normalizeReviewErrorCode` — a
+// version-skew safety net, not a bug.
 export type ReviewErrorCode =
   | 'model_not_downloaded'
+  | 'model_unreadable'
   | 'timeout'
   | 'output_invalid'
-  | 'crashed';
+  | 'crashed'
+  | 'disabled'
+  | 'busy'
+  | 'no_instruction'
+  | 'no_selection'
+  | 'too_large'
+  | 'ax_unavailable'
+  | 'accessibility_denied'
+  | 'target_gone'
+  | 'selection_changed'
+  | 'clipboard_unavailable'
+  | 'paste_failed'
+  | 'not_applied';
 
 const REVIEW_STATES: readonly ReviewState[] = [
   'listening', 'thinking', 'ready', 'failed', 'applied',
 ];
 
 const REVIEW_ERROR_CODES: readonly ReviewErrorCode[] = [
-  'model_not_downloaded', 'timeout', 'output_invalid', 'crashed',
+  'model_not_downloaded', 'model_unreadable', 'timeout', 'output_invalid', 'crashed',
+  'disabled', 'busy', 'no_instruction', 'no_selection', 'too_large', 'ax_unavailable',
+  'accessibility_denied', 'target_gone', 'selection_changed',
+  'clipboard_unavailable', 'paste_failed', 'not_applied',
 ];
 
 export function isReviewState(v: unknown): v is ReviewState {
@@ -35,9 +56,22 @@ export function isReviewErrorCode(v: unknown): v is ReviewErrorCode {
 /** Stable copy for each error code — never render a raw error code to the user. */
 export const REVIEW_ERROR_COPY: Record<ReviewErrorCode, string> = {
   model_not_downloaded: 'Model not downloaded',
+  model_unreadable: "Model file couldn't be read",
   timeout: 'Timed out',
   output_invalid: 'Model gave no usable output',
   crashed: 'Sidecar crashed — original text untouched',
+  disabled: 'Transform temporarily disabled — try again shortly',
+  busy: 'Busy — try again in a moment',
+  no_instruction: "Didn't catch an instruction — hold the key and speak",
+  no_selection: 'Select some text first',
+  too_large: 'Selection is too large to transform',
+  ax_unavailable: "Couldn't read the selection",
+  accessibility_denied: 'Accessibility permission required',
+  target_gone: 'The target app changed — original text untouched',
+  selection_changed: 'The selection changed — nothing was overwritten',
+  clipboard_unavailable: "Couldn't reach the clipboard — try Undo again",
+  paste_failed: "Couldn't undo the change — try Undo again",
+  not_applied: 'Nothing to undo',
 };
 
 /**

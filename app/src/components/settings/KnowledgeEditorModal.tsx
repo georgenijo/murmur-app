@@ -7,6 +7,11 @@ import type {
   KnowledgePayload,
   KnowledgeScope,
 } from '../../lib/knowledge';
+import {
+  byteLength,
+  MAX_TRANSFORM_INSTRUCTION_BYTES,
+  presetShadowWarning,
+} from './TransformsManager';
 
 interface Props {
   entry: KnowledgeEntry | null;
@@ -74,6 +79,7 @@ export function KnowledgeEditorModal({ entry, profiles, onClose, onSave }: Props
     if (kind === 'replacement_rule') setPayload({ kind, source: '', replacement: '' });
     if (kind === 'vocabulary_term') setPayload({ kind, written: '', aliases: [] });
     if (kind === 'snippet') setPayload({ kind, trigger: '', body: '' });
+    if (kind === 'transform') setPayload({ kind, name: '', instruction: '' });
   };
 
   const buildScope = (): KnowledgeScope | null => {
@@ -94,6 +100,15 @@ export function KnowledgeEditorModal({ entry, profiles, onClose, onSave }: Props
     }
     if (payload.kind === 'snippet' && (!payload.trigger.trim() || !payload.body.trim())) {
       return 'Enter both the spoken trigger and snippet body.';
+    }
+    if (payload.kind === 'transform' && (!payload.name.trim() || !payload.instruction.trim())) {
+      return 'Enter both the spoken transform name and instruction.';
+    }
+    if (payload.kind === 'transform') {
+      const bytes = byteLength(payload.instruction.trim());
+      if (bytes > MAX_TRANSFORM_INSTRUCTION_BYTES) {
+        return `Instruction is ${bytes} bytes; the limit is ${MAX_TRANSFORM_INSTRUCTION_BYTES}. Shorten it and try again.`;
+      }
     }
     if (!buildScope()) return scope.kind === 'project'
       ? 'Project scope requires an app bundle ID and project root.'
@@ -164,6 +179,7 @@ export function KnowledgeEditorModal({ entry, profiles, onClose, onSave }: Props
               <option value="replacement_rule">Replacement rule</option>
               <option value="vocabulary_term">Vocabulary term</option>
               <option value="snippet">Snippet</option>
+              <option value="transform">Transform</option>
             </select>
           </label>
 
@@ -195,6 +211,38 @@ export function KnowledgeEditorModal({ entry, profiles, onClose, onSave }: Props
               </label>
               <label className="block text-xs font-medium text-on-surface">Snippet body
                 <textarea aria-label="Snippet body" value={payload.body} onChange={(event) => setPayload({ ...payload, body: event.target.value })} className={`${inputClass} mt-1 min-h-24 resize-y font-mono`} maxLength={16_384} />
+              </label>
+            </div>
+          )}
+          {payload.kind === 'transform' && (
+            <div className="space-y-3">
+              <label className="block text-xs font-medium text-on-surface">Spoken name
+                <input aria-label="Spoken name" value={payload.name} onChange={(event) => setPayload({ ...payload, name: event.target.value })} className={`${inputClass} mt-1`} maxLength={256} />
+              </label>
+              {(() => {
+                const warning = presetShadowWarning(payload.name);
+                return warning ? (
+                  <p className="text-xs text-amber-600 dark:text-amber-400">{warning}</p>
+                ) : null;
+              })()}
+              <label className="block text-xs font-medium text-on-surface">
+                <span className="flex items-baseline justify-between">
+                  <span>Instruction</span>
+                  <span
+                    className={
+                      byteLength(payload.instruction) > MAX_TRANSFORM_INSTRUCTION_BYTES
+                        ? 'font-normal text-red-600 dark:text-red-400'
+                        : 'font-normal text-on-surface-variant'
+                    }
+                  >
+                    {byteLength(payload.instruction)} / {MAX_TRANSFORM_INSTRUCTION_BYTES} bytes
+                  </span>
+                </span>
+                <textarea aria-label="Transform instruction" value={payload.instruction} onChange={(event) => setPayload({ ...payload, instruction: event.target.value })} className={`${inputClass} mt-1 min-h-24 resize-y`} maxLength={16_384} />
+                <span className="mt-1 block font-normal text-on-surface-variant">
+                  Presets shadow saved transforms with the same spoken name — presets always run
+                  first.
+                </span>
               </label>
             </div>
           )}

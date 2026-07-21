@@ -162,11 +162,11 @@ export function TransformReviewApp() {
 
       {vm.showDiff && <ReviewDiff original={driver.content.original} proposed={driver.content.proposed} />}
 
-      {vm.errorMessage && (
+      {vm.errorMessage && !vm.showUndo && (
         <div className="px-3 py-2 text-[12px] text-red-300/90">{vm.errorMessage}</div>
       )}
 
-      {vm.showUndo && <ReviewApplied onUndo={driver.undo} />}
+      {vm.showUndo && <ReviewApplied onUndo={driver.undo} errorMessage={vm.errorMessage} />}
 
       {(vm.approveEnabled || vm.retryEnabled || vm.cancelEnabled) && (
         <ReviewActions

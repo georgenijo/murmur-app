@@ -2,6 +2,10 @@
 
 The app supports Hold-Down, Double-Tap, and a combined Both mode, selectable in Settings. All use `rdev` for low-level keyboard event listening and require Accessibility permission.
 
+## Transform hold key (issue #312)
+
+Separate from dictation modes: a dedicated **transform hold key** (`transformHoldKey`: `alt_r` / `ctrl_l` / `shift_r`) drives the selected-text transform flow. It uses the **same shared rdev listener thread** as dictation (one thread rule), with an independent detector and `start_transform_listener` / `stop_transform_listener` / `set_transform_key` commands. Dictation hold keys are rejected for the transform shortcut so the two never share a physical key. See [selected-text-transform.md](selected-text-transform.md).
+
 ## Hold-Down Mode (default)
 
 Hold a modifier key to record, release to stop and transcribe.

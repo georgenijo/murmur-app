@@ -48,6 +48,15 @@ export function OverlayPill({
             <div className="w-2.5 h-2.5 rounded-full bg-red-500" style={{ animation: 'pulse 0.8s ease-in-out infinite' }} />
           ) : indicator.kind === 'processing' ? (
             <span className="w-3 h-3 border-[1.5px] border-white/20 border-t-white/70 rounded-full animate-spin block" />
+          ) : indicator.kind === 'secureField' ? (
+            // Brief flash when a secure/password field is refused (issue #312).
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-label="secure field">
+              <rect x="5" y="11" width="14" height="9" rx="2" />
+              <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+            </svg>
+          ) : indicator.kind === 'transforming' ? (
+            // "Transforming…" — local LLM is thinking (issue #312).
+            <span className="w-2.5 h-2.5 rounded-full bg-violet-400 block" style={{ animation: 'pulse 0.8s ease-in-out infinite' }} />
           ) : (
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.4)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: indicator.dimmed ? 0.15 : 1 }}>
               <rect x="9" y="1" width="6" height="12" rx="3" />

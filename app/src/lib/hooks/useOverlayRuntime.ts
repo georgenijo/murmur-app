@@ -10,6 +10,8 @@ import {
 } from '../hotkeyFeedback';
 
 const CANCELLED_FLASH_MS = 800;
+/** How long the secure-field refusal flash shows (issue #312 PR-C2). */
+const SECURE_FIELD_FLASH_MS = 800;
 
 export interface UseOverlayRuntimeArgs {
   /** Current dictation status (reactive value, not just a ref). */
@@ -33,6 +35,8 @@ export interface UseOverlayRuntimeArgs {
 export interface OverlayRuntime {
   showCancelled: boolean;
   showHotkeyMiss: boolean;
+  /** Brief flash when a secure/password field was refused (issue #312). */
+  showSecureField: boolean;
   disabled: boolean;
   setDisabled: (value: boolean) => void;
   /** Ref mirror of `disabled`, read synchronously by useRecordingControls. */
@@ -58,6 +62,7 @@ export function useOverlayRuntime({
   hotkeyMissFeedbackRef,
 }: UseOverlayRuntimeArgs): OverlayRuntime {
   const [showCancelled, setShowCancelled] = useState(false);
+  const [showSecureField, setShowSecureField] = useState(false);
   const disabledRef = useRef(disabled);
   const hotkeyMissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -133,6 +138,29 @@ export function useOverlayRuntime({
     };
   }, []);
 
+  // Brief flash when the transform flow refuses a secure/password field
+  // (issue #312 PR-C2). Mirrors the recording-cancelled flash mechanism.
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    listen('transform-secure-field', () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      setShowSecureField(true);
+      timeoutId = setTimeout(() => {
+        if (!cancelled) setShowSecureField(false);
+        timeoutId = null;
+      }, SECURE_FIELD_FLASH_MS);
+    }).then((fn) => {
+      if (cancelled) { fn(); } else { unlisten = fn; }
+    });
+    return () => {
+      cancelled = true;
+      if (timeoutId) clearTimeout(timeoutId);
+      unlisten?.();
+    };
+  }, []);
+
   // Subscribe to app-disabled-changed events from Rust
   useEffect(() => {
     let cancelled = false;
@@ -146,5 +174,5 @@ export function useOverlayRuntime({
     return () => { cancelled = true; unlisten?.(); };
   }, [setDisabled]);
 
-  return { showCancelled, showHotkeyMiss, disabled, setDisabled, disabledRef };
+  return { showCancelled, showSecureField, showHotkeyMiss, disabled, setDisabled, disabledRef };
 }

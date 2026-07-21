@@ -1,7 +1,12 @@
 use serde::{Deserialize, Serialize};
 
 pub const EXPORT_FORMAT: &str = "murmur-personal-knowledge";
-pub const EXPORT_VERSION: u32 = 2;
+/// Bumped 2 -> 3 for issue #312 round 2: v3 bundles can carry
+/// `KnowledgeKind::Transform` entries (the store convention is to bump this
+/// whenever the payload shape space expands). Import still accepts older
+/// bundles (version 1 and 2) since their entries are a strict subset of the
+/// current `KnowledgePayload` variants.
+pub const EXPORT_VERSION: u32 = 3;
 pub const DEFAULT_PAGE_SIZE: u32 = 50;
 pub const MAX_PAGE_SIZE: u32 = 100;
 
@@ -11,6 +16,9 @@ pub enum KnowledgeKind {
     ReplacementRule,
     VocabularyTerm,
     Snippet,
+    /// User-defined selected-text transform (issue #312 D1): spoken name expands
+    /// to a full rewrite instruction before the local LLM runs.
+    Transform,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,6 +59,7 @@ impl KnowledgeKind {
             Self::ReplacementRule => "replacement_rule",
             Self::VocabularyTerm => "vocabulary_term",
             Self::Snippet => "snippet",
+            Self::Transform => "transform",
         }
     }
 }
@@ -147,6 +156,11 @@ pub enum KnowledgePayload {
         trigger: String,
         body: String,
     },
+    /// Named transform instruction for the selected-text flow (#312 D1).
+    Transform {
+        name: String,
+        instruction: String,
+    },
 }
 
 impl KnowledgePayload {
@@ -155,6 +169,7 @@ impl KnowledgePayload {
             Self::ReplacementRule { .. } => KnowledgeKind::ReplacementRule,
             Self::VocabularyTerm { .. } => KnowledgeKind::VocabularyTerm,
             Self::Snippet { .. } => KnowledgeKind::Snippet,
+            Self::Transform { .. } => KnowledgeKind::Transform,
         }
     }
 
@@ -168,6 +183,9 @@ impl KnowledgePayload {
                 (written.clone(), String::new(), aliases.clone())
             }
             Self::Snippet { trigger, body } => (trigger.clone(), body.clone(), Vec::new()),
+            Self::Transform { name, instruction } => {
+                (name.clone(), instruction.clone(), Vec::new())
+            }
         }
     }
 }
