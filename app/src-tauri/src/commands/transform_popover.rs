@@ -190,12 +190,17 @@ fn active_screen_visible_frame(app: &tauri::AppHandle, state: &State) -> Rect {
 
     match monitor {
         Some(monitor) => {
+            // C1 carry-forward fix: bias to `true` when `primary_monitor()`
+            // errors/returns None. On a single-display Mac (the common case)
+            // the active monitor IS the primary, so failing to resolve it must
+            // still reserve the menu-bar / notch inset rather than place the
+            // popover under the notch.
             let is_primary = app
                 .primary_monitor()
                 .ok()
                 .flatten()
                 .map(|primary| primary.position() == monitor.position())
-                .unwrap_or(false);
+                .unwrap_or(true);
 
             visible_frame_for_monitor(
                 (monitor.position().x as f64, monitor.position().y as f64),
@@ -253,10 +258,21 @@ pub fn show_transform_popover(
     state: tauri::State<'_, State>,
     anchor: Option<Rect>,
 ) -> Result<(), String> {
+    show_popover_internal(&app, state.inner(), anchor)
+}
+
+/// Non-command core of `show_transform_popover`, callable directly from the
+/// transform-flow orchestrator (issue #312 PR-C2) with plain references rather
+/// than a `tauri::State` extractor.
+pub(crate) fn show_popover_internal(
+    app: &tauri::AppHandle,
+    state: &State,
+    anchor: Option<Rect>,
+) -> Result<(), String> {
     *state.transform_popover_anchor.lock_or_recover() = anchor;
     match app.get_webview_window("transform-review") {
         Some(window) => {
-            let screen_frame = active_screen_visible_frame(&app, &state);
+            let screen_frame = active_screen_visible_frame(app, state);
             let geometry = popover_geometry_for(anchor, screen_frame);
             let target = geometry.compact;
             window
@@ -280,6 +296,11 @@ pub fn show_transform_popover(
 /// Hide the transform review popover.
 #[tauri::command]
 pub fn hide_transform_popover(app: tauri::AppHandle) -> Result<(), String> {
+    hide_popover_internal(&app)
+}
+
+/// Non-command core of `hide_transform_popover` (issue #312 PR-C2).
+pub(crate) fn hide_popover_internal(app: &tauri::AppHandle) -> Result<(), String> {
     match app.get_webview_window("transform-review") {
         Some(window) => window.hide().map_err(|e| e.to_string()),
         None => {
@@ -306,8 +327,23 @@ pub fn set_transform_popover_expanded(
     state: tauri::State<'_, State>,
     expanded: bool,
 ) -> Result<PopoverBox, String> {
+    set_expanded_internal(&app, state.inner(), expanded)
+}
+
+/// Non-command core of `set_transform_popover_expanded` (issue #312 PR-C2).
+///
+/// C1 carry-forward fix: a missing `transform-review` window is now a hard
+/// `Err` (was `Ok` + warn), mirroring `overlay::set_overlay_expanded`. The
+/// caller gates a CSS reveal on the resolved box; silently returning a box the
+/// window was never actually resized to would let the popover reveal at the
+/// wrong size.
+pub(crate) fn set_expanded_internal(
+    app: &tauri::AppHandle,
+    state: &State,
+    expanded: bool,
+) -> Result<PopoverBox, String> {
     let anchor = *state.transform_popover_anchor.lock_or_recover();
-    let screen_frame = active_screen_visible_frame(&app, &state);
+    let screen_frame = active_screen_visible_frame(app, state);
     let geometry = popover_geometry_for(anchor, screen_frame);
     let target = if expanded { geometry.expanded } else { geometry.compact };
 
@@ -319,12 +355,13 @@ pub fn set_transform_popover_expanded(
             window
                 .set_position(tauri::LogicalPosition::new(target.x, target.y))
                 .map_err(|e| e.to_string())?;
+            Ok(target)
         }
         None => {
-            tracing::warn!(target: "system", "set_transform_popover_expanded: transform-review window not found — skipping");
+            tracing::warn!(target: "system", "set_transform_popover_expanded: transform-review window not found");
+            Err("transform-review window not found".to_string())
         }
     }
-    Ok(target)
 }
 
 /// Toggle whether the popover can take key focus. `false` during
@@ -341,6 +378,11 @@ pub fn set_transform_popover_expanded(
 /// window never gets a chance to visibly flash on screen.
 #[tauri::command]
 pub fn set_transform_popover_focusable(app: tauri::AppHandle, focusable: bool) -> Result<(), String> {
+    set_focusable_internal(&app, focusable)
+}
+
+/// Non-command core of `set_transform_popover_focusable` (issue #312 PR-C2).
+pub(crate) fn set_focusable_internal(app: &tauri::AppHandle, focusable: bool) -> Result<(), String> {
     match app.get_webview_window("transform-review") {
         Some(window) => {
             apply_popover_window_treatment(&window, !focusable);
@@ -384,9 +426,21 @@ pub struct TransformReviewContent {
     pub proposed: String,
 }
 
+/// Return the live transform session's instruction / original / proposed text
+/// for the review popover (issue #312 PR-C2 — replaces the C1 stub). Pulled by
+/// the transform-review window ONLY; this text is never broadcast in the
+/// `transform-state-changed` event, so potentially sensitive selected text
+/// stays out of the event bus, logs, and telemetry.
 #[tauri::command]
-pub fn get_transform_review_content() -> TransformReviewContent {
-    TransformReviewContent::default()
+pub fn get_transform_review_content(state: tauri::State<'_, State>) -> TransformReviewContent {
+    match crate::transform_apply::session_snapshot(&state.app_state) {
+        Some(session) => TransformReviewContent {
+            instruction: session.instruction.unwrap_or_default(),
+            original: session.snapshot.text,
+            proposed: session.proposed.unwrap_or_default(),
+        },
+        None => TransformReviewContent::default(),
+    }
 }
 
 /// Overwrite the transform-review window's size from `COMPACT_W`/`COMPACT_H`

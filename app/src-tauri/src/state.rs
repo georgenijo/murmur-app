@@ -338,6 +338,20 @@ pub struct AppState {
     /// Monotonic generation counter stamped onto every new `TransformSession`
     /// (issue #312 PR-B2). See `next_transform_session_generation`.
     pub transform_session_generation: AtomicU64,
+    /// Monotonic epoch bumped at the start of every apply/undo AND on cancel
+    /// (issue #312 PR-C2, B2 review nit N1). A `run_apply` paste fallback
+    /// schedules a ~300ms-delayed clipboard restore off the main thread; if a
+    /// newer apply/undo (or a cancel) begins inside that window, that stale
+    /// restore would clobber the newer op's house-rule clipboard write. The
+    /// delayed restore captures the epoch it was scheduled under and no-ops if
+    /// this counter has since advanced.
+    pub transform_apply_epoch: AtomicU64,
+    /// Abort handle for the in-flight sidecar transform task (issue #312
+    /// PR-C2). `finish_transform_instruction` spawns the `sidecar.transform`
+    /// future as a task and stores its abort handle here so `cancel_transform`
+    /// can cancel a `Thinking`-phase request cooperatively — dropping the
+    /// future clears the sidecar's busy flag (see `llm_sidecar::BusyGuard`).
+    pub transform_inflight: Mutex<Option<tokio::task::AbortHandle>>,
 }
 
 impl AppState {
@@ -437,6 +451,20 @@ impl AppState {
     pub fn next_transform_session_generation(&self) -> u64 {
         self.transform_session_generation.fetch_add(1, Ordering::SeqCst) + 1
     }
+
+    /// Bump and return the next apply epoch (issue #312 PR-C2, nit N1). Called
+    /// at the start of every apply/undo and by `cancel_transform`, so any
+    /// clipboard restore still pending from an earlier op sees a changed epoch
+    /// and declines to run.
+    pub fn next_transform_apply_epoch(&self) -> u64 {
+        self.transform_apply_epoch.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// Current apply epoch, read by a pending clipboard restore to decide
+    /// whether it is still the most recent op (see `next_transform_apply_epoch`).
+    pub fn transform_apply_epoch(&self) -> u64 {
+        self.transform_apply_epoch.load(Ordering::SeqCst)
+    }
 }
 
 impl Default for AppState {
@@ -459,6 +487,8 @@ impl Default for AppState {
             transform_status: Mutex::new(TransformStatus::default()),
             transform_session: Mutex::new(None),
             transform_session_generation: AtomicU64::new(0),
+            transform_apply_epoch: AtomicU64::new(0),
+            transform_inflight: Mutex::new(None),
         }
     }
 }

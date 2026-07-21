@@ -139,6 +139,11 @@ use crate::MutexExt;
 #[derive(Clone)]
 pub struct TransformSession {
     pub snapshot: crate::selection::TransformSnapshot,
+    /// The spoken instruction transcribed for this pass (issue #312 PR-C2).
+    /// Filled by `finish_transform_instruction` before the sidecar call.
+    /// Surfaced ONLY via `get_transform_review_content` (pulled by the popover
+    /// window) — never logged or attached to an event payload.
+    pub instruction: Option<String>,
     pub proposed: Option<String>,
     pub applied: bool,
     /// Monotonic id stamped at `start_session` time. See the module doc
@@ -150,6 +155,7 @@ impl TransformSession {
     pub fn new(snapshot: crate::selection::TransformSnapshot, generation: u64) -> Self {
         Self {
             snapshot,
+            instruction: None,
             proposed: None,
             applied: false,
             generation,
@@ -174,6 +180,19 @@ pub fn set_proposed_text(app_state: &AppState, text: String) -> bool {
     match session.as_mut() {
         Some(active) => {
             active.proposed = Some(text);
+            true
+        }
+        None => false,
+    }
+}
+
+/// Fill in (or replace) the transcribed instruction for the active session
+/// (issue #312 PR-C2). Returns `false` if there is no active session.
+pub fn set_instruction(app_state: &AppState, instruction: String) -> bool {
+    let mut session = app_state.transform_session.lock_or_recover();
+    match session.as_mut() {
+        Some(active) => {
+            active.instruction = Some(instruction);
             true
         }
         None => false,
@@ -517,6 +536,7 @@ async fn run_apply(
     range_len: usize,
     expected_current: String,
     replacement: String,
+    apply_epoch: u64,
 ) -> Result<AppliedVia, ApplyError> {
     let (tx, rx) = tokio::sync::oneshot::channel::<native::NativeApplyOutcome>();
     app_handle
@@ -529,8 +549,24 @@ async fn run_apply(
     let outcome = rx.await.map_err(|_| ApplyError::Unsupported)?;
 
     if let Some(original) = outcome.pending_clipboard_restore {
+        // N1 (B2 review): a newer apply/undo/cancel bumps the apply epoch. If
+        // one begins inside this ~300ms window it re-writes the clipboard with
+        // its own house-rule text; this stale restore must NOT clobber that.
+        // Capture the epoch we were scheduled under and only restore if it is
+        // still current.
+        let app = app_handle.clone();
         tokio::task::spawn_blocking(move || {
             std::thread::sleep(std::time::Duration::from_millis(PASTE_CLIPBOARD_RESTORE_DELAY_MS));
+            use tauri::Manager;
+            if let Some(state) = app.try_state::<crate::State>() {
+                if state.app_state.transform_apply_epoch() != apply_epoch {
+                    tracing::info!(
+                        target: "transform",
+                        "pending clipboard restore skipped — a newer apply/undo/cancel superseded it"
+                    );
+                    return;
+                }
+            }
             let _ = crate::injector::write_clipboard_text(&original);
         });
     }
@@ -558,7 +594,8 @@ pub async fn apply_transform(
         // for `snapshot.text`, not the proposed replacement.
         let range_len = range_len_for(&snapshot.text);
         let expected_current = snapshot.text.clone();
-        let result = run_apply(app_handle, snapshot.pid, range_start, range_len, expected_current, text).await;
+        let apply_epoch = app_state.next_transform_apply_epoch();
+        let result = run_apply(app_handle, snapshot.pid, range_start, range_len, expected_current, text, apply_epoch).await;
         if result.is_ok() {
             set_applied(app_state, true, generation);
         }
@@ -598,7 +635,8 @@ pub async fn undo_applied_transform(
         // the bug this parametrization fixes.
         let range_len = range_len_for(&proposed);
         let original = snapshot.text.clone();
-        let result = run_apply(app_handle, snapshot.pid, range_start, range_len, proposed, original).await;
+        let apply_epoch = app_state.next_transform_apply_epoch();
+        let result = run_apply(app_handle, snapshot.pid, range_start, range_len, proposed, original, apply_epoch).await;
         result.map(|_| {
             set_applied(app_state, false, generation);
         })
