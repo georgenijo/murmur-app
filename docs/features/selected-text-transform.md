@@ -14,6 +14,31 @@ Binding runtime ADR: [docs/decisions/2026-07-20-signed-local-llm-sidecar.md](../
 
 Dictation and transform are mutually exclusive (status guards both ways + sidecar busy + helper shutdown before recording).
 
+## Instruction expansion and name precedence
+
+`transform_flow::expand_instruction` resolves a spoken instruction in this
+order, stopping at the first match:
+
+1. **Built-in preset** (`transform_presets::resolve_preset`) — checked by
+   canonical name and every alias.
+2. **Saved transform** (`KnowledgeKind::Transform`, `transform_flow::resolve_saved_transform`)
+   — checked by name against enabled saved transforms.
+3. **Raw transcript** — used as a free-form rewrite instruction when nothing matched.
+
+Both lookups normalize the spoken text and the stored name with the same
+`transform_presets::normalize()`: split on whitespace, trim non-alphanumeric
+characters from each word's edges (Unicode-aware), lowercase, and rejoin —
+so ASR punctuation ("Shorten.", "Make shorter!", "  fix grammar?  ") does not
+prevent a match.
+
+**Presets always shadow saved transforms with the same normalized name.** If
+you save a transform named "shorten" (or an alias like "make shorter"), the
+built-in preset still runs when you speak that name — the saved transform is
+stored but unreachable by voice until you rename it or the built-in changes.
+The Transforms editor rejects saving two transforms with the same normalized
+name outright, and warns (without blocking) when a name collides with a
+preset name or alias.
+
 ## Model storage
 
 - Catalog pin: Qwen2.5-1.5B-Instruct Q4_K_M (~1.1 GB), exact size + SHA-256 enforced at download and before spawn.
@@ -57,7 +82,7 @@ Settings → **Transform**:
 
 - Enable + hold-key picker (rejects dictation keys)
 - Model status / Download / Remove / Reset runtime
-- Saved transforms CRUD (`KnowledgeKind::Transform`) plus built-in presets: Shorten, Bullets, Professional, Fix grammar, Casual
+- Saved transforms CRUD (`KnowledgeKind::Transform`) plus built-in presets: Shorten, Bullets, Professional, Fix grammar, Casual. Instructions are capped at `MAX_INSTRUCTION_BYTES` (4096 bytes); exact duplicate saved names are rejected, and a name colliding with a preset (name or alias) is shadowed — see [Instruction expansion and name precedence](#instruction-expansion-and-name-precedence)
 
 ## Related modules
 

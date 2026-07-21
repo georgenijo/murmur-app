@@ -41,12 +41,22 @@ pub const BUILTIN_PRESETS: &[TransformPreset] = &[
     },
 ];
 
-fn normalize(s: &str) -> String {
-    s.trim()
-        .split_whitespace()
+/// Normalize a spoken or typed name/key for case- and punctuation-insensitive
+/// comparison. Splits on whitespace, trims non-alphanumeric characters from
+/// each word's edges (Unicode-aware, so trailing punctuation from ASR output
+/// like "Shorten." or "Make shorter!" is stripped), lowercases per-Unicode
+/// rules, and rejoins with single spaces. Words that are pure punctuation
+/// (and thus become empty after trimming) are dropped.
+///
+/// Shared by preset resolution here and by `transform_flow::resolve_saved_transform`
+/// so both use the exact same matching rule.
+pub fn normalize(s: &str) -> String {
+    s.split_whitespace()
+        .map(|word| word.trim_matches(|c: char| !c.is_alphanumeric()))
+        .filter(|word| !word.is_empty())
+        .map(|word| word.chars().flat_map(char::to_lowercase).collect::<String>())
         .collect::<Vec<_>>()
         .join(" ")
-        .to_ascii_lowercase()
 }
 
 /// Resolve a spoken (or typed) name to a built-in preset instruction.
@@ -119,6 +129,43 @@ mod tests {
         assert_eq!(resolve_preset("translate to french"), None);
         assert_eq!(resolve_preset(""), None);
         assert_eq!(resolve_preset("   "), None);
+    }
+
+    /// Whisper transcripts end in terminal punctuation, so preset matching
+    /// must tolerate it (issue #312 round-2 D1 fix #1). Non-alphanumeric
+    /// edges are trimmed per word; punctuation in the middle of a name is
+    /// preserved as a word separator boundary (there is none in these cases).
+    #[test]
+    fn resolves_names_with_trailing_or_surrounding_punctuation() {
+        assert_eq!(
+            resolve_preset("Shorten."),
+            Some(BUILTIN_PRESETS[0].instruction)
+        );
+        assert_eq!(
+            resolve_preset("Make shorter!"),
+            Some(BUILTIN_PRESETS[0].instruction)
+        );
+        assert_eq!(
+            resolve_preset("  fix grammar?  "),
+            Some(BUILTIN_PRESETS[3].instruction)
+        );
+    }
+
+    #[test]
+    fn punctuation_alone_does_not_create_a_false_match() {
+        // Non-matching punctuated text still falls through (returns None) so
+        // the caller uses the raw transcript as the instruction.
+        assert_eq!(resolve_preset("translate to french."), None);
+        assert_eq!(resolve_preset("..."), None);
+        assert_eq!(resolve_preset("!?"), None);
+    }
+
+    #[test]
+    fn normalize_trims_punctuation_edges_and_lowercases() {
+        assert_eq!(normalize("Shorten."), "shorten");
+        assert_eq!(normalize("Make shorter!"), "make shorter");
+        assert_eq!(normalize("  fix grammar?  "), "fix grammar");
+        assert_eq!(normalize("..."), "");
     }
 
     #[test]

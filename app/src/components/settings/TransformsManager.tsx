@@ -12,6 +12,54 @@ interface Props {
   active: boolean;
 }
 
+/// Same cap the sidecar protocol and knowledge_store::validate_payload
+/// enforce (murmur_local_llm_protocol::MAX_INSTRUCTION_BYTES). Kept as a
+/// local mirror since this component cannot import Rust constants; bytes,
+/// not chars, to match the Rust-side check exactly (issue #312 round 2 D1
+/// fix #3).
+export const MAX_TRANSFORM_INSTRUCTION_BYTES = 4096;
+
+export function byteLength(value: string): number {
+  return new TextEncoder().encode(value).length;
+}
+
+/**
+ * Mirrors `app/src-tauri/src/transform_presets.rs` BUILTIN_PRESETS (name +
+ * aliases). Used only to warn a user at save time that their chosen name is
+ * shadowed by a built-in preset — the Rust side (`transform_presets::resolve_preset`,
+ * checked before saved transforms in `transform_flow::expand_instruction`) is
+ * the sole source of truth for actual preset matching. Keep this list in
+ * sync when presets change.
+ */
+const BUILTIN_TRANSFORM_PRESET_NAMES = [
+  'Shorten', 'make shorter', 'shorter', 'condense', 'brief',
+  'Bullets', 'bullet points', 'bullet list', 'as bullets', 'make bullets',
+  'Professional', 'formal', 'more professional', 'make professional',
+  'Fix grammar', 'grammar', 'fix spelling', 'proofread', 'correct grammar',
+  'Casual', 'informal', 'make casual', 'friendlier', 'more casual',
+];
+
+/** Case- and punctuation-insensitive key, mirroring the Rust `normalize()`
+ * used for both preset and saved-transform name matching. */
+export function normalizeTransformKey(value: string): string {
+  return value
+    .split(/\s+/)
+    .map((word) => word.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ''))
+    .filter((word) => word.length > 0)
+    .join(' ')
+    .toLowerCase();
+}
+
+const NORMALIZED_PRESET_NAMES = new Set(
+  BUILTIN_TRANSFORM_PRESET_NAMES.map(normalizeTransformKey),
+);
+
+export function presetShadowWarning(name: string): string | null {
+  const key = normalizeTransformKey(name);
+  if (key.length === 0 || !NORMALIZED_PRESET_NAMES.has(key)) return null;
+  return 'This name matches a built-in preset. Speaking it will run the built-in preset instead — presets always take precedence over saved transforms with the same name.';
+}
+
 function TransformEditor({
   entry,
   onClose,
@@ -31,6 +79,10 @@ function TransformEditor({
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
+  const instructionBytes = byteLength(instruction.trim());
+  const overInstructionLimit = instructionBytes > MAX_TRANSFORM_INSTRUCTION_BYTES;
+  const shadowWarning = presetShadowWarning(name);
+
   const draft = useMemo<KnowledgeDraft>(() => ({
     id: entry?.id,
     expectedRevision: entry?.revision,
@@ -46,6 +98,12 @@ function TransformEditor({
     }
     if (!instruction.trim()) {
       setError('Enter the full rewrite instruction.');
+      return;
+    }
+    if (overInstructionLimit) {
+      setError(
+        `Instruction is ${instructionBytes} bytes; the limit is ${MAX_TRANSFORM_INSTRUCTION_BYTES}. Shorten it and try again.`,
+      );
       return;
     }
     setSaving(true);
@@ -71,9 +129,19 @@ function TransformEditor({
           className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface"
           placeholder="e.g. meeting notes"
         />
+        {shadowWarning && (
+          <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">{shadowWarning}</p>
+        )}
       </div>
       <div>
-        <label className="mb-1 block text-xs font-medium text-on-surface">Instruction</label>
+        <div className="mb-1 flex items-baseline justify-between">
+          <label className="block text-xs font-medium text-on-surface">Instruction</label>
+          <span
+            className={`text-xs ${overInstructionLimit ? 'text-error' : 'text-on-surface-variant'}`}
+          >
+            {instructionBytes} / {MAX_TRANSFORM_INSTRUCTION_BYTES} bytes
+          </span>
+        </div>
         <textarea
           value={instruction}
           onChange={(e) => setInstruction(e.target.value)}
@@ -81,6 +149,12 @@ function TransformEditor({
           className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface"
           placeholder="Rewrite as concise meeting notes with action items…"
         />
+        {overInstructionLimit && (
+          <p className="mt-1 text-xs text-error">
+            Instruction exceeds the {MAX_TRANSFORM_INSTRUCTION_BYTES}-byte limit enforced by the
+            local transform model.
+          </p>
+        )}
       </div>
       <label className="flex items-center gap-2 text-xs text-on-surface">
         <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
@@ -90,7 +164,7 @@ function TransformEditor({
       <div className="flex gap-2">
         <button
           type="button"
-          disabled={saving}
+          disabled={saving || overInstructionLimit}
           onClick={() => void save()}
           className="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-on-primary disabled:opacity-50"
         >
@@ -120,7 +194,9 @@ export function TransformsManager({ active }: Props) {
       <div className="flex items-center justify-between gap-2">
         <p className="text-xs text-on-surface-variant">
           Speak a saved name during transform hold to expand it to the full instruction.
-          Built-ins: Shorten, Bullets, Professional, Fix grammar, Casual.
+          Built-ins: Shorten, Bullets, Professional, Fix grammar, Casual. If a saved name
+          matches a built-in preset (or one of its aliases), the built-in preset always
+          runs instead — rename the saved transform to avoid being shadowed.
         </p>
         <button
           type="button"
