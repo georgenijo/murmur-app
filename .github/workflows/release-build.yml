@@ -143,9 +143,12 @@ jobs:
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          KEYCHAIN_PASSWORD: ${{ github.run_id }}-${{ github.run_attempt }}
         run: |
+          set -euo pipefail
+          [ -n "$APPLE_CERTIFICATE" ] && [ -n "$APPLE_CERTIFICATE_PASSWORD" ] || {
+            echo "ERROR: APPLE_CERTIFICATE and APPLE_CERTIFICATE_PASSWORD must be set"; exit 1; }
           KEYCHAIN="$RUNNER_TEMP/murmur-signing.keychain-db"
+          KEYCHAIN_PASSWORD=$(openssl rand -hex 16)
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
           security set-keychain-settings -lut 21600 "$KEYCHAIN"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
@@ -183,7 +186,12 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          SIGNING_KEYCHAIN: ${{ runner.temp }}/murmur-signing.keychain-db
         run: |
+          set -euo pipefail
+          for VAR in APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID TAURI_SIGNING_PRIVATE_KEY; do
+            [ -n "${!VAR}" ] || { echo "ERROR: $VAR must be set"; exit 1; }
+          done
           BUNDLE_MACOS=app/src-tauri/target/release/bundle/macos
           APP=$(find "$BUNDLE_MACOS" -maxdepth 1 -name '*.app' -print -quit)
           if [ -z "$APP" ]; then
@@ -204,18 +212,18 @@ jobs:
 
           # Notarize + staple the finalized app, then rebuild the DMG and the
           # updater .app.tar.gz (+ Ed25519 signature) FROM that finalized app.
+          # Apple/Tauri secrets are read from the environment by the script.
           python3 scripts/notarize_and_repackage_macos.py \
             --app "$APP" \
             --app-dir app \
             --identity "$APPLE_SIGNING_IDENTITY" \
             --version "$VERSION" \
             --arch aarch64 \
-            --dmg-out app/src-tauri/target/release/bundle/dmg \
-            --apple-id "$APPLE_ID" \
-            --apple-password "$APPLE_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID" \
-            --tauri-signing-key "$TAURI_SIGNING_PRIVATE_KEY" \
-            --tauri-signing-password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
+            --dmg-out app/src-tauri/target/release/bundle/dmg
+
+          # Mirror the rehearsal's Gatekeeper evidence on the release path.
+          xcrun stapler validate "$APP"
+          spctl --assess --type execute -vvv "$APP"
 
       - name: Smoke test signed application
         run: |

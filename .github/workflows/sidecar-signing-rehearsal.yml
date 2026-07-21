@@ -81,9 +81,12 @@ jobs:
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          KEYCHAIN_PASSWORD: ${{ github.run_id }}-${{ github.run_attempt }}
         run: |
+          set -euo pipefail
+          [ -n "$APPLE_CERTIFICATE" ] && [ -n "$APPLE_CERTIFICATE_PASSWORD" ] || {
+            echo "ERROR: APPLE_CERTIFICATE and APPLE_CERTIFICATE_PASSWORD must be set"; exit 1; }
           KEYCHAIN="$RUNNER_TEMP/murmur-signing.keychain-db"
+          KEYCHAIN_PASSWORD=$(openssl rand -hex 16)
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
           security set-keychain-settings -lut 21600 "$KEYCHAIN"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
@@ -111,6 +114,9 @@ jobs:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
+          set -euo pipefail
+          [ -n "$APPLE_SIGNING_IDENTITY" ] && [ -n "$APPLE_TEAM_ID" ] || {
+            echo "ERROR: APPLE_SIGNING_IDENTITY and APPLE_TEAM_ID must be set"; exit 1; }
           BUNDLE_MACOS=app/src-tauri/target/release/bundle/macos
           APP=$(find "$BUNDLE_MACOS" -maxdepth 1 -name '*.app' -print -quit)
           echo "APP=$APP" >> "$GITHUB_ENV"
@@ -170,8 +176,15 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          SIGNING_KEYCHAIN: ${{ runner.temp }}/murmur-signing.keychain-db
         run: |
+          set -euo pipefail
+          for VAR in APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID TAURI_SIGNING_PRIVATE_KEY; do
+            [ -n "${!VAR}" ] || { echo "ERROR: $VAR must be set"; exit 1; }
+          done
           VERSION=$(python3 -c "import json;print(json.load(open('app/src-tauri/tauri.conf.json'))['version'])")
+          # Apple/Tauri secrets are read from the environment by the script, not
+          # passed as argv.
           python3 scripts/notarize_and_repackage_macos.py \
             --app "$APP" \
             --app-dir app \
@@ -179,11 +192,6 @@ jobs:
             --version "$VERSION" \
             --arch aarch64 \
             --dmg-out app/src-tauri/target/release/bundle/dmg \
-            --apple-id "$APPLE_ID" \
-            --apple-password "$APPLE_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID" \
-            --tauri-signing-key "$TAURI_SIGNING_PRIVATE_KEY" \
-            --tauri-signing-password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" \
             | tee "$RUNNER_TEMP/rehearsal-evidence/repackage.json"
 
       - name: Assess Gatekeeper, quarantine, and launch
@@ -197,21 +205,26 @@ jobs:
             spctl --assess --type execute -vvv "$APP"
           } | tee "$LOG"
 
-          # Quarantine the notarized+stapled app, then confirm it still launches.
+          # Quarantine the notarized+stapled app, then launch it through
+          # LaunchServices/Gatekeeper (`open`, not a direct exec) so the quarantine
+          # assessment path is actually exercised. `open -W` blocks until the app
+          # exits; if it stays alive for 5s the wrapper is still running.
           xattr -w com.apple.quarantine "0081;$(printf '%x' "$(date +%s)");SidecarRehearsal;" "$APP"
-          EXEC=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")
-          "$APP/Contents/MacOS/$EXEC" &
-          PID=$!
+          open -W "$APP" &
+          OPEN_PID=$!
           for i in 1 2 3 4 5; do
             sleep 1
-            if ! kill -0 "$PID" 2>/dev/null; then
-              echo "ERROR: quarantined app exited after ${i}s" | tee -a "$LOG"
+            if ! kill -0 "$OPEN_PID" 2>/dev/null; then
+              echo "ERROR: quarantined app failed to launch or exited within ${i}s" | tee -a "$LOG"
+              wait "$OPEN_PID" 2>/dev/null || true
               exit 1
             fi
           done
-          echo "quarantined app alive for 5s" | tee -a "$LOG"
-          kill "$PID" 2>/dev/null || true
-          wait "$PID" 2>/dev/null || true
+          echo "quarantined app launched via LaunchServices and alive for 5s" | tee -a "$LOG"
+          EXEC=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")
+          osascript -e "tell application \"$EXEC\" to quit" 2>/dev/null || pkill -f "$APP" 2>/dev/null || true
+          kill "$OPEN_PID" 2>/dev/null || true
+          wait "$OPEN_PID" 2>/dev/null || true
 
       - name: Download model for full descriptor proof
         if: ${{ inputs.download_model }}
@@ -259,6 +272,7 @@ jobs:
           path: ${{ runner.temp }}/rehearsal-evidence
           if-no-files-found: warn
           retention-days: 14
+          overwrite: true
 
       - name: Delete signing keychain
         if: always()
