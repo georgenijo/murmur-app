@@ -1156,6 +1156,10 @@ pub(crate) async fn undo_transform_and_close(
             // the Applied UI (Undo button) stays reachable while surfacing the
             // failure. Privacy: state event stays {state, errorCode} only.
             fx.emit_state(ReviewState::Applied, Some(apply_error_code(error)));
+            // Re-arm the linger so the error window is deterministic: the
+            // approve-time timer may be about to fire (hiding the popover
+            // ~instantly) or may have no-op'd mid-undo (leaving it up forever).
+            fx.schedule_linger_hide();
             Err(apply_error_code(error).to_string())
         }
     }
