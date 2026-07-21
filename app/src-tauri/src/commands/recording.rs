@@ -812,6 +812,10 @@ pub async fn process_audio(
     audio_data: String,
     state: tauri::State<'_, State>,
 ) -> Result<serde_json::Value, String> {
+    // Only one heavy inference runtime may be resident: stop any local-LLM
+    // helper before recording. Fail-fast no-op while a transform is in flight —
+    // the is_transform_busy guard below then refuses this recording.
+    state.transform_runtime.shutdown();
     let rid = {
         let mut dictation = state.app_state.dictation.lock_or_recover();
         // Same mutual exclusion as start_native_recording: this legacy base64
@@ -830,6 +834,12 @@ pub async fn process_audio(
         if state.app_state.transform_status().blocks_recording() {
             tracing::warn!(target: "pipeline", "process_audio: blocked — transform in progress");
             return Err("Cannot process audio while a transform is in progress.".to_string());
+        }
+        // Mutual exclusion with the local-LLM transform runtime: only one heavy
+        // inference runtime may be resident. Refuse while a transform is active.
+        if state.transform_runtime.is_transform_busy() {
+            tracing::warn!(target: "pipeline", "process_audio: blocked — transform runtime busy");
+            return Err("Cannot process audio while a text transform is in progress.".to_string());
         }
         if dictation.status != DictationStatus::Idle {
             return Err("Cannot process audio while live dictation is active.".to_string());
@@ -1922,6 +1932,10 @@ pub async fn start_native_recording(
         tracing::info!(target: "pipeline", "start_native_recording: app disabled — ignoring");
         return Ok(serde_json::json!({ "type": "app_disabled", "state": "idle" }));
     }
+    // Stop any resident local-LLM helper before recording (fail-fast no-op
+    // while a transform is in flight; the is_transform_busy guard below then
+    // refuses this recording).
+    state.transform_runtime.shutdown();
     // Check and update status in one lock; assign recording ID in the same
     // critical section so no concurrent cancel/start can slip between them.
     let rid = {
@@ -1948,6 +1962,15 @@ pub async fn start_native_recording(
         // same as the two guards above.
         if state.app_state.transform_status().blocks_recording() {
             tracing::warn!(target: "pipeline", "start_native_recording: blocked — transform in progress");
+            return Ok(serde_json::json!({
+                "type": "busy_transforming",
+                "state": "idle"
+            }));
+        }
+        // Only one heavy inference runtime may be resident: refuse to record
+        // while a local-LLM transform is in flight (supervisor busy).
+        if state.transform_runtime.is_transform_busy() {
+            tracing::warn!(target: "pipeline", "start_native_recording: blocked — transform runtime busy");
             return Ok(serde_json::json!({
                 "type": "busy_transforming",
                 "state": "idle"
@@ -2316,6 +2339,10 @@ pub async fn transcribe_file(
     {
         return Err("Already transcribing a file.".to_string());
     }
+    // Only one heavy inference runtime may be resident: stop any local-LLM
+    // helper before running the file transcription (fail-fast no-op while a
+    // transform is in flight).
+    state.transform_runtime.shutdown();
     let _file_guard = FileTranscribeGuard {
         app_state: &state.app_state,
         app_handle: Some(app_handle.clone()),

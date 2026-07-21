@@ -15,6 +15,12 @@ resolver = "2"
 name = "ui_lib"
 crate-type = ["lib", "cdylib", "staticlib"]
 
+[features]
+# Exposes LlmSidecar::for_test + scenario env injection into the local-LLM
+# helper. Off by default so the injection path is not linkable in a release
+# binary (debug_assertions also enables it for the standard test build).
+llm-test-support = []
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -51,9 +57,24 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 aho-corasick = "1"
 libc = "0.2"
 rusqlite = { version = "0.40.1", default-features = false, features = ["backup", "bundled"] }
+# Local-LLM sidecar supervisor (#312): the app links ONLY the protocol crate,
+# never llama-cpp-2. sha2 verifies the pinned transform model before spawn and
+# while streaming its download; sysinfo reads the child helper's RSS by pid.
+murmur-local-llm-protocol = { path = "crates/local-llm-protocol" }
+sha2 = "0.10"
+sysinfo = { version = "0.33", default-features = false, features = ["system"] }
+
+# Test-support helper: a protocol-v1 mock of the local-LLM sidecar, driven by
+# scenario env vars. Built as a normal bin so integration tests can locate it
+# via CARGO_BIN_EXE_mock_llm_helper. Not an externalBin, so it is never bundled.
+[[bin]]
+name = "mock_llm_helper"
+path = "tests/support/mock_llm_helper.rs"
 
 [dev-dependencies]
 tempfile = "3"
+# Async test harness for the local-LLM supervisor integration tests.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 # "test" feature only -- enables tauri::test::mock_app() for the headless
 # benchmark runner (tests/headless_benchmark.rs). Dev-dependency only: does
 # not affect release builds.

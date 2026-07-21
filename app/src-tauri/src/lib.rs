@@ -19,6 +19,7 @@ mod ide_context;
 mod injector;
 mod keyboard;
 mod knowledge_store;
+pub mod llm_sidecar;
 mod model_runtime;
 mod platform;
 mod resource_monitor;
@@ -92,6 +93,45 @@ pub(crate) struct State {
     /// call, so `set_transform_popover_expanded` can resize/reposition for a
     /// new size class without the caller re-supplying the anchor.
     pub(crate) transform_popover_anchor: Mutex<Option<commands::transform_popover::Rect>>,
+    /// Host-side supervisor for the signed local-LLM transform sidecar (#312).
+    pub(crate) transform_runtime: std::sync::Arc<llm_sidecar::LlmSidecar>,
+}
+
+/// Production mutual-exclusion bridge: lets the sidecar refuse to start over a
+/// heavy ASR runtime and release the ASR model (via the existing
+/// `MemoryPressure` unload path) before it spawns.
+struct AppHostGuard {
+    app: tauri::AppHandle,
+}
+
+impl llm_sidecar::HostGuard for AppHostGuard {
+    fn heavy_runtime_active(&self) -> Option<&'static str> {
+        use tauri::Manager;
+        let state = self.app.state::<State>();
+        if state.benchmark.is_running() {
+            return Some("benchmark");
+        }
+        if state
+            .app_state
+            .file_transcribing
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Some("fileTranscription");
+        }
+        if state.app_state.dictation.lock_or_recover().status != state::DictationStatus::Idle {
+            return Some("recording");
+        }
+        None
+    }
+
+    fn release_asr(&self) {
+        use tauri::Manager;
+        let state = self.app.state::<State>();
+        let _ = state
+            .app_state
+            .model_runtime
+            .unload(Some(&self.app), model_runtime::UnloadReason::MemoryPressure);
+    }
 }
 
 /// WebKitGTK environment defaults applied on Linux before GTK/webkit init.
@@ -145,6 +185,7 @@ pub fn run() {
             correct_and_teach: correct_and_teach::CorrectAndTeachState::default(),
             notch_info: Mutex::new(None),
             transform_popover_anchor: Mutex::new(None),
+            transform_runtime: std::sync::Arc::new(llm_sidecar::LlmSidecar::new()),
         })
         .invoke_handler(tauri::generate_handler![
             commands::recording::init_dictation,
@@ -207,6 +248,10 @@ pub fn run() {
             commands::models::get_model_runtime_catalog,
             commands::models::get_model_runtime_status,
             commands::models::download_model,
+            commands::transform_model::transform_model_status,
+            commands::transform_model::download_transform_model,
+            commands::transform_model::remove_transform_model,
+            commands::transform_model::reset_transform_runtime,
             frontmost::list_running_applications,
             commands::benchmark::get_benchmark_models,
             commands::benchmark::get_benchmark_activity,
@@ -270,6 +315,26 @@ pub fn run() {
 
             // Periodic heartbeat: memory telemetry + idle timeout
             resource_monitor::start_heartbeat(app.handle().clone());
+
+            // Install the local-LLM mutual-exclusion bridge and start its
+            // maintenance reaper (RSS ceiling + idle unload).
+            {
+                let state = app.state::<State>();
+                state
+                    .transform_runtime
+                    .set_host_guard(std::sync::Arc::new(AppHostGuard {
+                        app: app.handle().clone(),
+                    }));
+                let sidecar = std::sync::Arc::clone(&state.transform_runtime);
+                tauri::async_runtime::spawn(async move {
+                    let mut interval =
+                        tokio::time::interval(std::time::Duration::from_secs(30));
+                    loop {
+                        interval.tick().await;
+                        sidecar.maintenance_tick();
+                    }
+                });
+            }
 
             // Cache notch dimensions on the main thread (safe for NSScreen APIs).
             let notch = commands::overlay::detect_notch_info();
@@ -380,6 +445,15 @@ pub fn run() {
                     let _ = win.show();
                     let _ = win.set_focus();
                 }
+            }
+        }
+
+        // App-exit teardown: stop any resident local-LLM helper so it never
+        // outlives the app (no-op when no child is running).
+        #[cfg(target_os = "macos")]
+        if let RunEvent::Exit = &_event {
+            if let Some(state) = _app_handle.try_state::<State>() {
+                state.transform_runtime.shutdown();
             }
         }
     });
