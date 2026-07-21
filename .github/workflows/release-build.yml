@@ -333,14 +333,27 @@ jobs:
 
       - name: Free disk space for CUDA release build
         run: |
+          # CUDA + whisper release needs roughly 15–20 GiB free. Always drop the
+          # large unused toolchains (fast). Skip the expensive `docker system
+          # prune` when headroom is already enough (~1m of the ~1.5m step).
+          free_gib() { df -Pk / | awk 'NR==2 {printf "%d", $4/1024/1024}'; }
+          echo "Free space on / before: $(free_gib) GiB"
           sudo rm -rf \
             /usr/local/lib/android \
             /usr/share/dotnet \
             /opt/ghc \
             /usr/local/.ghcup \
             /opt/hostedtoolcache/CodeQL
-          sudo apt-get clean
+          sudo apt-get clean || true
+          FREE_GIB=$(free_gib)
+          echo "Free space on / after toolchain removal: ${FREE_GIB} GiB"
+          if [ "$FREE_GIB" -ge 25 ]; then
+            echo "Skipping docker system prune; sufficient space for CUDA release build"
+            exit 0
+          fi
+          echo "Running docker system prune to free additional space"
           docker system prune --all --force || true
+          echo "Free space on / after docker prune: $(free_gib) GiB"
 
       - name: Setup minimal Linux release environment
         uses: ./.github/actions/setup-linux-build
