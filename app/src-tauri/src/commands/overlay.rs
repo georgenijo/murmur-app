@@ -159,9 +159,17 @@ fn raise_window_above_menubar(overlay: &tauri::WebviewWindow) {
         super::native_window::ABOVE_MENU_BAR_LEVEL,
         true,
     );
-    if let Ok(ptr) = overlay.ns_window() {
-        let ns_window: &objc2_app_kit::NSWindow = unsafe { &*(ptr.cast()) };
-        ns_window.setHasShadow(false);
+    // Raw NSWindow mutation must run on the main thread (macOS 26 hard-traps
+    // off-main), same as `set_window_level_and_activation` (issue #325).
+    let overlay = overlay.clone();
+    let handle = overlay.app_handle().clone();
+    if let Err(e) = handle.run_on_main_thread(move || {
+        if let Ok(ptr) = overlay.ns_window() {
+            let ns_window: &objc2_app_kit::NSWindow = unsafe { &*(ptr.cast()) };
+            ns_window.setHasShadow(false);
+        }
+    }) {
+        tracing::warn!(target: "system", "raise_window_above_menubar: run_on_main_thread failed: {}", e);
     }
 }
 

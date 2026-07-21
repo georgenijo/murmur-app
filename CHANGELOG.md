@@ -11,6 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **Local dictation evaluation harness** adds strict versioned fixtures, a deterministic no-hardware CI tier, an opt-in installed-model/audio tier, and machine-readable recognition/transformation/delivery reports through `murmur-eval` (#267).
 
 ### Fixed
+- The selected-text transform popover no longer crashes the app on macOS 26. Its `NSWindow` level/activation and shadow treatment were mutated directly from async command context (a tokio worker); macOS 26 hard-traps on off-main `NSWindow` mutation. Those raw AppKit calls are now dispatched to the main thread via `run_on_main_thread`, matching the app's AX write paths (#325).
 - Disabling Murmur from the overlay no longer traps it disabled: the hover quick-settings card — which holds the "Enable Murmur" power button — now stays reachable while disabled, so the overlay's own control can turn Murmur back on. Previously the global-disable state gated off the overlay's hover-expand, leaving the tray "Disable Murmur" check item as the only way back.
 
 ## [0.19.0] - 2026-07-20
