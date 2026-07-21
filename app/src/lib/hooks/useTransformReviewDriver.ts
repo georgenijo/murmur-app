@@ -52,6 +52,24 @@ export function useTransformReviewDriver(enabled: boolean): ReviewDriverResult {
     if (!enabled) return;
     let cancelled = false;
     let unlisten: (() => void) | null = null;
+    let unlistenHidden: (() => void) | null = null;
+
+    // A backend-initiated hide (short-tap cancel, linger auto-hide, capture
+    // aborts) emits this content-free signal so we drop any stale review
+    // content — otherwise the hidden webview keeps the old diff and can flash
+    // it on the next show (item 13). Payload is intentionally empty.
+    listen('transform-review-hidden', () => {
+      if (cancelled) return;
+      setContent(EMPTY_REVIEW_CONTENT);
+      setErrorCode(null);
+    })
+      .then((fn) => {
+        if (cancelled) fn();
+        else unlistenHidden = fn;
+      })
+      .catch((e) => {
+        flog.error('transform-review', 'listen(transform-review-hidden) failed', { error: String(e) });
+      });
 
     listen<unknown>('transform-state-changed', (event) => {
       if (cancelled) return;
@@ -88,6 +106,7 @@ export function useTransformReviewDriver(enabled: boolean): ReviewDriverResult {
     return () => {
       cancelled = true;
       unlisten?.();
+      unlistenHidden?.();
     };
   }, [enabled]);
 
