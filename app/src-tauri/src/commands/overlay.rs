@@ -35,12 +35,13 @@ pub struct AppliedSurface {
 // the same box, so there is no horizontal hit-area mismatch and nothing animates
 // its width — expansion is height-only.
 //
-// WING is the visible strip on each side of the physical notch and must fit its
-// content clear of the notch:
-//   - left wing: 10px pill padding + 12px status icon = 22px used
-//   - right wing: 10px pill padding + 23px 7-bar waveform (7*2px + 6*1.5px) = 33px used
-// WING = 36 covers the wider (right) side with 3px of slack; anything wider than a
-// wing (recording timer, "Tap missed" label) renders below notch height instead.
+// WING is the visible strip on each side of the physical notch. The frontend
+// treats each wing as a fixed-width slot of this size and *centers* its content
+// (icon / waveform) inside it — so content is not flush to the notch edge.
+//   - left: red pulse / mic / spinner centered in the wing
+//   - right: ~23px 7-bar waveform (7*2px + 6*1.5px) centered in the wing
+// WING = 36 fits both with a little slack. Anything wider than a wing
+// (recording timer, "Tap missed" label) renders below notch height instead.
 const WING: f64 = 36.0;
 const DROPDOWN_H: f64 = 44.0;
 const FALLBACK_NOTCH_W: f64 = 80.0;

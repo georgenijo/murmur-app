@@ -14,11 +14,12 @@ interface OverlayPillProps {
  * Top-bar content: status indicator (left wing) + waveform (right wing). Purely
  * presentational — driven by the `visual` descriptor from `deriveVisual`.
  *
- * The wings are the only strips clear of the physical notch, so they hold ONLY
- * these two narrow elements. Wider content (recording timer, "Tap missed" label)
- * lives in the dropdown row, below notch height. Does not own the island
- * container (sizing/hover/islandRef stay in OverlayWidget.tsx, since they also
- * govern the sibling dropdown).
+ * Each wing is a fixed `geometry.wingW` slot with content *centered* inside it
+ * (not flush to the notch edge). The flex-1 spacer is the notch-obscured
+ * center. Wider content (recording timer, "Tap missed" label) lives in the
+ * dropdown row, below notch height. Does not own the island container
+ * (sizing/hover/islandRef stay in OverlayWidget.tsx, since they also govern
+ * the sibling dropdown).
  */
 export function OverlayPill({
   geometry,
@@ -27,14 +28,19 @@ export function OverlayPill({
   barRefs,
 }: OverlayPillProps) {
   const topH = geometry.collapsedH;
+  const wingW = geometry.wingW;
   const { indicator } = visual;
 
   return (
     <>
-      {/* Top bar — the only draggable surface (keeps the dropdown buttons clickable) */}
-      <div data-tauri-drag-region className="flex items-center" style={{ height: topH, paddingLeft: 10, paddingRight: 10 }}>
-        {/* Left wing — mic icon (idle) or red dot (recording) or spinner (processing) or red X (cancelled) or amber ! (hotkey miss), all same position */}
-        <div className="shrink-0 w-3 h-3 flex items-center justify-center">
+      {/* Top bar — the only draggable surface (keeps the dropdown buttons clickable).
+          No horizontal padding: each wing owns its full wingW and centers content. */}
+      <div data-tauri-drag-region className="flex items-center" style={{ height: topH }}>
+        {/* Left wing — fixed wing slot, content centered */}
+        <div
+          className="shrink-0 flex items-center justify-center"
+          style={{ width: wingW }}
+        >
           {indicator.kind === 'cancelled' ? (
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
               <line x1="6" y1="6" x2="18" y2="18" />
@@ -73,25 +79,29 @@ export function OverlayPill({
           )}
         </div>
 
-        {/* This spacer is intentionally the notch-obscured center region. */}
+        {/* Notch-obscured center — flex absorbs the physical notch width. */}
         <div className="flex-1" aria-hidden="true" />
 
-        {/* Right wing — waveform (only when recording) */}
+        {/* Right wing — same fixed wing slot; waveform centered in the middle
+            of the wing (not flush against the notch edge). */}
         <div
-          className="flex items-center gap-[1.5px] h-4 shrink-0 transition-opacity duration-300"
-          style={{ opacity: visual.waveformVisible ? 1 : 0 }}
+          className="shrink-0 flex items-center justify-center transition-opacity duration-300"
+          style={{ width: wingW, opacity: visual.waveformVisible ? 1 : 0 }}
+          aria-hidden={!visual.waveformVisible}
         >
-          {Array.from({ length: BAR_COUNT }, (_, i) => (
-            <div
-              key={i}
-              ref={el => { barRefs.current[i] = el; }}
-              className="w-[2px] rounded-full bg-white/90"
-              style={{
-                height: '2px',
-                transition: `height ${status === 'recording' ? '50ms' : '300ms'} ease-out`,
-              }}
-            />
-          ))}
+          <div className="flex items-center gap-[1.5px] h-4">
+            {Array.from({ length: BAR_COUNT }, (_, i) => (
+              <div
+                key={i}
+                ref={el => { barRefs.current[i] = el; }}
+                className="w-[2px] rounded-full bg-white/90"
+                style={{
+                  height: '2px',
+                  transition: `height ${status === 'recording' ? '50ms' : '300ms'} ease-out`,
+                }}
+              />
+            ))}
+          </div>
         </div>
       </div>
     </>
