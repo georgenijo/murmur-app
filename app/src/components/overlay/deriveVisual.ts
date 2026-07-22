@@ -9,6 +9,7 @@ import type { DictationStatus } from '../../lib/types';
 export type OverlayIndicator =
   | { kind: 'cancelled' }
   | { kind: 'secureField' }
+  | { kind: 'transformBusy' }
   | { kind: 'hotkeyMiss' }
   | { kind: 'recording' }
   | { kind: 'processing' }
@@ -37,16 +38,19 @@ export interface OverlayVisual {
  *   showCancelled ? X : showHotkeyMiss ? ! : status==='recording' ? dot
  *     : status==='processing' ? spinner : mic (dimmed if disabled)
  *
- * Priority: cancelled > secure-field flash > hotkey-miss > recording >
- * processing > transforming > idle. (Since `status` is a single enum value,
- * recording and processing can never both be true, so their relative order
- * does not change behavior — only idle's position at the end, after both,
- * matters.)
+ * Priority: cancelled > secure-field flash > transform-busy flash >
+ * hotkey-miss > recording > processing > transforming > idle. (Since `status`
+ * is a single enum value, recording and processing can never both be true, so
+ * their relative order does not change behavior — only idle's position at the
+ * end, after both, matters.)
  *
  * `transforming` and `showSecureField` (issue #312 PR-C2) are the transform
- * flow's two overlay affordances: the "transforming…" indicator shown while
+ * flow's overlay affordances: the "transforming…" indicator shown while
  * the local LLM is thinking, and a brief flash when a password/secure field is
- * refused. Both default off so the dictation call sites are unchanged.
+ * refused. `showTransformBusy` (issue #329) flashes when a transform keypress
+ * was refused because dictation/benchmark/file-transcription/a mid-flight
+ * transform owns the pipeline. All default off so the dictation call sites
+ * are unchanged.
  */
 export function deriveVisual(
   status: DictationStatus,
@@ -55,20 +59,23 @@ export function deriveVisual(
   disabled: boolean,
   transforming: boolean = false,
   showSecureField: boolean = false,
+  showTransformBusy: boolean = false,
 ): OverlayVisual {
   const indicator: OverlayIndicator = showCancelled
     ? { kind: 'cancelled' }
     : showSecureField
       ? { kind: 'secureField' }
-      : showHotkeyMiss
-        ? { kind: 'hotkeyMiss' }
-        : status === 'recording'
-          ? { kind: 'recording' }
-          : status === 'processing'
-            ? { kind: 'processing' }
-            : transforming
-              ? { kind: 'transforming' }
-              : { kind: 'idle', dimmed: disabled };
+      : showTransformBusy
+        ? { kind: 'transformBusy' }
+        : showHotkeyMiss
+          ? { kind: 'hotkeyMiss' }
+          : status === 'recording'
+            ? { kind: 'recording' }
+            : status === 'processing'
+              ? { kind: 'processing' }
+              : transforming
+                ? { kind: 'transforming' }
+                : { kind: 'idle', dimmed: disabled };
 
   return {
     indicator,

@@ -56,4 +56,25 @@ describe('deriveVisual', () => {
     expect(deriveVisual('idle', false, false, true).indicator).toEqual({ kind: 'idle', dimmed: true });
     expect(deriveVisual('idle', false, false, false).indicator).toEqual({ kind: 'idle', dimmed: false });
   });
+
+  // Transform-busy refusal flash (issue #329).
+  it('transform-busy flash beats hotkey-miss and active statuses', () => {
+    const visual = deriveVisual('recording', false, true, false, false, false, true);
+    expect(visual.indicator).toEqual({ kind: 'transformBusy' });
+  });
+
+  it('secure-field flash beats transform-busy', () => {
+    const visual = deriveVisual('idle', false, false, false, false, true, true);
+    expect(visual.indicator).toEqual({ kind: 'secureField' });
+  });
+
+  it('cancelled beats transform-busy', () => {
+    const visual = deriveVisual('idle', true, false, false, false, false, true);
+    expect(visual.indicator).toEqual({ kind: 'cancelled' });
+  });
+
+  it('transform-busy default-off leaves existing call sites unchanged', () => {
+    const visual = deriveVisual('idle', false, false, false);
+    expect(visual.indicator).toEqual({ kind: 'idle', dimmed: false });
+  });
 });

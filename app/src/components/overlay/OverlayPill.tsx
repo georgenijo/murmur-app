@@ -54,6 +54,13 @@ export function OverlayPill({
               <rect x="5" y="11" width="14" height="9" rx="2" />
               <path d="M8 11V7a4 4 0 0 1 8 0v4" />
             </svg>
+          ) : indicator.kind === 'transformBusy' ? (
+            // Brief flash when a transform keypress was refused — something
+            // else (dictation/benchmark/…) owns the pipeline (issue #329).
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-label="transform busy">
+              <circle cx="12" cy="12" r="9" />
+              <polyline points="12 7 12 12 15.5 14" />
+            </svg>
           ) : indicator.kind === 'transforming' ? (
             // "Transforming…" — local LLM is thinking (issue #312).
             <span className="w-2.5 h-2.5 rounded-full bg-violet-400 block" style={{ animation: 'pulse 0.8s ease-in-out infinite' }} />

@@ -96,6 +96,15 @@ pub(crate) struct State {
     /// call, so `set_transform_popover_expanded` can resize/reposition for a
     /// new size class without the caller re-supplying the anchor.
     pub(crate) transform_popover_anchor: Mutex<Option<commands::transform_popover::Rect>>,
+    /// Main-window visibility snapshotted at the FIRST popover show of a
+    /// transform pass (issue #329): `Some(was_visible)` while a popover is up,
+    /// `None` otherwise. `set_transform_popover_focusable`'s activation guard
+    /// reads this sticky value instead of a per-call snapshot — rapid repeated
+    /// transform-key presses interleave focus calls, and a per-call snapshot
+    /// taken while a previous `set_focus` had transiently surfaced the main
+    /// window would record "visible" and disable the re-hide guard, leaking
+    /// the main window onto the screen.
+    pub(crate) transform_main_was_visible: Mutex<Option<bool>>,
     /// Host-side supervisor for the signed local-LLM transform sidecar (#312).
     pub(crate) transform_runtime: std::sync::Arc<llm_sidecar::LlmSidecar>,
 }
@@ -188,6 +197,7 @@ pub fn run() {
             correct_and_teach: correct_and_teach::CorrectAndTeachState::default(),
             notch_info: Mutex::new(None),
             transform_popover_anchor: Mutex::new(None),
+            transform_main_was_visible: Mutex::new(None),
             transform_runtime: std::sync::Arc::new(llm_sidecar::LlmSidecar::new()),
         })
         .invoke_handler(tauri::generate_handler![
