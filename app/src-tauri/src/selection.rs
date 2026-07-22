@@ -95,6 +95,12 @@ pub enum SelectionError {
     /// (unlike `injector::focused_field_state`) — a native failure is a hard
     /// error here.
     AxUnavailable,
+    /// The secure-field check itself errored (non-benign AXSubrole/AXRole
+    /// status, or the messaging timeout could not be armed on the focused
+    /// element). We could not prove the focused element is NOT a password
+    /// field, so this is terminal for the clipboard fallback — only the AX
+    /// retry loop (which re-runs the full check) may try again (issue #334).
+    SecureCheckFailed,
 }
 
 impl SelectionError {
@@ -105,8 +111,48 @@ impl SelectionError {
             Self::NoSelection => "no_selection",
             Self::TooLarge => "too_large",
             Self::AxUnavailable => "ax_unavailable",
+            Self::SecureCheckFailed => "secure_check_failed",
         }
     }
+}
+
+/// Whether an AX-path failure may be retried by the warm-up retry loop in
+/// `capture_selection`. Retrying is always safe — a retry re-runs the full
+/// secure-field check and reads nothing unless that check passes — so this
+/// includes `SecureCheckFailed` (Chromium's lazy AX tree times out the first
+/// subrole queries; the retries are what warm it).
+fn retry_eligible(error: SelectionError) -> bool {
+    matches!(
+        error,
+        SelectionError::NoSelection
+            | SelectionError::AxUnavailable
+            | SelectionError::SecureCheckFailed
+    )
+}
+
+/// Whether an AX-path failure may fall back to the clipboard capture.
+/// Fail-closed set (issue #334): a positively detected `SecureField`, missing
+/// Accessibility permission, and — critically — an errored secure-field check
+/// (`SecureCheckFailed`) never fall back: if we could not prove the focused
+/// element is not a password field, we do not post a synthetic Cmd+C at it.
+fn fallback_eligible(error: SelectionError) -> bool {
+    matches!(
+        error,
+        SelectionError::NoSelection | SelectionError::AxUnavailable
+    )
+}
+
+/// Capture-granularity fallback decision (issue #334). `fallback_eligible`
+/// judges only the FINAL attempt's error, but the secure-check error must be
+/// sticky across the whole retry ladder: if ANY attempt reached a focused
+/// element and then failed to complete the secure-field check, a later
+/// attempt failing somewhere shallower (e.g. the focused-element query timing
+/// out → `AxUnavailable`) must not launder the capture back into fallback
+/// eligibility. Chromium's 25ms timeouts fail at nondeterministic query
+/// points across warm-up attempts, so this laundering path is real, not
+/// theoretical.
+fn fallback_allowed(final_error: SelectionError, secure_check_errored: bool) -> bool {
+    fallback_eligible(final_error) && !secure_check_errored
 }
 
 /// Bucket a byte length for privacy-safe logging. Never log the raw length or
@@ -244,6 +290,10 @@ pub async fn capture_selection(
 
         let mut ax_result = Err(SelectionError::AxUnavailable);
         let mut frontmost: Option<(i32, Option<String>)> = None;
+        // Sticky across attempts (issue #334): once any attempt errors the
+        // secure-field check, the whole capture is barred from the clipboard
+        // fallback — see `fallback_allowed`.
+        let mut secure_check_errored = false;
         for attempt in 0..AX_ATTEMPTS {
             if attempt > 0 {
                 tokio::time::sleep(AX_RETRY_GAP).await;
@@ -262,11 +312,15 @@ pub async fn capture_selection(
                 .unwrap_or((Err(SelectionError::AxUnavailable), None));
             ax_result = result;
             frontmost = fm;
+            if matches!(ax_result, Err(SelectionError::SecureCheckFailed)) {
+                secure_check_errored = true;
+            }
             match ax_result {
-                // Retry only the two "AX couldn't produce a selection" cases —
-                // success and the fail-closed errors (SecureField,
-                // AccessibilityDenied, TooLarge) are final.
-                Err(SelectionError::NoSelection) | Err(SelectionError::AxUnavailable) => {
+                // Retry only the "AX couldn't produce a selection" cases
+                // (including an errored secure-field check, which a retry
+                // re-runs from scratch) — success and the fail-closed errors
+                // (SecureField, AccessibilityDenied, TooLarge) are final.
+                Err(err) if retry_eligible(err) => {
                     if attempt + 1 < AX_ATTEMPTS {
                         tracing::info!(
                             target: "transform",
@@ -296,19 +350,22 @@ pub async fn capture_selection(
             // (NSSecureTextField disables it at the framework level; browsers
             // block password-field copy), so against a secure field the
             // sentinel never changes and the fallback times out — it can fail,
-            // never leak. `AccessibilityDenied` and a positively detected
-            // `SecureField` stay hard-blocked with no fallback.
-            (
-                Err(err @ (SelectionError::NoSelection | SelectionError::AxUnavailable)),
-                Some((pid, bundle_id)),
-            ) => {
+            // never leak. `AccessibilityDenied`, a positively detected
+            // `SecureField`, and an errored secure-field check
+            // (`SecureCheckFailed`, issue #334) stay hard-blocked with no
+            // fallback: if the check itself failed we could not prove the
+            // focused element is not a password field, so no synthetic Cmd+C.
+            // The bar is sticky across the retry ladder (`fallback_allowed`):
+            // an errored secure check on ANY attempt bars the fallback even if
+            // a later attempt fails shallower (`AxUnavailable`).
+            (Err(err), Some((pid, bundle_id))) if fallback_allowed(err, secure_check_errored) => {
                 tracing::info!(
                     target: "transform",
                     ax_outcome = err.as_str(),
                     "AX capture incomplete — attempting clipboard fallback"
                 );
                 tokio::task::spawn_blocking(move || {
-                    clipboard_fallback::capture_via_clipboard(pid, bundle_id)
+                    clipboard_fallback::capture_via_clipboard(pid, bundle_id, err)
                 })
                 .await
                 .unwrap_or(Err(err))
@@ -339,14 +396,16 @@ pub async fn capture_selection(
 /// first queries); this fallback is the last resort for genuinely AX-less
 /// targets whose copy handling honors the event flags.
 ///
-/// Strategy: snapshot the current clipboard text, overwrite it with a unique
-/// sentinel, post a synthetic Cmd+C, and poll until the clipboard no longer
-/// holds the sentinel (or a 300ms deadline passes — with nothing selected,
-/// Cmd+C is a no-op and the sentinel never changes). The user's original
-/// clipboard text is restored afterwards. Limitations, documented in the
-/// feature doc: a non-text clipboard (image/file) cannot be snapshotted by
-/// `arboard` and therefore cannot be restored, and the captured snapshot has
-/// no AX range/bounds (the popover centers; apply uses the paste fallback).
+/// Strategy: snapshot the full pasteboard (every item, every type — images
+/// and files survive, issue #335), overwrite it with a unique text sentinel,
+/// record the pasteboard `changeCount`, post a synthetic Cmd+C, and poll until
+/// the pasteboard shows exactly one ownership change past the sentinel write
+/// with non-sentinel text (or a 300ms deadline passes — with nothing selected,
+/// Cmd+C is a no-op and the count never moves). More than one change means a
+/// third-party writer interleaved and the text is rejected. The user's
+/// pasteboard is restored in full afterwards, success or failure. Remaining
+/// limitation: the captured snapshot has no AX range/bounds (the popover
+/// centers; apply uses the paste fallback).
 #[cfg(target_os = "macos")]
 mod clipboard_fallback {
     use super::{SelectionError, TransformSnapshot};
@@ -357,6 +416,88 @@ mod clipboard_fallback {
     const POLL_DEADLINE: Duration = Duration::from_millis(300);
 
     static CAPTURE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    /// Full-fidelity pasteboard snapshot: every item with every type's raw
+    /// data, so images/files/rich text survive the sentinel dance (issue #335
+    /// defect A — the previous text-only snapshot destroyed any non-text
+    /// clipboard). Content never leaves this module and is never logged.
+    pub(super) type PasteboardSnapshot = Vec<Vec<(String, Vec<u8>)>>;
+
+    /// NSPasteboard access. arboard also talks to NSPasteboard from arbitrary
+    /// threads, and this module already runs inside `spawn_blocking`, so
+    /// off-main use here matches the existing clipboard I/O in `injector`.
+    mod pasteboard {
+        use super::PasteboardSnapshot;
+        use objc2_app_kit::{NSPasteboard, NSPasteboardItem};
+        use objc2_foundation::{NSArray, NSData, NSString};
+
+        /// Monotonic change counter for the general pasteboard. Bumps once
+        /// per ownership change (i.e. once per Copy / write).
+        pub(in super::super) fn change_count() -> isize {
+            let pb = NSPasteboard::generalPasteboard();
+            pb.changeCount()
+        }
+
+        pub(in super::super) fn snapshot() -> PasteboardSnapshot {
+            let pb = NSPasteboard::generalPasteboard();
+            let Some(items) = pb.pasteboardItems() else {
+                return Vec::new();
+            };
+            items
+                .iter()
+                .map(|item| {
+                    item.types()
+                        .iter()
+                        .filter_map(|ty| {
+                            let data = item.dataForType(&ty)?;
+                            Some((ty.to_string(), data.to_vec()))
+                        })
+                        .collect()
+                })
+                .collect()
+        }
+
+        pub(in super::super) fn restore(snapshot: &PasteboardSnapshot) {
+            let pb = NSPasteboard::generalPasteboard();
+            pb.clearContents();
+            if snapshot.is_empty() {
+                return;
+            }
+            let items: Vec<_> = snapshot
+                .iter()
+                .map(|entry| {
+                    let item = NSPasteboardItem::new();
+                    for (ty, data) in entry {
+                        let ns_type = NSString::from_str(ty);
+                        let ns_data = NSData::with_bytes(data);
+                        item.setData_forType(&ns_data, &ns_type);
+                    }
+                    objc2::runtime::ProtocolObject::from_retained(item)
+                })
+                .collect();
+            let array = NSArray::from_retained_slice(&items);
+            if !pb.writeObjects(&array) {
+                // Content-free by design: item/type counts only.
+                tracing::warn!(
+                    target: "transform",
+                    items = snapshot.len(),
+                    "pasteboard restore write was refused"
+                );
+            }
+        }
+    }
+
+    /// Test-only shims: the `pasteboard` submodule is private; these expose
+    /// snapshot/restore to the unit tests without widening the API.
+    #[cfg(test)]
+    pub(super) fn pasteboard_snapshot_for_tests() -> PasteboardSnapshot {
+        pasteboard::snapshot()
+    }
+
+    #[cfg(test)]
+    pub(super) fn pasteboard_restore_for_tests(snapshot: &PasteboardSnapshot) {
+        pasteboard::restore(snapshot)
+    }
 
     /// Unique-per-attempt sentinel. Never derived from clipboard or selection
     /// content — safe to compare, never logged with content around it.
@@ -388,23 +529,57 @@ mod clipboard_fallback {
         Ok(())
     }
 
-    /// Poll `read` until it returns text that is not `sentinel`, up to
-    /// `deadline`. Injected reader so the loop is unit-testable without a real
+    /// Poll `read` until the pasteboard shows exactly the one ownership change
+    /// our synthetic Cmd+C should produce, up to `deadline`. `baseline` is the
+    /// `changeCount` observed immediately after the sentinel write; the only
+    /// accepted outcome is `baseline + 1` with non-sentinel text, re-checked
+    /// after the text read so a foreign write racing the read is caught.
+    /// A count that ever moves past `baseline + 1` means a third-party writer
+    /// (clipboard manager, Universal Clipboard push) interleaved — that text
+    /// is NOT the user's selection and is rejected outright (issue #335
+    /// defect B). Injected reader so the loop is unit-testable without a real
     /// clipboard.
-    pub(super) fn poll_for_selection<F>(
+    ///
+    /// Residual limitation (documented in the feature doc): `changeCount`
+    /// counts changes but cannot attribute a writer, so when the synthetic
+    /// Cmd+C is swallowed (Chromium reads hardware modifier state and sees
+    /// Cmd+Opt+C) and EXACTLY ONE foreign write lands inside the 300ms
+    /// window, that single write is indistinguishable from the copy and is
+    /// accepted. No NSPasteboard API closes this fully; the guard reduces the
+    /// exposure from "any write, any time in the window" to "a single write
+    /// that also stops writing before the re-check".
+    pub(super) fn poll_for_copy<F>(
         sentinel: &str,
+        baseline: isize,
         mut read: F,
         deadline: Duration,
         interval: Duration,
     ) -> Option<String>
     where
-        F: FnMut() -> Result<String, String>,
+        F: FnMut() -> (isize, Result<String, String>),
     {
         let started = Instant::now();
         loop {
-            if let Ok(text) = read() {
-                if text != sentinel {
-                    return Some(text);
+            let (count, text) = read();
+            if count > baseline + 1 {
+                return None;
+            }
+            if count == baseline + 1 {
+                match text {
+                    Ok(text) if text != sentinel => {
+                        let (count_after, _) = read();
+                        if count_after == baseline + 1 {
+                            return Some(text);
+                        }
+                        return None;
+                    }
+                    // Count moved but the sentinel is still (or again) the
+                    // text: a foreign writer re-wrote it. Unusable.
+                    Ok(_) => return None,
+                    // The one change happened but no text is readable yet
+                    // (transient read error, or Copy produced non-text data).
+                    // Keep polling until the deadline.
+                    Err(_) => {}
                 }
             }
             if started.elapsed() >= deadline {
@@ -414,41 +589,59 @@ mod clipboard_fallback {
         }
     }
 
+    /// The error reported when the fallback itself fails: the AX path's
+    /// terminal error, preserved verbatim (issue #336). `AxUnavailable` must
+    /// stay "couldn't read the selection" — never collapse to the misleading
+    /// `NoSelection` ("Select some text first") when text IS selected but the
+    /// synthetic Cmd+C was swallowed (Chromium sees Cmd+Opt+C while the
+    /// transform key is held). `NoSelection` is reserved for the case where
+    /// the AX path itself said the selection was empty.
+    pub(super) fn fallback_failure_error(ax_outcome: SelectionError) -> SelectionError {
+        ax_outcome
+    }
+
+    /// `ax_outcome` is the terminal error of the AX path that triggered this
+    /// fallback. When the fallback itself fails, that original error is what
+    /// the caller reports (issue #336) — see `fallback_failure_error`.
     pub(super) fn capture_via_clipboard(
         pid: i32,
         bundle_id: Option<String>,
+        ax_outcome: SelectionError,
     ) -> Result<TransformSnapshot, SelectionError> {
-        let original = crate::injector::read_clipboard_text().ok();
+        let original = pasteboard::snapshot();
         let sentinel = sentinel();
         if crate::injector::write_clipboard_text(&sentinel).is_err() {
-            return Err(SelectionError::NoSelection);
+            // arboard clears the pasteboard BEFORE writing, so a failed
+            // sentinel write can still have destroyed the contents — restore
+            // the snapshot (harmless if the pasteboard was never touched).
+            pasteboard::restore(&original);
+            return Err(fallback_failure_error(ax_outcome));
         }
+        let baseline = pasteboard::change_count();
 
         let copied = match post_copy_keystroke() {
-            Ok(()) => poll_for_selection(
+            Ok(()) => poll_for_copy(
                 &sentinel,
-                || crate::injector::read_clipboard_text(),
+                baseline,
+                || {
+                    (
+                        pasteboard::change_count(),
+                        crate::injector::read_clipboard_text(),
+                    )
+                },
                 POLL_DEADLINE,
                 POLL_INTERVAL,
             ),
             Err(_) => None,
         };
 
-        // Restore the user's clipboard. If the original was non-text (image/
-        // file) there is nothing to restore; on a failed capture at least
-        // clear our sentinel rather than leaving it behind.
-        match &original {
-            Some(text) => {
-                let _ = crate::injector::write_clipboard_text(text);
-            }
-            None => {
-                if copied.is_none() {
-                    let _ = crate::injector::write_clipboard_text("");
-                }
-            }
-        }
+        // Restore the user's pasteboard in full fidelity — every item, every
+        // type — whether or not the capture succeeded. An empty snapshot
+        // restores to an empty (cleared) pasteboard, which also removes our
+        // sentinel on the failure path.
+        pasteboard::restore(&original);
 
-        let text = copied.ok_or(SelectionError::NoSelection)?;
+        let text = copied.ok_or(fallback_failure_error(ax_outcome))?;
         super::classify_selection(&text)?;
         tracing::info!(
             target: "transform",
@@ -739,14 +932,22 @@ mod native {
         set_timeout(app)?;
 
         let focused = copy_attribute(app, "AXFocusedUIElement")?;
-        set_timeout(focused.0)?;
+        // From here on we hold a focused element whose secure-ness is not yet
+        // established. Any failure to complete the secure-field check —
+        // including failing to arm the messaging timeout it depends on — is
+        // `SecureCheckFailed`, which the caller treats as terminal for the
+        // clipboard fallback (issue #334): retry-eligible, never fall-back.
+        if set_timeout(focused.0).is_err() {
+            return Err(SelectionError::SecureCheckFailed);
+        }
 
         // FIRST: secure-field check. A positive match reads NOTHING else. Fails
         // closed: an AX error here (including the 25ms messaging timeout) is
         // NOT treated as "no subrole/role" — only a benign "no value"/
         // "attribute unsupported" status is safe to continue past. Any other
-        // error aborts the capture entirely (`AxUnavailable`) rather than
-        // silently falling through to read the selection.
+        // error aborts the capture entirely (`SecureCheckFailed`) rather than
+        // silently falling through to read the selection or falling over to
+        // the clipboard fallback.
         match copy_attribute_string_status(focused.0, "AXSubrole") {
             Ok(subrole) => {
                 if is_secure_subrole(&subrole) {
@@ -754,7 +955,7 @@ mod native {
                 }
             }
             Err(status) if super::is_benign_role_query_error(status) => {}
-            Err(_) => return Err(SelectionError::AxUnavailable),
+            Err(_) => return Err(SelectionError::SecureCheckFailed),
         }
         match copy_attribute_string_status(focused.0, "AXRole") {
             Ok(role) => {
@@ -763,7 +964,7 @@ mod native {
                 }
             }
             Err(status) if super::is_benign_role_query_error(status) => {}
-            Err(_) => return Err(SelectionError::AxUnavailable),
+            Err(_) => return Err(SelectionError::SecureCheckFailed),
         }
 
         let text = copy_attribute_string(focused.0, "AXSelectedText").unwrap_or_default();
@@ -862,6 +1063,7 @@ mod tests {
             (SelectionError::NoSelection, "no_selection"),
             (SelectionError::TooLarge, "too_large"),
             (SelectionError::AxUnavailable, "ax_unavailable"),
+            (SelectionError::SecureCheckFailed, "secure_check_failed"),
         ];
         for (error, expected) in cases {
             assert_eq!(error.as_str(), expected);
@@ -903,15 +1105,20 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn clipboard_poll_returns_first_non_sentinel_text() {
+    fn clipboard_poll_returns_text_from_the_single_copy_change() {
         use std::time::Duration;
+        // Sequence: Cmd+C hasn't landed yet (count still at baseline), then
+        // the copy lands (baseline+1) with real text, then the post-read
+        // re-check still sees baseline+1 → accept.
         let reads = std::cell::RefCell::new(vec![
-            Ok("SENTINEL".to_string()),
-            Ok("SENTINEL".to_string()),
-            Ok("copied selection".to_string()),
+            (10, Ok("SENTINEL".to_string())),
+            (10, Ok("SENTINEL".to_string())),
+            (11, Ok("copied selection".to_string())),
+            (11, Ok("copied selection".to_string())),
         ]);
-        let result = super::clipboard_fallback::poll_for_selection(
+        let result = super::clipboard_fallback::poll_for_copy(
             "SENTINEL",
+            10,
             || reads.borrow_mut().remove(0),
             Duration::from_millis(500),
             Duration::from_millis(1),
@@ -921,13 +1128,14 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn clipboard_poll_times_out_when_sentinel_never_changes() {
+    fn clipboard_poll_times_out_when_nothing_is_copied() {
         use std::time::Duration;
-        // Nothing selected: Cmd+C is a no-op, the sentinel never changes, and
-        // the poll must time out rather than return the sentinel as "text".
-        let result = super::clipboard_fallback::poll_for_selection(
+        // Nothing selected: Cmd+C is a no-op, the change count never moves,
+        // and the poll must time out rather than return the sentinel as text.
+        let result = super::clipboard_fallback::poll_for_copy(
             "SENTINEL",
-            || Ok("SENTINEL".to_string()),
+            10,
+            || (10, Ok("SENTINEL".to_string())),
             Duration::from_millis(20),
             Duration::from_millis(1),
         );
@@ -939,16 +1147,177 @@ mod tests {
     fn clipboard_poll_survives_transient_read_errors() {
         use std::time::Duration;
         let reads = std::cell::RefCell::new(vec![
-            Err("busy".to_string()),
-            Ok("copied".to_string()),
+            (11, Err("busy".to_string())),
+            (11, Ok("copied".to_string())),
+            (11, Ok("copied".to_string())),
         ]);
-        let result = super::clipboard_fallback::poll_for_selection(
+        let result = super::clipboard_fallback::poll_for_copy(
             "SENTINEL",
+            10,
             || reads.borrow_mut().remove(0),
             Duration::from_millis(500),
             Duration::from_millis(1),
         );
         assert_eq!(result, Some("copied".to_string()));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn clipboard_poll_rejects_foreign_writer_that_bumps_past_our_copy() {
+        use std::time::Duration;
+        // Issue #335 defect B: a clipboard manager / Universal Clipboard push
+        // interleaving with our Cmd+C moves the change count more than one
+        // step past the sentinel write. That text is NOT the user's selection
+        // — it must be rejected, not ingested.
+        let result = super::clipboard_fallback::poll_for_copy(
+            "SENTINEL",
+            10,
+            || (12, Ok("INJECTED-1234".to_string())),
+            Duration::from_millis(500),
+            Duration::from_millis(1),
+        );
+        assert_eq!(result, None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn clipboard_poll_rejects_foreign_write_racing_the_text_read() {
+        use std::time::Duration;
+        // The copy lands (baseline+1) but a foreign writer bumps the count
+        // between our text read and the re-check — the text we read can no
+        // longer be trusted to be the copy's.
+        let reads = std::cell::RefCell::new(vec![
+            (11, Ok("could be anyone's".to_string())),
+            (12, Ok("INJECTED".to_string())),
+        ]);
+        let result = super::clipboard_fallback::poll_for_copy(
+            "SENTINEL",
+            10,
+            || reads.borrow_mut().remove(0),
+            Duration::from_millis(500),
+            Duration::from_millis(1),
+        );
+        assert_eq!(result, None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn clipboard_poll_rejects_sentinel_rewritten_by_foreign_writer() {
+        use std::time::Duration;
+        // Count moved one step but the text is still the sentinel: someone
+        // re-wrote our sentinel. Unusable — never returned as a selection.
+        let result = super::clipboard_fallback::poll_for_copy(
+            "SENTINEL",
+            10,
+            || (11, Ok("SENTINEL".to_string())),
+            Duration::from_millis(20),
+            Duration::from_millis(1),
+        );
+        assert_eq!(result, None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn pasteboard_snapshot_restores_non_text_content_in_full() {
+        // Issue #335 defect A: a non-text clipboard (image/file) must survive
+        // the fallback's sentinel dance. Round-trip real NSPasteboard items
+        // carrying a custom binary type alongside text, through a destructive
+        // overwrite, and verify both types come back byte-identical. The
+        // user's real pasteboard is snapshotted first and restored at the end.
+        let user_pasteboard = super::clipboard_fallback::pasteboard_snapshot_for_tests();
+
+        let fixture: super::clipboard_fallback::PasteboardSnapshot = vec![vec![
+            (
+                "public.utf8-plain-text".to_string(),
+                b"fixture text".to_vec(),
+            ),
+            (
+                "com.murmur.test.binary".to_string(),
+                vec![0u8, 159, 146, 150, 255],
+            ),
+        ]];
+        super::clipboard_fallback::pasteboard_restore_for_tests(&fixture);
+
+        // Destroy it the way the fallback does: a plain text write.
+        crate::injector::write_clipboard_text("sentinel-destroys-clipboard").unwrap();
+
+        // Restore the fixture snapshot and read back both types.
+        super::clipboard_fallback::pasteboard_restore_for_tests(&fixture);
+        let round_tripped = super::clipboard_fallback::pasteboard_snapshot_for_tests();
+
+        // Put the user's pasteboard back before asserting.
+        super::clipboard_fallback::pasteboard_restore_for_tests(&user_pasteboard);
+
+        assert_eq!(round_tripped.len(), 1);
+        let types: Vec<&str> = round_tripped[0]
+            .iter()
+            .map(|(ty, _)| ty.as_str())
+            .collect();
+        assert!(types.contains(&"public.utf8-plain-text"));
+        assert!(types.contains(&"com.murmur.test.binary"));
+        for (ty, data) in &fixture[0] {
+            let restored = round_tripped[0]
+                .iter()
+                .find(|(t, _)| t == ty)
+                .map(|(_, d)| d);
+            assert_eq!(restored, Some(data), "type {ty} did not round-trip");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn fallback_failure_preserves_the_ax_paths_terminal_error() {
+        // Issue #336: when the AX path ended in AxUnavailable and the
+        // clipboard fallback then failed too, the user must see "couldn't
+        // read the selection" — not "Select some text first" over a visible
+        // selection. NoSelection survives only when AX itself reported empty.
+        assert_eq!(
+            super::clipboard_fallback::fallback_failure_error(SelectionError::AxUnavailable),
+            SelectionError::AxUnavailable
+        );
+        assert_eq!(
+            super::clipboard_fallback::fallback_failure_error(SelectionError::NoSelection),
+            SelectionError::NoSelection
+        );
+    }
+
+    #[test]
+    fn secure_check_failure_is_never_fallback_eligible() {
+        // Issue #334: an errored secure-field check must fail closed — no
+        // synthetic Cmd+C at an element we could not prove is not a password
+        // field. Only the benign "AX couldn't produce a selection" outcomes
+        // may fall back.
+        assert!(!fallback_eligible(SelectionError::SecureCheckFailed));
+        assert!(!fallback_eligible(SelectionError::SecureField));
+        assert!(!fallback_eligible(SelectionError::AccessibilityDenied));
+        assert!(!fallback_eligible(SelectionError::TooLarge));
+        assert!(fallback_eligible(SelectionError::NoSelection));
+        assert!(fallback_eligible(SelectionError::AxUnavailable));
+    }
+
+    #[test]
+    fn secure_check_error_bars_fallback_for_the_whole_capture() {
+        // Issue #334 (capture granularity): an errored secure check on ANY
+        // retry attempt is sticky — a later attempt failing shallower
+        // (AxUnavailable from a focused-element query timeout) must not
+        // launder the capture back into fallback eligibility.
+        assert!(!fallback_allowed(SelectionError::AxUnavailable, true));
+        assert!(!fallback_allowed(SelectionError::NoSelection, true));
+        assert!(!fallback_allowed(SelectionError::SecureCheckFailed, false));
+        assert!(fallback_allowed(SelectionError::AxUnavailable, false));
+        assert!(fallback_allowed(SelectionError::NoSelection, false));
+    }
+
+    #[test]
+    fn secure_check_failure_is_retry_eligible_but_terminal_errors_are_not() {
+        // Retrying re-runs the full secure check, so it stays safe; the
+        // fail-closed terminal errors must not be retried.
+        assert!(retry_eligible(SelectionError::SecureCheckFailed));
+        assert!(retry_eligible(SelectionError::NoSelection));
+        assert!(retry_eligible(SelectionError::AxUnavailable));
+        assert!(!retry_eligible(SelectionError::SecureField));
+        assert!(!retry_eligible(SelectionError::AccessibilityDenied));
+        assert!(!retry_eligible(SelectionError::TooLarge));
     }
 
     #[test]

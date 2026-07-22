@@ -102,6 +102,11 @@ pub fn selection_error_code(error: SelectionError) -> &'static str {
         SelectionError::NoSelection => "no_selection",
         SelectionError::TooLarge => "too_large",
         SelectionError::AxUnavailable => "ax_unavailable",
+        // The secure-field check itself errored (issue #334). The popover
+        // message for ax_unavailable ("Couldn't read the selection") is the
+        // accurate user-facing story; the distinct log string lives in
+        // `SelectionError::as_str`.
+        SelectionError::SecureCheckFailed => "ax_unavailable",
     }
 }
 
@@ -1609,6 +1614,10 @@ mod tests {
             (SelectionError::NoSelection, "no_selection"),
             (SelectionError::TooLarge, "too_large"),
             (SelectionError::AxUnavailable, "ax_unavailable"),
+            // An errored secure-field check surfaces to the user as the
+            // (accurate) "couldn't read the selection" popover code; the
+            // distinct diagnostic string lives in SelectionError::as_str.
+            (SelectionError::SecureCheckFailed, "ax_unavailable"),
         ];
         for (error, expected) in cases {
             assert_eq!(selection_error_code(error), expected);
