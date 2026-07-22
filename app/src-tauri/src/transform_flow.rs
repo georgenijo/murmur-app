@@ -1151,6 +1151,33 @@ pub(crate) fn dismiss_review_for_recording(app_state: &AppState, fx: &dyn FlowEf
     true
 }
 
+/// Entry-point prologue for pipeline work other than a dictation recording —
+/// file transcription, the legacy base64 `process_audio` path, and benchmarks
+/// (issue #338). Auto-dismisses a parked (ready/failed) review exactly like
+/// `start_native_recording` does — a parked review never completes on its
+/// own, so refusing with "wait for the transform to finish" would deadlock
+/// the user — then refuses with `refusal` if an ACTIVE transform phase
+/// (Capturing/Listening/Thinking/Applying) still holds the shared pipeline.
+///
+/// Callers may re-check `blocks_recording()` under their own dictation lock
+/// afterwards as a race guard; this prologue is the part every work-starting
+/// entry point must share so parked reviews are handled consistently.
+pub(crate) fn clear_parked_review_for_pipeline_work(
+    app_state: &AppState,
+    fx: &dyn FlowEffects,
+    entry: &'static str,
+    refusal: &str,
+) -> Result<(), String> {
+    if dismiss_review_for_recording(app_state, fx) {
+        tracing::info!(target: "pipeline", entry = entry, "auto-dismissed parked transform review");
+    }
+    if app_state.transform_status().blocks_recording() {
+        tracing::warn!(target: "pipeline", entry = entry, "blocked — transform in progress");
+        return Err(refusal.to_string());
+    }
+    Ok(())
+}
+
 /// Undo an applied transform and close the popover **without** bumping the
 /// clipboard-restore epoch a second time.
 ///
@@ -1768,6 +1795,58 @@ mod tests {
             );
             assert_eq!(app_state.transform_status(), status);
         }
+    }
+
+    // ---- clear_parked_review_for_pipeline_work (issue #338) ----------------
+
+    #[test]
+    fn pipeline_work_dismisses_parked_review_and_proceeds() {
+        // Issue #338: a parked (ready/failed) review never completes on its
+        // own — file transcription / process_audio / benchmarks must dismiss
+        // it and proceed, not refuse with "wait for the transform to finish".
+        let app_state = AppState::default();
+        let fx = RecordingFlowEffects::new();
+        transform_apply::start_session(&app_state, snapshot_for_dismiss_tests());
+        assert!(transform_apply::set_proposed_text(&app_state, "HELLO".to_string()));
+        app_state.set_transform_status(TransformStatus::ReviewPending);
+
+        let result =
+            clear_parked_review_for_pipeline_work(&app_state, &fx, "test_entry", "blocked");
+        assert_eq!(result, Ok(()));
+        assert_eq!(app_state.transform_status(), TransformStatus::Idle);
+        assert!(transform_apply::session_snapshot(&app_state).is_none());
+        assert!(!fx.popover_shown());
+    }
+
+    #[test]
+    fn pipeline_work_refused_while_a_transform_phase_is_active() {
+        // Issue #338 (benchmark side): an ACTIVE transform must refuse the
+        // work — the benchmark path previously ignored transform status
+        // entirely and ran right over it.
+        let app_state = AppState::default();
+        let fx = RecordingFlowEffects::new();
+        for status in [
+            TransformStatus::Capturing,
+            TransformStatus::Listening,
+            TransformStatus::Thinking,
+            TransformStatus::Applying,
+        ] {
+            app_state.set_transform_status(status);
+            let result =
+                clear_parked_review_for_pipeline_work(&app_state, &fx, "test_entry", "blocked");
+            assert_eq!(result, Err("blocked".to_string()), "{:?} must refuse", status);
+            assert_eq!(app_state.transform_status(), status, "{:?} must survive", status);
+        }
+    }
+
+    #[test]
+    fn pipeline_work_is_a_noop_when_transform_is_idle() {
+        let app_state = AppState::default();
+        let fx = RecordingFlowEffects::new();
+        let result =
+            clear_parked_review_for_pipeline_work(&app_state, &fx, "test_entry", "blocked");
+        assert_eq!(result, Ok(()));
+        assert_eq!(app_state.transform_status(), TransformStatus::Idle);
     }
 
     #[tokio::test]

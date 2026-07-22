@@ -812,6 +812,21 @@ pub async fn process_audio(
     audio_data: String,
     state: tauri::State<'_, State>,
 ) -> Result<serde_json::Value, String> {
+    // Auto-dismiss a parked transform review, refuse on an active transform
+    // (issue #338 — same policy as start_native_recording). The in-lock
+    // transform guard below stays as a race guard.
+    {
+        let fx = crate::transform_flow::TauriFlowEffects {
+            app: &app_handle,
+            state: &state,
+        };
+        crate::transform_flow::clear_parked_review_for_pipeline_work(
+            &state.app_state,
+            &fx,
+            "process_audio",
+            "Cannot process audio while a transform is in progress.",
+        )?;
+    }
     // Only one heavy inference runtime may be resident: stop any local-LLM
     // helper before recording. Fail-fast no-op while a transform is in flight —
     // the is_transform_busy guard below then refuses this recording.
@@ -2363,6 +2378,29 @@ pub async fn transcribe_file(
         .swap(true, Ordering::SeqCst)
     {
         return Err("Already transcribing a file.".to_string());
+    }
+    // Auto-dismiss a parked transform review, refuse on an active transform
+    // (issue #338 — same policy as start_native_recording; a parked review
+    // never finishes on its own, so "wait for the transform" would never
+    // resolve). The in-lock transform guard below stays as a race guard.
+    // Note: file_transcribing was claimed above, so release it on refusal.
+    {
+        let fx = crate::transform_flow::TauriFlowEffects {
+            app: &app_handle,
+            state: &state,
+        };
+        if let Err(refusal) = crate::transform_flow::clear_parked_review_for_pipeline_work(
+            &state.app_state,
+            &fx,
+            "transcribe_file",
+            "Wait for the transform to finish before transcribing a file.",
+        ) {
+            state
+                .app_state
+                .file_transcribing
+                .store(false, Ordering::SeqCst);
+            return Err(refusal);
+        }
     }
     // Only one heavy inference runtime may be resident: stop any local-LLM
     // helper before running the file transcription (fail-fast no-op while a
