@@ -851,14 +851,18 @@ pub(crate) async fn start_transform_capture(
         app: &app_handle,
         state: &state,
     };
-    let outcome =
-        core_start_capture(&state.app_state, &fx, model_ready, crate::selection::capture_selection(&app_handle))
-            .await;
 
-    if outcome == StartOutcome::Listening {
-        // Arm audio for the spoken instruction. DictationStatus stays Idle —
-        // this audio belongs to the transform flow (TransformStatus::Listening).
-        // Pass the configured input device (same contract as start_native_recording).
+    // Arm audio for the spoken instruction BEFORE selection capture, not
+    // after (issue #329): capture can take over a second in Chromium apps
+    // (lazy-AX warm-up retries + the clipboard fallback), and users start
+    // speaking the instant they press the key. Arming afterwards chopped the
+    // first ~1s off the instruction — the reproducible "Didn't catch an
+    // instruction" in browsers while TextEdit (instant capture) worked.
+    // DictationStatus stays Idle — this audio belongs to the transform flow.
+    // If capture then aborts (secure field, error, short-tap cancel), the
+    // Aborted arm below tears the mic down; nothing is ever transcribed from
+    // an aborted pass.
+    if model_ready {
         if let Err(e) = crate::audio::start_recording(Some(app_handle.clone()), device_name) {
             tracing::error!(target: "transform", error = %e, "instruction audio failed to start");
             state.app_state.set_transform_status(TransformStatus::Idle);
@@ -867,6 +871,23 @@ pub(crate) async fn start_transform_capture(
             emit_transform_hidden(&app_handle);
             return Err(e);
         }
+    }
+
+    let outcome =
+        core_start_capture(&state.app_state, &fx, model_ready, crate::selection::capture_selection(&app_handle))
+            .await;
+
+    if outcome != StartOutcome::Listening {
+        // Capture aborted (secure field, capture error, model-not-ready
+        // failed popover, or a cancel racing the capture) — the pre-armed mic
+        // must not stay live.
+        if crate::audio::is_recording() {
+            let _ = crate::audio::stop_recording();
+        }
+        return Ok(());
+    }
+
+    {
         // Mic-leak window (item 10): `cancel_transform` is lock-free and does
         // not take `recording_transition`, so a short-tap cancel can land
         // between `core_start_capture` returning Listening and the mic actually
@@ -1104,8 +1125,13 @@ pub(crate) async fn cancel_transform(
     // after a successful undo — see undo_transform_and_close.)
     let _ = state.app_state.next_transform_apply_epoch();
 
-    // Stop instruction audio only if it was the transform's (Listening).
-    if prev == TransformStatus::Listening && crate::audio::is_recording() {
+    // Stop instruction audio only if it was the transform's. Since issue #329
+    // the mic is pre-armed during Capturing (before selection capture
+    // completes), so both phases can own live audio — never dictation's,
+    // which is mutually excluded while the transform status is non-Idle.
+    if matches!(prev, TransformStatus::Capturing | TransformStatus::Listening)
+        && crate::audio::is_recording()
+    {
         let _ = crate::audio::stop_recording();
     }
 
