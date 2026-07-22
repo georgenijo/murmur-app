@@ -142,6 +142,19 @@ fn fallback_eligible(error: SelectionError) -> bool {
     )
 }
 
+/// Capture-granularity fallback decision (issue #334). `fallback_eligible`
+/// judges only the FINAL attempt's error, but the secure-check error must be
+/// sticky across the whole retry ladder: if ANY attempt reached a focused
+/// element and then failed to complete the secure-field check, a later
+/// attempt failing somewhere shallower (e.g. the focused-element query timing
+/// out → `AxUnavailable`) must not launder the capture back into fallback
+/// eligibility. Chromium's 25ms timeouts fail at nondeterministic query
+/// points across warm-up attempts, so this laundering path is real, not
+/// theoretical.
+fn fallback_allowed(final_error: SelectionError, secure_check_errored: bool) -> bool {
+    fallback_eligible(final_error) && !secure_check_errored
+}
+
 /// Bucket a byte length for privacy-safe logging. Never log the raw length or
 /// text — only which bucket it falls in.
 pub fn length_bucket(bytes: usize) -> &'static str {
@@ -277,6 +290,10 @@ pub async fn capture_selection(
 
         let mut ax_result = Err(SelectionError::AxUnavailable);
         let mut frontmost: Option<(i32, Option<String>)> = None;
+        // Sticky across attempts (issue #334): once any attempt errors the
+        // secure-field check, the whole capture is barred from the clipboard
+        // fallback — see `fallback_allowed`.
+        let mut secure_check_errored = false;
         for attempt in 0..AX_ATTEMPTS {
             if attempt > 0 {
                 tokio::time::sleep(AX_RETRY_GAP).await;
@@ -295,6 +312,9 @@ pub async fn capture_selection(
                 .unwrap_or((Err(SelectionError::AxUnavailable), None));
             ax_result = result;
             frontmost = fm;
+            if matches!(ax_result, Err(SelectionError::SecureCheckFailed)) {
+                secure_check_errored = true;
+            }
             match ax_result {
                 // Retry only the "AX couldn't produce a selection" cases
                 // (including an errored secure-field check, which a retry
@@ -335,7 +355,10 @@ pub async fn capture_selection(
             // (`SecureCheckFailed`, issue #334) stay hard-blocked with no
             // fallback: if the check itself failed we could not prove the
             // focused element is not a password field, so no synthetic Cmd+C.
-            (Err(err), Some((pid, bundle_id))) if fallback_eligible(err) => {
+            // The bar is sticky across the retry ladder (`fallback_allowed`):
+            // an errored secure check on ANY attempt bars the fallback even if
+            // a later attempt fails shallower (`AxUnavailable`).
+            (Err(err), Some((pid, bundle_id))) if fallback_allowed(err, secure_check_errored) => {
                 tracing::info!(
                     target: "transform",
                     ax_outcome = err.as_str(),
@@ -453,7 +476,14 @@ mod clipboard_fallback {
                 })
                 .collect();
             let array = NSArray::from_retained_slice(&items);
-            pb.writeObjects(&array);
+            if !pb.writeObjects(&array) {
+                // Content-free by design: item/type counts only.
+                tracing::warn!(
+                    target: "transform",
+                    items = snapshot.len(),
+                    "pasteboard restore write was refused"
+                );
+            }
         }
     }
 
@@ -509,6 +539,15 @@ mod clipboard_fallback {
     /// is NOT the user's selection and is rejected outright (issue #335
     /// defect B). Injected reader so the loop is unit-testable without a real
     /// clipboard.
+    ///
+    /// Residual limitation (documented in the feature doc): `changeCount`
+    /// counts changes but cannot attribute a writer, so when the synthetic
+    /// Cmd+C is swallowed (Chromium reads hardware modifier state and sees
+    /// Cmd+Opt+C) and EXACTLY ONE foreign write lands inside the 300ms
+    /// window, that single write is indistinguishable from the copy and is
+    /// accepted. No NSPasteboard API closes this fully; the guard reduces the
+    /// exposure from "any write, any time in the window" to "a single write
+    /// that also stops writing before the re-check".
     pub(super) fn poll_for_copy<F>(
         sentinel: &str,
         baseline: isize,
@@ -572,6 +611,10 @@ mod clipboard_fallback {
         let original = pasteboard::snapshot();
         let sentinel = sentinel();
         if crate::injector::write_clipboard_text(&sentinel).is_err() {
+            // arboard clears the pasteboard BEFORE writing, so a failed
+            // sentinel write can still have destroyed the contents — restore
+            // the snapshot (harmless if the pasteboard was never touched).
+            pasteboard::restore(&original);
             return Err(fallback_failure_error(ax_outcome));
         }
         let baseline = pasteboard::change_count();
@@ -1250,6 +1293,19 @@ mod tests {
         assert!(!fallback_eligible(SelectionError::TooLarge));
         assert!(fallback_eligible(SelectionError::NoSelection));
         assert!(fallback_eligible(SelectionError::AxUnavailable));
+    }
+
+    #[test]
+    fn secure_check_error_bars_fallback_for_the_whole_capture() {
+        // Issue #334 (capture granularity): an errored secure check on ANY
+        // retry attempt is sticky — a later attempt failing shallower
+        // (AxUnavailable from a focused-element query timeout) must not
+        // launder the capture back into fallback eligibility.
+        assert!(!fallback_allowed(SelectionError::AxUnavailable, true));
+        assert!(!fallback_allowed(SelectionError::NoSelection, true));
+        assert!(!fallback_allowed(SelectionError::SecureCheckFailed, false));
+        assert!(fallback_allowed(SelectionError::AxUnavailable, false));
+        assert!(fallback_allowed(SelectionError::NoSelection, false));
     }
 
     #[test]
