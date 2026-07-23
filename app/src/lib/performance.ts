@@ -405,3 +405,9 @@ export function onPerformanceResourceSample(
     if (isResourceSampleV1(event.payload)) callback(event.payload);
   });
 }
+
+export function onPerformanceDiagnosticsCleared(
+  callback: () => void,
+): Promise<UnlistenFn> {
+  return listen('performance-diagnostics-cleared', callback);
+}

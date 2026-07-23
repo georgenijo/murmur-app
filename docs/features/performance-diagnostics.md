@@ -137,6 +137,9 @@ There is no network upload or remote telemetry.
 | `performance-resource-sample` | Live typed one-second sample event |
 
 The TypeScript guards reject unsupported schemas before UI code consumes them.
-The current resource cards use these samples and label host CPU, Murmur CPU,
-Murmur RSS, Rust heap, and FFI/native heap explicitly. The Runs table and
-waterfall remain #352, not this data-layer issue.
+The Diagnostics Performance tab uses these samples for synchronized, explicitly
+scoped host, main-process, and sidecar cards and charts. The Runs tab reads the
+bounded records directly, then uses `get_performance_run` for detail. Its phase
+waterfall preserves canonical stage order and availability but does not infer
+absolute offsets that V1 does not record. Correlated Events navigation matches
+the structured canonical correlation field rather than parsing event summaries.

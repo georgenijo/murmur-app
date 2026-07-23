@@ -1,23 +1,36 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useEventStore } from '../../lib/hooks/useEventStore';
-import { useResourceMonitor } from '../../lib/hooks/useResourceMonitor';
+import { usePerformanceDiagnostics } from '../../lib/hooks/usePerformanceDiagnostics';
+import { usePerformanceHealth } from '../../lib/hooks/usePerformanceHealth';
 import { StreamChips } from './StreamChips';
 import { LevelFilter } from './LevelFilter';
 import { EventRow } from './EventRow';
-import { MetricsView } from './MetricsView';
-import type { StreamName, LevelName } from '../../lib/events';
-import { formatEventForCopy, matchesTransformPassId } from '../../lib/eventFilters';
+import { PerformanceView } from './PerformanceView';
+import { RunsView } from './RunsView';
+import { LEVELS, STREAMS, type StreamName, type LevelName } from '../../lib/events';
+import {
+  CORRELATION_FIELD_LABELS,
+  formatEventForCopy,
+  matchesCorrelation,
+  type CorrelationField,
+  type CorrelationFilter,
+} from '../../lib/eventFilters';
 
-type Tab = 'events' | 'metrics';
+type Tab = 'events' | 'performance' | 'runs';
+const TABS: Tab[] = ['events', 'performance', 'runs'];
 
 export function LogViewerApp() {
   const { events, clear } = useEventStore();
   const [tab, setTab] = useState<Tab>('events');
-  const resourceReadings = useResourceMonitor(tab === 'metrics');
+  const performance = usePerformanceDiagnostics(true);
+  const health = usePerformanceHealth(tab === 'performance');
   const [activeStreams, setActiveStreams] = useState<Set<StreamName>>(
     () => new Set(['pipeline', 'audio', 'transform', 'system'])
   );
-  const [transformPassId, setTransformPassId] = useState('');
+  const [correlation, setCorrelation] = useState<CorrelationFilter>({
+    field: 'transform_pass_id',
+    value: '',
+  });
   const [activeLevels, setActiveLevels] = useState<Set<LevelName>>(
     () => new Set(['info', 'warn', 'error'])
   );
@@ -45,7 +58,7 @@ export function LogViewerApp() {
   const filteredEvents = events.filter(
     e => activeStreams.has(e.stream as StreamName)
       && activeLevels.has(e.level as LevelName)
-      && matchesTransformPassId(e, transformPassId)
+      && matchesCorrelation(e, correlation)
   );
 
   // Auto-scroll to bottom when new events arrive
@@ -68,43 +81,58 @@ export function LogViewerApp() {
     navigator.clipboard.writeText(text);
   }, [filteredEvents]);
 
+  const showCorrelatedEvents = useCallback((filter: CorrelationFilter) => {
+    setCorrelation(filter);
+    setActiveStreams(new Set(STREAMS));
+    setActiveLevels(new Set(LEVELS));
+    setTab('events');
+  }, []);
+
   return (
     <div className="h-screen flex flex-col bg-background text-on-surface">
       {/* Header */}
       <div className="shrink-0 bg-surface-container-low px-4 py-3">
         <div className="flex items-center justify-between mb-3">
           {/* Tabs */}
-          <div className="flex gap-1 rounded-xl bg-surface-container p-1">
-            {(['events', 'metrics'] as Tab[]).map((t) => (
+          <div role="tablist" aria-label="Diagnostics views" className="flex gap-1 rounded-xl bg-surface-container p-1">
+            {TABS.map((t) => (
               <button
                 key={t}
+                type="button"
+                role="tab"
+                id={`diagnostics-tab-${t}`}
+                aria-controls={`diagnostics-panel-${t}`}
+                aria-selected={tab === t}
                 onClick={() => setTab(t)}
                 className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-[background-color,box-shadow,color] ${
                   tab === t
                     ? 'bg-surface-container-lowest text-on-surface shadow-sm'
                     : 'text-on-surface-variant hover:text-on-surface'
                 }`}
-                aria-pressed={tab === t}
               >
                 {t.charAt(0).toUpperCase() + t.slice(1)}
               </button>
             ))}
           </div>
           {/* Actions */}
-          <div className="flex gap-2">
-            <button
-              onClick={handleCopyAll}
-              className="rounded-lg border border-outline-variant/10 bg-surface-container-lowest px-3 py-1.5 text-xs font-medium text-on-surface-variant shadow-sm transition-colors hover:bg-surface-container hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-            >
-              Copy All
-            </button>
-            <button
-              onClick={clear}
-              className="rounded-lg border border-outline-variant/10 bg-surface-container-lowest px-3 py-1.5 text-xs font-medium text-on-surface-variant shadow-sm transition-colors hover:bg-surface-container hover:text-error focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-            >
-              Clear
-            </button>
-          </div>
+          {tab === 'events' && (
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={handleCopyAll}
+                className="rounded-lg border border-outline-variant/10 bg-surface-container-lowest px-3 py-1.5 text-xs font-medium text-on-surface-variant shadow-sm transition-colors hover:bg-surface-container hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+              >
+                Copy filtered Events
+              </button>
+              <button
+                type="button"
+                onClick={clear}
+                className="rounded-lg border border-outline-variant/10 bg-surface-container-lowest px-3 py-1.5 text-xs font-medium text-on-surface-variant shadow-sm transition-colors hover:bg-surface-container hover:text-error focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+              >
+                Clear Events
+              </button>
+            </div>
+          )}
         </div>
         {/* Filters (only for events tab) */}
         {tab === 'events' && (
@@ -112,16 +140,32 @@ export function LogViewerApp() {
             <StreamChips active={activeStreams} onToggle={toggleStream} />
             <div className="flex items-center gap-2">
               <label className="flex items-center gap-1.5 text-xs text-on-surface-variant">
-                Pass ID
+                Correlation
+                <select
+                  value={correlation.field}
+                  onChange={event => setCorrelation(current => ({
+                    field: event.target.value as CorrelationField,
+                    value: current.value,
+                  }))}
+                  aria-label="Correlation field"
+                  className="rounded-lg border border-outline-variant/20 bg-surface-container-lowest px-2 py-1 text-xs text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+                >
+                  {(Object.keys(CORRELATION_FIELD_LABELS) as CorrelationField[]).map(field => (
+                    <option key={field} value={field}>{CORRELATION_FIELD_LABELS[field]}</option>
+                  ))}
+                </select>
                 <input
                   type="text"
-                  inputMode="numeric"
-                  pattern="[0-9]*"
-                  value={transformPassId}
-                  onChange={(event) => setTransformPassId(event.target.value)}
+                  inputMode={correlation.field === 'run_id' ? 'text' : 'numeric'}
+                  pattern={correlation.field === 'run_id' ? undefined : '[0-9]*'}
+                  value={correlation.value}
+                  onChange={(event) => setCorrelation(current => ({
+                    ...current,
+                    value: event.target.value,
+                  }))}
                   placeholder="All"
-                  aria-label="Filter by transform pass ID"
-                  className="w-20 rounded-lg border border-outline-variant/20 bg-surface-container-lowest px-2 py-1 font-mono text-xs text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+                  aria-label={`Filter by ${CORRELATION_FIELD_LABELS[correlation.field]}`}
+                  className="w-28 rounded-lg border border-outline-variant/20 bg-surface-container-lowest px-2 py-1 font-mono text-xs text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
                 />
               </label>
               <LevelFilter active={activeLevels} onToggle={toggleLevel} />
@@ -131,8 +175,11 @@ export function LogViewerApp() {
       </div>
 
       {/* Content */}
-      {tab === 'events' ? (
+      {tab === 'events' && (
         <div
+          role="tabpanel"
+          id="diagnostics-panel-events"
+          aria-labelledby="diagnostics-tab-events"
           ref={listRef}
           onScroll={handleScroll}
           className="flex-1 overflow-y-auto font-mono text-xs"
@@ -147,9 +194,44 @@ export function LogViewerApp() {
             ))
           )}
         </div>
-      ) : (
-        <div className="flex-1 overflow-y-auto">
-          <MetricsView events={events} resourceReadings={resourceReadings} />
+      )}
+      {tab === 'performance' && (
+        <div
+          role="tabpanel"
+          id="diagnostics-panel-performance"
+          aria-labelledby="diagnostics-tab-performance"
+          className="flex-1 overflow-y-auto"
+        >
+          <PerformanceView
+            samples={performance.samples}
+            loading={performance.resourcesLoading}
+            error={performance.resourcesError}
+            health={health}
+            onRetry={() => {
+              void performance.refreshResources();
+              health.refresh();
+            }}
+          />
+        </div>
+      )}
+      {tab === 'runs' && (
+        <div
+          role="tabpanel"
+          id="diagnostics-panel-runs"
+          aria-labelledby="diagnostics-tab-runs"
+          className="flex-1 overflow-y-auto"
+        >
+          <RunsView
+            runs={performance.runs}
+            loading={performance.runsLoading}
+            error={performance.runsError}
+            cleared={performance.cleared}
+            clearing={performance.clearing}
+            clearError={performance.clearError}
+            onRetry={performance.refreshRuns}
+            onClear={performance.clear}
+            onShowEvents={showCorrelatedEvents}
+          />
         </div>
       )}
     </div>
