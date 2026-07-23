@@ -23,6 +23,7 @@ export type CompatibilityIssueCode =
   | 'fixture_set_mismatch'
   | 'evaluation_model_mismatch'
   | 'evaluation_execution_mismatch'
+  | 'evaluation_result_incomplete'
   | 'machine_mismatch'
   | 'app_version_mismatch';
 
@@ -246,6 +247,15 @@ function compareEvaluationCompatibility(
       'evaluation_tier_mismatch',
       'tier',
       'Deterministic and hardware evaluation tiers cannot be compared.',
+    );
+  }
+  if (baseline.cases.some((entry) => !entry.complete || entry.status !== 'passed')
+    || candidate.cases.some((entry) => !entry.complete || entry.status !== 'passed')) {
+    blocker(
+      issues,
+      'evaluation_result_incomplete',
+      'cases.results',
+      'One or more evaluation case results are incomplete, failed, or skipped.',
     );
   }
 

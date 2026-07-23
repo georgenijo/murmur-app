@@ -191,4 +191,24 @@ describe('compareDiagnosticReports', () => {
       'evaluation_execution_mismatch',
     ]));
   });
+
+  it('blocks recommendations for failed or incomplete evaluation results', () => {
+    const baseline = imported(evaluationDeterministic);
+    const candidate = structuredClone(baseline);
+    if (candidate.kind !== 'evaluation') throw new Error('evaluation fixture expected');
+    candidate.cases[0].status = 'failed';
+    candidate.cases[0].complete = false;
+
+    const comparison = compareDiagnosticReports(baseline, candidate);
+    expect(comparison).toMatchObject({
+      status: 'blocked',
+      deltasAllowed: false,
+      recommendationAllowed: false,
+      metrics: [],
+    });
+    expect(comparison.issues).toContainEqual(expect.objectContaining({
+      code: 'evaluation_result_incomplete',
+      severity: 'blocker',
+    }));
+  });
 });

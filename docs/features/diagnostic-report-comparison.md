@@ -59,7 +59,10 @@ like-for-like comparison, so they cannot produce deltas or recommendations.
 Evaluation comparison is blocked when report/fixture schema, deterministic
 versus hardware tier, fixture ID set, per-case model/backend/accelerator, stage
 sequence, fixture-only mode, final-only behavior, or incremental-completion
-semantics differ.
+semantics differ. Cases marked passed must contain complete recognition,
+transformation, and delivery measurements. Failed, skipped, or incomplete case
+sets may still be imported for inspection, but cannot produce deltas or
+recommendations.
 
 Machine/OS metadata and Murmur app-version differences are visible warnings.
 They still permit side-by-side deltas, but disable recommendation eligibility.

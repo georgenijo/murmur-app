@@ -147,6 +147,88 @@ describe('parseDiagnosticReportJson', () => {
       ok: false,
       error: { code: 'schema_mismatch' },
     });
+    expect(parse({ ...evaluationDeterministic, summary: null })).toMatchObject({
+      ok: false,
+      error: { code: 'schema_mismatch' },
+    });
+  });
+
+  it('rejects benchmark results marked successful without required measurements', () => {
+    const missingMeasurement = JSON.parse(JSON.stringify(benchmarkV2));
+    missingMeasurement.results[0].warmMedianMs = null;
+    expect(parse(missingMeasurement)).toMatchObject({
+      ok: false,
+      error: { code: 'schema_mismatch' },
+    });
+
+    const emptyMeasurements = JSON.parse(JSON.stringify(benchmarkV2));
+    emptyMeasurements.results[0].fixtures = [];
+    expect(parse(emptyMeasurements)).toMatchObject({
+      ok: false,
+      error: { code: 'schema_mismatch' },
+    });
+  });
+
+  it('rejects evaluation cases marked passed without required measurements', () => {
+    const missingRecognition = JSON.parse(JSON.stringify(evaluationDeterministic));
+    missingRecognition.cases[0].recognition.rawWer = null;
+    expect(parse(missingRecognition)).toMatchObject({
+      ok: false,
+      error: { code: 'schema_mismatch' },
+    });
+
+    const missingDelivery = JSON.parse(JSON.stringify(evaluationDeterministic));
+    missingDelivery.cases[0].delivery.delivered = null;
+    expect(parse(missingDelivery)).toMatchObject({
+      ok: false,
+      error: { code: 'schema_mismatch' },
+    });
+  });
+
+  it('keeps valid failed evaluation cases importable but not complete', () => {
+    const failed = JSON.parse(JSON.stringify(evaluationHardware));
+    failed.cases[0].status = 'failed';
+    failed.cases[0].failures = ['PRIVATE_FAILURE_SENTINEL'];
+    failed.cases[0].recognition = {
+      expectedRaw: null,
+      actualRaw: null,
+      rawWordErrors: null,
+      normalizedWordErrors: null,
+      referenceWords: null,
+      normalizedReferenceWords: null,
+      referenceCharacters: null,
+      characterErrors: null,
+      rawWer: null,
+      normalizedWer: null,
+      cer: null,
+      boundedAlternativeMatch: false,
+    };
+    failed.cases[0].transformation.actualFinal = null;
+    failed.cases[0].transformation.exactMatch = false;
+    failed.cases[0].transformation.commandExactMatch = null;
+    failed.cases[0].transformation.noChangePreserved = null;
+    failed.cases[0].transformation.stages = [];
+    failed.cases[0].delivery.delivered = null;
+    failed.cases[0].delivery.exactMatch = false;
+    failed.cases[0].delivery.attempts = 0;
+    failed.summary.passed = 0;
+    failed.summary.failed = 1;
+    failed.summary.aggregateRawWer = null;
+    failed.summary.aggregateNormalizedWer = null;
+    failed.summary.aggregateCer = null;
+    failed.summary.transformationMatchRate = 0;
+    failed.summary.commandExactMatchRate = null;
+    failed.summary.noChangePreservationRate = null;
+    failed.summary.deliveryMatchRate = 0;
+
+    const result = parse(failed);
+    expect(result.ok).toBe(true);
+    if (!result.ok || result.report.kind !== 'evaluation') return;
+    expect(result.report.cases[0]).toMatchObject({
+      status: 'failed',
+      complete: false,
+    });
+    expect(JSON.stringify(result.report)).not.toContain('PRIVATE_FAILURE_SENTINEL');
   });
 
   it('enforces model, fixture, case, and stage collection bounds', () => {

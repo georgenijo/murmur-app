@@ -107,6 +107,7 @@ export interface NormalizedBenchmarkReport {
 export interface NormalizedEvaluationCase {
   id: string;
   status: 'passed' | 'failed' | 'skipped';
+  complete: boolean;
   fixtureOnly: boolean;
   model: {
     name: string;
@@ -349,7 +350,7 @@ function isBenchmarkModel(value: unknown, context: ValidationContext): value is 
     return false;
   }
   const fixtureIds = value.fixtures.map((fixture) => fixture.fixtureId as string);
-  return isString(value.modelName)
+  const structurallyValid = isString(value.modelName)
     && isString(value.label)
     && isString(value.backend)
     && isString(value.accelerator)
@@ -366,6 +367,22 @@ function isBenchmarkModel(value: unknown, context: ValidationContext): value is 
     && isNonNegativeNumber(value.memoryDeltaMb)
     && isNullableString(value.error)
     && hasUniqueStrings(fixtureIds);
+  if (!structurallyValid) return false;
+  return value.error !== null || hasCompleteBenchmarkMeasurements(value);
+}
+
+function hasCompleteBenchmarkMeasurements(value: JsonRecord): boolean {
+  return isNonNegativeNumber(value.modelLoadMs)
+    && isNonNegativeNumber(value.firstInferenceMs)
+    && isNonNegativeNumber(value.warmMedianMs)
+    && isNonNegativeNumber(value.warmP95Ms)
+    && isNonNegativeNumber(value.realtimeFactor)
+    && isNonNegativeNumber(value.wordErrorRate)
+    && isNonNegativeNumber(value.normalizedWordErrorRate)
+    && isNonNegativeNumber(value.deliveredWordErrorRate)
+    && isNonNegativeNumber(value.deliveredNormalizedWordErrorRate)
+    && Array.isArray(value.fixtures)
+    && value.fixtures.length > 0;
 }
 
 function isBenchmarkEnvironment(value: unknown): value is JsonRecord {
@@ -635,7 +652,7 @@ function isEvaluationCase(
     'id', 'status', 'failures', 'provenance', 'context', 'model', 'recognition',
     'transformation', 'delivery', 'latency', 'runtime',
   ])) return false;
-  return isString(value.id)
+  const structurallyValid = isString(value.id)
     && (value.status === 'passed' || value.status === 'failed' || value.status === 'skipped')
     && boundedStrings(value.failures, DIAGNOSTIC_REPORT_LIMITS.stringsPerCollection, context)
     && isCaseProvenance(value.provenance)
@@ -646,6 +663,45 @@ function isEvaluationCase(
     && isDelivery(value.delivery)
     && isLatency(value.latency)
     && isRuntime(value.runtime, context);
+  if (!structurallyValid) return false;
+  return hasConsistentEvaluationOutcome(value);
+}
+
+function hasCompleteRecognition(value: JsonRecord): boolean {
+  return isString(value.expectedRaw)
+    && isString(value.actualRaw)
+    && isNonNegativeInteger(value.rawWordErrors)
+    && isNonNegativeInteger(value.normalizedWordErrors)
+    && isNonNegativeInteger(value.referenceWords)
+    && value.referenceWords > 0
+    && isNonNegativeInteger(value.normalizedReferenceWords)
+    && value.normalizedReferenceWords > 0
+    && isNonNegativeInteger(value.referenceCharacters)
+    && value.referenceCharacters > 0
+    && isNonNegativeInteger(value.characterErrors)
+    && isNonNegativeNumber(value.rawWer)
+    && isNonNegativeNumber(value.normalizedWer)
+    && isNonNegativeNumber(value.cer)
+    && value.boundedAlternativeMatch === true;
+}
+
+function hasConsistentEvaluationOutcome(value: JsonRecord): boolean {
+  const failures = value.failures as string[];
+  if (value.status !== 'passed') return failures.length > 0;
+  const transformation = value.transformation as JsonRecord;
+  const delivery = value.delivery as JsonRecord;
+  return failures.length === 0
+    && hasCompleteRecognition(value.recognition as JsonRecord)
+    && isString(transformation.actualFinal)
+    && transformation.exactMatch === true
+    && transformation.commandExactMatch !== false
+    && transformation.noChangePreserved !== false
+    && (transformation.stages as JsonRecord[])
+      .every((stage) => stage.expectationMatch === true)
+    && isString(delivery.delivered)
+    && delivery.exactMatch === true
+    && isNonNegativeInteger(delivery.attempts)
+    && delivery.attempts > 0;
 }
 
 function isEvaluationReport(
@@ -662,15 +718,27 @@ function isEvaluationReport(
     isEvaluationCase,
     context,
   )) return false;
+  if (!isEvaluationSummary(value.summary)) return false;
   const caseIds = value.cases.map((entry) => entry.id as string);
+  const tierModelsAreConsistent = value.cases.every((entry) =>
+    value.tier === 'deterministic' ? entry.model === null : entry.model !== null);
+  const summary = value.summary as JsonRecord;
+  const passedSummaryIsComplete = summary.passed === 0 || (
+    isNonNegativeNumber(summary.aggregateRawWer)
+    && isNonNegativeNumber(summary.aggregateNormalizedWer)
+    && isNonNegativeNumber(summary.aggregateCer)
+    && isNonNegativeNumber(summary.transformationMatchRate)
+    && isNonNegativeNumber(summary.deliveryMatchRate)
+  );
   return value.reportVersion === 1
     && value.fixtureVersion === 1
     && isIsoDate(value.generatedAt)
     && (value.tier === 'deterministic' || value.tier === 'hardware')
     && isEvaluationPrivacy(value.privacy)
     && isEvaluationEnvironment(value.environment)
-    && isEvaluationSummary(value.summary)
     && value.summary.total === value.cases.length
+    && tierModelsAreConsistent
+    && passedSummaryIsComplete
     && hasUniqueStrings(caseIds);
 }
 
@@ -745,7 +813,7 @@ function normalizeBenchmark(
           fixture.deliveredNormalizedWordErrorRate as number,
         deliveredTransformFailed: fixture.deliveredTransformFailed as boolean,
       })),
-      succeeded: model.error === null,
+      succeeded: model.error === null && hasCompleteBenchmarkMeasurements(model),
     })),
     recommendations: {
       fastest: recommendations.fastest as string | null,
@@ -802,6 +870,7 @@ function normalizeEvaluation(
       return {
         id: entry.id as string,
         status: entry.status as NormalizedEvaluationCase['status'],
+        complete: entry.status === 'passed' && hasConsistentEvaluationOutcome(entry),
         fixtureOnly: context.fixtureOnly as boolean,
         model: model ? {
           name: model.name as string,
