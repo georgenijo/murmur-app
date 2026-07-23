@@ -138,4 +138,15 @@ describe('useSettings configure rollback privacy', () => {
       JSON.parse(localStorage.getItem('dictation-settings') ?? '{}').microphone,
     ).toBe('Studio Mic');
   });
+
+  it('pushes mirrorToNotchPill changes to the backend (regression: was missing from configure-trigger list)', async () => {
+    await act(async () => {
+      current.updateSettings({ mirrorToNotchPill: true });
+      await Promise.resolve();
+    });
+
+    expect(mocks.configure).toHaveBeenCalled();
+    const lastArg = mocks.configure.mock.calls.at(-1)?.[0];
+    expect(lastArg).toMatchObject({ mirrorToNotchPill: true });
+  });
 });
