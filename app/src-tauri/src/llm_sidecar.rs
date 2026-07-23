@@ -294,7 +294,9 @@ fn open_and_verify_model(
         .open(path)
         .map_err(|_| TransformError::ModelUnreadable)?;
 
-    let metadata = file.metadata().map_err(|_| TransformError::ModelUnreadable)?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| TransformError::ModelUnreadable)?;
     if !metadata.is_file() || metadata.len() != expected_size {
         return Err(TransformError::ModelMismatch);
     }
@@ -549,9 +551,10 @@ fn unique_id(prefix: &str) -> String {
 mod supported {
     use super::*;
     use murmur_local_llm_protocol::{
-        read_frame, write_frame, FrameError, HelperMessage, HostMessage, ModelIdentity,
-        ProtocolLimits, HostMessage::Cancel as HostCancel, MAX_INPUT_BYTES, MAX_INSTRUCTION_BYTES,
-        MAX_OUTPUT_BYTES, MAX_OUTPUT_TOKENS, MAX_DEADLINE_MS, PROTOCOL_NAME, PROTOCOL_VERSION,
+        read_frame, write_frame, FrameError, HelperMessage, HostMessage,
+        HostMessage::Cancel as HostCancel, ModelIdentity, ProtocolLimits, MAX_DEADLINE_MS,
+        MAX_INPUT_BYTES, MAX_INSTRUCTION_BYTES, MAX_OUTPUT_BYTES, MAX_OUTPUT_TOKENS, PROTOCOL_NAME,
+        PROTOCOL_VERSION,
     };
     use std::sync::mpsc::{Receiver, RecvTimeoutError};
     use std::sync::Mutex;
@@ -733,6 +736,38 @@ mod supported {
             deadline: Duration,
             cancel: CancelToken,
         ) -> Result<TransformOutput, TransformError> {
+            self.transform_inner(instruction, input, deadline, cancel, None)
+                .await
+        }
+
+        /// Correlated transform entry point for the selected-text flow. The
+        /// existing uncorrelated method remains for isolated protocol tests.
+        pub async fn transform_for_pass(
+            self: &Arc<Self>,
+            transform_pass_id: u64,
+            instruction: &str,
+            input: &str,
+            deadline: Duration,
+            cancel: CancelToken,
+        ) -> Result<TransformOutput, TransformError> {
+            self.transform_inner(
+                instruction,
+                input,
+                deadline,
+                cancel,
+                Some(transform_pass_id),
+            )
+            .await
+        }
+
+        async fn transform_inner(
+            self: &Arc<Self>,
+            instruction: &str,
+            input: &str,
+            deadline: Duration,
+            cancel: CancelToken,
+            transform_pass_id: Option<u64>,
+        ) -> Result<TransformOutput, TransformError> {
             // App-side limit enforcement (defence in depth over the helper).
             if instruction.len() > MAX_INSTRUCTION_BYTES
                 || input.len() > MAX_INPUT_BYTES
@@ -791,15 +826,28 @@ mod supported {
                 Ok(out) => ("ok", out.output_tokens),
                 Err(err) => (err.as_str(), 0),
             };
-            tracing::info!(
-                target: "pipeline",
-                outcome,
-                duration_ms = elapsed_ms,
-                instruction_bucket,
-                input_bucket,
-                output_tokens,
-                "llm_transform"
-            );
+            if let Some(transform_pass_id) = transform_pass_id {
+                tracing::info!(
+                    target: "pipeline",
+                    transform_pass_id,
+                    outcome,
+                    duration_ms = elapsed_ms,
+                    instruction_bucket,
+                    input_bucket,
+                    output_tokens,
+                    "llm_transform"
+                );
+            } else {
+                tracing::info!(
+                    target: "pipeline",
+                    outcome,
+                    duration_ms = elapsed_ms,
+                    instruction_bucket,
+                    input_bucket,
+                    output_tokens,
+                    "llm_transform"
+                );
+            }
             result
         }
 
@@ -911,9 +959,9 @@ mod supported {
         }
 
         fn spawn_and_handshake(&self, model_path: &Path) -> Result<Child, TransformError> {
+            use murmur_local_llm_protocol::MODEL_FD;
             use std::os::unix::io::AsRawFd;
             use std::os::unix::process::CommandExt;
-            use murmur_local_llm_protocol::MODEL_FD;
 
             let (size, sha) = self.plan.pins();
             let model_file = open_and_verify_model(model_path, size, sha)?;
@@ -1485,6 +1533,17 @@ impl LlmSidecar {
         Err(TransformError::Unsupported)
     }
 
+    pub async fn transform_for_pass(
+        self: &Arc<Self>,
+        _transform_pass_id: u64,
+        _instruction: &str,
+        _input: &str,
+        _deadline: Duration,
+        _cancel: CancelToken,
+    ) -> Result<TransformOutput, TransformError> {
+        Err(TransformError::Unsupported)
+    }
+
     pub fn maintenance_tick(&self) {}
     pub fn reset(&self) {}
     pub fn shutdown(&self) {}
@@ -1532,7 +1591,10 @@ mod tests {
 
         a.cancel();
         assert!(a.is_cancelled(), "cancelling A must flip A");
-        assert!(!b.is_cancelled(), "cancelling A must NOT flip B (per-request)");
+        assert!(
+            !b.is_cancelled(),
+            "cancelling A must NOT flip B (per-request)"
+        );
 
         // A clone observes the same cancellation; identity holds across clones.
         let a2 = a.clone();

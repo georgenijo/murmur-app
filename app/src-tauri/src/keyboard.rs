@@ -734,6 +734,10 @@ static HOLD_DOWN_DETECTOR: Mutex<Option<HoldDownDetector>> = Mutex::new(None);
 // listener per process. Starting/stopping the transform listener never
 // touches `DOUBLE_TAP_DETECTOR` / `HOLD_DOWN_DETECTOR` or `ACTIVE_MODE`.
 static TRANSFORM_DETECTOR: Mutex<Option<HoldDownDetector>> = Mutex::new(None);
+/// Physical hold identity, independent of whether the backend accepts the pass.
+/// A refused press still gets a complete start/stop trace under its own ID and
+/// can never overwrite the active flow's correlation ID.
+static TRANSFORM_HOLD_CONTEXT: Mutex<Option<(u64, Instant)>> = Mutex::new(None);
 /// Gates transform-detector processing independent of `LISTENER_ACTIVE`
 /// (which only reflects the dictation listener). Lets the transform hotkey
 /// work even if, hypothetically, it were started before the dictation
@@ -854,7 +858,8 @@ fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                 // The dictation listener (LISTENER_ACTIVE) and the transform
                 // hotkey (TRANSFORM_ACTIVE) are independent; either one being
                 // active is enough to keep processing events on this thread.
-                if !LISTENER_ACTIVE.load(Ordering::SeqCst) && !TRANSFORM_ACTIVE.load(Ordering::SeqCst)
+                if !LISTENER_ACTIVE.load(Ordering::SeqCst)
+                    && !TRANSFORM_ACTIVE.load(Ordering::SeqCst)
                 {
                     return;
                 }
@@ -902,6 +907,9 @@ fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                             d.reset();
                             d.last_stopped_at = Some(Instant::now());
                         }
+                    }
+                    if let Some((pass_id, elapsed_ms)) = take_transform_hold_context() {
+                        crate::transform_trace::key_stop(pass_id, elapsed_ms, "escape");
                     }
                     // Invalidate pending hold-promotion timers
                     HOLD_PROMOTED.store(false, Ordering::SeqCst);
@@ -952,6 +960,10 @@ fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                             // pass owns out from under it.
                             let state = handle.state::<crate::State>();
                             let app_state = &state.app_state;
+                            let pass_id = app_state.next_transform_pass_id();
+                            *TRANSFORM_HOLD_CONTEXT.lock_or_recover() =
+                                Some((pass_id, Instant::now()));
+                            crate::transform_trace::key_start(pass_id);
                             // Pass boundary (issue #337 defect B): drop the
                             // sticky main-window visibility snapshot so the
                             // new pass re-records it at its first popover
@@ -977,24 +989,61 @@ fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                             // Applying) is left untouched.
                             match app_state.transform_status() {
                                 crate::state::TransformStatus::Idle => {
+                                    if let Some(previous_pass_id) =
+                                        app_state.active_transform_pass_id()
+                                    {
+                                        crate::transform_trace::resolution(
+                                            previous_pass_id,
+                                            "cancelled",
+                                            "superseded",
+                                            None,
+                                        );
+                                        app_state.clear_transform_pass(previous_pass_id);
+                                    }
                                     crate::transform_apply::clear_session(app_state);
                                     clear_visibility_snapshot();
+                                    app_state.activate_transform_pass(pass_id);
                                 }
                                 crate::state::TransformStatus::ReviewPending => {
+                                    let previous_pass_id = app_state.active_transform_pass_id();
                                     if app_state.try_transition_transform_status(
                                         crate::state::TransformStatus::ReviewPending,
                                         crate::state::TransformStatus::Idle,
                                     ) {
+                                        if let Some(previous_pass_id) = previous_pass_id {
+                                            crate::transform_trace::resolution(
+                                                previous_pass_id,
+                                                "cancelled",
+                                                "superseded",
+                                                None,
+                                            );
+                                            app_state.clear_transform_pass(previous_pass_id);
+                                        }
                                         crate::transform_apply::clear_session(app_state);
                                         clear_visibility_snapshot();
+                                        app_state.activate_transform_pass(pass_id);
                                     }
                                 }
                                 _ => {}
                             }
-                            let _ = handle.emit("transform-key-pressed", ());
+                            let _ = handle.emit(
+                                "transform-key-pressed",
+                                serde_json::json!({ "transformPassId": pass_id }),
+                            );
                         }
                         HoldDownEvent::Stop => {
-                            let _ = handle.emit("transform-key-released", ());
+                            if let Some((pass_id, elapsed_ms)) = take_transform_hold_context() {
+                                let reason = match event.event_type {
+                                    EventType::KeyRelease(_) => "released",
+                                    EventType::KeyPress(_) => "combo_cancelled",
+                                    _ => "detector_stop",
+                                };
+                                crate::transform_trace::key_stop(pass_id, elapsed_ms, reason);
+                                let _ = handle.emit(
+                                    "transform-key-released",
+                                    serde_json::json!({ "transformPassId": pass_id }),
+                                );
+                            }
                         }
                         HoldDownEvent::None => {}
                     }
@@ -1352,6 +1401,9 @@ pub fn stop_transform_listener() {
         let _ = d.set_target(None);
         d.reset();
     }
+    if let Some((pass_id, elapsed_ms)) = take_transform_hold_context() {
+        crate::transform_trace::key_stop(pass_id, elapsed_ms, "listener_stopped");
+    }
 }
 
 /// Update the transform target key without stopping the detector. Returns
@@ -1369,6 +1421,15 @@ pub fn set_transform_key(hotkey: &str) -> bool {
             was_held
         }
     }
+}
+
+/// Consume the current physical transform hold and return its privacy-safe
+/// correlation/timing metadata.
+pub fn take_transform_hold_context() -> Option<(u64, u64)> {
+    TRANSFORM_HOLD_CONTEXT
+        .lock_or_recover()
+        .take()
+        .map(|(pass_id, started)| (pass_id, started.elapsed().as_millis() as u64))
 }
 
 /// Whether the transform hotkey is currently enabled (a listener was started
@@ -2252,6 +2313,9 @@ mod tests {
         TRANSFORM_ACTIVE.store(false, Ordering::SeqCst);
         let mut det = TRANSFORM_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
         *det = None;
+        *TRANSFORM_HOLD_CONTEXT
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = None;
     }
 
     #[test]
@@ -2285,6 +2349,17 @@ mod tests {
         }
 
         reset_transform_state();
+    }
+
+    #[test]
+    fn transform_hold_context_is_consumed_once() {
+        reset_transform_state();
+        *TRANSFORM_HOLD_CONTEXT
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some((41, Instant::now()));
+        let (pass_id, _elapsed_ms) = take_transform_hold_context().unwrap();
+        assert_eq!(pass_id, 41);
+        assert_eq!(take_transform_hold_context(), None);
     }
 
     #[test]

@@ -50,19 +50,25 @@ impl tracing::field::Visit for JsonVisitor {
         if field.name() == "message" {
             self.message = Some(value.to_string());
         } else {
-            self.fields
-                .insert(field.name().to_string(), serde_json::Value::String(value.to_string()));
+            self.fields.insert(
+                field.name().to_string(),
+                serde_json::Value::String(value.to_string()),
+            );
         }
     }
 
     fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
-        self.fields
-            .insert(field.name().to_string(), serde_json::Value::Number(value.into()));
+        self.fields.insert(
+            field.name().to_string(),
+            serde_json::Value::Number(value.into()),
+        );
     }
 
     fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
-        self.fields
-            .insert(field.name().to_string(), serde_json::Value::Number(value.into()));
+        self.fields.insert(
+            field.name().to_string(),
+            serde_json::Value::Number(value.into()),
+        );
     }
 
     fn record_f64(&mut self, field: &tracing::field::Field, value: f64) {
@@ -99,7 +105,11 @@ pub struct TauriEmitterLayer {
 }
 
 impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for TauriEmitterLayer {
-    fn on_event(&self, event: &tracing::Event<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
         let meta = event.metadata();
 
         // Stream = target (e.g. "pipeline", "audio", "system")
@@ -122,15 +132,9 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for TauriEmitterLayer 
         let summary = visitor.message.unwrap_or_default();
         let mut data = serde_json::Value::Object(visitor.fields);
 
-        // Privacy: in release builds, strip all string fields from pipeline events
-        if !cfg!(debug_assertions) && stream == "pipeline" {
-            if let Some(obj) = data.as_object_mut() {
-                obj.retain(|_, v| !v.is_string());
-            }
-        }
+        sanitize_event_data(&stream, &mut data, cfg!(debug_assertions));
 
-        let timestamp =
-            chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
 
         let app_event = AppEvent {
             timestamp,
@@ -162,13 +166,47 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for TauriEmitterLayer 
     }
 }
 
+/// Enforce the structured-event privacy boundary independently of call-site
+/// discipline. Transform traces may retain only stable enum/bucket fields;
+/// arbitrary strings (and therefore transform content, paths, app/device
+/// identifiers, or raw errors) are discarded in both debug and release builds.
+fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: bool) {
+    let Some(obj) = data.as_object_mut() else {
+        return;
+    };
+    if !debug_build && stream == "pipeline" {
+        obj.retain(|_, value| !value.is_string());
+        return;
+    }
+    if stream == "transform" {
+        const SAFE_STRING_FIELDS: &[&str] = &[
+            "event",
+            "reason",
+            "from",
+            "to",
+            "outcome",
+            "stage",
+            "error_code",
+            "length_bucket",
+            "via",
+            "effect",
+            "ax_outcome",
+        ];
+        obj.retain(|key, value| !value.is_string() || SAFE_STRING_FIELDS.contains(&key.as_str()));
+    }
+}
+
 // ---------------------------------------------------------------------------
 // init() — set up the global tracing subscriber
 // ---------------------------------------------------------------------------
 
 fn jsonl_path() -> Option<std::path::PathBuf> {
     let dir = dirs::data_dir()?.join("local-dictation").join("logs");
-    let name = if cfg!(debug_assertions) { "events.dev.jsonl" } else { "events.jsonl" };
+    let name = if cfg!(debug_assertions) {
+        "events.dev.jsonl"
+    } else {
+        "events.jsonl"
+    };
     Some(dir.join(name))
 }
 
@@ -238,9 +276,8 @@ pub fn init(app_handle: tauri::AppHandle) {
     let jsonl_writer = std::io::BufWriter::new(jsonl_file);
 
     // Layer 1: Pretty file
-    let (pretty_writer, pretty_guard) = tracing_appender::non_blocking(
-        tracing_appender::rolling::never(&log_dir, log_file_name),
-    );
+    let (pretty_writer, pretty_guard) =
+        tracing_appender::non_blocking(tracing_appender::rolling::never(&log_dir, log_file_name));
     let pretty_layer = tracing_subscriber::fmt::layer()
         .with_writer(pretty_writer)
         .with_target(true)
@@ -261,8 +298,7 @@ pub fn init(app_handle: tauri::AppHandle) {
         .with(pretty_layer)
         .with(emitter_layer);
 
-    tracing::subscriber::set_global_default(subscriber)
-        .expect("Failed to set tracing subscriber");
+    tracing::subscriber::set_global_default(subscriber).expect("Failed to set tracing subscriber");
 
     // Leak guard to keep writer alive for app lifetime
     Box::leak(Box::new(pretty_guard));
@@ -348,4 +384,39 @@ pub fn clear_event_history() {
     let buffer = get_event_buffer();
     let mut guard = buffer.lock().unwrap_or_else(|p| p.into_inner());
     guard.clear();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transform_event_sanitizer_keeps_only_stable_string_fields() {
+        let mut data = serde_json::json!({
+            "transform_pass_id": 17,
+            "duration_ms": 12,
+            "won": false,
+            "outcome": "failed",
+            "error_code": "timeout",
+            "length_bucket": "17-64",
+            "instruction": "SENTINEL_INSTRUCTION",
+            "selected_text": "SENTINEL_SELECTION",
+            "proposal": "SENTINEL_PROPOSAL",
+            "clipboard": "SENTINEL_CLIPBOARD",
+            "path": "/Users/private/project",
+            "bundle_id": "com.private.Editor",
+            "device": "Private Microphone",
+            "model": "Private Model Setting"
+        });
+        sanitize_event_data("transform", &mut data, true);
+        let encoded = serde_json::to_string(&data).unwrap();
+
+        assert!(encoded.contains("\"transform_pass_id\":17"));
+        assert!(encoded.contains("\"error_code\":\"timeout\""));
+        assert!(!encoded.contains("SENTINEL"));
+        assert!(!encoded.contains("/Users/private"));
+        assert!(!encoded.contains("com.private"));
+        assert!(!encoded.contains("Private Microphone"));
+        assert!(!encoded.contains("Private Model"));
+    }
 }
