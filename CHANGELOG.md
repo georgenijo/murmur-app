@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+- Production app bundles now contain only the Murmur executable and signed local-LLM sidecar. The mock sidecar and local evaluation CLI remain available as Cargo examples for development and CI, and release finalization fails closed on any unexpected executable (#324).
+
 ## [0.21.0] - 2026-07-23
 
 ### Added

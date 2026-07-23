@@ -1,8 +1,9 @@
 //! Integration tests for the local-LLM sidecar supervisor (#312).
 //!
 //! These drive the real supervisor against the protocol-v1 mock helper
-//! (`CARGO_BIN_EXE_mock_llm_helper`). No real GGUF model or llama.cpp is
-//! involved: the "model" is a small temp file whose pins the test derives.
+//! (`target/<profile>/examples/mock_llm_helper`). No real GGUF model or
+//! llama.cpp is involved: the "model" is a small temp file whose pins the test
+//! derives.
 
 #![cfg(all(target_os = "macos", target_arch = "aarch64"))]
 
@@ -15,7 +16,12 @@ use ui_lib::llm_sidecar::{
 };
 
 fn helper_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_mock_llm_helper"))
+    std::env::current_exe()
+        .expect("integration test executable path")
+        .parent()
+        .and_then(|deps| deps.parent())
+        .expect("Cargo target profile directory")
+        .join("examples/mock_llm_helper")
 }
 
 /// A small fixture "model" file plus its exact pins.

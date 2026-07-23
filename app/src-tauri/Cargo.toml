@@ -65,11 +65,12 @@ sha2 = "0.10"
 sysinfo = { version = "0.33", default-features = false, features = ["system"] }
 
 # Test-support helper: a protocol-v1 mock of the local-LLM sidecar, driven by
-# scenario env vars. Built as a normal bin so integration tests can locate it
-# via CARGO_BIN_EXE_mock_llm_helper. Not an externalBin, so it is never bundled.
-[[bin]]
+# scenario env vars. It is an example target so `cargo test` builds it for the
+# integration suite without exposing it to Tauri's automatic `--bins` bundle.
+[[example]]
 name = "mock_llm_helper"
 path = "tests/support/mock_llm_helper.rs"
+test = false
 
 [dev-dependencies]
 tempfile = "3"

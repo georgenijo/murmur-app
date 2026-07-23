@@ -126,7 +126,7 @@ jobs:
           CMAKE_CXX_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
         run: >-
           cd app/src-tauri &&
-          cargo run --bin murmur-eval -- deterministic
+          cargo run --example murmur-eval -- deterministic
           --output target/murmur-eval/ci-report.json
 
   linux:
