@@ -238,6 +238,8 @@ pub struct DictationState {
     pub smart_punctuation: bool,
     pub save_transcript: bool,
     pub save_audio: bool,
+    /// Opt-in: mirror each final transcript to a local file NotchPill can tail.
+    pub mirror_to_notchpill: bool,
     pub output_dir: String,
     /// Per-app profiles resolved once from the frontmost app at recording start.
     pub app_profiles: Vec<AppProfile>,
@@ -304,6 +306,7 @@ impl Default for DictationState {
             smart_punctuation: true,
             save_transcript: false,
             save_audio: false,
+            mirror_to_notchpill: false,
             output_dir: String::new(),
             app_profiles: Vec::new(),
             voice_commands_enabled: false,

@@ -23,6 +23,53 @@ pub(crate) fn write_clipboard_text(text: &str) -> Result<(), String> {
         .map_err(|e| format!("Failed to copy to clipboard: {}", e))
 }
 
+/// Mirror the final transcript to a local file NotchPill (a separate notch-overlay
+/// app) can tail. Opt-in and best-effort: any failure is swallowed so dictation is
+/// never affected. Only the final text + a timestamp leave this function, and only
+/// to the app's own data dir — nothing is sent off-device.
+pub fn mirror_caption(text: &str) {
+    let Some(dir) = dirs::data_dir().map(|d| d.join("local-dictation")) else {
+        return;
+    };
+    let _ = write_caption_to(&dir, text);
+}
+
+/// Atomic write (temp file + rename) of the caption JSON to
+/// `<dir>/latest-caption.json`. Returns false (no write) for empty/whitespace
+/// text. Separated from `mirror_caption` so it can be unit-tested against a temp
+/// directory.
+fn write_caption_to(dir: &std::path::Path, text: &str) -> bool {
+    if text.trim().is_empty() {
+        return false;
+    }
+    if std::fs::create_dir_all(dir).is_err() {
+        return false;
+    }
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let payload = serde_json::json!({ "text": text, "timestamp": ts });
+    let Ok(bytes) = serde_json::to_vec(&payload) else {
+        return false;
+    };
+    let target = dir.join("latest-caption.json");
+    let tmp = dir.join(format!("latest-caption.json.tmp.{}", std::process::id()));
+    if std::fs::write(&tmp, &bytes).is_err() {
+        return false;
+    }
+    // Owner-only. This file holds a verbatim record of the last thing the user
+    // said out loud, and the default 0644 makes that readable by every account
+    // on the machine. Set on the temp file before the rename so the caption is
+    // never briefly world-readable at its real path.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+    }
+    std::fs::rename(&tmp, &target).is_ok()
+}
+
 /// Copy text to clipboard and optionally simulate Cmd+V paste.
 /// `delay_ms` controls the pause before pasting (window focus settling).
 /// On paste failure, retries once after a 100ms backoff.
@@ -1128,5 +1175,35 @@ pub fn request_accessibility_prompt() -> bool {
         let trusted = AXIsProcessTrustedWithOptions(dict);
         CFRelease(dict);
         trusted
+    }
+}
+
+// Caption-mirror tests run on all platforms (the helper is platform-independent),
+// unlike the injector's Linux-gated process-mock tests above.
+#[cfg(test)]
+mod caption_tests {
+    use super::*;
+
+    #[test]
+    fn write_caption_to_writes_valid_json() {
+        let tmp = std::env::temp_dir().join(format!("murmur-cap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        assert!(write_caption_to(&tmp, "hello world"));
+        let raw = std::fs::read_to_string(tmp.join("latest-caption.json")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(v["text"], "hello world");
+        assert!(v["timestamp"].as_u64().unwrap() > 0);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn write_caption_to_skips_empty() {
+        let tmp = std::env::temp_dir().join(format!("murmur-cap-empty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        assert!(!write_caption_to(&tmp, "   "));
+        assert!(!tmp.join("latest-caption.json").exists());
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

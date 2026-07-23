@@ -957,6 +957,11 @@ async fn run_transcription_pipeline(
     performance_guard.enter(PerformanceStageV1::ClipboardPaste);
     if !text.is_empty() {
         let text_to_inject = text.clone();
+        // Opt-in mirror to NotchPill: best-effort local file write, never blocks
+        // or affects injection. Fires alongside the clipboard write.
+        if delivery.mirror_to_notchpill {
+            injector::mirror_caption(&text_to_inject);
+        }
         let paste_delay_ms = delivery.paste_delay_ms;
         let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
         app_handle
@@ -1494,6 +1499,9 @@ pub async fn configure_dictation(
 
     if let Some(auto_paste) = options.get("autoPaste").and_then(|v| v.as_bool()) {
         dictation.auto_paste = auto_paste;
+    }
+    if let Some(mirror) = options.get("mirrorToNotchPill").and_then(|v| v.as_bool()) {
+        dictation.mirror_to_notchpill = mirror;
     }
 
     if let Some(delay) = options.get("autoPasteDelayMs").and_then(|v| v.as_u64()) {
