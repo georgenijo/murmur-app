@@ -1,8 +1,8 @@
 # Diagnostic Report Import and Comparison
 
-Issue #353 is delivered in phases. The first phase defines the local parser and
-comparison contract; Diagnostics navigation and presentation follow after the
-Performance/Runs shell from #352 is stable.
+Issue #353 adds an explicit Reports tab to the Diagnostics shell. It uses the
+local parser and comparison contract without changing report generation or the
+Performance/Runs data model.
 
 ## Supported reports
 
@@ -19,17 +19,19 @@ evaluation reports are recognized separately and are never interpreted as one
 another.
 
 Imports are limited to 8 MiB. The parser also caps benchmark models, fixtures
-per model, evaluation cases, stages per case, and string collections. The
-future file picker must check the file size before reading it; the parser
-rechecks both the declared byte count and decoded UTF-8 size before parsing.
+per model, evaluation cases, stages per case, and string collections. The file
+picker checks the file size before reading it; the parser rechecks both the
+declared byte count and decoded UTF-8 size before parsing.
 
 Import errors use stable codes and fixed messages. They never include the
 selected path, filename, JSON contents, or a rejected field value.
 
 ## In-memory representation and privacy
 
-Normalized imports are session-only. The parser has no storage or telemetry
-dependency and never receives a source path. Its normalized output includes the
+Normalized imports are session-only. The Reports tab keeps at most 20 imports
+and never writes them to Performance Lab history. The parser has no storage or
+telemetry dependency and never receives a source path. Its normalized output
+includes the
 metadata and numeric/categorical measurements required for comparison, but
 deliberately drops:
 
@@ -39,9 +41,9 @@ deliberately drops:
 - evaluator bundle IDs, matched profile names, and audio paths.
 
 Evaluation imports always carry a warning that the selected source report may
-contain curated fixture transcripts and stage text. Clearing an import in the
-future UI will discard only in-session state and will not change or delete the
-source file.
+contain curated fixture transcripts and stage text. Clearing imports discards
+only in-session state and does not change source files or saved Performance Lab
+history.
 
 ## Compatibility gate
 
@@ -82,3 +84,17 @@ Percentage delta is unavailable when the baseline is zero. Missing metrics stay
 unavailable rather than becoming zero. Every metric declares its unit and
 whether lower or higher values are preferable; the comparison core does not
 round values or synthesize a cross-report winner.
+
+## Diagnostics presentation
+
+The Reports tab loads the bounded saved Performance Lab history as local report
+options and accepts benchmark or evaluation JSON through an explicit picker.
+Each selected report shows its source, schema, date, machine, app, corpus/tier,
+execution configuration, and model/backend/accelerator identity. Compatibility
+findings are rendered before the delta table and recommendation eligibility.
+
+The metric table shows the baseline, candidate, absolute delta, and percentage
+delta side by side. A measured zero is displayed as zero. A percentage change
+from a zero baseline is labeled unavailable, and metrics absent from either
+report are not fabricated. Rendering is capped to the first 500 comparison
+metrics while preserving the parser's full collection validation.

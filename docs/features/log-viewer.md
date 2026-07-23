@@ -162,6 +162,25 @@ benchmark/evaluation reports are untouched. Loading, never-recorded, cleared,
 filtered-empty, error, stale/partial, unsupported, and unavailable states are
 presented separately.
 
+### Reports Tab
+
+Reports imports local Performance Lab benchmark or `murmur-eval` JSON through
+an explicit file picker and compares two normalized reports. The picker rejects
+files larger than 8 MiB before reading; parser/schema/collection failures use
+fixed content-free messages. Imported paths, filenames, raw JSON, transcript
+fields, and evaluation stage text are neither retained nor logged.
+
+Saved Performance Lab history appears as local choices. Imported reports remain
+in memory for the Diagnostics session only, with at most 20 session imports.
+Clear imports removes only those in-memory choices and does not alter source
+files, local benchmark history, Events, or Performance data.
+
+Compatibility blockers are shown before deltas and recommendation eligibility.
+Blockers suppress metrics entirely; machine and app-version warnings permit
+deltas but disable recommendations. Missing metrics remain unavailable,
+measured zero remains zero, and percentage delta from a zero baseline is
+explicitly unavailable.
+
 ### Event Store (`useEventStore`)
 
 The frontend event buffer is managed by the `useEventStore` hook:
