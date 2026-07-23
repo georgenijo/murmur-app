@@ -13,7 +13,7 @@ It does not read Murmur history, app settings, the microphone, the system clipbo
 Run the deterministic suite from `app/src-tauri`:
 
 ```bash
-cargo run --bin murmur-eval -- deterministic \
+cargo run --example murmur-eval -- deterministic \
   --output target/murmur-eval/deterministic-report.json
 ```
 
@@ -22,7 +22,7 @@ This is the CI tier. It uses fixture-provided raw ASR, a fixed clock, a fake cli
 The hardware tier is explicit and opt-in:
 
 ```bash
-cargo run --bin murmur-eval -- hardware \
+cargo run --example murmur-eval -- hardware \
   --machine-label local-mac \
   --output target/murmur-eval/hardware-report.json
 ```

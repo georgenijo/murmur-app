@@ -5,6 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
+from scripts.finalize_macos_bundle import require_exact_macos_executables
 from scripts.release_artifacts import (
     ArtifactError,
     create_provenance,
@@ -215,6 +216,38 @@ class ReleaseArtifactTests(unittest.TestCase):
         (linux / "provenance.json").write_text(json.dumps(payload))
         with self.assertRaisesRegex(ArtifactError, "must not carry a helper block"):
             validate_release(self.artifacts, SHA, RUN_ID)
+
+    def test_macos_bundle_requires_exact_production_executables(self) -> None:
+        app = self.root / "Murmur.app"
+        executable_dir = app / "Contents" / "MacOS"
+        executable_dir.mkdir(parents=True)
+        main = executable_dir / "ui"
+        helper = executable_dir / "murmur-llm-sidecar"
+        main.write_bytes(b"main")
+        helper.write_bytes(b"helper")
+
+        require_exact_macos_executables(app, main, helper)
+
+        for unexpected in ("mock_llm_helper", "murmur-eval"):
+            with self.subTest(unexpected=unexpected):
+                extra = executable_dir / unexpected
+                extra.write_bytes(b"developer tool")
+                with self.assertRaisesRegex(
+                    SystemExit, "app bundle executables differ"
+                ):
+                    require_exact_macos_executables(app, main, helper)
+                extra.unlink()
+
+    def test_macos_bundle_rejects_missing_production_executable(self) -> None:
+        app = self.root / "Murmur.app"
+        executable_dir = app / "Contents" / "MacOS"
+        executable_dir.mkdir(parents=True)
+        main = executable_dir / "ui"
+        helper = executable_dir / "murmur-llm-sidecar"
+        main.write_bytes(b"main")
+
+        with self.assertRaisesRegex(SystemExit, "app bundle executables differ"):
+            require_exact_macos_executables(app, main, helper)
 
 
 if __name__ == "__main__":

@@ -17,7 +17,12 @@ use ui_lib::llm_sidecar::{model_file_digest, LlmSidecar, TestSpawnConfig};
 use ui_lib::transform_flow::run_happy_path_for_test;
 
 fn helper_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_mock_llm_helper"))
+    std::env::current_exe()
+        .expect("integration test executable path")
+        .parent()
+        .and_then(|deps| deps.parent())
+        .expect("Cargo target profile directory")
+        .join("examples/mock_llm_helper")
 }
 
 struct Fixture {
