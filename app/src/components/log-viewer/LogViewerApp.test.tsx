@@ -53,9 +53,9 @@ describe('LogViewerApp shared diagnostics shell', () => {
     container.remove();
   });
 
-  it('replaces Metrics with Events, Performance, and Runs tabs', async () => {
+  it('keeps Events, Performance, and Runs and adds an accessible Reports panel', async () => {
     const tabs = Array.from(container.querySelectorAll('[role="tab"]'));
-    expect(tabs.map(tab => tab.textContent)).toEqual(['Events', 'Performance', 'Runs']);
+    expect(tabs.map(tab => tab.textContent)).toEqual(['Events', 'Performance', 'Runs', 'Reports']);
     expect(container.textContent).not.toContain('Metrics');
 
     await act(async () => (tabs[1] as HTMLButtonElement).click());
@@ -65,5 +65,10 @@ describe('LogViewerApp shared diagnostics shell', () => {
     await act(async () => (tabs[2] as HTMLButtonElement).click());
     expect(container.querySelector('#diagnostics-panel-runs')).not.toBeNull();
     expect(tabs[2].getAttribute('aria-selected')).toBe('true');
+
+    await act(async () => (tabs[3] as HTMLButtonElement).click());
+    expect(container.querySelector('#diagnostics-panel-reports')).not.toBeNull();
+    expect(tabs[3].getAttribute('aria-selected')).toBe('true');
+    expect(container.textContent).toContain('Report comparison');
   });
 });
