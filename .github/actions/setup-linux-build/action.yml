@@ -18,6 +18,10 @@ inputs:
   cuda-cache-save-if:
     description: Expression controlling whether the CUDA cache is saved; defaults to trusted main-branch pushes only
     default: "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}"
+  cuda-cache-key-prefix:
+    description: Cache-key namespace; rehearsals must use a source-SHA-specific prefix instead of the trusted release namespace
+    required: true
+    default: 'cuda-minimal'
 
 runs:
   using: composite
@@ -56,7 +60,7 @@ runs:
       uses: actions/cache/restore@v4
       with:
         path: /usr/local/cuda-${{ env.CUDA_MM }}
-        key: cuda-minimal-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cuda-version }}-v1
+        key: ${{ inputs.cuda-cache-key-prefix }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cuda-version }}-v1
 
     - name: Install CUDA toolkit
       if: steps.cuda-cache.outputs.cache-hit != 'true'
@@ -147,14 +151,14 @@ runs:
       uses: actions/cache/save@v4
       with:
         path: /usr/local/cuda-${{ env.CUDA_MM }}
-        key: cuda-minimal-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cuda-version }}-v1
+        key: ${{ inputs.cuda-cache-key-prefix }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cuda-version }}-v1
 
     - name: Summarize CUDA cache policy
       shell: bash
       run: |
         {
           echo "### CUDA cache"
-          echo "- key: \`cuda-minimal-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cuda-version }}-v1\`"
+          echo "- key: \`${{ inputs.cuda-cache-key-prefix }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cuda-version }}-v1\`"
           echo "- restore hit: \`${{ steps.cuda-cache.outputs.cache-hit || 'false' }}\`"
           echo "- write authorized: \`${{ inputs.cuda-cache-save-if }}\`"
           echo "- physical tree: \`/usr/local/cuda-${CUDA_MM}\` ($(du -sh "/usr/local/cuda-${CUDA_MM}" | cut -f1))"

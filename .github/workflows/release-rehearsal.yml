@@ -1,0 +1,329 @@
+name: Release Rehearsal
+
+# Manual, non-publishing measurement lane for pre-merge release-profile work.
+# The workflow definition must be dispatched from main, while source_sha may be
+# any immutable commit in this repository. Source code runs only in secretless,
+# read-only jobs. Signing, notarization, updater signing, tags, and promotion are
+# intentionally outside this lane.
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact 40-character commit SHA to build
+        type: string
+        required: true
+      prime_caches:
+        description: Save source-SHA-isolated Cargo and CUDA caches for a warm follow-up run
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-rehearsal-${{ inputs.source_sha }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  context:
+    runs-on: ubuntu-latest
+    outputs:
+      source-sha: ${{ steps.context.outputs.source_sha }}
+      workflow-sha: ${{ steps.context.outputs.workflow_sha }}
+      cache-write: ${{ steps.context.outputs.cache_write }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate trusted workflow and immutable source
+        id: context
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          PRIME_CACHES: ${{ inputs.prime_caches }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "ERROR: release rehearsals must use the workflow definition from main"
+            exit 1
+          fi
+          if ! [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "ERROR: source_sha must be an exact lowercase 40-character commit SHA"
+            exit 1
+          fi
+          git fetch --no-tags --depth=1 origin "$SOURCE_SHA"
+          RESOLVED=$(git rev-parse "$SOURCE_SHA^{commit}")
+          if [ "$RESOLVED" != "$SOURCE_SHA" ]; then
+            echo "ERROR: source_sha did not resolve immutably"
+            exit 1
+          fi
+          echo "source_sha=$RESOLVED" >> "$GITHUB_OUTPUT"
+          echo "workflow_sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          echo "cache_write=$PRIME_CACHES" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Secretless release rehearsal"
+            echo "- trusted workflow SHA: \`$GITHUB_SHA\`"
+            echo "- immutable source SHA: \`$RESOLVED\`"
+            echo "- isolated cache write: \`$PRIME_CACHES\`"
+            echo "- signing/notarization/publication: disabled"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  typecheck:
+    needs: context
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.context.outputs.source-sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install dependencies
+        run: cd app && npm ci
+
+      - name: TypeScript check
+        run: cd app && npx tsc --noEmit
+
+      - name: Unit tests
+        run: cd app && npm test
+
+      - name: Workflow and artifact policy tests
+        run: |
+          python3 scripts/validate_workflow_policy.py
+          python3 -m unittest tests/test_release_artifacts.py tests/test_workflow_policy.py
+
+  rehearse-macos:
+    needs: context
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.context.outputs.source-sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore isolated macOS release cache
+        id: rust-cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+          shared-key: macos-release-rehearsal-${{ needs.context.outputs.source-sha }}
+          key: profile-release
+          add-job-id-key: false
+          save-if: ${{ needs.context.outputs.cache-write == 'true' }}
+
+      - name: Install frontend dependencies
+        run: cd app && npm ci
+
+      - name: Locate clang runtime for ggml-metal symbol resolution
+        run: |
+          CLANG_RT=$(find /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang \
+            -name "libclang_rt.osx.a" 2>/dev/null | sort -V | tail -1)
+          if [ -z "$CLANG_RT" ]; then
+            echo "ERROR: libclang_rt.osx.a not found"
+            exit 1
+          fi
+          echo "RUSTFLAGS=-C link-arg=$CLANG_RT -C link-arg=-mmacosx-version-min=14.0 -C link-arg=-Wl,-rpath,/usr/lib/swift" >> "$GITHUB_ENV"
+
+      - name: Build local-LLM sidecar
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "14.0"
+          CMAKE_OSX_DEPLOYMENT_TARGET: "14.0"
+          CMAKE_C_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
+          CMAKE_CXX_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
+        run: python3 scripts/build_local_llm_sidecar.py --release
+
+      - name: Build unsigned macOS release proxy
+        id: build
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "14.0"
+          CMAKE_OSX_DEPLOYMENT_TARGET: "14.0"
+          CMAKE_C_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
+          CMAKE_CXX_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
+        run: |
+          STARTED=$(date +%s)
+          cd app
+          npx tauri build --no-sign --bundles app --verbose
+          echo "build_seconds=$(($(date +%s) - STARTED))" >> "$GITHUB_OUTPUT"
+
+      - name: Record macOS timing and size metrics
+        env:
+          SOURCE_SHA: ${{ needs.context.outputs.source-sha }}
+          WORKFLOW_SHA: ${{ needs.context.outputs.workflow-sha }}
+          BUILD_SECONDS: ${{ steps.build.outputs.build_seconds }}
+          CACHE_HIT: ${{ steps.rust-cache.outputs.cache-hit || 'false' }}
+        run: |
+          APP=$(find app/src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)
+          if [ -z "$APP" ]; then
+            echo "ERROR: unsigned application bundle is missing"
+            exit 1
+          fi
+          EXECUTABLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")
+          BINARY="$APP/Contents/MacOS/$EXECUTABLE"
+          mkdir -p rehearsal-metrics
+          export APP BINARY
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          app = Path(os.environ["APP"])
+          binary = Path(os.environ["BINARY"])
+          bundle_bytes = sum(path.stat().st_size for path in app.rglob("*") if path.is_file())
+          metrics = {
+              "schema_version": 1,
+              "proxy": "unsigned-release-build",
+              "platform": "macos",
+              "source_sha": os.environ["SOURCE_SHA"],
+              "workflow_sha": os.environ["WORKFLOW_SHA"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "build_seconds": int(os.environ["BUILD_SECONDS"]),
+              "rust_cache_hit": os.environ["CACHE_HIT"].lower() == "true",
+              "main_binary_bytes": binary.stat().st_size,
+              "app_bundle_bytes": bundle_bytes,
+          }
+          Path("rehearsal-metrics/macos.json").write_text(
+              json.dumps(metrics, indent=2, sort_keys=True) + "\n"
+          )
+          PY
+          cat rehearsal-metrics/macos.json
+          {
+            echo "### macOS unsigned release proxy"
+            echo "- build seconds: \`$BUILD_SECONDS\`"
+            echo "- Rust cache hit: \`$CACHE_HIT\`"
+            echo "- metrics: \`macos.json\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload macOS rehearsal metrics
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-rehearsal-macos-${{ needs.context.outputs.source-sha }}-${{ github.run_id }}
+          path: rehearsal-metrics/macos.json
+          if-no-files-found: error
+          retention-days: 30
+
+  rehearse-linux:
+    needs: context
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.context.outputs.source-sha }}
+          persist-credentials: false
+
+      - name: Check out trusted rehearsal actions
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.context.outputs.workflow-sha }}
+          path: .trusted-rehearsal
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Free disk space for CUDA rehearsal
+        run: |
+          free_gib() { df -Pk / | awk 'NR==2 {printf "%d", $4/1024/1024}'; }
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL
+          sudo apt-get clean || true
+          FREE_GIB=$(free_gib)
+          if [ "$FREE_GIB" -lt 25 ]; then
+            docker system prune --all --force || true
+          fi
+
+      - name: Setup isolated Linux release environment
+        uses: ./.trusted-rehearsal/.github/actions/setup-linux-build
+        with:
+          cuda-version: '12.8.0'
+          rust-cache-shared-key: linux-cuda-rehearsal-${{ needs.context.outputs.source-sha }}
+          rust-cache-save-if: ${{ needs.context.outputs.cache-write == 'true' }}
+          cuda-cache-save-if: ${{ needs.context.outputs.cache-write == 'true' }}
+          cuda-cache-key-prefix: cuda-rehearsal-${{ needs.context.outputs.source-sha }}
+
+      - name: Install frontend dependencies
+        run: cd app && npm ci
+
+      - name: Build unsigned Linux release proxies
+        id: build
+        run: |
+          STARTED=$(date +%s)
+          cd app
+          npx tauri build --no-sign --bundles deb,appimage --verbose
+          echo "build_seconds=$(($(date +%s) - STARTED))" >> "$GITHUB_OUTPUT"
+
+      - name: Record Linux timing and size metrics
+        env:
+          SOURCE_SHA: ${{ needs.context.outputs.source-sha }}
+          WORKFLOW_SHA: ${{ needs.context.outputs.workflow-sha }}
+          BUILD_SECONDS: ${{ steps.build.outputs.build_seconds }}
+        run: |
+          DEB=$(find app/src-tauri/target/release/bundle/deb -maxdepth 1 -type f -name '*.deb' -print -quit)
+          APPIMAGE=$(find app/src-tauri/target/release/bundle/appimage -maxdepth 1 -type f -name '*.AppImage' -print -quit)
+          BINARY=app/src-tauri/target/release/ui
+          if [ -z "$DEB" ] || [ -z "$APPIMAGE" ] || [ ! -f "$BINARY" ]; then
+            echo "ERROR: unsigned Linux release proxy is incomplete"
+            exit 1
+          fi
+          mkdir -p rehearsal-metrics
+          export DEB APPIMAGE BINARY
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          metrics = {
+              "schema_version": 1,
+              "proxy": "unsigned-release-build",
+              "platform": "linux",
+              "source_sha": os.environ["SOURCE_SHA"],
+              "workflow_sha": os.environ["WORKFLOW_SHA"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "build_seconds": int(os.environ["BUILD_SECONDS"]),
+              "main_binary_bytes": Path(os.environ["BINARY"]).stat().st_size,
+              "deb_bytes": Path(os.environ["DEB"]).stat().st_size,
+              "appimage_bytes": Path(os.environ["APPIMAGE"]).stat().st_size,
+          }
+          Path("rehearsal-metrics/linux.json").write_text(
+              json.dumps(metrics, indent=2, sort_keys=True) + "\n"
+          )
+          PY
+          cat rehearsal-metrics/linux.json
+          {
+            echo "### Linux unsigned release proxy"
+            echo "- build seconds: \`$BUILD_SECONDS\`"
+            echo "- metrics: \`linux.json\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Linux rehearsal metrics
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-rehearsal-linux-${{ needs.context.outputs.source-sha }}-${{ github.run_id }}
+          path: rehearsal-metrics/linux.json
+          if-no-files-found: error
+          retention-days: 30
