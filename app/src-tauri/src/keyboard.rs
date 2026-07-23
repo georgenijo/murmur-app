@@ -950,7 +950,23 @@ fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                             // Listening/Thinking/Applying), a stray or racing
                             // hotkey press must not blow away the session that
                             // pass owns out from under it.
-                            let app_state = &handle.state::<crate::State>().app_state;
+                            let state = handle.state::<crate::State>();
+                            let app_state = &state.app_state;
+                            // Pass boundary (issue #337 defect B): drop the
+                            // sticky main-window visibility snapshot so the
+                            // new pass re-records it at its first popover
+                            // show. The supersede paths below never route
+                            // through hide_popover_internal (which is where
+                            // the snapshot is normally cleared), so without
+                            // this a pass could inherit the previous pass's
+                            // snapshot and force-hide a main window the user
+                            // deliberately opened between passes. Gated the
+                            // same way as the session clear: only at a real
+                            // pass boundary (Idle / ReviewPending), never
+                            // under a mid-flight pass.
+                            let clear_visibility_snapshot = || {
+                                *state.transform_main_was_visible.lock_or_recover() = None;
+                            };
                             // N2 (B2 review): every session clear must be paired
                             // with the matching status transition so the status
                             // is never left stranded at ReviewPending with no
@@ -962,6 +978,7 @@ fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                             match app_state.transform_status() {
                                 crate::state::TransformStatus::Idle => {
                                     crate::transform_apply::clear_session(app_state);
+                                    clear_visibility_snapshot();
                                 }
                                 crate::state::TransformStatus::ReviewPending => {
                                     if app_state.try_transition_transform_status(
@@ -969,6 +986,7 @@ fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                                         crate::state::TransformStatus::Idle,
                                     ) {
                                         crate::transform_apply::clear_session(app_state);
+                                        clear_visibility_snapshot();
                                     }
                                 }
                                 _ => {}

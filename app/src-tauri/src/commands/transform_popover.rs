@@ -402,6 +402,27 @@ pub fn set_transform_popover_focusable(app: tauri::AppHandle, focusable: bool) -
     set_focusable_internal(&app, focusable)
 }
 
+/// Pure re-hide decision for `set_focusable_internal` (issues #329 + #337).
+/// The main window must be re-hidden after `set_focus` when EITHER:
+///
+/// - the sticky pass-start snapshot says it was hidden (`Some(false)`) — the
+///   #329 guarantee: under rapid repeated presses a per-call check can catch
+///   the window transiently surfaced by a previous `set_focus` and would
+///   wrongly disable the guard; or
+/// - it is hidden RIGHT NOW (`currently_visible == Some(false)`) — the #337
+///   defect-A fix: the user closed the main window mid-pass, so focusing the
+///   popover must not resurrect it, even though the pass-start snapshot says
+///   "visible".
+///
+/// `currently_visible` is `None` when there is no main window (nothing to
+/// re-hide) and `true` on an `is_visible()` error (err on the side of not
+/// force-hiding a window the user may be using).
+fn should_rehide_main(sticky_was_visible: Option<bool>, currently_visible: Option<bool>) -> bool {
+    let sticky_hidden = sticky_was_visible.map(|was| !was).unwrap_or(false);
+    let currently_hidden = currently_visible.map(|is| !is).unwrap_or(false);
+    sticky_hidden || currently_hidden
+}
+
 /// Non-command core of `set_transform_popover_focusable` (issue #312 PR-C2).
 pub(crate) fn set_focusable_internal(app: &tauri::AppHandle, focusable: bool) -> Result<(), String> {
     match app.get_webview_window("transform-review") {
@@ -416,16 +437,13 @@ pub(crate) fn set_focusable_internal(app: &tauri::AppHandle, focusable: bool) ->
                 // window — recording "visible" and disabling the re-hide
                 // guard, which leaks the main window onto the screen. Fall
                 // back to a per-call snapshot only if no show recorded one.
-                let main_was_hidden = app
+                let sticky_was_visible = app
                     .try_state::<State>()
-                    .and_then(|s| *s.transform_main_was_visible.lock_or_recover())
-                    .map(|was_visible| !was_visible)
-                    .unwrap_or_else(|| {
-                        main_window
-                            .as_ref()
-                            .map(|w| !w.is_visible().unwrap_or(true))
-                            .unwrap_or(false)
-                    });
+                    .and_then(|s| *s.transform_main_was_visible.lock_or_recover());
+                let currently_visible = main_window
+                    .as_ref()
+                    .map(|w| w.is_visible().unwrap_or(true));
+                let main_was_hidden = should_rehide_main(sticky_was_visible, currently_visible);
 
                 let _ = window.set_focus();
 
@@ -661,5 +679,38 @@ mod tests {
             .unwrap()
             .insert("extraField".into(), serde_json::json!(1));
         assert!(serde_json::from_value::<TransformPopoverGeometry>(value).is_err());
+    }
+
+    // ---- should_rehide_main (issues #329 + #337) ---------------------------
+
+    #[test]
+    fn rehides_when_hidden_at_pass_start_even_if_transiently_surfaced_now() {
+        // The #329 guarantee: rapid repeated presses can catch the main
+        // window transiently surfaced by a previous set_focus. The sticky
+        // pass-start snapshot ("hidden") must keep the guard armed.
+        assert!(should_rehide_main(Some(false), Some(true)));
+        assert!(should_rehide_main(Some(false), Some(false)));
+    }
+
+    #[test]
+    fn rehides_when_user_closed_the_main_window_mid_pass() {
+        // Issue #337 defect A: snapshot says "visible" (it was, at pass
+        // start) but the user closed the window while the transform was
+        // thinking. Focusing the popover must not resurrect it.
+        assert!(should_rehide_main(Some(true), Some(false)));
+        // Same with no snapshot recorded at all.
+        assert!(should_rehide_main(None, Some(false)));
+    }
+
+    #[test]
+    fn does_not_rehide_a_window_that_was_and_is_visible() {
+        assert!(!should_rehide_main(Some(true), Some(true)));
+        assert!(!should_rehide_main(None, Some(true)));
+    }
+
+    #[test]
+    fn does_not_rehide_when_there_is_no_main_window() {
+        assert!(!should_rehide_main(None, None));
+        assert!(!should_rehide_main(Some(true), None));
     }
 }

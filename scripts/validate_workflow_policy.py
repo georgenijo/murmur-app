@@ -9,6 +9,7 @@ from typing import Optional
 ROOT = Path(__file__).resolve().parents[1]
 CI_WORKFLOW = ROOT / ".github/workflows/ci.yml"
 RELEASE_BUILD_WORKFLOW = ROOT / ".github/workflows/release-build.yml"
+RELEASE_REHEARSAL_WORKFLOW = ROOT / ".github/workflows/release-rehearsal.yml"
 RELEASE_WORKFLOW = ROOT / ".github/workflows/release.yml"
 LINUX_SETUP_ACTION = ROOT / ".github/actions/setup-linux-build/action.yml"
 CARGO_TOML = ROOT / "app/src-tauri/Cargo.toml"
@@ -187,9 +188,76 @@ def validate_release_build(workflow: str) -> int:
     return len(cases)
 
 
+def validate_release_rehearsal(workflow: str) -> int:
+    assert "name: Release Rehearsal" in workflow
+    assert "\n  workflow_dispatch:" in workflow
+    for forbidden_trigger in ("\n  push:", "\n  pull_request:", "\n  workflow_run:"):
+        assert forbidden_trigger not in workflow
+    assert "permissions:\n  contents: read" in workflow
+    for forbidden in (
+        "secrets.",
+        "GITHUB_TOKEN",
+        "contents: write",
+        "actions: write",
+        "id-token: write",
+        "pull-requests: write",
+        "gh release",
+        "git tag",
+        "tauri-action",
+    ):
+        assert forbidden not in workflow
+
+    context = job_block(workflow, "context")
+    assert "ref: main" in context
+    assert 'if [ "$GITHUB_REF" != "refs/heads/main" ]' in workflow
+    assert "source_sha must be an exact lowercase 40-character commit SHA" in workflow
+    assert 'git fetch --no-tags --depth=1 origin "$SOURCE_SHA"' in workflow
+    assert 'RESOLVED=$(git rev-parse "$SOURCE_SHA^{commit}")' in workflow
+    assert 'echo "source_sha=$RESOLVED" >> "$GITHUB_OUTPUT"' in workflow
+    assert 'echo "workflow_sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"' in workflow
+
+    for job in ("typecheck", "rehearse-macos", "rehearse-linux"):
+        assert scalar(job_block(workflow, job), "needs") == "context"
+    assert workflow.count("ref: ${{ needs.context.outputs.source-sha }}") == 3
+    assert workflow.count("persist-credentials: false") == 5
+    assert "ref: ${{ needs.context.outputs.workflow-sha }}" in workflow
+    assert "path: .trusted-rehearsal" in workflow
+    assert "uses: ./.trusted-rehearsal/.github/actions/setup-linux-build" in workflow
+    assert "uses: ./.github/actions/setup-linux-build" not in workflow
+
+    assert (
+        "shared-key: macos-release-rehearsal-${{ needs.context.outputs.source-sha }}"
+        in workflow
+    )
+    assert (
+        "rust-cache-shared-key: linux-cuda-rehearsal-${{ needs.context.outputs.source-sha }}"
+        in workflow
+    )
+    assert (
+        "cuda-cache-key-prefix: cuda-rehearsal-${{ needs.context.outputs.source-sha }}"
+        in workflow
+    )
+    assert "macos-release-v1" not in workflow
+    assert "linux-cuda-release-v1" not in workflow
+    assert "cuda-minimal-${{ runner.os }}" not in workflow
+    assert workflow.count("--no-sign") == 2
+    assert '"proxy": "unsigned-release-build"' in workflow
+    assert '"workflow_sha": os.environ["WORKFLOW_SHA"]' in workflow
+    assert '"source_sha": os.environ["SOURCE_SHA"]' in workflow
+    assert '"build_seconds": int(os.environ["BUILD_SECONDS"])' in workflow
+    assert workflow.count("uses: actions/upload-artifact@v4") == 2
+    return 3
+
+
 def validate_linux_cache_policy(action: str) -> None:
     assert action.count(TRUSTED_MAIN_CACHE_DEFAULT) == 2
-    assert "cuda-minimal-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cuda-version }}-v1" in action
+    assert "cuda-cache-key-prefix:" in action
+    assert "default: 'cuda-minimal'" in action
+    cache_key = (
+        "${{ inputs.cuda-cache-key-prefix }}-${{ runner.os }}-"
+        "${{ runner.arch }}-${{ inputs.cuda-version }}-v1"
+    )
+    assert action.count(cache_key) == 3
     assert 'sub-packages: \'["nvcc", "cudart-dev"]\'' in action
     assert 'non-cuda-sub-packages: \'["libcublas-dev"]\'' in action
     assert 'STUB_DIR="$RUNNER_TEMP/murmur-cuda-driver-stub"' in action
@@ -340,12 +408,14 @@ def validate_promotion_policy(workflow: str) -> int:
 def main() -> None:
     ci = CI_WORKFLOW.read_text()
     release_build = RELEASE_BUILD_WORKFLOW.read_text()
+    release_rehearsal = RELEASE_REHEARSAL_WORKFLOW.read_text()
     release = RELEASE_WORKFLOW.read_text()
     linux_action = LINUX_SETUP_ACTION.read_text()
     cargo_toml = CARGO_TOML.read_text()
 
     ci_cases = validate_ci(ci)
     release_build_cases = validate_release_build(release_build)
+    rehearsal_jobs = validate_release_rehearsal(release_rehearsal)
     validate_linux_cache_policy(linux_action)
     validate_release_profile(cargo_toml)
     publication_steps = validate_promotion_policy(release)
@@ -353,6 +423,7 @@ def main() -> None:
     print(
         "workflow policy validation passed "
         f"({ci_cases} CI cases; {release_build_cases} release-build cases; "
+        f"{rehearsal_jobs} secretless rehearsal jobs; "
         f"{publication_steps} publication gates; trusted cache ownership intact)"
     )
 

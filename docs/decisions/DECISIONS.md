@@ -18,6 +18,18 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 ---
 
+## 2026-07-21: Pre-merge release tuning uses a secretless unsigned rehearsal (#319)
+
+**Decision:** Release-performance experiments are measured by a main-defined, manual-only workflow that builds an immutable source SHA in secretless read-only jobs. Cargo and CUDA caches are source-SHA-isolated. macOS app and Linux deb/AppImage builds remain unsigned; JSON evidence records build timing, cache state, workflow/source identity, and size proxies. Signing, notarization, updater signing, tags, and promotion remain exclusive to the trusted production release path.
+
+**Rationale:** Running feature-branch source inside `Release Build` would expose Apple/updater credentials and trusted cache namespaces. LTO and codegen-unit changes affect compile/link/bundle work, while notarization is external queue noise, so an unsigned proxy is both safer and more causally useful.
+
+**Status:** active
+
+**References:** issue #319; unblocks #305; [ADR](2026-07-21-secure-release-rehearsal.md).
+
+---
+
 ## 2026-07-20: Selected-text transform Phase D wrap (#312)
 
 **Decision:** Ship settings + presets + docs for local selected-text transform without expanding scope into AX webview special-cases. Built-in presets (Shorten / Bullets / Professional / Fix grammar / Casual) and user-defined `KnowledgeKind::Transform` names expand in `finish_transform_instruction` before the sidecar runs. Settings owns hold-key wiring, model download/remove/reset, and saved-transform CRUD. Cursor-chat and similar webviews remain best-effort (documented limitation, not a blocker). Native smoke and issue acceptance checkboxes stay a separate pass on a built `.app`.
