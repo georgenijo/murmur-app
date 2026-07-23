@@ -294,14 +294,10 @@ pub struct SidecarResourceSampleV1 {
 }
 
 impl SidecarResourceSampleV1 {
-    pub fn dependency_pending() -> Self {
+    pub fn unavailable(reason: UnavailableReasonV1) -> Self {
         Self {
-            cpu_percent: MeasurementV1::Unavailable {
-                reason: UnavailableReasonV1::DependencyPending,
-            },
-            rss_bytes: MeasurementV1::Unavailable {
-                reason: UnavailableReasonV1::DependencyPending,
-            },
+            cpu_percent: MeasurementV1::Unavailable { reason },
+            rss_bytes: MeasurementV1::Unavailable { reason },
         }
     }
 }
@@ -352,8 +348,8 @@ impl ResourceSummaryV1 {
         let no_samples = UnavailableReasonV1::NoSamples;
         let sidecar = if kind == PerformanceRunKindV1::SelectedTextTransform {
             SidecarResourceSummaryV1 {
-                cpu_percent: ResourceRangeV1::unavailable(UnavailableReasonV1::DependencyPending),
-                rss_bytes: ResourceRangeV1::unavailable(UnavailableReasonV1::DependencyPending),
+                cpu_percent: ResourceRangeV1::unavailable(no_samples),
+                rss_bytes: ResourceRangeV1::unavailable(no_samples),
             }
         } else {
             SidecarResourceSummaryV1 {

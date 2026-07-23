@@ -13,7 +13,7 @@
 //! enums are recorded.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -96,6 +96,27 @@ pub struct TransformOutput {
     pub output: String,
     pub finish_reason: FinishReason,
     pub output_tokens: u32,
+}
+
+/// Content-free timing metadata returned only by the correlated transform
+/// entry point. `None` means that phase was never entered, not a synthetic
+/// numeric zero.
+pub struct CorrelatedTransformOutcome {
+    pub result: Result<TransformOutput, TransformError>,
+    pub spawn_load_ms: Option<u64>,
+    pub generation_ms: Option<u64>,
+    pub cache_hit: Option<bool>,
+}
+
+impl CorrelatedTransformOutcome {
+    fn before_runtime(error: TransformError) -> Self {
+        Self {
+            result: Err(error),
+            spawn_load_ms: None,
+            generation_ms: None,
+            cache_hit: None,
+        }
+    }
 }
 
 /// Stable supervisor error enum. Mirrors the protocol `ErrorCode` and adds
@@ -579,6 +600,33 @@ mod supported {
         _model_file: std::fs::File,
     }
 
+    struct SpawnPidGuard<'a> {
+        resident_pid: &'a AtomicU32,
+        keep: bool,
+    }
+
+    impl<'a> SpawnPidGuard<'a> {
+        fn new(resident_pid: &'a AtomicU32, pid: u32) -> Self {
+            resident_pid.store(pid, Ordering::Release);
+            Self {
+                resident_pid,
+                keep: false,
+            }
+        }
+
+        fn keep(mut self) {
+            self.keep = true;
+        }
+    }
+
+    impl Drop for SpawnPidGuard<'_> {
+        fn drop(&mut self) {
+            if !self.keep {
+                self.resident_pid.store(0, Ordering::Release);
+            }
+        }
+    }
+
     struct Inner {
         child: Option<Child>,
         breaker: Breaker,
@@ -612,6 +660,11 @@ mod supported {
         plan: SpawnPlan,
         host_guard: OnceLock<Arc<dyn HostGuard>>,
         busy: AtomicBool,
+        /// PID of the resident helper, including while its startup handshake
+        /// is loading the model. Kept atomic because `transform_blocking`
+        /// holds `inner` across the request while the resource sampler must
+        /// remain non-blocking.
+        resident_pid: AtomicU32,
         /// The in-flight request's cancel token, registered for the duration of
         /// one `transform` call and cleared by its `BusyGuard`. Per-request (not
         /// supervisor-wide): [`Self::cancel_inflight_request`] cancels ONLY the
@@ -639,6 +692,7 @@ mod supported {
                 plan,
                 host_guard: OnceLock::new(),
                 busy: AtomicBool::new(false),
+                resident_pid: AtomicU32::new(0),
                 inflight_cancel: Mutex::new(None),
                 inner: Mutex::new(Inner {
                     child: None,
@@ -724,7 +778,23 @@ mod supported {
         /// Test-support: whether a helper process is currently resident. Not
         /// part of any stable external API.
         pub fn has_live_child(&self) -> bool {
-            self.lock().child.is_some()
+            self.resident_pid().is_some()
+        }
+
+        /// Non-blocking resource-attribution seam. PID 0 is never a child PID.
+        pub fn resident_pid(&self) -> Option<u32> {
+            match self.resident_pid.load(Ordering::Acquire) {
+                0 => None,
+                pid => Some(pid),
+            }
+        }
+
+        fn take_child(&self, inner: &mut Inner) -> Option<Child> {
+            let child = inner.child.take();
+            if child.is_some() {
+                self.resident_pid.store(0, Ordering::Release);
+            }
+            child
         }
 
         /// Async transform facade. Serializes to one in-flight request via a
@@ -738,6 +808,7 @@ mod supported {
         ) -> Result<TransformOutput, TransformError> {
             self.transform_inner(instruction, input, deadline, cancel, None)
                 .await
+                .result
         }
 
         /// Correlated transform entry point for the selected-text flow. The
@@ -749,7 +820,7 @@ mod supported {
             input: &str,
             deadline: Duration,
             cancel: CancelToken,
-        ) -> Result<TransformOutput, TransformError> {
+        ) -> CorrelatedTransformOutcome {
             self.transform_inner(
                 instruction,
                 input,
@@ -767,7 +838,7 @@ mod supported {
             deadline: Duration,
             cancel: CancelToken,
             transform_pass_id: Option<u64>,
-        ) -> Result<TransformOutput, TransformError> {
+        ) -> CorrelatedTransformOutcome {
             // App-side limit enforcement (defence in depth over the helper).
             if instruction.len() > MAX_INSTRUCTION_BYTES
                 || input.len() > MAX_INPUT_BYTES
@@ -776,7 +847,7 @@ mod supported {
                 || deadline.is_zero()
                 || deadline > Duration::from_millis(MAX_DEADLINE_MS)
             {
-                return Err(TransformError::InvalidRequest);
+                return CorrelatedTransformOutcome::before_runtime(TransformError::InvalidRequest);
             }
 
             if self
@@ -784,7 +855,7 @@ mod supported {
                 .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
                 .is_err()
             {
-                return Err(TransformError::Busy);
+                return CorrelatedTransformOutcome::before_runtime(TransformError::Busy);
             }
             // Register this request's cancel token so cancel_inflight_request()
             // reaches exactly THIS request. No stale-flag reset is needed (the
@@ -815,14 +886,14 @@ mod supported {
             })
             .await;
 
-            let result = match join {
-                Ok(r) => r,
-                Err(_) => Err(TransformError::Internal),
+            let outcome = match join {
+                Ok(outcome) => outcome,
+                Err(_) => CorrelatedTransformOutcome::before_runtime(TransformError::Internal),
             };
 
             // Telemetry: enums, durations, buckets, token counts only.
             let elapsed_ms = started.elapsed().as_millis() as u64;
-            let (outcome, output_tokens) = match &result {
+            let (result_code, output_tokens) = match &outcome.result {
                 Ok(out) => ("ok", out.output_tokens),
                 Err(err) => (err.as_str(), 0),
             };
@@ -830,7 +901,7 @@ mod supported {
                 tracing::info!(
                     target: "pipeline",
                     transform_pass_id,
-                    outcome,
+                    outcome = result_code,
                     duration_ms = elapsed_ms,
                     instruction_bucket,
                     input_bucket,
@@ -840,7 +911,7 @@ mod supported {
             } else {
                 tracing::info!(
                     target: "pipeline",
-                    outcome,
+                    outcome = result_code,
                     duration_ms = elapsed_ms,
                     instruction_bucket,
                     input_bucket,
@@ -848,7 +919,7 @@ mod supported {
                     "llm_transform"
                 );
             }
-            result
+            outcome
         }
 
         fn transform_blocking(
@@ -857,18 +928,40 @@ mod supported {
             input: &str,
             deadline: Duration,
             cancel: &CancelToken,
-        ) -> Result<TransformOutput, TransformError> {
+        ) -> CorrelatedTransformOutcome {
             let mut inner = self.lock();
+            let cache_hit = inner.child.is_some();
+            let load_started = Instant::now();
 
             if inner.breaker.is_disabled(Instant::now()) {
-                return Err(TransformError::Disabled);
+                return CorrelatedTransformOutcome {
+                    result: Err(TransformError::Disabled),
+                    spawn_load_ms: Some(load_started.elapsed().as_millis() as u64),
+                    generation_ms: None,
+                    cache_hit: Some(cache_hit),
+                };
             }
             if let Some(_reason) = self.guard().heavy_runtime_active() {
-                return Err(TransformError::HeavyRuntimeActive);
+                return CorrelatedTransformOutcome {
+                    result: Err(TransformError::HeavyRuntimeActive),
+                    spawn_load_ms: Some(load_started.elapsed().as_millis() as u64),
+                    generation_ms: None,
+                    cache_hit: Some(cache_hit),
+                };
             }
 
             // Verify the model exists before touching the helper.
-            let model_path = self.plan.model_path()?;
+            let model_path = match self.plan.model_path() {
+                Ok(path) => path,
+                Err(error) => {
+                    return CorrelatedTransformOutcome {
+                        result: Err(error),
+                        spawn_load_ms: Some(load_started.elapsed().as_millis() as u64),
+                        generation_ms: None,
+                        cache_hit: Some(cache_hit),
+                    };
+                }
+            };
 
             // Lazy spawn. Release the ASR model first so only one heavy runtime
             // is ever resident (mutual exclusion, ADR "Lifecycle and resources").
@@ -882,16 +975,28 @@ mod supported {
                         // the user can re-download. Not a helper fault → no breaker
                         // trip; the file is gone so this cannot loop.
                         self.plan.cleanup_bad_model();
-                        return Err(TransformError::ModelMismatch);
+                        return CorrelatedTransformOutcome {
+                            result: Err(TransformError::ModelMismatch),
+                            spawn_load_ms: Some(load_started.elapsed().as_millis() as u64),
+                            generation_ms: None,
+                            cache_hit: Some(cache_hit),
+                        };
                     }
                     Err(err) => {
                         inner.breaker.record_failure(Instant::now());
-                        return Err(err);
+                        return CorrelatedTransformOutcome {
+                            result: Err(err),
+                            spawn_load_ms: Some(load_started.elapsed().as_millis() as u64),
+                            generation_ms: None,
+                            cache_hit: Some(cache_hit),
+                        };
                     }
                 }
             }
+            let spawn_load_ms = load_started.elapsed().as_millis() as u64;
 
             let request_id = unique_id("req");
+            let generation_started = Instant::now();
             let outcome = {
                 let child = inner.child.as_mut().expect("child present");
                 run_request(
@@ -905,7 +1010,7 @@ mod supported {
                 )
             };
 
-            match outcome {
+            let result = match outcome {
                 RequestOutcome::Ok(out) => {
                     inner.last_activity = Instant::now();
                     Ok(out)
@@ -928,7 +1033,7 @@ mod supported {
                     Err(TransformError::Timeout)
                 }
                 RequestOutcome::TimedOutKilled => {
-                    kill_child(inner.child.take());
+                    kill_child(self.take_child(&mut inner));
                     Err(TransformError::Timeout)
                 }
                 RequestOutcome::CancelledKeepChild => {
@@ -937,24 +1042,30 @@ mod supported {
                     Err(TransformError::Cancelled)
                 }
                 RequestOutcome::CancelledKilled => {
-                    kill_child(inner.child.take());
+                    kill_child(self.take_child(&mut inner));
                     Err(TransformError::Cancelled)
                 }
                 RequestOutcome::Crashed => {
-                    kill_child(inner.child.take());
+                    kill_child(self.take_child(&mut inner));
                     inner.breaker.record_failure(Instant::now());
                     Err(TransformError::Crashed)
                 }
                 RequestOutcome::Protocol => {
-                    kill_child(inner.child.take());
+                    kill_child(self.take_child(&mut inner));
                     inner.breaker.record_failure(Instant::now());
                     Err(TransformError::Protocol)
                 }
                 RequestOutcome::OutputInvalid => {
-                    kill_child(inner.child.take());
+                    kill_child(self.take_child(&mut inner));
                     inner.breaker.record_failure(Instant::now());
                     Err(TransformError::OutputInvalid)
                 }
+            };
+            CorrelatedTransformOutcome {
+                result,
+                spawn_load_ms: Some(spawn_load_ms),
+                generation_ms: Some(generation_started.elapsed().as_millis() as u64),
+                cache_hit: Some(cache_hit),
             }
         }
 
@@ -1021,8 +1132,21 @@ mod supported {
 
             let mut proc = command.spawn().map_err(|_| TransformError::SpawnFailed)?;
             let pid = proc.id();
-            let mut stdin = proc.stdin.take().ok_or(TransformError::SpawnFailed)?;
-            let stdout = proc.stdout.take().ok_or(TransformError::SpawnFailed)?;
+            let pid_guard = SpawnPidGuard::new(&self.resident_pid, pid);
+            let mut stdin = match proc.stdin.take() {
+                Some(stdin) => stdin,
+                None => {
+                    kill_and_reap(&mut proc);
+                    return Err(TransformError::SpawnFailed);
+                }
+            };
+            let stdout = match proc.stdout.take() {
+                Some(stdout) => stdout,
+                None => {
+                    kill_and_reap(&mut proc);
+                    return Err(TransformError::SpawnFailed);
+                }
+            };
 
             // Reader thread: classifies frames, protocol violations, and EOF.
             let (tx, rx) = std::sync::mpsc::channel::<HelperEvent>();
@@ -1089,14 +1213,16 @@ mod supported {
                             kill_and_reap(&mut proc);
                             return Err(TransformError::HandshakeFailed);
                         }
-                        return Ok(Child {
+                        let child = Child {
                             proc,
                             stdin,
                             events: rx,
                             session_nonce,
                             pid,
                             _model_file: model_file,
-                        });
+                        };
+                        pid_guard.keep();
+                        return Ok(child);
                     }
                     Ok(_) | Err(RecvTimeoutError::Disconnected) => {
                         kill_and_reap(&mut proc);
@@ -1151,9 +1277,9 @@ mod supported {
                 }
 
                 if kill {
-                    (inner.child.take(), true)
+                    (self.take_child(&mut inner), true)
                 } else if inner.last_activity.elapsed() >= self.plan.idle_after() {
-                    (inner.child.take(), false)
+                    (self.take_child(&mut inner), false)
                 } else {
                     return;
                 }
@@ -1174,7 +1300,7 @@ mod supported {
             let child = match self.inner.try_lock() {
                 Ok(mut inner) => {
                     inner.breaker.reset();
-                    inner.child.take()
+                    self.take_child(&mut inner)
                 }
                 Err(_) => return,
             };
@@ -1188,7 +1314,7 @@ mod supported {
         /// transform is in flight — the guard never blocks behind a ≤31s request.
         pub fn shutdown(&self) {
             let child = match self.inner.try_lock() {
-                Ok(mut inner) => inner.child.take(),
+                Ok(mut inner) => self.take_child(&mut inner),
                 Err(_) => return,
             };
             shutdown_child(child, self.plan.cancel_grace());
@@ -1482,6 +1608,7 @@ pub use supported::LlmSidecar;
 pub struct LlmSidecar {
     host_guard: OnceLock<Arc<dyn HostGuard>>,
     busy: AtomicBool,
+    resident_pid: AtomicU32,
     _plan: SpawnPlan,
 }
 
@@ -1500,6 +1627,7 @@ impl LlmSidecar {
         Self {
             host_guard: OnceLock::new(),
             busy: AtomicBool::new(false),
+            resident_pid: AtomicU32::new(0),
             _plan: plan,
         }
     }
@@ -1523,6 +1651,10 @@ impl LlmSidecar {
         false
     }
 
+    pub fn resident_pid(&self) -> Option<u32> {
+        None
+    }
+
     pub async fn transform(
         self: &Arc<Self>,
         _instruction: &str,
@@ -1540,8 +1672,8 @@ impl LlmSidecar {
         _input: &str,
         _deadline: Duration,
         _cancel: CancelToken,
-    ) -> Result<TransformOutput, TransformError> {
-        Err(TransformError::Unsupported)
+    ) -> CorrelatedTransformOutcome {
+        CorrelatedTransformOutcome::before_runtime(TransformError::Unsupported)
     }
 
     pub fn maintenance_tick(&self) {}

@@ -90,6 +90,14 @@ their actual `from`, requested `to`, and whether the atomic transition won.
 Pass resolution uses stable outcomes (`ready`, `failed`, `cancelled`, `applied`,
 `undone`) plus stable stage/error codes.
 
+The persistent `PerformanceRunV1` uses that same pass ID. A successfully
+claimed pass records selected-text capture, instruction capture/ASR,
+sidecar spawn/load, generation, and review-ready or terminal failure. The base
+run completes once; later Apply/Undo attempts append bounded, content-free
+follow-up duration/outcome records. Sidecar CPU/RSS samples use the helper's
+resident PID and are summarized only for the transform run's wall-clock
+interval. No second transform tracing path is introduced.
+
 Transform diagnostics are content-free. They may contain IDs, enum values,
 numeric AX outcomes, booleans, sample/token counts, timings, apply/capture
 routes, and length buckets. They never contain selected text, instruction or

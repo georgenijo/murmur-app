@@ -7,6 +7,7 @@ const DB_FILE: &str = "performance.sqlite3";
 const LATEST_DB_SCHEMA_VERSION: u32 = 1;
 const MAX_COMPLETED_RUNS: usize = 200;
 const MAX_RESOURCE_SAMPLES: usize = 600;
+const MAX_TRANSFORM_FOLLOW_UPS: usize = 8;
 
 #[derive(Clone)]
 pub(crate) struct PerformanceRepository {
@@ -198,6 +199,58 @@ impl PerformanceRepository {
         prune_resource_samples_tx(&transaction)?;
         transaction.commit().map_err(db_error)?;
         Ok(())
+    }
+
+    pub(crate) fn append_transform_follow_up(
+        &self,
+        correlation: &RunCorrelationV1,
+        follow_up: TransformFollowUpV1,
+    ) -> Result<Option<PerformanceRunV1>, String> {
+        if !matches!(correlation, RunCorrelationV1::SelectedTextTransform { .. }) {
+            return Ok(None);
+        }
+        let mut connection = self.open()?;
+        let transaction = connection.transaction().map_err(db_error)?;
+        let (kind, id) = correlation.storage_parts();
+        let row = transaction
+            .query_row(
+                "SELECT run_id, record_version, payload_json
+                 FROM completed_runs
+                 WHERE correlation_kind = ? AND correlation_id = ?
+                 ORDER BY finished_at_ms DESC, rowid DESC LIMIT 1",
+                params![kind, to_i64(id)?],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, u32>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(db_error)?;
+        let Some((run_id, version, payload)) = row else {
+            return Ok(None);
+        };
+        if version != PERFORMANCE_RUN_SCHEMA_VERSION {
+            return Ok(None);
+        }
+        let mut run: PerformanceRunV1 =
+            serde_json::from_str(&payload).map_err(|_| invalid_record())?;
+        run.follow_ups.push(follow_up);
+        if run.follow_ups.len() > MAX_TRANSFORM_FOLLOW_UPS {
+            let overflow = run.follow_ups.len() - MAX_TRANSFORM_FOLLOW_UPS;
+            run.follow_ups.drain(0..overflow);
+        }
+        let payload = serde_json::to_string(&run).map_err(|_| invalid_record())?;
+        transaction
+            .execute(
+                "UPDATE completed_runs SET payload_json = ? WHERE run_id = ?",
+                params![payload, run_id],
+            )
+            .map_err(db_error)?;
+        transaction.commit().map_err(db_error)?;
+        Ok(Some(run))
     }
 
     pub(crate) fn list(&self, limit: u32) -> Result<Vec<PerformanceRunV1>, String> {
@@ -546,9 +599,17 @@ fn resource_summary_tx(
         .filter_map(|sample| sample.main_process.ffi_native_heap_bytes.value().copied())
         .collect::<Vec<_>>();
     let sidecar = if kind == PerformanceRunKindV1::SelectedTextTransform {
+        let sidecar_cpu = samples
+            .iter()
+            .filter_map(|sample| sample.sidecar_process.cpu_percent.value().copied())
+            .collect::<Vec<_>>();
+        let sidecar_rss = samples
+            .iter()
+            .filter_map(|sample| sample.sidecar_process.rss_bytes.value().copied())
+            .collect::<Vec<_>>();
         SidecarResourceSummaryV1 {
-            cpu_percent: ResourceRangeV1::unavailable(UnavailableReasonV1::DependencyPending),
-            rss_bytes: ResourceRangeV1::unavailable(UnavailableReasonV1::DependencyPending),
+            cpu_percent: range_f32(&sidecar_cpu),
+            rss_bytes: range_u64(&sidecar_rss),
         }
     } else {
         SidecarResourceSummaryV1 {
@@ -725,7 +786,15 @@ mod tests {
                 rust_heap_bytes: MeasurementV1::measured(20),
                 ffi_native_heap_bytes: MeasurementV1::measured(30),
             },
-            sidecar_process: SidecarResourceSampleV1::dependency_pending(),
+            sidecar_process: SidecarResourceSampleV1::unavailable(
+                UnavailableReasonV1::DependencyPending,
+            ),
+        }
+    }
+
+    fn transform_correlation(id: u64) -> RunCorrelationV1 {
+        RunCorrelationV1::SelectedTextTransform {
+            transform_pass_id: id,
         }
     }
 
@@ -803,6 +872,80 @@ mod tests {
             run.resources.sidecar_process.rss_bytes.start,
             MeasurementV1::NotApplicable
         ));
+    }
+
+    #[test]
+    fn transform_summarizes_measured_sidecar_and_bounds_follow_ups() {
+        let (_temp, repository) = repository();
+        let correlation = transform_correlation(41);
+        let active = repository
+            .begin(
+                PerformanceRunKindV1::SelectedTextTransform,
+                correlation.clone(),
+                vec![RuntimeIdentityV1 {
+                    role: RuntimeRoleV1::Generation,
+                    model_id: "catalog-model".to_string(),
+                    backend: RuntimeBackendV1::LlamaCpp,
+                    accelerator: AcceleratorV1::MetalGpu,
+                    warm_state: ModelWarmStateV1::Warm,
+                }],
+                ContentFreeInputSummaryV1::default(),
+            )
+            .unwrap();
+        let mut resource = sample(active.started_at_ms, MeasurementV1::measured(1.0));
+        resource.sidecar_process = SidecarResourceSampleV1 {
+            cpu_percent: MeasurementV1::measured(25.0),
+            rss_bytes: MeasurementV1::measured(456),
+        };
+        repository.insert_resource_sample(&resource).unwrap();
+        let run = repository
+            .complete(
+                &correlation,
+                RunOutcomeV1::Success,
+                vec![StageTimingV1::measured(PerformanceStageV1::Generation, 12)],
+                None,
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            run.resources.sidecar_process.rss_bytes.peak,
+            MeasurementV1::measured(456)
+        );
+
+        for index in 0..10 {
+            repository
+                .append_transform_follow_up(
+                    &correlation,
+                    TransformFollowUpV1 {
+                        kind: if index % 2 == 0 {
+                            TransformFollowUpKindV1::Apply
+                        } else {
+                            TransformFollowUpKindV1::Undo
+                        },
+                        at_ms: index,
+                        duration_ms: MeasurementV1::measured(index as u64),
+                        outcome: StageOutcomeV1::Completed,
+                    },
+                )
+                .unwrap();
+        }
+        let updated = repository.get(&run.run_id).unwrap().unwrap();
+        assert_eq!(updated.follow_ups.len(), MAX_TRANSFORM_FOLLOW_UPS);
+        assert_eq!(updated.follow_ups[0].at_ms, 2);
+        repository.clear().unwrap();
+        assert!(repository
+            .append_transform_follow_up(
+                &correlation,
+                TransformFollowUpV1 {
+                    kind: TransformFollowUpKindV1::Apply,
+                    at_ms: 11,
+                    duration_ms: MeasurementV1::measured(1),
+                    outcome: StageOutcomeV1::Completed,
+                },
+            )
+            .unwrap()
+            .is_none());
     }
 
     #[test]
