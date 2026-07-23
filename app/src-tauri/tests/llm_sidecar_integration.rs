@@ -86,6 +86,40 @@ async fn successful_transform_round_trip() {
 }
 
 #[tokio::test]
+async fn correlated_transform_reports_cold_then_warm_phase_timings() {
+    let fixture = fixture_model();
+    let sidecar = sidecar("happy", &fixture);
+    let cold = sidecar
+        .transform_for_pass(
+            77,
+            "Rewrite this politely.",
+            "gimme the report",
+            Duration::from_secs(5),
+            CancelToken::new(),
+        )
+        .await;
+    assert!(cold.result.is_ok());
+    assert_eq!(cold.cache_hit, Some(false));
+    assert!(cold.spawn_load_ms.is_some());
+    assert!(cold.generation_ms.is_some());
+    assert!(sidecar.resident_pid().is_some());
+
+    let warm = sidecar
+        .transform_for_pass(
+            78,
+            "Rewrite this politely.",
+            "gimme the report",
+            Duration::from_secs(5),
+            CancelToken::new(),
+        )
+        .await;
+    assert!(warm.result.is_ok());
+    assert_eq!(warm.cache_hit, Some(true));
+    assert!(warm.spawn_load_ms.is_some());
+    assert!(warm.generation_ms.is_some());
+}
+
+#[tokio::test]
 async fn timeout_cancels_then_kills_and_reports_timeout() {
     let fixture = fixture_model();
     let sidecar = sidecar("slow_ignore_cancel", &fixture);

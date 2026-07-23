@@ -556,6 +556,14 @@ struct PipelineResult {
 }
 
 fn runtime_identity(model_name: &str, warm_state: ModelWarmStateV1) -> Vec<RuntimeIdentityV1> {
+    runtime_identity_for_role(model_name, warm_state, RuntimeRoleV1::Transcription)
+}
+
+pub(crate) fn runtime_identity_for_role(
+    model_name: &str,
+    warm_state: ModelWarmStateV1,
+    role: RuntimeRoleV1,
+) -> Vec<RuntimeIdentityV1> {
     let Ok(definition) = model_runtime::model_definition(model_name) else {
         return Vec::new();
     };
@@ -571,7 +579,7 @@ fn runtime_identity(model_name: &str, warm_state: ModelWarmStateV1) -> Vec<Runti
         _ => AcceleratorV1::PlatformFallback,
     };
     vec![RuntimeIdentityV1 {
-        role: RuntimeRoleV1::Transcription,
+        role,
         model_id: model_name.to_string(),
         backend,
         accelerator,

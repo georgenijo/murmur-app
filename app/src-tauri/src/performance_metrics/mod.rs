@@ -95,6 +95,19 @@ impl PerformanceMetrics {
         )
     }
 
+    pub(crate) fn begin_selected_text_transform(
+        &self,
+        transform_pass_id: u64,
+        runtimes: Vec<RuntimeIdentityV1>,
+    ) -> Result<ActiveRunV1, String> {
+        self.begin(
+            PerformanceRunKindV1::SelectedTextTransform,
+            RunCorrelationV1::SelectedTextTransform { transform_pass_id },
+            runtimes,
+            ContentFreeInputSummaryV1::default(),
+        )
+    }
+
     pub(crate) fn update_active(
         &self,
         correlation: &RunCorrelationV1,
@@ -183,6 +196,17 @@ impl PerformanceMetrics {
         Ok(())
     }
 
+    pub(crate) fn append_transform_follow_up(
+        &self,
+        transform_pass_id: u64,
+        follow_up: TransformFollowUpV1,
+    ) -> Result<Option<PerformanceRunV1>, String> {
+        self.repository()?.append_transform_follow_up(
+            &RunCorrelationV1::SelectedTextTransform { transform_pass_id },
+            follow_up,
+        )
+    }
+
     pub(crate) fn list(&self, limit: u32) -> Result<PerformanceRunListV1, String> {
         Ok(PerformanceRunListV1 {
             schema_version: PERFORMANCE_RUN_SCHEMA_VERSION,
@@ -229,6 +253,12 @@ impl PerformanceRunGuard {
     pub(crate) fn record(&mut self, timing: StageTimingV1) {
         self.current_stage = timing.stage;
         let _ = self.metrics.record_stage(&self.correlation, timing);
+    }
+
+    /// Leave a deliberately long-lived run active across command boundaries.
+    /// The next command creates its own panic guard for the same correlation.
+    pub(crate) fn defer(mut self) {
+        self.finished = true;
     }
 
     pub(crate) fn finish(
@@ -320,6 +350,34 @@ mod tests {
             RunOutcomeV1::Failed {
                 stage: PerformanceStageV1::ModelLoad,
                 ..
+            }
+        ));
+    }
+
+    #[test]
+    fn deferred_transform_run_is_closed_by_the_next_command_guard() {
+        let (_temp, metrics) = metrics();
+        let correlation = RunCorrelationV1::SelectedTextTransform {
+            transform_pass_id: 8,
+        };
+        metrics
+            .begin_selected_text_transform(8, Vec::new())
+            .unwrap();
+        metrics
+            .guard(correlation.clone(), PerformanceStageV1::SelectedTextCapture)
+            .defer();
+        assert!(metrics.list(10).unwrap().runs.is_empty());
+
+        let mut next_command = metrics.guard(correlation, PerformanceStageV1::InstructionCapture);
+        next_command.enter(PerformanceStageV1::InstructionAsr);
+        drop(next_command);
+        let runs = metrics.list(10).unwrap().runs;
+        assert_eq!(runs.len(), 1);
+        assert!(matches!(
+            runs[0].outcome,
+            RunOutcomeV1::Failed {
+                stage: PerformanceStageV1::InstructionAsr,
+                error_code: StableRunErrorV1::InternalEarlyExit,
             }
         ));
     }

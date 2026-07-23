@@ -13,33 +13,37 @@ pub fn get_process_rss_mb() -> u64 {
 
 struct ProcessCpuSampler {
     system: sysinfo::System,
+    pid: sysinfo::Pid,
     primed: bool,
 }
 
 impl ProcessCpuSampler {
-    fn new() -> Self {
+    fn new(pid: u32) -> Self {
         Self {
             system: sysinfo::System::new(),
+            pid: sysinfo::Pid::from_u32(pid),
             primed: false,
         }
     }
 
-    fn sample(&mut self) -> Option<f32> {
-        use sysinfo::{Pid, ProcessesToUpdate};
-
-        let pid = Pid::from_u32(std::process::id());
+    fn sample(&mut self) -> (Option<f32>, Option<u64>) {
+        use sysinfo::ProcessesToUpdate;
         self.system
-            .refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
-        let value = self.system.process(pid).map(|process| process.cpu_usage());
-        if value.is_some() && !self.primed {
+            .refresh_processes(ProcessesToUpdate::Some(&[self.pid]), true);
+        let process = self.system.process(self.pid);
+        let cpu = process.map(|process| process.cpu_usage());
+        let rss = process.map(|process| process.memory());
+        if cpu.is_some() && !self.primed {
             self.primed = true;
-            return None;
+            return (None, rss);
         }
-        value
+        (cpu, rss)
     }
 }
 
 static PROCESS_CPU: std::sync::OnceLock<Mutex<ProcessCpuSampler>> = std::sync::OnceLock::new();
+static SIDECAR_CPU: std::sync::OnceLock<Mutex<Option<ProcessCpuSampler>>> =
+    std::sync::OnceLock::new();
 
 fn measured_or_unavailable<T>(value: Option<T>) -> crate::performance_metrics::MeasurementV1<T> {
     value.map_or(
@@ -50,17 +54,68 @@ fn measured_or_unavailable<T>(value: Option<T>) -> crate::performance_metrics::M
     )
 }
 
-pub fn sample_resources() -> crate::performance_metrics::ResourceSampleV1 {
+fn sample_sidecar(
+    sidecar: &crate::llm_sidecar::LlmSidecar,
+) -> crate::performance_metrics::SidecarResourceSampleV1 {
+    use crate::performance_metrics::{SidecarResourceSampleV1, UnavailableReasonV1};
+
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    {
+        let _ = sidecar;
+        return SidecarResourceSampleV1::unavailable(UnavailableReasonV1::UnsupportedPlatform);
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        let Some(pid) = sidecar.resident_pid() else {
+            return SidecarResourceSampleV1::unavailable(UnavailableReasonV1::NoSamples);
+        };
+        sample_sidecar_pid(pid)
+    }
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn sample_sidecar_pid(pid: u32) -> crate::performance_metrics::SidecarResourceSampleV1 {
+    use crate::performance_metrics::{MeasurementV1, SidecarResourceSampleV1, UnavailableReasonV1};
+
+    let mut slot = SIDECAR_CPU
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if slot.as_ref().map(|sampler| sampler.pid.as_u32()) != Some(pid) {
+        *slot = Some(ProcessCpuSampler::new(pid));
+    }
+    let (cpu, rss) = slot.as_mut().expect("sidecar sampler initialized").sample();
+    SidecarResourceSampleV1 {
+        cpu_percent: cpu.map_or(
+            MeasurementV1::Unavailable {
+                reason: UnavailableReasonV1::SampleFailed,
+            },
+            MeasurementV1::measured,
+        ),
+        rss_bytes: rss.map_or(
+            MeasurementV1::Unavailable {
+                reason: UnavailableReasonV1::SampleFailed,
+            },
+            MeasurementV1::measured,
+        ),
+    }
+}
+
+pub fn sample_resources(
+    sidecar: &crate::llm_sidecar::LlmSidecar,
+) -> crate::performance_metrics::ResourceSampleV1 {
     use crate::performance_metrics::{
         HostResourceSampleV1, MeasurementV1, ProcessResourceSampleV1, ResourceSampleV1,
-        SidecarResourceSampleV1, UnavailableReasonV1, RESOURCE_SAMPLE_SCHEMA_VERSION,
+        UnavailableReasonV1, RESOURCE_SAMPLE_SCHEMA_VERSION,
     };
 
     let process_cpu = PROCESS_CPU
-        .get_or_init(|| Mutex::new(ProcessCpuSampler::new()))
+        .get_or_init(|| Mutex::new(ProcessCpuSampler::new(std::process::id())))
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .sample();
+        .sample()
+        .0;
     let rust_heap = if cfg!(target_os = "macos") {
         MeasurementV1::measured(crate::rust_heap_bytes())
     } else {
@@ -88,9 +143,7 @@ pub fn sample_resources() -> crate::performance_metrics::ResourceSampleV1 {
             rust_heap_bytes: rust_heap,
             ffi_native_heap_bytes: ffi_native_heap,
         },
-        // Phase A reserves the typed sidecar scope but does not inspect the
-        // #332-owned transform runtime or llm_sidecar internals.
-        sidecar_process: SidecarResourceSampleV1::dependency_pending(),
+        sidecar_process: sample_sidecar(sidecar),
     }
 }
 
@@ -187,8 +240,8 @@ pub fn start_heartbeat(app_handle: tauri::AppHandle) {
             interval.tick().await;
             ticks = ticks.saturating_add(1);
 
-            let sample = sample_resources();
             let state = app_handle.state::<crate::State>();
+            let sample = sample_resources(&state.transform_runtime);
             if let Err(error) = state.performance.insert_resource_sample(&sample) {
                 tracing::warn!(
                     target: "system",
@@ -221,21 +274,68 @@ pub fn start_heartbeat(app_handle: tauri::AppHandle) {
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-pub fn get_resource_usage() -> crate::performance_metrics::ResourceSampleV1 {
-    sample_resources()
+pub fn get_resource_usage(
+    state: tauri::State<'_, crate::State>,
+) -> crate::performance_metrics::ResourceSampleV1 {
+    sample_resources(&state.transform_runtime)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::performance_metrics::{MeasurementV1, UnavailableReasonV1};
     use crate::state::DictationStatus;
 
     #[test]
     fn idle_release_requires_expired_idle_status() {
         let expired = Some(std::time::Duration::from_secs(5 * 60));
         assert!(should_release_model(5, DictationStatus::Idle, expired));
-        assert!(!should_release_model(5, DictationStatus::Recording, expired));
-        assert!(!should_release_model(5, DictationStatus::Processing, expired));
+        assert!(!should_release_model(
+            5,
+            DictationStatus::Recording,
+            expired
+        ));
+        assert!(!should_release_model(
+            5,
+            DictationStatus::Processing,
+            expired
+        ));
+    }
+
+    #[test]
+    fn nonresident_sidecar_is_never_reported_as_zero() {
+        let sidecar = crate::llm_sidecar::LlmSidecar::new();
+        let sample = sample_resources(&sidecar);
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let expected = UnavailableReasonV1::NoSamples;
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let expected = UnavailableReasonV1::UnsupportedPlatform;
+        assert_eq!(
+            sample.sidecar_process.cpu_percent,
+            MeasurementV1::Unavailable { reason: expected }
+        );
+        assert_eq!(
+            sample.sidecar_process.rss_bytes,
+            MeasurementV1::Unavailable { reason: expected }
+        );
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn pid_sampler_reads_real_rss_and_primes_cpu_without_a_zero_sentinel() {
+        let first = sample_sidecar_pid(std::process::id());
+        assert!(matches!(
+            first.rss_bytes,
+            MeasurementV1::Measured { value } if value > 0
+        ));
+        assert_eq!(
+            first.cpu_percent,
+            MeasurementV1::Unavailable {
+                reason: UnavailableReasonV1::SampleFailed
+            }
+        );
+        let second = sample_sidecar_pid(std::process::id());
+        assert!(matches!(second.cpu_percent, MeasurementV1::Measured { .. }));
     }
 
     #[test]

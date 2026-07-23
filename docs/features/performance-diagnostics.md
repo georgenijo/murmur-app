@@ -2,9 +2,9 @@
 
 Issue [#351](https://github.com/georgenijo/murmur-app/issues/351) defines the
 versioned, local data layer used by the Diagnostics performance workspace.
-Phase A covers dictation and imported-file runs. Selected-text transform and
-sidecar correlation remain reserved until #332 supplies the canonical
-`transform_pass_id` and one typed trace source.
+Dictation, imported-file, and selected-text transform runs share this contract.
+Transform metrics reuse #332's canonical `transform_pass_id`; the existing
+content-free transform trace remains the only structured trace source.
 
 ## Storage and retention
 
@@ -18,6 +18,7 @@ It is separate from logs, transcription history, settings, personal knowledge,
 and Performance Lab/evaluation reports. The store keeps:
 
 - the newest 200 completed runs;
+- at most eight apply/undo follow-up attempts per completed transform run;
 - active content-free lifecycle rows so early exits and restart interruption can
   close a run exactly once;
 - the newest 600 one-second resource samples (a ten-minute window).
@@ -38,10 +39,9 @@ record versions are not decoded as V1.
 `PerformanceRunV1` contains:
 
 - an opaque random `runId`;
-- kind (`dictation`, `fileTranscription`, or reserved
-  `selectedTextTransform`);
+- kind (`dictation`, `fileTranscription`, or `selectedTextTransform`);
 - start/finish UTC timestamps and exactly one terminal outcome;
-- the existing `recordingId`, a dedicated `fileRunId`, or the future canonical
+- the existing `recordingId`, a dedicated `fileRunId`, or the canonical
   `transformPassId`;
 - catalog-backed model, backend, accelerator, and warm/cold state;
 - typed stage measurements;
@@ -79,9 +79,20 @@ The contract never uses numeric zero as a missing-data sentinel.
 - file return;
 - total command processing.
 
-The selected-text capture, instruction-ASR, sidecar-load, generation,
-review-ready, apply, and undo stage names are reserved in V1 but Phase A does
-not emit them.
+### Selected-text transform stages
+
+- selected-text capture;
+- instruction audio capture and cleanup-only ASR;
+- sidecar spawn/model-load and generation as separate timings;
+- review-ready completion or a stable terminal failure, cancellation, or
+  timeout.
+
+The run starts only after the canonical pass wins the transform pipeline claim.
+It closes at review-ready or the first terminal outcome. Apply and Undo happen
+after that completion, so their measured duration and completed/failed outcome
+are appended as bounded correlated follow-up records rather than changing the
+run's single terminal outcome. Retry keeps #332's same pass ID and does not
+create a competing trace identity.
 
 ## Resource scopes
 
@@ -92,12 +103,19 @@ not emit them.
 | Main-process RSS | Physical resident memory in bytes |
 | Rust heap | Bytes in Murmur's dedicated Rust malloc zone on macOS |
 | FFI/native heap | Bytes in all other malloc zones; not an RSS component and not a complete GPU/unified-memory measurement |
-| Sidecar CPU/RSS | Reserved as unavailable in Phase A; non-transform run summaries mark the scope not applicable |
+| Sidecar CPU/RSS | Signed local-LLM helper process only; sampled by its atomic resident PID, including model handshake |
 
 The first host/process CPU observation needs a prior counter baseline and is
 therefore unavailable rather than reported as zero. Rust/FFI heap breakdown is
 unavailable on unsupported platforms. Accelerator identity is recorded, but
 GPU or ANE utilization is not estimated.
+
+Only one transform request can own the helper at a time. Resource samples in
+the transform run's wall-clock interval are therefore attributable to that
+pass; an idle/nonresident helper yields `unavailable { reason: noSamples }`.
+Non-transform run summaries mark the sidecar scope `notApplicable`. A vanished
+PID or failed process read is `sampleFailed`, and unsupported platforms report
+`unsupportedPlatform`.
 
 ## Privacy
 
