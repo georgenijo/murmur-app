@@ -1,0 +1,106 @@
+{
+  "reportVersion": 1,
+  "fixtureVersion": 1,
+  "generatedAt": "2026-07-21T14:00:00Z",
+  "tier": "hardware",
+  "privacy": {
+    "localOnly": true,
+    "historyIngestion": false,
+    "networkUsed": false,
+    "systemClipboardUsed": false,
+    "fixtureProvenanceRequired": true
+  },
+  "environment": {
+    "appVersion": "0.19.0",
+    "os": "macos",
+    "arch": "aarch64",
+    "machineLabel": "local-mac",
+    "logicalCpus": 8
+  },
+  "summary": {
+    "total": 1,
+    "passed": 1,
+    "failed": 0,
+    "skipped": 0,
+    "aggregateRawWer": 0.05,
+    "aggregateNormalizedWer": 0.04,
+    "aggregateCer": 0.02,
+    "transformationMatchRate": 1,
+    "commandExactMatchRate": null,
+    "noChangePreservationRate": 1,
+    "deliveryMatchRate": 1
+  },
+  "cases": [
+    {
+      "id": "hardware-short",
+      "status": "passed",
+      "failures": [],
+      "provenance": {
+        "kind": "repositoryProjectTest",
+        "source": "Bundled hardware fixture",
+        "containsRealUserData": false,
+        "deletion": "Delete the fixture and generated local reports."
+      },
+      "context": {
+        "bundleId": null,
+        "matchedProfile": null,
+        "fixtureOnly": true
+      },
+      "model": {
+        "name": "tiny.en",
+        "backend": "whisper.cpp",
+        "accelerator": "Metal",
+        "audioPath": "PRIVATE_AUDIO_PATH_SENTINEL",
+        "sampleRateHz": 16000,
+        "channels": 1
+      },
+      "recognition": {
+        "expectedRaw": "PRIVATE_HARDWARE_EXPECTED",
+        "actualRaw": "PRIVATE_HARDWARE_ACTUAL",
+        "rawWordErrors": 1,
+        "normalizedWordErrors": 1,
+        "referenceWords": 20,
+        "normalizedReferenceWords": 20,
+        "referenceCharacters": 100,
+        "characterErrors": 2,
+        "rawWer": 0.05,
+        "normalizedWer": 0.04,
+        "cer": 0.02,
+        "boundedAlternativeMatch": true
+      },
+      "transformation": {
+        "expectedFinal": "PRIVATE_HARDWARE_FINAL",
+        "actualFinal": "PRIVATE_HARDWARE_FINAL",
+        "exactMatch": true,
+        "commandExactMatch": null,
+        "noChangePreserved": true,
+        "stages": []
+      },
+      "delivery": {
+        "expected": "PRIVATE_HARDWARE_DELIVERY",
+        "delivered": "PRIVATE_HARDWARE_DELIVERY",
+        "exactMatch": true,
+        "attempts": 1,
+        "partialCount": 0,
+        "firstPartialMs": null,
+        "firstPartialApplicability": "notApplicable",
+        "finalOnly": true
+      },
+      "latency": {
+        "rawAsrMs": 220,
+        "transformationMs": 8,
+        "finalizationMs": 1,
+        "deliveryMs": 2,
+        "totalMs": 231
+      },
+      "runtime": {
+        "incrementalCompletion": "notApplicableFinalOnly",
+        "fallbackUsed": false,
+        "fallbackStages": [],
+        "memoryBeforeMb": 120,
+        "memoryAfterMb": 130,
+        "memoryDeltaMb": 10
+      }
+    }
+  ]
+}
