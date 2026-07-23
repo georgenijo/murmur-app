@@ -317,7 +317,11 @@ pub fn decide(state: FlowState, event: FlowEvent) -> FlowDecision {
         // ---- Listening ------------------------------------------------------
         (S::Listening, E::InstructionRequested) => go(
             S::Thinking,
-            vec![StopInstructionCapture, Emit(ReviewState::Thinking), RunTransform],
+            vec![
+                StopInstructionCapture,
+                Emit(ReviewState::Thinking),
+                RunTransform,
+            ],
         ),
         (S::Listening, E::Cancel) => go(
             S::Idle,
@@ -328,7 +332,11 @@ pub fn decide(state: FlowState, event: FlowEvent) -> FlowDecision {
         // ---- Thinking -------------------------------------------------------
         (S::Thinking, E::TransformOk) => go(
             S::Review,
-            vec![SetExpanded(true), SetFocusable(true), Emit(ReviewState::Ready)],
+            vec![
+                SetExpanded(true),
+                SetFocusable(true),
+                Emit(ReviewState::Ready),
+            ],
         ),
         (S::Thinking, E::TransformError) => go(
             S::Failed,
@@ -338,10 +346,7 @@ pub fn decide(state: FlowState, event: FlowEvent) -> FlowDecision {
             S::Failed,
             vec![SetFocusable(true), Emit(ReviewState::Failed)],
         ),
-        (S::Thinking, E::Cancel) => go(
-            S::Idle,
-            vec![CancelInflight, HidePopover, ClearSession],
-        ),
+        (S::Thinking, E::Cancel) => go(S::Idle, vec![CancelInflight, HidePopover, ClearSession]),
         (S::Thinking, _) => ignore(S::Thinking),
 
         // ---- Review (proposal shown) ---------------------------------------
@@ -372,9 +377,7 @@ pub fn decide(state: FlowState, event: FlowEvent) -> FlowDecision {
         // never stranded un-undoable. The command layer carries the undo error
         // code on this `applied` emit (spec-by-test:
         // `decide_undo_error_keeps_applied_and_undo_reachable`).
-        (S::Applying, E::UndoError) => {
-            go(S::Applied, vec![Emit(ReviewState::Applied)])
-        }
+        (S::Applying, E::UndoError) => go(S::Applied, vec![Emit(ReviewState::Applied)]),
         // Cancel during Applying: tear down; ApplyingGuard must not resurrect
         // ReviewPending after the session is cleared (see cancel_transform).
         (S::Applying, E::Cancel) => cancel_from(state),
@@ -450,6 +453,7 @@ pub(crate) async fn core_start_capture<Fut>(
 where
     Fut: std::future::Future<Output = Result<TransformSnapshot, SelectionError>>,
 {
+    let transform_pass_id = app_state.active_transform_pass_id().unwrap_or(0);
     if !model_ready {
         // Discoverable error surface: still show the popover, in a failed state.
         // Bail if a short-tap cancel already left Capturing.
@@ -462,6 +466,14 @@ where
         fx.show_popover(None);
         fx.set_focusable(true);
         fx.emit_state(ReviewState::Failed, Some("model_not_downloaded"));
+        if transform_pass_id != 0 {
+            crate::transform_trace::resolution(
+                transform_pass_id,
+                "failed",
+                "capture",
+                Some("model_not_downloaded"),
+            );
+        }
         return StartOutcome::Aborted;
     }
 
@@ -469,7 +481,7 @@ where
     // Content-free outcome log (issue #329): only length buckets and error
     // enums — this was previously never wired, leaving capture failures
     // (e.g. browser AX gaps) invisible in the logs.
-    crate::selection::log_capture_outcome(&capture_result);
+    crate::selection::log_capture_outcome_for_pass(&capture_result, transform_pass_id);
     match capture_result {
         Ok(snapshot) => {
             // Cancel during slow AX capture must not resurrect the flow:
@@ -490,15 +502,22 @@ where
         }
         Err(SelectionError::SecureField) => {
             // Never show content UI for a password field — abort silently.
-            if !app_state.try_transition_transform_status(
-                TransformStatus::Capturing,
-                TransformStatus::Idle,
-            ) {
+            if !app_state
+                .try_transition_transform_status(TransformStatus::Capturing, TransformStatus::Idle)
+            {
                 return StartOutcome::Aborted;
             }
             transform_apply::clear_session(app_state);
             fx.hide_popover();
             fx.flash_secure_field();
+            if transform_pass_id != 0 {
+                crate::transform_trace::resolution(
+                    transform_pass_id,
+                    "failed",
+                    "capture",
+                    Some("secure_field"),
+                );
+            }
             StartOutcome::Aborted
         }
         Err(other) => {
@@ -513,7 +532,16 @@ where
             }
             fx.show_popover(None);
             fx.set_focusable(true);
-            fx.emit_state(ReviewState::Failed, Some(selection_error_code(other)));
+            let error_code = selection_error_code(other);
+            fx.emit_state(ReviewState::Failed, Some(error_code));
+            if transform_pass_id != 0 {
+                crate::transform_trace::resolution(
+                    transform_pass_id,
+                    "failed",
+                    "capture",
+                    Some(error_code),
+                );
+            }
             StartOutcome::Aborted
         }
     }
@@ -522,7 +550,8 @@ where
 /// Transition `Listening -> Thinking` and emit it. Returns `false` if the flow
 /// was no longer `Listening` (e.g. cancelled) — the caller must not proceed.
 pub(crate) fn enter_thinking(app_state: &AppState, fx: &dyn FlowEffects) -> bool {
-    if app_state.try_transition_transform_status(TransformStatus::Listening, TransformStatus::Thinking)
+    if app_state
+        .try_transition_transform_status(TransformStatus::Listening, TransformStatus::Thinking)
     {
         fx.emit_state(ReviewState::Thinking, None);
         true
@@ -543,11 +572,14 @@ pub(crate) async fn run_transform(
     app_state: &AppState,
     fx: &dyn FlowEffects,
     sidecar: &Arc<LlmSidecar>,
-    inflight: &std::sync::Mutex<Option<(tokio::task::AbortHandle, crate::llm_sidecar::CancelToken)>>,
+    inflight: &std::sync::Mutex<
+        Option<(tokio::task::AbortHandle, crate::llm_sidecar::CancelToken)>,
+    >,
     instruction: Result<String, ()>,
     original: String,
     deadline: Duration,
 ) {
+    let transform_pass_id = app_state.active_transform_pass_id().unwrap_or(0);
     let instruction = match instruction {
         Ok(text) if !text.trim().is_empty() => text,
         _ => {
@@ -557,6 +589,14 @@ pub(crate) async fn run_transform(
             ) {
                 fx.set_focusable(true);
                 fx.emit_state(ReviewState::Failed, Some("no_instruction"));
+                if transform_pass_id != 0 {
+                    crate::transform_trace::resolution(
+                        transform_pass_id,
+                        "failed",
+                        "instruction",
+                        Some("no_instruction"),
+                    );
+                }
             }
             return;
         }
@@ -579,7 +619,15 @@ pub(crate) async fn run_transform(
     let cancel = crate::llm_sidecar::CancelToken::new();
     let join = tokio::spawn({
         let cancel = cancel.clone();
-        async move { sidecar.transform(&instr, &input, deadline, cancel).await }
+        async move {
+            if transform_pass_id == 0 {
+                sidecar.transform(&instr, &input, deadline, cancel).await
+            } else {
+                sidecar
+                    .transform_for_pass(transform_pass_id, &instr, &input, deadline, cancel)
+                    .await
+            }
+        }
     });
     *inflight.lock_or_recover() = Some((join.abort_handle(), cancel));
     let joined = join.await;
@@ -595,6 +643,14 @@ pub(crate) async fn run_transform(
             ) {
                 fx.set_focusable(true);
                 fx.emit_state(ReviewState::Failed, Some("internal"));
+                if transform_pass_id != 0 {
+                    crate::transform_trace::resolution(
+                        transform_pass_id,
+                        "failed",
+                        "sidecar",
+                        Some("internal"),
+                    );
+                }
             }
         }
         Ok(Ok(output)) => {
@@ -608,6 +664,9 @@ pub(crate) async fn run_transform(
             fx.set_expanded(true);
             fx.set_focusable(true);
             fx.emit_state(ReviewState::Ready, None);
+            if transform_pass_id != 0 {
+                crate::transform_trace::resolution(transform_pass_id, "ready", "sidecar", None);
+            }
         }
         // Cooperative cancel from the sidecar: cancel_transform already tore
         // the flow down — do not force ReviewPending.
@@ -617,8 +676,17 @@ pub(crate) async fn run_transform(
                 TransformStatus::Thinking,
                 TransformStatus::ReviewPending,
             ) {
+                let error_code = transform_error_code(error);
                 fx.set_focusable(true);
-                fx.emit_state(ReviewState::Failed, Some(transform_error_code(error)));
+                fx.emit_state(ReviewState::Failed, Some(error_code));
+                if transform_pass_id != 0 {
+                    crate::transform_trace::resolution(
+                        transform_pass_id,
+                        "failed",
+                        "sidecar",
+                        Some(error_code),
+                    );
+                }
             }
         }
     }
@@ -668,7 +736,15 @@ impl FlowEffects for TauriFlowEffects<'_> {
         if let Err(e) =
             crate::commands::transform_popover::show_popover_internal(self.app, self.state, anchor)
         {
-            tracing::warn!(target: "transform", error = %e, "show_popover failed");
+            let _ = e;
+            if let Some(transform_pass_id) = self.state.app_state.active_transform_pass_id() {
+                tracing::warn!(
+                    target: "transform",
+                    transform_pass_id,
+                    error_code = "show_failed",
+                    "show_popover failed"
+                );
+            }
         }
     }
 
@@ -684,10 +760,18 @@ impl FlowEffects for TauriFlowEffects<'_> {
     }
 
     fn set_expanded(&self, expanded: bool) {
-        if let Err(e) =
-            crate::commands::transform_popover::set_expanded_internal(self.app, self.state, expanded)
-        {
-            tracing::warn!(target: "transform", error = %e, "set_expanded failed");
+        if let Err(e) = crate::commands::transform_popover::set_expanded_internal(
+            self.app, self.state, expanded,
+        ) {
+            let _ = e;
+            if let Some(transform_pass_id) = self.state.app_state.active_transform_pass_id() {
+                tracing::warn!(
+                    target: "transform",
+                    transform_pass_id,
+                    error_code = "expand_failed",
+                    "set_expanded failed"
+                );
+            }
         }
     }
 
@@ -703,7 +787,7 @@ impl FlowEffects for TauriFlowEffects<'_> {
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(APPLIED_LINGER_MS)).await;
             use tauri::Manager;
-            if let Some(state) = app.try_state::<crate::State>() {
+            let transform_pass_id = if let Some(state) = app.try_state::<crate::State>() {
                 // Only auto-hide if we are still in the applied review (status
                 // Idle + an applied session). A newer flow leaves status
                 // non-Idle, so its popover is never yanked out from under it.
@@ -714,14 +798,32 @@ impl FlowEffects for TauriFlowEffects<'_> {
                 if !still_applied {
                     return;
                 }
+                let transform_pass_id = transform_apply::session_snapshot(&state.app_state)
+                    .map(|session| session.transform_pass_id)
+                    .or_else(|| state.app_state.active_transform_pass_id());
                 // Free the held selection text once Undo is no longer reachable
                 // from the UI (popover gone). Content is only available via
                 // get_transform_review_content, which returns empty after this.
                 transform_apply::clear_session(&state.app_state);
-            }
+                transform_pass_id
+            } else {
+                None
+            };
             let _ = crate::commands::transform_popover::hide_popover_internal(&app);
             // Linger auto-hide is backend-initiated — reset stale content (item 13).
             emit_transform_hidden(&app);
+            if let (Some(transform_pass_id), Some(state)) = (
+                transform_pass_id,
+                app.try_state::<crate::State>(),
+            ) {
+                crate::transform_trace::resolution(
+                    transform_pass_id,
+                    "applied",
+                    "linger_complete",
+                    None,
+                );
+                state.app_state.clear_transform_pass(transform_pass_id);
+            }
         });
     }
 }
@@ -734,15 +836,42 @@ impl FlowEffects for TauriFlowEffects<'_> {
 /// shared ASR backend, then the deterministic transcript pipeline with the
 /// **cleanup-only** stage config (`instruction_cleanup`) — NEVER voice
 /// commands, CLI canonicalization, smart formatting, or the IDE-context stage
-/// (an instruction is a prompt, not dictation). `Err(())` means empty audio, a
-/// transcription failure, or a blank transcript — all surface as `no_instruction`.
+/// (an instruction is a prompt, not dictation). Failures stay distinct in
+/// content-free tracing even though all surface as `no_instruction`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InstructionFailure {
+    AudioEmpty,
+    TranscriptionError,
+    TranscriptBlank,
+}
+
+impl InstructionFailure {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::AudioEmpty => "audio_empty",
+            Self::TranscriptionError => "transcription_error",
+            Self::TranscriptBlank => "transcript_blank",
+        }
+    }
+}
+
 async fn transcribe_instruction(
     app_handle: &tauri::AppHandle,
     state: &crate::State,
     samples: &[f32],
-) -> Result<String, ()> {
+    transform_pass_id: u64,
+    attempt: u64,
+) -> Result<String, InstructionFailure> {
+    let started = std::time::Instant::now();
     if samples.is_empty() {
-        return Err(());
+        crate::transform_trace::instruction(
+            transform_pass_id,
+            attempt,
+            InstructionFailure::AudioEmpty.as_str(),
+            None,
+            0,
+        );
+        return Err(InstructionFailure::AudioEmpty);
     }
     let (model_name, language, smart_punctuation) = {
         let dictation = state.app_state.dictation.lock_or_recover();
@@ -762,8 +891,15 @@ async fn transcribe_instruction(
     let (raw, _load_report) = match raw {
         Ok(pair) => pair,
         Err(e) => {
-            tracing::warn!(target: "transform", error = %e, "instruction transcription failed");
-            return Err(());
+            let _ = e;
+            crate::transform_trace::instruction(
+                transform_pass_id,
+                attempt,
+                InstructionFailure::TranscriptionError.as_str(),
+                None,
+                started.elapsed().as_millis() as u64,
+            );
+            return Err(InstructionFailure::TranscriptionError);
         }
     };
 
@@ -774,18 +910,42 @@ async fn transcribe_instruction(
         cli_formatting_mode: crate::cli_command::CliFormattingMode::Auto,
         stages: crate::transcript_transform::TranscriptStageConfig::instruction_cleanup(),
     };
-    let cleaned = crate::transcript_transform::transform_transcript(
+    let cleaned = match crate::transcript_transform::transform_transcript(
         raw,
         &context,
         crate::transcript_transform::TranscriptTransformResources::empty(),
-    )
-    .map(|out| out.text)
-    .unwrap_or_default();
+    ) {
+        Ok(output) => output.text,
+        Err(_) => {
+            crate::transform_trace::instruction(
+                transform_pass_id,
+                attempt,
+                InstructionFailure::TranscriptionError.as_str(),
+                None,
+                started.elapsed().as_millis() as u64,
+            );
+            return Err(InstructionFailure::TranscriptionError);
+        }
+    };
 
     let trimmed = cleaned.trim().to_string();
     if trimmed.is_empty() {
-        Err(())
+        crate::transform_trace::instruction(
+            transform_pass_id,
+            attempt,
+            InstructionFailure::TranscriptBlank.as_str(),
+            None,
+            started.elapsed().as_millis() as u64,
+        );
+        Err(InstructionFailure::TranscriptBlank)
     } else {
+        crate::transform_trace::instruction(
+            transform_pass_id,
+            attempt,
+            "ok",
+            Some(crate::selection::length_bucket(trimmed.len())),
+            started.elapsed().as_millis() as u64,
+        );
         Ok(trimmed)
     }
 }
@@ -806,6 +966,7 @@ pub(crate) async fn start_transform_capture(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, crate::State>,
     device_name: Option<String>,
+    transform_pass_id: u64,
 ) -> Result<(), String> {
     // Serialize against dictation start/stop, taking the same locks in the
     // same order (`recording_transition` then `dictation`) as
@@ -813,32 +974,43 @@ pub(crate) async fn start_transform_capture(
     // recorder down.
     let _transition = state.app_state.recording_transition.lock().await;
 
-    let claimed = {
+    let claim_result: Result<(), &'static str> = {
         let dictation = state.app_state.dictation.lock_or_recover();
-        if dictation.status != DictationStatus::Idle {
-            tracing::info!(target: "transform", "start_transform_capture: ignored — dictation active");
-            false
+        if state.app_state.active_transform_pass_id() != Some(transform_pass_id) {
+            Err("stale_pass")
+        } else if dictation.status != DictationStatus::Idle {
+            tracing::info!(target: "transform", transform_pass_id, error_code = "dictation_active", "start_transform_capture ignored");
+            Err("dictation_active")
         } else if state.benchmark.is_running() {
-            tracing::info!(target: "transform", "start_transform_capture: ignored — benchmark running");
-            false
+            tracing::info!(target: "transform", transform_pass_id, error_code = "benchmark_running", "start_transform_capture ignored");
+            Err("benchmark_running")
         } else if state
             .app_state
             .file_transcribing
             .load(std::sync::atomic::Ordering::SeqCst)
         {
-            tracing::info!(target: "transform", "start_transform_capture: ignored — file transcription running");
-            false
+            tracing::info!(target: "transform", transform_pass_id, error_code = "file_transcribing", "start_transform_capture ignored");
+            Err("file_transcribing")
         } else if state.transform_runtime.is_transform_busy() {
-            tracing::info!(target: "transform", "start_transform_capture: ignored — transform runtime busy");
-            false
+            tracing::info!(target: "transform", transform_pass_id, error_code = "runtime_busy", "start_transform_capture ignored");
+            Err("runtime_busy")
         } else {
             // Atomic Idle -> Capturing under the dictation lock.
-            state
+            if state
                 .app_state
                 .try_transition_transform_status(TransformStatus::Idle, TransformStatus::Capturing)
+            {
+                Ok(())
+            } else {
+                Err("transform_busy")
+            }
         }
     };
-    if !claimed {
+    if let Err(error_code) = claim_result {
+        crate::transform_trace::resolution(transform_pass_id, "failed", "start", Some(error_code));
+        if state.app_state.transform_status() == TransformStatus::Idle {
+            state.app_state.clear_transform_pass(transform_pass_id);
+        }
         // The press was refused because dictation / a benchmark / a file
         // transcription / a mid-flight transform owns the pipeline. Silently
         // eating the keypress reads as "the app is broken" (issue #329) —
@@ -869,25 +1041,47 @@ pub(crate) async fn start_transform_capture(
     // an aborted pass.
     if model_ready {
         if let Err(e) = crate::audio::start_recording(Some(app_handle.clone()), device_name) {
-            tracing::error!(target: "transform", error = %e, "instruction audio failed to start");
+            crate::transform_trace::audio(transform_pass_id, "armed", "error", 0, 0);
+            crate::transform_trace::resolution(
+                transform_pass_id,
+                "failed",
+                "audio_start",
+                Some("audio_start_failed"),
+            );
             state.app_state.set_transform_status(TransformStatus::Idle);
             transform_apply::clear_session(&state.app_state);
             let _ = crate::commands::transform_popover::hide_popover_internal(&app_handle);
             emit_transform_hidden(&app_handle);
+            state.app_state.clear_transform_pass(transform_pass_id);
             return Err(e);
         }
+        crate::transform_trace::audio(transform_pass_id, "armed", "ok", 0, 0);
     }
 
-    let outcome =
-        core_start_capture(&state.app_state, &fx, model_ready, crate::selection::capture_selection(&app_handle))
-            .await;
+    let outcome = core_start_capture(
+        &state.app_state,
+        &fx,
+        model_ready,
+        crate::selection::capture_selection(&app_handle, transform_pass_id),
+    )
+    .await;
 
     if outcome != StartOutcome::Listening {
         // Capture aborted (secure field, capture error, model-not-ready
         // failed popover, or a cancel racing the capture) — the pre-armed mic
         // must not stay live.
         if crate::audio::is_recording() {
-            let _ = crate::audio::stop_recording();
+            let samples = crate::audio::stop_recording().unwrap_or_default();
+            crate::transform_trace::audio(
+                transform_pass_id,
+                "stopped",
+                "capture_aborted",
+                samples.len(),
+                samples.len() as u64 * 1_000 / crate::state::WHISPER_SAMPLE_RATE as u64,
+            );
+        }
+        if state.app_state.transform_status() == TransformStatus::Idle {
+            state.app_state.clear_transform_pass(transform_pass_id);
         }
         return Ok(());
     }
@@ -902,7 +1096,14 @@ pub(crate) async fn start_transform_capture(
         // down if the flow was cancelled out from under us.
         if state.app_state.transform_status() != TransformStatus::Listening {
             if crate::audio::is_recording() {
-                let _ = crate::audio::stop_recording();
+                let samples = crate::audio::stop_recording().unwrap_or_default();
+                crate::transform_trace::audio(
+                    transform_pass_id,
+                    "stopped",
+                    "cancelled",
+                    samples.len(),
+                    samples.len() as u64 * 1_000 / crate::state::WHISPER_SAMPLE_RATE as u64,
+                );
             }
             // cancel_transform already cleared the session / hid the popover;
             // repeat the teardown idempotently so no half-state survives.
@@ -921,6 +1122,7 @@ pub(crate) async fn start_transform_capture(
 pub(crate) async fn finish_transform_instruction(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, crate::State>,
+    transform_pass_id: u64,
 ) -> Result<(), String> {
     let fx = TauriFlowEffects {
         app: &app_handle,
@@ -944,11 +1146,20 @@ pub(crate) async fn finish_transform_instruction(
         let _transition = state.app_state.recording_transition.lock().await;
 
         // Tolerate a stray release: only proceed from Listening.
-        if state.app_state.transform_status() != TransformStatus::Listening {
+        if state.app_state.active_transform_pass_id() != Some(transform_pass_id)
+            || state.app_state.transform_status() != TransformStatus::Listening
+        {
             return Ok(());
         }
 
         let samples = crate::audio::stop_recording().unwrap_or_default();
+        crate::transform_trace::audio(
+            transform_pass_id,
+            "stopped",
+            if samples.is_empty() { "empty" } else { "ok" },
+            samples.len(),
+            samples.len() as u64 * 1_000 / crate::state::WHISPER_SAMPLE_RATE as u64,
+        );
 
         if !enter_thinking(&state.app_state, &fx) {
             // Lost the race to a concurrent cancel.
@@ -962,14 +1173,25 @@ pub(crate) async fn finish_transform_instruction(
         None => {
             // Session vanished (cancelled) — bail cleanly.
             state.app_state.set_transform_status(TransformStatus::Idle);
+            crate::transform_trace::resolution(
+                transform_pass_id,
+                "failed",
+                "instruction",
+                Some("no_session"),
+            );
+            state.app_state.clear_transform_pass(transform_pass_id);
             return Ok(());
         }
     };
 
-    let instruction = match transcribe_instruction(&app_handle, &state, &samples).await {
-        Ok(raw) => Ok(expand_instruction(&state, &raw)),
-        Err(()) => Err(()),
-    };
+    let attempt = state.app_state.current_instruction_attempt();
+    let instruction =
+        match transcribe_instruction(&app_handle, &state, &samples, transform_pass_id, attempt)
+            .await
+        {
+            Ok(raw) => Ok(expand_instruction(&state, &raw)),
+            Err(_) => Err(()),
+        };
     run_transform(
         &state.app_state,
         &fx,
@@ -1035,6 +1257,7 @@ pub(crate) async fn retry_transform_instruction(
         app: &app_handle,
         state: &state,
     };
+    let transform_pass_id = state.app_state.active_transform_pass_id().unwrap_or(0);
 
     // Retry only means anything with a live session (a frozen snapshot). A
     // failed popover with no session (e.g. model_not_downloaded) has nothing
@@ -1043,6 +1266,15 @@ pub(crate) async fn retry_transform_instruction(
         state.app_state.set_transform_status(TransformStatus::Idle);
         let _ = crate::commands::transform_popover::hide_popover_internal(&app_handle);
         emit_transform_hidden(&app_handle);
+        if transform_pass_id != 0 {
+            crate::transform_trace::resolution(
+                transform_pass_id,
+                "cancelled",
+                "retry_without_session",
+                None,
+            );
+            state.app_state.clear_transform_pass(transform_pass_id);
+        }
         return Ok(());
     }
 
@@ -1057,20 +1289,36 @@ pub(crate) async fn retry_transform_instruction(
     fx.set_expanded(false);
     fx.set_focusable(false);
     fx.emit_state(ReviewState::Listening, None);
+    let _attempt = state.app_state.next_instruction_attempt();
 
     if let Err(e) = crate::audio::start_recording(Some(app_handle.clone()), device_name) {
-        tracing::error!(target: "transform", error = %e, "retry audio failed to start");
+        crate::transform_trace::audio(transform_pass_id, "armed", "error", 0, 0);
+        crate::transform_trace::resolution(
+            transform_pass_id,
+            "failed",
+            "retry_audio_start",
+            Some("audio_start_failed"),
+        );
         state.app_state.set_transform_status(TransformStatus::Idle);
         transform_apply::clear_session(&state.app_state);
         let _ = crate::commands::transform_popover::hide_popover_internal(&app_handle);
         emit_transform_hidden(&app_handle);
+        state.app_state.clear_transform_pass(transform_pass_id);
         return Err(e);
     }
+    crate::transform_trace::audio(transform_pass_id, "armed", "ok", 0, 0);
     // Same mic-leak re-check as start_transform_capture (item 10): a cancel
     // that raced in during audio startup must not leave the mic live.
     if state.app_state.transform_status() != TransformStatus::Listening {
         if crate::audio::is_recording() {
-            let _ = crate::audio::stop_recording();
+            let samples = crate::audio::stop_recording().unwrap_or_default();
+            crate::transform_trace::audio(
+                transform_pass_id,
+                "stopped",
+                "cancelled",
+                samples.len(),
+                samples.len() as u64 * 1_000 / crate::state::WHISPER_SAMPLE_RATE as u64,
+            );
         }
         transform_apply::clear_session(&state.app_state);
         let _ = crate::commands::transform_popover::hide_popover_internal(&app_handle);
@@ -1088,33 +1336,65 @@ pub(crate) async fn approve_transform(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, crate::State>,
 ) -> Result<(), String> {
+    let transform_pass_id = transform_apply::session_snapshot(&state.app_state)
+        .map(|session| session.transform_pass_id)
+        .or_else(|| state.app_state.active_transform_pass_id())
+        .unwrap_or(0);
     let fx = TauriFlowEffects {
         app: &app_handle,
         state: &state,
     };
 
-    let mut guard =
-        match transform_apply::ApplyingGuard::try_new(&state.app_state, TransformStatus::ReviewPending)
-        {
-            Some(guard) => guard,
-            None => {
-                fx.emit_state(ReviewState::Failed, Some("busy"));
-                return Err("busy".to_string());
+    let mut guard = match transform_apply::ApplyingGuard::try_new(
+        &state.app_state,
+        TransformStatus::ReviewPending,
+    ) {
+        Some(guard) => guard,
+        None => {
+            fx.emit_state(ReviewState::Failed, Some("busy"));
+            if transform_pass_id != 0 {
+                crate::transform_trace::resolution(
+                    transform_pass_id,
+                    "failed",
+                    "apply",
+                    Some("busy"),
+                );
             }
-        };
+            return Err("busy".to_string());
+        }
+    };
 
     match transform_apply::apply_transform(&app_handle, &state.app_state).await {
-        Ok(_via) => {
+        Ok(via) => {
             guard.mark_succeeded(); // status -> Idle; session.applied stays true
             fx.emit_state(ReviewState::Applied, None);
             fx.schedule_linger_hide();
+            if transform_pass_id != 0 {
+                crate::transform_trace::effect(transform_pass_id, "apply", via.as_str(), None);
+                crate::transform_trace::resolution(transform_pass_id, "applied", "apply", None);
+            }
             Ok(())
         }
         Err(error) => {
             // Guard drop restores ReviewPending so Retry stays available.
             fx.set_focusable(true);
-            fx.emit_state(ReviewState::Failed, Some(apply_error_code(error)));
-            Err(apply_error_code(error).to_string())
+            let error_code = apply_error_code(error);
+            fx.emit_state(ReviewState::Failed, Some(error_code));
+            if transform_pass_id != 0 {
+                crate::transform_trace::effect(
+                    transform_pass_id,
+                    "apply",
+                    "error",
+                    Some(error_code),
+                );
+                crate::transform_trace::resolution(
+                    transform_pass_id,
+                    "failed",
+                    "apply",
+                    Some(error_code),
+                );
+            }
+            Err(error_code.to_string())
         }
     }
 }
@@ -1128,7 +1408,13 @@ pub(crate) async fn approve_transform(
 pub(crate) async fn cancel_transform(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, crate::State>,
+    transform_pass_id: Option<u64>,
 ) -> Result<(), String> {
+    let active_pass_id = state.app_state.active_transform_pass_id();
+    if transform_pass_id.is_some() && transform_pass_id != active_pass_id {
+        return Ok(());
+    }
+    let transform_pass_id = active_pass_id.unwrap_or(0);
     let prev = state.app_state.transform_status();
 
     // Cooperative cancel first: the blocking spawn_blocking work only clears
@@ -1151,10 +1437,19 @@ pub(crate) async fn cancel_transform(
     // the mic is pre-armed during Capturing (before selection capture
     // completes), so both phases can own live audio — never dictation's,
     // which is mutually excluded while the transform status is non-Idle.
-    if matches!(prev, TransformStatus::Capturing | TransformStatus::Listening)
-        && crate::audio::is_recording()
+    if matches!(
+        prev,
+        TransformStatus::Capturing | TransformStatus::Listening
+    ) && crate::audio::is_recording()
     {
-        let _ = crate::audio::stop_recording();
+        let samples = crate::audio::stop_recording().unwrap_or_default();
+        crate::transform_trace::audio(
+            transform_pass_id,
+            "stopped",
+            "cancelled",
+            samples.len(),
+            samples.len() as u64 * 1_000 / crate::state::WHISPER_SAMPLE_RATE as u64,
+        );
     }
 
     // Force Idle even from Applying — ApplyingGuard drop will no-op once status
@@ -1165,6 +1460,10 @@ pub(crate) async fn cancel_transform(
     // Backend-initiated hide (short-tap cancel, mid-hold cleanup, or the
     // popover's own Cancel button all route here): reset stale content (item 13).
     emit_transform_hidden(&app_handle);
+    if transform_pass_id != 0 {
+        crate::transform_trace::resolution(transform_pass_id, "cancelled", prev.as_str(), None);
+        state.app_state.clear_transform_pass(transform_pass_id);
+    }
     Ok(())
 }
 
@@ -1185,10 +1484,10 @@ pub(crate) async fn cancel_transform(
 /// keeps this race-safe against a concurrent retry
 /// (`ReviewPending -> Listening`): exactly one side wins.
 pub(crate) fn dismiss_review_for_recording(app_state: &AppState, fx: &dyn FlowEffects) -> bool {
-    if !app_state.try_transition_transform_status(
-        TransformStatus::ReviewPending,
-        TransformStatus::Idle,
-    ) {
+    let transform_pass_id = app_state.active_transform_pass_id();
+    if !app_state
+        .try_transition_transform_status(TransformStatus::ReviewPending, TransformStatus::Idle)
+    {
         return false;
     }
     transform_apply::clear_session(app_state);
@@ -1196,6 +1495,15 @@ pub(crate) fn dismiss_review_for_recording(app_state: &AppState, fx: &dyn FlowEf
     // `transform-review-hidden` reset (item 13), same as every other
     // backend-initiated hide.
     fx.hide_popover();
+    if let Some(transform_pass_id) = transform_pass_id {
+        crate::transform_trace::resolution(
+            transform_pass_id,
+            "cancelled",
+            "pipeline_superseded",
+            None,
+        );
+        app_state.clear_transform_pass(transform_pass_id);
+    }
     true
 }
 
@@ -1242,6 +1550,10 @@ pub(crate) async fn undo_transform_and_close(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, crate::State>,
 ) -> Result<(), String> {
+    let transform_pass_id = transform_apply::session_snapshot(&state.app_state)
+        .map(|session| session.transform_pass_id)
+        .or_else(|| state.app_state.active_transform_pass_id())
+        .unwrap_or(0);
     let fx = TauriFlowEffects {
         app: &app_handle,
         state: &state,
@@ -1263,6 +1575,11 @@ pub(crate) async fn undo_transform_and_close(
             transform_apply::clear_session(&state.app_state);
             let _ = crate::commands::transform_popover::hide_popover_internal(&app_handle);
             emit_transform_hidden(&app_handle);
+            if transform_pass_id != 0 {
+                crate::transform_trace::effect(transform_pass_id, "undo", "ok", None);
+                crate::transform_trace::resolution(transform_pass_id, "undone", "undo", None);
+                state.app_state.clear_transform_pass(transform_pass_id);
+            }
             Ok(())
         }
         Err(error) => {
@@ -1278,6 +1595,20 @@ pub(crate) async fn undo_transform_and_close(
             // approve-time timer may be about to fire (hiding the popover
             // ~instantly) or may have no-op'd mid-undo (leaving it up forever).
             fx.schedule_linger_hide();
+            if transform_pass_id != 0 {
+                crate::transform_trace::effect(
+                    transform_pass_id,
+                    "undo",
+                    "error",
+                    Some(apply_error_code(error)),
+                );
+                crate::transform_trace::resolution(
+                    transform_pass_id,
+                    "failed",
+                    "undo",
+                    Some(apply_error_code(error)),
+                );
+            }
             Err(apply_error_code(error).to_string())
         }
     }
@@ -1335,11 +1666,17 @@ impl RecordingFlowEffects {
     }
 
     pub fn popover_shown(&self) -> bool {
-        self.inner.lock().unwrap_or_else(|p| p.into_inner()).popover_shown
+        self.inner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .popover_shown
     }
 
     pub fn secure_flash(&self) -> bool {
-        self.inner.lock().unwrap_or_else(|p| p.into_inner()).secure_flash
+        self.inner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .secure_flash
     }
 }
 
@@ -1350,25 +1687,46 @@ impl FlowEffects for RecordingFlowEffects {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .emitted
-            .push((state.as_str().to_string(), error_code.map(|s| s.to_string())));
+            .push((
+                state.as_str().to_string(),
+                error_code.map(|s| s.to_string()),
+            ));
     }
     fn show_popover(&self, _anchor: Option<AnchorRect>) {
-        self.inner.lock().unwrap_or_else(|p| p.into_inner()).popover_shown = true;
+        self.inner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .popover_shown = true;
     }
     fn hide_popover(&self) {
-        self.inner.lock().unwrap_or_else(|p| p.into_inner()).popover_shown = false;
+        self.inner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .popover_shown = false;
     }
     fn set_focusable(&self, focusable: bool) {
-        self.inner.lock().unwrap_or_else(|p| p.into_inner()).focusable = Some(focusable);
+        self.inner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .focusable = Some(focusable);
     }
     fn set_expanded(&self, expanded: bool) {
-        self.inner.lock().unwrap_or_else(|p| p.into_inner()).expanded = Some(expanded);
+        self.inner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .expanded = Some(expanded);
     }
     fn flash_secure_field(&self) {
-        self.inner.lock().unwrap_or_else(|p| p.into_inner()).secure_flash = true;
+        self.inner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .secure_flash = true;
     }
     fn schedule_linger_hide(&self) {
-        self.inner.lock().unwrap_or_else(|p| p.into_inner()).linger_scheduled = true;
+        self.inner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .linger_scheduled = true;
     }
 }
 
@@ -1497,7 +1855,11 @@ mod tests {
                 if decision.actions.is_empty() {
                     assert_eq!(
                         (state, event, decision.next),
-                        (FlowState::Idle, FlowEvent::StartRequested, FlowState::Capturing),
+                        (
+                            FlowState::Idle,
+                            FlowEvent::StartRequested,
+                            FlowState::Capturing
+                        ),
                         "only Idle+StartRequested may have no actions",
                     );
                 }
@@ -1514,7 +1876,9 @@ mod tests {
         let cap = decide(FlowState::Capturing, FlowEvent::CaptureOk);
         assert_eq!(cap.next, FlowState::Listening);
         assert!(cap.actions.contains(&FlowAction::StartSession));
-        assert!(cap.actions.contains(&FlowAction::Emit(ReviewState::Listening)));
+        assert!(cap
+            .actions
+            .contains(&FlowAction::Emit(ReviewState::Listening)));
         assert!(cap.actions.contains(&FlowAction::StartInstructionCapture));
 
         let think = decide(FlowState::Listening, FlowEvent::InstructionRequested);
@@ -1523,7 +1887,9 @@ mod tests {
 
         let ready = decide(FlowState::Thinking, FlowEvent::TransformOk);
         assert_eq!(ready.next, FlowState::Review);
-        assert!(ready.actions.contains(&FlowAction::Emit(ReviewState::Ready)));
+        assert!(ready
+            .actions
+            .contains(&FlowAction::Emit(ReviewState::Ready)));
         assert!(ready.actions.contains(&FlowAction::SetFocusable(true)));
 
         let applying = decide(FlowState::Review, FlowEvent::Approve);
@@ -1587,7 +1953,9 @@ mod tests {
             let d = decide(state, FlowEvent::Retry);
             assert_eq!(d.next, FlowState::Listening);
             assert!(d.actions.contains(&FlowAction::StartInstructionCapture));
-            assert!(d.actions.contains(&FlowAction::Emit(ReviewState::Listening)));
+            assert!(d
+                .actions
+                .contains(&FlowAction::Emit(ReviewState::Listening)));
             // Retry keeps the session — it never clears it.
             assert!(!d.actions.contains(&FlowAction::ClearSession));
         }
@@ -1614,7 +1982,11 @@ mod tests {
 
     #[test]
     fn press_while_mid_flow_is_ignored() {
-        for state in [FlowState::Capturing, FlowState::Listening, FlowState::Thinking] {
+        for state in [
+            FlowState::Capturing,
+            FlowState::Listening,
+            FlowState::Thinking,
+        ] {
             let d = decide(state, FlowEvent::StartRequested);
             assert_eq!(d.actions, vec![FlowAction::Ignore]);
             assert_eq!(d.next, state);
@@ -1668,10 +2040,16 @@ mod tests {
             assert!(!transform_error_code(error).is_empty());
         }
         // Key discoverable codes are exact.
-        assert_eq!(transform_error_code(TransformError::NotDownloaded), "model_not_downloaded");
+        assert_eq!(
+            transform_error_code(TransformError::NotDownloaded),
+            "model_not_downloaded"
+        );
         assert_eq!(transform_error_code(TransformError::Timeout), "timeout");
         assert_eq!(transform_error_code(TransformError::Crashed), "crashed");
-        assert_eq!(transform_error_code(TransformError::OutputInvalid), "output_invalid");
+        assert_eq!(
+            transform_error_code(TransformError::OutputInvalid),
+            "output_invalid"
+        );
         assert_eq!(transform_error_code(TransformError::Busy), "busy");
         assert_eq!(transform_error_code(TransformError::Disabled), "disabled");
     }
@@ -1694,7 +2072,10 @@ mod tests {
             assert!(!apply_error_code(error).is_empty());
         }
         assert_eq!(apply_error_code(ApplyError::TargetGone), "target_gone");
-        assert_eq!(apply_error_code(ApplyError::SelectionChanged), "selection_changed");
+        assert_eq!(
+            apply_error_code(ApplyError::SelectionChanged),
+            "selection_changed"
+        );
     }
 
     // ---- Async core with a fake selection provider -------------------------
@@ -1766,7 +2147,10 @@ mod tests {
         assert_eq!(app_state.transform_status(), TransformStatus::ReviewPending);
         assert_eq!(
             fx.emitted(),
-            vec![("failed".to_string(), Some("model_not_downloaded".to_string()))]
+            vec![(
+                "failed".to_string(),
+                Some("model_not_downloaded".to_string())
+            )]
         );
         assert!(fx.popover_shown());
     }
@@ -1819,7 +2203,10 @@ mod tests {
         let app_state = AppState::default();
         let fx = RecordingFlowEffects::new();
         transform_apply::start_session(&app_state, snapshot_for_dismiss_tests());
-        assert!(transform_apply::set_proposed_text(&app_state, "HELLO".to_string()));
+        assert!(transform_apply::set_proposed_text(
+            &app_state,
+            "HELLO".to_string()
+        ));
         app_state.set_transform_status(TransformStatus::ReviewPending);
 
         assert!(dismiss_review_for_recording(&app_state, &fx));
@@ -1859,7 +2246,10 @@ mod tests {
         let app_state = AppState::default();
         let fx = RecordingFlowEffects::new();
         transform_apply::start_session(&app_state, snapshot_for_dismiss_tests());
-        assert!(transform_apply::set_proposed_text(&app_state, "HELLO".to_string()));
+        assert!(transform_apply::set_proposed_text(
+            &app_state,
+            "HELLO".to_string()
+        ));
         app_state.set_transform_status(TransformStatus::ReviewPending);
 
         let result =
@@ -1886,8 +2276,18 @@ mod tests {
             app_state.set_transform_status(status);
             let result =
                 clear_parked_review_for_pipeline_work(&app_state, &fx, "test_entry", "blocked");
-            assert_eq!(result, Err("blocked".to_string()), "{:?} must refuse", status);
-            assert_eq!(app_state.transform_status(), status, "{:?} must survive", status);
+            assert_eq!(
+                result,
+                Err("blocked".to_string()),
+                "{:?} must refuse",
+                status
+            );
+            assert_eq!(
+                app_state.transform_status(),
+                status,
+                "{:?} must survive",
+                status
+            );
         }
     }
 
@@ -2085,5 +2485,18 @@ mod tests {
         // Contrast: cancel_transform would bump again and break paste-fallback.
         let second = app_state.next_transform_apply_epoch();
         assert_eq!(second, first + 1);
+    }
+
+    #[test]
+    fn instruction_failure_codes_are_stable_and_content_free() {
+        assert_eq!(InstructionFailure::AudioEmpty.as_str(), "audio_empty");
+        assert_eq!(
+            InstructionFailure::TranscriptionError.as_str(),
+            "transcription_error"
+        );
+        assert_eq!(
+            InstructionFailure::TranscriptBlank.as_str(),
+            "transcript_blank"
+        );
     }
 }

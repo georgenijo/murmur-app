@@ -18,7 +18,7 @@ A custom `tracing_subscriber::Layer` that intercepts every tracing event in the 
 ```typescript
 type AppEvent = {
   timestamp: string;
-  stream: StreamName;   // "pipeline" | "audio" | "keyboard" | "system"
+  stream: StreamName;   // "pipeline" | "audio" | "keyboard" | "transform" | "system"
   level: LevelName;     // "trace" | "debug" | "info" | "warn" | "error"
   summary: string;      // the tracing message
   data: Record<string, unknown>; // structured fields
@@ -43,7 +43,7 @@ When the JSONL file exceeds 5MB, it is rotated — renamed to `.jsonl.1` — and
 
 ### Privacy Stripping
 
-In release builds, all string-valued fields from `pipeline` target events are stripped from the `data` object. Only numeric fields survive. The `summary` (message) field is not stripped. This prevents transcription text from being persisted in structured log data.
+In release builds, all string-valued fields from `pipeline` target events are stripped from the `data` object. Only numeric fields survive. For the `transform` stream in both debug and release builds, each string must match an explicit key-specific enum/bucket vocabulary; unknown keys or values are dropped. Numeric and boolean diagnostic fields are retained. The `summary` (message) field is not stripped and transform summaries are constant. This prevents transcription or transform content from being persisted in structured log data.
 
 ### Pretty-Printed Log File
 
@@ -58,6 +58,7 @@ Tracing targets map to stream names used for filtering:
 | `pipeline` | pipeline | Transcription timing, VAD results, model loading |
 | `audio` | audio | Device selection, sample rates, audio levels |
 | `keyboard` | keyboard | Hotkey detection, rejection reasons/timing, mode changes, listener lifecycle |
+| `transform` | transform | Correlated transform key, state, capture, audio, effects, and terminal outcomes |
 | `system` | system | Startup, permissions, updates, resource usage |
 
 ### Frontend Logging
@@ -80,7 +81,9 @@ The log viewer is a separate Tauri window (`label: "log-viewer"`, 800x600, min 6
 
 The primary view for browsing structured events.
 
-**Stream filter chips** — Colored toggle buttons for each stream (`pipeline`, `audio`, `keyboard`, `system`). Click to show/hide events from that stream. Default: `pipeline`, `audio`, `system` active.
+**Stream filter chips** — Colored toggle buttons for each stream (`pipeline`, `audio`, `keyboard`, `transform`, `system`). Click to show/hide events from that stream. Default: `pipeline`, `audio`, `transform`, `system` active.
+
+**Transform pass filter** — Enter an exact positive `transform_pass_id` to isolate every structured event for one physical transform hold. Clearing the field restores all passes.
 
 **Level filter** — Toggle buttons for `info`, `warn`, `error`. All active by default.
 
@@ -94,7 +97,7 @@ Rows with structured data are expandable — click to reveal a `<pre>` block wit
 
 **Auto-scroll** — The list automatically scrolls to the bottom as new events arrive. If the user scrolls up (more than 40px from the bottom), auto-scroll disengages. Scrolling back near the bottom re-engages it.
 
-**Copy All** — Copies all filtered events as text lines: `{timestamp} [{stream}] {LEVEL} {summary}`.
+**Copy All** — Copies all filtered events as text lines including compact JSON structured data, so correlation IDs, outcomes, timings, and error codes remain in pasted diagnostic evidence.
 
 **Clear** — Clears all events (calls `clear_event_history` on the backend and clears the local buffer).
 

@@ -173,10 +173,19 @@ pub fn length_bucket(bytes: usize) -> &'static str {
 /// Log the outcome of a capture attempt. Only length buckets and outcome
 /// enums ever reach the log line — the selection text itself never does.
 pub fn log_capture_outcome(result: &Result<TransformSnapshot, SelectionError>) {
+    log_capture_outcome_for_pass(result, 0);
+}
+
+/// Correlated production variant of [`log_capture_outcome`].
+pub fn log_capture_outcome_for_pass(
+    result: &Result<TransformSnapshot, SelectionError>,
+    transform_pass_id: u64,
+) {
     match result {
         Ok(snapshot) => {
             tracing::info!(
                 target: "transform",
+                transform_pass_id,
                 outcome = "ok",
                 length_bucket = length_bucket(snapshot.text.len()),
                 has_range = snapshot.range.is_some(),
@@ -187,6 +196,7 @@ pub fn log_capture_outcome(result: &Result<TransformSnapshot, SelectionError>) {
         Err(error) => {
             tracing::info!(
                 target: "transform",
+                transform_pass_id,
                 outcome = error.as_str(),
                 "selection capture failed"
             );
@@ -264,13 +274,28 @@ fn classify_selection(text: &str) -> Result<(), SelectionError> {
 /// no fallback.
 pub async fn capture_selection(
     app_handle: &tauri::AppHandle,
+    transform_pass_id: u64,
 ) -> Result<TransformSnapshot, SelectionError> {
     if !crate::injector::is_accessibility_enabled() {
+        crate::transform_trace::capture_attempt(
+            transform_pass_id,
+            0,
+            SelectionError::AccessibilityDenied.as_str(),
+            0,
+        );
+        crate::transform_trace::capture_path(
+            transform_pass_id,
+            "preflight",
+            SelectionError::AccessibilityDenied.as_str(),
+            0,
+            None,
+        );
         return Err(SelectionError::AccessibilityDenied);
     }
 
     #[cfg(target_os = "macos")]
     {
+        let capture_started = Instant::now();
         type AxReply = (
             Result<TransformSnapshot, SelectionError>,
             Option<(i32, Option<String>)>,
@@ -298,6 +323,7 @@ pub async fn capture_selection(
             if attempt > 0 {
                 tokio::time::sleep(AX_RETRY_GAP).await;
             }
+            let attempt_started = Instant::now();
             let (tx, rx) = tokio::sync::oneshot::channel::<AxReply>();
             app_handle
                 .run_on_main_thread(move || {
@@ -312,6 +338,16 @@ pub async fn capture_selection(
                 .unwrap_or((Err(SelectionError::AxUnavailable), None));
             ax_result = result;
             frontmost = fm;
+            let attempt_outcome = match &ax_result {
+                Ok(_) => "ok",
+                Err(error) => error.as_str(),
+            };
+            crate::transform_trace::capture_attempt(
+                transform_pass_id,
+                attempt + 1,
+                attempt_outcome,
+                attempt_started.elapsed().as_millis() as u64,
+            );
             if matches!(ax_result, Err(SelectionError::SecureCheckFailed)) {
                 secure_check_errored = true;
             }
@@ -324,6 +360,7 @@ pub async fn capture_selection(
                     if attempt + 1 < AX_ATTEMPTS {
                         tracing::info!(
                             target: "transform",
+                            transform_pass_id,
                             attempt = attempt + 1,
                             "AX capture incomplete — retrying after warm-up gap"
                         );
@@ -361,16 +398,39 @@ pub async fn capture_selection(
             (Err(err), Some((pid, bundle_id))) if fallback_allowed(err, secure_check_errored) => {
                 tracing::info!(
                     target: "transform",
+                    transform_pass_id,
                     ax_outcome = err.as_str(),
                     "AX capture incomplete — attempting clipboard fallback"
                 );
                 tokio::task::spawn_blocking(move || {
-                    clipboard_fallback::capture_via_clipboard(pid, bundle_id, err)
+                    clipboard_fallback::capture_via_clipboard(
+                        pid,
+                        bundle_id,
+                        err,
+                        transform_pass_id,
+                    )
                 })
                 .await
                 .unwrap_or(Err(err))
             }
-            (result, _) => result,
+            (result, _) => {
+                let outcome = match &result {
+                    Ok(_) => "ok",
+                    Err(error) => error.as_str(),
+                };
+                let length_bucket = result
+                    .as_ref()
+                    .ok()
+                    .map(|snapshot| length_bucket(snapshot.text.len()));
+                crate::transform_trace::capture_path(
+                    transform_pass_id,
+                    "ax_attempt",
+                    outcome,
+                    capture_started.elapsed().as_millis() as u64,
+                    length_bucket,
+                );
+                result
+            }
         }
     }
 
@@ -457,7 +517,7 @@ mod clipboard_fallback {
                 .collect()
         }
 
-        pub(in super::super) fn restore(snapshot: &PasteboardSnapshot) {
+        pub(in super::super) fn restore(snapshot: &PasteboardSnapshot, transform_pass_id: u64) {
             let pb = NSPasteboard::generalPasteboard();
             pb.clearContents();
             if snapshot.is_empty() {
@@ -480,6 +540,7 @@ mod clipboard_fallback {
                 // Content-free by design: item/type counts only.
                 tracing::warn!(
                     target: "transform",
+                    transform_pass_id,
                     items = snapshot.len(),
                     "pasteboard restore write was refused"
                 );
@@ -496,7 +557,7 @@ mod clipboard_fallback {
 
     #[cfg(test)]
     pub(super) fn pasteboard_restore_for_tests(snapshot: &PasteboardSnapshot) {
-        pasteboard::restore(snapshot)
+        pasteboard::restore(snapshot, 0)
     }
 
     /// Unique-per-attempt sentinel. Never derived from clipboard or selection
@@ -607,14 +668,23 @@ mod clipboard_fallback {
         pid: i32,
         bundle_id: Option<String>,
         ax_outcome: SelectionError,
+        transform_pass_id: u64,
     ) -> Result<TransformSnapshot, SelectionError> {
+        let started = Instant::now();
         let original = pasteboard::snapshot();
         let sentinel = sentinel();
         if crate::injector::write_clipboard_text(&sentinel).is_err() {
             // arboard clears the pasteboard BEFORE writing, so a failed
             // sentinel write can still have destroyed the contents — restore
             // the snapshot (harmless if the pasteboard was never touched).
-            pasteboard::restore(&original);
+            pasteboard::restore(&original, transform_pass_id);
+            crate::transform_trace::capture_path(
+                transform_pass_id,
+                "clipboard_fallback",
+                "sentinel_write_failed",
+                started.elapsed().as_millis() as u64,
+                None,
+            );
             return Err(fallback_failure_error(ax_outcome));
         }
         let baseline = pasteboard::change_count();
@@ -639,16 +709,37 @@ mod clipboard_fallback {
         // type — whether or not the capture succeeded. An empty snapshot
         // restores to an empty (cleared) pasteboard, which also removes our
         // sentinel on the failure path.
-        pasteboard::restore(&original);
+        pasteboard::restore(&original, transform_pass_id);
 
-        let text = copied.ok_or(fallback_failure_error(ax_outcome))?;
-        super::classify_selection(&text)?;
-        tracing::info!(
-            target: "transform",
-            outcome = "ok",
-            via = "clipboard_fallback",
-            length_bucket = super::length_bucket(text.len()),
-            "selection captured via clipboard fallback"
+        let text = match copied {
+            Some(text) => text,
+            None => {
+                crate::transform_trace::capture_path(
+                    transform_pass_id,
+                    "clipboard_fallback",
+                    ax_outcome.as_str(),
+                    started.elapsed().as_millis() as u64,
+                    None,
+                );
+                return Err(fallback_failure_error(ax_outcome));
+            }
+        };
+        if let Err(error) = super::classify_selection(&text) {
+            crate::transform_trace::capture_path(
+                transform_pass_id,
+                "clipboard_fallback",
+                error.as_str(),
+                started.elapsed().as_millis() as u64,
+                None,
+            );
+            return Err(error);
+        }
+        crate::transform_trace::capture_path(
+            transform_pass_id,
+            "clipboard_fallback",
+            "ok",
+            started.elapsed().as_millis() as u64,
+            Some(super::length_bucket(text.len())),
         );
         Ok(TransformSnapshot {
             bundle_id,
@@ -819,7 +910,10 @@ mod native {
         copy_attribute_raw(element, name).map_err(|_| SelectionError::AxUnavailable)
     }
 
-    fn copy_attribute_string(element: AXUIElementRef, name: &str) -> Result<String, SelectionError> {
+    fn copy_attribute_string(
+        element: AXUIElementRef,
+        name: &str,
+    ) -> Result<String, SelectionError> {
         let value = copy_attribute(element, name)?;
         cfstring_to_string(value.0)
     }
@@ -1249,10 +1343,7 @@ mod tests {
         super::clipboard_fallback::pasteboard_restore_for_tests(&user_pasteboard);
 
         assert_eq!(round_tripped.len(), 1);
-        let types: Vec<&str> = round_tripped[0]
-            .iter()
-            .map(|(ty, _)| ty.as_str())
-            .collect();
+        let types: Vec<&str> = round_tripped[0].iter().map(|(ty, _)| ty.as_str()).collect();
         assert!(types.contains(&"public.utf8-plain-text"));
         assert!(types.contains(&"com.murmur.test.binary"));
         for (ty, data) in &fixture[0] {

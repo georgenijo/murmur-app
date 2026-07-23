@@ -73,6 +73,31 @@ Chromium/Electron webviews (Brave, Chrome, Slack, …) often expose no `AXSelect
 - Apply/undo failures surface stable `errorCode`s (`target_gone`, `selection_changed`, `paste_failed`, …) without content in logs.
 - Instructions never enter transcription history or stats.
 
+## Correlated diagnostics
+
+Every physical transform-key hold receives a process-local monotonic
+`transform_pass_id` in the Rust rdev callback. The ID is carried explicitly
+through the Tauri key events and commands, the active transform session, AX
+capture attempts, instruction audio/ASR, sidecar work, popover effects,
+apply/undo, cancellation, and linger cleanup. It is not inferred from a tracing
+span, so correlation survives frontend dispatch, worker threads, and spawned
+blocking work.
+
+Retrying an instruction keeps the same pass ID and advances a one-based
+instruction-attempt counter. A new physical hold receives a new ID; a stale
+release or stale command cannot mutate the active pass. Status transitions log
+their actual `from`, requested `to`, and whether the atomic transition won.
+Pass resolution uses stable outcomes (`ready`, `failed`, `cancelled`, `applied`,
+`undone`) plus stable stage/error codes.
+
+Transform diagnostics are content-free. They may contain IDs, enum values,
+numeric AX outcomes, booleans, sample/token counts, timings, apply/capture
+routes, and length buckets. They never contain selected text, instruction or
+preset text, proposals, clipboard contents, paths, bundle IDs, device names, or
+model-setting values. The structured-event layer independently removes any
+string whose key or value is outside the transform stream's explicit stable
+vocabulary.
+
 ## Sidecar removal / lifecycle
 
 - Packaged as Tauri `externalBin` (`murmur-llm-sidecar`), signed with hardened runtime + App Sandbox (split entitlements via the repository finalizer).

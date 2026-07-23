@@ -333,6 +333,13 @@ pub struct AppState {
     /// Current phase of the AX-selection transform pipeline (issue #312).
     /// Independent of `dictation.status` — see `TransformStatus`'s doc comment.
     pub transform_status: Mutex<TransformStatus>,
+    /// Process-local monotonic ID allocator for physical transform-key passes.
+    pub transform_pass_sequence: AtomicU64,
+    /// The pass that currently owns the transform lifecycle. Zero means none.
+    pub active_transform_pass_id: AtomicU64,
+    /// One-based spoken-instruction attempt within the active pass. Retries
+    /// keep the pass ID and advance only this counter.
+    pub transform_instruction_attempt: AtomicU64,
     /// The single active transform session (captured selection + proposed
     /// replacement + applied flag), if any (issue #312, PR-B2). See
     /// `transform_apply::TransformSession` and its setter/getter helpers —
@@ -358,7 +365,8 @@ pub struct AppState {
     /// inner `spawn_blocking` work finishes. Callers must also invoke
     /// `LlmSidecar::cancel_inflight_request` so the blocking loop sends a
     /// protocol Cancel and settles promptly (see `cancel_transform`).
-    pub transform_inflight: Mutex<Option<(tokio::task::AbortHandle, crate::llm_sidecar::CancelToken)>>,
+    pub transform_inflight:
+        Mutex<Option<(tokio::task::AbortHandle, crate::llm_sidecar::CancelToken)>>,
 }
 
 impl AppState {
@@ -431,9 +439,51 @@ impl AppState {
         *self.transform_status.lock_or_recover()
     }
 
+    pub fn next_transform_pass_id(&self) -> u64 {
+        self.transform_pass_sequence.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    pub fn active_transform_pass_id(&self) -> Option<u64> {
+        match self.active_transform_pass_id.load(Ordering::SeqCst) {
+            0 => None,
+            id => Some(id),
+        }
+    }
+
+    pub fn activate_transform_pass(&self, pass_id: u64) {
+        debug_assert_ne!(pass_id, 0);
+        self.transform_instruction_attempt
+            .store(1, Ordering::SeqCst);
+        self.active_transform_pass_id
+            .store(pass_id, Ordering::SeqCst);
+    }
+
+    pub fn clear_transform_pass(&self, pass_id: u64) -> bool {
+        self.active_transform_pass_id
+            .compare_exchange(pass_id, 0, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    }
+
+    pub fn current_instruction_attempt(&self) -> u64 {
+        self.transform_instruction_attempt
+            .load(Ordering::SeqCst)
+            .max(1)
+    }
+
+    pub fn next_instruction_attempt(&self) -> u64 {
+        self.transform_instruction_attempt
+            .fetch_add(1, Ordering::SeqCst)
+            + 1
+    }
+
     /// Set the transform pipeline phase. Independent of `dictation.status`.
     pub fn set_transform_status(&self, status: TransformStatus) {
-        *self.transform_status.lock_or_recover() = status;
+        let mut current = self.transform_status.lock_or_recover();
+        let from = *current;
+        *current = status;
+        if let Some(pass_id) = self.active_transform_pass_id() {
+            crate::transform_trace::transition(pass_id, from.as_str(), status.as_str(), true);
+        }
     }
 
     /// Atomically check-and-set the transform pipeline phase: transitions to
@@ -443,14 +493,21 @@ impl AppState {
     /// `transform_status() == X` check followed by `set_transform_status(Y)`
     /// would leave open between two concurrent `apply_transform_result`/
     /// `undo_transform` command invocations (issue #312 PR-B2 review).
-    pub fn try_transition_transform_status(&self, from: TransformStatus, to: TransformStatus) -> bool {
+    pub fn try_transition_transform_status(
+        &self,
+        from: TransformStatus,
+        to: TransformStatus,
+    ) -> bool {
         let mut status = self.transform_status.lock_or_recover();
-        if *status == from {
+        let actual = *status;
+        let won = actual == from;
+        if won {
             *status = to;
-            true
-        } else {
-            false
         }
+        if let Some(pass_id) = self.active_transform_pass_id() {
+            crate::transform_trace::transition(pass_id, actual.as_str(), to.as_str(), won);
+        }
+        won
     }
 
     /// Next generation id for a new `TransformSession` (issue #312 PR-B2).
@@ -460,7 +517,9 @@ impl AppState {
     /// longer applies and no-op instead of mutating the session that replaced
     /// it.
     pub fn next_transform_session_generation(&self) -> u64 {
-        self.transform_session_generation.fetch_add(1, Ordering::SeqCst) + 1
+        self.transform_session_generation
+            .fetch_add(1, Ordering::SeqCst)
+            + 1
     }
 
     /// Bump and return the next apply epoch (issue #312 PR-C2, nit N1). Called
@@ -497,6 +556,9 @@ impl Default for AppState {
             knowledge_replacements: Mutex::new(Arc::new(Vec::new())),
             ide_context: Mutex::new(crate::ide_context::IdeContextStore::default()),
             transform_status: Mutex::new(TransformStatus::default()),
+            transform_pass_sequence: AtomicU64::new(0),
+            active_transform_pass_id: AtomicU64::new(0),
+            transform_instruction_attempt: AtomicU64::new(1),
             transform_session: Mutex::new(None),
             transform_session_generation: AtomicU64::new(0),
             transform_apply_epoch: AtomicU64::new(0),
@@ -606,12 +668,14 @@ mod tests {
         assert_eq!(state.transform_status(), TransformStatus::Idle);
 
         // Correct `from` -- transitions and reports success.
-        assert!(state.try_transition_transform_status(TransformStatus::Idle, TransformStatus::Capturing));
+        assert!(state
+            .try_transition_transform_status(TransformStatus::Idle, TransformStatus::Capturing));
         assert_eq!(state.transform_status(), TransformStatus::Capturing);
 
         // A second call with the same `from` now fails -- status already moved on,
         // modeling two concurrent callers racing for the same transition.
-        assert!(!state.try_transition_transform_status(TransformStatus::Idle, TransformStatus::Capturing));
+        assert!(!state
+            .try_transition_transform_status(TransformStatus::Idle, TransformStatus::Capturing));
         assert_eq!(state.transform_status(), TransformStatus::Capturing);
     }
 
@@ -621,6 +685,31 @@ mod tests {
         assert_eq!(state.next_transform_session_generation(), 1);
         assert_eq!(state.next_transform_session_generation(), 2);
         assert_eq!(state.next_transform_session_generation(), 3);
+    }
+
+    #[test]
+    fn transform_pass_ids_are_monotonic_and_stale_clears_cannot_remove_new_pass() {
+        let state = AppState::default();
+        let first = state.next_transform_pass_id();
+        let second = state.next_transform_pass_id();
+        assert_eq!((first, second), (1, 2));
+
+        state.activate_transform_pass(first);
+        assert_eq!(state.active_transform_pass_id(), Some(first));
+        state.activate_transform_pass(second);
+        assert!(!state.clear_transform_pass(first));
+        assert_eq!(state.active_transform_pass_id(), Some(second));
+        assert!(state.clear_transform_pass(second));
+        assert_eq!(state.active_transform_pass_id(), None);
+    }
+
+    #[test]
+    fn retries_keep_pass_id_and_advance_instruction_attempt() {
+        let state = AppState::default();
+        state.activate_transform_pass(7);
+        assert_eq!(state.current_instruction_attempt(), 1);
+        assert_eq!(state.next_instruction_attempt(), 2);
+        assert_eq!(state.active_transform_pass_id(), Some(7));
     }
 
     #[test]

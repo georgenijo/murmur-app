@@ -50,7 +50,7 @@ For commands invoked from the frontend to the backend, see [commands.md](command
 
 | Event | Payload | Source | When It Fires | Listeners |
 |-------|---------|--------|---------------|-----------|
-| `app-event` | `AppEvent {timestamp: string, stream: StreamName, level: LevelName, summary: string, data: Record<string, unknown>}` | `telemetry.rs` (TauriEmitterLayer) | For every `tracing` event in the entire Rust backend. Every log statement becomes a structured event. | Log viewer window (`useEventStore` appends to buffer). In release builds, string fields in `pipeline` stream events are stripped from the `data` object for privacy. |
+| `app-event` | `AppEvent {timestamp: string, stream: StreamName, level: LevelName, summary: string, data: Record<string, unknown>}` | `telemetry.rs` (TauriEmitterLayer) | For every `tracing` event in the entire Rust backend. Every log statement becomes a structured event. | Log viewer window (`useEventStore` appends to buffer). Release `pipeline` strings are stripped; `transform` strings are always restricted by key and value to explicit stable enum/bucket vocabularies. |
 
 ## Tray Menu Events
 
@@ -67,7 +67,7 @@ For commands invoked from the frontend to the backend, see [commands.md](command
 ```typescript
 interface AppEvent {
   timestamp: string;        // ISO timestamp
-  stream: StreamName;       // "pipeline" | "audio" | "keyboard" | "system"
+  stream: StreamName;       // "pipeline" | "audio" | "keyboard" | "transform" | "system"
   level: LevelName;         // "trace" | "debug" | "info" | "warn" | "error"
   summary: string;          // The tracing message
   data: Record<string, unknown>;  // Structured fields from the tracing event
@@ -77,7 +77,7 @@ interface AppEvent {
 ### Stream and Level Types
 
 ```typescript
-type StreamName = 'pipeline' | 'audio' | 'keyboard' | 'system';
+type StreamName = 'pipeline' | 'audio' | 'keyboard' | 'transform' | 'system';
 type LevelName = 'trace' | 'debug' | 'info' | 'warn' | 'error';
 ```
 
