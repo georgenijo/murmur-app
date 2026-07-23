@@ -24,14 +24,14 @@ describe('overlay geometry contract fixture', () => {
   it('locks the characterization values', () => {
     expect(fixture.notched).toEqual({
       windowW: 305, collapsedH: 32, expandedH: 76,
-      pillIdleW: 213, pillActiveW: 305,
-      pillMarginIdle: 46, pillMarginActive: 0,
+      pillIdleW: 241, pillActiveW: 305,
+      pillMarginIdle: 32, pillMarginActive: 0,
       dropdownH: 44,
     });
     expect(fixture.fallback).toEqual({
       windowW: 200, collapsedH: 37, expandedH: 81,
-      pillIdleW: 108, pillActiveW: 200,
-      pillMarginIdle: 46, pillMarginActive: 0,
+      pillIdleW: 136, pillActiveW: 200,
+      pillMarginIdle: 32, pillMarginActive: 0,
       dropdownH: 44,
     });
   });

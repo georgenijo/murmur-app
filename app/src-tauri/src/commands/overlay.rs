@@ -28,7 +28,14 @@ pub struct AppliedSurface {
 }
 
 // Private geometry constants — the ONLY place these magic numbers live.
-const PILL_IDLE_PAD: f64 = 28.0;
+//
+// PILL_IDLE_PAD is split evenly into a left and right wing around the notch when
+// the pill is idle (`pill_margin_idle = (window_w - pill_idle_w) / 2`), so the
+// idle left wing is always `PILL_IDLE_PAD / 2` points wide regardless of notch
+// size. It must stay wide enough that the top-bar indicator (a 12pt icon at 10pt
+// left padding) clears the physical notch edge — at 28.0 the wing was only 14pt
+// and the idle mic / disabled indicator rendered mostly *behind* the notch.
+const PILL_IDLE_PAD: f64 = 56.0;
 const WINDOW_EXPAND: f64 = 120.0; // active pill pad too (fills window)
 const DROPDOWN_H: f64 = 44.0;
 const FALLBACK_NOTCH_W: f64 = 80.0;
@@ -339,7 +346,7 @@ mod tests {
                 g.pill_margin_active,
                 g.dropdown_h,
             ),
-            (305.0, 32.0, 76.0, 213.0, 305.0, 46.0, 0.0, 44.0)
+            (305.0, 32.0, 76.0, 241.0, 305.0, 32.0, 0.0, 44.0)
         );
     }
 

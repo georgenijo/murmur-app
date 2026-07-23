@@ -20,7 +20,7 @@ function expectedIndicator(
   if (showHotkeyMiss) return { kind: 'hotkeyMiss' };
   if (status === 'recording') return { kind: 'recording' };
   if (status === 'processing') return { kind: 'processing' };
-  return { kind: 'idle', dimmed: disabled };
+  return disabled ? { kind: 'disabled' } : { kind: 'idle' };
 }
 
 describe('deriveVisual', () => {
@@ -55,8 +55,27 @@ describe('deriveVisual', () => {
     expect(visual.indicator).toEqual({ kind: 'hotkeyMiss' });
   });
 
-  it('dims the idle mic icon only when disabled and otherwise idle', () => {
-    expect(deriveVisual('idle', false, false, true).indicator).toEqual({ kind: 'idle', dimmed: true });
-    expect(deriveVisual('idle', false, false, false).indicator).toEqual({ kind: 'idle', dimmed: false });
+  it('surfaces global-disable as its own indicator, not a dimmed idle mic', () => {
+    expect(deriveVisual('idle', false, false, true).indicator).toEqual({ kind: 'disabled' });
+    expect(deriveVisual('idle', false, false, false).indicator).toEqual({ kind: 'idle' });
+  });
+
+  // Regression: global-disable was previously signalled only by dropping the
+  // idle mic to 15% opacity, which is ~6% effective white on the dark pill and
+  // indistinguishable from enabled at a glance. A user clicked the notch ~20
+  // times over 20 minutes with no feedback while every start_native_recording
+  // was rejected with "app disabled — ignoring". The off state must be a
+  // distinct indicator kind so it can render a distinct shape, not an alpha.
+  it('does not represent disabled as an opacity variant of idle', () => {
+    const off = deriveVisual('idle', false, false, true).indicator;
+    expect(off.kind).not.toBe('idle');
+    expect(off).not.toHaveProperty('dimmed');
+  });
+
+  it('keeps transient flashes and active statuses ahead of disabled', () => {
+    expect(deriveVisual('idle', true, false, true).indicator).toEqual({ kind: 'cancelled' });
+    expect(deriveVisual('idle', false, true, true).indicator).toEqual({ kind: 'hotkeyMiss' });
+    expect(deriveVisual('recording', false, false, true).indicator).toEqual({ kind: 'recording' });
+    expect(deriveVisual('processing', false, false, true).indicator).toEqual({ kind: 'processing' });
   });
 });

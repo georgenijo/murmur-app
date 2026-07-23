@@ -1,4 +1,4 @@
 {
-  "notched":  { "windowW":305,"collapsedH":32,"expandedH":76,"pillIdleW":213,"pillActiveW":305,"pillMarginIdle":46,"pillMarginActive":0,"dropdownH":44 },
-  "fallback": { "windowW":200,"collapsedH":37,"expandedH":81,"pillIdleW":108,"pillActiveW":200,"pillMarginIdle":46,"pillMarginActive":0,"dropdownH":44 }
+  "notched":  { "windowW":305,"collapsedH":32,"expandedH":76,"pillIdleW":241,"pillActiveW":305,"pillMarginIdle":32,"pillMarginActive":0,"dropdownH":44 },
+  "fallback": { "windowW":200,"collapsedH":37,"expandedH":81,"pillIdleW":136,"pillActiveW":200,"pillMarginIdle":32,"pillMarginActive":0,"dropdownH":44 }
 }

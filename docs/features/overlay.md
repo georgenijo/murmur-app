@@ -49,7 +49,7 @@ Tauri's `focusable: false` configuration disables mouse events on macOS. The `sh
 
 Every overlay dimension comes from one source: `geometry_for(notch)` in `commands/overlay.rs`, which returns an `OverlayGeometry` (`windowW`, `collapsedH`, `expandedH`, `pillIdleW`, `pillActiveW`, `pillMarginIdle`, `pillMarginActive`, `dropdownH`). Rust owns every geometry number; the frontend only reads the struct — via `get_overlay_geometry` (`useOverlayGeometry`, with retry-with-backoff on the initial fetch) and the `overlay-geometry-changed` event — and never hardcodes pixels. No overlay component holds a geometry literal.
 
-- **Pill width** adjusts based on recording state and hover: `pillIdleW` (centered by a `pillMarginIdle` left margin) when idle-and-collapsed, or `pillActiveW` (fills the window, `pillMarginActive = 0`) when recording, processing, cancelled-flash, hotkey-miss-flash, or hover-expanded.
+- **Pill width** adjusts based on recording state and hover: `pillIdleW` (centered by `pillMarginIdle`, applied as a `translateX` offset) when idle-and-collapsed, or `pillActiveW` (fills the window, `pillMarginActive = 0`) when recording, processing, cancelled-flash, hotkey-miss-flash, or hover-expanded. `pillIdleW = notchW + PILL_IDLE_PAD` with `PILL_IDLE_PAD = 56`, so the idle pill keeps a `PILL_IDLE_PAD / 2 = 28pt` wing on each side of the notch — wide enough that the left-aligned top-bar indicator (idle mic / disabled slashed-mic) clears the physical notch edge instead of rendering behind it.
 - **Window width** (`windowW`) is fixed and horizontally centers the overlay at the top of the screen (y=0).
 - **Height** is `collapsedH` at rest and grows to `expandedH` (`= collapsedH + dropdownH`) while the hover dropdown is open; the window stays top-anchored so the extra height grows downward.
 - **Motion tokens** — durations and easing for the width/height transition — live in `app/src/lib/overlayMotion.ts` as the single source; see [Motion tokens](#motion-tokens) below rather than restating numbers here.
@@ -81,7 +81,7 @@ The controller runs a four-phase state machine:
 
 ### Motion tokens
 
-The transition durations/easings live in `app/src/lib/overlayMotion.ts` as the single source: `OVERLAY_WIDTH_MS`, `OVERLAY_HEIGHT_MS`, `OVERLAY_SPRING`, `HOVER_OPEN_DWELL_MS`, `COLLAPSE_DELAY_MS`. `SHRINK_DELAY_MS` is **derived** as `OVERLAY_HEIGHT_MS + 20` rather than a hand-tuned constant, so it can never drift from the height transition it guards. The island's `transition` string (`OVERLAY_ISLAND_TRANSITION`) is templated from these tokens. Read that file for current values rather than duplicating them in prose here. With `prefers-reduced-motion: reduce`, CSS transitions are removed (see `styles.css`) and the controller shrinks immediately after the leave-intent delay, avoiding both motion and a residual transparent hit area.
+The transition durations/easings live in `app/src/lib/overlayMotion.ts` as the single source: `OVERLAY_WIDTH_MS`, `OVERLAY_HEIGHT_MS`, `OVERLAY_SPRING`, `OVERLAY_ACTIVE_EASE`, `HOVER_OPEN_DWELL_MS`, `COLLAPSE_DELAY_MS`. `SHRINK_DELAY_MS` is **derived** as `OVERLAY_HEIGHT_MS + 20` rather than a hand-tuned constant, so it can never drift from the height transition it guards. The island's `transition` string (`OVERLAY_ISLAND_TRANSITION`) is templated from these tokens. The idle↔active change animates **both** `width` and horizontal position (`transform: translateX`, not `margin-left`) with `OVERLAY_ACTIVE_EASE` — a no-overshoot decelerate — so the pill grows and slides as one smooth motion that lands cleanly at the window edge; `margin-left` used to be omitted from the transition entirely, so the left edge snapped while the width sprang. Height keeps `OVERLAY_SPRING` (overshoot) for the hover dropdown, which grows into open space below the notch. Read that file for current values rather than duplicating them in prose here. With `prefers-reduced-motion: reduce`, CSS transitions are removed (see `styles.css`) and the controller shrinks immediately after the leave-intent delay, avoiding both motion and a residual transparent hit area.
 
 ## Frontend Hooks
 
@@ -98,7 +98,7 @@ The transition durations/easings live in `app/src/lib/overlayMotion.ts` as the s
 
 Pure, React-free logic lives alongside the presentational components in `app/src/components/overlay/`:
 
-- **`deriveVisual.ts`** — `(status, showCancelled, showHotkeyMiss, disabled) → OverlayVisual`. Encodes the top-bar indicator priority (cancelled > hotkey-miss > recording > processing > idle-with-disabled-dimming) exactly once; locked by an exhaustive matrix test (`deriveVisual.test.ts`) over every status × flag combination.
+- **`deriveVisual.ts`** — `(status, showCancelled, showHotkeyMiss, disabled) → OverlayVisual`. Encodes the top-bar indicator priority (cancelled > hotkey-miss > recording > processing > disabled > idle) exactly once; locked by an exhaustive matrix test (`deriveVisual.test.ts`) over every status × flag combination.
 
 Presentational components, both driven entirely by props (no hooks beyond `OverlayPill`'s own local elapsed-timer state):
 
@@ -111,7 +111,7 @@ The island **container** (sizing, hover handlers, `islandRef`) stays in `Overlay
 
 | Control | Action |
 |---------|--------|
-| Power | Toggles global disable. Calls `set_app_disabled` directly for an immediate gate. When disabled: red icon (`#ef4444`) on a red-tinted background, auto-paste dims to 35%, top-bar mic fades to 15%. Global disable is also a "Disable Murmur" check item in the tray menu; the command keeps the tray check state in sync and the main window persists tray-driven changes. |
+| Power | Toggles global disable. Calls `set_app_disabled` directly for an immediate gate. When disabled: red icon (`#ef4444`) on a red-tinted background, auto-paste dims to 35%, and the top-bar mic becomes the red slashed-mic disabled indicator. Global disable is also a "Disable Murmur" check item in the tray menu; the command keeps the tray check state in sync and the main window persists tray-driven changes. |
 | Auto-paste toggle | Reads/writes the `autoPaste` setting via `loadSettings()`/`saveSettings()`. |
 | Gear | Emits `open-settings` and shows/focuses the main window (`show_main_window`). |
 
@@ -126,7 +126,14 @@ The overlay runs in a separate window with no shared React context. Writes go th
 The overlay's top-bar indicator is a pure function of status + two transient flags + global-disable (`deriveVisual()`); `status` itself is driven by the `recording-status-changed` event.
 
 ### Idle
-Small mic SVG icon at 40% white opacity (dimmed further to 15% when globally disabled). Compact width.
+Small mic SVG icon at 40% white opacity. Compact width.
+
+### Globally disabled
+Slashed mic icon in red (`#ef4444`), the same red as the dropdown's Power control, carrying an `aria-label` of "Murmur is disabled". Compact width.
+
+The enable↔disable change **morphs** rather than hard-swapping: idle and disabled render from a single persistent mic node in `OverlayPill`, so the stroke crossfades white↔red, the slash line draws itself in/out (a `pathLength`-normalized `stroke-dashoffset` sweep), and the pill's background crossfades to a red-tinted charcoal — all over `OVERLAY_STATE_MS` with `OVERLAY_ACTIVE_EASE`. (Because both states share one node in the final indicator branch, React reuses the DOM node when only `disabled` flips, which is what lets the CSS transitions fire.)
+
+This is a **distinct indicator kind** (`{ kind: 'disabled' }`), not an opacity variant of idle. It previously rendered as the idle mic at 15% opacity — roughly 6% effective white on the dark pill, which was indistinguishable from the enabled state at 12px. Because global disable silently rejects every recording (`start_native_recording: app disabled — ignoring`), a state that swallows all input has to be legible from the collapsed pill alone, without opening the dropdown. Disable ranks below the transient flashes and active statuses in the priority chain, so a cancelled/hotkey-miss flash is never swallowed and an in-flight recording keeps showing its true state until it settles.
 
 ### Recording
 Expanded width. The red pulsing dot and elapsed timer occupy the visible left wing, while the animated 7-bar waveform occupies the right. No transcript text is displayed while recording.

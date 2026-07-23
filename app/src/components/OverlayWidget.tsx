@@ -29,6 +29,38 @@ export function OverlayWidget() {
   const hotkeyMissFeedbackRef = useRef(false);
   const statusRef = useRef<DictationStatus>('idle');
 
+  // Minimum-visible processing window. Neural-Engine transcription can finish in
+  // ~200ms, which would flash the processing indicator (the thinking orb) too
+  // briefly to perceive. Hold the *visual* status in `processing` for at least
+  // MIN_PROCESSING_MS after it begins — the real `status` the hooks below depend
+  // on is untouched. A new recording always overrides the hold immediately.
+  const MIN_PROCESSING_MS = 1000;
+  const [displayStatus, setDisplayStatus] = useState<DictationStatus>('idle');
+  const processingSinceRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (status === 'processing') {
+      processingSinceRef.current = Date.now();
+      setDisplayStatus('processing');
+      return;
+    }
+    if (status === 'recording') {
+      processingSinceRef.current = null;
+      setDisplayStatus('recording');
+      return;
+    }
+    // status === 'idle': if we were showing processing, keep the orb up for the
+    // remainder of the minimum window before falling back to idle.
+    if (processingSinceRef.current !== null) {
+      const remaining = Math.max(0, MIN_PROCESSING_MS - (Date.now() - processingSinceRef.current));
+      processingSinceRef.current = null;
+      if (remaining === 0) { setDisplayStatus('idle'); return; }
+      setDisplayStatus('processing');
+      const timer = window.setTimeout(() => setDisplayStatus('idle'), remaining);
+      return () => window.clearTimeout(timer);
+    }
+    setDisplayStatus('idle');
+  }, [status]);
+
   const settingsMirror = useOverlaySettingsMirror({ setDisabled, setShowHotkeyMiss, hotkeyMissFeedbackRef });
 
   const runtime = useOverlayRuntime({
@@ -47,7 +79,7 @@ export function OverlayWidget() {
     status, statusRef, disabledRef: runtime.disabledRef, expandedRef,
   });
 
-  const visual = deriveVisual(status, runtime.showCancelled, runtime.showHotkeyMiss, runtime.disabled);
+  const visual = deriveVisual(displayStatus, runtime.showCancelled, runtime.showHotkeyMiss, runtime.disabled);
 
   // Log mount/unmount.
   useEffect(() => {
@@ -121,10 +153,16 @@ export function OverlayWidget() {
             ? geometry.pillActiveW
             : geometry.pillIdleW,
           height: topH + (expanded ? geometry.dropdownH : 0),
-          marginLeft: (expanded || visual.isActive)
-            ? geometry.pillMarginActive
-            : geometry.pillMarginIdle,
-          background: 'rgba(20, 20, 20, 0.92)',
+          // Centering offset via transform (not margin) so it animates on the
+          // compositor in lockstep with width — see OVERLAY_ISLAND_TRANSITION.
+          transform: `translateX(${
+            (expanded || visual.isActive)
+              ? geometry.pillMarginActive
+              : geometry.pillMarginIdle
+          }px)`,
+          // Subtle red-tinted charcoal when globally disabled; crossfades with the
+          // mic morph (background-color is in OVERLAY_ISLAND_TRANSITION).
+          backgroundColor: runtime.disabled ? 'rgba(34, 18, 18, 0.92)' : 'rgba(20, 20, 20, 0.92)',
           boxShadow: visual.showTapMissedLabel ? 'inset 0 -2px 0 rgba(245,158,11,0.9), 0 3px 16px rgba(245,158,11,0.22)' : 'none',
           backdropFilter: 'blur(40px)',
           WebkitBackdropFilter: 'blur(40px)',
@@ -134,7 +172,7 @@ export function OverlayWidget() {
         <OverlayPill
           geometry={geometry}
           visual={visual}
-          status={status}
+          status={displayStatus}
           barRefs={waveform.barRefs}
         />
         <OverlayDropdown
