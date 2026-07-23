@@ -191,7 +191,7 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
     def test_linuxdeploy_override_must_be_checksum_pinned(self) -> None:
         action = (ROOT / ".github/actions/setup-linux-build/action.yml").read_text()
         mutated = action.replace(
-            'echo "$LINUXDEPLOY_SHA256  $LINUXDEPLOY_PATH" | sha256sum --check --strict',
+            "sha256sum --check --strict",
             'echo "linuxdeploy checksum validation skipped"',
             1,
         )

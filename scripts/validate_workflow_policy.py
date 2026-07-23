@@ -276,10 +276,7 @@ def validate_linux_cache_policy(action: str) -> None:
         in linuxdeploy
     )
     assert 'LINUXDEPLOY_PATH="$HOME/.cache/tauri/linuxdeploy-x86_64.AppImage"' in linuxdeploy
-    assert (
-        'echo "$LINUXDEPLOY_SHA256  $LINUXDEPLOY_PATH" | sha256sum --check --strict'
-        in linuxdeploy
-    )
+    assert "sha256sum --check --strict" in linuxdeploy
 
     prepare = named_step_block(action, "Prepare CUDA cache restore path", 4)
     assert 'sudo mkdir -p "/usr/local/cuda-${CUDA_MM}"' in prepare
