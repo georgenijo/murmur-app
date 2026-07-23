@@ -312,7 +312,7 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 
 // --- Main Component ---
 
-function SimpleStatCard({ label, value, color, unit = 'MB' }: { label: string; value: number; color: string; unit?: string }) {
+function SimpleStatCard({ label, value, color, unit = 'MB' }: { label: string; value: number | string; color: string; unit?: string }) {
   return (
     <div className="min-w-0 flex-1 rounded-xl bg-surface-container-lowest p-3 shadow-sm">
       <div className="flex items-center gap-2 mb-1">
@@ -438,41 +438,62 @@ export function MetricsView({ events, resourceReadings }: MetricsViewProps) {
         </>
       )}
 
-      {/* System metrics — fed by 1s resource monitor polling */}
+      {/* Scoped resources — hydrated from persistence, then fed by the live 1s stream */}
       {resourceReadings.length > 0 && (() => {
         const latestReading = resourceReadings[resourceReadings.length - 1];
-        const rssValues = resourceReadings.map(r => r.rss_mb);
-        const heapValues = resourceReadings.map(r => r.rust_heap_mb);
-        const ffiValues = resourceReadings.map(r => r.ffi_heap_mb);
-        const cpuValues = resourceReadings.map(r => Math.round(r.cpu_percent));
+        const rssValues = resourceReadings.flatMap(r => r.rss_mb === null ? [] : [r.rss_mb]);
+        const heapValues = resourceReadings.flatMap(r => r.rust_heap_mb === null ? [] : [r.rust_heap_mb]);
+        const ffiValues = resourceReadings.flatMap(r => r.ffi_heap_mb === null ? [] : [r.ffi_heap_mb]);
+        const hostCpuValues = resourceReadings.flatMap(
+          r => r.host_cpu_percent === null ? [] : [Math.round(r.host_cpu_percent)],
+        );
+        const processCpuValues = resourceReadings.flatMap(
+          r => r.process_cpu_percent === null ? [] : [Math.round(r.process_cpu_percent)],
+        );
         return (
           <>
-            <SectionLabel>System</SectionLabel>
+            <SectionLabel>Scoped resources</SectionLabel>
             <div className="flex gap-3">
-              <SimpleStatCard label="RSS" value={latestReading.rss_mb} color={MEMORY_COLOR} />
-              <SimpleStatCard label="Rust Heap" value={latestReading.rust_heap_mb} color={HEAP_COLOR} />
-              <SimpleStatCard label="FFI Heap" value={latestReading.ffi_heap_mb} color={EXTERNAL_COLOR} />
-              <SimpleStatCard label="CPU" value={Math.round(latestReading.cpu_percent)} color={CPU_COLOR} unit="%" />
+              <SimpleStatCard label="Murmur RSS" value={latestReading.rss_mb ?? '—'} color={MEMORY_COLOR} />
+              <SimpleStatCard label="Rust Heap" value={latestReading.rust_heap_mb ?? '—'} color={HEAP_COLOR} />
+              <SimpleStatCard label="FFI / Native Heap" value={latestReading.ffi_heap_mb ?? '—'} color={EXTERNAL_COLOR} />
+              <SimpleStatCard
+                label="Murmur CPU"
+                value={latestReading.process_cpu_percent === null ? '—' : Math.round(latestReading.process_cpu_percent)}
+                color={CPU_COLOR}
+                unit="% core"
+              />
+              <SimpleStatCard
+                label="Host CPU"
+                value={latestReading.host_cpu_percent === null ? '—' : Math.round(latestReading.host_cpu_percent)}
+                color={CPU_COLOR}
+                unit="%"
+              />
             </div>
             <LiveChart
-              label={"RSS — Physical RAM Used"}
+              label={"Murmur RSS — main-process physical memory"}
               height={160}
               series={[{ key: 'rss', color: MEMORY_COLOR, values: rssValues }]}
             />
             <LiveChart
-              label={"Rust Heap — malloc zone tracked"}
+              label={"Rust Heap — Murmur malloc zone"}
               height={160}
               series={[{ key: 'heap', color: HEAP_COLOR, values: heapValues }]}
             />
             <LiveChart
-              label={"FFI Heap — whisper.cpp / C libs"}
+              label={"FFI / Native Heap — non-Rust malloc zones"}
               height={160}
               series={[{ key: 'ffi', color: EXTERNAL_COLOR, values: ffiValues }]}
             />
             <LiveChart
-              label={"CPU — System Usage"}
+              label={"Murmur CPU — 100% equals one logical core"}
               height={160}
-              series={[{ key: 'cpu', color: CPU_COLOR, values: cpuValues }]}
+              series={[{ key: 'process-cpu', color: CPU_COLOR, values: processCpuValues }]}
+            />
+            <LiveChart
+              label={"Host CPU — system-wide usage"}
+              height={160}
+              series={[{ key: 'host-cpu', color: CPU_COLOR, values: hostCpuValues }]}
             />
           </>
         );
