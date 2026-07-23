@@ -6,6 +6,18 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 ---
 
+## 2026-07-22: Diagnostics accelerator metrics stay honest (#354)
+
+**Decision:** Diagnostics will not display GPU or ANE utilization percentages. The production follow-up may ship exact backend identity, request timing, real-time factor or token throughput, correctly scoped RSS, the existing explicitly host-wide CPU percentage, and `GPU utilization unavailable` / `Accelerator utilization unavailable`. Public Metal timestamps, counters, and allocation accounting remain developer-only until Murmur's pinned runtime exposes an integration seam and a production rehearsal proves it.
+
+**Rationale:** Public Metal instrumentation measures command buffers, encoders, and resources the caller can access; Murmur's pinned whisper.cpp and llama.cpp runtimes own those objects internally, while Core ML exposes allowed compute-unit selection rather than production execution attribution. The standalone public-API probe proves behavior only for work it owns and cannot justify fabricated percentages or claims about the pinned runtimes.
+
+**Status:** active
+
+**References:** issue #354; parent #350; ADR [`2026-07-22-accelerator-diagnostics-metrics.md`](2026-07-22-accelerator-diagnostics-metrics.md); disposable probe `spikes/354-metal-metrics`.
+
+---
+
 ## 2026-07-21: Pre-merge release tuning uses a secretless unsigned rehearsal (#319)
 
 **Decision:** Release-performance experiments are measured by a main-defined, manual-only workflow that builds an immutable source SHA in secretless read-only jobs. Cargo and CUDA caches are source-SHA-isolated. macOS app and Linux deb/AppImage builds remain unsigned; JSON evidence records build timing, cache state, workflow/source identity, and size proxies. Signing, notarization, updater signing, tags, and promotion remain exclusive to the trusted production release path.
