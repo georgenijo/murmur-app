@@ -24,9 +24,7 @@ picker checks the file size before reading it; the parser rechecks both the
 declared byte count and decoded UTF-8 size before parsing.
 
 Import errors use stable codes and fixed messages. They never include the
-selected path, filename, JSON contents, or a rejected field value. The file
-picker checks the declared size before reading, and the parser checks it again
-against the decoded UTF-8 payload.
+selected path, filename, JSON contents, or a rejected field value.
 
 ## In-memory representation and privacy
 
