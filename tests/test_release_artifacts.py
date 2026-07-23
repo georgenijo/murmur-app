@@ -173,6 +173,39 @@ class ReleaseArtifactTests(unittest.TestCase):
         with self.assertRaisesRegex(ArtifactError, "designated_requirement must pin"):
             self._rerecord_macos_with_helper({**self.HELPER, "designated_requirement": dr})
 
+    def test_helper_designated_requirement_or_branch_rejected(self) -> None:
+        requirements = (
+            'identifier "com.localdictation.local-llm-sidecar" or anchor apple generic '
+            'and certificate leaf[subject.OU] = ABCDE12345',
+            'identifier "com.localdictation.local-llm-sidecar" and anchor apple generic '
+            'and certificate leaf[subject.OU] = ABCDE12345 or cdhash H"deadbeefcafe"',
+        )
+        for dr in requirements:
+            with self.subTest(dr=dr):
+                with self.assertRaisesRegex(ArtifactError, "designated_requirement must pin"):
+                    self._rerecord_macos_with_helper(
+                        {**self.HELPER, "designated_requirement": dr}
+                    )
+
+    def test_helper_designated_requirement_clause_prefix_decoys_rejected(self) -> None:
+        requirements = (
+            'notidentifier "com.localdictation.local-llm-sidecar" '
+            'and anchor apple generic '
+            'and certificate leaf[subject.OU] = ABCDE12345',
+            'identifier "com.localdictation.local-llm-sidecar" '
+            'and xanchor apple generic '
+            'and certificate leaf[subject.OU] = ABCDE12345',
+            'identifier "com.localdictation.local-llm-sidecar" '
+            'and anchor apple generic '
+            'and not certificate leaf[subject.OU] = ABCDE12345',
+        )
+        for dr in requirements:
+            with self.subTest(dr=dr):
+                with self.assertRaisesRegex(ArtifactError, "designated_requirement must pin"):
+                    self._rerecord_macos_with_helper(
+                        {**self.HELPER, "designated_requirement": dr}
+                    )
+
     def test_validate_rejects_helper_block_on_linux(self) -> None:
         # A helper block must never appear on a non-macos platform, even if a
         # provenance file is hand-edited to smuggle one in.

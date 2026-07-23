@@ -117,18 +117,29 @@ def _require_helper(helper: dict[str, Any]) -> dict[str, Any]:
     # Apple-anchored Developer ID certificate for this exact Team ID. This rejects
     # bare-cdhash ad-hoc requirements, which carry no identity or anchor.
     dr = str(helper["designated_requirement"])
-    required_clauses = (
-        f'identifier "{HELPER_IDENTIFIER}"',
-        "anchor apple generic",
-        "subject.OU",
+    clause_start = r"(?:^|\band\s+)"
+    clause_end = r"(?=\s*(?:and\b|$))"
+    identifier_clause = re.compile(
+        rf'{clause_start}identifier\s+"{re.escape(HELPER_IDENTIFIER)}"{clause_end}'
     )
-    missing_clauses = [clause for clause in required_clauses if clause not in dr]
+    anchor_clause = re.compile(
+        rf"{clause_start}anchor\s+apple\s+generic{clause_end}"
+    )
     team_clause = re.compile(
-        rf"certificate\s+leaf\[subject\.OU\]\s*=\s*"
+        rf"{clause_start}certificate\s+leaf\[subject\.OU\]\s*=\s*"
         rf"(?:\"{re.escape(team_id)}\"|{re.escape(team_id)})"
-        rf"(?=\s*(?:and\b|or\b|$))"
+        rf"{clause_end}"
     )
-    if missing_clauses or team_clause.search(dr) is None:
+    has_unsafe_alternative = (
+        re.search(r"(?:^|\W)or(?:\W|$)", dr) is not None
+        or re.search(r"(?:^|\W)cdhash(?:\W|$)", dr) is not None
+    )
+    if (
+        has_unsafe_alternative
+        or identifier_clause.search(dr) is None
+        or anchor_clause.search(dr) is None
+        or team_clause.search(dr) is None
+    ):
         raise ArtifactError(
             "helper designated_requirement must pin the fixed identifier, an Apple "
             f"anchor, and subject.OU = {team_id!r}; got {dr!r}"
