@@ -109,6 +109,16 @@ class ReleaseArtifactTests(unittest.TestCase):
         result = validate_release(self.artifacts, SHA, RUN_ID, require_macos_helper=True)
         self.assertEqual(result["platforms"]["macos"]["helper"], self.HELPER)
 
+    def test_helper_unquoted_team_id_requirement_is_valid(self) -> None:
+        dr = (
+            'identifier "com.localdictation.local-llm-sidecar" and anchor apple generic '
+            'and certificate leaf[subject.OU] = ABCDE12345'
+        )
+        helper = {**self.HELPER, "designated_requirement": dr}
+        self._rerecord_macos_with_helper(helper)
+        result = validate_release(self.artifacts, SHA, RUN_ID, require_macos_helper=True)
+        self.assertEqual(result["platforms"]["macos"]["helper"], helper)
+
     def test_require_macos_helper_fails_without_block(self) -> None:
         with self.assertRaisesRegex(ArtifactError, "missing the required local-LLM helper"):
             validate_release(self.artifacts, SHA, RUN_ID, require_macos_helper=True)
@@ -143,6 +153,22 @@ class ReleaseArtifactTests(unittest.TestCase):
         dr = (
             'identifier "com.localdictation.local-llm-sidecar" and anchor apple generic '
             'and certificate leaf[subject.OU] = "ZZZZZ99999"'
+        )
+        with self.assertRaisesRegex(ArtifactError, "designated_requirement must pin"):
+            self._rerecord_macos_with_helper({**self.HELPER, "designated_requirement": dr})
+
+    def test_helper_designated_requirement_team_prefix_rejected(self) -> None:
+        dr = (
+            'identifier "com.localdictation.local-llm-sidecar" and anchor apple generic '
+            'and certificate leaf[subject.OU] = ABCDE12345EXTRA'
+        )
+        with self.assertRaisesRegex(ArtifactError, "designated_requirement must pin"):
+            self._rerecord_macos_with_helper({**self.HELPER, "designated_requirement": dr})
+
+    def test_helper_designated_requirement_wrong_operator_rejected(self) -> None:
+        dr = (
+            'identifier "com.localdictation.local-llm-sidecar" and anchor apple generic '
+            'and certificate leaf[subject.OU] != ABCDE12345'
         )
         with self.assertRaisesRegex(ArtifactError, "designated_requirement must pin"):
             self._rerecord_macos_with_helper({**self.HELPER, "designated_requirement": dr})

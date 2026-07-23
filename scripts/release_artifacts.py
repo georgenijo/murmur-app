@@ -123,7 +123,12 @@ def _require_helper(helper: dict[str, Any]) -> dict[str, Any]:
         "subject.OU",
     )
     missing_clauses = [clause for clause in required_clauses if clause not in dr]
-    if missing_clauses or f'"{team_id}"' not in dr:
+    team_clause = re.compile(
+        rf"certificate\s+leaf\[subject\.OU\]\s*=\s*"
+        rf"(?:\"{re.escape(team_id)}\"|{re.escape(team_id)})"
+        rf"(?=\s*(?:and\b|or\b|$))"
+    )
+    if missing_clauses or team_clause.search(dr) is None:
         raise ArtifactError(
             "helper designated_requirement must pin the fixed identifier, an Apple "
             f"anchor, and subject.OU = {team_id!r}; got {dr!r}"
