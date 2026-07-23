@@ -69,6 +69,7 @@ For event-based communication (Rust to frontend), see [events.md](events.md). Fo
 | Command | Parameters | Return Type | Description |
 |---------|-----------|-------------|-------------|
 | `propose_learned_correction` | `request: CorrectionProposalRequest` | `CorrectionProposalOutcome` | Computes one bounded local diff and stores only an ephemeral reviewed proposal. It never writes knowledge. |
+| `propose_specific_learned_correction` | `request: SpecificCorrectionProposalRequest` | `CorrectionProposalOutcome` | Validates one user-selected bounded whole-term replacement, counts and previews exact matches locally, and stores only an ephemeral reviewed proposal. It never writes knowledge. |
 | `confirm_learned_correction` | `proposal_id`, `scope` | `Result<KnowledgeEntry, String>` | Persists the exact reviewed replacement with `learned_correction` provenance and refreshes the next matcher generation. |
 | `discard_learned_correction_proposal` | `proposal_id` | `()` | Discards the matching ephemeral proposal without persistence. |
 

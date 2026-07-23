@@ -240,6 +240,7 @@ pub fn run() {
             commands::recording::refresh_ide_context,
             commands::recording::clear_ide_context,
             commands::correct_and_teach::propose_learned_correction,
+            commands::correct_and_teach::propose_specific_learned_correction,
             commands::correct_and_teach::confirm_learned_correction,
             commands::correct_and_teach::discard_learned_correction_proposal,
             commands::permissions::open_system_preferences,
