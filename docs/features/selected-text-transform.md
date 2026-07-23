@@ -95,7 +95,8 @@ numeric AX outcomes, booleans, sample/token counts, timings, apply/capture
 routes, and length buckets. They never contain selected text, instruction or
 preset text, proposals, clipboard contents, paths, bundle IDs, device names, or
 model-setting values. The structured-event layer independently removes any
-non-allowlisted string field from the `transform` stream.
+string whose key or value is outside the transform stream's explicit stable
+vocabulary.
 
 ## Sidecar removal / lifecycle
 

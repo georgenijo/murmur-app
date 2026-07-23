@@ -170,6 +170,131 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for TauriEmitterLayer 
 /// discipline. Transform traces may retain only stable enum/bucket fields;
 /// arbitrary strings (and therefore transform content, paths, app/device
 /// identifiers, or raw errors) are discarded in both debug and release builds.
+fn is_safe_transform_string(key: &str, value: &str) -> bool {
+    match key {
+        "event" => matches!(value, "hold_start" | "hold_stop" | "armed" | "stopped"),
+        "reason" => matches!(
+            value,
+            "released"
+                | "combo_cancelled"
+                | "detector_stop"
+                | "escape"
+                | "listener_stopped"
+                | "key_reconfigured"
+        ),
+        "from" | "to" => matches!(
+            value,
+            "idle" | "capturing" | "listening" | "thinking" | "review_pending" | "applying"
+        ),
+        "outcome" => matches!(
+            value,
+            "ok" | "error"
+                | "failed"
+                | "ready"
+                | "cancelled"
+                | "applied"
+                | "undone"
+                | "capture_aborted"
+                | "empty"
+                | "audio_empty"
+                | "transcription_error"
+                | "transcript_blank"
+                | "accessibility_denied"
+                | "secure_field"
+                | "no_selection"
+                | "too_large"
+                | "ax_unavailable"
+                | "secure_check_failed"
+                | "sentinel_write_failed"
+                | "ax"
+                | "ax_unverified"
+                | "paste"
+        ),
+        "stage" => matches!(
+            value,
+            "start"
+                | "capture"
+                | "instruction"
+                | "sidecar"
+                | "audio_start"
+                | "retry_without_session"
+                | "retry_audio_start"
+                | "apply"
+                | "undo"
+                | "linger_complete"
+                | "superseded"
+                | "pipeline_superseded"
+                | "idle"
+                | "capturing"
+                | "listening"
+                | "thinking"
+                | "review_pending"
+                | "applying"
+        ),
+        "error_code" => matches!(
+            value,
+            "accessibility_denied"
+                | "secure_field"
+                | "no_selection"
+                | "too_large"
+                | "ax_unavailable"
+                | "unsupported"
+                | "model_not_downloaded"
+                | "disabled"
+                | "busy"
+                | "invalid_request"
+                | "crashed"
+                | "model_unreadable"
+                | "timeout"
+                | "cancelled"
+                | "output_invalid"
+                | "resource_limit"
+                | "internal"
+                | "no_session"
+                | "no_proposed_text"
+                | "already_applied"
+                | "not_applied"
+                | "clipboard_unavailable"
+                | "target_gone"
+                | "selection_changed"
+                | "paste_failed"
+                | "stale_pass"
+                | "dictation_active"
+                | "benchmark_running"
+                | "file_transcribing"
+                | "runtime_busy"
+                | "transform_busy"
+                | "audio_start_failed"
+                | "no_instruction"
+                | "show_failed"
+                | "expand_failed"
+                | "set_size_failed"
+                | "set_position_failed"
+                | "window_missing"
+                | "hide_failed"
+        ),
+        "length_bucket" => matches!(
+            value,
+            "0" | "1-16" | "17-64" | "65-256" | "257-1024" | "1025-4096" | "4097-16384" | ">16384"
+        ),
+        "via" => matches!(value, "preflight" | "ax_attempt" | "clipboard_fallback"),
+        "effect" => matches!(
+            value,
+            "show" | "hide" | "expand" | "focusable" | "apply" | "undo"
+        ),
+        "ax_outcome" => matches!(
+            value,
+            "accessibility_denied"
+                | "secure_field"
+                | "no_selection"
+                | "too_large"
+                | "ax_unavailable"
+                | "secure_check_failed"
+        ),
+        _ => false,
+    }
+}
+
 fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: bool) {
     let Some(obj) = data.as_object_mut() else {
         return;
@@ -179,20 +304,10 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
         return;
     }
     if stream == "transform" {
-        const SAFE_STRING_FIELDS: &[&str] = &[
-            "event",
-            "reason",
-            "from",
-            "to",
-            "outcome",
-            "stage",
-            "error_code",
-            "length_bucket",
-            "via",
-            "effect",
-            "ax_outcome",
-        ];
-        obj.retain(|key, value| !value.is_string() || SAFE_STRING_FIELDS.contains(&key.as_str()));
+        obj.retain(|key, value| match value.as_str() {
+            Some(value) => is_safe_transform_string(key, value),
+            None => true,
+        });
     }
 }
 
@@ -418,5 +533,67 @@ mod tests {
         assert!(!encoded.contains("com.private"));
         assert!(!encoded.contains("Private Microphone"));
         assert!(!encoded.contains("Private Model"));
+    }
+
+    #[test]
+    fn transform_event_sanitizer_keeps_documented_stable_values() {
+        let mut data = serde_json::json!({
+            "event": "hold_stop",
+            "reason": "released",
+            "from": "listening",
+            "to": "thinking",
+            "outcome": "failed",
+            "stage": "sidecar",
+            "error_code": "timeout",
+            "length_bucket": "17-64",
+            "via": "clipboard_fallback",
+            "effect": "focusable",
+            "ax_outcome": "no_selection"
+        });
+
+        sanitize_event_data("transform", &mut data, true);
+
+        assert_eq!(data["event"], "hold_stop");
+        assert_eq!(data["reason"], "released");
+        assert_eq!(data["from"], "listening");
+        assert_eq!(data["to"], "thinking");
+        assert_eq!(data["outcome"], "failed");
+        assert_eq!(data["stage"], "sidecar");
+        assert_eq!(data["error_code"], "timeout");
+        assert_eq!(data["length_bucket"], "17-64");
+        assert_eq!(data["via"], "clipboard_fallback");
+        assert_eq!(data["effect"], "focusable");
+        assert_eq!(data["ax_outcome"], "no_selection");
+    }
+
+    #[test]
+    fn transform_event_sanitizer_rejects_content_in_every_allowed_string_field() {
+        let sentinel = "SENTINEL transcript /Users/private/project";
+        let mut data = serde_json::json!({
+            "transform_pass_id": 23,
+            "duration_ms": 9,
+            "won": true,
+            "event": sentinel,
+            "reason": sentinel,
+            "from": sentinel,
+            "to": sentinel,
+            "outcome": sentinel,
+            "stage": sentinel,
+            "error_code": sentinel,
+            "length_bucket": sentinel,
+            "via": sentinel,
+            "effect": sentinel,
+            "ax_outcome": sentinel
+        });
+
+        sanitize_event_data("transform", &mut data, true);
+        let encoded = serde_json::to_string(&data).unwrap();
+
+        assert_eq!(data["transform_pass_id"], 23);
+        assert_eq!(data["duration_ms"], 9);
+        assert_eq!(data["won"], true);
+        assert!(!encoded.contains("SENTINEL"));
+        assert!(!encoded.contains("/Users/private"));
+        assert_eq!(data.as_object().unwrap().len(), 3);
     }
 }

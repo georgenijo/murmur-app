@@ -50,7 +50,7 @@ For commands invoked from the frontend to the backend, see [commands.md](command
 
 | Event | Payload | Source | When It Fires | Listeners |
 |-------|---------|--------|---------------|-----------|
-| `app-event` | `AppEvent {timestamp: string, stream: StreamName, level: LevelName, summary: string, data: Record<string, unknown>}` | `telemetry.rs` (TauriEmitterLayer) | For every `tracing` event in the entire Rust backend. Every log statement becomes a structured event. | Log viewer window (`useEventStore` appends to buffer). Release `pipeline` strings are stripped; `transform` strings are always restricted to stable allowlisted enum/bucket fields. |
+| `app-event` | `AppEvent {timestamp: string, stream: StreamName, level: LevelName, summary: string, data: Record<string, unknown>}` | `telemetry.rs` (TauriEmitterLayer) | For every `tracing` event in the entire Rust backend. Every log statement becomes a structured event. | Log viewer window (`useEventStore` appends to buffer). Release `pipeline` strings are stripped; `transform` strings are always restricted by key and value to explicit stable enum/bucket vocabularies. |
 
 ## Tray Menu Events
 

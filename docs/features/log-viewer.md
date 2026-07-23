@@ -43,7 +43,7 @@ When the JSONL file exceeds 5MB, it is rotated — renamed to `.jsonl.1` — and
 
 ### Privacy Stripping
 
-In release builds, all string-valued fields from `pipeline` target events are stripped from the `data` object. Only numeric fields survive. For the `transform` stream in both debug and release builds, arbitrary string fields are removed and only stable enum/bucket keys are retained. The `summary` (message) field is not stripped and transform summaries are constant. This prevents transcription or transform content from being persisted in structured log data.
+In release builds, all string-valued fields from `pipeline` target events are stripped from the `data` object. Only numeric fields survive. For the `transform` stream in both debug and release builds, each string must match an explicit key-specific enum/bucket vocabulary; unknown keys or values are dropped. Numeric and boolean diagnostic fields are retained. The `summary` (message) field is not stripped and transform summaries are constant. This prevents transcription or transform content from being persisted in structured log data.
 
 ### Pretty-Printed Log File
 
