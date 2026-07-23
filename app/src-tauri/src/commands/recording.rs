@@ -1,5 +1,10 @@
 use crate::dictation_context::{self, DictationContextSnapshot, ResolverInputs, SessionOverrides};
 use crate::model_runtime::{self, PreparationReason};
+use crate::performance_metrics::{
+    AcceleratorV1, ContentFreeInputSummaryV1, ModelWarmStateV1, PerformanceStageV1,
+    PerformanceRunGuard, RunCorrelationV1, RunOutcomeV1, RuntimeBackendV1, RuntimeIdentityV1,
+    RuntimeRoleV1, StableRunErrorV1, StageOutcomeV1, StageTimingV1,
+};
 use crate::state::{AppState, DictationStatus};
 use crate::transcriber;
 use crate::{audio, audio_decode, injector, keyboard, vad};
@@ -407,20 +412,47 @@ fn spawn_model_preparation(app_handle: tauri::AppHandle, model_name: String, rec
         let rss_after_mb = crate::resource_monitor::get_process_rss_mb();
         let total_ms = queued_at.elapsed().as_millis() as u64;
         match result {
-            Ok(report) => tracing::info!(
-                target: "pipeline",
-                recording_id,
-                model = model_name.as_str(),
-                backend = model_runtime::model_definition(&model_name).map(|model| model.backend.as_str()).unwrap_or("unknown"),
-                cache_hit = report.cache_hit,
-                queue_ms,
-                lock_wait_ms = report.lock_wait_ms,
-                load_ms = report.load_ms,
-                total_ms,
-                rss_before_mb,
-                rss_after_mb,
-                "model_prepare_complete"
-            ),
+            Ok(report) => {
+                let correlation = RunCorrelationV1::Dictation { recording_id };
+                let _ = state.performance.update_active(&correlation, |active| {
+                    active.runtimes = runtime_identity(
+                        &model_name,
+                        if report.cache_hit {
+                            ModelWarmStateV1::Warm
+                        } else {
+                            ModelWarmStateV1::ColdLoaded
+                        },
+                    );
+                    active.stages.retain(|stage| {
+                        !matches!(
+                            stage.stage,
+                            PerformanceStageV1::ModelQueue | PerformanceStageV1::ModelLoad
+                        )
+                    });
+                    active.stages.push(StageTimingV1::measured(
+                        PerformanceStageV1::ModelQueue,
+                        queue_ms.saturating_add(report.lock_wait_ms),
+                    ));
+                    active.stages.push(StageTimingV1::measured(
+                        PerformanceStageV1::ModelLoad,
+                        report.load_ms,
+                    ));
+                });
+                tracing::info!(
+                    target: "pipeline",
+                    recording_id,
+                    model = model_name.as_str(),
+                    backend = model_runtime::model_definition(&model_name).map(|model| model.backend.as_str()).unwrap_or("unknown"),
+                    cache_hit = report.cache_hit,
+                    queue_ms,
+                    lock_wait_ms = report.lock_wait_ms,
+                    load_ms = report.load_ms,
+                    total_ms,
+                    rss_before_mb,
+                    rss_after_mb,
+                    "model_prepare_complete"
+                )
+            }
             Err(_error) => tracing::warn!(
                 target: "pipeline",
                 recording_id,
@@ -496,13 +528,111 @@ fn spawn_idle_model_preparation(
 #[derive(Default)]
 pub(crate) struct PipelineTimings {
     pub vad_ms: u64,
+    pub model_queue_ms: u64,
     pub model_load_ms: u64,
     pub decode_ms: u64,
     pub inference_ms: u64,
+    pub transform_ms: u64,
+    pub transform_stages: Vec<StageTimingV1>,
     pub correction_ms: u64,
+    pub file_output_ms: u64,
     pub paste_ms: u64,
     pub rss_before_mb: u64,
     pub rss_after_mb: u64,
+    pub warm_state: Option<ModelWarmStateV1>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PipelineTerminal {
+    Success,
+    NoSpeech,
+    Cancelled(PerformanceStageV1),
+}
+
+struct PipelineResult {
+    text: String,
+    timings: PipelineTimings,
+    terminal: PipelineTerminal,
+}
+
+fn runtime_identity(model_name: &str, warm_state: ModelWarmStateV1) -> Vec<RuntimeIdentityV1> {
+    let Ok(definition) = model_runtime::model_definition(model_name) else {
+        return Vec::new();
+    };
+    let backend = match definition.backend {
+        model_runtime::BackendKind::Whisper => RuntimeBackendV1::Whisper,
+        model_runtime::BackendKind::Parakeet => RuntimeBackendV1::Parakeet,
+        model_runtime::BackendKind::Coreml => RuntimeBackendV1::Coreml,
+    };
+    let accelerator = match model_runtime::model_accelerator(definition) {
+        "CPU" => AcceleratorV1::Cpu,
+        "Metal GPU" => AcceleratorV1::MetalGpu,
+        "Apple Neural Engine" => AcceleratorV1::AppleNeuralEngine,
+        _ => AcceleratorV1::PlatformFallback,
+    };
+    vec![RuntimeIdentityV1 {
+        role: RuntimeRoleV1::Transcription,
+        model_id: model_name.to_string(),
+        backend,
+        accelerator,
+        warm_state,
+    }]
+}
+
+fn transcript_stage_timing(
+    report: &crate::transcript_transform::StageReport,
+) -> Option<StageTimingV1> {
+    use crate::transcript_transform::{
+        StageOutcome, CLEANUP_STAGE, CLI_COMMAND_STAGE, IDE_CONTEXT_STAGE, SMART_CORRECTION_STAGE,
+        SMART_FORMATTING_STAGE, VOICE_COMMANDS_STAGE,
+    };
+
+    let stage = match report.stage {
+        CLEANUP_STAGE => PerformanceStageV1::Cleanup,
+        VOICE_COMMANDS_STAGE => PerformanceStageV1::VoiceCommands,
+        SMART_CORRECTION_STAGE => PerformanceStageV1::SmartCorrection,
+        SMART_FORMATTING_STAGE => PerformanceStageV1::SmartFormatting,
+        IDE_CONTEXT_STAGE => PerformanceStageV1::IdeContext,
+        CLI_COMMAND_STAGE => PerformanceStageV1::CliCommand,
+        _ => return None,
+    };
+    let outcome = match report.outcome {
+        StageOutcome::Applied => StageOutcomeV1::Completed,
+        StageOutcome::Skipped => StageOutcomeV1::Skipped,
+        StageOutcome::Fallback => StageOutcomeV1::Fallback,
+        StageOutcome::Failed => StageOutcomeV1::Failed,
+    };
+    Some(StageTimingV1 {
+        stage,
+        duration_ms: if report.outcome == StageOutcome::Skipped {
+            crate::performance_metrics::MeasurementV1::NotApplicable
+        } else {
+            crate::performance_metrics::MeasurementV1::measured(report.duration_us / 1_000)
+        },
+        outcome,
+    })
+}
+
+fn pipeline_stages(timings: &PipelineTimings, total_ms: u64) -> Vec<StageTimingV1> {
+    let mut stages = vec![
+        StageTimingV1::measured(PerformanceStageV1::Vad, timings.vad_ms),
+        StageTimingV1::measured(PerformanceStageV1::ModelQueue, timings.model_queue_ms),
+        StageTimingV1::measured(PerformanceStageV1::ModelLoad, timings.model_load_ms),
+        StageTimingV1::measured(PerformanceStageV1::InferenceDecode, timings.decode_ms),
+        StageTimingV1::measured(
+            PerformanceStageV1::TranscriptTransform,
+            timings.transform_ms,
+        ),
+        if timings.file_output_ms == 0 {
+            StageTimingV1::not_applicable(PerformanceStageV1::FileOutput)
+        } else {
+            StageTimingV1::measured(PerformanceStageV1::FileOutput, timings.file_output_ms)
+        },
+        StageTimingV1::measured(PerformanceStageV1::ClipboardPaste, timings.paste_ms),
+        StageTimingV1::measured(PerformanceStageV1::TotalProcessing, total_ms),
+    ];
+    stages.extend(timings.transform_stages.clone());
+    stages
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -545,8 +675,9 @@ async fn run_transcription_pipeline(
     app_handle: &tauri::AppHandle,
     app_state: &AppState,
     recording_id: u64,
+    performance_guard: &mut PerformanceRunGuard,
     context: Arc<DictationContextSnapshot>,
-) -> Result<(String, PipelineTimings), String> {
+) -> Result<PipelineResult, String> {
     // Guard resets status to Idle on any return path (error or success),
     // but only if this recording is still the active one
     let _guard = IdleGuard::new(app_state, recording_id);
@@ -554,7 +685,6 @@ async fn run_transcription_pipeline(
     let transcription = &context.transcription;
     let transformations = &context.transformations;
     let delivery = &context.delivery;
-
     // When saving to a file, suppress auto-paste into the focused app. The
     // clipboard write inside `inject_text` is unconditional, so text remains
     // copyable regardless of these toggles.
@@ -570,12 +700,17 @@ async fn run_transcription_pipeline(
     // Checkpoint 1: cancelled before VAD?
     if app_state.is_cancelled(recording_id) {
         tracing::info!(target: "pipeline", "cancelled before VAD (recording_id={})", recording_id);
-        return Ok((String::new(), PipelineTimings::default()));
+        return Ok(PipelineResult {
+            text: String::new(),
+            timings: PipelineTimings::default(),
+            terminal: PipelineTerminal::Cancelled(PerformanceStageV1::Vad),
+        });
     }
 
     // Every backend uses one authoritative full-buffer VAD + inference pass
     // after recording stops.
     let vad_threshold = 1.0 - (transcription.vad_sensitivity as f32 / 100.0);
+    performance_guard.enter(PerformanceStageV1::Vad);
     let t_vad = std::time::Instant::now();
     let (samples_for_transcription, vad_trimmed) = match vad::vad_model_path() {
         Some(vad_path) if vad_path.exists() => {
@@ -591,13 +726,14 @@ async fn run_transcription_pipeline(
                 Ok(vad::VadResult::NoSpeech) => {
                     tracing::info!(target: "pipeline", "VAD detected no speech ({} samples, {:?}), skipping transcription",
                             samples.len(), t_vad.elapsed());
-                    return Ok((
-                        String::new(),
-                        PipelineTimings {
+                    return Ok(PipelineResult {
+                        text: String::new(),
+                        timings: PipelineTimings {
                             vad_ms: t_vad.elapsed().as_millis() as u64,
                             ..PipelineTimings::default()
                         },
-                    ));
+                        terminal: PipelineTerminal::NoSpeech,
+                    });
                 }
                 Ok(vad::VadResult::Speech(trimmed)) => {
                     tracing::info!(target: "pipeline", "VAD trimmed {} -> {} samples ({:.0}% speech, {:?})",
@@ -627,16 +763,18 @@ async fn run_transcription_pipeline(
 
     if app_state.is_cancelled(recording_id) {
         tracing::info!(target: "pipeline", "cancelled before transcription (recording_id={})", recording_id);
-        return Ok((
-            String::new(),
-            PipelineTimings {
+        return Ok(PipelineResult {
+            text: String::new(),
+            timings: PipelineTimings {
                 vad_ms,
                 ..PipelineTimings::default()
             },
-        ));
+            terminal: PipelineTerminal::Cancelled(PerformanceStageV1::InferenceDecode),
+        });
     }
 
     let rss_before_mb = crate::resource_monitor::get_process_rss_mb();
+    performance_guard.enter(PerformanceStageV1::InferenceDecode);
     let t_transcribe = std::time::Instant::now();
     let mut decode_ms = 0;
     let (text, load_report) = app_state.model_runtime.with_ready_backend(
@@ -665,11 +803,17 @@ async fn run_transcription_pipeline(
     tracing::info!(target: "pipeline", "transcription ({} samples): {:?}", samples_for_transcription.len(), t_transcribe.elapsed());
     let mut timings = PipelineTimings {
         vad_ms,
+        model_queue_ms: load_report.lock_wait_ms,
         model_load_ms,
         decode_ms,
         inference_ms,
         rss_before_mb,
         rss_after_mb,
+        warm_state: Some(if load_report.cache_hit {
+            ModelWarmStateV1::Warm
+        } else {
+            ModelWarmStateV1::ColdLoaded
+        }),
         ..PipelineTimings::default()
     };
 
@@ -709,12 +853,15 @@ async fn run_transcription_pipeline(
         ide_context_index: transformations.ide_context_index.clone(),
         voice_command_runtime: None,
     };
+    let transform_started = std::time::Instant::now();
+    performance_guard.enter(PerformanceStageV1::TranscriptTransform);
     let transformed = crate::transcript_transform::transform_transcript(
         text,
         &transform_context,
         transform_resources,
     )
     .map_err(|error| error.to_string())?;
+    let transform_ms = transform_started.elapsed().as_millis() as u64;
     tracing::info!(
         target: "pipeline",
         changed = transformed.was_changed(),
@@ -722,6 +869,11 @@ async fn run_transcription_pipeline(
     );
     let correction_ms =
         transformed.stage_duration_ms(crate::transcript_transform::SMART_CORRECTION_STAGE);
+    let transform_stages = transformed
+        .stages
+        .iter()
+        .filter_map(transcript_stage_timing)
+        .collect();
     let text = transformed.text;
 
     // Update last_transcription_at for idle timeout tracking
@@ -730,12 +882,20 @@ async fn run_transcription_pipeline(
     if app_state.is_cancelled(recording_id) {
         tracing::info!(target: "pipeline", "cancelled before injection (recording_id={})", recording_id);
         timings.correction_ms = correction_ms;
-        return Ok((String::new(), timings));
+        timings.transform_ms = transform_ms;
+        timings.transform_stages = transform_stages;
+        return Ok(PipelineResult {
+            text: String::new(),
+            timings,
+            terminal: PipelineTerminal::Cancelled(PerformanceStageV1::ClipboardPaste),
+        });
     }
 
     // Phase: File output (optional) -- persist audio/transcript before injection.
     // Non-fatal: a write failure is logged and surfaced to the UI, but the text
     // is already on its way to the clipboard. Uses the original (pre-VAD) samples.
+    let file_output_started = std::time::Instant::now();
+    performance_guard.enter(PerformanceStageV1::FileOutput);
     if delivery.save_audio || delivery.save_transcript {
         if let Err(e) = crate::file_output::write_dictation_outputs(
             samples,
@@ -751,9 +911,15 @@ async fn run_transcription_pipeline(
             );
         }
     }
+    let file_output_ms = if delivery.save_audio || delivery.save_transcript {
+        file_output_started.elapsed().as_millis() as u64
+    } else {
+        0
+    };
 
     // Phase: Text injection (clipboard write + optional osascript paste)
     let t_inject = std::time::Instant::now();
+    performance_guard.enter(PerformanceStageV1::ClipboardPaste);
     if !text.is_empty() {
         let text_to_inject = text.clone();
         let paste_delay_ms = delivery.paste_delay_ms;
@@ -792,8 +958,15 @@ async fn run_transcription_pipeline(
     tracing::info!(target: "pipeline", "inject (clipboard + paste): {:?}", t_inject.elapsed());
 
     timings.correction_ms = correction_ms;
+    timings.transform_ms = transform_ms;
+    timings.transform_stages = transform_stages;
+    timings.file_output_ms = file_output_ms;
     timings.paste_ms = paste_ms;
-    Ok((text, timings))
+    Ok(PipelineResult {
+        text,
+        timings,
+        terminal: PipelineTerminal::Success,
+    })
     // _guard drops here, setting status to Idle
 }
 
@@ -866,6 +1039,21 @@ pub async fn process_audio(
     let _ = app_handle.emit("recording-status-changed", "processing");
     let bundle_id = crate::frontmost::frontmost_bundle_id();
     let context = resolve_live_context(&state.app_state, &state.knowledge, bundle_id.as_deref());
+    if let Err(error) = state.performance.begin_dictation(
+        rid,
+        runtime_identity(&context.transcription.model_name, ModelWarmStateV1::Unknown),
+    ) {
+        tracing::warn!(
+            target: "system",
+            recording_id = rid,
+            "performance run start failed: {}",
+            error
+        );
+    }
+    let mut performance_guard = state.performance.guard(
+        RunCorrelationV1::Dictation { recording_id: rid },
+        PerformanceStageV1::CaptureFinalization,
+    );
 
     // Guard resets status to Idle if decode/parse fails before reaching the pipeline
     let mut guard = IdleGuard::new(&state.app_state, rid);
@@ -886,6 +1074,11 @@ pub async fn process_audio(
         e
     })?;
     tracing::info!(target: "pipeline", "audio parse (base64 + WAV): {:?}", t_parse.elapsed());
+    performance_guard.record(StageTimingV1::measured(
+        PerformanceStageV1::CaptureFinalization,
+        t_parse.elapsed().as_millis() as u64,
+    ));
+    performance_guard.enter(PerformanceStageV1::Vad);
 
     // Pipeline has its own guard, so disarm this one
     guard.disarm();
@@ -896,6 +1089,7 @@ pub async fn process_audio(
         &app_handle,
         &state.app_state,
         rid,
+        &mut performance_guard,
         Arc::clone(&context),
     )
     .await;
@@ -909,7 +1103,9 @@ pub async fn process_audio(
             let _ = app_handle.emit("recording-status-changed", "idle");
         }
     }
-    let (text, timings) = pipeline_result?;
+    let pipeline = pipeline_result?;
+    let text = pipeline.text;
+    let timings = pipeline.timings;
 
     let total_ms = t_total.elapsed().as_millis() as u64;
     let audio_secs = samples.len() as f64 / 16_000.0;
@@ -942,6 +1138,22 @@ pub async fn process_audio(
         model = model_name.as_str(),
         backend = backend_name.as_str(),
         "transcription complete"
+    );
+
+    let outcome = match pipeline.terminal {
+        PipelineTerminal::Success => RunOutcomeV1::Success,
+        PipelineTerminal::NoSpeech => RunOutcomeV1::NoSpeech,
+        PipelineTerminal::Cancelled(stage) => RunOutcomeV1::Cancelled { stage },
+    };
+    let warm_state = timings.warm_state.unwrap_or(ModelWarmStateV1::Unknown);
+    let _ = performance_guard.finish(
+        outcome,
+        pipeline_stages(&timings, total_ms),
+        Some(ContentFreeInputSummaryV1::audio_with_output(
+            (audio_secs * 1_000.0).round() as u64,
+            text.len(),
+        )),
+        Some(runtime_identity(&model_name, warm_state)),
     );
 
     Ok(serde_json::json!({
@@ -1116,9 +1328,7 @@ fn stage_vocabulary_configuration(
             effective_commands.push(command.clone());
         }
     }
-    let effective_entries = entries
-        .as_deref()
-        .unwrap_or(&dictation.vocabulary_entries);
+    let effective_entries = entries.as_deref().unwrap_or(&dictation.vocabulary_entries);
     crate::vocabulary_alias::validate_entries(effective_entries, &effective_commands)?;
 
     Ok(StagedVocabularyConfiguration {
@@ -2041,7 +2251,20 @@ pub async fn start_native_recording(
     let bundle_id = crate::frontmost::frontmost_bundle_id();
     refresh_expired_ide_context(&app_handle, &state.app_state, bundle_id.as_deref());
     let context = resolve_live_context(&state.app_state, &state.knowledge, bundle_id.as_deref());
-    state.app_state.set_active_context(rid, Arc::clone(&context));
+    state
+        .app_state
+        .set_active_context(rid, Arc::clone(&context));
+    if let Err(error) = state.performance.begin_dictation(
+        rid,
+        runtime_identity(&context.transcription.model_name, ModelWarmStateV1::Unknown),
+    ) {
+        tracing::warn!(
+            target: "system",
+            recording_id = rid,
+            "performance run start failed: {}",
+            error
+        );
+    }
     tracing::info!(
         target: "pipeline",
         recording_id = rid,
@@ -2064,6 +2287,16 @@ pub async fn start_native_recording(
         if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
             dictation.status = DictationStatus::Idle;
         }
+        let _ = state.performance.complete(
+            &RunCorrelationV1::Dictation { recording_id: rid },
+            RunOutcomeV1::Failed {
+                stage: PerformanceStageV1::CaptureFinalization,
+                error_code: StableRunErrorV1::AudioCaptureFailed,
+            },
+            Vec::new(),
+            None,
+            None,
+        );
         return Err(e);
     }
     *state.app_state.last_transcription_at.lock_or_recover() = Some(std::time::Instant::now());
@@ -2110,6 +2343,10 @@ pub async fn stop_native_recording(
             }
         }
     };
+    let mut performance_guard = state.performance.guard(
+        RunCorrelationV1::Dictation { recording_id: rid },
+        PerformanceStageV1::CaptureFinalization,
+    );
     let context = match state.app_state.active_context(rid) {
         Some(context) => context,
         None => {
@@ -2143,6 +2380,10 @@ pub async fn stop_native_recording(
     // rejected start inspect Processing while inference continues.
     drop(transition);
     tracing::info!(target: "pipeline", "audio teardown + resample: {:?}", t_total.elapsed());
+    performance_guard.record(StageTimingV1::measured(
+        PerformanceStageV1::CaptureFinalization,
+        t_total.elapsed().as_millis() as u64,
+    ));
 
     if samples.is_empty() {
         tracing::info!(target: "pipeline", "stop_native_recording: no audio captured");
@@ -2150,6 +2391,15 @@ pub async fn stop_native_recording(
         if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
             let _ = app_handle.emit("recording-status-changed", "idle");
         }
+        let _ = performance_guard.finish(
+            RunOutcomeV1::NoSpeech,
+            vec![StageTimingV1::measured(
+                PerformanceStageV1::TotalProcessing,
+                t_total.elapsed().as_millis() as u64,
+            )],
+            Some(ContentFreeInputSummaryV1::audio(samples.len() as u64 / 16)),
+            None,
+        );
         return Ok(serde_json::json!({
             "type": "transcription",
             "text": "",
@@ -2167,6 +2417,15 @@ pub async fn stop_native_recording(
         if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
             let _ = app_handle.emit("recording-status-changed", "idle");
         }
+        let _ = performance_guard.finish(
+            RunOutcomeV1::NoSpeech,
+            vec![StageTimingV1::measured(
+                PerformanceStageV1::TotalProcessing,
+                t_total.elapsed().as_millis() as u64,
+            )],
+            Some(ContentFreeInputSummaryV1::audio(samples.len() as u64 / 16)),
+            None,
+        );
         return Ok(serde_json::json!({
             "type": "transcription",
             "text": "",
@@ -2176,12 +2435,14 @@ pub async fn stop_native_recording(
 
     // Hand off status management to the pipeline's own guard
     guard.disarm();
+    performance_guard.enter(PerformanceStageV1::Vad);
 
     let pipeline_result = run_transcription_pipeline(
         &samples,
         &app_handle,
         &state.app_state,
         rid,
+        &mut performance_guard,
         Arc::clone(&context),
     )
     .await;
@@ -2195,13 +2456,15 @@ pub async fn stop_native_recording(
             let _ = app_handle.emit("recording-status-changed", "idle");
         }
     }
-    let (text, timings) = match pipeline_result {
+    let pipeline = match pipeline_result {
         Ok(result) => result,
         Err(error) => {
             tracing::error!(target: "pipeline", "stop_native_recording: pipeline failed: {}", error);
             return Err(error);
         }
     };
+    let text = pipeline.text;
+    let timings = pipeline.timings;
 
     let total_ms = t_total.elapsed().as_millis() as u64;
     let audio_secs = samples.len() as f64 / 16_000.0;
@@ -2235,6 +2498,22 @@ pub async fn stop_native_recording(
         model = model_name.as_str(),
         backend = backend_name.as_str(),
         "transcription complete"
+    );
+
+    let outcome = match pipeline.terminal {
+        PipelineTerminal::Success => RunOutcomeV1::Success,
+        PipelineTerminal::NoSpeech => RunOutcomeV1::NoSpeech,
+        PipelineTerminal::Cancelled(stage) => RunOutcomeV1::Cancelled { stage },
+    };
+    let warm_state = timings.warm_state.unwrap_or(ModelWarmStateV1::Unknown);
+    let _ = performance_guard.finish(
+        outcome,
+        pipeline_stages(&timings, total_ms),
+        Some(ContentFreeInputSummaryV1::audio_with_output(
+            (audio_secs * 1_000.0).round() as u64,
+            text.len(),
+        )),
+        Some(runtime_identity(&model_name, warm_state)),
     );
 
     // Broadcast transcription result to all windows (so the main window can update
@@ -2314,6 +2593,27 @@ pub async fn cancel_native_recording(
     let _ = app_handle.emit(
         "recording-cancelled",
         serde_json::json!({ "recordingId": rid }),
+    );
+
+    let stage = match prev_status {
+        DictationStatus::Recording => PerformanceStageV1::CaptureFinalization,
+        DictationStatus::Processing => PerformanceStageV1::InferenceDecode,
+        DictationStatus::Idle => unreachable!(),
+    };
+    let outcome = if stop_err.is_some() {
+        RunOutcomeV1::Failed {
+            stage,
+            error_code: StableRunErrorV1::AudioCaptureFailed,
+        }
+    } else {
+        RunOutcomeV1::Cancelled { stage }
+    };
+    let _ = state.performance.complete(
+        &RunCorrelationV1::Dictation { recording_id: rid },
+        outcome,
+        Vec::new(),
+        None,
+        None,
     );
 
     match stop_err {
@@ -2429,6 +2729,23 @@ pub async fn transcribe_file(
             );
         }
     }
+    let file_run_id = state.app_state.next_file_run_id();
+    if let Err(error) = state
+        .performance
+        .begin_file_transcription(file_run_id, Vec::new())
+    {
+        tracing::warn!(
+            target: "system",
+            file_run_id,
+            "performance file run start failed: {}",
+            error
+        );
+    }
+    let mut performance_guard = state.performance.guard(
+        RunCorrelationV1::FileTranscription { file_run_id },
+        PerformanceStageV1::FileDecode,
+    );
+    let total_started = std::time::Instant::now();
 
     // Log only the extension as a structured field — never the raw path, which
     // would carry the user's home dir/username into telemetry (release builds
@@ -2437,7 +2754,7 @@ pub async fn transcribe_file(
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("");
-    tracing::info!(target: "pipeline", ext = ext, "transcribe_file: start");
+    tracing::info!(target: "pipeline", file_run_id, ext = ext, "transcribe_file: start");
 
     // Phase: decode + downmix + resample to 16kHz mono (off the async runtime).
     let t_decode = std::time::Instant::now();
@@ -2453,6 +2770,11 @@ pub async fn transcribe_file(
     let duration_secs = samples.len() as f64 / 16_000.0;
     tracing::info!(target: "pipeline", "transcribe_file: decoded {} samples (~{:.1}s) in {:?}",
         samples.len(), duration_secs, t_decode.elapsed());
+    let file_decode_ms = t_decode.elapsed().as_millis() as u64;
+    performance_guard.record(StageTimingV1::measured(
+        PerformanceStageV1::FileDecode,
+        file_decode_ms,
+    ));
 
     // Read the settings shared with live dictation in one lock.
     let (model_name, language, vad_sensitivity, custom_vocabulary, smart_punctuation) = {
@@ -2465,8 +2787,16 @@ pub async fn transcribe_file(
             dictation.smart_punctuation,
         )
     };
+    let _ = state.performance.update_active(
+        &RunCorrelationV1::FileTranscription { file_run_id },
+        |active| {
+            active.runtimes = runtime_identity(&model_name, ModelWarmStateV1::Unknown);
+        },
+    );
 
     // Phase: VAD — skip silence, best-effort with fallback to full audio (mirrors live).
+    performance_guard.enter(PerformanceStageV1::Vad);
+    let vad_started = std::time::Instant::now();
     let vad_threshold = 1.0 - (vad_sensitivity as f32 / 100.0);
     let (samples_for_transcription, vad_trimmed) = match vad::vad_model_path() {
         Some(vad_path) if vad_path.exists() => {
@@ -2481,6 +2811,23 @@ pub async fn transcribe_file(
             match vad_result {
                 Ok(vad::VadResult::NoSpeech) => {
                     tracing::info!(target: "pipeline", "transcribe_file: VAD detected no speech");
+                    let _ = performance_guard.finish(
+                        RunOutcomeV1::NoSpeech,
+                        vec![
+                            StageTimingV1::measured(
+                                PerformanceStageV1::Vad,
+                                vad_started.elapsed().as_millis() as u64,
+                            ),
+                            StageTimingV1::measured(
+                                PerformanceStageV1::TotalProcessing,
+                                total_started.elapsed().as_millis() as u64,
+                            ),
+                        ],
+                        Some(ContentFreeInputSummaryV1::audio(
+                            (duration_secs * 1_000.0).round() as u64,
+                        )),
+                        Some(runtime_identity(&model_name, ModelWarmStateV1::Unknown)),
+                    );
                     return Ok(serde_json::json!({
                         "type": "file_transcription", "text": "", "duration": duration_secs
                     }));
@@ -2506,8 +2853,10 @@ pub async fn transcribe_file(
             (samples.clone(), false)
         }
     };
+    let vad_ms = vad_started.elapsed().as_millis() as u64;
 
     // Phase: transcription (lazy model load), mirroring run_transcription_pipeline.
+    performance_guard.enter(PerformanceStageV1::InferenceDecode);
     let t_transcribe = std::time::Instant::now();
     let sanitized = custom_vocabulary.replace('\0', "");
     let code_vocab = resolve_code_vocab_prompt(&state.app_state);
@@ -2544,13 +2893,21 @@ pub async fn transcribe_file(
         cli_formatting_mode: crate::cli_command::CliFormattingMode::Auto,
         stages: crate::transcript_transform::TranscriptStageConfig::verbatim(),
     };
-    let text = crate::transcript_transform::transform_transcript(
+    performance_guard.enter(PerformanceStageV1::TranscriptTransform);
+    let transform_started = std::time::Instant::now();
+    let transformed = crate::transcript_transform::transform_transcript(
         text,
         &transform_context,
         crate::transcript_transform::TranscriptTransformResources::empty(),
     )
-    .map_err(|error| error.to_string())?
-    .text;
+    .map_err(|error| error.to_string())?;
+    let transform_ms = transform_started.elapsed().as_millis() as u64;
+    let transform_stages = transformed
+        .stages
+        .iter()
+        .filter_map(transcript_stage_timing)
+        .collect::<Vec<_>>();
+    let text = transformed.text;
 
     *state.app_state.last_transcription_at.lock_or_recover() = Some(std::time::Instant::now());
 
@@ -2561,6 +2918,7 @@ pub async fn transcribe_file(
     };
     tracing::info!(
         target: "pipeline",
+        file_run_id,
         model_load_ms,
         decode_ms,
         inference_ms = t_transcribe.elapsed().as_millis() as u64,
@@ -2570,8 +2928,38 @@ pub async fn transcribe_file(
         "file transcription complete"
     );
 
+    let warm_state = if load_report.cache_hit {
+        ModelWarmStateV1::Warm
+    } else {
+        ModelWarmStateV1::ColdLoaded
+    };
+    let mut stages = vec![
+        StageTimingV1::measured(PerformanceStageV1::FileDecode, file_decode_ms),
+        StageTimingV1::measured(PerformanceStageV1::Vad, vad_ms),
+        StageTimingV1::measured(PerformanceStageV1::ModelQueue, load_report.lock_wait_ms),
+        StageTimingV1::measured(PerformanceStageV1::ModelLoad, model_load_ms),
+        StageTimingV1::measured(PerformanceStageV1::InferenceDecode, decode_ms),
+        StageTimingV1::measured(PerformanceStageV1::TranscriptTransform, transform_ms),
+        StageTimingV1::measured(PerformanceStageV1::FileReturn, 0),
+        StageTimingV1::measured(
+            PerformanceStageV1::TotalProcessing,
+            total_started.elapsed().as_millis() as u64,
+        ),
+    ];
+    stages.extend(transform_stages);
+    let _ = performance_guard.finish(
+        RunOutcomeV1::Success,
+        stages,
+        Some(ContentFreeInputSummaryV1::audio_with_output(
+            (duration_secs * 1_000.0).round() as u64,
+            text.len(),
+        )),
+        Some(runtime_identity(&model_name, warm_state)),
+    );
+
     Ok(serde_json::json!({
         "type": "file_transcription",
+        "fileRunId": file_run_id,
         "text": text,
         "duration": duration_secs
     }))

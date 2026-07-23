@@ -43,7 +43,7 @@ fn snapshot() -> Option<CpuTicks> {
 
 static PREVIOUS: Mutex<Option<CpuTicks>> = Mutex::new(None);
 
-pub(super) fn cpu_percent() -> f32 {
+pub(super) fn cpu_percent() -> Option<f32> {
     update_cpu_percent(&mut PREVIOUS.lock_or_recover(), snapshot())
 }
 
