@@ -16,9 +16,9 @@ History edits cannot change text that was already copied, pasted, or saved, and 
 
 ## Bounded rule extraction
 
-Proposal generation is deterministic and local. Inputs are capped at 8,192 Unicode characters and 512 lexical tokens. A candidate must contain exactly one replacement hunk, with non-empty source and replacement spans of at most eight tokens and 256 characters each.
+Proposal generation is deterministic and local. Inputs are capped at 8,192 Unicode characters and 512 lexical tokens. Murmur aligns unchanged context case-insensitively, matching how learned rules are applied, but accepts the alignment only when one optimal token alignment can be proven. Repeated or reordered tokens with multiple optimal alignments fail closed instead of choosing an arbitrary replacement span. A candidate must contain exactly one replacement hunk, with non-empty source and replacement spans of at most eight tokens and 256 characters each.
 
-Casing, names, code identifiers, and short phrase replacements are supported. Insert-only, delete-only, punctuation-only, whitespace-only, oversized, reordered, and multiple-disjoint edits fail closed. An unsafe edit may still be saved to history, but Murmur does not guess a reusable rule.
+Casing, names, code identifiers, and short phrase replacements are supported. A single-token case-only correction remains eligible, while multiple case-only changes fail closed. The reviewed rule always preserves the exact source and replacement spelling from the user's transcripts; normalization is used only to prove unchanged alignment. Insert-only, delete-only, punctuation-only, whitespace-only, oversized, reordered, ambiguous, and multiple-disjoint edits fail closed. An unsafe edit may still be saved to history, but Murmur does not guess a reusable rule.
 
 Built-in and configured Voice Command phrases are rejected as learned corrections. Voice Commands remain earlier and unchanged in the pipeline.
 

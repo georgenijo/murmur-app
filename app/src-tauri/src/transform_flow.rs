@@ -1124,32 +1124,49 @@ pub(crate) async fn finish_transform_instruction(
     state: tauri::State<'_, crate::State>,
     transform_pass_id: u64,
 ) -> Result<(), String> {
-    let _transition = state.app_state.recording_transition.lock().await;
-
-    // Tolerate a stray release: only proceed from Listening.
-    if state.app_state.active_transform_pass_id() != Some(transform_pass_id)
-        || state.app_state.transform_status() != TransformStatus::Listening
-    {
-        return Ok(());
-    }
-
-    let samples = crate::audio::stop_recording().unwrap_or_default();
-    crate::transform_trace::audio(
-        transform_pass_id,
-        "stopped",
-        if samples.is_empty() { "empty" } else { "ok" },
-        samples.len(),
-        samples.len() as u64 * 1_000 / crate::state::WHISPER_SAMPLE_RATE as u64,
-    );
-
     let fx = TauriFlowEffects {
         app: &app_handle,
         state: &state,
     };
-    if !enter_thinking(&state.app_state, &fx) {
-        // Lost the race to a concurrent cancel.
-        return Ok(());
-    }
+
+    // Hold `recording_transition` ONLY for the audio-stop + state transition,
+    // never across the whisper transcription or the sidecar await (issue
+    // #333). The FIFO-fair mutex means anything parked on it resumes the
+    // moment we release; pre-fix, a dictation keypress made during a long
+    // Thinking phase queued here for up to ~20s+, resumed after the review
+    // reached `ready`, and destroyed it via the parked-review auto-dismiss —
+    // silently, seconds after the physical press. With the lock released
+    // before the heavy work, that press acquires the mutex immediately,
+    // observes `Thinking` via the `blocks_recording()` guard, and is refused
+    // with `busy_transforming` — the pre-#327 behavior — so the review
+    // survives. Concurrency during Thinking is gated by `TransformStatus`,
+    // not by this mutex: every work-starting entry point refuses while the
+    // status is non-Idle.
+    let samples = {
+        let _transition = state.app_state.recording_transition.lock().await;
+
+        // Tolerate a stray release: only proceed from Listening.
+        if state.app_state.active_transform_pass_id() != Some(transform_pass_id)
+            || state.app_state.transform_status() != TransformStatus::Listening
+        {
+            return Ok(());
+        }
+
+        let samples = crate::audio::stop_recording().unwrap_or_default();
+        crate::transform_trace::audio(
+            transform_pass_id,
+            "stopped",
+            if samples.is_empty() { "empty" } else { "ok" },
+            samples.len(),
+            samples.len() as u64 * 1_000 / crate::state::WHISPER_SAMPLE_RATE as u64,
+        );
+
+        if !enter_thinking(&state.app_state, &fx) {
+            // Lost the race to a concurrent cancel.
+            return Ok(());
+        }
+        samples
+    };
 
     let original = match transform_apply::session_snapshot(&state.app_state) {
         Some(session) => session.snapshot.text,

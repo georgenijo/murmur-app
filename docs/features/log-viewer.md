@@ -103,7 +103,11 @@ Rows with structured data are expandable — click to reveal a `<pre>` block wit
 
 ### Metrics Tab
 
-Visualizes transcription performance data extracted from pipeline events where `summary === 'transcription complete'`.
+Visualizes transcription performance data extracted from pipeline events where
+`summary === 'transcription complete'`. Its resource compatibility charts now
+hydrate from the typed persistent resource window and subscribe to typed live
+samples. The durable Runs table and waterfall are intentionally deferred to
+#352; see [Performance diagnostics data](performance-diagnostics.md).
 
 **Four timing series:**
 
@@ -123,6 +127,15 @@ Visualizes transcription performance data extracted from pipeline events where `
 Y-axis auto-scales with "nice" round numbers and three tick marks. X-axis shows transcription index (1-based). Each data point has a dot marker.
 
 The metrics view shows the last 20 transcriptions. The series legend is toggleable — click a series label to show/hide it (at least one must remain visible).
+
+Resource labels are scope-explicit:
+
+- Host CPU is whole-system utilization.
+- Murmur CPU is main-process utilization where 100% equals one logical core.
+- Murmur RSS is main-process physical resident memory.
+- Rust heap and FFI/native heap are separate malloc-zone measurements and are
+  not presented as additive RSS components.
+- Unavailable readings render as unavailable, never as zero.
 
 ### Event Store (`useEventStore`)
 

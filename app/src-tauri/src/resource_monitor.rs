@@ -1,21 +1,97 @@
 use crate::model_runtime::UnloadReason;
-use serde::Serialize;
 use std::sync::Mutex;
 
-#[derive(Debug, Clone, Serialize)]
-pub struct ResourceUsage {
-    pub cpu_percent: f32,
-    pub memory_mb: u64,
-    pub rss_mb: u64,
-    pub rust_heap_mb: u64,
-    pub ffi_heap_mb: u64,
+/// Get process RSS in bytes via `memory-stats` (task_info on macOS).
+pub fn get_process_rss_bytes() -> Option<u64> {
+    memory_stats::memory_stats().map(|statistics| statistics.physical_mem as u64)
 }
 
-/// Get process RSS in megabytes via `memory-stats` (task_info on macOS).
+/// Legacy internal helper retained for existing model/benchmark logs.
 pub fn get_process_rss_mb() -> u64 {
-    memory_stats::memory_stats()
-        .map(|s| s.physical_mem as u64 / 1_048_576)
-        .unwrap_or(0)
+    get_process_rss_bytes().unwrap_or(0) / 1_048_576
+}
+
+struct ProcessCpuSampler {
+    system: sysinfo::System,
+    primed: bool,
+}
+
+impl ProcessCpuSampler {
+    fn new() -> Self {
+        Self {
+            system: sysinfo::System::new(),
+            primed: false,
+        }
+    }
+
+    fn sample(&mut self) -> Option<f32> {
+        use sysinfo::{Pid, ProcessesToUpdate};
+
+        let pid = Pid::from_u32(std::process::id());
+        self.system
+            .refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
+        let value = self.system.process(pid).map(|process| process.cpu_usage());
+        if value.is_some() && !self.primed {
+            self.primed = true;
+            return None;
+        }
+        value
+    }
+}
+
+static PROCESS_CPU: std::sync::OnceLock<Mutex<ProcessCpuSampler>> = std::sync::OnceLock::new();
+
+fn measured_or_unavailable<T>(value: Option<T>) -> crate::performance_metrics::MeasurementV1<T> {
+    value.map_or(
+        crate::performance_metrics::MeasurementV1::Unavailable {
+            reason: crate::performance_metrics::UnavailableReasonV1::SampleFailed,
+        },
+        crate::performance_metrics::MeasurementV1::measured,
+    )
+}
+
+pub fn sample_resources() -> crate::performance_metrics::ResourceSampleV1 {
+    use crate::performance_metrics::{
+        HostResourceSampleV1, MeasurementV1, ProcessResourceSampleV1, ResourceSampleV1,
+        SidecarResourceSampleV1, UnavailableReasonV1, RESOURCE_SAMPLE_SCHEMA_VERSION,
+    };
+
+    let process_cpu = PROCESS_CPU
+        .get_or_init(|| Mutex::new(ProcessCpuSampler::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .sample();
+    let rust_heap = if cfg!(target_os = "macos") {
+        MeasurementV1::measured(crate::rust_heap_bytes())
+    } else {
+        MeasurementV1::Unavailable {
+            reason: UnavailableReasonV1::UnsupportedPlatform,
+        }
+    };
+    let ffi_native_heap = if cfg!(target_os = "macos") {
+        MeasurementV1::measured(crate::ffi_heap_bytes())
+    } else {
+        MeasurementV1::Unavailable {
+            reason: UnavailableReasonV1::UnsupportedPlatform,
+        }
+    };
+
+    ResourceSampleV1 {
+        schema_version: RESOURCE_SAMPLE_SCHEMA_VERSION,
+        observed_at_ms: chrono::Utc::now().timestamp_millis(),
+        host: HostResourceSampleV1 {
+            cpu_percent: measured_or_unavailable(crate::platform::cpu_percent()),
+        },
+        main_process: ProcessResourceSampleV1 {
+            cpu_percent: measured_or_unavailable(process_cpu),
+            rss_bytes: measured_or_unavailable(get_process_rss_bytes()),
+            rust_heap_bytes: rust_heap,
+            ffi_native_heap_bytes: ffi_native_heap,
+        },
+        // Phase A reserves the typed sidecar scope but does not inspect the
+        // #332-owned transform runtime or llm_sidecar internals.
+        sidecar_process: SidecarResourceSampleV1::dependency_pending(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -100,25 +176,42 @@ fn check_idle_timeout() {
 // ---------------------------------------------------------------------------
 
 pub fn start_heartbeat(app_handle: tauri::AppHandle) {
+    use tauri::Manager;
+
     set_idle_timeout(app_handle.clone());
 
     tauri::async_runtime::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+        let mut ticks = 0_u64;
         loop {
             interval.tick().await;
+            ticks = ticks.saturating_add(1);
 
-            let rss = get_process_rss_mb();
-            let rust = crate::rust_heap_mb();
-            let ffi = crate::ffi_heap_mb();
-            tracing::info!(
-                target: "system",
-                rss_mb = rss,
-                rust_heap_mb = rust,
-                ffi_heap_mb = ffi,
-                "heartbeat"
-            );
+            let sample = sample_resources();
+            let state = app_handle.state::<crate::State>();
+            if let Err(error) = state.performance.insert_resource_sample(&sample) {
+                tracing::warn!(
+                    target: "system",
+                    diagnostics_available = false,
+                    "performance resource sample not persisted: {}",
+                    error
+                );
+            }
 
-            check_idle_timeout();
+            if ticks % 60 == 0 {
+                let rss = get_process_rss_mb();
+                let rust = crate::rust_heap_mb();
+                let ffi = crate::ffi_heap_mb();
+                tracing::info!(
+                    target: "system",
+                    rss_mb = rss,
+                    rust_heap_mb = rust,
+                    ffi_heap_mb = ffi,
+                    "heartbeat"
+                );
+
+                check_idle_timeout();
+            }
         }
     });
 }
@@ -128,15 +221,8 @@ pub fn start_heartbeat(app_handle: tauri::AppHandle) {
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-pub fn get_resource_usage() -> ResourceUsage {
-    let rss_mb = get_process_rss_mb();
-    ResourceUsage {
-        cpu_percent: crate::platform::cpu_percent(),
-        memory_mb: rss_mb,
-        rss_mb,
-        rust_heap_mb: crate::rust_heap_mb(),
-        ffi_heap_mb: crate::ffi_heap_mb(),
-    }
+pub fn get_resource_usage() -> crate::performance_metrics::ResourceSampleV1 {
+    sample_resources()
 }
 
 #[cfg(test)]
