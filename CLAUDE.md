@@ -39,6 +39,7 @@ Read these before working on a feature:
 - **[docs/features/voice-commands.md](docs/features/voice-commands.md)** — Typed replacements, multiline snippets, safe variables, scopes, and clipboard permission
 - **[docs/features/selected-text-transform.md](docs/features/selected-text-transform.md)** — Local selected-text rewrite (hold key, sidecar LLM, review popover, approve/undo)
 - **[docs/features/evaluation-harness.md](docs/features/evaluation-harness.md)** — Versioned local fixtures, deterministic CI, opt-in hardware evaluation, reports, and deletion
+- **[docs/features/performance-diagnostics.md](docs/features/performance-diagnostics.md)** — Versioned local run metrics, retention, correlation, scoped resources, and privacy
 - **[docs/decisions/DECISIONS.md](docs/decisions/DECISIONS.md)** — Running log of architectural/scope decisions (newest first)
 
 ## File Map

@@ -302,6 +302,10 @@ pub struct AppState {
     /// Monotonically increasing opaque ID assigned to every post-recognition
     /// transformation pass (live recordings and imported files).
     pub transcript_session_id: AtomicU64,
+    /// Monotonically increasing ID assigned to each imported-file run. This is
+    /// separate from `recording_id` so diagnostics and structured events can
+    /// correlate file work without pretending it is a microphone recording.
+    pub file_run_id: AtomicU64,
     /// Monotonic revision for settings and vocabulary inputs captured by each
     /// immutable dictation context snapshot.
     pub settings_revision: AtomicU64,
@@ -365,6 +369,10 @@ impl AppState {
 
     pub fn next_transcript_session_id(&self) -> u64 {
         self.transcript_session_id.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    pub fn next_file_run_id(&self) -> u64 {
+        self.file_run_id.fetch_add(1, Ordering::SeqCst) + 1
     }
 
     pub fn bump_settings_revision(&self) -> u64 {
@@ -480,6 +488,7 @@ impl Default for AppState {
             idle_timeout_minutes: Mutex::new(5),
             recording_id: AtomicU64::new(0),
             transcript_session_id: AtomicU64::new(0),
+            file_run_id: AtomicU64::new(0),
             settings_revision: AtomicU64::new(0),
             active_context: Mutex::new(None),
             cancelled_id: AtomicU64::new(0),

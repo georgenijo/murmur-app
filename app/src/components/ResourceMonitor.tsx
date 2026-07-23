@@ -16,15 +16,17 @@ function loadCollapsed(): boolean {
 
 function toPolylinePoints(
   readings: ResourceReading[],
-  getValue: (r: ResourceReading) => number,
+  getValue: (r: ResourceReading) => number | null,
   maxVal: number,
 ): string {
   if (readings.length === 0) return '';
   return readings
-    .map((r, i) => {
+    .flatMap((r, i) => {
+      const value = getValue(r);
+      if (value === null) return [];
       const x = (i / (MAX_READINGS - 1)) * CHART_W;
-      const y = (1 - getValue(r) / maxVal) * CHART_H;
-      return `${x.toFixed(2)},${y.toFixed(2)}`;
+      const y = (1 - value / maxVal) * CHART_H;
+      return [`${x.toFixed(2)},${y.toFixed(2)}`];
     })
     .join(' ');
 }
@@ -36,13 +38,20 @@ export function ResourceMonitor() {
   const readings = useResourceMonitor(!isCollapsed);
 
   const latest = readings[readings.length - 1];
-  const cpuNow = latest ? latest.cpu_percent.toFixed(1) : '—';
-  const memNow = latest ? latest.memory_mb.toLocaleString() : '—';
+  const cpuNow = latest?.host_cpu_percent == null
+    ? '—'
+    : latest.host_cpu_percent.toFixed(1);
+  const memNow = latest?.rss_mb == null
+    ? '—'
+    : latest.rss_mb.toLocaleString();
 
-  const maxMem = Math.max(...readings.map(r => r.memory_mb), 1024);
+  const maxMem = Math.max(
+    ...readings.flatMap(r => r.rss_mb === null ? [] : [r.rss_mb]),
+    1024,
+  );
 
-  const cpuPoints = toPolylinePoints(readings, r => r.cpu_percent, 100);
-  const memPoints = toPolylinePoints(readings, r => r.memory_mb, maxMem);
+  const cpuPoints = toPolylinePoints(readings, r => r.host_cpu_percent, 100);
+  const memPoints = toPolylinePoints(readings, r => r.rss_mb, maxMem);
 
   const toggle = () => {
     const next = !isCollapsed;
@@ -64,12 +73,12 @@ export function ResourceMonitor() {
           Resources
         </span>
         <div className="flex items-center gap-3">
-          <span className="text-xs text-stone-500 dark:text-stone-400">
-            <span className="text-stone-600 dark:text-stone-300 font-medium">CPU</span>
-            {' '}{cpuNow}%
+            <span className="text-xs text-stone-500 dark:text-stone-400">
+              <span className="text-stone-600 dark:text-stone-300 font-medium">Host CPU</span>
+            {' '}{cpuNow}{cpuNow === '—' ? '' : '%'}
           </span>
           <span className="text-xs text-stone-500 dark:text-stone-400">
-            <span className="text-amber-600 dark:text-amber-400 font-medium">MEM</span>
+            <span className="text-amber-600 dark:text-amber-400 font-medium">Murmur RSS</span>
             {' '}{memNow} MB
           </span>
           <svg
@@ -130,11 +139,11 @@ export function ResourceMonitor() {
           <div className="flex gap-3 mt-1">
             <span className="flex items-center gap-1 text-xs text-stone-500 dark:text-stone-400">
               <span className="inline-block w-2.5 h-0.5 rounded" style={{ background: 'var(--cpu-stroke)' }} />
-              CPU %
+              Host CPU %
             </span>
             <span className="flex items-center gap-1 text-xs text-stone-500 dark:text-stone-400">
               <span className="inline-block w-2.5 h-0.5 rounded" style={{ background: 'var(--mem-stroke)' }} />
-              Memory MB
+              Murmur RSS MB
             </span>
           </div>
         </div>

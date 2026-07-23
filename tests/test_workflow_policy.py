@@ -8,6 +8,7 @@ from scripts.validate_workflow_policy import (
     validate_linux_cache_policy,
     validate_promotion_policy,
     validate_release_build,
+    validate_release_rehearsal,
     validate_release_profile,
 )
 
@@ -116,6 +117,56 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
         )
         with self.assertRaises(AssertionError):
             validate_release_build(mutated)
+
+    def test_release_rehearsal_requires_main_workflow_definition(self) -> None:
+        workflow = (ROOT / ".github/workflows/release-rehearsal.yml").read_text()
+        mutated = workflow.replace(
+            'if [ "$GITHUB_REF" != "refs/heads/main" ]',
+            'if [ -z "$GITHUB_REF" ]',
+            1,
+        )
+        with self.assertRaises(AssertionError):
+            validate_release_rehearsal(mutated)
+
+    def test_release_rehearsal_rejects_secrets_and_write_permissions(self) -> None:
+        workflow = (ROOT / ".github/workflows/release-rehearsal.yml").read_text()
+        for mutated in (
+            workflow + "\n# ${{ secrets.APPLE_ID }}\n",
+            workflow.replace("contents: read", "contents: write", 1),
+        ):
+            with self.subTest(mutated=mutated[-40:]):
+                with self.assertRaises(AssertionError):
+                    validate_release_rehearsal(mutated)
+
+    def test_release_rehearsal_requires_isolated_cache_namespaces(self) -> None:
+        workflow = (ROOT / ".github/workflows/release-rehearsal.yml").read_text()
+        mutated = workflow.replace(
+            "cuda-rehearsal-${{ needs.context.outputs.source-sha }}",
+            "cuda-minimal",
+            1,
+        )
+        with self.assertRaises(AssertionError):
+            validate_release_rehearsal(mutated)
+
+    def test_release_rehearsal_requires_immutable_source_checkouts(self) -> None:
+        workflow = (ROOT / ".github/workflows/release-rehearsal.yml").read_text()
+        mutated = workflow.replace(
+            "ref: ${{ needs.context.outputs.source-sha }}",
+            "ref: main",
+            1,
+        )
+        with self.assertRaises(AssertionError):
+            validate_release_rehearsal(mutated)
+
+    def test_release_rehearsal_uses_trusted_cache_action(self) -> None:
+        workflow = (ROOT / ".github/workflows/release-rehearsal.yml").read_text()
+        mutated = workflow.replace(
+            "uses: ./.trusted-rehearsal/.github/actions/setup-linux-build",
+            "uses: ./.github/actions/setup-linux-build",
+            1,
+        )
+        with self.assertRaises(AssertionError):
+            validate_release_rehearsal(mutated)
 
     def test_cuda_cache_restore_requires_writable_target(self) -> None:
         action = (ROOT / ".github/actions/setup-linux-build/action.yml").read_text()

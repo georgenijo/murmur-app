@@ -21,6 +21,7 @@ mod keyboard;
 mod knowledge_store;
 pub mod llm_sidecar;
 mod model_runtime;
+mod performance_metrics;
 mod platform;
 mod resource_monitor;
 mod selection;
@@ -53,6 +54,16 @@ pub fn ffi_heap_mb() -> u64 {
     alloc::ffi_heap_mb()
 }
 
+#[cfg(target_os = "macos")]
+pub fn rust_heap_bytes() -> u64 {
+    alloc::rust_heap_bytes()
+}
+
+#[cfg(target_os = "macos")]
+pub fn ffi_heap_bytes() -> u64 {
+    alloc::ffi_heap_bytes()
+}
+
 #[cfg(not(target_os = "macos"))]
 pub fn rust_heap_mb() -> u64 {
     0
@@ -60,6 +71,16 @@ pub fn rust_heap_mb() -> u64 {
 
 #[cfg(not(target_os = "macos"))]
 pub fn ffi_heap_mb() -> u64 {
+    0
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn rust_heap_bytes() -> u64 {
+    0
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn ffi_heap_bytes() -> u64 {
     0
 }
 
@@ -90,6 +111,7 @@ pub(crate) struct State {
     pub(crate) benchmark: std::sync::Arc<benchmark::BenchmarkCoordinator>,
     pub(crate) knowledge: knowledge_store::KnowledgeStore,
     pub(crate) correct_and_teach: correct_and_teach::CorrectAndTeachState,
+    pub(crate) performance: performance_metrics::PerformanceMetrics,
     /// Cached notch dimensions (notch_width, menu_bar_height) from setup (main thread).
     pub(crate) notch_info: Mutex<Option<(f64, f64)>>,
     /// The selection-bounds anchor from the most recent `show_transform_popover`
@@ -195,6 +217,7 @@ pub fn run() {
             benchmark: std::sync::Arc::new(benchmark::BenchmarkCoordinator::new()),
             knowledge: knowledge_store::KnowledgeStore::default(),
             correct_and_teach: correct_and_teach::CorrectAndTeachState::default(),
+            performance: performance_metrics::PerformanceMetrics::default(),
             notch_info: Mutex::new(None),
             transform_popover_anchor: Mutex::new(None),
             transform_main_was_visible: Mutex::new(None),
@@ -265,6 +288,10 @@ pub fn run() {
             commands::logging::clear_logs,
             commands::logging::log_frontend,
             commands::logging::open_log_viewer,
+            commands::performance::list_performance_runs,
+            commands::performance::get_performance_run,
+            commands::performance::get_performance_resource_window,
+            commands::performance::clear_performance_diagnostics,
             commands::models::check_model_exists,
             commands::models::check_specific_model_exists,
             commands::models::get_model_runtime_catalog,
@@ -309,6 +336,20 @@ pub fn run() {
         })
         .setup(|app| {
             telemetry::init(app.handle().clone());
+
+            let performance_root = app.path().app_data_dir()?.join("diagnostics");
+            if let Err(error) = app
+                .state::<State>()
+                .performance
+                .initialize(performance_root, Some(app.handle().clone()))
+            {
+                tracing::warn!(
+                    target: "system",
+                    diagnostics_available = false,
+                    "performance diagnostics store unavailable: {}",
+                    error
+                );
+            }
 
             let knowledge_root = app.path().app_data_dir()?.join("knowledge");
             let knowledge_status = app.state::<State>().knowledge.initialize(knowledge_root);

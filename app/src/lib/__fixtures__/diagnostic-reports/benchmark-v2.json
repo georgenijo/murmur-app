@@ -1,0 +1,82 @@
+{
+  "reportVersion": 2,
+  "createdAt": "2026-07-21T12:00:00Z",
+  "appVersion": "0.19.0",
+  "platform": "macos aarch64",
+  "preset": "quick",
+  "iterations": 3,
+  "sharedInitMs": 1200,
+  "environment": {
+    "os": "macOS",
+    "osVersion": "15.5",
+    "architecture": "aarch64",
+    "hardwareModel": "Mac14,3",
+    "chip": "Apple M2",
+    "memoryMb": 16384
+  },
+  "corpus": {
+    "language": "en",
+    "fixtureIds": ["short"],
+    "fixtureCount": 1,
+    "referenceWords": 12,
+    "provenance": "Bundled synthetic fixture",
+    "limitation": "Directional local comparison only."
+  },
+  "configuration": {
+    "vadThreshold": 0.5,
+    "executionPath": "full-buffer final transcription after recording stops",
+    "transcriptTransformProfile": "default local delivery pipeline",
+    "percentileMethod": "nearest-rank over measured warm iterations",
+    "modelRunOrder": ["tiny.en"],
+    "sharedInitOrder": ["tiny.en"]
+  },
+  "results": [
+    {
+      "modelName": "tiny.en",
+      "label": "Whisper Tiny English",
+      "backend": "whisper.cpp",
+      "accelerator": "Metal",
+      "downloadSize": "75 MB",
+      "modelLoadMs": 210,
+      "firstInferenceMs": 430,
+      "warmMedianMs": 110,
+      "warmP95Ms": 130,
+      "realtimeFactor": 0.2,
+      "wordErrorRate": 0.1,
+      "normalizedWordErrorRate": 0.08,
+      "deliveredWordErrorRate": 0.09,
+      "deliveredNormalizedWordErrorRate": 0.07,
+      "memoryDeltaMb": 86,
+      "fixtures": [
+        {
+          "fixtureId": "short",
+          "label": "Short",
+          "audioSeconds": 5.5,
+          "warmMedianMs": 110,
+          "warmP95Ms": 130,
+          "realtimeFactor": 0.2,
+          "wordErrorRate": 0.1,
+          "wordErrors": 1,
+          "referenceWords": 12,
+          "normalizedWordErrorRate": 0.08,
+          "normalizedWordErrors": 1,
+          "normalizedReferenceWords": 12,
+          "reference": "PRIVATE_REFERENCE_SENTINEL",
+          "transcript": "PRIVATE_TRANSCRIPT_SENTINEL",
+          "deliveredTranscript": "PRIVATE_DELIVERED_SENTINEL",
+          "deliveredWordErrorRate": 0.09,
+          "deliveredWordErrors": 1,
+          "deliveredNormalizedWordErrorRate": 0.07,
+          "deliveredNormalizedWordErrors": 1,
+          "deliveredTransformFailed": false
+        }
+      ],
+      "error": null
+    }
+  ],
+  "recommendations": {
+    "fastest": "tiny.en",
+    "mostAccurate": "tiny.en",
+    "balanced": "tiny.en"
+  }
+}
