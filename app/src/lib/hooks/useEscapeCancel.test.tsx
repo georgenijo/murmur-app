@@ -3,7 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DictationStatus } from '../types';
 
-type Listener = () => void | Promise<void>;
+type Listener = (event: { payload: unknown }) => void | Promise<void>;
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
@@ -65,105 +65,151 @@ describe('useEscapeCancel', () => {
     });
   }
 
-  async function pressEscape() {
+  async function pressEscape(payload: unknown = { transformPassId: null }) {
     await act(async () => {
-      await mocks.listeners.get('escape-cancel')?.();
+      await mocks.listeners.get('escape-cancel')?.({ payload });
     });
   }
 
-  it.each(['capturing', 'listening', 'thinking']) (
-    'routes Escape during %s to transform cancellation only',
-    async (transformStatus) => {
-      mocks.invoke.mockImplementation(async (command: string) => {
-        if (command === 'transform_status') return transformStatus;
-        return undefined;
-      });
-      await renderHook('idle');
+  it('routes a correlated Escape to only that exact transform pass', async () => {
+    mocks.invoke.mockResolvedValue(undefined);
+    await renderHook('processing');
 
-      await pressEscape();
+    await pressEscape({ transformPassId: 41 });
 
-      expect(mocks.invoke).toHaveBeenNthCalledWith(1, 'transform_status');
-      expect(mocks.invoke).toHaveBeenNthCalledWith(2, 'cancel_transform');
-      expect(mocks.invoke).toHaveBeenCalledTimes(2);
-      expect(mocks.cancelRecording).not.toHaveBeenCalled();
-    },
-  );
-
-  it.each(['review_pending', 'applying'])(
-    'leaves %s out of the global Escape cancellation path',
-    async (transformStatus) => {
-      mocks.invoke.mockResolvedValue(transformStatus);
-      await renderHook('processing');
-
-      await pressEscape();
-
-      expect(mocks.invoke).toHaveBeenCalledOnce();
-      expect(mocks.invoke).toHaveBeenCalledWith('transform_status');
-      expect(mocks.cancelRecording).not.toHaveBeenCalled();
-    },
-  );
+    expect(mocks.invoke).toHaveBeenCalledOnce();
+    expect(mocks.invoke).toHaveBeenCalledWith('cancel_transform', {
+      transformPassId: 41,
+    });
+    expect(mocks.cancelRecording).not.toHaveBeenCalled();
+  });
 
   it.each(['recording', 'processing'] as const)(
-    'retains dictation cancellation while dictation is %s and transform is idle',
+    'retains dictation cancellation for a null transform target while dictation is %s',
     async (status) => {
-      mocks.invoke.mockResolvedValue('idle');
       mocks.cancelRecording.mockResolvedValue(undefined);
       await renderHook(status);
 
       await pressEscape();
 
-      expect(mocks.invoke).toHaveBeenCalledOnce();
-      expect(mocks.invoke).toHaveBeenCalledWith('transform_status');
+      expect(mocks.invoke).not.toHaveBeenCalled();
       expect(mocks.cancelRecording).toHaveBeenCalledOnce();
     },
   );
 
   it('does nothing when both pipelines are idle', async () => {
-    mocks.invoke.mockResolvedValue('idle');
     await renderHook('idle');
 
     await pressEscape();
 
-    expect(mocks.invoke).toHaveBeenCalledOnce();
+    expect(mocks.invoke).not.toHaveBeenCalled();
     expect(mocks.cancelRecording).not.toHaveBeenCalled();
   });
 
-  it('coalesces repeated Escape events while cancellation is in flight', async () => {
+  it('coalesces repeated Escape events for the same pass while cancellation is in flight', async () => {
     const cancellation = deferred<void>();
-    mocks.invoke.mockImplementation((command: string) => {
-      if (command === 'transform_status') return Promise.resolve('thinking');
-      if (command === 'cancel_transform') return cancellation.promise;
-      return Promise.resolve(undefined);
-    });
+    mocks.invoke.mockReturnValue(cancellation.promise);
     await renderHook('idle');
 
     let first!: Promise<void>;
     await act(async () => {
-      first = Promise.resolve(mocks.listeners.get('escape-cancel')?.());
+      first = Promise.resolve(mocks.listeners.get('escape-cancel')?.({
+        payload: { transformPassId: 51 },
+      }));
       await Promise.resolve();
-      await mocks.listeners.get('escape-cancel')?.();
+      await mocks.listeners.get('escape-cancel')?.({
+        payload: { transformPassId: 51 },
+      });
     });
 
-    expect(mocks.invoke.mock.calls.filter(([command]) => command === 'cancel_transform'))
-      .toHaveLength(1);
+    expect(mocks.invoke).toHaveBeenCalledOnce();
+    expect(mocks.invoke).toHaveBeenCalledWith('cancel_transform', {
+      transformPassId: 51,
+    });
 
     cancellation.resolve();
     await act(async () => first);
   });
 
-  it('falls back to dictation cancellation when transform status cannot be read', async () => {
-    mocks.invoke.mockRejectedValueOnce(new Error('unavailable'));
-    mocks.cancelRecording.mockResolvedValue(undefined);
+  it('does not let an in-flight stale pass suppress cancellation of a newer pass', async () => {
+    const firstCancellation = deferred<void>();
+    mocks.invoke.mockImplementation(
+      (_command: string, args?: { transformPassId?: number }) => (
+        args?.transformPassId === 61 ? firstCancellation.promise : Promise.resolve()
+      ),
+    );
+    await renderHook('idle');
+
+    let first!: Promise<void>;
+    await act(async () => {
+      first = Promise.resolve(mocks.listeners.get('escape-cancel')?.({
+        payload: { transformPassId: 61 },
+      }));
+      await Promise.resolve();
+      await mocks.listeners.get('escape-cancel')?.({
+        payload: { transformPassId: 62 },
+      });
+    });
+
+    expect(mocks.invoke.mock.calls).toEqual([
+      ['cancel_transform', { transformPassId: 61 }],
+      ['cancel_transform', { transformPassId: 62 }],
+    ]);
+
+    firstCancellation.resolve();
+    await act(async () => first);
+  });
+
+  it('bounds distinct in-flight cancellation targets and releases capacity on settle', async () => {
+    const cancellations = Array.from({ length: 9 }, () => deferred<void>());
+    mocks.invoke.mockImplementation(
+      (_command: string, args?: { transformPassId?: number }) => (
+        cancellations[(args?.transformPassId ?? 1) - 1].promise
+      ),
+    );
+    await renderHook('idle');
+
+    const pending: Promise<void>[] = [];
+    await act(async () => {
+      for (let transformPassId = 1; transformPassId <= 9; transformPassId += 1) {
+        pending.push(Promise.resolve(mocks.listeners.get('escape-cancel')?.({
+          payload: { transformPassId },
+        })));
+      }
+      await Promise.resolve();
+    });
+    expect(mocks.invoke).toHaveBeenCalledTimes(8);
+
+    cancellations[0].resolve();
+    await act(async () => pending[0]);
+    await act(async () => {
+      pending.push(Promise.resolve(mocks.listeners.get('escape-cancel')?.({
+        payload: { transformPassId: 9 },
+      })));
+      await Promise.resolve();
+    });
+    expect(mocks.invoke).toHaveBeenCalledTimes(9);
+
+    for (const cancellation of cancellations) cancellation.resolve();
+    await act(async () => Promise.all(pending));
+  });
+
+  it.each([
+    null,
+    {},
+    { transformPassId: undefined },
+    { transformPassId: 0 },
+    { transformPassId: -1 },
+    { transformPassId: 1.5 },
+    { transformPassId: Number.MAX_SAFE_INTEGER + 1 },
+    { transformPassId: '41' },
+  ])('fails closed for malformed payload %#', async (payload) => {
     await renderHook('recording');
 
-    await pressEscape();
+    await pressEscape(payload);
 
-    expect(mocks.invoke).toHaveBeenCalledOnce();
-    expect(mocks.cancelRecording).toHaveBeenCalledOnce();
-    expect(consoleError).toHaveBeenCalledWith(
-      'transform_status failed during Escape cancellation:',
-      expect.any(Error),
-    );
+    expect(mocks.invoke).not.toHaveBeenCalled();
+    expect(mocks.cancelRecording).not.toHaveBeenCalled();
   });
 
   it('does not register a listener while disabled', async () => {
@@ -178,7 +224,7 @@ describe('useEscapeCancel', () => {
 
     await act(async () => root.unmount());
     rootMounted = false;
-    await listener?.();
+    await listener?.({ payload: { transformPassId: 71 } });
 
     expect(mocks.unlisten).toHaveBeenCalledOnce();
     expect(mocks.invoke).not.toHaveBeenCalled();

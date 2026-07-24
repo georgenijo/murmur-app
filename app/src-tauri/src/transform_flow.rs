@@ -1456,13 +1456,17 @@ fn terminalize_cancelled_transform_start(
     diagnostics: &crate::transform_diagnostics::TransformDiagnostics,
     transform_pass_id: u64,
 ) -> bool {
-    if !app_state.clear_transform_pass(transform_pass_id) {
-        return false;
+    let cleared_active_owner = app_state.clear_transform_pass(transform_pass_id);
+    let (phase, outcome) = if cleared_active_owner {
+        ("cancellation", "cancelled")
+    } else {
+        ("supersession", "superseded")
+    };
+    let terminalized = diagnostics.terminalize_active(transform_pass_id, phase, outcome);
+    if terminalized {
+        crate::transform_trace::resolution(transform_pass_id, outcome, "start", None);
     }
-    diagnostics.phase(transform_pass_id, "cancellation", "completed", None, None);
-    diagnostics.finish(transform_pass_id, "cancelled");
-    crate::transform_trace::resolution(transform_pass_id, "cancelled", "start", None);
-    true
+    terminalized
 }
 
 /// Begin a transform pass: check preconditions, claim the flow, capture the
@@ -2300,33 +2304,55 @@ pub(crate) async fn approve_transform(
 /// and hide the popover. Clearing the session before hide means the next
 /// `get_transform_review_content` returns empty — no stale React flash of prior
 /// selection text.
+fn resolve_transform_cancel_pass(
+    active_transform_pass_id: Option<u64>,
+    requested_transform_pass_id: Option<u64>,
+) -> Option<u64> {
+    match requested_transform_pass_id {
+        Some(requested) if active_transform_pass_id == Some(requested) => Some(requested),
+        Some(_) => None,
+        None => active_transform_pass_id,
+    }
+}
+
 #[tauri::command]
-pub(crate) async fn cancel_transform(
+pub(crate) fn cancel_transform(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, crate::State>,
     transform_pass_id: Option<u64>,
 ) -> Result<(), String> {
+    // Hold the status lock across exact-pass validation and teardown. The rdev
+    // start path reads this same lock before activating a new pass, so it
+    // cannot observe Idle and install N+1 while cancellation for N is still
+    // clearing audio/session/popover state.
+    let mut transform_status = state.app_state.transform_status.lock_or_recover();
     let active_pass_id = state.app_state.active_transform_pass_id();
-    if transform_pass_id.is_some() && transform_pass_id != active_pass_id {
+    let Some(transform_pass_id) = resolve_transform_cancel_pass(active_pass_id, transform_pass_id)
+    else {
+        return Ok(());
+    };
+    if !state.app_state.clear_transform_pass(transform_pass_id) {
         return Ok(());
     }
-    let transform_pass_id = active_pass_id.unwrap_or(0);
-    if transform_pass_id != 0 {
-        // Publish the terminal winner before any awaitable/main-thread
-        // teardown. A concurrent selection capture can return immediately
-        // after status becomes Idle and must not persist a failed outcome for
-        // a pass the user already cancelled.
-        state
-            .app_state
-            .mark_transform_pass_cancelled(transform_pass_id);
-    }
-    let prev = state.app_state.transform_status();
-    let _performance_guard = (transform_pass_id != 0).then(|| {
-        state.performance.guard(
-            transform_correlation(transform_pass_id),
-            performance_stage_for_transform_status(prev),
-        )
-    });
+    // Publish the terminal winner before any awaitable/main-thread teardown.
+    // A concurrent selection capture can return immediately after status
+    // becomes Idle and must not persist a failed outcome for a pass the user
+    // already cancelled.
+    state
+        .app_state
+        .mark_transform_pass_cancelled(transform_pass_id);
+    let prev = *transform_status;
+    *transform_status = TransformStatus::Idle;
+    crate::transform_trace::transition(
+        transform_pass_id,
+        prev.as_str(),
+        TransformStatus::Idle.as_str(),
+        true,
+    );
+    let _performance_guard = state.performance.guard(
+        transform_correlation(transform_pass_id),
+        performance_stage_for_transform_status(prev),
+    );
 
     // Cooperative cancel first: the blocking spawn_blocking work only clears
     // BusyGuard when it finishes, so abort alone would leave busy held up to
@@ -2376,9 +2402,8 @@ pub(crate) async fn cancel_transform(
         }
     }
 
-    // Force Idle even from Applying — ApplyingGuard drop will no-op once status
-    // is no longer Applying (try_transition).
-    state.app_state.set_transform_status(TransformStatus::Idle);
+    // Status is already Idle under `transform_status`; ApplyingGuard drop will
+    // no-op once this lock is released instead of resurrecting ReviewPending.
     transform_apply::clear_session(&state.app_state);
     let _ = crate::commands::transform_popover::hide_popover_internal(&app_handle);
     // Backend-initiated hide (short-tap cancel, mid-hold cleanup, or the
@@ -2403,7 +2428,6 @@ pub(crate) async fn cancel_transform(
         state
             .transform_diagnostics
             .finish(transform_pass_id, "cancelled");
-        state.app_state.clear_transform_pass(transform_pass_id);
     }
     Ok(())
 }
@@ -3506,6 +3530,50 @@ mod tests {
         );
         assert_eq!(claim_transform_start_status(&app_state, 42), Ok(()));
         assert_eq!(app_state.transform_status(), TransformStatus::Capturing);
+    }
+
+    #[test]
+    fn delayed_cancelled_start_terminalizes_as_superseded_without_clearing_newer_owner() {
+        let app_state = AppState::default();
+        let diagnostics = crate::transform_diagnostics::TransformDiagnostics::default();
+
+        diagnostics.begin(51);
+        app_state.mark_transform_pass_cancelled(51);
+        app_state.activate_transform_pass(52);
+
+        assert!(terminalize_cancelled_transform_start(
+            &app_state,
+            &diagnostics,
+            51
+        ));
+        assert!(!terminalize_cancelled_transform_start(
+            &app_state,
+            &diagnostics,
+            51
+        ));
+        assert_eq!(app_state.active_transform_pass_id(), Some(52));
+
+        let attempts = diagnostics.list_attempts(10).attempts;
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(attempts[0].transform_pass_id, 51);
+        assert_eq!(attempts[0].outcome, "superseded");
+        assert_eq!(
+            attempts[0]
+                .phases
+                .iter()
+                .filter(|phase| phase.phase == "supersession")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn scoped_transform_cancel_never_resolves_to_a_different_pass() {
+        assert_eq!(resolve_transform_cancel_pass(Some(61), Some(61)), Some(61));
+        assert_eq!(resolve_transform_cancel_pass(Some(62), Some(61)), None);
+        assert_eq!(resolve_transform_cancel_pass(None, Some(61)), None);
+        assert_eq!(resolve_transform_cancel_pass(Some(62), None), Some(62));
+        assert_eq!(resolve_transform_cancel_pass(None, None), None);
     }
 
     #[test]

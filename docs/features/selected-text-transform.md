@@ -10,7 +10,7 @@ Binding runtime ADR: [docs/decisions/2026-07-20-signed-local-llm-sidecar.md](../
 2. Host freezes an AX selection snapshot (secure fields refused), shows the review popover in **listening**, arms mic for the instruction only.
 3. On release (≥300ms hold): stop mic → cleanup-only ASR on the instruction → expand built-in preset or saved transform name if matched → signed local-LLM sidecar proposes a rewrite.
 4. Popover shows **thinking** then **ready** (word diff). Events carry `{ state, errorCode }` only; instruction / original / proposed text are pulled via `get_transform_review_content`.
-5. **Approve** writes through `transform_apply` (AX set-value or paste fallback with clipboard restore). **Undo** restores the frozen original. Global Esc cancels the non-focusable Capturing/Listening/Thinking phases; once Ready or Failed makes the review popover focusable, its local Esc handler cancels instead. A short transform-key tap cancels the active hold. Applying is bounded and not keyboard-cancellable; after apply, use Undo.
+5. **Approve** writes through `transform_apply` (AX set-value or paste fallback with clipboard restore). **Undo** restores the frozen original. Global Esc snapshots and carries the exact pass ID for non-focusable Capturing/Listening/Thinking cancellation; the backend no-ops if that pass no longer owns the flow, so a delayed handler cannot cancel the next pass. The synchronous marker still makes that Escape win if the same pass reaches ReviewPending before event delivery. Once Ready or Failed is already focusable at the physical keypress, its local Esc handler owns cancellation instead. A short transform-key tap cancels the active hold. Applying is bounded and not keyboard-cancellable; after apply, use Undo.
 
 Dictation and transform are mutually exclusive (status guards both ways + sidecar busy + helper shutdown before recording).
 
@@ -85,7 +85,7 @@ blocking work.
 
 Retrying an instruction keeps the same pass ID and advances a one-based
 instruction-attempt counter. A new physical hold receives a new ID; a stale
-release or stale command cannot mutate the active pass. Status transitions log
+release, Escape event, or scoped command cannot mutate the active pass. Status transitions log
 their actual `from`, requested `to`, and whether the atomic transition won.
 Pass resolution uses stable outcomes (`ready`, `failed`, `cancelled`, `applied`,
 `undone`) plus stable stage/error codes.
@@ -101,7 +101,10 @@ interval. No second transform tracing path is introduced.
 `TransformAttemptV1` is a backward-compatible companion record rather than a
 change to `PerformanceRunV1`. It records every claimed or refused pass,
 including cancellation and supersession, with ordered, enum-only phase
-outcomes. The signed helper protocol reports helper model verification,
+outcomes. Begin and queued-start terminalization are idempotent by pass ID:
+even a delayed invocation that has lost active ownership finishes as
+`superseded` instead of leaving an unbounded `inProgress` entry, and it cannot
+clear the newer owner. The signed helper protocol reports helper model verification,
 backend/Metal initialization, model load, request receipt, and first-token
 timings. The host adds its own verification, spawn, ready-handshake,
 generation, review, apply, undo, process-exit, and failure-phase evidence.

@@ -67,7 +67,9 @@ describe('useTransformFlow Escape recovery', () => {
       mocks.listeners.get('transform-key-pressed')?.({
         payload: { transformPassId: 7 },
       });
-      mocks.listeners.get('escape-cancel')?.({ payload: null });
+      mocks.listeners.get('escape-cancel')?.({
+        payload: { transformPassId: 7 },
+      });
       mocks.listeners.get('transform-key-released')?.({
         payload: { transformPassId: 7 },
       });
@@ -90,6 +92,67 @@ describe('useTransformFlow Escape recovery', () => {
       [
         'start_transform_capture',
         { deviceName: null, transformPassId: 8 },
+      ],
+    ]);
+  });
+
+  it('does not let a stale or malformed Escape reset a newer held pass', async () => {
+    function Harness() {
+      useTransformFlow({
+        enabled: true,
+        initialized: true,
+        accessibilityGranted: true,
+        transformHoldKey: 'alt_r',
+        microphone: 'system_default',
+      });
+      return null;
+    }
+
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      mocks.listeners.get('transform-key-pressed')?.({
+        payload: { transformPassId: 7 },
+      });
+      mocks.listeners.get('escape-cancel')?.({
+        payload: { transformPassId: 7 },
+      });
+      mocks.listeners.get('transform-key-pressed')?.({
+        payload: { transformPassId: 8 },
+      });
+      mocks.listeners.get('escape-cancel')?.({
+        payload: { transformPassId: 7 },
+      });
+      mocks.listeners.get('escape-cancel')?.({
+        payload: { transformPassId: Number.MAX_SAFE_INTEGER + 1 },
+      });
+      mocks.listeners.get('transform-key-released')?.({
+        payload: { transformPassId: 8 },
+      });
+      await Promise.resolve();
+    });
+
+    const flowCalls = mocks.invoke.mock.calls.filter(([command]) => (
+      command === 'start_transform_capture'
+      || command === 'finish_transform_instruction'
+      || command === 'cancel_transform'
+    ));
+    expect(flowCalls).toEqual([
+      [
+        'start_transform_capture',
+        { deviceName: null, transformPassId: 7 },
+      ],
+      [
+        'start_transform_capture',
+        { deviceName: null, transformPassId: 8 },
+      ],
+      [
+        'cancel_transform',
+        { transformPassId: 8 },
       ],
     ]);
   });

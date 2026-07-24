@@ -9,18 +9,26 @@ interface UseEscapeCancelProps {
   enabled: boolean;
 }
 
-type ActiveTransformStatus =
-  | 'capturing'
-  | 'listening'
-  | 'thinking';
-
-function isActiveTransformStatus(status: unknown): status is ActiveTransformStatus {
-  return status === 'capturing' || status === 'listening' || status === 'thinking';
+interface EscapeCancelPayload {
+  transformPassId: number | null;
 }
+
+function isEscapeCancelPayload(value: unknown): value is EscapeCancelPayload {
+  if (!value || typeof value !== 'object') return false;
+  const transformPassId = (value as Record<string, unknown>).transformPassId;
+  return transformPassId === null
+    || (
+      typeof transformPassId === 'number'
+      && Number.isSafeInteger(transformPassId)
+      && transformPassId > 0
+    );
+}
+
+const MAX_IN_FLIGHT_ESCAPE_TARGETS = 8;
+const DICTATION_ESCAPE_TARGET = 'dictation';
 
 export function useEscapeCancel({ status, enabled }: UseEscapeCancelProps) {
   const statusRef = useRef(status);
-  const cancellingRef = useRef(false);
   useEffect(() => { statusRef.current = status; }, [status]);
 
   useEffect(() => {
@@ -28,38 +36,33 @@ export function useEscapeCancel({ status, enabled }: UseEscapeCancelProps) {
 
     let cancelled = false;
     let unlisten: (() => void) | null = null;
+    const cancellingTargets = new Set<number | typeof DICTATION_ESCAPE_TARGET>();
 
-    listen('escape-cancel', async () => {
+    listen<unknown>('escape-cancel', async (event) => {
       if (cancelled) return;
-      if (cancellingRef.current) return;
-      cancellingRef.current = true;
-      try {
-        let transformStatus: unknown = 'idle';
-        try {
-          transformStatus = await invoke<unknown>('transform_status');
-        } catch (err) {
-          // Preserve dictation Escape cancellation if the independent
-          // transform-status query is temporarily unavailable.
-          console.error('transform_status failed during Escape cancellation:', err);
-        }
+      if (!isEscapeCancelPayload(event.payload)) return;
 
-        if (isActiveTransformStatus(transformStatus)) {
-          await invoke('cancel_transform');
+      const transformPassId = event.payload.transformPassId;
+      const target = transformPassId ?? DICTATION_ESCAPE_TARGET;
+      if (cancellingTargets.has(target)) return;
+      if (cancellingTargets.size >= MAX_IN_FLIGHT_ESCAPE_TARGETS) return;
+      cancellingTargets.add(target);
+      try {
+        if (transformPassId !== null) {
+          await invoke('cancel_transform', { transformPassId });
           return;
         }
 
-        // Ready/failed both park at ReviewPending and remain owned by the
-        // focusable transform-review webview's Escape handler. Applying has no
-        // safe keyboard cancellation action. Never double-dispatch either one
-        // through the global event path.
-        if (transformStatus === 'review_pending' || transformStatus === 'applying') return;
-
+        // Rust emits a null pass only when physical Escape did not target an
+        // active/queued transform. ReviewPending remains owned by the focusable
+        // popover and Applying has no global Escape action, so the only
+        // remaining route is dictation cancellation.
         if (statusRef.current === 'idle') return;
         await cancelRecording();
       } catch (err) {
         console.error('Escape cancellation failed:', err);
       } finally {
-        cancellingRef.current = false;
+        cancellingTargets.delete(target);
       }
     }).then((fn) => {
       if (cancelled) { fn(); } else { unlisten = fn; }
@@ -67,6 +70,7 @@ export function useEscapeCancel({ status, enabled }: UseEscapeCancelProps) {
 
     return () => {
       cancelled = true;
+      cancellingTargets.clear();
       unlisten?.();
     };
   }, [enabled]);

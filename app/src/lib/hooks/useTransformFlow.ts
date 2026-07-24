@@ -25,10 +25,21 @@ interface TransformKeyPayload {
   transformPassId: number;
 }
 
+interface EscapeCancelPayload {
+  transformPassId: number | null;
+}
+
 function isTransformKeyPayload(value: unknown): value is TransformKeyPayload {
   if (!value || typeof value !== 'object') return false;
   const passId = (value as Record<string, unknown>).transformPassId;
   return typeof passId === 'number' && Number.isSafeInteger(passId) && passId > 0;
+}
+
+function isEscapeCancelPayload(value: unknown): value is EscapeCancelPayload {
+  if (!value || typeof value !== 'object') return false;
+  const passId = (value as Record<string, unknown>).transformPassId;
+  return passId === null
+    || (typeof passId === 'number' && Number.isSafeInteger(passId) && passId > 0);
 }
 
 /**
@@ -137,15 +148,29 @@ export function useTransformFlow({
       });
       if (cancelled) { unlistenPressed(); unlistenReleased(); return; }
 
-      unlistenEscape = await listen('escape-cancel', () => {
+      unlistenEscape = await listen<unknown>('escape-cancel', (event) => {
         if (cancelled) return;
+        if (!isEscapeCancelPayload(event.payload)) {
+          flog.warn('transform-flow', 'invalid escape-cancel payload');
+          return;
+        }
+        if (
+          event.payload.transformPassId === null
+          || stateRef.current.transformPassId !== event.payload.transformPassId
+        ) {
+          return;
+        }
         // Rust resets the transform detector and intentionally emits no
         // transform-key-released event after Escape. Mirror that reset in the
-        // frontend reducer so the next physical press is not mistaken for a
-        // double-press. Backend cancellation remains solely owned by
+        // frontend reducer only for the exact correlated hold. A delayed
+        // Escape from pass N must never reset the reducer after pass N+1 has
+        // already started. Backend cancellation remains solely owned by
         // useEscapeCancel.
         stateRef.current = reduceTransformFlow(stateRef.current, { type: 'reset' }).state;
-        flog.info('transform-flow', 'local hold reset', { reason: 'escape_cancel' });
+        flog.info('transform-flow', 'local hold reset', {
+          reason: 'escape_cancel',
+          transform_pass_id: event.payload.transformPassId,
+        });
       });
       if (cancelled) {
         unlistenPressed();
