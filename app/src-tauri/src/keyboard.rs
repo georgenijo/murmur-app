@@ -998,6 +998,16 @@ fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                                             "superseded",
                                             None,
                                         );
+                                        state.transform_diagnostics.phase(
+                                            previous_pass_id,
+                                            "supersession",
+                                            "completed",
+                                            None,
+                                            None,
+                                        );
+                                        state
+                                            .transform_diagnostics
+                                            .finish(previous_pass_id, "superseded");
                                         app_state.clear_transform_pass(previous_pass_id);
                                     }
                                     crate::transform_apply::clear_session(app_state);
@@ -1017,6 +1027,16 @@ fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                                                 "superseded",
                                                 None,
                                             );
+                                            state.transform_diagnostics.phase(
+                                                previous_pass_id,
+                                                "supersession",
+                                                "completed",
+                                                None,
+                                                None,
+                                            );
+                                            state
+                                                .transform_diagnostics
+                                                .finish(previous_pass_id, "superseded");
                                             app_state.clear_transform_pass(previous_pass_id);
                                         }
                                         crate::transform_apply::clear_session(app_state);

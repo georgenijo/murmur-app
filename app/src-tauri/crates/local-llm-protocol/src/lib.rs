@@ -2,7 +2,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::io::{Read, Write};
 
 pub const PROTOCOL_NAME: &str = "murmur.local_llm";
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 pub const MODEL_FD: i32 = 3;
 pub const MAX_FRAME_BYTES: usize = 64 * 1024;
 pub const MAX_INSTRUCTION_BYTES: usize = 4 * 1024;
@@ -12,6 +12,7 @@ pub const MAX_OUTPUT_TOKENS: u32 = 2_048;
 pub const MAX_CONTEXT_TOKENS: u32 = 8_192;
 pub const DEFAULT_DEADLINE_MS: u64 = 15_000;
 pub const MAX_DEADLINE_MS: u64 = 30_000;
+pub const MAX_DIAGNOSTIC_PHASE_MS: u64 = 10 * 60 * 1_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -109,6 +110,51 @@ pub enum ErrorCode {
     Internal,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum DiagnosticPhase {
+    HelperModelVerification,
+    BackendInitialization,
+    ModelLoad,
+    RequestReceipt,
+    FirstToken,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum PhaseState {
+    Started,
+    Completed,
+}
+
+pub fn validate_diagnostic_phase(
+    request_id: Option<&str>,
+    phase: DiagnosticPhase,
+    state: PhaseState,
+    duration_ms: Option<u64>,
+) -> bool {
+    let duration_valid = duration_ms.is_none_or(|value| value <= MAX_DIAGNOSTIC_PHASE_MS);
+    if !duration_valid {
+        return false;
+    }
+    match phase {
+        DiagnosticPhase::HelperModelVerification
+        | DiagnosticPhase::BackendInitialization
+        | DiagnosticPhase::ModelLoad => {
+            request_id.is_none()
+                && matches!(
+                    (state, duration_ms),
+                    (PhaseState::Started, None) | (PhaseState::Completed, Some(_))
+                )
+        }
+        DiagnosticPhase::RequestReceipt | DiagnosticPhase::FirstToken => {
+            request_id.is_some_and(|id| !id.is_empty() && id.len() <= 64)
+                && state == PhaseState::Completed
+                && duration_ms.is_some()
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(
     tag = "type",
@@ -117,6 +163,15 @@ pub enum ErrorCode {
     deny_unknown_fields
 )]
 pub enum HelperMessage {
+    DiagnosticPhase {
+        protocol: String,
+        version: u16,
+        session_nonce: String,
+        request_id: Option<String>,
+        phase: DiagnosticPhase,
+        state: PhaseState,
+        duration_ms: Option<u64>,
+    },
     Ready {
         protocol: String,
         version: u16,
@@ -328,5 +383,39 @@ mod tests {
         assert_eq!(json["sessionNonce"], "nonce");
         assert_eq!(json["requestId"], "request");
         assert!(json.get("session_nonce").is_none());
+    }
+
+    #[test]
+    fn diagnostic_phase_shape_is_strict_and_content_free() {
+        assert!(validate_diagnostic_phase(
+            None,
+            DiagnosticPhase::ModelLoad,
+            PhaseState::Started,
+            None,
+        ));
+        assert!(validate_diagnostic_phase(
+            Some("request"),
+            DiagnosticPhase::FirstToken,
+            PhaseState::Completed,
+            Some(12),
+        ));
+        assert!(!validate_diagnostic_phase(
+            Some("request"),
+            DiagnosticPhase::ModelLoad,
+            PhaseState::Completed,
+            Some(12),
+        ));
+        assert!(!validate_diagnostic_phase(
+            None,
+            DiagnosticPhase::RequestReceipt,
+            PhaseState::Completed,
+            Some(0),
+        ));
+        assert!(!validate_diagnostic_phase(
+            None,
+            DiagnosticPhase::ModelLoad,
+            PhaseState::Completed,
+            Some(MAX_DIAGNOSTIC_PHASE_MS + 1),
+        ));
     }
 }

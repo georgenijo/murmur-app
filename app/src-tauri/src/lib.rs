@@ -31,6 +31,7 @@ pub mod telemetry;
 pub mod transcriber;
 mod transcript_transform;
 mod transform_apply;
+mod transform_diagnostics;
 pub mod transform_flow;
 mod transform_presets;
 mod transform_trace;
@@ -113,6 +114,7 @@ pub(crate) struct State {
     pub(crate) knowledge: knowledge_store::KnowledgeStore,
     pub(crate) correct_and_teach: correct_and_teach::CorrectAndTeachState,
     pub(crate) performance: performance_metrics::PerformanceMetrics,
+    pub(crate) transform_diagnostics: transform_diagnostics::TransformDiagnostics,
     /// Cached notch dimensions (notch_width, menu_bar_height) from setup (main thread).
     pub(crate) notch_info: Mutex<Option<(f64, f64)>>,
     /// The selection-bounds anchor from the most recent `show_transform_popover`
@@ -219,6 +221,7 @@ pub fn run() {
             knowledge: knowledge_store::KnowledgeStore::default(),
             correct_and_teach: correct_and_teach::CorrectAndTeachState::default(),
             performance: performance_metrics::PerformanceMetrics::default(),
+            transform_diagnostics: transform_diagnostics::TransformDiagnostics::default(),
             notch_info: Mutex::new(None),
             transform_popover_anchor: Mutex::new(None),
             transform_main_was_visible: Mutex::new(None),
@@ -293,6 +296,12 @@ pub fn run() {
             commands::performance::get_performance_run,
             commands::performance::get_performance_resource_window,
             commands::performance::clear_performance_diagnostics,
+            commands::transform_diagnostics::arm_next_transform_diagnostic_capture,
+            commands::transform_diagnostics::get_transform_diagnostic_capture_status,
+            commands::transform_diagnostics::list_transform_attempts,
+            commands::transform_diagnostics::list_transform_diagnostic_captures,
+            commands::transform_diagnostics::get_transform_diagnostic_capture,
+            commands::transform_diagnostics::delete_transform_diagnostic_capture,
             commands::models::check_model_exists,
             commands::models::check_specific_model_exists,
             commands::models::get_model_runtime_catalog,
@@ -342,12 +351,24 @@ pub fn run() {
             if let Err(error) = app
                 .state::<State>()
                 .performance
-                .initialize(performance_root, Some(app.handle().clone()))
+                .initialize(performance_root.clone(), Some(app.handle().clone()))
             {
                 tracing::warn!(
                     target: "system",
                     diagnostics_available = false,
                     "performance diagnostics store unavailable: {}",
+                    error
+                );
+            }
+            if let Err(error) = app
+                .state::<State>()
+                .transform_diagnostics
+                .initialize(performance_root.join("transforms"))
+            {
+                tracing::warn!(
+                    target: "system",
+                    diagnostics_available = false,
+                    "transform diagnostics store unavailable: {}",
                     error
                 );
             }

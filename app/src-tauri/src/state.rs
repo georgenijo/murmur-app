@@ -337,6 +337,11 @@ pub struct AppState {
     pub transform_pass_sequence: AtomicU64,
     /// The pass that currently owns the transform lifecycle. Zero means none.
     pub active_transform_pass_id: AtomicU64,
+    /// Highest transform pass explicitly cancelled by the user. Selection
+    /// capture runs asynchronously, so it must be able to distinguish a late
+    /// capture abort from an ordinary capture failure even before the cancel
+    /// path has finished clearing `active_transform_pass_id`.
+    cancelled_transform_pass_id: AtomicU64,
     /// One-based spoken-instruction attempt within the active pass. Retries
     /// keep the pass ID and advance only this counter.
     pub transform_instruction_attempt: AtomicU64,
@@ -464,6 +469,15 @@ impl AppState {
             .is_ok()
     }
 
+    pub fn mark_transform_pass_cancelled(&self, pass_id: u64) {
+        self.cancelled_transform_pass_id
+            .fetch_max(pass_id, Ordering::SeqCst);
+    }
+
+    pub fn is_transform_pass_cancelled(&self, pass_id: u64) -> bool {
+        pass_id != 0 && self.cancelled_transform_pass_id.load(Ordering::SeqCst) >= pass_id
+    }
+
     pub fn current_instruction_attempt(&self) -> u64 {
         self.transform_instruction_attempt
             .load(Ordering::SeqCst)
@@ -558,6 +572,7 @@ impl Default for AppState {
             transform_status: Mutex::new(TransformStatus::default()),
             transform_pass_sequence: AtomicU64::new(0),
             active_transform_pass_id: AtomicU64::new(0),
+            cancelled_transform_pass_id: AtomicU64::new(0),
             transform_instruction_attempt: AtomicU64::new(1),
             transform_session: Mutex::new(None),
             transform_session_generation: AtomicU64::new(0),
@@ -701,6 +716,17 @@ mod tests {
         assert_eq!(state.active_transform_pass_id(), Some(second));
         assert!(state.clear_transform_pass(second));
         assert_eq!(state.active_transform_pass_id(), None);
+    }
+
+    #[test]
+    fn transform_cancel_marker_is_visible_before_active_pass_is_cleared() {
+        let state = AppState::default();
+        state.activate_transform_pass(11);
+        state.mark_transform_pass_cancelled(11);
+
+        assert!(state.is_transform_pass_cancelled(11));
+        assert_eq!(state.active_transform_pass_id(), Some(11));
+        assert!(!state.is_transform_pass_cancelled(12));
     }
 
     #[test]

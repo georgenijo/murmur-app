@@ -224,6 +224,10 @@ fn complete_transform_performance(
     );
 }
 
+fn capture_abort_was_cancelled(app_state: &AppState, transform_pass_id: u64) -> bool {
+    app_state.is_transform_pass_cancelled(transform_pass_id)
+}
+
 fn append_transform_follow_up(
     state: &crate::State,
     transform_pass_id: u64,
@@ -308,6 +312,43 @@ pub fn transform_error_code(error: TransformError) -> &'static str {
         TransformError::Protocol => "crashed",
         TransformError::ResourceLimit => "resource_limit",
         TransformError::Internal => "internal",
+    }
+}
+
+fn transform_error_code_for_phase(
+    error: TransformError,
+    diagnostics: crate::llm_sidecar::SidecarDiagnostics,
+) -> &'static str {
+    use crate::llm_sidecar::SidecarDiagnosticPhase as Phase;
+    match (error, diagnostics.failure_phase) {
+        (
+            TransformError::Timeout,
+            Some(Phase::HostModelVerification | Phase::HelperModelVerification),
+        ) => "model_verification_timeout",
+        (TransformError::Timeout, Some(Phase::BackendInitialization | Phase::ModelLoad)) => {
+            "model_load_timeout"
+        }
+        (TransformError::Timeout, Some(Phase::ReadyHandshake)) => "handshake_timeout",
+        (
+            TransformError::Timeout,
+            Some(Phase::RequestReceipt | Phase::FirstToken | Phase::Generation),
+        ) => "generation_timeout",
+        (TransformError::SpawnFailed, _) => "helper_spawn_failed",
+        (TransformError::HandshakeFailed, Some(Phase::HelperModelVerification)) => {
+            "model_verification_failed"
+        }
+        (
+            TransformError::HandshakeFailed,
+            Some(Phase::BackendInitialization | Phase::ModelLoad),
+        ) => "model_load_failed",
+        (TransformError::HandshakeFailed | TransformError::Protocol, _) => {
+            "handshake_protocol_failed"
+        }
+        (TransformError::Crashed, _) => "process_exit",
+        (TransformError::ModelMismatch | TransformError::ModelUnreadable, _) => {
+            "model_verification_failed"
+        }
+        _ => transform_error_code(error),
     }
 }
 
@@ -621,6 +662,7 @@ pub(crate) struct SidecarRunMetrics {
     spawn_load_ms: Option<u64>,
     generation_ms: Option<u64>,
     cache_hit: Option<bool>,
+    diagnostics: crate::llm_sidecar::SidecarDiagnostics,
 }
 
 pub(crate) enum TransformRunReport {
@@ -628,12 +670,14 @@ pub(crate) enum TransformRunReport {
         metrics: SidecarRunMetrics,
         output_bytes: usize,
         output_tokens: u32,
+        finish_reason: &'static str,
         review_ready_ms: u64,
     },
     Failed {
         metrics: Option<SidecarRunMetrics>,
         timed_out: bool,
         stage: PerformanceStageV1,
+        error_code: &'static str,
     },
     Cancelled,
 }
@@ -800,6 +844,7 @@ pub(crate) async fn run_transform(
                 metrics: None,
                 timed_out: false,
                 stage: PerformanceStageV1::InstructionAsr,
+                error_code: "no_instruction",
             };
         }
     };
@@ -829,6 +874,7 @@ pub(crate) async fn run_transform(
                     spawn_load_ms: None,
                     generation_ms: None,
                     cache_hit: None,
+                    diagnostics: crate::llm_sidecar::SidecarDiagnostics::default(),
                 }
             } else {
                 sidecar
@@ -864,6 +910,7 @@ pub(crate) async fn run_transform(
                 metrics: None,
                 timed_out: false,
                 stage: PerformanceStageV1::Generation,
+                error_code: "internal",
             }
         }
         Ok(outcome) => {
@@ -871,6 +918,7 @@ pub(crate) async fn run_transform(
                 spawn_load_ms: outcome.spawn_load_ms,
                 generation_ms: outcome.generation_ms,
                 cache_hit: outcome.cache_hit,
+                diagnostics: outcome.diagnostics,
             };
             match outcome.result {
                 Ok(output) => {
@@ -882,6 +930,10 @@ pub(crate) async fn run_transform(
                     }
                     let output_bytes = output.output.len();
                     let output_tokens = output.output_tokens;
+                    let finish_reason = match output.finish_reason {
+                        murmur_local_llm_protocol::FinishReason::Stop => "stop",
+                        murmur_local_llm_protocol::FinishReason::Length => "length",
+                    };
                     let review_ready_started = std::time::Instant::now();
                     transform_apply::set_proposed_text(app_state, output.output);
                     fx.set_expanded(true);
@@ -899,6 +951,7 @@ pub(crate) async fn run_transform(
                         metrics,
                         output_bytes,
                         output_tokens,
+                        finish_reason,
                         review_ready_ms: review_ready_started.elapsed().as_millis() as u64,
                     }
                 }
@@ -910,7 +963,7 @@ pub(crate) async fn run_transform(
                         TransformStatus::Thinking,
                         TransformStatus::ReviewPending,
                     ) {
-                        let error_code = transform_error_code(error);
+                        let error_code = transform_error_code_for_phase(error, metrics.diagnostics);
                         fx.set_focusable(true);
                         fx.emit_state(ReviewState::Failed, Some(error_code));
                         if transform_pass_id != 0 {
@@ -927,10 +980,12 @@ pub(crate) async fn run_transform(
                     } else {
                         PerformanceStageV1::SidecarSpawnLoad
                     };
+                    let error_code = transform_error_code_for_phase(error, metrics.diagnostics);
                     TransformRunReport::Failed {
                         metrics: Some(metrics),
                         timed_out: error == TransformError::Timeout,
                         stage,
+                        error_code,
                     }
                 }
             }
@@ -944,6 +999,45 @@ fn record_sidecar_metrics(
     metrics: SidecarRunMetrics,
     succeeded: bool,
 ) -> PerformanceStageV1 {
+    let d = metrics.diagnostics;
+    state.transform_diagnostics.process_exit(
+        transform_pass_id,
+        d.process_exit_code,
+        d.process_exit_signal,
+    );
+    for (phase, duration) in [
+        ("host_model_verification", d.host_model_verification_ms),
+        ("helper_spawn", d.helper_spawn_ms),
+        ("helper_model_verification", d.helper_model_verification_ms),
+        ("backend_initialization", d.backend_initialization_ms),
+        ("model_load", d.model_load_ms),
+        ("ready_handshake", d.ready_handshake_ms),
+        ("request_receipt", d.request_receipt_ms),
+        ("first_token", d.first_token_ms),
+    ] {
+        if let Some(duration_ms) = duration {
+            crate::transform_trace::sidecar_phase(
+                transform_pass_id,
+                phase,
+                "completed",
+                duration_ms,
+                None,
+            );
+            state.transform_diagnostics.phase(
+                transform_pass_id,
+                phase,
+                "completed",
+                Some(duration_ms),
+                None,
+            );
+        }
+    }
+    if let Some(phase) = d.failure_phase {
+        crate::transform_trace::sidecar_phase(transform_pass_id, phase.as_str(), "failed", 0, None);
+        state
+            .transform_diagnostics
+            .phase(transform_pass_id, phase.as_str(), "failed", None, None);
+    }
     let warm_state = match metrics.cache_hit {
         Some(true) => ModelWarmStateV1::Warm,
         Some(false) => ModelWarmStateV1::ColdLoaded,
@@ -1111,10 +1205,9 @@ impl FlowEffects for TauriFlowEffects<'_> {
             let _ = crate::commands::transform_popover::hide_popover_internal(&app);
             // Linger auto-hide is backend-initiated — reset stale content (item 13).
             emit_transform_hidden(&app);
-            if let (Some(transform_pass_id), Some(state)) = (
-                transform_pass_id,
-                app.try_state::<crate::State>(),
-            ) {
+            if let (Some(transform_pass_id), Some(state)) =
+                (transform_pass_id, app.try_state::<crate::State>())
+            {
                 crate::transform_trace::resolution(
                     transform_pass_id,
                     "applied",
@@ -1326,6 +1419,7 @@ pub(crate) async fn start_transform_capture(
     device_name: Option<String>,
     transform_pass_id: u64,
 ) -> Result<(), String> {
+    state.transform_diagnostics.begin(transform_pass_id);
     // Serialize against dictation start/stop, taking the same locks in the
     // same order (`recording_transition` then `dictation`) as
     // `start_native_recording`, so the two audio paths can't tear each other's
@@ -1365,6 +1459,16 @@ pub(crate) async fn start_transform_capture(
         }
     };
     if let Err(error_code) = claim_result {
+        state.transform_diagnostics.phase(
+            transform_pass_id,
+            "start",
+            "failed",
+            None,
+            Some(error_code),
+        );
+        state
+            .transform_diagnostics
+            .finish(transform_pass_id, "failed");
         crate::transform_trace::resolution(transform_pass_id, "failed", "start", Some(error_code));
         if state.app_state.transform_status() == TransformStatus::Idle {
             state.app_state.clear_transform_pass(transform_pass_id);
@@ -1431,6 +1535,16 @@ pub(crate) async fn start_transform_capture(
             let _ = crate::commands::transform_popover::hide_popover_internal(&app_handle);
             emit_transform_hidden(&app_handle);
             state.app_state.clear_transform_pass(transform_pass_id);
+            state.transform_diagnostics.phase(
+                transform_pass_id,
+                "instructionCapture",
+                "failed",
+                Some(audio_start_started.elapsed().as_millis() as u64),
+                Some("audio_start_failed"),
+            );
+            state
+                .transform_diagnostics
+                .finish(transform_pass_id, "failed");
             return Err(e);
         }
         crate::transform_trace::audio(transform_pass_id, "armed", "ok", 0, 0);
@@ -1443,6 +1557,55 @@ pub(crate) async fn start_transform_capture(
         None
     };
     let capture_succeeded = capture_result.as_ref().is_some_and(|result| result.is_ok());
+    let capture_duration_ms = capture_started.elapsed().as_millis() as u64;
+    match capture_result.as_ref() {
+        Some(Ok(snapshot)) => {
+            let source = if snapshot.range.is_some() || snapshot.bounds.is_some() {
+                "accessibility"
+            } else {
+                "clipboardFallback"
+            };
+            state.transform_diagnostics.selection(
+                transform_pass_id,
+                Ok((
+                    source,
+                    crate::selection::length_bucket(snapshot.text.len()),
+                    snapshot.range.is_some(),
+                    snapshot.bounds.is_some(),
+                    "success",
+                )),
+                Some(&snapshot.text),
+            );
+            state.transform_diagnostics.phase(
+                transform_pass_id,
+                "selectionCapture",
+                "completed",
+                Some(capture_duration_ms),
+                None,
+            );
+        }
+        Some(Err(error)) => {
+            state
+                .transform_diagnostics
+                .selection(transform_pass_id, Err(error.as_str()), None);
+            state.transform_diagnostics.phase(
+                transform_pass_id,
+                "selectionCapture",
+                "failed",
+                Some(capture_duration_ms),
+                Some(error.as_str()),
+            );
+        }
+        None => {
+            state.transform_diagnostics.phase(
+                transform_pass_id,
+                "selectionCapture",
+                "failed",
+                Some(capture_duration_ms),
+                Some("model_not_downloaded"),
+            );
+        }
+    }
     record_transform_stage(
         &state,
         transform_pass_id,
@@ -1462,15 +1625,23 @@ pub(crate) async fn start_transform_capture(
     .await;
 
     if outcome != StartOutcome::Listening {
-        complete_transform_performance(
-            &state,
-            transform_pass_id,
-            RunOutcomeV1::Failed {
-                stage: PerformanceStageV1::SelectedTextCapture,
-                error_code: StableRunErrorV1::TransformStageFailed,
-            },
-            None,
-        );
+        // cancel_transform marks cancellation before tearing down the pass,
+        // while a slow AX capture may still be unwinding. Use that monotonic
+        // marker instead of inferring from Idle/active state: this command can
+        // resume during the window after cancel forced Idle but before it
+        // clears the active pass.
+        let cancellation_won = capture_abort_was_cancelled(&state.app_state, transform_pass_id);
+        if !cancellation_won {
+            complete_transform_performance(
+                &state,
+                transform_pass_id,
+                RunOutcomeV1::Failed {
+                    stage: PerformanceStageV1::SelectedTextCapture,
+                    error_code: StableRunErrorV1::TransformStageFailed,
+                },
+                None,
+            );
+        }
         // Capture aborted (secure field, capture error, model-not-ready
         // failed popover, or a cancel racing the capture) — the pre-armed mic
         // must not stay live.
@@ -1484,8 +1655,13 @@ pub(crate) async fn start_transform_capture(
                 samples.len() as u64 * 1_000 / crate::state::WHISPER_SAMPLE_RATE as u64,
             );
         }
-        if state.app_state.transform_status() == TransformStatus::Idle {
+        if !cancellation_won && state.app_state.transform_status() == TransformStatus::Idle {
             state.app_state.clear_transform_pass(transform_pass_id);
+        }
+        if !cancellation_won {
+            state
+                .transform_diagnostics
+                .finish(transform_pass_id, "failed");
         }
         return Ok(());
     }
@@ -1589,6 +1765,17 @@ pub(crate) async fn finish_transform_instruction(
                 },
             ),
         );
+        state.transform_diagnostics.phase(
+            transform_pass_id,
+            "instructionCapture",
+            if samples.is_empty() {
+                "failed"
+            } else {
+                "completed"
+            },
+            Some(audio_duration_ms),
+            samples.is_empty().then_some("audio_empty"),
+        );
 
         if !enter_thinking(&state.app_state, &fx) {
             // Lost the race to a concurrent cancel.
@@ -1625,12 +1812,34 @@ pub(crate) async fn finish_transform_instruction(
     };
 
     let attempt = state.app_state.current_instruction_attempt();
+    let instruction_asr_started = std::time::Instant::now();
     let instruction =
         match transcribe_instruction(&app_handle, &state, &samples, transform_pass_id, attempt)
             .await
         {
-            Ok(raw) => Ok(expand_instruction(&state, &raw)),
-            Err(_) => Err(()),
+            Ok(raw) => {
+                state
+                    .transform_diagnostics
+                    .instruction(transform_pass_id, &raw);
+                state.transform_diagnostics.phase(
+                    transform_pass_id,
+                    "instructionAsr",
+                    "completed",
+                    Some(instruction_asr_started.elapsed().as_millis() as u64),
+                    None,
+                );
+                Ok(expand_instruction(&state, &raw))
+            }
+            Err(error) => {
+                state.transform_diagnostics.phase(
+                    transform_pass_id,
+                    "instructionAsr",
+                    "failed",
+                    Some(instruction_asr_started.elapsed().as_millis() as u64),
+                    Some(error.as_str()),
+                );
+                Err(())
+            }
         };
     let audio_duration_ms = samples.len() as u64 * 1_000 / crate::state::WHISPER_SAMPLE_RATE as u64;
     let input_bytes = original.len();
@@ -1652,8 +1861,14 @@ pub(crate) async fn finish_transform_instruction(
             metrics,
             output_bytes,
             output_tokens,
+            finish_reason,
             review_ready_ms,
         } => {
+            let warm_state = match metrics.cache_hit {
+                Some(true) => "warm",
+                Some(false) => "cold",
+                None => "unknown",
+            };
             record_sidecar_metrics(&state, transform_pass_id, metrics, true);
             record_transform_stage(
                 &state,
@@ -1670,10 +1885,31 @@ pub(crate) async fn finish_transform_instruction(
                     Some((output_bytes, output_tokens)),
                 )),
             );
+            let snapshot = transform_apply::session_snapshot(&state.app_state);
+            state.transform_diagnostics.sidecar_result(
+                transform_pass_id,
+                Some(warm_state),
+                Some(output_tokens),
+                Some(finish_reason),
+                snapshot
+                    .as_ref()
+                    .and_then(|session| session.proposed.as_deref()),
+            );
+            state.transform_diagnostics.phase(
+                transform_pass_id,
+                "reviewReady",
+                "completed",
+                Some(review_ready_ms),
+                None,
+            );
+            state
+                .transform_diagnostics
+                .finish(transform_pass_id, "ready");
         }
         TransformRunReport::Failed {
             metrics: Some(metrics),
             timed_out,
+            error_code,
             ..
         } => {
             let terminal_stage = record_sidecar_metrics(&state, transform_pass_id, metrics, false);
@@ -1696,10 +1932,22 @@ pub(crate) async fn finish_transform_instruction(
                     None,
                 )),
             );
+            state.transform_diagnostics.phase(
+                transform_pass_id,
+                "sidecar",
+                if timed_out { "timedOut" } else { "failed" },
+                None,
+                Some(error_code),
+            );
+            state.transform_diagnostics.finish(
+                transform_pass_id,
+                if timed_out { "timedOut" } else { "failed" },
+            );
         }
         TransformRunReport::Failed {
             metrics: None,
             stage,
+            error_code,
             ..
         } => {
             complete_transform_performance(
@@ -1719,11 +1967,28 @@ pub(crate) async fn finish_transform_instruction(
                     None,
                 )),
             );
+            state.transform_diagnostics.phase(
+                transform_pass_id,
+                if stage == PerformanceStageV1::InstructionAsr {
+                    "instructionAsr"
+                } else {
+                    "sidecar"
+                },
+                "failed",
+                None,
+                Some(error_code),
+            );
+            state
+                .transform_diagnostics
+                .finish(transform_pass_id, "failed");
         }
         TransformRunReport::Cancelled => {
             if let Some(guard) = performance_guard {
                 guard.defer();
             }
+            state
+                .transform_diagnostics
+                .finish(transform_pass_id, "cancelled");
         }
     }
     Ok(())
@@ -1911,6 +2176,16 @@ pub(crate) async fn approve_transform(
                 );
                 crate::transform_trace::effect(transform_pass_id, "apply", via.as_str(), None);
                 crate::transform_trace::resolution(transform_pass_id, "applied", "apply", None);
+                state.transform_diagnostics.phase(
+                    transform_pass_id,
+                    "apply",
+                    "completed",
+                    Some(performance_started.elapsed().as_millis() as u64),
+                    None,
+                );
+                state
+                    .transform_diagnostics
+                    .finish(transform_pass_id, "applied");
             }
             Ok(())
         }
@@ -1939,6 +2214,16 @@ pub(crate) async fn approve_transform(
                     "apply",
                     Some(error_code),
                 );
+                state.transform_diagnostics.phase(
+                    transform_pass_id,
+                    "apply",
+                    "failed",
+                    Some(performance_started.elapsed().as_millis() as u64),
+                    Some(error_code),
+                );
+                state
+                    .transform_diagnostics
+                    .finish(transform_pass_id, "applyFailed");
             }
             Err(error_code.to_string())
         }
@@ -1961,6 +2246,15 @@ pub(crate) async fn cancel_transform(
         return Ok(());
     }
     let transform_pass_id = active_pass_id.unwrap_or(0);
+    if transform_pass_id != 0 {
+        // Publish the terminal winner before any awaitable/main-thread
+        // teardown. A concurrent selection capture can return immediately
+        // after status becomes Idle and must not persist a failed outcome for
+        // a pass the user already cancelled.
+        state
+            .app_state
+            .mark_transform_pass_cancelled(transform_pass_id);
+    }
     let prev = state.app_state.transform_status();
     let _performance_guard = (transform_pass_id != 0).then(|| {
         state.performance.guard(
@@ -2034,6 +2328,16 @@ pub(crate) async fn cancel_transform(
             None,
         );
         crate::transform_trace::resolution(transform_pass_id, "cancelled", prev.as_str(), None);
+        state.transform_diagnostics.phase(
+            transform_pass_id,
+            "cancellation",
+            "completed",
+            None,
+            None,
+        );
+        state
+            .transform_diagnostics
+            .finish(transform_pass_id, "cancelled");
         state.app_state.clear_transform_pass(transform_pass_id);
     }
     Ok(())
@@ -2167,6 +2471,16 @@ pub(crate) async fn undo_transform_and_close(
                 );
                 crate::transform_trace::effect(transform_pass_id, "undo", "ok", None);
                 crate::transform_trace::resolution(transform_pass_id, "undone", "undo", None);
+                state.transform_diagnostics.phase(
+                    transform_pass_id,
+                    "undo",
+                    "completed",
+                    Some(performance_started.elapsed().as_millis() as u64),
+                    None,
+                );
+                state
+                    .transform_diagnostics
+                    .finish(transform_pass_id, "undone");
                 state.app_state.clear_transform_pass(transform_pass_id);
             }
             Ok(())
@@ -2204,6 +2518,16 @@ pub(crate) async fn undo_transform_and_close(
                     "undo",
                     Some(apply_error_code(error)),
                 );
+                state.transform_diagnostics.phase(
+                    transform_pass_id,
+                    "undo",
+                    "failed",
+                    Some(performance_started.elapsed().as_millis() as u64),
+                    Some(apply_error_code(error)),
+                );
+                state
+                    .transform_diagnostics
+                    .finish(transform_pass_id, "undoFailed");
             }
             Err(apply_error_code(error).to_string())
         }
@@ -2651,6 +2975,42 @@ mod tests {
     }
 
     #[test]
+    fn sidecar_failures_are_precise_for_the_observed_phase() {
+        use crate::llm_sidecar::{SidecarDiagnosticPhase as Phase, SidecarDiagnostics};
+
+        let diagnostics = |phase| SidecarDiagnostics {
+            failure_phase: Some(phase),
+            ..SidecarDiagnostics::default()
+        };
+        assert_eq!(
+            transform_error_code_for_phase(
+                TransformError::Timeout,
+                diagnostics(Phase::HelperModelVerification),
+            ),
+            "model_verification_timeout"
+        );
+        assert_eq!(
+            transform_error_code_for_phase(TransformError::Timeout, diagnostics(Phase::ModelLoad),),
+            "model_load_timeout"
+        );
+        assert_eq!(
+            transform_error_code_for_phase(TransformError::Timeout, diagnostics(Phase::Generation),),
+            "generation_timeout"
+        );
+        assert_eq!(
+            transform_error_code_for_phase(
+                TransformError::HandshakeFailed,
+                diagnostics(Phase::ReadyHandshake),
+            ),
+            "handshake_protocol_failed"
+        );
+        assert_eq!(
+            transform_error_code_for_phase(TransformError::Crashed, diagnostics(Phase::FirstToken),),
+            "process_exit"
+        );
+    }
+
+    #[test]
     fn apply_error_codes_are_total_and_nonempty() {
         let all = [
             ApplyError::Unsupported,
@@ -3013,6 +3373,21 @@ mod tests {
         assert!(transform_apply::session_snapshot(&app_state).is_none());
         assert!(!fx.popover_shown());
         assert!(fx.emitted_states().is_empty());
+    }
+
+    #[test]
+    fn capture_abort_does_not_terminalize_during_cancel_before_pass_clear() {
+        let app_state = AppState::default();
+        app_state.activate_transform_pass(41);
+        app_state.set_transform_status(TransformStatus::Capturing);
+
+        // Mirrors cancel_transform's ordering: publish cancellation first,
+        // then force Idle, with the active pass still present until teardown.
+        app_state.mark_transform_pass_cancelled(41);
+        app_state.set_transform_status(TransformStatus::Idle);
+
+        assert_eq!(app_state.active_transform_pass_id(), Some(41));
+        assert!(capture_abort_was_cancelled(&app_state, 41));
     }
 
     // ---- Spec-by-test divergence points (finding 8) ------------------------

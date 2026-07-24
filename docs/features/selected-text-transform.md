@@ -98,6 +98,16 @@ follow-up duration/outcome records. Sidecar CPU/RSS samples use the helper's
 resident PID and are summarized only for the transform run's wall-clock
 interval. No second transform tracing path is introduced.
 
+`TransformAttemptV1` is a backward-compatible companion record rather than a
+change to `PerformanceRunV1`. It records every claimed or refused pass,
+including cancellation and supersession, with ordered, enum-only phase
+outcomes. The signed helper protocol reports helper model verification,
+backend/Metal initialization, model load, request receipt, and first-token
+timings. The host adds its own verification, spawn, ready-handshake,
+generation, review, apply, undo, process-exit, and failure-phase evidence.
+Startup failures therefore remain distinguishable instead of collapsing into
+“sidecar crashed.”
+
 Transform diagnostics are content-free. They may contain IDs, enum values,
 numeric AX outcomes, booleans, sample/token counts, timings, apply/capture
 routes, and length buckets. They never contain selected text, instruction or
@@ -105,6 +115,16 @@ preset text, proposals, clipboard contents, paths, bundle IDs, device names, or
 model-setting values. The structured-event layer independently removes any
 string whose key or value is outside the transform stream's explicit stable
 vocabulary.
+
+Diagnostics → **Transforms** also offers **Capture next transform** for cases
+where the user explicitly needs to inspect exact content. The warning must be
+confirmed; the arm lives only in memory, applies to one pass, and expires after
+10 minutes. A captured selection, recognized instruction, output, and phase
+trace stay on this Mac in a `0700` directory with `0600` files. Symlink targets
+are refused, at most three captures are retained, and each expires after seven
+days. Captures can only be reviewed or deleted in the app. They are never added
+to Events, copied diagnostics, Performance records, or reports, and the UI has
+no raw-content export action.
 
 ## Sidecar removal / lifecycle
 

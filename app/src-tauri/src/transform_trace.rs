@@ -180,6 +180,20 @@ pub fn effect(
     }
 }
 
+pub fn sidecar_phase(
+    transform_pass_id: u64,
+    phase: &'static str,
+    outcome: &'static str,
+    duration_ms: u64,
+    error_code: Option<&'static str>,
+) {
+    if let Some(error_code) = error_code {
+        tracing::info!(target: "transform", transform_pass_id, phase, outcome, duration_ms, error_code, "transform_sidecar_phase");
+    } else {
+        tracing::info!(target: "transform", transform_pass_id, phase, outcome, duration_ms, "transform_sidecar_phase");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
