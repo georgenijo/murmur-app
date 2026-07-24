@@ -2177,7 +2177,20 @@ pub async fn start_native_recording(
             app: &app_handle,
             state: &state,
         };
+        let dismissed_transform_pass_id = state.app_state.active_transform_pass_id();
         if crate::transform_flow::dismiss_review_for_recording(&state.app_state, &fx) {
+            if let Some(transform_pass_id) = dismissed_transform_pass_id {
+                state.transform_diagnostics.phase(
+                    transform_pass_id,
+                    "supersession",
+                    "completed",
+                    None,
+                    None,
+                );
+                state
+                    .transform_diagnostics
+                    .finish(transform_pass_id, "superseded");
+            }
             tracing::info!(target: "pipeline", "start_native_recording: auto-dismissed transform review");
         }
     }

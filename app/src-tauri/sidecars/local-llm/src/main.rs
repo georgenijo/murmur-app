@@ -10,9 +10,9 @@ mod macos_arm64 {
     use llama_cpp_2::sampling::LlamaSampler;
     use llama_cpp_2::{list_llama_ggml_backend_devices, send_logs_to_tracing, LogOptions};
     use murmur_local_llm_protocol::{
-        read_frame, validate_host_message, write_frame, ErrorCode, FinishReason, HelperMessage,
-        HostMessage, ModelIdentity, ProtocolLimits, MAX_CONTEXT_TOKENS, MAX_OUTPUT_BYTES, MODEL_FD,
-        PROTOCOL_NAME, PROTOCOL_VERSION,
+        read_frame, validate_host_message, write_frame, DiagnosticPhase, ErrorCode, FinishReason,
+        HelperMessage, HostMessage, ModelIdentity, PhaseState, ProtocolLimits, MAX_CONTEXT_TOKENS,
+        MAX_OUTPUT_BYTES, MODEL_FD, PROTOCOL_NAME, PROTOCOL_VERSION,
     };
     use sha2::{Digest, Sha256};
     use std::fs::File;
@@ -53,8 +53,62 @@ mod macos_arm64 {
             bail!("host limits do not match helper limits");
         }
 
+        emit_phase(
+            &mut stdout,
+            &session_nonce,
+            None,
+            DiagnosticPhase::HelperModelVerification,
+            PhaseState::Started,
+            None,
+        )?;
+        let started = Instant::now();
         verify_inherited_model(&expected_model)?;
-        let runtime = Runtime::load()?;
+        emit_phase(
+            &mut stdout,
+            &session_nonce,
+            None,
+            DiagnosticPhase::HelperModelVerification,
+            PhaseState::Completed,
+            Some(started.elapsed().as_millis() as u64),
+        )?;
+
+        emit_phase(
+            &mut stdout,
+            &session_nonce,
+            None,
+            DiagnosticPhase::BackendInitialization,
+            PhaseState::Started,
+            None,
+        )?;
+        let started = Instant::now();
+        let (backend, backend_name) = Runtime::init_backend()?;
+        emit_phase(
+            &mut stdout,
+            &session_nonce,
+            None,
+            DiagnosticPhase::BackendInitialization,
+            PhaseState::Completed,
+            Some(started.elapsed().as_millis() as u64),
+        )?;
+
+        emit_phase(
+            &mut stdout,
+            &session_nonce,
+            None,
+            DiagnosticPhase::ModelLoad,
+            PhaseState::Started,
+            None,
+        )?;
+        let started = Instant::now();
+        let runtime = Runtime::load_model(backend, backend_name)?;
+        emit_phase(
+            &mut stdout,
+            &session_nonce,
+            None,
+            DiagnosticPhase::ModelLoad,
+            PhaseState::Completed,
+            Some(started.elapsed().as_millis() as u64),
+        )?;
         write_frame(
             &mut stdout,
             &HelperMessage::Ready {
@@ -94,26 +148,49 @@ mod macos_arm64 {
                     max_output_tokens,
                     deadline_ms,
                     ..
-                } => match runtime.transform(
-                    &instruction,
-                    &input,
-                    max_output_tokens,
-                    Duration::from_millis(deadline_ms),
-                ) {
-                    Ok((output, finish_reason, output_tokens)) => write_frame(
+                } => {
+                    emit_phase(
                         &mut stdout,
-                        &HelperMessage::Result {
-                            protocol: PROTOCOL_NAME.to_string(),
-                            version: PROTOCOL_VERSION,
-                            session_nonce: session_nonce.clone(),
-                            request_id,
-                            output,
-                            finish_reason,
-                            output_tokens,
+                        &session_nonce,
+                        Some(&request_id),
+                        DiagnosticPhase::RequestReceipt,
+                        PhaseState::Completed,
+                        Some(0),
+                    )?;
+                    match runtime.transform(
+                        &instruction,
+                        &input,
+                        max_output_tokens,
+                        Duration::from_millis(deadline_ms),
+                        |first_token_ms| {
+                            emit_phase(
+                                &mut stdout,
+                                &session_nonce,
+                                Some(&request_id),
+                                DiagnosticPhase::FirstToken,
+                                PhaseState::Completed,
+                                Some(first_token_ms),
+                            )
+                            .map_err(|_| ErrorCode::Internal)
                         },
-                    )?,
-                    Err(code) => write_error(&mut stdout, &session_nonce, Some(request_id), code)?,
-                },
+                    ) {
+                        Ok((output, finish_reason, output_tokens)) => write_frame(
+                            &mut stdout,
+                            &HelperMessage::Result {
+                                protocol: PROTOCOL_NAME.to_string(),
+                                version: PROTOCOL_VERSION,
+                                session_nonce: session_nonce.clone(),
+                                request_id,
+                                output,
+                                finish_reason,
+                                output_tokens,
+                            },
+                        )?,
+                        Err(code) => {
+                            write_error(&mut stdout, &session_nonce, Some(request_id), code)?
+                        }
+                    }
+                }
                 HostMessage::Cancel { request_id, .. } => write_frame(
                     &mut stdout,
                     &HelperMessage::Cancelled {
@@ -170,6 +247,29 @@ mod macos_arm64 {
         Ok(())
     }
 
+    fn emit_phase(
+        stdout: &mut impl std::io::Write,
+        session_nonce: &str,
+        request_id: Option<&str>,
+        phase: DiagnosticPhase,
+        state: PhaseState,
+        duration_ms: Option<u64>,
+    ) -> Result<()> {
+        write_frame(
+            stdout,
+            &HelperMessage::DiagnosticPhase {
+                protocol: PROTOCOL_NAME.to_string(),
+                version: PROTOCOL_VERSION,
+                session_nonce: session_nonce.to_string(),
+                request_id: request_id.map(str::to_string),
+                phase,
+                state,
+                duration_ms,
+            },
+        )?;
+        Ok(())
+    }
+
     fn disable_core_dumps() -> Result<()> {
         let limit = libc::rlimit {
             rlim_cur: 0,
@@ -212,7 +312,7 @@ mod macos_arm64 {
     }
 
     impl Runtime {
-        fn load() -> Result<Self> {
+        fn init_backend() -> Result<(LlamaBackend, String)> {
             let backend = LlamaBackend::init().context("llama backend init")?;
             let devices = list_llama_ggml_backend_devices();
             let metal_device = devices
@@ -230,13 +330,17 @@ mod macos_arm64 {
                         backend.supports_gpu_offload()
                     )
                 })?;
+            Ok((backend, format!("metal:{}", metal_device.name)))
+        }
+
+        fn load_model(backend: LlamaBackend, backend_name: String) -> Result<Self> {
             let params = LlamaModelParams::default().with_n_gpu_layers(1_000);
             let model = LlamaModel::load_from_file(&backend, Path::new("/dev/fd/3"), &params)
                 .context("model load from inherited descriptor")?;
             Ok(Self {
                 _backend: backend,
                 model,
-                backend_name: format!("metal:{}", metal_device.name),
+                backend_name,
             })
         }
 
@@ -246,6 +350,7 @@ mod macos_arm64 {
             input: &str,
             max_output_tokens: u32,
             deadline: Duration,
+            mut on_first_token: impl FnMut(u64) -> Result<(), ErrorCode>,
         ) -> Result<(String, FinishReason, u32), ErrorCode> {
             let prompt = format!(
                 "<|im_start|>system\n{FIXED_SYSTEM_PROMPT}<|im_end|>\n<|im_start|>user\nINSTRUCTION_BEGIN\n{instruction}\nINSTRUCTION_END\nINPUT_BEGIN\n{input}\nINPUT_END<|im_end|>\n<|im_start|>assistant\n"
@@ -294,6 +399,9 @@ mod macos_arm64 {
                 if self.model.is_eog_token(token) {
                     finish_reason = FinishReason::Stop;
                     break;
+                }
+                if generated == 0 {
+                    on_first_token(started.elapsed().as_millis() as u64)?;
                 }
                 let piece = self
                     .model

@@ -162,6 +162,22 @@ benchmark/evaluation reports are untouched. Loading, never-recorded, cleared,
 filtered-empty, error, stale/partial, unsupported, and unavailable states are
 presented separately.
 
+### Transforms Tab
+
+Transforms lists the newest content-free `TransformAttemptV1` records. Each
+attempt carries the same `transform_pass_id` used by Events and
+`PerformanceRunV1`, plus ordered selection, instruction, sidecar, review,
+apply/undo, cancellation, and process-lifecycle phase evidence. The companion
+performance run remains schema V1 and supplies the correlated resource peaks.
+
+**Capture next transform** is an explicit one-shot privacy boundary. After a
+warning and confirmation, an in-memory arm lasts for one attempt or ten minutes.
+Exact selection, recognized instruction, and output are stored locally with
+restrictive permissions, capped at three captures and seven days. Opening a
+capture is the only command that returns its text to the Diagnostics webview.
+The tab offers Review and Delete, but no copy/export integration. Ordinary
+Events, Performance records, reports, and log export stay content-free.
+
 ### Reports Tab
 
 Reports imports local Performance Lab benchmark or `murmur-eval` JSON through
@@ -205,6 +221,12 @@ The frontend event buffer is managed by the `useEventStore` hook:
 | `get_performance_run` | Returns one typed run by opaque `run_id` |
 | `get_performance_resource_window` | Returns the bounded typed resource window |
 | `clear_performance_diagnostics` | Clears only local Performance runs and samples |
+| `list_transform_attempts` | Lists bounded, content-free transform attempts |
+| `arm_next_transform_diagnostic_capture` | Arms one local exact-content capture for up to 10 minutes |
+| `get_transform_diagnostic_capture_status` | Reads the in-memory one-shot arm state |
+| `list_transform_diagnostic_captures` | Lists content-free capture summaries |
+| `get_transform_diagnostic_capture` | Returns one exact local capture for explicit review |
+| `delete_transform_diagnostic_capture` | Deletes one exact local capture |
 
 ## Log Files
 

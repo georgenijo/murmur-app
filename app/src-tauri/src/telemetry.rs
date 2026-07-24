@@ -231,6 +231,18 @@ fn is_safe_transform_string(key: &str, value: &str) -> bool {
                 | "review_pending"
                 | "applying"
         ),
+        "phase" => matches!(
+            value,
+            "host_model_verification"
+                | "helper_spawn"
+                | "helper_model_verification"
+                | "backend_initialization"
+                | "model_load"
+                | "ready_handshake"
+                | "request_receipt"
+                | "first_token"
+                | "generation"
+        ),
         "error_code" => matches!(
             value,
             "accessibility_denied"
@@ -244,6 +256,15 @@ fn is_safe_transform_string(key: &str, value: &str) -> bool {
                 | "busy"
                 | "invalid_request"
                 | "crashed"
+                | "model_verification_timeout"
+                | "model_load_timeout"
+                | "handshake_timeout"
+                | "generation_timeout"
+                | "helper_spawn_failed"
+                | "handshake_protocol_failed"
+                | "process_exit"
+                | "model_verification_failed"
+                | "model_load_failed"
                 | "model_unreadable"
                 | "timeout"
                 | "cancelled"

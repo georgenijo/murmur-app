@@ -9,6 +9,7 @@ pub mod overlay;
 pub mod performance;
 pub mod permissions;
 pub mod recording;
+pub mod transform_diagnostics;
 pub mod transform_model;
 pub mod transform_popover;
 pub mod tray;

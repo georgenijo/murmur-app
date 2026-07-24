@@ -8,6 +8,7 @@ import { EventRow } from './EventRow';
 import { PerformanceView } from './PerformanceView';
 import { RunsView } from './RunsView';
 import { ReportCompareView } from './ReportCompareView';
+import { TransformDiagnosticsView } from './TransformDiagnosticsView';
 import { LEVELS, STREAMS, type StreamName, type LevelName } from '../../lib/events';
 import {
   CORRELATION_FIELD_LABELS,
@@ -17,8 +18,8 @@ import {
   type CorrelationFilter,
 } from '../../lib/eventFilters';
 
-type Tab = 'events' | 'performance' | 'runs' | 'reports';
-const TABS: Tab[] = ['events', 'performance', 'runs', 'reports'];
+type Tab = 'events' | 'performance' | 'runs' | 'transforms' | 'reports';
+const TABS: Tab[] = ['events', 'performance', 'runs', 'transforms', 'reports'];
 
 export function LogViewerApp() {
   const { events, clear } = useEventStore();
@@ -233,6 +234,16 @@ export function LogViewerApp() {
             onClear={performance.clear}
             onShowEvents={showCorrelatedEvents}
           />
+        </div>
+      )}
+      {tab === 'transforms' && (
+        <div
+          role="tabpanel"
+          id="diagnostics-panel-transforms"
+          aria-labelledby="diagnostics-tab-transforms"
+          className="flex-1 overflow-y-auto"
+        >
+          <TransformDiagnosticsView />
         </div>
       )}
       <div

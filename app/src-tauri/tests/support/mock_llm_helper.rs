@@ -23,9 +23,31 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use murmur_local_llm_protocol::{
-    read_frame, write_frame, ErrorCode, FinishReason, HelperMessage, HostMessage, ModelIdentity,
-    MODEL_FD, PROTOCOL_NAME, PROTOCOL_VERSION,
+    read_frame, write_frame, DiagnosticPhase, ErrorCode, FinishReason, HelperMessage, HostMessage,
+    ModelIdentity, PhaseState, MODEL_FD, PROTOCOL_NAME, PROTOCOL_VERSION,
 };
+
+fn phase(
+    stdout: &mut impl Write,
+    nonce: &str,
+    request_id: Option<&str>,
+    diagnostic: DiagnosticPhase,
+    state: PhaseState,
+    duration_ms: Option<u64>,
+) {
+    let _ = write_frame(
+        stdout,
+        &HelperMessage::DiagnosticPhase {
+            protocol: PROTOCOL_NAME.to_string(),
+            version: PROTOCOL_VERSION,
+            session_nonce: nonce.to_string(),
+            request_id: request_id.map(str::to_string),
+            phase: diagnostic,
+            state,
+            duration_ms,
+        },
+    );
+}
 
 fn scenario() -> String {
     std::env::var("MOCK_SCENARIO").unwrap_or_else(|_| "happy".to_string())
@@ -71,6 +93,36 @@ fn main() {
     } else {
         session_nonce.clone()
     };
+    for diagnostic in [
+        DiagnosticPhase::HelperModelVerification,
+        DiagnosticPhase::BackendInitialization,
+        DiagnosticPhase::ModelLoad,
+    ] {
+        phase(
+            &mut stdout,
+            &session_nonce,
+            None,
+            diagnostic,
+            PhaseState::Started,
+            None,
+        );
+        if scenario == format!("fail_{diagnostic:?}").to_ascii_lowercase() {
+            std::process::exit(70);
+        }
+        phase(
+            &mut stdout,
+            &session_nonce,
+            None,
+            diagnostic,
+            PhaseState::Completed,
+            Some(1),
+        );
+    }
+    if let Ok(ms) = std::env::var("MOCK_READY_DELAY_MS") {
+        if let Ok(ms) = ms.parse::<u64>() {
+            std::thread::sleep(Duration::from_millis(ms));
+        }
+    }
     let ready = HelperMessage::Ready {
         protocol: PROTOCOL_NAME.to_string(),
         version: PROTOCOL_VERSION,
@@ -114,6 +166,14 @@ fn main() {
     while let Ok(Some(message)) = rx.recv() {
         match message {
             HostMessage::Transform { request_id, .. } => {
+                phase(
+                    &mut stdout,
+                    &session_nonce,
+                    Some(&request_id),
+                    DiagnosticPhase::RequestReceipt,
+                    PhaseState::Completed,
+                    Some(0),
+                );
                 match scenario.as_str() {
                     "crash_on_transform" => std::process::exit(101),
                     "malformed_on_transform" => {
@@ -165,6 +225,14 @@ fn main() {
                                 std::thread::sleep(Duration::from_millis(ms));
                             }
                         }
+                        phase(
+                            &mut stdout,
+                            &session_nonce,
+                            Some(&request_id),
+                            DiagnosticPhase::FirstToken,
+                            PhaseState::Completed,
+                            Some(1),
+                        );
                         let result = HelperMessage::Result {
                             protocol: PROTOCOL_NAME.to_string(),
                             version: PROTOCOL_VERSION,

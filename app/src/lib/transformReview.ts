@@ -21,6 +21,15 @@ export type ReviewErrorCode =
   | 'timeout'
   | 'output_invalid'
   | 'crashed'
+  | 'model_verification_timeout'
+  | 'model_load_timeout'
+  | 'handshake_timeout'
+  | 'generation_timeout'
+  | 'helper_spawn_failed'
+  | 'handshake_protocol_failed'
+  | 'process_exit'
+  | 'model_verification_failed'
+  | 'model_load_failed'
   | 'disabled'
   | 'busy'
   | 'no_instruction'
@@ -40,6 +49,10 @@ const REVIEW_STATES: readonly ReviewState[] = [
 
 const REVIEW_ERROR_CODES: readonly ReviewErrorCode[] = [
   'model_not_downloaded', 'model_unreadable', 'timeout', 'output_invalid', 'crashed',
+  'model_verification_timeout', 'model_load_timeout', 'handshake_timeout',
+  'generation_timeout', 'helper_spawn_failed', 'handshake_protocol_failed',
+  'process_exit', 'model_verification_failed',
+  'model_load_failed',
   'disabled', 'busy', 'no_instruction', 'no_selection', 'too_large', 'ax_unavailable',
   'accessibility_denied', 'target_gone', 'selection_changed',
   'clipboard_unavailable', 'paste_failed', 'not_applied',
@@ -60,6 +73,15 @@ export const REVIEW_ERROR_COPY: Record<ReviewErrorCode, string> = {
   timeout: 'Timed out',
   output_invalid: 'Model gave no usable output',
   crashed: 'Sidecar crashed — original text untouched',
+  model_verification_timeout: 'Model verification timed out',
+  model_load_timeout: 'Local model loading timed out',
+  handshake_timeout: 'Local helper did not become ready in time',
+  generation_timeout: 'Generation timed out',
+  helper_spawn_failed: 'Local helper could not start',
+  handshake_protocol_failed: 'Local helper identity or protocol check failed',
+  process_exit: 'Local helper exited — original text untouched',
+  model_verification_failed: 'Local model verification failed',
+  model_load_failed: 'Local model or Metal backend failed to load',
   disabled: 'Transform temporarily disabled — try again shortly',
   busy: 'Busy — try again in a moment',
   no_instruction: "Didn't catch an instruction — hold the key and speak",

@@ -35,6 +35,15 @@ vi.mock('../../lib/hooks/usePerformanceHealth', () => ({
   }),
 }));
 
+vi.mock('../../lib/transformDiagnostics', () => ({
+  listTransformAttempts: vi.fn(async () => []),
+  listTransformCaptures: vi.fn(async () => []),
+  getCaptureArmStatus: vi.fn(async () => ({ armed: false, expiresAtMs: null })),
+  armNextTransformCapture: vi.fn(),
+  getTransformCapture: vi.fn(),
+  deleteTransformCapture: vi.fn(),
+}));
+
 import { LogViewerApp } from './LogViewerApp';
 
 describe('LogViewerApp shared diagnostics shell', () => {
@@ -53,9 +62,15 @@ describe('LogViewerApp shared diagnostics shell', () => {
     container.remove();
   });
 
-  it('keeps Events, Performance, and Runs and adds an accessible Reports panel', async () => {
+  it('keeps the diagnostics views and adds accessible Transforms and Reports panels', async () => {
     const tabs = Array.from(container.querySelectorAll('[role="tab"]'));
-    expect(tabs.map(tab => tab.textContent)).toEqual(['Events', 'Performance', 'Runs', 'Reports']);
+    expect(tabs.map(tab => tab.textContent)).toEqual([
+      'Events',
+      'Performance',
+      'Runs',
+      'Transforms',
+      'Reports',
+    ]);
     expect(container.textContent).not.toContain('Metrics');
 
     await act(async () => (tabs[1] as HTMLButtonElement).click());
@@ -67,8 +82,13 @@ describe('LogViewerApp shared diagnostics shell', () => {
     expect(tabs[2].getAttribute('aria-selected')).toBe('true');
 
     await act(async () => (tabs[3] as HTMLButtonElement).click());
-    expect(container.querySelector('#diagnostics-panel-reports')).not.toBeNull();
+    expect(container.querySelector('#diagnostics-panel-transforms')).not.toBeNull();
     expect(tabs[3].getAttribute('aria-selected')).toBe('true');
+    expect(container.textContent).toContain('Transform diagnostics');
+
+    await act(async () => (tabs[4] as HTMLButtonElement).click());
+    expect(container.querySelector('#diagnostics-panel-reports')).not.toBeNull();
+    expect(tabs[4].getAttribute('aria-selected')).toBe('true');
     expect(container.textContent).toContain('Report comparison');
   });
 });
