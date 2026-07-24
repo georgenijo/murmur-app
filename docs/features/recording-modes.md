@@ -111,6 +111,10 @@ Only the expired second-tap window is surfaced. Existing structured diagnostics 
 - `DetectorMode` enum (`DoubleTap` | `HoldDown`) determines which detector processes events
 - Separate `Mutex`-wrapped detectors: `DOUBLE_TAP_DETECTOR` and `HOLD_DOWN_DETECTOR`
 
+### Escape cancellation
+
+The shared rdev listener emits `escape-cancel` before mode-specific handling and resets the hold-down, double-tap, and transform detectors so a later trigger-key release cannot advance a cancelled flow. Its content-free payload is `{ transformPassId }`: the exact active/queued transform pass for Capturing, Listening, Thinking, or ReviewPending, or `null` when Escape did not target a transform. Rust snapshots active ownership on both sides of the status read and fails closed if it changes, then publishes the exact pass's cancellation marker before emitting. `useTransformFlow` mirrors the detector reset only when that ID still matches its local held pass, so a delayed Escape for pass N cannot reset pass N+1. The main-window cancellation listener sends `cancel_transform({ transformPassId })` without an asynchronous status lookup; the backend no-ops unless that exact pass still owns the flow. Including ReviewPending closes the transition-before-focus gap; once the Ready/Failed popover is focusable its local Esc may race the global route, but both carry the same exact pass ID and duplicate cancellation is an idempotent no-op. Applying is left untouched, and a `null` payload falls back to dictation recording/processing cancellation. In-flight duplicate suppression is bounded and keyed per target, so pass N cannot suppress cancellation of N+1.
+
 ### Tests
 
 46 unit tests in `keyboard.rs` (`#[cfg(test)] mod tests`). Run with:

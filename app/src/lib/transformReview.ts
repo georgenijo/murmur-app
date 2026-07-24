@@ -104,6 +104,7 @@ export const REVIEW_ERROR_COPY: Record<ReviewErrorCode, string> = {
  */
 export interface TransformStateChangedEvent {
   state: ReviewState;
+  transformPassId: number | null;
   errorCode?: ReviewErrorCode;
 }
 
@@ -119,7 +120,15 @@ export interface TransformStateChangedEvent {
 export function isTransformStateChangedEvent(v: unknown): v is TransformStateChangedEvent {
   if (typeof v !== 'object' || v === null) return false;
   const o = v as Record<string, unknown>;
-  return isReviewState(o.state);
+  return isReviewState(o.state)
+    && (
+      o.transformPassId === null
+      || (
+        typeof o.transformPassId === 'number'
+        && Number.isSafeInteger(o.transformPassId)
+        && o.transformPassId > 0
+      )
+    );
 }
 
 /**

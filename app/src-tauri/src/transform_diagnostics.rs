@@ -5,7 +5,7 @@
 //! separate local store with restrictive permissions and bounded retention.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -132,6 +132,10 @@ struct Inner {
     root: Option<PathBuf>,
     attempts: Vec<TransformAttemptV1>,
     active: HashMap<u64, TransformAttemptV1>,
+    /// Terminal pass IDs from this process only. Transform pass IDs are
+    /// process-local and restart at 1, so persisted attempts must never seed
+    /// this set during initialization.
+    finished: BTreeSet<u64>,
     armed_until_ms: Option<i64>,
     captures: HashMap<u64, DiagnosticCaptureV1>,
 }
@@ -159,6 +163,14 @@ impl TransformDiagnostics {
         }
         let now = now_ms();
         let mut inner = self.inner.lock_or_recover();
+        // One physical pass owns one diagnostics attempt. A delayed duplicate
+        // start command must neither replace live phase data nor resurrect a
+        // terminal pass as a new inProgress entry.
+        if inner.active.contains_key(&transform_pass_id)
+            || inner.finished.contains(&transform_pass_id)
+        {
+            return;
+        }
         inner.active.insert(
             transform_pass_id,
             TransformAttemptV1::new(transform_pass_id, now),
@@ -184,6 +196,49 @@ impl TransformDiagnostics {
                 },
             );
         }
+    }
+
+    /// Atomically terminalize a still-active attempt with exactly one terminal
+    /// phase. Returns false when another path already terminalized this pass.
+    ///
+    /// This is used by queued start cancellation/supersession, where active
+    /// transform ownership may already belong to a newer pass. Diagnostics
+    /// ownership is keyed independently by `transform_pass_id`, so clearing or
+    /// retaining the app's active owner must never strand this attempt.
+    pub fn terminalize_active(&self, transform_pass_id: u64, phase: &str, outcome: &str) -> bool {
+        let mut inner = self.inner.lock_or_recover();
+        let Some(mut attempt) = inner.active.remove(&transform_pass_id) else {
+            return false;
+        };
+        let now = now_ms();
+        let terminal_phase = TransformPhaseV1 {
+            phase: phase.to_string(),
+            outcome: "completed".to_string(),
+            duration_ms: None,
+            error_code: None,
+        };
+        attempt.phases.push(terminal_phase.clone());
+        attempt.finished_at_ms = Some(now);
+        attempt.outcome = outcome.to_string();
+        inner.attempts.push(attempt);
+        remember_finished(&mut inner, transform_pass_id);
+        inner.attempts.sort_by_key(|attempt| attempt.started_at_ms);
+        if inner.attempts.len() > MAX_ATTEMPTS {
+            let excess = inner.attempts.len() - MAX_ATTEMPTS;
+            inner.attempts.drain(0..excess);
+        }
+        let _ = write_attempts(&inner);
+
+        let capture = inner.captures.get_mut(&transform_pass_id).map(|capture| {
+            capture.phases.push(terminal_phase);
+            capture.outcome = outcome.to_string();
+            capture.clone()
+        });
+        if let Some(capture) = capture {
+            let _ = write_capture(&inner, &capture);
+            let _ = prune_captures(&mut inner);
+        }
+        true
     }
 
     pub fn phase(
@@ -346,6 +401,7 @@ impl TransformDiagnostics {
             attempt.finished_at_ms = Some(now);
             attempt.outcome = outcome.to_string();
             inner.attempts.push(attempt);
+            remember_finished(&mut inner, transform_pass_id);
             inner.attempts.sort_by_key(|attempt| attempt.started_at_ms);
             if inner.attempts.len() > MAX_ATTEMPTS {
                 let excess = inner.attempts.len() - MAX_ATTEMPTS;
@@ -454,6 +510,13 @@ impl TransformDiagnostics {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(_) => Err("diagnostic capture could not be deleted".to_string()),
         }
+    }
+}
+
+fn remember_finished(inner: &mut Inner, transform_pass_id: u64) {
+    inner.finished.insert(transform_pass_id);
+    while inner.finished.len() > MAX_ATTEMPTS {
+        inner.finished.pop_first();
     }
 }
 
@@ -866,6 +929,141 @@ mod tests {
         assert_eq!(attempt.outcome, "cancelled");
         let capture = store.list_captures().unwrap().pop().unwrap();
         assert_eq!(capture.outcome, "cancelled");
+    }
+
+    #[test]
+    fn terminalize_active_is_idempotent_and_begin_cannot_resurrect_the_pass() {
+        let store = TransformDiagnostics::default();
+        store.begin(91);
+        store.begin(91);
+
+        assert!(store.terminalize_active(91, "cancellation", "cancelled"));
+        assert!(!store.terminalize_active(91, "supersession", "superseded"));
+        store.begin(91);
+
+        let inner = store.inner.lock_or_recover();
+        assert!(inner.active.is_empty());
+        assert_eq!(inner.attempts.len(), 1);
+        assert_eq!(inner.attempts[0].outcome, "cancelled");
+        assert_eq!(
+            inner.attempts[0]
+                .phases
+                .iter()
+                .filter(|phase| phase.phase == "cancellation")
+                .count(),
+            1
+        );
+        assert!(!inner.attempts[0]
+            .phases
+            .iter()
+            .any(|phase| phase.phase == "supersession"));
+    }
+
+    #[test]
+    fn terminalized_attempts_are_capped_and_leave_no_active_entries() {
+        let store = TransformDiagnostics::default();
+        for transform_pass_id in 1..=(MAX_ATTEMPTS as u64 + 25) {
+            store.begin(transform_pass_id);
+            assert!(store.terminalize_active(transform_pass_id, "supersession", "superseded"));
+        }
+
+        let inner = store.inner.lock_or_recover();
+        assert!(inner.active.is_empty());
+        assert_eq!(inner.attempts.len(), MAX_ATTEMPTS);
+        assert_eq!(inner.finished.len(), MAX_ATTEMPTS);
+        assert_eq!(
+            inner
+                .attempts
+                .first()
+                .map(|attempt| attempt.transform_pass_id),
+            Some(26)
+        );
+        assert_eq!(inner.finished.first().copied(), Some(26));
+        assert!(inner
+            .attempts
+            .iter()
+            .all(|attempt| attempt.outcome == "superseded"));
+    }
+
+    #[test]
+    fn persisted_process_local_pass_id_can_begin_again_after_restart() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("diagnostics");
+
+        let first_process = TransformDiagnostics::default();
+        first_process.initialize(root.clone()).unwrap();
+        first_process.begin(1);
+        first_process.finish(1, "cancelled");
+        drop(first_process);
+
+        let next_process = TransformDiagnostics::default();
+        next_process.initialize(root).unwrap();
+        next_process.begin(1);
+        assert!(next_process.inner.lock_or_recover().active.contains_key(&1));
+        assert!(next_process.terminalize_active(1, "cancellation", "cancelled"));
+
+        let attempts = next_process.list_attempts(10).attempts;
+        assert_eq!(
+            attempts
+                .iter()
+                .filter(|attempt| attempt.transform_pass_id == 1)
+                .count(),
+            2
+        );
+        assert!(attempts
+            .iter()
+            .all(|attempt| attempt.finished_at_ms.is_some()));
+    }
+
+    #[test]
+    fn late_updates_for_reused_persisted_pass_id_target_latest_attempt_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("diagnostics");
+
+        let first_process = TransformDiagnostics::default();
+        first_process.initialize(root.clone()).unwrap();
+        first_process.begin(1);
+        first_process.phase(1, "firstProcess", "completed", None, None);
+        first_process.finish(1, "ready");
+        drop(first_process);
+
+        let next_process = TransformDiagnostics::default();
+        next_process.initialize(root).unwrap();
+        next_process.begin(1);
+        next_process.phase(1, "nextProcess", "completed", None, None);
+        next_process.finish(1, "ready");
+
+        // Mirrors late cancellation/unwind metadata after this process has
+        // already persisted its attempt. Reverse lookup must attach to the
+        // newest duplicate numeric ID, never the older process's record.
+        next_process.phase(1, "lateFollowUp", "completed", None, None);
+        next_process.finish(1, "cancelled");
+
+        let inner = next_process.inner.lock_or_recover();
+        let attempts = inner
+            .attempts
+            .iter()
+            .filter(|attempt| attempt.transform_pass_id == 1)
+            .collect::<Vec<_>>();
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(attempts[0].outcome, "ready");
+        assert!(attempts[0]
+            .phases
+            .iter()
+            .any(|phase| phase.phase == "firstProcess"));
+        assert!(!attempts[0]
+            .phases
+            .iter()
+            .any(|phase| phase.phase == "lateFollowUp"));
+        assert_eq!(attempts[1].outcome, "cancelled");
+        assert!(attempts[1]
+            .phases
+            .iter()
+            .any(|phase| phase.phase == "nextProcess"));
+        assert!(attempts[1]
+            .phases
+            .iter()
+            .any(|phase| phase.phase == "lateFollowUp"));
     }
 
     #[cfg(unix)]

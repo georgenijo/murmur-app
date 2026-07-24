@@ -74,7 +74,9 @@ describe('useTransformReviewDriver (real driver)', () => {
     expect(contentCalls()).toBe(0);
 
     await act(async () => {
-      mocks.listeners['transform-state-changed']?.({ payload: { state: 'ready' } });
+      mocks.listeners['transform-state-changed']?.({
+        payload: { state: 'ready', transformPassId: 41 },
+      });
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -101,7 +103,11 @@ describe('useTransformReviewDriver (real driver)', () => {
 
     await act(async () => {
       mocks.listeners['transform-state-changed']?.({
-        payload: { state: 'failed', errorCode: 'model_not_downloaded' },
+        payload: {
+          state: 'failed',
+          errorCode: 'model_not_downloaded',
+          transformPassId: 42,
+        },
       });
       await Promise.resolve();
     });
@@ -123,6 +129,12 @@ describe('useTransformReviewDriver (real driver)', () => {
       await Promise.resolve();
     });
 
+    await act(async () => {
+      mocks.listeners['transform-state-changed']?.({
+        payload: { state: 'ready', transformPassId: 43 },
+      });
+      await Promise.resolve();
+    });
     await act(async () => { current!.approve(); });
     await act(async () => { current!.retry(); });
     await act(async () => { current!.cancel(); });
@@ -131,6 +143,50 @@ describe('useTransformReviewDriver (real driver)', () => {
     expect(names).toContain('approve_transform');
     expect(names).toContain('retry_transform_instruction');
     expect(names).toContain('cancel_transform');
+    expect(mocks.invoke).toHaveBeenCalledWith('cancel_transform', {
+      transformPassId: 43,
+    });
+  });
+
+  it('keeps delayed and duplicate local cancellation scoped to its rendered pass', async () => {
+    mocks.invoke.mockResolvedValue(undefined);
+
+    function Harness() {
+      current = useTransformReviewDriver(true);
+      return null;
+    }
+
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      mocks.listeners['transform-state-changed']?.({
+        payload: { state: 'ready', transformPassId: 51 },
+      });
+      await Promise.resolve();
+    });
+    const staleCancel = current!.cancel;
+
+    await act(async () => {
+      mocks.listeners['transform-state-changed']?.({
+        payload: { state: 'ready', transformPassId: 52 },
+      });
+      await Promise.resolve();
+    });
+    await act(async () => {
+      staleCancel();
+      staleCancel();
+      current!.cancel();
+    });
+
+    const cancelCalls = mocks.invoke.mock.calls.filter(([command]) => command === 'cancel_transform');
+    expect(cancelCalls).toEqual([
+      ['cancel_transform', { transformPassId: 51 }],
+      ['cancel_transform', { transformPassId: 51 }],
+      ['cancel_transform', { transformPassId: 52 }],
+    ]);
   });
 
   it('clears content on a backend-initiated transform-review-hidden signal', async () => {
@@ -149,7 +205,9 @@ describe('useTransformReviewDriver (real driver)', () => {
 
     // Populate content via a normal state change first.
     await act(async () => {
-      mocks.listeners['transform-state-changed']?.({ payload: { state: 'ready' } });
+      mocks.listeners['transform-state-changed']?.({
+        payload: { state: 'ready', transformPassId: 44 },
+      });
       await Promise.resolve();
       await Promise.resolve();
     });

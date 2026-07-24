@@ -27,8 +27,8 @@
 //! ## Privacy (hard invariant)
 //!
 //! Instruction / original / proposed text NEVER reaches an event payload, a
-//! log line, or telemetry. `transform-state-changed` carries only
-//! `{ state, errorCode }` (both stable enums). The review text is pulled by the
+//! log line, or telemetry. `transform-state-changed` carries only content-free
+//! `{ state, errorCode, transformPassId }` metadata. The review text is pulled by the
 //! popover window alone via `get_transform_review_content`. The state-machine
 //! action list and every `emit_*` here are structurally incapable of carrying
 //! that text.
@@ -628,7 +628,7 @@ pub struct AnchorRect {
 /// Every side effect the async core performs, behind a trait so a recording
 /// fake can stand in for Tauri in tests.
 pub(crate) trait FlowEffects: Send + Sync {
-    /// Emit `transform-state-changed` — state name + optional error code ONLY.
+    /// Emit content-free `transform-state-changed` correlation/state metadata.
     fn emit_state(&self, state: ReviewState, error_code: Option<&str>);
     fn show_popover(&self, anchor: Option<AnchorRect>);
     fn hide_popover(&self);
@@ -1110,11 +1110,20 @@ pub(crate) struct TauriFlowEffects<'a> {
 impl FlowEffects for TauriFlowEffects<'_> {
     fn emit_state(&self, state: ReviewState, error_code: Option<&str>) {
         use tauri::Emitter;
-        // Payload carries ONLY the state name and an optional stable error
-        // code — never any instruction/original/proposed text.
+        // Payload carries only content-free correlation/state metadata. The
+        // pass ID lets the focusable popover scope its local Escape/Cancel to
+        // the review it rendered, so a delayed dismiss cannot cancel N+1.
+        let transform_pass_id = self.state.app_state.active_transform_pass_id();
         let payload = match error_code {
-            Some(code) => serde_json::json!({ "state": state.as_str(), "errorCode": code }),
-            None => serde_json::json!({ "state": state.as_str() }),
+            Some(code) => serde_json::json!({
+                "state": state.as_str(),
+                "errorCode": code,
+                "transformPassId": transform_pass_id,
+            }),
+            None => serde_json::json!({
+                "state": state.as_str(),
+                "transformPassId": transform_pass_id,
+            }),
         };
         let _ = self.app.emit("transform-state-changed", payload);
     }
@@ -1405,6 +1414,70 @@ async fn transcribe_instruction(
 // Tauri commands (the thin wrappers the frontend calls).
 // ===========================================================================
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TransformStartPassDisposition {
+    Current,
+    Cancelled,
+    Stale,
+}
+
+fn transform_start_pass_disposition(
+    app_state: &AppState,
+    transform_pass_id: u64,
+) -> TransformStartPassDisposition {
+    if app_state.is_transform_pass_cancelled(transform_pass_id) {
+        TransformStartPassDisposition::Cancelled
+    } else if app_state.active_transform_pass_id() == Some(transform_pass_id) {
+        TransformStartPassDisposition::Current
+    } else {
+        TransformStartPassDisposition::Stale
+    }
+}
+
+fn claim_transform_start_status(
+    app_state: &AppState,
+    transform_pass_id: u64,
+) -> Result<(), &'static str> {
+    match transform_start_pass_disposition(app_state, transform_pass_id) {
+        TransformStartPassDisposition::Cancelled => return Err("cancelled"),
+        TransformStartPassDisposition::Stale => return Err("stale_pass"),
+        TransformStartPassDisposition::Current => {}
+    }
+    if !app_state.try_transition_transform_status(TransformStatus::Idle, TransformStatus::Capturing)
+    {
+        return Err("transform_busy");
+    }
+    // Escape publishes the exact pass cancellation marker before emitting the
+    // asynchronous frontend event. Re-check after the claim to close the tiny
+    // race where the marker lands between the pre-claim check and
+    // Idle -> Capturing.
+    if app_state.is_transform_pass_cancelled(transform_pass_id) {
+        let _ = app_state
+            .try_transition_transform_status(TransformStatus::Capturing, TransformStatus::Idle);
+        Err("cancelled")
+    } else {
+        Ok(())
+    }
+}
+
+fn terminalize_cancelled_transform_start(
+    app_state: &AppState,
+    diagnostics: &crate::transform_diagnostics::TransformDiagnostics,
+    transform_pass_id: u64,
+) -> bool {
+    let cleared_active_owner = app_state.clear_transform_pass(transform_pass_id);
+    let (phase, outcome) = if cleared_active_owner {
+        ("cancellation", "cancelled")
+    } else {
+        ("supersession", "superseded")
+    };
+    let terminalized = diagnostics.terminalize_active(transform_pass_id, phase, outcome);
+    if terminalized {
+        crate::transform_trace::resolution(transform_pass_id, outcome, "start", None);
+    }
+    terminalized
+}
+
 /// Begin a transform pass: check preconditions, claim the flow, capture the
 /// selection, and (on success) arm the instruction audio.
 ///
@@ -1428,7 +1501,11 @@ pub(crate) async fn start_transform_capture(
 
     let claim_result: Result<(), &'static str> = {
         let dictation = state.app_state.dictation.lock_or_recover();
-        if state.app_state.active_transform_pass_id() != Some(transform_pass_id) {
+        if transform_start_pass_disposition(&state.app_state, transform_pass_id)
+            == TransformStartPassDisposition::Cancelled
+        {
+            Err("cancelled")
+        } else if state.app_state.active_transform_pass_id() != Some(transform_pass_id) {
             Err("stale_pass")
         } else if dictation.status != DictationStatus::Idle {
             tracing::info!(target: "transform", transform_pass_id, error_code = "dictation_active", "start_transform_capture ignored");
@@ -1448,17 +1525,18 @@ pub(crate) async fn start_transform_capture(
             Err("runtime_busy")
         } else {
             // Atomic Idle -> Capturing under the dictation lock.
-            if state
-                .app_state
-                .try_transition_transform_status(TransformStatus::Idle, TransformStatus::Capturing)
-            {
-                Ok(())
-            } else {
-                Err("transform_busy")
-            }
+            claim_transform_start_status(&state.app_state, transform_pass_id)
         }
     };
     if let Err(error_code) = claim_result {
+        if error_code == "cancelled" {
+            terminalize_cancelled_transform_start(
+                &state.app_state,
+                &state.transform_diagnostics,
+                transform_pass_id,
+            );
+            return Ok(());
+        }
         state.transform_diagnostics.phase(
             transform_pass_id,
             "start",
@@ -2235,33 +2313,55 @@ pub(crate) async fn approve_transform(
 /// and hide the popover. Clearing the session before hide means the next
 /// `get_transform_review_content` returns empty — no stale React flash of prior
 /// selection text.
+fn resolve_transform_cancel_pass(
+    active_transform_pass_id: Option<u64>,
+    requested_transform_pass_id: Option<u64>,
+) -> Option<u64> {
+    match requested_transform_pass_id {
+        Some(requested) if active_transform_pass_id == Some(requested) => Some(requested),
+        Some(_) => None,
+        None => active_transform_pass_id,
+    }
+}
+
 #[tauri::command]
-pub(crate) async fn cancel_transform(
+pub(crate) fn cancel_transform(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, crate::State>,
     transform_pass_id: Option<u64>,
 ) -> Result<(), String> {
+    // Hold the status lock across exact-pass validation and teardown. The rdev
+    // start path reads this same lock before activating a new pass, so it
+    // cannot observe Idle and install N+1 while cancellation for N is still
+    // clearing audio/session/popover state.
+    let mut transform_status = state.app_state.transform_status.lock_or_recover();
     let active_pass_id = state.app_state.active_transform_pass_id();
-    if transform_pass_id.is_some() && transform_pass_id != active_pass_id {
+    let Some(transform_pass_id) = resolve_transform_cancel_pass(active_pass_id, transform_pass_id)
+    else {
+        return Ok(());
+    };
+    if !state.app_state.clear_transform_pass(transform_pass_id) {
         return Ok(());
     }
-    let transform_pass_id = active_pass_id.unwrap_or(0);
-    if transform_pass_id != 0 {
-        // Publish the terminal winner before any awaitable/main-thread
-        // teardown. A concurrent selection capture can return immediately
-        // after status becomes Idle and must not persist a failed outcome for
-        // a pass the user already cancelled.
-        state
-            .app_state
-            .mark_transform_pass_cancelled(transform_pass_id);
-    }
-    let prev = state.app_state.transform_status();
-    let _performance_guard = (transform_pass_id != 0).then(|| {
-        state.performance.guard(
-            transform_correlation(transform_pass_id),
-            performance_stage_for_transform_status(prev),
-        )
-    });
+    // Publish the terminal winner before any awaitable/main-thread teardown.
+    // A concurrent selection capture can return immediately after status
+    // becomes Idle and must not persist a failed outcome for a pass the user
+    // already cancelled.
+    state
+        .app_state
+        .mark_transform_pass_cancelled(transform_pass_id);
+    let prev = *transform_status;
+    *transform_status = TransformStatus::Idle;
+    crate::transform_trace::transition(
+        transform_pass_id,
+        prev.as_str(),
+        TransformStatus::Idle.as_str(),
+        true,
+    );
+    let _performance_guard = state.performance.guard(
+        transform_correlation(transform_pass_id),
+        performance_stage_for_transform_status(prev),
+    );
 
     // Cooperative cancel first: the blocking spawn_blocking work only clears
     // BusyGuard when it finishes, so abort alone would leave busy held up to
@@ -2311,9 +2411,8 @@ pub(crate) async fn cancel_transform(
         }
     }
 
-    // Force Idle even from Applying — ApplyingGuard drop will no-op once status
-    // is no longer Applying (try_transition).
-    state.app_state.set_transform_status(TransformStatus::Idle);
+    // Status is already Idle under `transform_status`; ApplyingGuard drop will
+    // no-op once this lock is released instead of resurrecting ReviewPending.
     transform_apply::clear_session(&state.app_state);
     let _ = crate::commands::transform_popover::hide_popover_internal(&app_handle);
     // Backend-initiated hide (short-tap cancel, mid-hold cleanup, or the
@@ -2338,7 +2437,6 @@ pub(crate) async fn cancel_transform(
         state
             .transform_diagnostics
             .finish(transform_pass_id, "cancelled");
-        state.app_state.clear_transform_pass(transform_pass_id);
     }
     Ok(())
 }
@@ -2492,7 +2590,7 @@ pub(crate) async fn undo_transform_and_close(
             // dead Retry — the applied text would become permanently
             // un-undoable. Instead re-emit `applied` carrying the error code so
             // the Applied UI (Undo button) stays reachable while surfacing the
-            // failure. Privacy: state event stays {state, errorCode} only.
+            // failure. Privacy: the state event stays content-free.
             fx.emit_state(ReviewState::Applied, Some(apply_error_code(error)));
             // Re-arm the linger so the error window is deterministic: the
             // approve-time timer may be about to fire (hiding the popover
@@ -3388,6 +3486,131 @@ mod tests {
 
         assert_eq!(app_state.active_transform_pass_id(), Some(41));
         assert!(capture_abort_was_cancelled(&app_state, 41));
+    }
+
+    #[test]
+    fn cancelled_queued_start_terminalizes_once_and_later_pass_can_claim() {
+        let app_state = AppState::default();
+        let diagnostics = crate::transform_diagnostics::TransformDiagnostics::default();
+
+        diagnostics.begin(41);
+        app_state.activate_transform_pass(41);
+        app_state.mark_transform_pass_cancelled(41);
+
+        assert_eq!(
+            transform_start_pass_disposition(&app_state, 41),
+            TransformStartPassDisposition::Cancelled
+        );
+        assert_eq!(
+            claim_transform_start_status(&app_state, 41),
+            Err("cancelled")
+        );
+        assert_eq!(app_state.transform_status(), TransformStatus::Idle);
+        assert!(terminalize_cancelled_transform_start(
+            &app_state,
+            &diagnostics,
+            41
+        ));
+        assert!(!terminalize_cancelled_transform_start(
+            &app_state,
+            &diagnostics,
+            41
+        ));
+        assert_eq!(app_state.transform_status(), TransformStatus::Idle);
+        assert_eq!(app_state.active_transform_pass_id(), None);
+
+        let attempts = diagnostics.list_attempts(10).attempts;
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(attempts[0].transform_pass_id, 41);
+        assert_eq!(attempts[0].outcome, "cancelled");
+        assert_eq!(
+            attempts[0]
+                .phases
+                .iter()
+                .filter(|phase| phase.phase == "cancellation")
+                .count(),
+            1
+        );
+
+        app_state.activate_transform_pass(42);
+        assert_eq!(
+            transform_start_pass_disposition(&app_state, 42),
+            TransformStartPassDisposition::Current
+        );
+        assert_eq!(claim_transform_start_status(&app_state, 42), Ok(()));
+        assert_eq!(app_state.transform_status(), TransformStatus::Capturing);
+    }
+
+    #[test]
+    fn delayed_cancelled_start_terminalizes_as_superseded_without_clearing_newer_owner() {
+        let app_state = AppState::default();
+        let diagnostics = crate::transform_diagnostics::TransformDiagnostics::default();
+
+        diagnostics.begin(51);
+        app_state.mark_transform_pass_cancelled(51);
+        app_state.activate_transform_pass(52);
+
+        assert!(terminalize_cancelled_transform_start(
+            &app_state,
+            &diagnostics,
+            51
+        ));
+        assert!(!terminalize_cancelled_transform_start(
+            &app_state,
+            &diagnostics,
+            51
+        ));
+        assert_eq!(app_state.active_transform_pass_id(), Some(52));
+
+        let attempts = diagnostics.list_attempts(10).attempts;
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(attempts[0].transform_pass_id, 51);
+        assert_eq!(attempts[0].outcome, "superseded");
+        assert_eq!(
+            attempts[0]
+                .phases
+                .iter()
+                .filter(|phase| phase.phase == "supersession")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn scoped_transform_cancel_never_resolves_to_a_different_pass() {
+        assert_eq!(resolve_transform_cancel_pass(Some(61), Some(61)), Some(61));
+        // A duplicate delivery after the first exact cancellation cleared N
+        // is an idempotent no-op.
+        assert_eq!(resolve_transform_cancel_pass(None, Some(61)), None);
+        // The same delayed duplicate must also leave a newly active N+1 alone.
+        assert_eq!(resolve_transform_cancel_pass(Some(62), Some(61)), None);
+        assert_eq!(resolve_transform_cancel_pass(Some(62), None), Some(62));
+        assert_eq!(resolve_transform_cancel_pass(None, None), None);
+    }
+
+    #[test]
+    fn queued_start_guard_rejects_cancelled_and_unrelated_stale_passes() {
+        let app_state = AppState::default();
+        app_state.activate_transform_pass(8);
+        app_state.mark_transform_pass_cancelled(7);
+
+        assert_eq!(
+            transform_start_pass_disposition(&app_state, 7),
+            TransformStartPassDisposition::Cancelled
+        );
+        assert_eq!(
+            transform_start_pass_disposition(&app_state, 6),
+            TransformStartPassDisposition::Cancelled
+        );
+        assert_eq!(
+            transform_start_pass_disposition(&app_state, 9),
+            TransformStartPassDisposition::Stale
+        );
+        assert_eq!(
+            transform_start_pass_disposition(&app_state, 8),
+            TransformStartPassDisposition::Current
+        );
+        assert_eq!(app_state.transform_status(), TransformStatus::Idle);
     }
 
     // ---- Spec-by-test divergence points (finding 8) ------------------------
