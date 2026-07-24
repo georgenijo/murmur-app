@@ -10,7 +10,7 @@ Binding runtime ADR: [docs/decisions/2026-07-20-signed-local-llm-sidecar.md](../
 2. Host freezes an AX selection snapshot (secure fields refused), shows the review popover in **listening**, arms mic for the instruction only.
 3. On release (≥300ms hold): stop mic → cleanup-only ASR on the instruction → expand built-in preset or saved transform name if matched → signed local-LLM sidecar proposes a rewrite.
 4. Popover shows **thinking** then **ready** (word diff). Events carry `{ state, errorCode }` only; instruction / original / proposed text are pulled via `get_transform_review_content`.
-5. **Approve** writes through `transform_apply` (AX set-value or paste fallback with clipboard restore). **Undo** restores the frozen original. Esc / short-tap cancels at every stage.
+5. **Approve** writes through `transform_apply` (AX set-value or paste fallback with clipboard restore). **Undo** restores the frozen original. Global Esc cancels the non-focusable Capturing/Listening/Thinking phases; once Ready or Failed makes the review popover focusable, its local Esc handler cancels instead. A short transform-key tap cancels the active hold. Applying is bounded and not keyboard-cancellable; after apply, use Undo.
 
 Dictation and transform are mutually exclusive (status guards both ways + sidecar busy + helper shutdown before recording).
 

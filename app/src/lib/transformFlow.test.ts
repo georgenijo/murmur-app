@@ -65,6 +65,27 @@ describe('reduceTransformFlow', () => {
     expect(step.command).toBe('start_transform_capture');
   });
 
+  it('reset makes a stale release harmless before the next press starts', () => {
+    const held: TransformFlowState = { holding: true, pressedAt: 1000, transformPassId: 7 };
+    const afterEscape = reduceTransformFlow(held, { type: 'reset' });
+
+    const staleRelease = reduceTransformFlow(afterEscape.state, {
+      type: 'released',
+      now: 1200,
+      transformPassId: 7,
+    });
+    expect(staleRelease.command).toBeNull();
+    expect(staleRelease.ignored).toBe('stray_release');
+
+    const nextPress = reduceTransformFlow(staleRelease.state, {
+      type: 'pressed',
+      now: 2000,
+      transformPassId: 8,
+    });
+    expect(nextPress.command).toBe('start_transform_capture');
+    expect(nextPress.transformPassId).toBe(8);
+  });
+
   it('a full press/release/press cycle drives start -> finish -> start', () => {
     let state = INITIAL_TRANSFORM_FLOW_STATE;
     let step = reduceTransformFlow(state, { type: 'pressed', now: 0, transformPassId: 1 });

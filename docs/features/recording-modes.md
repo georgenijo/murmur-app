@@ -111,6 +111,10 @@ Only the expired second-tap window is surfaced. Existing structured diagnostics 
 - `DetectorMode` enum (`DoubleTap` | `HoldDown`) determines which detector processes events
 - Separate `Mutex`-wrapped detectors: `DOUBLE_TAP_DETECTOR` and `HOLD_DOWN_DETECTOR`
 
+### Escape cancellation
+
+The shared rdev listener emits `escape-cancel` before mode-specific handling and resets the hold-down, double-tap, and transform detectors so a later trigger-key release cannot advance a cancelled flow. `useTransformFlow` mirrors that reset in its local press/release reducer because the reset detector intentionally emits no release event; a stale release is ignored and the next physical transform press starts normally. The main-window cancellation listener routes the same event by the current backend transform status: Capturing, Listening, and Thinking cancel through `cancel_transform`; ReviewPending stays owned by the focusable Ready/Failed popover's local Esc handler; Applying is left untouched; and Idle falls back to dictation recording/processing cancellation. One in-flight guard prevents key repeat from dispatching duplicate backend cancels.
+
 ### Tests
 
 46 unit tests in `keyboard.rs` (`#[cfg(test)] mod tests`). Run with:

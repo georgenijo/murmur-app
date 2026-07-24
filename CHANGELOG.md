@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Escape now cancels selected-text transforms during capture, instruction listening, and local-model thinking, while ready/failed reviews retain their existing popover-local Escape behavior (#347).
+
 ## [0.21.1] - 2026-07-23
 
 ### Fixed

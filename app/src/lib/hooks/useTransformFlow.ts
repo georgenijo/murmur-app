@@ -63,6 +63,7 @@ export function useTransformFlow({
     let cancelled = false;
     let unlistenPressed: (() => void) | null = null;
     let unlistenReleased: (() => void) | null = null;
+    let unlistenEscape: (() => void) | null = null;
 
     const deviceNameArg = () => {
       const mic = microphoneRef.current;
@@ -136,6 +137,23 @@ export function useTransformFlow({
       });
       if (cancelled) { unlistenPressed(); unlistenReleased(); return; }
 
+      unlistenEscape = await listen('escape-cancel', () => {
+        if (cancelled) return;
+        // Rust resets the transform detector and intentionally emits no
+        // transform-key-released event after Escape. Mirror that reset in the
+        // frontend reducer so the next physical press is not mistaken for a
+        // double-press. Backend cancellation remains solely owned by
+        // useEscapeCancel.
+        stateRef.current = reduceTransformFlow(stateRef.current, { type: 'reset' }).state;
+        flog.info('transform-flow', 'local hold reset', { reason: 'escape_cancel' });
+      });
+      if (cancelled) {
+        unlistenPressed();
+        unlistenReleased();
+        unlistenEscape();
+        return;
+      }
+
       try {
         await invoke('start_transform_listener', { hotkey: transformHoldKey });
         if (cancelled) {
@@ -152,6 +170,7 @@ export function useTransformFlow({
       cancelled = true;
       unlistenPressed?.();
       unlistenReleased?.();
+      unlistenEscape?.();
       invoke('stop_transform_listener').catch(() => {});
       // Mid-hold cleanup: backend is Listening with a live mic and no release
       // will arrive after the listener stops — cancel so we do not wedge.
