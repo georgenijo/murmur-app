@@ -339,6 +339,7 @@ impl TransformDiagnostics {
     pub fn finish(&self, transform_pass_id: u64, outcome: &str) {
         let mut inner = self.inner.lock_or_recover();
         let now = now_ms();
+        let mut recorded_outcome = outcome.to_string();
         if let Some(mut attempt) = inner.active.remove(&transform_pass_id) {
             attempt.finished_at_ms = Some(now);
             attempt.outcome = outcome.to_string();
@@ -355,12 +356,21 @@ impl TransformDiagnostics {
             .rev()
             .find(|attempt| attempt.transform_pass_id == transform_pass_id)
         {
-            attempt.finished_at_ms = Some(now);
-            attempt.outcome = outcome.to_string();
-            let _ = write_attempts(&inner);
+            // Cancellation/supersession can win while an async capture future
+            // is still unwinding. A late `Aborted -> failed` cleanup must not
+            // downgrade the terminal user outcome already persisted.
+            if matches!(attempt.outcome.as_str(), "cancelled" | "superseded")
+                && attempt.outcome != outcome
+            {
+                recorded_outcome = attempt.outcome.clone();
+            } else {
+                attempt.finished_at_ms = Some(now);
+                attempt.outcome = outcome.to_string();
+                let _ = write_attempts(&inner);
+            }
         }
         if let Some(capture) = inner.captures.get_mut(&transform_pass_id) {
-            capture.outcome = outcome.to_string();
+            capture.outcome = recorded_outcome;
             let capture = capture.clone();
             let _ = write_capture(&inner, &capture);
             let _ = prune_captures(&mut inner);
@@ -719,6 +729,32 @@ mod tests {
             .attempts
             .iter()
             .any(|attempt| { attempt.transform_pass_id == 1 && attempt.outcome == "cancelled" }));
+    }
+
+    #[test]
+    fn cancel_during_capture_cannot_be_downgraded_by_late_abort() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = TransformDiagnostics::default();
+        store.initialize(temp.path().join("diagnostics")).unwrap();
+
+        store.arm_next().unwrap();
+        store.begin(88);
+        store.phase(88, "cancellation", "completed", None, None);
+        store.finish(88, "cancelled");
+
+        // Mirrors start_transform_capture returning Aborted after the
+        // cancellation path already terminalized and cleared the pass.
+        store.finish(88, "failed");
+
+        let attempt = store
+            .list_attempts(10)
+            .attempts
+            .into_iter()
+            .find(|attempt| attempt.transform_pass_id == 88)
+            .unwrap();
+        assert_eq!(attempt.outcome, "cancelled");
+        let capture = store.list_captures().unwrap().pop().unwrap();
+        assert_eq!(capture.outcome, "cancelled");
     }
 
     #[cfg(unix)]

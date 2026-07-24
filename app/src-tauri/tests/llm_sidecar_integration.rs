@@ -297,6 +297,29 @@ async fn wrong_handshake_nonce_fails_closed() {
 }
 
 #[tokio::test]
+async fn startup_diagnostic_frames_require_exact_nonce_and_version() {
+    for scenario in [
+        "wrong_nonce_on_startup_phase",
+        "wrong_version_on_startup_phase",
+    ] {
+        let fixture = fixture_model();
+        let sidecar = sidecar(scenario, &fixture);
+        let err = run_transform(&sidecar, Duration::from_secs(5))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err,
+            TransformError::HandshakeFailed,
+            "startup diagnostic envelope was accepted for {scenario}"
+        );
+        assert!(
+            !sidecar.has_live_child(),
+            "invalid startup diagnostic left helper alive for {scenario}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn one_transform_in_flight_rejects_the_second() {
     let fixture = fixture_model();
     // A deliberate delay so the two requests overlap.
@@ -379,6 +402,72 @@ async fn cooperative_cancel_mid_request_helper_receives_cancel_and_busy_clears()
     // hang again — reusability of the supervisor after cancel is covered by
     // the happy-path round-trip and dropping_the_transform_future tests.
     assert!(sidecar.has_live_child());
+}
+
+#[tokio::test]
+async fn cancellation_diagnostic_without_matching_ack_kills_and_reaps() {
+    let fixture = fixture_model();
+    let sidecar = sidecar("slow_diagnostic_no_cancel_ack", &fixture);
+    let request_sidecar = Arc::clone(&sidecar);
+    let handle =
+        tokio::spawn(async move { run_transform(&request_sidecar, Duration::from_secs(30)).await });
+
+    for _ in 0..200 {
+        if sidecar.is_transform_busy() && sidecar.has_live_child() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        sidecar.is_transform_busy() && sidecar.has_live_child(),
+        "transform/helper never became ready for cancellation"
+    );
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    sidecar.cancel_inflight_request();
+
+    let err = handle.await.unwrap().unwrap_err();
+    assert_eq!(err, TransformError::Cancelled);
+    assert!(!sidecar.is_transform_busy());
+    assert!(
+        !sidecar.has_live_child(),
+        "a diagnostic frame was incorrectly accepted as cancel confirmation"
+    );
+}
+
+#[tokio::test]
+async fn diagnostics_before_cancel_ack_do_not_leak_into_immediate_reuse() {
+    let fixture = fixture_model();
+    let sidecar = sidecar("diagnostic_before_cancel_ack_then_happy", &fixture);
+    let request_sidecar = Arc::clone(&sidecar);
+    let handle =
+        tokio::spawn(async move { run_transform(&request_sidecar, Duration::from_secs(30)).await });
+
+    for _ in 0..200 {
+        if sidecar.is_transform_busy() && sidecar.has_live_child() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        sidecar.is_transform_busy() && sidecar.has_live_child(),
+        "transform/helper never became ready for cancellation"
+    );
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    sidecar.cancel_inflight_request();
+
+    let err = handle.await.unwrap().unwrap_err();
+    assert_eq!(err, TransformError::Cancelled);
+    assert!(!sidecar.is_transform_busy());
+    assert!(
+        sidecar.has_live_child(),
+        "matching cancellation acknowledgement should preserve the helper"
+    );
+
+    let output = run_transform(&sidecar, Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(output.output, "mock-output");
+    assert!(!sidecar.is_transform_busy());
 }
 
 #[tokio::test]

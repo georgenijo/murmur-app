@@ -14,6 +14,12 @@
 //! - `slow_honor_cancel`   — alias of `slow_ack_cancel` (cancel-honoring slow path
 //!                           for host-side cooperative-cancel tests)
 //! - `slow_ignore_cancel`  — never Result; ignore Cancel (forces a kill)
+//! - `slow_diagnostic_no_cancel_ack` — emit a diagnostic after Cancel, but no
+//!                           matching Cancelled acknowledgement
+//! - `diagnostic_before_cancel_ack_then_happy` — first request emits a
+//!                           diagnostic then Cancelled; later requests succeed
+//! - `wrong_nonce_on_startup_phase` — a startup completion has a bad nonce
+//! - `wrong_version_on_startup_phase` — a later startup completion has a bad version
 //!
 //! The real supervisor spawns with `env_clear`, so these vars only exist for the
 //! mock via the supervisor's test-only constructor.
@@ -35,11 +41,34 @@ fn phase(
     state: PhaseState,
     duration_ms: Option<u64>,
 ) {
+    phase_with_envelope(
+        stdout,
+        PROTOCOL_NAME,
+        PROTOCOL_VERSION,
+        nonce,
+        request_id,
+        diagnostic,
+        state,
+        duration_ms,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn phase_with_envelope(
+    stdout: &mut impl Write,
+    protocol: &str,
+    version: u16,
+    nonce: &str,
+    request_id: Option<&str>,
+    diagnostic: DiagnosticPhase,
+    state: PhaseState,
+    duration_ms: Option<u64>,
+) {
     let _ = write_frame(
         stdout,
         &HelperMessage::DiagnosticPhase {
-            protocol: PROTOCOL_NAME.to_string(),
-            version: PROTOCOL_VERSION,
+            protocol: protocol.to_string(),
+            version,
             session_nonce: nonce.to_string(),
             request_id: request_id.map(str::to_string),
             phase: diagnostic,
@@ -98,8 +127,10 @@ fn main() {
         DiagnosticPhase::BackendInitialization,
         DiagnosticPhase::ModelLoad,
     ] {
-        phase(
+        phase_with_envelope(
             &mut stdout,
+            PROTOCOL_NAME,
+            PROTOCOL_VERSION,
             &session_nonce,
             None,
             diagnostic,
@@ -109,9 +140,25 @@ fn main() {
         if scenario == format!("fail_{diagnostic:?}").to_ascii_lowercase() {
             std::process::exit(70);
         }
-        phase(
+        let completed_nonce = if scenario == "wrong_nonce_on_startup_phase"
+            && diagnostic == DiagnosticPhase::BackendInitialization
+        {
+            "WRONG-NONCE"
+        } else {
+            &session_nonce
+        };
+        let completed_version = if scenario == "wrong_version_on_startup_phase"
+            && diagnostic == DiagnosticPhase::ModelLoad
+        {
+            PROTOCOL_VERSION + 1
+        } else {
+            PROTOCOL_VERSION
+        };
+        phase_with_envelope(
             &mut stdout,
-            &session_nonce,
+            PROTOCOL_NAME,
+            completed_version,
+            completed_nonce,
             None,
             diagnostic,
             PhaseState::Completed,
@@ -163,9 +210,12 @@ fn main() {
         }
     });
 
+    let mut transform_count = 0_u32;
+    let mut active_request_id: Option<String> = None;
     while let Ok(Some(message)) = rx.recv() {
         match message {
             HostMessage::Transform { request_id, .. } => {
+                transform_count += 1;
                 phase(
                     &mut stdout,
                     &session_nonce,
@@ -190,8 +240,14 @@ fn main() {
                         let _ = stdout.write_all(b"xx");
                         let _ = stdout.flush();
                     }
-                    "slow_ack_cancel" | "slow_honor_cancel" | "slow_ignore_cancel" => {
+                    "slow_ack_cancel"
+                    | "slow_honor_cancel"
+                    | "slow_ignore_cancel"
+                    | "slow_diagnostic_no_cancel_ack" => {
                         // Never send a Result; wait for the Cancel below.
+                    }
+                    "diagnostic_before_cancel_ack_then_happy" if transform_count == 1 => {
+                        active_request_id = Some(request_id);
                     }
                     "error_deadline_on_transform" => {
                         // A self-reported DeadlineExceeded: a designed outcome the
@@ -255,6 +311,34 @@ fn main() {
                         request_id,
                     };
                     let _ = write_frame(&mut stdout, &cancelled);
+                } else if scenario == "slow_diagnostic_no_cancel_ack" {
+                    phase(
+                        &mut stdout,
+                        &session_nonce,
+                        Some(&request_id),
+                        DiagnosticPhase::FirstToken,
+                        PhaseState::Completed,
+                        Some(1),
+                    );
+                } else if scenario == "diagnostic_before_cancel_ack_then_happy"
+                    && active_request_id.as_deref() == Some(request_id.as_str())
+                {
+                    phase(
+                        &mut stdout,
+                        &session_nonce,
+                        Some(&request_id),
+                        DiagnosticPhase::FirstToken,
+                        PhaseState::Completed,
+                        Some(1),
+                    );
+                    let cancelled = HelperMessage::Cancelled {
+                        protocol: PROTOCOL_NAME.to_string(),
+                        version: PROTOCOL_VERSION,
+                        session_nonce: session_nonce.clone(),
+                        request_id,
+                    };
+                    let _ = write_frame(&mut stdout, &cancelled);
+                    active_request_id = None;
                 }
                 // slow_ignore_cancel: intentionally drop it.
             }

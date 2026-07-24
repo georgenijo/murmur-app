@@ -224,6 +224,10 @@ fn complete_transform_performance(
     );
 }
 
+fn capture_abort_was_cancelled(app_state: &AppState, transform_pass_id: u64) -> bool {
+    app_state.is_transform_pass_cancelled(transform_pass_id)
+}
+
 fn append_transform_follow_up(
     state: &crate::State,
     transform_pass_id: u64,
@@ -1621,15 +1625,23 @@ pub(crate) async fn start_transform_capture(
     .await;
 
     if outcome != StartOutcome::Listening {
-        complete_transform_performance(
-            &state,
-            transform_pass_id,
-            RunOutcomeV1::Failed {
-                stage: PerformanceStageV1::SelectedTextCapture,
-                error_code: StableRunErrorV1::TransformStageFailed,
-            },
-            None,
-        );
+        // cancel_transform marks cancellation before tearing down the pass,
+        // while a slow AX capture may still be unwinding. Use that monotonic
+        // marker instead of inferring from Idle/active state: this command can
+        // resume during the window after cancel forced Idle but before it
+        // clears the active pass.
+        let cancellation_won = capture_abort_was_cancelled(&state.app_state, transform_pass_id);
+        if !cancellation_won {
+            complete_transform_performance(
+                &state,
+                transform_pass_id,
+                RunOutcomeV1::Failed {
+                    stage: PerformanceStageV1::SelectedTextCapture,
+                    error_code: StableRunErrorV1::TransformStageFailed,
+                },
+                None,
+            );
+        }
         // Capture aborted (secure field, capture error, model-not-ready
         // failed popover, or a cancel racing the capture) — the pre-armed mic
         // must not stay live.
@@ -1643,12 +1655,14 @@ pub(crate) async fn start_transform_capture(
                 samples.len() as u64 * 1_000 / crate::state::WHISPER_SAMPLE_RATE as u64,
             );
         }
-        if state.app_state.transform_status() == TransformStatus::Idle {
+        if !cancellation_won && state.app_state.transform_status() == TransformStatus::Idle {
             state.app_state.clear_transform_pass(transform_pass_id);
         }
-        state
-            .transform_diagnostics
-            .finish(transform_pass_id, "failed");
+        if !cancellation_won {
+            state
+                .transform_diagnostics
+                .finish(transform_pass_id, "failed");
+        }
         return Ok(());
     }
     if let Some(guard) = performance_guard.as_mut() {
@@ -2232,6 +2246,15 @@ pub(crate) async fn cancel_transform(
         return Ok(());
     }
     let transform_pass_id = active_pass_id.unwrap_or(0);
+    if transform_pass_id != 0 {
+        // Publish the terminal winner before any awaitable/main-thread
+        // teardown. A concurrent selection capture can return immediately
+        // after status becomes Idle and must not persist a failed outcome for
+        // a pass the user already cancelled.
+        state
+            .app_state
+            .mark_transform_pass_cancelled(transform_pass_id);
+    }
     let prev = state.app_state.transform_status();
     let _performance_guard = (transform_pass_id != 0).then(|| {
         state.performance.guard(
@@ -3350,6 +3373,21 @@ mod tests {
         assert!(transform_apply::session_snapshot(&app_state).is_none());
         assert!(!fx.popover_shown());
         assert!(fx.emitted_states().is_empty());
+    }
+
+    #[test]
+    fn capture_abort_does_not_terminalize_during_cancel_before_pass_clear() {
+        let app_state = AppState::default();
+        app_state.activate_transform_pass(41);
+        app_state.set_transform_status(TransformStatus::Capturing);
+
+        // Mirrors cancel_transform's ordering: publish cancellation first,
+        // then force Idle, with the active pass still present until teardown.
+        app_state.mark_transform_pass_cancelled(41);
+        app_state.set_transform_status(TransformStatus::Idle);
+
+        assert_eq!(app_state.active_transform_pass_id(), Some(41));
+        assert!(capture_abort_was_cancelled(&app_state, 41));
     }
 
     // ---- Spec-by-test divergence points (finding 8) ------------------------

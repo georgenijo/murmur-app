@@ -1330,19 +1330,25 @@ mod supported {
                 let slice = (deadline_at - now).min(Duration::from_millis(25));
                 match rx.recv_timeout(slice) {
                     Ok(HelperEvent::Frame(HelperMessage::DiagnosticPhase {
+                        protocol,
+                        version,
+                        session_nonce: got_nonce,
                         request_id,
                         phase,
                         state,
                         duration_ms,
-                        ..
                     })) => {
                         use murmur_local_llm_protocol::{DiagnosticPhase, PhaseState};
-                        if !murmur_local_llm_protocol::validate_diagnostic_phase(
-                            request_id.as_deref(),
-                            phase,
-                            state,
-                            duration_ms,
-                        ) || expected_phases.get(expected_phase_index) != Some(&(phase, state))
+                        if protocol != PROTOCOL_NAME
+                            || version != PROTOCOL_VERSION
+                            || got_nonce != session_nonce
+                            || !murmur_local_llm_protocol::validate_diagnostic_phase(
+                                request_id.as_deref(),
+                                phase,
+                                state,
+                                duration_ms,
+                            )
+                            || expected_phases.get(expected_phase_index) != Some(&(phase, state))
                         {
                             kill_and_reap(&mut proc);
                             return Err(TransformError::HandshakeFailed);
@@ -1773,9 +1779,36 @@ mod supported {
                     if !helper_frame_valid(&frame, &child.session_nonce) {
                         return kill;
                     }
-                    // A matching Cancelled, or any other well-formed frame,
-                    // proves the helper is responsive: cancellation confirmed.
-                    return keep;
+                    match frame {
+                        // Only an explicit acknowledgement for this exact
+                        // request confirms cooperative cancellation. Receipt /
+                        // first-token frames may already be queued when Cancel
+                        // is sent and must never be mistaken for an ack.
+                        HelperMessage::Cancelled {
+                            request_id: got, ..
+                        } if got == request_id => return keep,
+                        HelperMessage::DiagnosticPhase {
+                            request_id,
+                            phase,
+                            state,
+                            duration_ms,
+                            ..
+                        } => {
+                            if !murmur_local_llm_protocol::validate_diagnostic_phase(
+                                request_id.as_deref(),
+                                phase,
+                                state,
+                                duration_ms,
+                            ) {
+                                return kill;
+                            }
+                            continue;
+                        }
+                        // A stale/mismatched Cancelled or any other valid frame
+                        // is not confirmation. Keep waiting until the grace
+                        // deadline, then kill and reap the helper.
+                        _ => continue,
+                    }
                 }
                 Ok(HelperEvent::Exited)
                 | Ok(HelperEvent::ProtocolViolation)
