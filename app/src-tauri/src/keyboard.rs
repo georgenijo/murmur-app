@@ -910,6 +910,8 @@ fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                     }
                     if let Some((pass_id, elapsed_ms)) = take_transform_hold_context() {
                         crate::transform_trace::key_stop(pass_id, elapsed_ms, "escape");
+                        let state = handle.state::<crate::State>();
+                        mark_transform_pass_cancelled_on_escape(&state.app_state, pass_id);
                     }
                     // Invalidate pending hold-promotion timers
                     HOLD_PROMOTED.store(false, Ordering::SeqCst);
@@ -1296,6 +1298,28 @@ fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
             }
         });
     }
+}
+
+/// Publish cancellation for the exact physical transform pass whose hold
+/// context Escape consumed.
+///
+/// This marker is deliberately written before the frontend's asynchronous
+/// `escape-cancel` listener runs. A new pass can already be queued in
+/// `start_transform_capture` behind an older pass's slow AX capture while the
+/// public transform status is still Idle. The queued command checks this
+/// marker before claiming Capturing, so it cannot start after the Escape that
+/// ended its physical hold. Active phases are not torn down here; their
+/// existing frontend-owned `cancel_transform` path remains the sole teardown
+/// owner.
+fn mark_transform_pass_cancelled_on_escape(
+    app_state: &crate::state::AppState,
+    transform_pass_id: u64,
+) -> bool {
+    if app_state.active_transform_pass_id() != Some(transform_pass_id) {
+        return false;
+    }
+    app_state.mark_transform_pass_cancelled(transform_pass_id);
+    true
 }
 
 /// Stop processing keyboard events (the thread stays alive but idle).
@@ -2380,6 +2404,43 @@ mod tests {
         let (pass_id, _elapsed_ms) = take_transform_hold_context().unwrap();
         assert_eq!(pass_id, 41);
         assert_eq!(take_transform_hold_context(), None);
+    }
+
+    #[test]
+    fn escape_marks_only_the_exact_active_transform_pass() {
+        let app_state = crate::state::AppState::default();
+        app_state.activate_transform_pass(41);
+
+        assert!(!mark_transform_pass_cancelled_on_escape(&app_state, 40));
+        assert!(!app_state.is_transform_pass_cancelled(40));
+
+        assert!(mark_transform_pass_cancelled_on_escape(&app_state, 41));
+        assert!(app_state.is_transform_pass_cancelled(41));
+        // The synchronous keyboard branch only publishes the marker. The
+        // existing async owner still performs active-phase teardown.
+        assert_eq!(
+            app_state.transform_status(),
+            crate::state::TransformStatus::Idle
+        );
+        assert_eq!(app_state.active_transform_pass_id(), Some(41));
+    }
+
+    #[test]
+    fn escape_marker_does_not_tear_down_active_transform_phases() {
+        for (pass_id, status) in [
+            (51, crate::state::TransformStatus::Capturing),
+            (52, crate::state::TransformStatus::Listening),
+            (53, crate::state::TransformStatus::Thinking),
+        ] {
+            let app_state = crate::state::AppState::default();
+            app_state.activate_transform_pass(pass_id);
+            app_state.set_transform_status(status);
+
+            assert!(mark_transform_pass_cancelled_on_escape(&app_state, pass_id));
+            assert!(app_state.is_transform_pass_cancelled(pass_id));
+            assert_eq!(app_state.transform_status(), status);
+            assert_eq!(app_state.active_transform_pass_id(), Some(pass_id));
+        }
     }
 
     #[test]

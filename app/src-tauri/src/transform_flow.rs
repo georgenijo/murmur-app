@@ -1405,6 +1405,66 @@ async fn transcribe_instruction(
 // Tauri commands (the thin wrappers the frontend calls).
 // ===========================================================================
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TransformStartPassDisposition {
+    Current,
+    Cancelled,
+    Stale,
+}
+
+fn transform_start_pass_disposition(
+    app_state: &AppState,
+    transform_pass_id: u64,
+) -> TransformStartPassDisposition {
+    if app_state.is_transform_pass_cancelled(transform_pass_id) {
+        TransformStartPassDisposition::Cancelled
+    } else if app_state.active_transform_pass_id() == Some(transform_pass_id) {
+        TransformStartPassDisposition::Current
+    } else {
+        TransformStartPassDisposition::Stale
+    }
+}
+
+fn claim_transform_start_status(
+    app_state: &AppState,
+    transform_pass_id: u64,
+) -> Result<(), &'static str> {
+    match transform_start_pass_disposition(app_state, transform_pass_id) {
+        TransformStartPassDisposition::Cancelled => return Err("cancelled"),
+        TransformStartPassDisposition::Stale => return Err("stale_pass"),
+        TransformStartPassDisposition::Current => {}
+    }
+    if !app_state.try_transition_transform_status(TransformStatus::Idle, TransformStatus::Capturing)
+    {
+        return Err("transform_busy");
+    }
+    // Escape publishes the exact pass cancellation marker before emitting the
+    // asynchronous frontend event. Re-check after the claim to close the tiny
+    // race where the marker lands between the pre-claim check and
+    // Idle -> Capturing.
+    if app_state.is_transform_pass_cancelled(transform_pass_id) {
+        let _ = app_state
+            .try_transition_transform_status(TransformStatus::Capturing, TransformStatus::Idle);
+        Err("cancelled")
+    } else {
+        Ok(())
+    }
+}
+
+fn terminalize_cancelled_transform_start(
+    app_state: &AppState,
+    diagnostics: &crate::transform_diagnostics::TransformDiagnostics,
+    transform_pass_id: u64,
+) -> bool {
+    if !app_state.clear_transform_pass(transform_pass_id) {
+        return false;
+    }
+    diagnostics.phase(transform_pass_id, "cancellation", "completed", None, None);
+    diagnostics.finish(transform_pass_id, "cancelled");
+    crate::transform_trace::resolution(transform_pass_id, "cancelled", "start", None);
+    true
+}
+
 /// Begin a transform pass: check preconditions, claim the flow, capture the
 /// selection, and (on success) arm the instruction audio.
 ///
@@ -1428,7 +1488,11 @@ pub(crate) async fn start_transform_capture(
 
     let claim_result: Result<(), &'static str> = {
         let dictation = state.app_state.dictation.lock_or_recover();
-        if state.app_state.active_transform_pass_id() != Some(transform_pass_id) {
+        if transform_start_pass_disposition(&state.app_state, transform_pass_id)
+            == TransformStartPassDisposition::Cancelled
+        {
+            Err("cancelled")
+        } else if state.app_state.active_transform_pass_id() != Some(transform_pass_id) {
             Err("stale_pass")
         } else if dictation.status != DictationStatus::Idle {
             tracing::info!(target: "transform", transform_pass_id, error_code = "dictation_active", "start_transform_capture ignored");
@@ -1448,17 +1512,18 @@ pub(crate) async fn start_transform_capture(
             Err("runtime_busy")
         } else {
             // Atomic Idle -> Capturing under the dictation lock.
-            if state
-                .app_state
-                .try_transition_transform_status(TransformStatus::Idle, TransformStatus::Capturing)
-            {
-                Ok(())
-            } else {
-                Err("transform_busy")
-            }
+            claim_transform_start_status(&state.app_state, transform_pass_id)
         }
     };
     if let Err(error_code) = claim_result {
+        if error_code == "cancelled" {
+            terminalize_cancelled_transform_start(
+                &state.app_state,
+                &state.transform_diagnostics,
+                transform_pass_id,
+            );
+            return Ok(());
+        }
         state.transform_diagnostics.phase(
             transform_pass_id,
             "start",
@@ -3388,6 +3453,84 @@ mod tests {
 
         assert_eq!(app_state.active_transform_pass_id(), Some(41));
         assert!(capture_abort_was_cancelled(&app_state, 41));
+    }
+
+    #[test]
+    fn cancelled_queued_start_terminalizes_once_and_later_pass_can_claim() {
+        let app_state = AppState::default();
+        let diagnostics = crate::transform_diagnostics::TransformDiagnostics::default();
+
+        diagnostics.begin(41);
+        app_state.activate_transform_pass(41);
+        app_state.mark_transform_pass_cancelled(41);
+
+        assert_eq!(
+            transform_start_pass_disposition(&app_state, 41),
+            TransformStartPassDisposition::Cancelled
+        );
+        assert_eq!(
+            claim_transform_start_status(&app_state, 41),
+            Err("cancelled")
+        );
+        assert_eq!(app_state.transform_status(), TransformStatus::Idle);
+        assert!(terminalize_cancelled_transform_start(
+            &app_state,
+            &diagnostics,
+            41
+        ));
+        assert!(!terminalize_cancelled_transform_start(
+            &app_state,
+            &diagnostics,
+            41
+        ));
+        assert_eq!(app_state.transform_status(), TransformStatus::Idle);
+        assert_eq!(app_state.active_transform_pass_id(), None);
+
+        let attempts = diagnostics.list_attempts(10).attempts;
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(attempts[0].transform_pass_id, 41);
+        assert_eq!(attempts[0].outcome, "cancelled");
+        assert_eq!(
+            attempts[0]
+                .phases
+                .iter()
+                .filter(|phase| phase.phase == "cancellation")
+                .count(),
+            1
+        );
+
+        app_state.activate_transform_pass(42);
+        assert_eq!(
+            transform_start_pass_disposition(&app_state, 42),
+            TransformStartPassDisposition::Current
+        );
+        assert_eq!(claim_transform_start_status(&app_state, 42), Ok(()));
+        assert_eq!(app_state.transform_status(), TransformStatus::Capturing);
+    }
+
+    #[test]
+    fn queued_start_guard_rejects_cancelled_and_unrelated_stale_passes() {
+        let app_state = AppState::default();
+        app_state.activate_transform_pass(8);
+        app_state.mark_transform_pass_cancelled(7);
+
+        assert_eq!(
+            transform_start_pass_disposition(&app_state, 7),
+            TransformStartPassDisposition::Cancelled
+        );
+        assert_eq!(
+            transform_start_pass_disposition(&app_state, 6),
+            TransformStartPassDisposition::Cancelled
+        );
+        assert_eq!(
+            transform_start_pass_disposition(&app_state, 9),
+            TransformStartPassDisposition::Stale
+        );
+        assert_eq!(
+            transform_start_pass_disposition(&app_state, 8),
+            TransformStartPassDisposition::Current
+        );
+        assert_eq!(app_state.transform_status(), TransformStatus::Idle);
     }
 
     // ---- Spec-by-test divergence points (finding 8) ------------------------
