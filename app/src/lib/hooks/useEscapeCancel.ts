@@ -54,9 +54,10 @@ export function useEscapeCancel({ status, enabled }: UseEscapeCancelProps) {
         }
 
         // Rust emits a null pass only when physical Escape did not target an
-        // active/queued transform. ReviewPending remains owned by the focusable
-        // popover and Applying has no global Escape action, so the only
-        // remaining route is dictation cancellation.
+        // active/queued transform. ReviewPending is also globally correlated
+        // across the brief transition-before-focus handoff; Applying has no
+        // global Escape action. A null target can therefore only fall back to
+        // dictation cancellation.
         if (statusRef.current === 'idle') return;
         await cancelRecording();
       } catch (err) {

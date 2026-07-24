@@ -1357,12 +1357,16 @@ fn choose_transform_escape_target(
         }
         crate::state::TransformStatus::Capturing
         | crate::state::TransformStatus::Listening
-        | crate::state::TransformStatus::Thinking => Some(active_pass_id),
-        // ReviewPending remains owned by its focusable popover. Applying has
-        // no global Escape action. A mismatched/refused hold cannot change
-        // either ownership rule.
+        | crate::state::TransformStatus::Thinking
+        // ReviewPending is included in the global handoff because the status
+        // transition happens before the popover becomes focusable. Once the
+        // popover is focused, its local Escape handler may race this route;
+        // both carry the same exact pass and backend cancellation is
+        // idempotent.
+        | crate::state::TransformStatus::ReviewPending => Some(active_pass_id),
+        // Applying has no Escape action. A mismatched/refused hold cannot
+        // change that ownership rule.
         crate::state::TransformStatus::Idle
-        | crate::state::TransformStatus::ReviewPending
         | crate::state::TransformStatus::Applying => None,
     }
 }
@@ -2499,7 +2503,7 @@ mod tests {
     }
 
     #[test]
-    fn escape_target_uses_exact_queued_or_active_pass_and_preserves_review_ownership() {
+    fn escape_target_uses_exact_queued_active_or_review_handoff_pass() {
         use crate::state::TransformStatus;
 
         assert_eq!(
@@ -2511,6 +2515,8 @@ mod tests {
             TransformStatus::Capturing,
             TransformStatus::Listening,
             TransformStatus::Thinking,
+            // Deterministic seam for ReviewPending-before-set_focusable(true).
+            TransformStatus::ReviewPending,
         ] {
             assert_eq!(
                 choose_transform_escape_target(None, Some(42), status, Some(42)),
@@ -2522,11 +2528,7 @@ mod tests {
                 "a refused hold falls back to the actual active transform"
             );
         }
-        for status in [
-            TransformStatus::Idle,
-            TransformStatus::ReviewPending,
-            TransformStatus::Applying,
-        ] {
+        for status in [TransformStatus::Idle, TransformStatus::Applying] {
             assert_eq!(
                 choose_transform_escape_target(None, Some(43), status, Some(43)),
                 None

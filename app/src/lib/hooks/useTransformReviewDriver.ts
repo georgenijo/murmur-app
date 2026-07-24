@@ -47,6 +47,7 @@ export function useTransformReviewDriver(enabled: boolean): ReviewDriverResult {
   const [errorCode, setErrorCode] = useState<ReviewErrorCode | null>(null);
   const [content, setContent] = useState<TransformReviewContent>(EMPTY_REVIEW_CONTENT);
   const [thinkingElapsedMs, setThinkingElapsedMs] = useState(0);
+  const [transformPassId, setTransformPassId] = useState<number | null>(null);
 
   useEffect(() => {
     if (!enabled) return;
@@ -63,6 +64,7 @@ export function useTransformReviewDriver(enabled: boolean): ReviewDriverResult {
       setContent(EMPTY_REVIEW_CONTENT);
       setErrorCode(null);
       setState('listening');
+      setTransformPassId(null);
     })
       .then((fn) => {
         if (cancelled) fn();
@@ -80,6 +82,7 @@ export function useTransformReviewDriver(enabled: boolean): ReviewDriverResult {
       }
       setState(event.payload.state);
       setErrorCode(normalizeReviewErrorCode(event.payload.errorCode));
+      setTransformPassId(event.payload.transformPassId);
 
       invoke<unknown>('get_transform_review_content')
         .then((value) => {
@@ -133,10 +136,11 @@ export function useTransformReviewDriver(enabled: boolean): ReviewDriverResult {
     // Clear local content immediately so a subsequent show cannot flash stale
     // selection text before the next get_transform_review_content resolves.
     setContent(EMPTY_REVIEW_CONTENT);
-    invoke('cancel_transform').catch((e) => {
+    if (transformPassId === null) return;
+    invoke('cancel_transform', { transformPassId }).catch((e) => {
       flog.warn('transform-review', 'cancel_transform failed', { error: String(e) });
     });
-  }, []);
+  }, [transformPassId]);
   const retry = useCallback(() => {
     invoke('retry_transform_instruction', { deviceName: deviceNameArg() }).catch((e) => {
       flog.warn('transform-review', 'retry_transform_instruction failed', { error: String(e) });

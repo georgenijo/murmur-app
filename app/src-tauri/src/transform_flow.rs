@@ -27,8 +27,8 @@
 //! ## Privacy (hard invariant)
 //!
 //! Instruction / original / proposed text NEVER reaches an event payload, a
-//! log line, or telemetry. `transform-state-changed` carries only
-//! `{ state, errorCode }` (both stable enums). The review text is pulled by the
+//! log line, or telemetry. `transform-state-changed` carries only content-free
+//! `{ state, errorCode, transformPassId }` metadata. The review text is pulled by the
 //! popover window alone via `get_transform_review_content`. The state-machine
 //! action list and every `emit_*` here are structurally incapable of carrying
 //! that text.
@@ -628,7 +628,7 @@ pub struct AnchorRect {
 /// Every side effect the async core performs, behind a trait so a recording
 /// fake can stand in for Tauri in tests.
 pub(crate) trait FlowEffects: Send + Sync {
-    /// Emit `transform-state-changed` — state name + optional error code ONLY.
+    /// Emit content-free `transform-state-changed` correlation/state metadata.
     fn emit_state(&self, state: ReviewState, error_code: Option<&str>);
     fn show_popover(&self, anchor: Option<AnchorRect>);
     fn hide_popover(&self);
@@ -1110,11 +1110,20 @@ pub(crate) struct TauriFlowEffects<'a> {
 impl FlowEffects for TauriFlowEffects<'_> {
     fn emit_state(&self, state: ReviewState, error_code: Option<&str>) {
         use tauri::Emitter;
-        // Payload carries ONLY the state name and an optional stable error
-        // code — never any instruction/original/proposed text.
+        // Payload carries only content-free correlation/state metadata. The
+        // pass ID lets the focusable popover scope its local Escape/Cancel to
+        // the review it rendered, so a delayed dismiss cannot cancel N+1.
+        let transform_pass_id = self.state.app_state.active_transform_pass_id();
         let payload = match error_code {
-            Some(code) => serde_json::json!({ "state": state.as_str(), "errorCode": code }),
-            None => serde_json::json!({ "state": state.as_str() }),
+            Some(code) => serde_json::json!({
+                "state": state.as_str(),
+                "errorCode": code,
+                "transformPassId": transform_pass_id,
+            }),
+            None => serde_json::json!({
+                "state": state.as_str(),
+                "transformPassId": transform_pass_id,
+            }),
         };
         let _ = self.app.emit("transform-state-changed", payload);
     }
@@ -2581,7 +2590,7 @@ pub(crate) async fn undo_transform_and_close(
             // dead Retry — the applied text would become permanently
             // un-undoable. Instead re-emit `applied` carrying the error code so
             // the Applied UI (Undo button) stays reachable while surfacing the
-            // failure. Privacy: state event stays {state, errorCode} only.
+            // failure. Privacy: the state event stays content-free.
             fx.emit_state(ReviewState::Applied, Some(apply_error_code(error)));
             // Re-arm the linger so the error window is deterministic: the
             // approve-time timer may be about to fire (hiding the popover
@@ -3570,8 +3579,11 @@ mod tests {
     #[test]
     fn scoped_transform_cancel_never_resolves_to_a_different_pass() {
         assert_eq!(resolve_transform_cancel_pass(Some(61), Some(61)), Some(61));
-        assert_eq!(resolve_transform_cancel_pass(Some(62), Some(61)), None);
+        // A duplicate delivery after the first exact cancellation cleared N
+        // is an idempotent no-op.
         assert_eq!(resolve_transform_cancel_pass(None, Some(61)), None);
+        // The same delayed duplicate must also leave a newly active N+1 alone.
+        assert_eq!(resolve_transform_cancel_pass(Some(62), Some(61)), None);
         assert_eq!(resolve_transform_cancel_pass(Some(62), None), Some(62));
         assert_eq!(resolve_transform_cancel_pass(None, None), None);
     }

@@ -1015,6 +1015,57 @@ mod tests {
             .all(|attempt| attempt.finished_at_ms.is_some()));
     }
 
+    #[test]
+    fn late_updates_for_reused_persisted_pass_id_target_latest_attempt_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("diagnostics");
+
+        let first_process = TransformDiagnostics::default();
+        first_process.initialize(root.clone()).unwrap();
+        first_process.begin(1);
+        first_process.phase(1, "firstProcess", "completed", None, None);
+        first_process.finish(1, "ready");
+        drop(first_process);
+
+        let next_process = TransformDiagnostics::default();
+        next_process.initialize(root).unwrap();
+        next_process.begin(1);
+        next_process.phase(1, "nextProcess", "completed", None, None);
+        next_process.finish(1, "ready");
+
+        // Mirrors late cancellation/unwind metadata after this process has
+        // already persisted its attempt. Reverse lookup must attach to the
+        // newest duplicate numeric ID, never the older process's record.
+        next_process.phase(1, "lateFollowUp", "completed", None, None);
+        next_process.finish(1, "cancelled");
+
+        let inner = next_process.inner.lock_or_recover();
+        let attempts = inner
+            .attempts
+            .iter()
+            .filter(|attempt| attempt.transform_pass_id == 1)
+            .collect::<Vec<_>>();
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(attempts[0].outcome, "ready");
+        assert!(attempts[0]
+            .phases
+            .iter()
+            .any(|phase| phase.phase == "firstProcess"));
+        assert!(!attempts[0]
+            .phases
+            .iter()
+            .any(|phase| phase.phase == "lateFollowUp"));
+        assert_eq!(attempts[1].outcome, "cancelled");
+        assert!(attempts[1]
+            .phases
+            .iter()
+            .any(|phase| phase.phase == "nextProcess"));
+        assert!(attempts[1]
+            .phases
+            .iter()
+            .any(|phase| phase.phase == "lateFollowUp"));
+    }
+
     #[cfg(unix)]
     #[test]
     fn corrupt_capture_and_stale_temp_do_not_block_initialization_or_retention() {
