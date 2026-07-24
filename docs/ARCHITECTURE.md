@@ -2,9 +2,12 @@
 
 ## Overview
 
-Murmur is a privacy-first, local-only voice dictation app for macOS. You speak, it transcribes -- no cloud, no API keys, no internet. All inference runs on-device using Apple Silicon's GPU (Whisper).
+Murmur is a privacy-first, local-only voice dictation app for macOS. You speak, it transcribes — no cloud, no API keys, no internet. All inference runs on-device: transcription on the Apple Neural Engine (Core ML), the GPU (Metal/whisper.cpp), or CPU (sherpa-onnx), and selected-text rewriting through a signed local-LLM helper process.
 
-Built with **Tauri 2** (Rust backend + React frontend). ~25MB installed, no Python, no sidecar.
+Built with **Tauri 2** (Rust backend + React frontend). Two shipped inference stacks:
+
+- **In-process transcription** — Core ML / whisper.cpp / sherpa-onnx behind one `TranscriptionBackend` trait.
+- **Out-of-process rewriting** — a separate signed `murmur-llm-sidecar` executable runs llama.cpp. The app crate must **never** link `llama-cpp-2` directly: its ggml ABI clashes with whisper's.
 
 ---
 
@@ -12,477 +15,308 @@ Built with **Tauri 2** (Rust backend + React frontend). ~25MB installed, no Pyth
 
 | Layer | Technology | Notes |
 |-------|-----------|-------|
-| Desktop framework | Tauri 2 | Rust backend, React frontend, smaller than Electron |
+| Desktop framework | Tauri 2 | Rust backend, React frontend |
 | UI | React 18 + TypeScript + Tailwind CSS 4 | Vite 6 build |
 | Audio capture | cpal | Native multi-channel input, mono mix, 16kHz resample |
-| VAD | Silero v5.1.2 via whisper-rs | Filters silence before transcription; prevents Whisper hallucination loops |
-| Transcription | whisper-rs -> whisper.cpp | Metal GPU-accelerated on Apple Silicon |
-| Text injection | arboard + osascript | Clipboard-first; osascript for auto-paste |
-| Keyboard listening | rdev (git main branch) | Global key events; single background thread |
+| VAD | Silero v5.1.2 via whisper-rs | Filters silence before transcription; thread-local cached context |
+| Transcription | FluidAudio (Core ML/ANE), whisper-rs → whisper.cpp (Metal), sherpa-onnx (CPU) | Selected per model from one catalog |
+| Local rewriting | `murmur-llm-sidecar` (llama.cpp, Qwen2.5-1.5B-Instruct Q4_K_M) | Separate signed process, model passed as read-only fd |
+| Text injection | arboard + CGEvent (osascript fallback) | Clipboard-first |
+| Selection capture | Accessibility (AX) APIs + sentinel-guarded clipboard fallback | Secure fields fail closed |
+| Keyboard listening | rdev (git main branch) | Global key events; one background thread, three detectors |
+| Local storage | rusqlite (SQLite) | Personal knowledge store + performance diagnostics |
 | Telemetry | tracing + tracing-subscriber | Structured events: ring buffer, JSONL file, real-time frontend emission |
-| System info | sysinfo | CPU and memory monitoring for resource panel |
-| Release | GitHub Actions + Apple notarization | Signed DMG, platform-safe updater channels |
+| System info | sysinfo + custom malloc zone | CPU, RSS, and separated Rust/FFI heap accounting |
+| Release | GitHub Actions + Apple notarization | Signed DMG, hardened runtime, sidecar entitlements |
 
 ---
 
 ## Data Flow
 
-```
+### Dictation
+
+```text
 Hotkey event (rdev listener thread)
     |
 Frontend hook (useHoldDownToggle / useDoubleTapToggle / useCombinedToggle)
     |
-invoke('start_native_recording') --> cpal captures audio
+invoke('start_native_recording')
+    |-- cpal capture begins
+    |-- immutable DictationContextSnapshot resolved (global settings + per-app profile)
+    +-- spawn_model_preparation() warms the model *concurrently with speech*
     |
 invoke('stop_native_recording') --> audio thread joins, samples resampled to 16kHz mono
     |
-Silero VAD filters silence (configurable sensitivity 0-100)
+Silero VAD trims silence (NoSpeech short-circuits the whole pipeline)
     |
-TranscriptionBackend::transcribe() --> whisper.cpp (Metal GPU)
+ModelRuntimeManager::with_ready_backend() --> transcribe()
     |
-injector::inject_text() --> arboard writes to clipboard
+transform_transcript() -- ordered, backend-neutral text pipeline (see below)
     |
-[optional] osascript simulates Cmd+V --> text appears in focused app
+injector::inject_text() --> arboard clipboard write
     |
-'transcription-complete' event --> all windows: history + stats update
+[optional] CGEvent Cmd+V (osascript fallback) --> text appears in focused app
+    |
+[optional] file_output --> numbered .txt / .wav
+    |
+'transcription-complete' event + PerformanceRunV1 persisted
 ```
+
+The **transcript transform pipeline** (`transcript_transform.rs`) runs stages in exactly this order, each with a declared failure policy and per-stage timing/outcome telemetry:
+
+1. `cleanup` — filler removal, capitalization
+2. `voice_commands` — typed replacements/snippets from the knowledge store
+3. `smart_correction` — vocabulary matcher (exact tier + optional fuzzy tier)
+4. `smart_formatting` — deterministic prose grammar, lists, same-utterance backtracking (live only)
+5. `ide_context` — project symbol correction and `@file` canonicalization (live only, opt-in)
+6. `cli_command` — spoken CLI command formatting
+
+### Selected-text transform
+
+```text
+Transform hold key down (rdev, assigns a monotonic transform_pass_id)
+    |
+Mic arms immediately (before capture — Chromium capture can take >1s)
+    |
+selection.rs freezes an AX selection snapshot
+    |-- secure/password field --> fail closed, no popover content
+    +-- no AX selection --> AX retry ladder, then sentinel-guarded synthetic Cmd+C
+    |
+Popover shows 'listening' (non-focusable, never steals focus)
+    |
+Key release --> instruction ASR (cleanup-only transcript path)
+    |
+expand_instruction(): built-in preset > saved transform > raw text
+    |
+llm_sidecar: spawn + handshake (if cold) --> generate --> 'thinking' to 'ready'
+    |
+User reviews a word diff. Approve --> transform_apply (AX set-value, or paste
+fallback with full-pasteboard save/restore). Undo restores the frozen original.
+```
+
+Dictation and transform are mutually exclusive in both directions (status guards, sidecar busy guard, helper shutdown before recording).
 
 ---
 
-## Three-Window Architecture
+## Four-Window Architecture
 
-Murmur runs three distinct webview windows, each with separate Tauri capabilities following the principle of least privilege:
+Each window is a separate webview with its own Tauri capability set, following least privilege.
 
-| Window | Label | Entry Point | Purpose |
-|--------|-------|-------------|---------|
-| Main | `main` | `index.html` | Settings, recording controls, transcription history, stats, resource monitor, permissions, model download, about/update modals |
-| Overlay | `overlay` | `overlay.html` | Dynamic Island-style notch widget with waveform visualization. Always-on-top, transparent, not focusable |
-| Log Viewer | `log-viewer` | `log-viewer.html` | Structured event browser with Events tab (stream/level filtering) and Metrics tab (transcription timing charts) |
+| Window | Label | Entry Point | Size | Purpose |
+|--------|-------|-------------|------|---------|
+| Main | `main` | `index.html` | 720×560 | Settings, recording controls, history, stats, onboarding, modals |
+| Overlay | `overlay` | `overlay.html` | 260×100 | Dynamic Island notch widget. Always-on-top, transparent, non-activating |
+| Log Viewer | `log-viewer` | `log-viewer.html` | 800×600 | Events, Performance/Runs, Transform diagnostics, Reports |
+| Transform Review | `transform-review` | popover entry | 320×76 (compact) | Transform proposal review. Non-focusable until `ready`/`failed` |
 
-All three windows intercept close requests and hide instead of being destroyed, preserving state. The overlay reads settings from localStorage directly (no shared React context across windows).
+Main and log-viewer hide on close instead of being destroyed. The overlay and transform popover both use the shared non-activating window treatment in `commands/native_window.rs`, and **all** of their raw `NSWindow` mutation is dispatched to the main thread via `run_on_main_thread` — macOS 26 hard-traps on off-main `NSWindow` mutation (#325).
+
+Rust is the sole author of every overlay and popover pixel: `geometry_for()` and `popover_geometry_for()` are pure functions asserted by checked-in fixtures on both sides (cargo test + vitest). The frontend never hardcodes dimensions.
 
 ---
 
 ## Rust Backend (`app/src-tauri/src/`)
 
-### `lib.rs` -- App Wiring
+### Module map
 
-- Declares all modules, registers 30 Tauri commands via `invoke_handler!`
-- Defines `State` (top-level Tauri state): holds `AppState` + cached notch dimensions
-- Defines `MutexExt` trait with `lock_or_recover()`: recovers poisoned mutexes after panics instead of propagating the panic -- keeps the app alive if any thread panics while holding a lock
-- Hides window on close (keeps app alive in tray), suppresses default "Reopen" behavior -- dock icon click only shows the main window when no windows are visible (prevents overlay clicks from unhiding the main window)
-- Caches notch info on the main thread during setup (NSScreen APIs are main-thread-only)
-- Registers 5 Tauri plugins: opener, autostart (LaunchAgent), updater, notification, process
+| Module | Purpose |
+|--------|---------|
+| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 105 registered commands, setup, tray, run loop |
+| `alloc.rs` | Custom macOS malloc zone ("RustHeapZone") so Rust heap is accounted separately from whisper.cpp's FFI heap |
+| `audio.rs` | cpal capture, mono mix, 16kHz resample, `audio-level` emission |
+| `audio_decode.rs` | Decoding imported audio files for `transcribe_file` |
+| `benchmark.rs` | Performance Lab: fixture corpus, scoring (raw/normalized/delivered WER), reports |
+| `cleanup.rs` | Filler removal and capitalization |
+| `cli_command.rs` | Spoken CLI command grammar and lexicon |
+| `correct_and_teach.rs` | Bounded local diff proposals from a user's edit; never writes without confirmation |
+| `correction.rs` | Smart Correction matcher (exact + fuzzy tiers) |
+| `dictation_context.rs` | Immutable per-recording context snapshot resolution |
+| `evaluation.rs` | Versioned fixture evaluation harness (`murmur-eval`) |
+| `file_output.rs` | Numbered `.txt` / `.wav` output |
+| `frontmost.rs` | Native frontmost-app query + running-application list |
+| `ide_context.rs` | Memory-only bounded IDE symbol / root-relative file index |
+| `injector.rs` | Clipboard write, CGEvent paste (osascript fallback), focused-field AX role checks |
+| `keyboard.rs` | Hold-down, double-tap, and transform-hold detectors on one shared rdev thread |
+| `knowledge_store/` | SQLite personal knowledge store: migrations, repository, backup/recovery |
+| `llm_sidecar.rs` | Host supervisor for the signed local-LLM helper: spawn, handshake, RSS ceilings, idle unload, circuit breaker |
+| `model_runtime.rs` | Model catalog + lifecycle manager (load/warm/readiness/unload, generation-ordered status events) |
+| `performance_metrics/` | SQLite run history, stage timings, resource samples, retention |
+| `platform/` | Platform abstraction seams (macOS / Linux) |
+| `resource_monitor.rs` | CPU/RSS sampling, 1s heartbeat, idle-timeout enforcement |
+| `selection.rs` | AX selection capture with secure-field fail-closed and clipboard fallback |
+| `smart_formatting.rs` | Deterministic prose formatting and same-utterance backtracking |
+| `state.rs` | `DictationStatus`, `TransformStatus`, `DictationState`, `AppState` |
+| `telemetry.rs` | Structured event system: `TauriEmitterLayer`, ring buffer, JSONL, privacy stripping |
+| `transcriber/` | `TranscriptionBackend` trait + whisper / parakeet / coreml implementations |
+| `transcript_transform.rs` | The ordered post-recognition pipeline and its stage contracts |
+| `transform_apply.rs` | Approve/undo write-back — the only path that writes into the target app |
+| `transform_diagnostics.rs` | Per-attempt transform records and consented content captures |
+| `transform_flow.rs` | End-to-end transform orchestrator and its Tauri commands |
+| `transform_presets.rs` | Built-in spoken presets (Shorten, Bullets, Professional, Fix grammar, Casual) |
+| `transform_trace.rs` | Pass-scoped correlation tracing |
+| `vad.rs` | Silero VAD filtering, thread-local context cache |
+| `vocab.rs`, `vocabulary_alias.rs` | Code-vocabulary scanning and explicit spoken aliases |
+| `voice_commands.rs` | Typed voice command execution and variable expansion |
 
-### `state.rs` -- Shared State
+Commands live under `commands/` (`recording`, `permissions`, `keyboard`, `logging`, `models`, `knowledge`, `correct_and_teach`, `benchmark`, `performance`, `transform_model`, `transform_popover`, `transform_diagnostics`, `overlay`, `native_window`, `tray`).
+
+### `state.rs` — Shared State
 
 ```rust
 enum DictationStatus { Idle, Recording, Processing }
-
-struct DictationState {
-    status: DictationStatus,
-    model_name: String,        // e.g. "base.en"
-    language: String,
-    auto_paste: bool,
-    auto_paste_delay_ms: u64,  // 10-500, default 50
-    vad_sensitivity: u32,      // 0-100, default 50
-}
+enum TransformStatus { /* Idle, Capturing, Listening, Thinking, ReviewPending, ... */ }
 
 struct AppState {
     dictation: Mutex<DictationState>,
-    backend: Mutex<Box<dyn TranscriptionBackend>>,
+    recording_transition: tokio::sync::Mutex<()>,   // serializes start/stop/cancel/transform
+    model_runtime: ModelRuntimeManager,
+    recording_id: AtomicU64,                        // generation counter; supersedes stale work
+    cancelled_id: AtomicU64,
+    settings_revision: AtomicU64,
+    correction_matcher: Mutex<...>,                 // immutable, swapped by generation
+    ide_context: Mutex<IdeContextStore>,
+    transform_status: Mutex<TransformStatus>,
+    transform_pass_sequence: AtomicU64,             // monotonic per physical key hold
+    transform_session: Mutex<Option<TransformSession>>,
+    transform_apply_epoch: AtomicU64,               // guards clipboard restore races
+    // ...
 }
 ```
 
-`DictationState::default()` uses `"base.en"` only as the pre-configuration fallback. The frontend's new-install default and first-launch recommendation are `"parakeet-tdt-0.6b-v3-coreml"`; the first `configure_dictation` call selects FluidAudio. Existing persisted Whisper and sherpa selections remain valid.
+Two patterns do most of the concurrency work:
 
-### `audio.rs` -- Audio Capture
+- **Generation counters.** `recording_id` and `transform_pass_id` are monotonic. Every async continuation re-checks whether it still owns the current generation before mutating shared state, so a delayed handler can never cancel or overwrite the pass that replaced it.
+- **Immutable snapshots.** A recording resolves its full context (model, language, delivery, profile overrides, vocabulary, transform stage config) once at start. Settings or focus changes mid-recording apply to the *next* session, never the running one.
 
-- cpal opens the input device and builds a stream; multi-channel interleaved samples are averaged to mono
-- RMS computed per chunk -> `audio-level` events emitted at ~60fps (throttled via `AtomicU64` to 16ms minimum gap) -> waveform animation in UI
-- Each recording gets a fresh `Arc<Mutex<Vec<f32>>>` buffer -- prevents stale data from previous recordings
-- Stop command sent via channel; thread joins before samples are consumed
-- Linear interpolation resamples captured audio to 16kHz (what Whisper expects)
-- Recording state stored in a global `OnceLock<Mutex<RecordingState>>` with command sender, thread handle, shared buffer, sample rate, start timestamp, and device name
-- Initialization handshake: `start_recording` waits up to 5 seconds for the audio thread to signal ready
-- Device name redacted in release build logs
+### Model runtime (`model_runtime.rs`)
 
-### `keyboard.rs` -- Keyboard Detection
+One catalog is the single source of truth for all seven shipped models:
 
-All keyboard detection runs through a **single persistent rdev background thread** shared by two detectors.
+| Model | Backend | Accelerator | Size |
+|-------|---------|-------------|------|
+| `parakeet-tdt-0.6b-v3-coreml` | FluidAudio / Core ML | Apple Neural Engine | ~470 MB |
+| `parakeet-tdt-0.6b-v2-fp16` | sherpa-onnx | CPU | ~1.2 GB |
+| `tiny.en` | whisper.cpp | Metal GPU | ~75 MB |
+| `base.en` | whisper.cpp | Metal GPU | ~150 MB |
+| `small.en` | whisper.cpp | Metal GPU | ~500 MB |
+| `medium.en` | whisper.cpp | Metal GPU | ~1.5 GB |
+| `large-v3-turbo` | whisper.cpp | Metal GPU | ~3 GB |
 
-#### Hold-Down Detector
+Each entry declares its backend, accelerator, capabilities (multilingual, translation, timestamps, confidence, punctuation control), install kind, platform requirement, `warm_on_startup`, and `retry_unfiltered_on_empty`. Unknown model identifiers **fail closed** — Murmur never silently falls back to a different model.
 
-Simple 2-state machine:
-```text
-Idle --> [key press] --> Held (emit 'hold-down-start')
-Held --> [key release] --> Idle (emit 'hold-down-stop')
-```
-Rejects combos (e.g. Shift+A while Shift is the trigger key cancels hold and emits Stop).
+The manager serializes load/warm/readiness/unload, emits generation-ordered `model-runtime-status-changed` events, and reports a `LoadReport` (`lock_wait_ms`, `load_ms`, `cache_hit`) that feeds the performance record. Idle release is user-configurable (`idleTimeoutMinutes`).
 
-In hold-down-only mode, there is no minimum hold duration: a key press immediately emits `hold-down-start` and a key release immediately emits `hold-down-stop`. The 0.3-second minimum recording threshold in `stop_native_recording` handles discarding phantom triggers.
+**Warm-on-record:** `start_native_recording` kicks off `spawn_model_preparation()` immediately after audio capture starts, so model load overlaps with the user still speaking. By the time the key is released the model is usually resident. (The transform sidecar does **not** do this yet — see issue #340.)
 
-#### Double-Tap Detector
-
-4-state machine:
-```text
-Idle --> [press] --> WaitingFirstUp
-     --> [release <200ms] --> WaitingSecondDown
-     --> [press, gap <400ms] --> WaitingSecondUp
-     --> [release <200ms] --> FIRE --> Idle
-```
-Rejects: taps held >200ms, modifier+letter combos, gaps >400ms, triple-tap spam.
-When `recording=true`, a single tap fires immediately (to stop, not start).
-
-#### Both Mode (Hold-Down + Double-Tap simultaneously)
-
-The interesting one. The problem: a key press could be the start of a double-tap *or* a hold. You can't know which until time passes.
-
-Solution: **deferred hold promotion via a background timer thread + atomic invalidation counter.**
-
-1. On key press, a timer thread is spawned for 200ms
-2. If the key is released before 200ms -- it was a tap. Timer fires but is invalidated by `HOLD_PRESS_COUNTER` (atomically incremented on release)
-3. If the key is still held after 200ms -- timer fires, sets `HOLD_PROMOTED` to true, and emits `hold-down-start`. Now we're in hold mode
-4. The hold-down detector is suppressed when the double-tap detector is in its second phase (WaitingSecondDown or WaitingSecondUp), preventing false hold events during double-tap sequences
-5. On key release: if promoted, emits `hold-down-stop`. If not promoted but double-tap fired, emits `double-tap-toggle`. Otherwise (short single tap with no double-tap), nothing is emitted -- no recording was ever started
-
-#### Processing State Management
-
-When entering the transcription pipeline, `set_processing(true)` is called:
-- Both-mode callback ignores all key events
-- Pending hold-promotion timers are invalidated via `HOLD_PRESS_COUNTER`
-- Both detectors are reset
-- On exit from processing, cooldowns are applied to prevent accidental re-triggers
-
-#### macOS Thread Safety -- The rdev Segfault Fix
-
-rdev's keyboard translation uses macOS **TIS/TSM** (Text Input Sources) APIs to map raw key codes to characters. These APIs **must run on the main thread**. rdev listens on a background thread. Without intervention, this silently segfaults.
-
-Fix -- one line, called before `rdev::listen()`:
-```rust
-rdev::set_is_main_thread(false);
-```
-This tells rdev it is *not* on the main thread, which causes it to wrap TIS/TSM calls in `dispatch_sync(dispatch_get_main_queue(), ...)` -- marshaling only those calls to main, while the listener loop stays on the background thread.
-
-A heartbeat monitor thread logs trace-level messages every 60 seconds while the listener is active.
-
-### `vad.rs` -- Voice Activity Detection
-
-- Uses **Silero VAD v5.1.2** via whisper-rs `WhisperVadContext`
-- Filters out silence before transcription to prevent Whisper hallucination loops on quiet recordings
-- VAD threshold computed from user-configurable sensitivity: `threshold = 1.0 - (vad_sensitivity / 100.0)` (0-100 scale, default 50)
-- Configured: 1 thread, GPU disabled
-- Returns speech segments as centisecond timestamps, converted to sample indices
-- Three outcomes: `NoSpeech` (skip transcription entirely), `Speech` (trimmed samples), `Error` (fallback to unfiltered audio)
-- `filter_speech` is `!Send` (WhisperVadContext constraint), must run via `spawn_blocking`
-- VAD context is created and destroyed per transcription (not cached like WhisperState)
-
-### `transcriber/` -- Inference Backend
-
-The backend implements a shared trait (kept for future extensibility):
+### `transcriber/` — Inference Backends
 
 ```rust
 trait TranscriptionBackend: Send + Sync {
     fn name(&self) -> &str;
     fn load_model(&mut self, model_name: &str) -> Result<(), String>;
-    fn transcribe(&mut self, samples: &[f32], language: &str) -> Result<String, String>;
+    fn is_model_loaded(&self, model_name: &str) -> bool;
+    fn transcribe(&mut self, samples: &[f32], language: &str,
+                  initial_prompt: Option<&str>, smart_punctuation: bool) -> Result<String, String>;
+    fn token_count(&self, text: &str) -> Option<usize>;
     fn model_exists(&self) -> bool;
-    fn models_dir(&self) -> PathBuf;
+    fn models_dir(&self) -> Result<PathBuf, String>;
     fn reset(&mut self);
 }
 ```
 
-When the model changes, `reset()` is called to force a reload on the next transcription.
+- **Whisper** — `WhisperContext` and `WhisperState` are both cached; GPU/Metal buffers are allocated once and reused across transcriptions. Greedy sampling, blank suppression, timestamp-based continuation for long audio.
+- **Core ML (FluidAudio)** — Parakeet v3 on the ANE. Decoder state is reset between one-shot dictations. An empty result after VAD trimming retries once with the original unfiltered audio.
+- **Parakeet CPU (sherpa-onnx)** — English fallback, also the non-macOS path.
 
-**Whisper (`whisper.rs`)**
-- Wraps whisper.cpp via `whisper-rs` with the Metal GPU backend enabled by default
-- Single `.bin` file per model (GGML format), sourced from Hugging Face
-- **WhisperState caching (v0.7.8)**: The `WhisperBackend` struct holds `context: Option<WhisperContext>`, `state: Option<WhisperState>`, and `loaded_model_name: Option<String>`. On first `load_model()`, a `WhisperContext` is created from the model file and `ctx.create_state()` allocates GPU/Metal buffers exactly once. The `WhisperState` is stored and reused across all subsequent transcriptions (`state.full(params, samples)`). Only a model name change triggers `reset()` and reallocation. Previously, `create_state()` was called per-transcription, causing expensive alloc/free cycles
-- Uses greedy sampling (best_of=1), single segment mode, timestamps/progress/special tokens suppressed, blank suppression enabled
-- Scans 6 standard paths to find existing model files
-- Suppresses whisper.cpp's verbose stdout via log trampoline (`install_logging_hooks()` called once via `std::sync::Once`)
+All backends take one final-after-stop pass. The Whisper-only incremental/preview worker was removed in #279; delivery happens exactly once.
 
-**Available Models (5 total)**
+### `llm_sidecar.rs` — Local LLM Supervisor
 
-| Model | Backend | Size |
-|-------|---------|------|
-| `tiny.en` | Whisper (Metal GPU) | ~75 MB |
-| `base.en` | Whisper (Metal GPU) | ~150 MB |
-| `small.en` | Whisper (Metal GPU) | ~500 MB |
-| `medium.en` | Whisper (Metal GPU) | ~1.5 GB |
-| `large-v3-turbo` | Whisper (Metal GPU) | ~3 GB |
+The helper is a separate signed executable (`murmur-llm-sidecar`), packaged as a Tauri `externalBin`, running with hardened runtime and App Sandbox.
 
-The initial model downloader screen shows a curated subset of 2 models: `large-v3-turbo` and `base.en`. Default selection: `large-v3-turbo`.
+- **Model pin:** Qwen2.5-1.5B-Instruct Q4_K_M, ~1.1 GB, exact byte size **and** SHA-256 verified at download and again before every spawn.
+- **Spawn hardening:** empty environment, fixed cwd, no path arguments, no network. The model is handed over as an inherited read-only file descriptor (fd 3), so the helper never resolves a path itself.
+- **Handshake:** nonce + protocol + model-id verification within a deadline; a mismatch is a hard failure, not a downgrade.
+- **Resource ceilings:** RSS warn at 2 GB, kill at 3 GB. Idle unload after inactivity. A circuit breaker (3 faults in a 10-minute window) disables the runtime until `reset_transform_runtime`.
+- **Maintenance:** a 30-second tokio interval task runs `maintenance_tick()` for idle unload and RSS enforcement; `RunEvent::Exit` shuts the helper down so it never outlives the app.
 
-### `injector.rs` -- Text Injection
+### `keyboard.rs` — Keyboard Detection
 
-1. **Clipboard** (always): `arboard` writes text to the system clipboard. Empty/whitespace-only text is silently skipped.
-2. **Auto-paste** (optional): waits a configurable delay (10-500ms, default 50ms), then:
-   ```bash
-   osascript -e 'tell application "System Events" to keystroke "v" using command down'
-   ```
-   The delay allows the target window to regain focus.
-   Retries once on failure with 100ms backoff. 2-second timeout on the entire operation.
-   On failure, emits `auto-paste-failed` with a hint message ("press Cmd+V to paste manually").
-   Requires Accessibility permission -- if not granted, text stays in clipboard with a warning log.
-   Previous approaches (`engio`, rdev simulate) broke on Sonoma/Sequoia. osascript is the reliable path.
+One persistent rdev background thread feeds three detectors: hold-down, double-tap, and transform-hold.
 
-### `commands/recording.rs` -- Transcription Pipeline & RAII Guard
+- **Hold-down** — 2 states; press emits `hold-down-start`, release emits `hold-down-stop`. Combos (trigger+letter) cancel.
+- **Double-tap** — 4 states; each tap under 200ms, gap under 400ms. Rejects holds, combos, slow taps, triple-tap spam. Emits `hotkey-tap-rejected` when an idle first tap expires (opt-in overlay feedback).
+- **Both** — deferred hold promotion: a 200ms timer thread with an atomic invalidation counter decides tap-vs-hold. Releasing before 200ms invalidates the timer; still held at 200ms promotes to a hold.
+- **Transform hold** — an independent key (`alt_r` / `ctrl_l` / `shift_r`, rejects the dictation key). Each physical hold gets a monotonic `transform_pass_id` assigned *in the rdev callback*, which is then carried explicitly through every event, command, and worker — correlation never relies on an ambient tracing span.
 
-**`IdleGuard`** -- RAII guard wrapping the transcription pipeline:
-- On drop (if not disarmed), resets status to `Idle` and clears the "processing" keyboard flag
-- Guarantees the UI never gets stuck in "Processing" on any error path
-- Both the outer command and inner pipeline have their own guards with a disarm handoff pattern
+**macOS thread safety.** rdev's key translation uses TIS/TSM APIs that must run on the main thread. `rdev::set_is_main_thread(false)` is called before `listen()`, which makes rdev marshal only those calls to main via `dispatch_sync` while the listener loop stays on its background thread. Without it, the app silently segfaults.
 
-**`run_transcription_pipeline()`**:
-1. Read state -- model name, language, auto-paste settings, paste delay, VAD sensitivity in a single lock acquisition
-2. Pre-VAD diagnostics -- compute RMS and peak amplitude of raw audio, log device name
-3. VAD phase -- if VAD model exists, run Silero VAD on a blocking thread. Three outcomes: NoSpeech (skip), Speech (trimmed), Error (fallback). If VAD model missing, spawn background download for next time
-4. Transcription phase -- lock backend mutex, call `load_model()` (lazy), then `transcribe()`
-5. Text injection -- dispatched to main thread via `run_on_main_thread()` (osascript requires main thread). Clipboard write + optional paste with 2-second timeout
-6. Structured logging -- emits `vad_ms`, `inference_ms`, `paste_ms`, `total_ms`, `audio_secs`, `word_count`, `char_count`, `model`, `backend` as tracing fields
+Global modifier hotkeys recover when macOS disables the underlying event tap, and the hot path performs no main-thread key-name translation and ignores mouse movement.
 
-**`cancel_native_recording`**: Transitions Recording -> Idle without transcription. Used by "both" mode to discard speculative recordings from short taps.
+### `injector.rs` — Text Injection
 
-**Minimum recording threshold**: Recordings shorter than 0.3 seconds (4,800 samples at 16kHz) are silently discarded as phantom triggers.
+1. **Clipboard** (always): `arboard`. Empty/whitespace-only text is skipped.
+2. **Auto-paste** (optional): waits the configured delay, then posts a native `CGEvent` Cmd+V key-down/key-up pair to `CGEventTapLocation::HID`. If the native path fails, it falls back to `osascript`. Retries once on failure; the whole operation is timeout-bounded. On failure, `auto-paste-failed` is emitted and the text stays on the clipboard.
 
-### `commands/overlay.rs` -- Notch Overlay
+Focused-field role checks use native AX with a per-element messaging timeout and an osascript fallback, so a hung app can't stall the pipeline.
 
-- `detect_notch_info()`: reads `NSScreen.mainScreen().safeAreaInsets()` via `objc2`; uses `auxiliaryTopLeftArea` + `auxiliaryTopRightArea` to compute notch width. Main-thread only. Returns `None` when no notch is present; fallback dimensions come from `geometry_for()`.
-- `raise_window_above_menubar()`: sets NSWindow level to **25** (NSMainMenuWindowLevel = 24). Calls private API `_setPreventsActivation(true)` to prevent focus-stealing on click; guarded with `respondsToSelector()` for forward compatibility.
-- `register_screen_change_observer()`: subscribes to `NSApplicationDidChangeScreenParametersNotification` -- repositions overlay automatically when displays are plugged/unplugged or lid opens. Emits `overlay-geometry-changed` (the recomputed `OverlayGeometry`) to frontend. Observer intentionally leaked (app lifetime).
-- Every overlay dimension comes from one source, `geometry_for(notch)` in `commands/overlay.rs`, which returns an `OverlayGeometry`; the frontend only reads it (`get_overlay_geometry`, `overlay-geometry-changed`) and never hardcodes pixels. See [docs/features/overlay.md](features/overlay.md) for the full geometry contract and the hover-expand lifecycle. Mouse events are explicitly re-enabled (`setIgnoreCursorEvents(false)`) because `focusable:false` disables them on macOS.
-
-### `commands/tray.rs` -- Tray Icon
-
-- Static 66x66 RGBA icon (3x resolution for 22pt Retina menu bar) showing 5 vertical capsule bars in an equalizer style, rendered as white with anti-aliased edges
-- `update_tray_icon` is a registered no-op command -- the tray icon is always static white. Command kept to avoid breaking the registered handler
-- Tray menu: "Show Murmur" (shows and focuses main window) and "Quit Murmur" (exits app). Left-click on tray icon also shows the main window
-
-### `commands/models.rs` -- Model Downloads
-
-- `check_model_exists`: checks whether a model exists for the configured backend
-- `check_specific_model_exists`: verifies a named model exists on disk. Includes path traversal protection (rejects `..`, `/`, `\` in model names)
-- `download_model`: streaming download with progress events. Whisper models download as single `.bin` files from Hugging Face
-- **VAD model co-download**: when downloading any transcription model, the Silero VAD model (`ggml-silero-v5.1.2.bin`, ~1.8MB) is automatically co-downloaded if not already present. VAD download failure is non-fatal
-- **Lazy VAD download**: `ensure_vad_model` is a fallback for users who upgrade from a pre-VAD version. If the VAD model is missing at transcription time, a silent background download is kicked off for next time (no UI side effects)
-- All downloads use a temp-file-then-rename pattern for atomicity. Partial downloads never appear as valid models
-
-### `telemetry.rs` -- Structured Event System
-
-Replaces the former `logging.rs`. All application logging goes through `tracing` with two output layers:
+### `telemetry.rs` — Structured Events
 
 ```text
 tracing event
     |
-    +--> Pretty-printed text file (app.log / app.dev.log) via tracing_appender
+    +--> Pretty text file (app.log / app.dev.log)
     |
     +--> TauriEmitterLayer
              |
-             +--> In-memory ring buffer (500 events, FIFO eviction)
-             |
-             +--> JSONL file (events.jsonl / events.dev.jsonl)
-             |
-             +--> 'app-event' emission to all frontend windows
+             +--> Ring buffer (500 events, FIFO)
+             +--> JSONL file (events.jsonl / events.dev.jsonl, rotated at 5 MB)
+             +--> 'app-event' emitted to all windows
 ```
 
-**TauriEmitterLayer**: A custom `tracing_subscriber::Layer` that intercepts all tracing events and:
-1. Collects fields via `JsonVisitor` into serde_json values
-2. Builds an `AppEvent` struct (timestamp, stream/target, level, summary/message, data/fields)
-3. Pushes to ring buffer (capped at 500, evicts oldest)
-4. Writes as JSONL line to persistent file
-5. Emits `app-event` to all Tauri windows
+Five streams (tracing targets): `pipeline`, `audio`, `keyboard`, `transform`, `system`.
 
-**Tracing targets (streams)**: `pipeline`, `audio`, `system`, `keyboard`.
+**Privacy stripping.** In release builds, all string fields on `pipeline` events are removed from the data object; only numerics survive. `transform` events are stricter still and stripped in *all* builds: every string key **and** value must appear in an explicit stable vocabulary of enum values, stage names, error codes, and bucket labels. Anything else is dropped at the layer, independent of the call site — so a careless log statement cannot leak selected text, instructions, proposals, paths, or bundle IDs.
 
-**Privacy stripping**: In release builds, all string fields from `pipeline` target events are stripped from the data object. Only numeric fields survive. The summary (message) is not stripped.
+### Local storage
 
-**JSONL rotation**: File is rotated (renamed to `.jsonl.1`) when it exceeds 5MB.
+Two SQLite databases, both local-only:
 
-**Buffer seeding**: On startup, the ring buffer is pre-populated with up to 500 events from the existing JSONL file.
+| Store | File | Retention |
+|-------|------|-----------|
+| Personal knowledge | `knowledge/knowledge.sqlite3` | User-managed; versioned migrations, backups, quarantine on corruption |
+| Performance diagnostics | `diagnostics/performance.sqlite3` | 200 completed runs, 600 resource samples, 8 follow-ups per run |
 
-**Log files**: Separate filenames for dev (`app.dev.log`, `events.dev.jsonl`) vs release builds.
-
-**Frontend logging**: The `log_frontend` command routes frontend log messages through the Rust tracing system at INFO/WARN/ERROR levels with `source="frontend"`.
-
-### `resource_monitor.rs` -- System Resource Monitoring
-
-- Reports CPU usage percentage and used memory (MB) via `sysinfo` crate
-- Uses a persistent `System` instance stored in a `static Mutex<Option<System>>`, initialized on first call
-- First call returns ~0% CPU (baseline measurement behavior of sysinfo)
-- Polled every 1 second by the frontend when the resource panel is expanded
+Transform diagnostic captures (explicitly consented, content-bearing) live under `diagnostics/transforms/transform-captures/` in a `0700` directory with `0600` files: max 3 retained, 7-day expiry, symlink targets refused, no export path.
 
 ---
 
 ## Frontend (`app/src/`)
 
-### `App.tsx` -- Main Orchestrator
+`App.tsx` is a thin orchestrator that wires hooks together. All recording-mode hooks are always called (Rules of Hooks) and gated by an `enabled` prop:
 
-Wires all hooks together. Key state:
-- `modelReady` -- null (checking) | false (needs download) | true (ready)
-- `initialized` -- backend init complete
-- `accessibilityGranted` -- macOS Accessibility permission
-- `status` -- `'idle' | 'recording' | 'processing'`
-
-**Dual-mode hook pattern** -- all three hooks always called (Rules of Hooks); gated by `enabled`:
 ```tsx
 useHoldDownToggle({ enabled: settings.recordingMode === 'hold_down', ... });
 useDoubleTapToggle({ enabled: settings.recordingMode === 'double_tap', ... });
 useCombinedToggle({ enabled: settings.recordingMode === 'both', ... });
 ```
 
-### Key Hooks
+See [reference/hooks.md](reference/hooks.md) for the full hook inventory.
 
-| Hook | Responsibility |
-|------|---------------|
-| `useRecordingState` | Recording/transcription state machine, event listeners, audio level tracking, locked mode, stats integration |
-| `useHoldDownToggle` | Hold-down mode (rdev press/release events), error recovery + auto-restart |
-| `useDoubleTapToggle` | Double-tap mode (rdev events), syncs `recording` state to backend |
-| `useCombinedToggle` | Both modes; `holdActiveRef` prevents double-tap firing on hold release. Calls `cancel_native_recording` for speculative recording discard |
-| `useSettings` | localStorage persistence, OS autostart sync, backend configuration pushes |
-| `useAutoUpdater` | OTA updates, min-version enforcement, semver comparison, forced updates, macOS notifications |
-| `useInitialization` | One-time init sequence (initDictation + configure) on mount |
-| `useHistoryManagement` | Transcription history array with localStorage persistence (max 50 entries) |
-| `useEventStore` | Structured event log buffer: backend hydration, live `app-event` streaming, batched rendering via rAF, filter/clear |
-| `useResourceMonitor` | CPU/memory polling every 1 second, rolling 60-reading buffer |
-| `useShowAboutListener` | Listens for `show-about` tray event, manages about modal state |
+Two rules keep the multi-window state coherent:
 
-**`transcription-complete` as single source of truth** -- history entries are added *only* via the Rust event, never in `handleStop()`. Prevents duplicates when the overlay initiates recording independently.
-
-**Ref-based state in callbacks** -- `statusRef` stays in sync with `status` state so hotkey callbacks always read current status without stale closure captures. Callbacks stored in refs prevent listener setup from re-running on identity changes.
-
-### `lib/settings.ts` -- Settings & Model Configuration
-
-```typescript
-interface Settings {
-    model: ModelOption;         // default: 'base.en'
-    doubleTapKey: DoubleTapKey; // default: 'shift_l'
-    language: string;           // default: 'en'
-    autoPaste: boolean;         // default: false
-    autoPasteDelayMs: number;   // default: 50 (range: 10-500)
-    recordingMode: RecordingMode; // default: 'hold_down'
-    microphone: string;         // default: 'system_default'
-    launchAtLogin: boolean;     // default: false
-    vadSensitivity: number;     // default: 50 (range: 0-100)
-}
-```
-
-Settings persisted to localStorage under key `"dictation-settings"`. Migration handles legacy `hotkey` recording mode -> `hold_down`.
-
-### `lib/stats.ts` -- Usage Metrics
-
-Persisted to localStorage:
-- `totalWords`, `totalRecordings`, `totalDurationSeconds`
-- `wpmSamples: number[]` -- rolling 100-sample history (outlier-resistant)
-- Approx tokens = `totalWords * 1.3`
-
-### `lib/events.ts` -- Event System Types
-
-```typescript
-interface AppEvent {
-    timestamp: string;
-    stream: StreamName;   // 'pipeline' | 'audio' | 'keyboard' | 'system'
-    level: LevelName;     // 'trace' | 'debug' | 'info' | 'warn' | 'error'
-    summary: string;
-    data: Record<string, unknown>;
-}
-```
-
-Color constants map each stream and level to Tailwind classes (bg, text, dot) for the log viewer UI.
-
-### `OverlayWidget.tsx` -- Notch Widget
-
-Rendered in the overlay window, always-on-top, transparent, no decorations. `OverlayWidget.tsx` itself is a thin composition shell (~150 lines) that wires together the geometry contract, the expansion controller, and four extracted hooks, then renders two presentational components. See [docs/features/overlay.md](features/overlay.md) for the full architecture; summary:
-
-- **Three visual states**: Idle (small mic icon, dimmed), Recording (expanded, red pulsing dot + animated waveform), Processing (expanded, spinning circle + dimmed waveform) -- derived by the pure `deriveVisual()` (`components/overlay/deriveVisual.ts`)
-- **7-bar waveform** (`lib/hooks/useWaveform.ts`), driven by `requestAnimationFrame` + direct DOM refs -- bypasses React reconciliation for 60fps. Center bars are taller (envelope shaping), random jitter for organic feel
-- Spring-like expand/collapse transition (`cubic-bezier(0.34, 1.56, 0.64, 1)`, width 400ms / height 360ms -- see `lib/overlayMotion.ts`), owned end to end by `lib/hooks/useOverlayExpansion.ts`
-- Single click: stop recording (250ms debounce). Double-click: toggle locked mode (keeps recording across single clicks) -- `lib/hooks/useRecordingControls.ts`
-- Reads settings via the validated `loadSettings()` API (localStorage; no Tauri IPC needed) -- `lib/hooks/useOverlaySettingsMirror.ts`
-
-### Log Viewer (`components/log-viewer/`)
-
-**Events tab**:
-- Stream filter chips -- toggle which event streams to show (default active: `pipeline`, `audio`, `system`)
-- Level filter -- toggle info/warn/error visibility
-- Event list with auto-scroll (disengages on manual scroll up, re-engages within 40px of bottom)
-- Expandable rows: timestamp, colored stream chip, level label, summary text. Click to reveal JSON data
-- Copy All and Clear buttons
-
-**Metrics tab**:
-- Extracts transcription timing from pipeline events where `summary === 'transcription complete'`
-- Last 20 transcriptions displayed
-- Four toggleable series: Total, Inference, VAD, Paste
-- Stat cards with latest value, average, trend indicator (up/down/flat, 10% threshold)
-- Two SVG line charts: Total + Inference (upper, 150px), VAD + Paste (lower, 120px)
-- Auto-scaled Y-axis with round tick marks
-
-### Resource Monitor
-
-- Collapsible panel in the main window; collapse state persisted to localStorage
-- Header always shows current CPU% and memory MB
-- Expanded view: SVG polyline chart with CPU and memory lines, grid at 25/50/75%, legend
-- Only polls when expanded (performance optimization)
-- Rolling window of 60 readings (1 minute of data)
+- **`transcription-complete` is the single source of truth** for history and stats. Entries are added only from the Rust event, never in `handleStop()` — otherwise an overlay-initiated recording double-counts.
+- **The overlay reads settings from localStorage directly** (`useOverlaySettingsMirror`), not through React context or IPC. There is no shared context across windows.
 
 ---
 
-## Tauri Commands (30)
+## Tauri Commands
 
-| Module | Command | Description |
-|--------|---------|-------------|
-| recording | `init_dictation` | Returns initialized/idle response (no-op marker) |
-| recording | `process_audio` | Accepts base64-encoded WAV, runs full pipeline |
-| recording | `get_status` | Returns status, model name, language |
-| recording | `configure_dictation` | Updates model, language, autoPaste, autoPasteDelayMs, vadSensitivity |
-| recording | `start_native_recording` | Begins cpal audio capture; Idle -> Recording |
-| recording | `stop_native_recording` | Stops capture, runs VAD + transcription + injection pipeline |
-| recording | `cancel_native_recording` | Discards recording without transcribing (speculative hold-down) |
-| permissions | `open_system_preferences` | Opens macOS System Settings to Microphone pane |
-| permissions | `check_accessibility_permission` | Returns boolean for Accessibility status |
-| permissions | `request_accessibility_permission` | Triggers Accessibility prompt + opens Settings |
-| permissions | `request_microphone_permission` | Opens Microphone privacy pane |
-| permissions | `list_audio_devices` | Returns Vec of input device names |
-| keyboard | `start_keyboard_listener` | Starts rdev listener with hotkey and mode |
-| keyboard | `stop_keyboard_listener` | Stops processing keyboard events (thread stays alive) |
-| keyboard | `update_keyboard_key` | Changes hotkey at runtime; emits stop if held |
-| keyboard | `set_keyboard_recording` | Syncs recording state to double-tap detector |
-| logging | `get_log_contents` | Returns last N lines of pretty-printed log file |
-| logging | `clear_logs` | Deletes all log files + clears event ring buffer |
-| logging | `log_frontend` | Routes frontend message through Rust tracing |
-| logging | `open_log_viewer` | Shows and focuses the log-viewer window |
-| models | `check_model_exists` | Checks if any model exists (either backend) |
-| models | `check_specific_model_exists` | Checks named model on disk (path traversal protected) |
-| models | `download_model` | Streaming download + VAD co-download |
-| tray | `update_tray_icon` | No-op (static white icon). Kept for API compat |
-| overlay | `show_overlay` | Positions and shows the overlay window |
-| overlay | `hide_overlay` | Hides the overlay window |
-| overlay | `get_overlay_geometry` | Returns the current `OverlayGeometry` contract (never null) |
-| overlay | `set_overlay_expanded` | Resizes between the collapsed and expanded frames; returns the applied frame as a resize ack |
-| overlay | `show_main_window` | Shows and focuses the main window (used by the overlay's gear button) |
-| telemetry | `get_event_history` | Returns ring buffer (up to 500 events) |
-| telemetry | `clear_event_history` | Clears the event ring buffer |
-| resource_monitor | `get_resource_usage` | Returns CPU% and memory MB |
+105 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
 
----
+## Events
 
-## Events (Rust -> Frontend)
-
-| Event | Payload | Description |
-|-------|---------|-------------|
-| `audio-level` | f32 (RMS 0.0-1.0) | Real-time audio level during recording, ~60fps |
-| `recording-status-changed` | String | Status transitions: `"idle"`, `"recording"`, `"processing"` |
-| `transcription-complete` | `{text, duration}` | Broadcast to all windows after non-empty transcription |
-| `auto-paste-failed` | String (hint) | Paste failed; text is in clipboard |
-| `download-progress` | `{received, total}` | Streaming download progress (bytes) |
-| `double-tap-toggle` | `()` | Double-tap detected |
-| `hold-down-start` | `()` | Hold key pressed (or promoted in both mode) |
-| `hold-down-stop` | `()` | Hold key released |
-| `keyboard-listener-error` | String | rdev thread error; frontend retries after 2s |
-| `overlay-geometry-changed` | `OverlayGeometry` (never null) | Display config changed; carries the recomputed geometry contract |
-| `overlay-visible-changed` | Boolean | Overlay shown/hidden (no production emitter today — see events.md) |
-| `app-event` | `AppEvent` | Every tracing event, powers log viewer |
-| `show-about` | `()` | Tray menu "About" click |
+See [reference/events.md](reference/events.md) for every Rust → frontend event, its payload, and its listeners.
 
 ---
 
@@ -490,61 +324,60 @@ Rendered in the overlay window, always-on-top, transparent, no decorations. `Ove
 
 | Permission | Required For |
 |-----------|-------------|
-| Microphone | Audio capture (always required) |
-| Accessibility | Global hotkeys (rdev), auto-paste (osascript) |
+| Microphone | Audio capture — dictation and transform instructions |
+| Accessibility | Global hotkeys (rdev), auto-paste, AX selection capture, AX write-back |
 
-Accessibility is checked via `AXIsProcessTrusted()` FFI. If not granted, a system prompt is triggered via `AXIsProcessTrustedWithOptions()` with `kAXTrustedCheckOptionPrompt`.
+Accessibility is checked via `AXIsProcessTrusted()`; the prompt is triggered with `AXIsProcessTrustedWithOptions()`. Microphone access can be requested in-app via `AVCaptureDevice.requestAccess`. Both have reset paths for stale TCC entries.
 
 ---
 
-## Data Directory
+## Data Directories
 
-All models, logs, and event data are stored under:
+Murmur uses two roots — a legacy one from before the rename, and the Tauri app-data root:
+
 ```text
 ~/Library/Application Support/local-dictation/
+├── models/                    # whisper .bin files, Silero VAD, sherpa-onnx bundle
+│   └── transform-llm/<sha256>/qwen2.5-1.5b-instruct-q4_k_m.gguf
+└── logs/                      # app.log, events.jsonl (+ .dev variants)
+
+~/Library/Application Support/com.localdictation/        (com.localdictation.dev in dev)
+├── knowledge/                 # knowledge.sqlite3, backups/, quarantine/
+└── diagnostics/               # performance.sqlite3, transforms/
 ```
 
-This is a legacy name from before the app was renamed to Murmur. Contents:
-- `models/` -- Whisper GGML `.bin` files, Silero VAD model
-- `logs/` -- `app.log` / `app.dev.log` (pretty-printed), `events.jsonl` / `events.dev.jsonl` (structured)
+Core ML models are managed by FluidAudio under `~/Library/Application Support/FluidAudio/Models/`.
 
 ---
 
 ## Build & Release
 
-### Dev Configuration
+### Dev
 
 ```bash
-cd app && npm run tauri dev        # Dev with hot reload
-cd app && npm run tauri build      # Production .app and .dmg
-cd app/src-tauri && cargo test -- --test-threads=1  # Rust tests (single-threaded)
-cd app && npx tsc --noEmit         # TypeScript check
+python3 scripts/build_local_llm_sidecar.py   # once, before anything else on macOS
+cd app && npm install
+cd app && npm run tauri dev                  # hot reload
+cd app && npm run tauri build                # .app and .dmg
+cd app/src-tauri && cargo test -- --test-threads=1
+cd app && npx tsc --noEmit && npm test
 ```
 
-`tauri.dev.conf.json` overrides only two fields from production config: `identifier` -> `"com.localdictation.dev"` and `productName` -> `"Local Dictation Dev"`. This ensures the dev build installs as a separate app.
+`tauri.macos.conf.json` declares the `murmur-llm-sidecar` externalBin, so on macOS both `tauri dev` and `cargo check`/`cargo test` fail on a fresh clone until that binary exists. The build script produces a real helper on arm64 macOS and is a no-op elsewhere. See [DEVELOPMENT.md](DEVELOPMENT.md).
 
-### Release Pipeline
+`tauri.dev.conf.json` overrides only `identifier` → `com.localdictation.dev` and `productName` → `Local Dictation Dev`, so dev installs alongside the release build.
 
-1. Push the `chore: bump version ...` commit to trusted `main`.
-2. `Release Build` runs frontend verification, macOS signing/notarization, and
-   Linux CUDA packaging concurrently, including package launch smoke tests.
-3. The successful build stores macOS and Linux artifacts plus SHA-256
-   provenance under names keyed by the exact commit SHA.
-4. The completed-build event verifies the trusted push, version-bump message,
-   matching versions, exact run ID, source SHA, and immutable artifacts.
-5. Promotion creates `vX.Y.Z` at that commit, verifies the remote `.sig` files,
-   generates `latest-v2.json` and the legacy-safe `latest.json`, then publishes.
+### Release pipeline
 
-Manual build dispatches are rehearsal-only, and the tag trigger remains a
-recovery path protected by the same validation chain.
+1. Push a `chore: bump version ...` commit to trusted `main`.
+2. `Release Build` runs frontend verification, macOS signing/notarization (including the sidecar's split entitlements), and Linux packaging concurrently, with launch smoke tests.
+3. Artifacts plus SHA-256 provenance are stored under names keyed by the exact commit SHA.
+4. The completed-build event verifies the trusted push, version-bump message, matching versions, exact run ID, source SHA, and immutable artifacts.
+5. Promotion creates `vX.Y.Z`, verifies remote `.sig` files, generates `latest-v2.json` plus the legacy-safe `latest.json`, then publishes.
 
-Tag workflows never build or save Cargo/CUDA caches. See
-[`docs/release.md`](release.md) for trust boundaries, rehearsals, cache policy,
-and the supported cold fallback.
+Release finalization **fails closed** on any unexpected executable in the bundle: only the Murmur binary and the signed sidecar may ship (#324). Manual dispatches are rehearsal-only. See [release.md](release.md).
 
-**Auto-updater**: New builds check the dual-platform `latest-v2.json`; legacy `latest.json` routes old Macs through the signed, macOS 13-compatible v0.14.1 bridge before they receive the macOS 14 build. Updates are signed (ed25519). Min-version enforcement removes "Skip"/"Later" for required updates.
-
-### Release Profile
+### Release profile
 
 ```toml
 [profile.release]
@@ -552,23 +385,26 @@ panic = "abort"
 codegen-units = 1
 lto = true
 opt-level = "s"
-strip = false # retain Tauri's updater bundle-type marker
+strip = false   # retain Tauri's updater bundle-type marker
 ```
 
 ---
 
 ## Thread Model
 
-The app uses at least 4 persistent background threads plus short-lived workers:
-
-| Thread | Lifetime | Purpose |
+| Thread / task | Lifetime | Purpose |
 |--------|----------|---------|
-| rdev keyboard listener | App lifetime (spawned once) | Global key event loop |
-| Keyboard heartbeat | App lifetime | Trace-level heartbeat every 60s |
-| Audio capture | Per-recording session | cpal stream + mono mix |
-| Hold-promotion timer | Per key press (both mode) | 200ms sleep, atomic check |
+| rdev keyboard listener | App lifetime | Global key event loop for all three detectors |
+| Keyboard heartbeat | App lifetime | Trace-level liveness check every 60s |
+| Resource heartbeat (tokio) | App lifetime | 1s CPU/RSS sample → diagnostics; idle-timeout enforcement |
+| Sidecar maintenance (tokio) | App lifetime | 30s tick: RSS ceiling + idle unload |
+| `murmur-llm-sidecar` process | On demand | Out-of-process llama.cpp; killed on idle, fault, or app exit |
+| Sidecar reader thread | Per spawn | Reads the helper's protocol stream |
+| Audio capture | Per recording | cpal stream + mono mix |
+| Hold-promotion timer | Per key press (both mode) | 200ms sleep, atomic validity check |
+| Model preparation | Per recording start / model change | Warms the backend concurrently with speech |
 
-Plus Tokio async tasks for VAD (`spawn_blocking`), downloads, and text injection dispatch.
+Plus tokio `spawn_blocking` for VAD (its context is `!Send`), downloads, and injection dispatch.
 
 ---
 
@@ -576,19 +412,22 @@ Plus Tokio async tasks for VAD (`spawn_blocking`), downloads, and text injection
 
 | Decision | Rationale |
 |----------|-----------|
-| Pure Rust backend | No Python subprocess; faster startup, smaller bundle, no dependency hell |
-| Pluggable `TranscriptionBackend` trait | Clean abstraction for future backends; same pipeline code |
-| Lazy model loading + WhisperState caching | Fast app startup; GPU buffers allocated once, reused across transcriptions |
-| VAD pre-filtering | Prevents Whisper hallucination loops on silence; skips unnecessary inference |
-| Clipboard-first injection | Reliable across all apps; auto-paste layered on top |
-| osascript for auto-paste | `engio` and rdev simulate broke on Sonoma/Sequoia |
-| Single rdev thread, two detectors | Avoids multiple listeners; both detectors share one event stream |
-| `set_is_main_thread(false)` | Prevents TIS/TSM segfault on background rdev thread |
-| `MutexExt::lock_or_recover()` | Survives panics; no stuck UI state |
-| `IdleGuard` RAII | Guarantees status reset on any error path in the transcription pipeline |
-| Atomic timer invalidation (Both mode) | Stale hold-timers can't fire after key is released and re-pressed |
-| `_setPreventsActivation` + `respondsToSelector` | Overlay never steals focus; forward-compatible with future macOS |
-| tracing-based telemetry | Unified observability: every backend event captured, persisted, and streamed to frontend |
-| Privacy stripping in release builds | Pipeline string fields stripped from structured events; only numerics survive |
-| Three-window least-privilege | Overlay gets minimal permissions; log viewer gets event-only access; main window gets full permissions |
-| VAD co-download | Silero model bundled with transcription model downloads; lazy fallback for pre-VAD upgrades |
+| Out-of-process LLM sidecar | llama.cpp's ggml ABI clashes with whisper's; isolation also gives per-process RSS ceilings, a kill switch, and a smaller signed attack surface |
+| Model handed to the helper as fd 3 | The helper takes no paths and needs no filesystem reach; pinning is enforced host-side by size + SHA-256 |
+| One model catalog, fail-closed | Unknown identifiers error instead of silently substituting a model with different accuracy/latency |
+| Warm-on-record | Model load overlaps with speech instead of being charged to the user after key release |
+| Generation counters everywhere | A delayed continuation can observe that it lost ownership rather than corrupting the pass that replaced it |
+| Immutable per-recording context | Settings or focus changes mid-utterance can't reinterpret a recording already in flight |
+| Review-first transform | The LLM never writes into another app without explicit approval; Undo restores the frozen original |
+| Secure-field fail-closed | An *errored* AX secure-field check is treated as "possibly a password field" — no read, no clipboard fallback |
+| Transform telemetry allow-list | String keys and values must be in a stable vocabulary; leakage is prevented at the layer, not at the call site |
+| Ordered transcript pipeline | One entry point, declared stage order and failure policy, per-stage timing — instead of ad-hoc string munging per backend |
+| Rust owns all window geometry | Pure `geometry_for()` / `popover_geometry_for()` with fixtures on both sides; no drifting CSS pixel constants |
+| Main-thread `NSWindow` mutation | macOS 26 hard-traps on off-main mutation (#325) |
+| CGEvent paste with osascript fallback | Native path avoids process spawn; osascript remains the compatibility net |
+| Custom malloc zone | Separates Rust heap from whisper.cpp's FFI heap; `GlobalAlloc` wrappers drift when FFI frees Rust allocations |
+| `set_is_main_thread(false)` | Prevents the rdev TIS/TSM segfault on the background listener thread |
+| `MutexExt::lock_or_recover()` | Survives a panic while a lock is held; no stuck UI state |
+| `IdleGuard` RAII | Guarantees status reset on every error path in the pipeline |
+| Clipboard-first delivery | Reliable across all apps; auto-paste is layered on top and never the only path |
+| Per-window least privilege | Overlay and transform popover get minimal capabilities; only the main window gets the full set |

@@ -10,14 +10,15 @@ For the hook that manages settings, see [hooks.md](hooks.md). For the backend co
 
 All settings are stored in `localStorage` under the key `dictation-settings` as a single JSON object.
 
-The native Settings window has six pages in this order:
+The native Settings window has seven pages in this order (`SETTINGS_CATEGORIES` in `SettingsPanel.tsx`):
 
 1. **Recording** — microphone, voice detection, recording trigger, and shortcut feedback
 2. **Transcription** — one model selector, language, model lifecycle/download state, and idle release
-3. **Text & Vocabulary** — punctuation, cleanup, names and terms, developer terms, corrections, structured writing, spoken commands, and personal knowledge
-4. **Delivery** — clipboard-first behavior, auto-paste, file output, and app overrides
-5. **Performance** — the directional local Performance Lab
-6. **General** — launch at login, setup, logs, statistics, updates, and version
+3. **Transform** — enable + hold-key picker, local-LLM model status/download/remove/reset, and saved transforms
+4. **Text & Vocabulary** — punctuation, cleanup, names and terms, developer terms, corrections, structured writing, spoken commands, and personal knowledge
+5. **Delivery** — clipboard-first behavior, auto-paste, file output, and app overrides
+6. **Performance** — the directional local Performance Lab
+7. **General** — launch at login, setup, logs, statistics, updates, and version
 
 Changing pages only changes presentation. It does not rename, discard, or
 reinterpret persisted fields. A round-trip compatibility test serializes and
@@ -26,20 +27,58 @@ IDE roots.
 
 **Source file:** `app/src/lib/settings.ts`
 
-**TypeScript interface:**
+**TypeScript interface** (full current shape — see `settings.ts` for the per-field comments):
 
 ```typescript
 interface Settings {
+  // Transcription
   model: ModelOption;
-  doubleTapKey: DoubleTapKey;
   language: string;
-  autoPaste: boolean;
-  autoPasteDelayMs: number;
+  vadSensitivity: number;
+  idleTimeoutMinutes: number;
+
+  // Recording
   recordingMode: RecordingMode;
+  doubleTapKey: DoubleTapKey;
   hotkeyMissFeedback: boolean;
   microphone: string;
+  disabled: boolean;
+
+  // Transform (selected-text rewrite)
+  transformHoldKey: TransformKey | null;   // null = disabled (default)
+
+  // Delivery
+  autoPaste: boolean;
+  autoPasteDelayMs: number;
+  saveTranscript: boolean;
+  saveAudio: boolean;
+  outputDir: string;
+
+  // Text intelligence
+  smartPunctuation: boolean;
+  cleanupEnabled: boolean;
+  cleanupRemoveFiller: boolean;
+  cleanupCapitalize: boolean;
+  smartFormattingEnabled: boolean;
+  correctionEnabled: boolean;
+  correctionFuzzy: boolean;
+  voiceCommandsEnabled: boolean;
+  voiceCommands: VoiceCommand[];           // legacy pairs, migration-only
+  vocabularyEntries: VocabularyEntry[];
+  customVocabulary: string;                // @deprecated derived mirror
+  codeVocabEnabled: boolean;
+  codeVocabFolder: string;
+  codeVocabLastScan: VocabScanSummary | null;
+
+  // Per-app
+  appProfiles: AppProfile[];
+
+  // Performance Lab
+  benchmarkOutputDir: string;
+  benchmarkAutoSave: boolean;
+
+  // System
   launchAtLogin: boolean;
-  vadSensitivity: number;
 }
 ```
 
@@ -82,6 +121,14 @@ model-selection side effects.
 | `doubleTapKey` | `DoubleTapKey` | `'shift_l'` | `'shift_l'` (Shift), `'alt_l'` (Option), `'ctrl_r'` (Control) | The modifier key used for recording triggers. Used by all three recording modes as the trigger key. Label in the settings UI changes based on `recordingMode`. |
 | `hotkeyMissFeedback` | `boolean` | `false` | `true` / `false` | In Double-Tap or Both mode, briefly flashes the overlay amber when the 400ms second-tap window expires. It does not fire for holds, modifier shortcuts, processing skips, or successful gestures. Frontend/overlay only. |
 | `vadSensitivity` | `number` | `50` | 0-100, step 5 in UI | Voice Activity Detection sensitivity. Higher values keep more audio; lower values trim silence more aggressively. The backend converts this to a threshold: `1.0 - (sensitivity / 100.0)`. Clamped to 0-100 by the backend. |
+| `disabled` | `boolean` | `false` | `true` / `false` | Global disable. Mirrors the tray "Disable Murmur" check item and the overlay's power button; the hover quick-settings card stays reachable while disabled so the overlay can turn Murmur back on. |
+| `idleTimeoutMinutes` | `number` | `5` | `5`, `15`, `0` (Never) | How long an idle loaded model stays resident before the runtime releases it. `0` keeps it loaded indefinitely. |
+
+### Transform Settings
+
+| Setting | Type | Default | Valid Options/Range | Description |
+|---------|------|---------|-------------------|-------------|
+| `transformHoldKey` | `TransformKey \| null` | `null` | `'alt_r'` (Right Option), `'ctrl_l'` (Left Control), `'shift_r'` (Right Shift), or `null` to disable | The independent hold key for selected-text transform. Deliberately a distinct id set from `doubleTapKey` so the two shortcuts coexist; the picker rejects the active dictation key. Anything unrecognized — including an absent field on pre-feature settings — coerces back to `null` rather than silently arming a shortcut.<br><br>The transform **model**, saved transforms, and presets are not localStorage settings: the model install lives on disk under the app models directory, and saved transforms are knowledge-store records. See [Selected-text Transform](../features/selected-text-transform.md). |
 
 ### Recording Mode Details
 
@@ -161,8 +208,10 @@ New text replacements and snippets are Rust-owned knowledge records rather than 
 2. If found, parses as JSON and merges with `DEFAULT_SETTINGS` (stored values override defaults). Legacy comma/newline-separated `customVocabulary` values migrate to enabled global `vocabularyEntries` with no aliases.
 3. Applies migration: if `recordingMode` is missing or invalid (including the legacy `'hotkey'` value), resets to `'hold_down'`.
 4. Strips the legacy `hotkey` field if present.
-5. Validates `model` against the current allow-list. Any invalid or removed model (e.g. `moonshine-tiny`, `moonshine-base`) is reset to `'base.en'`.
-6. If not found or on parse error, returns `DEFAULT_SETTINGS`.
+5. Validates `model` against the platform allow-list. Any invalid or removed model (e.g. `moonshine-tiny`, `moonshine-base`) resets to the platform default — Core ML Parakeet v3 on Apple Silicon macOS, CPU Parakeet elsewhere. `language` is validated against `LANGUAGE_OPTIONS` the same way.
+6. Coerces `transformHoldKey` to `null` unless it matches `TRANSFORM_KEY_OPTIONS`, and sanitizes every structured field — `appProfiles`, `voiceCommands`, `vocabularyEntries`, `codeVocabLastScan` — dropping malformed entries and clamping list lengths so a tampered blob can't reach the Rust side or render bad numbers.
+7. Removes fields from deleted features (`hotkey`, `liveTranscriptPreview`).
+8. If not found or on parse error, returns `DEFAULT_SETTINGS`.
 
 ### Backend Synchronization
 

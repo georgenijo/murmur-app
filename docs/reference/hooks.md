@@ -1,348 +1,121 @@
 # React Hooks Reference
 
-This document lists all 11 custom React hooks in Murmur. Each hook is located under `app/src/lib/hooks/` and is consumed by `App.tsx` or by window-specific entry points (overlay, log viewer).
+The 28 custom React hooks under `app/src/lib/hooks/`, grouped by the window that uses them. Hooks are where nearly all frontend behavior lives — `App.tsx` and `OverlayWidget.tsx` are thin composition shells.
 
-For the Tauri commands these hooks invoke, see [commands.md](commands.md). For the events they listen to, see [events.md](events.md). For settings managed by `useSettings`, see [settings.md](settings.md).
-
----
-
-## useAutoUpdater
-
-**File:** `app/src/lib/hooks/useAutoUpdater.ts`
-
-**Parameters:** None.
-
-**Returns:** `UseAutoUpdaterReturn`
-
-```typescript
-interface UseAutoUpdaterReturn {
-  updateStatus: UpdateStatus;
-  checkForUpdate: () => Promise<void>;
-  startDownload: () => Promise<void>;
-  skipVersion: () => void;
-  dismissUpdate: () => void;
-}
-```
-
-**Responsibilities:**
-- Checks for updates on launch and every 24 hours (`CHECK_INTERVAL_MS`). Supports forced updates when the current version is below a remote `min_version` field.
-- Manages the full update lifecycle: check, download with progress, install, and relaunch via `@tauri-apps/plugin-updater` and `@tauri-apps/plugin-process`.
-- Sends a macOS notification when an update is discovered during a background check.
-
-**Key interactions:**
-- Fetches `min_version` from the current GitHub releases `latest-v2.json` channel via HTTP.
-- Stores skipped version in localStorage under `skipped-update-version`.
-- Stores last check timestamp in localStorage under `updater-last-check`.
+For the commands these hooks call see [commands.md](commands.md). For the events they subscribe to see [events.md](events.md). For settings managed by `useSettings` see [settings.md](settings.md).
 
 ---
 
-## useCombinedToggle
+## Recording and dictation (main window)
 
-**File:** `app/src/lib/hooks/useCombinedToggle.ts`
+### `useRecordingState`
+The dictation state machine. Owns `status` (`idle` / `recording` / `processing`), audio level, locked mode, and the error/hint banners. Subscribes to `recording-status-changed`, `transcription-complete`, `recording-cancelled`, `audio-level`, `auto-paste-failed`, and `file-output-failed`; invokes `start_native_recording` / `stop_native_recording` / `cancel_native_recording`.
 
-**Parameters:**
+**`transcription-complete` is the single source of truth** for history and stats — entries are never added in `handleStop()`, because the overlay can start a recording independently and that would double-count.
 
-```typescript
-interface UseCombinedToggleProps {
-  enabled: boolean;
-  initialized: boolean;
-  accessibilityGranted: boolean | null;
-  triggerKey: string;
-  status: DictationStatus;
-  onStart: () => void;
-  onStop: () => void;
-  onToggle: () => void;
-}
-```
+`statusRef` mirrors `status` so hotkey callbacks always read current state instead of a stale closure capture; callbacks themselves are stored in refs so listener setup doesn't re-run on identity changes.
 
-**Returns:** `void`
+### `useHoldDownToggle`
+Hold-down mode. Listens for `hold-down-start` / `hold-down-stop`, plus `keyboard-listener-error` for error recovery and auto-restart after 2s. Gated by `enabled`.
 
-**Responsibilities:**
-- Combines hold-down and double-tap keyboard detection on a single trigger key. Active when `recordingMode` is `'both'`.
-- Tracks whether a hold-down press is currently active via `holdActiveRef` to prevent the eager hold-start from corrupting the double-tap state machine.
-- Syncs recording state to the backend double-tap detector via `set_keyboard_recording`, but skips syncing while a hold press is active.
+### `useDoubleTapToggle`
+Double-tap mode. Listens for `double-tap-toggle` and syncs `recording` back into the detector via `set_keyboard_recording`. Gated by `enabled`.
 
-**Key interactions:**
-- Listens to events: `hold-down-start`, `hold-down-stop`, `double-tap-toggle`, `keyboard-listener-error`, `hold-down-cancel` (dead code -- this event is never emitted from Rust).
-- Invokes commands: `start_keyboard_listener` (mode `"both"`), `stop_keyboard_listener`, `set_keyboard_recording`, `cancel_native_recording` (in the dead `hold-down-cancel` handler).
+### `useCombinedToggle`
+Both modes at once. `holdActiveRef` prevents the double-tap path from firing on hold release; calls `cancel_native_recording` to discard speculative recordings from short taps. Gated by `enabled`.
+
+All three are always called (Rules of Hooks) and switched by the `enabled` prop rather than conditional invocation.
+
+### `useFileTranscription`
+Imported-file transcription: file selection, `transcribe_file`, and the `file-transcription-status-changed` busy state. Adds the result to history through the same `addEntry` path as live dictation.
+
+### `useHistoryManagement`
+Transcription history with localStorage persistence (`dictation-history`, max 50 entries), clear-with-confirmation, and the Correct-and-Teach entry point on the newest entry.
 
 ---
 
-## useDoubleTapToggle
+## Configuration and lifecycle (main window)
 
-**File:** `app/src/lib/hooks/useDoubleTapToggle.ts`
+### `useSettings`
+Loads and persists `Settings` to localStorage, pushes the backend-relevant subset to `configure_dictation`, and reconciles `launchAtLogin` with the actual OS autostart state on mount. Updates are optimistic with rollback: if `configure_dictation` fails, the affected fields revert, and a versioned configure ref prevents a stale rollback from clobbering newer settings. Emits `settings-changed` so the overlay re-reads.
 
-**Parameters:**
+### `useInitialization`
+One-time init sequence on mount: `init_dictation`, then `configure_dictation` with the loaded settings.
 
-```typescript
-interface UseDoubleTapToggleProps {
-  enabled: boolean;
-  initialized: boolean;
-  accessibilityGranted: boolean | null;
-  doubleTapKey: string;
-  status: DictationStatus;
-  onToggle: () => void;
-}
-```
+### `useAutoUpdater`
+OTA updates: background check on launch and every 24h, semver comparison, min-version enforcement (forced updates drop Skip/Later), skip/dismiss persistence, download progress, install, and auto-relaunch. Fires a native macOS notification when a background check finds an update.
 
-**Returns:** `void`
+Returns `{updateStatus, checkForUpdate, startDownload, skipVersion, dismissUpdate}`. Reads `min_version` from the `latest-v2.json` channel; persists `skipped-update-version` and `updater-last-check` to localStorage.
 
-**Responsibilities:**
-- Manages the double-tap keyboard listener for standalone double-tap mode. Active when `recordingMode` is `'double_tap'`.
-- Keeps the backend double-tap detector in sync with the current recording status via `set_keyboard_recording`.
-- On `keyboard-listener-error`, waits 2 seconds then attempts to restart the listener.
+### `useOpenSettingsListener`
+Listens for `open-settings` from the overlay's gear button and opens the Settings panel — showing the main window isn't enough, since panel visibility is local React state.
 
-**Key interactions:**
-- Listens to events: `double-tap-toggle`, `keyboard-listener-error`.
-- Invokes commands: `start_keyboard_listener` (mode `"double_tap"`), `stop_keyboard_listener`, `set_keyboard_recording`.
+### `useOverlaySettingsSync`
+The other direction: listens for `settings-changed` emitted by the overlay's quick controls and applies the persisted settings to main-window state and the backend.
+
+### `useShowAboutListener`
+Listens for `show-about`. **Currently inert** — the tray menu no longer has an About item, so nothing emits this event.
 
 ---
 
-## useHoldDownToggle
+## Selected-text transform
 
-**File:** `app/src/lib/hooks/useHoldDownToggle.ts`
+### `useTransformFlow` (main window)
+Drives the transform hold key. Listens for `transform-key-pressed` / `transform-key-released` and calls `start_transform_capture` / `finish_transform_instruction`, carrying the `transformPassId` from the event rather than re-deriving it. Pure press/release reduction lives in `lib/transformFlow.ts`.
 
-**Parameters:**
+### `useEscapeCancel` (main window)
+Listens for `escape-cancel` and issues a **scoped** `cancel_transform` with the pass ID snapshotted at key-press time, so a delayed Escape cannot cancel the pass that replaced it. Ready/failed reviews keep their own popover-local Escape handling.
 
-```typescript
-interface UseHoldDownToggleProps {
-  enabled: boolean;
-  initialized: boolean;
-  accessibilityGranted: boolean | null;
-  holdDownKey: string;
-  onStart: () => void;
-  onStop: () => void;
-}
-```
+### `useTransformReviewDriver` (popover window)
+The review popover's state machine. Subscribes to `transform-state-changed`, re-fetching `get_transform_review_content` on each transition (content is never carried in the event payload), and exposes approve / retry / cancel / undo. Also handles `transform-apply-failed` and `transform-review-hidden`.
 
-**Returns:** `void`
-
-**Responsibilities:**
-- Manages the hold-down keyboard listener for standalone hold-down mode. Active when `recordingMode` is `'hold_down'`.
-- Calls `onStart` on key press and `onStop` on key release. Does not handle `hold-down-cancel`.
-- On `keyboard-listener-error`, waits 2 seconds then attempts to restart the listener.
-
-**Key interactions:**
-- Listens to events: `hold-down-start`, `hold-down-stop`, `keyboard-listener-error`.
-- Invokes commands: `start_keyboard_listener` (mode `"hold_down"`), `stop_keyboard_listener`.
+### `useTransformReviewMockDriver` (dev only)
+Demo driver reachable via `?mock=1` (or `?mock=<state>`) on the popover URL, so the whole review UI can be exercised without a backend. Gated on `import.meta.env.DEV` by its caller; never in a production code path.
 
 ---
 
-## useHistoryManagement
+## Overlay window
 
-**File:** `app/src/lib/hooks/useHistoryManagement.ts`
+### `useOverlayGeometry`
+Owns geometry sourced from Rust — the single source of truth. Fetches `get_overlay_geometry` with a retry/backoff schedule (a single failed fetch used to leave the transparent overlay blank until the next display change) and re-reads on `overlay-geometry-changed`.
 
-**Parameters:** None.
+### `useOverlayExpansion`
+The hover-expand lifecycle, owned end to end: 150ms dwell intent gate, cursor polling, and the **only** writer to the native resize path (`set_overlay_expanded`). Awaits the applied frame before revealing the dropdown, so CSS never animates into a window that hasn't grown yet. Treats `overlay-geometry-changed` as an authoritative reset — cancels timers, forces collapsed, issues one corrective resize.
 
-**Returns:**
+### `useOverlayRuntime`
+Overlay runtime flashes and mirrors: cancelled and hotkey-miss timers, the `transform-busy` and `transform-secure-field` flashes, and the `app-disabled-changed` state mirror.
 
-```typescript
-{
-  historyEntries: HistoryEntry[];
-  addEntry: (text: string, duration: number) => void;
-  clearHistory: () => void;
-}
-```
+### `useOverlaySettingsMirror`
+The overlay's snapshot of persisted settings (read straight from localStorage — there is no shared React context across windows) plus the quick-control actions: auto-paste toggle, global disable, and `open-settings`.
 
-**Responsibilities:**
-- Manages the transcription history array with a maximum of 50 entries (oldest trimmed).
-- Persists history to localStorage under the key `dictation-history`.
-- Provides `addEntry` (used by `useRecordingState` via the `transcription-complete` event) and `clearHistory` callbacks.
+### `useRecordingControls`
+Click disambiguation on the island: single click (250ms debounce) stops recording or exits locked mode; double-click toggles locked mode.
 
-**Key interactions:**
-- Pure frontend state management. No Tauri commands or events. Delegates to `lib/history.ts` for persistence.
+### `useWaveform`
+Owns the `audio-level` listener and the rAF bar-height animation. Writes bar heights through direct DOM refs, bypassing React reconciliation to hold 60fps. Center bars are taller (envelope shaping) with jitter for organic movement.
 
 ---
 
-## useInitialization
+## Diagnostics (log viewer)
 
-**File:** `app/src/lib/hooks/useInitialization.ts`
+### `useEventStore`
+The structured event buffer: hydrates from `get_event_history`, streams live `app-event`s, batches rendering via rAF, and provides stream/level filtering and clear.
 
-**Parameters:** `settings: Settings`
+### `usePerformanceDiagnostics`
+Run history and resource samples. Hydrates from `list_performance_runs` / `get_performance_resource_window`, then merges live `performance-run-completed` and `performance-resource-sample` events (the exported `mergeRuns` / `mergeResourceSamples` are pure and unit-tested), and resets on `performance-diagnostics-cleared`. Gated by an `enabled` flag so a hidden tab does no work.
 
-**Returns:**
+### `usePerformanceHealth`
+Summary health of the diagnostics store (availability, counts) with an explicit `refresh`.
 
-```typescript
-{
-  initialized: boolean;
-  error: string;
-}
-```
-
-**Responsibilities:**
-- Runs the one-time initialization sequence on mount: `initDictation()` then `configure()` with the current model, language, and autoPaste settings.
-- Sets `initialized` to `true` on success, which gates the recording controls and keyboard listeners.
-- Uses a cancellation flag to prevent stale state updates after unmount.
-
-**Key interactions:**
-- Invokes commands: `init_dictation`, `configure_dictation`.
-- Note: Does not pass `autoPasteDelayMs` or `vadSensitivity` during initial configure. Those values are sent to the backend when `useSettings.updateSettings` is called.
+### `useResourceMonitor`
+CPU/memory polling with a rolling 60-reading buffer. Only polls while the panel is expanded.
 
 ---
 
-## useRecordingState
+## Settings surfaces
 
-**File:** `app/src/lib/hooks/useRecordingState.ts`
+### `useKnowledge`
+Bounded, paged access to the personal knowledge store (`list_knowledge`) with search/filter, driven by a request object and an `active` gate so closed panels don't query.
 
-**Parameters:**
-
-```typescript
-interface UseRecordingStateProps {
-  addEntry: (text: string, duration: number) => void;
-  microphone: string;
-}
-```
-
-**Returns:**
-
-```typescript
-{
-  status: DictationStatus;
-  transcription: string;
-  recordingDuration: number;
-  error: string;
-  setError: (error: string) => void;
-  handleStart: () => Promise<void>;
-  handleStop: () => Promise<void>;
-  toggleRecording: () => Promise<void>;
-  audioLevel: number;
-  lockedMode: boolean;
-  toggleLockedMode: () => Promise<void>;
-  statsVersion: number;
-}
-```
-
-**Responsibilities:**
-- Core recording state machine (`idle` -> `recording` -> `processing` -> `idle`) with guard refs to prevent concurrent start/stop calls.
-- Handles history and stats updates exclusively through the `transcription-complete` event listener to avoid race-condition duplicates.
-- Manages locked mode (overlay-initiated persistent recording), audio level tracking, recording duration timer (1-second ticks), and auto-paste error display (5-second auto-clear).
-
-**Key interactions:**
-- Listens to events: `recording-status-changed` (syncs status from overlay), `transcription-complete` (single source of truth for history/stats), `auto-paste-failed` (error display), `audio-level` (waveform data).
-- Invokes commands: `start_native_recording`, `stop_native_recording`.
-
----
-
-## useResourceMonitor
-
-**File:** `app/src/lib/hooks/useResourceMonitor.ts`
-
-**Parameters:** `enabled: boolean`
-
-**Returns:** `ResourceReading[]`
-
-```typescript
-interface ResourceReading {
-  cpu_percent: number;
-  memory_mb: number;
-}
-```
-
-**Responsibilities:**
-- Polls `get_resource_usage` every 1 second when enabled. Stops polling when disabled.
-- Maintains a rolling window of up to 60 readings (1 minute of data).
-- Clears stale readings when re-enabled so the chart starts fresh.
-
-**Key interactions:**
-- Invokes command: `get_resource_usage`.
-- No events listened.
-
----
-
-## useSettings
-
-**File:** `app/src/lib/hooks/useSettings.ts`
-
-**Parameters:** None.
-
-**Returns:**
-
-```typescript
-{
-  settings: Settings;
-  updateSettings: (updates: Partial<Settings>) => void;
-}
-```
-
-**Responsibilities:**
-- Wraps settings load/save with React state. Loads from localStorage on initialization, applies migrations.
-- Pushes relevant setting changes to the Rust backend via `configure_dictation` (model, language, autoPaste, autoPasteDelayMs, vadSensitivity). Uses versioned configure calls to prevent stale rollbacks.
-- Synchronizes `launchAtLogin` with the OS autostart state on mount (detects if user removed login item from System Settings). Serializes autostart enable/disable calls via a promise chain.
-
-**Key interactions:**
-- Invokes commands: `configure_dictation` (via `lib/dictation.ts`).
-- Uses `@tauri-apps/plugin-autostart` for `enable()`, `disable()`, `isEnabled()`.
-- See [settings.md](settings.md) for the full settings schema.
-
----
-
-## useShowAboutListener
-
-**File:** `app/src/lib/hooks/useShowAboutListener.ts`
-
-**Parameters:** None.
-
-**Returns:**
-
-```typescript
-{
-  showAbout: boolean;
-  setShowAbout: (value: boolean) => void;
-}
-```
-
-**Responsibilities:**
-- Listens for the `show-about` Tauri event (emitted from the tray menu) and sets `showAbout` to `true`.
-- Consumed in `App.tsx` to control the AboutModal visibility.
-
-**Key interactions:**
-- Listens to event: `show-about`.
-- No commands invoked.
-
----
-
-## useEventStore
-
-**File:** `app/src/lib/hooks/useEventStore.ts`
-
-**Parameters:** None.
-
-**Returns:**
-
-```typescript
-{
-  events: AppEvent[];
-  getByStream: (stream: StreamName) => AppEvent[];
-  getByLevel: (level: LevelName) => AppEvent[];
-  clear: () => void;
-}
-```
-
-**Responsibilities:**
-- Manages an in-memory buffer of up to 500 `AppEvent` objects. Hydrates from the backend on mount via `get_event_history`.
-- Streams new events in real-time via the `app-event` Tauri event. Coalesces rapid event bursts into a single React state update using `requestAnimationFrame`.
-- Provides filter methods (`getByStream`, `getByLevel`) that read directly from the mutable ref buffer (always up-to-date but not reactive on their own).
-
-**Key interactions:**
-- Listens to event: `app-event`.
-- Invokes commands: `get_event_history` (on mount), `clear_event_history` (on clear).
-
----
-
-## Hook Activation in App.tsx
-
-All hooks are always called (Rules of Hooks), but their behavior is gated by props:
-
-| Hook | Active When |
-|------|-------------|
-| `useHoldDownToggle` | `recordingMode === 'hold_down'` |
-| `useDoubleTapToggle` | `recordingMode === 'double_tap'` |
-| `useCombinedToggle` | `recordingMode === 'both'` |
-| `useAutoUpdater` | Always |
-| `useInitialization` | Always (runs once on mount) |
-| `useRecordingState` | Always |
-| `useHistoryManagement` | Always |
-| `useSettings` | Always |
-| `useShowAboutListener` | Always |
-| `useResourceMonitor` | When the resource monitor panel is expanded |
-| `useEventStore` | Used in the log-viewer window |
+### `useVocabScan`
+Live code-vocabulary scan: starts `scan_code_vocab`, streams `vocab-scan-progress` correlated by `scanId`, and reports non-adoption when a newer scan or a settings change supersedes the walk.
