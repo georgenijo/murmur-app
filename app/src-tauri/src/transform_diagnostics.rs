@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use crate::MutexExt;
@@ -18,6 +19,7 @@ const MAX_ATTEMPTS: usize = 200;
 const MAX_CAPTURES: usize = 3;
 const CAPTURE_ARM_MS: i64 = 10 * 60 * 1_000;
 const CAPTURE_RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1_000;
+static CAPTURE_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -569,12 +571,86 @@ fn read_attempts(inner: &Inner) -> Result<Vec<TransformAttemptV1>, String> {
 }
 
 fn write_capture(inner: &Inner, capture: &DiagnosticCaptureV1) -> Result<(), String> {
+    validate_capture_id(&capture.capture_id)?;
+    let root = capture_root(inner)?;
     let path = capture_path(inner, &capture.capture_id)?;
     let payload = serde_json::to_vec(capture)
         .map_err(|_| "diagnostic capture could not be encoded".to_string())?;
-    let mut file = open_private(&path)?;
-    file.write_all(&payload)
-        .map_err(|_| "diagnostic capture could not be written".to_string())
+    let (temp_path, mut file) = create_capture_temp(&root, &capture.capture_id)?;
+    let result = (|| {
+        file.write_all(&payload)
+            .map_err(|_| "diagnostic capture could not be written".to_string())?;
+        file.flush()
+            .map_err(|_| "diagnostic capture could not be written".to_string())?;
+        file.sync_all()
+            .map_err(|_| "diagnostic capture could not be written".to_string())?;
+        drop(file);
+
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+                return Err("diagnostic capture target refused".to_string());
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err("diagnostic capture unavailable".to_string()),
+        }
+
+        fs::rename(&temp_path, &path)
+            .map_err(|_| "diagnostic capture could not be written".to_string())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+                .map_err(|_| "diagnostic capture permissions unavailable".to_string())?;
+            std::fs::File::open(&root)
+                .and_then(|directory| directory.sync_all())
+                .map_err(|_| "diagnostic capture could not be written".to_string())?;
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        remove_regular_store_file(&temp_path);
+    }
+    result
+}
+
+fn create_capture_temp(root: &Path, capture_id: &str) -> Result<(PathBuf, std::fs::File), String> {
+    for _ in 0..16 {
+        let sequence = CAPTURE_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let path = root.join(format!(
+            ".capture-{capture_id}-{}-{sequence}.tmp",
+            std::process::id()
+        ));
+        let mut options = OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options
+                .mode(0o600)
+                .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+        }
+        match options.open(&path) {
+            Ok(file) => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if file
+                        .set_permissions(fs::Permissions::from_mode(0o600))
+                        .is_err()
+                    {
+                        drop(file);
+                        remove_regular_store_file(&path);
+                        return Err("diagnostic capture permissions unavailable".to_string());
+                    }
+                }
+                return Ok((path, file));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return Err("diagnostic capture unavailable".to_string()),
+        }
+    }
+    Err("diagnostic capture unavailable".to_string())
 }
 
 fn validate_capture_id(capture_id: &str) -> Result<(), String> {
@@ -622,16 +698,51 @@ fn read_captures(inner: &Inner) -> Result<Vec<DiagnosticCaptureV1>, String> {
     for entry in
         fs::read_dir(root).map_err(|_| "diagnostic capture store unavailable".to_string())?
     {
-        let entry = entry.map_err(|_| "diagnostic capture store unavailable".to_string())?;
+        let Ok(entry) = entry else {
+            continue;
+        };
         let path = entry.path();
-        if path.extension().and_then(|value| value.to_str()) != Some("json") {
+        let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if is_capture_temp_name(file_name) {
+            remove_regular_store_file(&path);
             continue;
         }
-        if let Some(capture) = read_capture_path(&path)? {
-            captures.push(capture);
+        if capture_id_from_file_name(file_name).is_none() {
+            continue;
+        }
+        match read_capture_path(&path) {
+            Ok(Some(capture)) => captures.push(capture),
+            Ok(None) => {}
+            Err(_) => remove_regular_store_file(&path),
         }
     }
     Ok(captures)
+}
+
+fn capture_id_from_file_name(file_name: &str) -> Option<&str> {
+    let capture_id = file_name.strip_suffix(".json")?;
+    validate_capture_id(capture_id).ok()?;
+    Some(capture_id)
+}
+
+fn is_capture_temp_name(file_name: &str) -> bool {
+    file_name
+        .strip_prefix(".capture-")
+        .and_then(|value| value.strip_suffix(".tmp"))
+        .is_some_and(|value| {
+            !value.is_empty()
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || byte == b'-')
+        })
+}
+
+fn remove_regular_store_file(path: &Path) {
+    if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_file()) {
+        let _ = fs::remove_file(path);
+    }
 }
 
 fn prune_captures(inner: &mut Inner) -> Result<(), String> {
@@ -755,6 +866,103 @@ mod tests {
         assert_eq!(attempt.outcome, "cancelled");
         let capture = store.list_captures().unwrap().pop().unwrap();
         assert_eq!(capture.outcome, "cancelled");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn corrupt_capture_and_stale_temp_do_not_block_initialization_or_retention() {
+        use std::os::unix::fs::{symlink, OpenOptionsExt, PermissionsExt};
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("diagnostics");
+        let store = TransformDiagnostics::default();
+        store.initialize(root.clone()).unwrap();
+
+        store.arm_next().unwrap();
+        store.begin(100);
+        store.selection(
+            100,
+            Ok(("accessibility", "1-16", true, true, "success")),
+            Some("current private input"),
+        );
+        store.finish(100, "ready");
+        let current = store.list_captures().unwrap().pop().unwrap();
+
+        let expired = DiagnosticCaptureV1 {
+            schema_version: SCHEMA_VERSION,
+            capture_id: "98-1".to_string(),
+            transform_pass_id: 98,
+            captured_at_ms: now_ms() - CAPTURE_RETENTION_MS - 1,
+            expires_at_ms: now_ms() - 1,
+            outcome: "ready".to_string(),
+            selection: Some("expired private input".to_string()),
+            instruction: Some("expired private instruction".to_string()),
+            output: Some("expired private output".to_string()),
+            phases: Vec::new(),
+        };
+        {
+            let inner = store.inner.lock_or_recover();
+            write_capture(&inner, &expired).unwrap();
+        }
+
+        let capture_root = root.join("transform-captures");
+        let corrupt_path = capture_root.join("99-2.json");
+        let mut corrupt = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(&corrupt_path)
+            .unwrap();
+        corrupt.write_all(br#"{"schemaVersion":1"#).unwrap();
+        corrupt.sync_all().unwrap();
+        drop(corrupt);
+
+        let stale_temp_path = capture_root.join(".capture-97-3-123-456.tmp");
+        let mut stale_temp = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(&stale_temp_path)
+            .unwrap();
+        stale_temp.write_all(b"stale private content").unwrap();
+        drop(stale_temp);
+
+        let unrelated_path = capture_root.join("notes.json");
+        fs::write(&unrelated_path, b"unrelated").unwrap();
+        let symlink_path = capture_root.join("96-4.json");
+        let symlink_target = temp.path().join("outside-private-data");
+        fs::write(&symlink_target, b"outside").unwrap();
+        symlink(&symlink_target, &symlink_path).unwrap();
+
+        let reloaded = TransformDiagnostics::default();
+        reloaded.initialize(root.clone()).unwrap();
+        let summaries = reloaded.list_captures().unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].capture_id, current.capture_id);
+        let capture = reloaded.get_capture(&current.capture_id).unwrap().unwrap();
+        assert_eq!(capture.selection.as_deref(), Some("current private input"));
+
+        assert!(!corrupt_path.exists());
+        assert!(!stale_temp_path.exists());
+        assert!(!capture_root.join("98-1.json").exists());
+        assert!(unrelated_path.exists());
+        assert!(fs::symlink_metadata(&symlink_path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(reloaded.get_capture("96-4").is_err());
+        assert_eq!(
+            fs::metadata(&capture_root).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(capture_root.join(format!("{}.json", current.capture_id)))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
     }
 
     #[cfg(unix)]
