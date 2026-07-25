@@ -4,14 +4,23 @@
 
 - [Node.js](https://nodejs.org/) 18+
 - [Rust](https://rustup.rs/) (latest stable)
+- Python 3 (sidecar and packaging scripts)
 - macOS 14 or newer on Apple Silicon
 - A transcription model (the app downloads one on first launch)
 
 ## Setup
 
 ```bash
+# Build the local-LLM sidecar FIRST — on macOS, tauri dev/build and even
+# cargo check/test fail on a fresh clone until this binary exists.
+python3 scripts/build_local_llm_sidecar.py
+
 cd app && npm install
 ```
+
+The sidecar lands at
+`app/src-tauri/binaries/murmur-llm-sidecar-aarch64-apple-darwin`. It is
+gitignored and rebuilt by release CI. The script is a no-op on non-arm64-macOS.
 
 ## Development
 
@@ -69,7 +78,7 @@ The app requires a ggml `.bin` model file. Download one:
 | `base.en` | ~150 MB | Fast | Good |
 | `small.en` | ~500 MB | Medium | Better |
 | `medium.en` | ~1.5 GB | Slow | Great |
-| `large-v3-turbo` | ~1.6 GB | Fast | Best (recommended) |
+| `large-v3-turbo` | ~3 GB | Fast | Best of the Whisper set, multilingual |
 
 Download from: `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-{model}.bin`
 
@@ -91,8 +100,11 @@ The app searches these locations in order:
 
 | Permission | Required For | How to Grant |
 |------------|-------------|--------------|
-| **Microphone** | Audio capture (always required) | Prompted on first use |
-| **Accessibility** | Double-tap recording mode + auto-paste | System Settings > Privacy & Security > Accessibility |
+| **Microphone** | Audio capture — dictation and transform instructions | Prompted in-app by the setup assistant |
+| **Accessibility** | All hotkeys (rdev), auto-paste, and transform selection capture / write-back | System Settings > Privacy & Security > Accessibility |
+
+Under `npm run tauri dev`, grant both to your *terminal app* — dev builds are
+re-signed on each rebuild, so a grant to the dev binary never sticks.
 
 ## Logs
 
@@ -103,6 +115,20 @@ Release and dev builds write to the same local directory:
 [`features/log-viewer.md`](features/log-viewer.md) for the event architecture and
 [`tools/murmur-diag/README.md`](../tools/murmur-diag/README.md) for local MCP
 diagnostics.
+
+## Transform model
+
+The selected-text transform uses a separate, optional local LLM: Qwen2.5-1.5B-Instruct Q4_K_M (~1.1 GB), downloaded from **Settings → Transform**. It is pinned by exact size and SHA-256, verified again before every spawn, and stored at:
+
+```text
+~/Library/Application Support/local-dictation/models/transform-llm/<sha256>/qwen2.5-1.5b-instruct-q4_k_m.gguf
+```
+
+Remove it from the same page. The helper process is shut down first so the file is not open. If repeated faults trip the circuit breaker, **Reset runtime** re-enables it.
+
+## Diagnostics data
+
+Local run history and CPU/memory samples live in `diagnostics/performance.sqlite3` under the Tauri app-data directory (`~/Library/Application Support/com.localdictation/`, or `com.localdictation.dev` in dev builds). They are content-free and bounded (200 runs, 600 samples), and are cleared from the Log Viewer. Explicitly consented transform content captures live beside them under `diagnostics/transforms/` with restrictive permissions, a 3-capture cap, and a 7-day expiry.
 
 ## Personal knowledge data
 
