@@ -14,16 +14,24 @@ The frontend is layered bottom-up:
 
 ## Notch Detection
 
-Notch dimensions are detected via NSScreen APIs on macOS:
+Overlay dimensions are detected via NSScreen APIs on macOS:
 
-- `safeAreaInsets()` — determines menu bar height
+- `safeAreaInsets()` — determines the physical notch height on notched displays
+- `frame()` minus `visibleFrame()` — determines the actual menu-bar height on
+  ordinary and external displays
 - `auxiliaryTopLeftArea()` and `auxiliaryTopRightArea()` — determines the non-notch menu bar area on each side
 
 Notch width is calculated as: `screen width - left auxiliary area - right auxiliary area`.
 
 Results are cached in `State.notch_info` (a `Mutex<Option<(f64, f64)>>`). The `get_overlay_geometry` command derives an `OverlayGeometry` from the cached notch via `geometry_for()` and returns it to the frontend.
 
-**Fallback:** when no notch is detected (external monitor, older Mac), `geometry_for()` substitutes a synthetic notch, still producing a full `OverlayGeometry`. `get_overlay_geometry` and the `overlay-geometry-changed` event never return null.
+**No-notch displays:** Murmur substitutes only the 80pt synthetic center width;
+the collapsed height always comes from the display's measured menu-bar height.
+This prevents a fixed synthetic notch from extending onto the desktop when the
+menu bar is shorter. If native screen measurement itself is unavailable,
+`geometry_for()` retains the fully synthetic `80×37` last-resort fallback.
+`get_overlay_geometry` and the `overlay-geometry-changed` event never return
+null.
 
 ## Window Configuration
 
@@ -49,10 +57,10 @@ Tauri's `focusable: false` configuration disables mouse events on macOS. The `sh
 
 Every overlay dimension comes from one source: `geometry_for(notch)` in `commands/overlay.rs`, which returns an `OverlayGeometry` (`windowW`, `collapsedH`, `expandedH`, `pillIdleW`, `pillActiveW`, `pillMarginIdle`, `pillMarginActive`, `dropdownH`). Rust owns every geometry number; the frontend only reads the struct — via `get_overlay_geometry` (`useOverlayGeometry`, with retry-with-backoff on the initial fetch) and the `overlay-geometry-changed` event — and never hardcodes pixels. No overlay component holds a geometry literal.
 
-- **One constant island width.** `windowW == pillIdleW == pillActiveW == notchW + 2·WING` and both margins (`pillMarginIdle`, `pillMarginActive`) are `0`. The island IS the window — same box in every state — so there is no horizontal hit-area mismatch and the width never animates. `WING = 36` is the visible strip on each side of the physical notch, sized to fit the wider wing's content clear of the notch: the left wing holds a 10px-padded 12px status icon (22px), the right wing holds a 10px-padded 23px 7-bar waveform (33px), so 36 leaves 3px of slack. The `pillIdleW`/`pillMarginIdle` fields are retained in the contract shape but now equal their active counterparts.
-- **Notched vs. fallback.** Notched (notch `185×32`): `windowW 257`, `collapsedH 32`, `expandedH 76`, `dropdownH 44`. No-notch fallback (synthetic `80×37` notch, same formula): `windowW 152`, `collapsedH 37`, `expandedH 81`.
-- **Window width** (`windowW`) is fixed and horizontally centers the overlay at the top of the screen (y=0).
-- **Height** is `collapsedH` at rest and grows to `expandedH` (`= collapsedH + dropdownH`) while the hover dropdown is open; the window stays top-anchored so the extra height grows downward. Expansion is **height-only** — width is constant.
+- **Left-anchored compact idle width.** `windowW == pillActiveW == notchW + 2·WING`; while truly idle and not hovered, `pillIdleW == notchW + WING`. Both margins are `0`, so the mic-side left edge never moves: compact idle tucks the empty right wing beneath the physical notch, and hover reveals that wing by growing only the right edge. Recording and processing always retain the full active width so their right-side indicators remain visible. `WING = 36` fits the left status icon and right waveform with a little slack.
+- **Notched vs. no-notch.** Notched (notch `185×32`): `windowW 257`, `collapsedH 32`, `expandedH 76`, `dropdownH 44`. A typical 30pt external-display menu bar uses the synthetic 80pt center width but the measured height: `windowW 152`, `collapsedH 30`, `expandedH 74`. The fully synthetic `80×37` geometry is reserved for native measurement failure.
+- **Window width** (`windowW`) is fixed and horizontally centers the overlay at the top of the primary/menu-bar display using that monitor's physical origin and scale factor.
+- **Size transition.** Height grows from `collapsedH` to `expandedH` (`= collapsedH + dropdownH`) while the hover dropdown opens. At the same time, an idle island grows from `pillIdleW` to `pillActiveW`; the fixed left edge makes that width reveal happen only on the right. The native window stays top-anchored and at `windowW`, so recording/processing can use the full top bar immediately.
 - **Nothing renders under the physical notch.** The wings hold ONLY the status indicator (left) and the waveform (right). Anything wider than a wing renders below notch height, in the dropdown row: the recording `m:ss` timer (shown when expanded + recording) and the "Tap missed" hotkey-miss label. The amber `!` badge and the amber border glow stay on the pill.
 - **Motion tokens** — durations and easing for the width/height transition — live in `app/src/lib/overlayMotion.ts` as the single source; see [Motion tokens](#motion-tokens) below rather than restating numbers here.
 
@@ -83,7 +91,7 @@ The controller runs a four-phase state machine:
 
 ### Motion tokens
 
-The transition durations/easings live in `app/src/lib/overlayMotion.ts` as the single source: `OVERLAY_HEIGHT_MS`, `OVERLAY_SPRING`, `HOVER_OPEN_DWELL_MS`, `COLLAPSE_DELAY_MS`. Expansion is **height-only** — the island's width is constant across every state, so there is no width token and `OVERLAY_ISLAND_TRANSITION` animates height alone. `SHRINK_DELAY_MS` is **derived** as `OVERLAY_HEIGHT_MS + 20` rather than a hand-tuned constant, so it can never drift from the height transition it guards. The island's `transition` string (`OVERLAY_ISLAND_TRANSITION`) is templated from these tokens. Read that file for current values rather than duplicating them in prose here. With `prefers-reduced-motion: reduce`, CSS transitions are removed (see `styles.css`) and the controller shrinks immediately after the leave-intent delay, avoiding both motion and a residual transparent hit area.
+The transition durations/easings live in `app/src/lib/overlayMotion.ts` as the single source: `OVERLAY_HEIGHT_MS`, `OVERLAY_SPRING`, `HOVER_OPEN_DWELL_MS`, `COLLAPSE_DELAY_MS`. `OVERLAY_ISLAND_TRANSITION` applies the same spring to width and height so the right wing and dropdown open as one surface. `SHRINK_DELAY_MS` is **derived** as `OVERLAY_HEIGHT_MS + 20` rather than a hand-tuned constant, so it cannot drift from the transition it guards. With `prefers-reduced-motion: reduce`, CSS transitions are removed (see `styles.css`) and the controller shrinks immediately after the leave-intent delay, avoiding both motion and a residual transparent hit area.
 
 ## Frontend Hooks
 

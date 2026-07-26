@@ -28,7 +28,9 @@ export function NotchCalibrationBand({ geometry }: NotchCalibrationBandProps) {
       style={{
         position: 'absolute',
         left: geometry.wingW,
-        right: geometry.wingW,
+        // Keep the band equal to the detected physical notch width even when
+        // the idle island tucks its right wing underneath that band.
+        width: geometry.windowW - (2 * geometry.wingW),
         top: 0,
         height: geometry.collapsedH,
         background: 'rgba(255, 0, 200, 0.5)',
