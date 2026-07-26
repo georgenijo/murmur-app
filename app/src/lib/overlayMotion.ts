@@ -6,13 +6,13 @@
 // shrink delay — from the very numbers the CSS transitions use, so the code link
 // can never silently drift.
 //
-// The island is one constant width in every state (see `geometry_for` in
-// commands/overlay.rs), so expansion is HEIGHT-ONLY — width never animates and
-// there is no width token.
+// The idle island tucks its empty right wing under the notch, then grows that
+// edge back out on hover (see `geometry_for` in commands/overlay.rs). Width and
+// height share one duration/easing so the rectangle opens as one surface.
 
-/** Height transition duration for the island element (ms). */
+/** Width/height transition duration for the island element (ms). */
 export const OVERLAY_HEIGHT_MS = 360;
-/** Spring easing for the height transition. */
+/** Spring easing for the width/height transition. */
 export const OVERLAY_SPRING = 'cubic-bezier(0.34,1.56,0.64,1)';
 
 /** Sustained hover (ms) required on the island before the card opens. */
@@ -31,11 +31,12 @@ export const COLLAPSE_DELAY_MS = 300;
 export const SHRINK_DELAY_MS = OVERLAY_HEIGHT_MS + 20;
 
 /**
- * The composed `transition` string applied to the island element. Height-only:
- * the island's width is constant across every state, so only height animates.
+ * The composed `transition` string applied to the island element. The left edge
+ * stays fixed while width reveals/conceals the right wing; height reveals the
+ * dropdown on the same spring.
  */
 export const OVERLAY_ISLAND_TRANSITION =
-  `height ${OVERLAY_HEIGHT_MS}ms ${OVERLAY_SPRING}`;
+  `width ${OVERLAY_HEIGHT_MS}ms ${OVERLAY_SPRING}, height ${OVERLAY_HEIGHT_MS}ms ${OVERLAY_SPRING}`;
 
 // --- Transform review popover motion tokens ---------------------------------
 //

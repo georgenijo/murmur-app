@@ -115,7 +115,9 @@ pub(crate) struct State {
     pub(crate) correct_and_teach: correct_and_teach::CorrectAndTeachState,
     pub(crate) performance: performance_metrics::PerformanceMetrics,
     pub(crate) transform_diagnostics: transform_diagnostics::TransformDiagnostics,
-    /// Cached notch dimensions (notch_width, menu_bar_height) from setup (main thread).
+    /// Cached overlay screen geometry
+    /// (physical-or-synthetic-notch width, measured menu-bar height) from the
+    /// primary NSScreen. Refreshed on the main thread after display changes.
     pub(crate) notch_info: Mutex<Option<(f64, f64)>>,
     /// The selection-bounds anchor from the most recent `show_transform_popover`
     /// call, so `set_transform_popover_expanded` can resize/reposition for a
