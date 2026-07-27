@@ -24,7 +24,7 @@ While focus is inside a text field, **only the Command form is accepted**: macOS
 | Section | Commands |
 |---------|----------|
 | Recording | Start / Stop recording · Enable / Disable Murmur |
-| History | Search transcripts · Copy last transcript* · Export history to a Markdown file* |
+| History | Search transcripts · Copy last transcript\* · Export history to a Markdown file\* |
 | Navigation | Go to Record · Go to Transcribe File |
 | Settings | One row per page: Recording, Transcription, Transform, Text & Vocabulary, Delivery, Performance, General |
 | Diagnostics | Open log viewer |

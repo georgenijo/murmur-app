@@ -159,7 +159,7 @@ Rust is the sole author of every overlay and popover pixel: `geometry_for()` and
 | `vocab.rs`, `vocabulary_alias.rs` | Code-vocabulary scanning and explicit spoken aliases |
 | `voice_commands.rs` | Typed voice command execution and variable expansion |
 
-Commands live under `commands/` (`recording`, `permissions`, `keyboard`, `logging`, `models`, `knowledge`, `correct_and_teach`, `benchmark`, `performance`, `transform_model`, `transform_popover`, `transform_diagnostics`, `overlay`, `native_window`, `tray`).
+Commands live under `commands/` (`recording`, `permissions`, `keyboard`, `export`, `logging`, `models`, `knowledge`, `correct_and_teach`, `benchmark`, `performance`, `transform_model`, `transform_popover`, `transform_diagnostics`, `overlay`, `native_window`, `tray`).
 
 ### `state.rs` — Shared State
 
