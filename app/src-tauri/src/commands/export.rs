@@ -74,7 +74,12 @@ pub(crate) fn write_text_export(path: &Path, contents: &str) -> Result<u64, Stri
     }
 
     let temp = temp_path_for(path);
-    std::fs::write(&temp, contents).map_err(|e| format!("Failed to write export: {e}"))?;
+    if let Err(e) = std::fs::write(&temp, contents) {
+        // A partial write (ENOSPC, permissions) must not leave a hidden temp
+        // sibling behind in the folder the user picked.
+        let _ = std::fs::remove_file(&temp);
+        return Err(format!("Failed to write export: {e}"));
+    }
     if let Err(e) = std::fs::rename(&temp, path) {
         let _ = std::fs::remove_file(&temp);
         return Err(format!("Failed to publish export: {e}"));
@@ -201,6 +206,25 @@ mod tests {
         let error = write_text_export(&path, &huge).unwrap_err();
         assert!(error.contains("too large"), "{error}");
         assert!(!path.exists(), "nothing should be written when the payload is refused");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_failed_write_leaves_no_temp_file_behind() {
+        // The temp sibling path is occupied by a directory, so `fs::write`
+        // itself fails rather than the rename.
+        let dir = temp_dir("write_failure");
+        let path = dir.join("history.md");
+        std::fs::create_dir_all(temp_path_for(&path)).unwrap();
+        assert!(write_text_export(&path, "x").is_err());
+        assert!(!path.exists());
+        // The pre-existing blocker is left alone; nothing new is created.
+        let entries: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(entries.len(), 1, "unexpected leftovers: {entries:?}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

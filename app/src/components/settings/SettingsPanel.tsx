@@ -506,9 +506,13 @@ export function SettingsPanel({
                     <button
                       key={option.value}
                       type="button"
+                      // Locked mid-recording like the sibling trigger controls:
+                      // the detector reads this value live, so a change now
+                      // would retune the recording already in flight.
+                      disabled={isRecording}
                       aria-pressed={settings.autoStopSilenceMs === option.value}
                       onClick={() => onUpdateSettings({ autoStopSilenceMs: option.value })}
-                      className={`flex-1 rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${settings.autoStopSilenceMs === option.value ? 'border-primary bg-primary text-on-primary' : 'border-outline-variant/30 bg-surface-container-lowest text-on-surface hover:bg-surface-container'}`}
+                      className={`flex-1 rounded-lg border px-3 py-2 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${settings.autoStopSilenceMs === option.value ? 'border-primary bg-primary text-on-primary' : 'border-outline-variant/30 bg-surface-container-lowest text-on-surface hover:bg-surface-container'}`}
                     >
                       {option.label}
                     </button>

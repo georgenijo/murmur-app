@@ -37,6 +37,8 @@ The stop is **latched**: it is reported exactly once per recording. Each recordi
 
 Because this value can end a recording on its own, `loadSettings` accepts **only** those exact values. Anything unrecognised, non-numeric, negative, fractional, or absent (older settings blobs) coerces back to Off rather than to some arbitrary duration.
 
+The control is locked while a recording is in flight, like the sibling Recording Trigger and Double-Tap Key controls — the detector reads the value live, so changing it mid-recording would retune the recording already running.
+
 The setting is purely frontend — nothing is pushed to Rust, and the recording still stops through the same `stop_native_recording` path a tap would use.
 
 ## Diagnostics

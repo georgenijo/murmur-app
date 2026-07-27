@@ -51,7 +51,11 @@ export function CommandPalette({ isOpen, onClose, commands }: CommandPaletteProp
   };
 
   const onKeyDown = (event: React.KeyboardEvent) => {
-    if (event.key === 'ArrowDown' || (event.key === 'n' && event.ctrlKey)) {
+    if (event.key === 'Tab') {
+      // The input is the dialog's only focusable element, so containing the
+      // modal is just refusing to hand focus back to the page behind it.
+      event.preventDefault();
+    } else if (event.key === 'ArrowDown' || (event.key === 'n' && event.ctrlKey)) {
       event.preventDefault();
       setSelected((current) => moveSelection(current, 1, results.length));
     } else if (event.key === 'ArrowUp' || (event.key === 'p' && event.ctrlKey)) {

@@ -15,7 +15,9 @@ It is a navigation surface only. Every row carries its own `run` callback suppli
 | `⌘,` | Open Settings |
 | `⌘L` | Open the log viewer |
 
-Control is accepted in place of Command for keyboard-only setups. Adding Option or Shift always passes the event through — those combinations belong to the focused control, and Murmur must not shadow text-editing shortcuts. The mapping is a pure function (`mainWindowShortcut`) so what is bound, and what is deliberately not, is pinned down in tests.
+Control is accepted in place of Command for keyboard-only setups. Adding Option or Shift always passes the event through — those combinations belong to the focused control, and Murmur must not shadow text-editing shortcuts.
+
+While focus is inside a text field, **only the Command form is accepted**: macOS binds Control+letter to emacs-style editing inside text controls (⌃F forward, ⌃K kill-to-end-of-line), and the search box, settings fields, and knowledge editor must keep those. The mapping is a pure function (`mainWindowShortcut`, with `isEditableTarget` supplying the focus context) so what is bound, and what is deliberately not, is pinned down in tests.
 
 ## Commands
 
@@ -57,6 +59,7 @@ Tokens are **ANDed** — `settings del` narrows to the Delivery page rather than
 - `↑` / `↓` (and `⌃P` / `⌃N`) move the selection and wrap at both ends. The selection resets to the top whenever the query changes.
 - `Enter` runs the selected row and closes. With no results it does nothing.
 - `Escape`, or a click on the backdrop, closes without running anything. A click inside the dialog does not.
+- `Tab` is swallowed: the input is the dialog's only focusable element, so focus cannot escape to the page behind it.
 - Mouse movement over a row selects it, so keyboard and pointer agree on what Enter would do.
 - The list is a `listbox`/`option` tree with `aria-activedescendant` on the input, and the dialog is a labelled `aria-modal`.
 

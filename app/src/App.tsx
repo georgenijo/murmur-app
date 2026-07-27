@@ -4,7 +4,7 @@ import { flog } from './lib/log';
 import { SettingsPanel, SETTINGS_CATEGORIES } from './components/settings';
 import { CommandPalette } from './components/CommandPalette';
 import type { PaletteCommand } from './lib/commandPalette';
-import { mainWindowShortcut } from './lib/keyboardShortcuts';
+import { isEditableTarget, mainWindowShortcut } from './lib/keyboardShortcuts';
 import { saveHistoryExport } from './lib/historyExport';
 import { PermissionsBanner } from './components/PermissionsBanner';
 import { AboutModal } from './components/AboutModal';
@@ -227,7 +227,7 @@ function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      const shortcut = mainWindowShortcut(event);
+      const shortcut = mainWindowShortcut(event, isEditableTarget(event.target));
       if (!shortcut) return;
       event.preventDefault();
       if (shortcut === 'palette') setIsPaletteOpen((open) => !open);

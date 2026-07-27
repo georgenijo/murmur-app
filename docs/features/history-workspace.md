@@ -42,7 +42,7 @@ The **Export** menu acts on **exactly what is currently shown** — filters and 
 | Plain text | `[timestamp · source · duration]` header line per entry, blank-line separated |
 | JSON | `{ schema: "murmur.history.v1", exportedAt, count, entries: [...] }` |
 
-Each format can go to the clipboard or to a file. Entries are ordered exactly as displayed (pinned first, then newest first), and timestamps are rendered as local `YYYY-MM-DD HH:MM:SS` so an export reads the same on every machine.
+Each format can go to the clipboard or to a file. The two menu groups repeat the same format names, so each is a labelled `role="group"` and every item carries the verb in its accessible name ("Copy 5 shown as Markdown", "Save 5 shown as Markdown"). Entries are ordered exactly as displayed (pinned first, then newest first), and timestamps are rendered as local `YYYY-MM-DD HH:MM:SS` so an export reads the same on every machine.
 
 **`teachingContext` is never exported.** The bundle id and project root captured at recording start are local scope metadata for Correct-and-Teach, not part of a transcript the user is sharing. All three formats are asserted against this in tests.
 
@@ -56,7 +56,7 @@ That command is deliberately narrow — it is a document sink, not a general fil
 - the file name must not start with a dot;
 - the extension must be one of `.json`, `.md`, `.txt` (case-insensitive) — anything else, including a missing extension, is refused;
 - the payload is capped at 8 MB;
-- the write is atomic: a temp sibling in the destination directory, then a rename, with the temp file removed if the rename fails.
+- the write is atomic: a temp sibling in the destination directory, then a rename, with the temp file removed if either the write or the rename fails.
 
 Cancelling the dialog is a no-op — no command call, no message.
 

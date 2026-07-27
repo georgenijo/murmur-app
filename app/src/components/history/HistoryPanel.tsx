@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
   HISTORY_EXPORT_FORMATS,
   HISTORY_FILTER_OPTIONS,
@@ -68,6 +68,8 @@ export function HistoryPanel({
   const [exportOpen, setExportOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [confirmClear, setConfirmClear] = useState<null | 'unpinned' | 'all'>(null);
+  const copyGroupId = useId();
+  const saveGroupId = useId();
   const searchRef = useRef<HTMLInputElement>(null);
   const exportRef = useRef<HTMLDivElement>(null);
   const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -219,35 +221,44 @@ export function HistoryPanel({
             </button>
             {exportOpen && (
               <div role="menu" className="absolute right-0 z-20 mt-1 w-52 overflow-hidden rounded-xl bg-surface-container-lowest py-1 shadow-lg ring-1 ring-outline-variant/30">
-                <p className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-on-surface-variant">
-                  Copy {visible.length} shown
-                </p>
-                {HISTORY_EXPORT_FORMATS.map((format) => (
-                  <button
-                    key={`copy-${format.value}`}
-                    role="menuitem"
-                    type="button"
-                    onClick={() => void handleCopyExport(format.value)}
-                    className="block w-full px-3 py-1.5 text-left text-xs text-on-surface hover:bg-surface-container"
-                  >
-                    {format.label}
-                  </button>
-                ))}
+                {/* Both groups render the same format names, so each group is
+                    labelled and each item carries the verb explicitly —
+                    otherwise a screen reader announces "Markdown" twice. */}
+                <div role="group" aria-labelledby={copyGroupId}>
+                  <p id={copyGroupId} className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-on-surface-variant">
+                    Copy {visible.length} shown
+                  </p>
+                  {HISTORY_EXPORT_FORMATS.map((format) => (
+                    <button
+                      key={`copy-${format.value}`}
+                      role="menuitem"
+                      type="button"
+                      aria-label={`Copy ${visible.length} shown as ${format.label}`}
+                      onClick={() => void handleCopyExport(format.value)}
+                      className="block w-full px-3 py-1.5 text-left text-xs text-on-surface hover:bg-surface-container"
+                    >
+                      {format.label}
+                    </button>
+                  ))}
+                </div>
                 <div className="my-1 border-t border-outline-variant/20" />
-                <p className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-on-surface-variant">
-                  Save to file
-                </p>
-                {HISTORY_EXPORT_FORMATS.map((format) => (
-                  <button
-                    key={`save-${format.value}`}
-                    role="menuitem"
-                    type="button"
-                    onClick={() => void handleSaveExport(format.value)}
-                    className="block w-full px-3 py-1.5 text-left text-xs text-on-surface hover:bg-surface-container"
-                  >
-                    {format.label}…
-                  </button>
-                ))}
+                <div role="group" aria-labelledby={saveGroupId}>
+                  <p id={saveGroupId} className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-on-surface-variant">
+                    Save to file
+                  </p>
+                  {HISTORY_EXPORT_FORMATS.map((format) => (
+                    <button
+                      key={`save-${format.value}`}
+                      role="menuitem"
+                      type="button"
+                      aria-label={`Save ${visible.length} shown as ${format.label}`}
+                      onClick={() => void handleSaveExport(format.value)}
+                      className="block w-full px-3 py-1.5 text-left text-xs text-on-surface hover:bg-surface-container"
+                    >
+                      {format.label}…
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
           </div>

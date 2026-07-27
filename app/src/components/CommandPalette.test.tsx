@@ -120,6 +120,13 @@ describe('CommandPalette', () => {
     expect(Object.values(runs).every((run) => run.mock.calls.length === 0)).toBe(true);
   });
 
+  it('keeps focus inside the dialog on Tab', async () => {
+    await render();
+    await press('Tab');
+    expect(document.activeElement).toBe(input());
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
   it('closes on Escape without running anything', async () => {
     await render();
     await press('Escape');
