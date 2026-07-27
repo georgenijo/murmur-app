@@ -1,5 +1,6 @@
 pub mod benchmark;
 pub mod correct_and_teach;
+pub mod export;
 pub mod keyboard;
 pub mod knowledge;
 pub mod logging;

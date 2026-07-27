@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   loadSettings,
   saveSettings,
+  AUTO_STOP_SILENCE_OPTIONS,
   DEFAULT_SETTINGS,
   defaultModelForPlatform,
   modelOptionsForPlatform,
@@ -276,6 +277,24 @@ describe('loadSettings', () => {
       hotkeyMissFeedback: 'yes',
     }));
     expect(loadSettings().hotkeyMissFeedback).toBe(false);
+  });
+
+  it('accepts only allow-listed stop-on-silence durations', () => {
+    for (const value of AUTO_STOP_SILENCE_OPTIONS.map((option) => option.value)) {
+      localStorage.setItem('dictation-settings', JSON.stringify({ ...DEFAULT_SETTINGS, autoStopSilenceMs: value }));
+      expect(loadSettings().autoStopSilenceMs).toBe(value);
+    }
+  });
+
+  it('coerces an unknown, tampered or absent stop-on-silence value back to Off', () => {
+    for (const value of [900, -2500, 'soon', null, Number.NaN, 2500.5]) {
+      localStorage.setItem('dictation-settings', JSON.stringify({ ...DEFAULT_SETTINGS, autoStopSilenceMs: value }));
+      expect(loadSettings().autoStopSilenceMs).toBe(0);
+    }
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      model: 'base.en', doubleTapKey: 'shift_l', language: 'en', recordingMode: 'double_tap',
+    }));
+    expect(loadSettings().autoStopSilenceMs).toBe(0);
   });
 
   it('removes the retired live transcript preview setting', () => {

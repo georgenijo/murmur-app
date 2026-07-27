@@ -290,6 +290,7 @@ pub fn run() {
             commands::knowledge::inspect_knowledge_import,
             commands::knowledge::import_knowledge_from_file,
             commands::knowledge::delete_all_knowledge,
+            commands::export::save_text_export,
             commands::logging::get_log_contents,
             commands::logging::clear_logs,
             commands::logging::log_frontend,

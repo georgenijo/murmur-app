@@ -1,0 +1,71 @@
+import { useEffect, useRef } from 'react';
+import { listen } from '@tauri-apps/api/event';
+import { flog } from '../log';
+import {
+  initialSilenceState,
+  reduceSilenceSample,
+  type SilenceAutoStopState,
+} from '../silenceAutoStop';
+import type { DictationStatus } from '../types';
+
+interface UseSilenceAutoStopProps {
+  /** Off unless the user enabled it for a hands-free recording mode. */
+  enabled: boolean;
+  status: DictationStatus;
+  /** Trailing silence that ends the recording; 0 disables the detector. */
+  silenceMs: number;
+  /** Invoked at most once per recording, on the silence transition. */
+  onAutoStop: () => void;
+}
+
+/**
+ * End a hands-free recording after a run of trailing silence.
+ *
+ * Reuses the `audio-level` RMS stream the overlay waveform already listens to,
+ * so no extra audio path or permission is involved. All of the decision logic
+ * lives in `reduceSilenceSample`; this hook only owns subscription, per-recording
+ * reset, and the single call out.
+ */
+export function useSilenceAutoStop({ enabled, status, silenceMs, onAutoStop }: UseSilenceAutoStopProps) {
+  const stateRef = useRef<SilenceAutoStopState>(initialSilenceState());
+  const enabledRef = useRef(enabled);
+  const statusRef = useRef(status);
+  const silenceMsRef = useRef(silenceMs);
+  const onAutoStopRef = useRef(onAutoStop);
+  useEffect(() => { enabledRef.current = enabled; }, [enabled]);
+  useEffect(() => { silenceMsRef.current = silenceMs; }, [silenceMs]);
+  useEffect(() => { onAutoStopRef.current = onAutoStop; }, [onAutoStop]);
+
+  // Every recording starts from a clean state — peak, armed and the silence run
+  // are all per-recording, and a latched stop must not leak into the next one.
+  useEffect(() => {
+    if (statusRef.current !== status) {
+      statusRef.current = status;
+      stateRef.current = initialSilenceState();
+    }
+  }, [status]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    listen<number>('audio-level', (event) => {
+      if (!enabledRef.current || statusRef.current !== 'recording') return;
+      if (silenceMsRef.current <= 0) return;
+      const result = reduceSilenceSample(
+        stateRef.current,
+        { level: event.payload, atMs: Date.now() },
+        silenceMsRef.current,
+      );
+      stateRef.current = result.state;
+      if (!result.stop) return;
+      flog.info('recording', 'silence auto-stop fired', {
+        silenceMs: silenceMsRef.current,
+        speechMs: Math.round(result.state.speechMs),
+      });
+      onAutoStopRef.current();
+    }).then((fn) => {
+      if (cancelled) { fn(); } else { unlisten = fn; }
+    }).catch(() => {});
+    return () => { cancelled = true; unlisten?.(); };
+  }, []);
+}

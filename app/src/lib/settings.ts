@@ -203,6 +203,12 @@ export interface Settings {
   autoPasteDelayMs: number;
   recordingMode: RecordingMode;
   hotkeyMissFeedback: boolean;
+  /**
+   * Trailing silence (ms) after which a hands-free double-tap recording stops
+   * itself. `0` disables it. Only ever applied in Double-Tap mode — in
+   * Hold Down (and the hold half of Both) the key release owns the stop.
+   */
+  autoStopSilenceMs: number;
   microphone: string;
   launchAtLogin: boolean;
   vadSensitivity: number;
@@ -319,6 +325,14 @@ export const RECORDING_MODE_OPTIONS: { value: RecordingMode; label: string }[] =
   { value: 'both', label: 'Both' },
 ];
 
+/** Allow-list for `autoStopSilenceMs`. Anything else coerces back to Off. */
+export const AUTO_STOP_SILENCE_OPTIONS: { value: number; label: string }[] = [
+  { value: 0, label: 'Off' },
+  { value: 1500, label: '1.5s' },
+  { value: 2500, label: '2.5s' },
+  { value: 4000, label: '4s' },
+];
+
 export const IDLE_TIMEOUT_OPTIONS: { value: number; label: string }[] = [
   { value: 5, label: '5 minutes' },
   { value: 15, label: '15 minutes' },
@@ -358,6 +372,8 @@ export const DEFAULT_SETTINGS: Settings = {
   autoPasteDelayMs: 50,
   recordingMode: 'hold_down',
   hotkeyMissFeedback: false,
+  // Opt-in: a recording that ends itself is a surprise until you ask for it.
+  autoStopSilenceMs: 0,
   microphone: 'system_default',
   launchAtLogin: false,
   vadSensitivity: 50,
@@ -602,6 +618,19 @@ export function loadSettings(): Settings {
 
       if (typeof parsed.hotkeyMissFeedback !== 'boolean') {
         parsed.hotkeyMissFeedback = DEFAULT_SETTINGS.hotkeyMissFeedback;
+      }
+
+      // autoStopSilenceMs ends a recording on its own, so an unrecognised or
+      // tampered value must fall back to Off rather than to some arbitrary
+      // duration. Absent on pre-feature blobs — also Off.
+      {
+        const validDurations = new Set<number>(AUTO_STOP_SILENCE_OPTIONS.map((o) => o.value));
+        if (
+          typeof parsed.autoStopSilenceMs !== 'number'
+          || !validDurations.has(parsed.autoStopSilenceMs)
+        ) {
+          parsed.autoStopSilenceMs = DEFAULT_SETTINGS.autoStopSilenceMs;
+        }
       }
       // codeVocabEnabled gates the Rust scan — coerce non-booleans (or a missing
       // field on pre-feature stored settings) back to the default.

@@ -1,7 +1,11 @@
-import { useState, useEffect, lazy, Suspense, useCallback, useRef } from 'react';
+import { useState, useEffect, lazy, Suspense, useCallback, useMemo, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { flog } from './lib/log';
-import { SettingsPanel } from './components/settings';
+import { SettingsPanel, SETTINGS_CATEGORIES } from './components/settings';
+import { CommandPalette } from './components/CommandPalette';
+import type { PaletteCommand } from './lib/commandPalette';
+import { mainWindowShortcut } from './lib/keyboardShortcuts';
+import { saveHistoryExport } from './lib/historyExport';
 import { PermissionsBanner } from './components/PermissionsBanner';
 import { AboutModal } from './components/AboutModal';
 import { StatusHeader } from './components/StatusHeader';
@@ -20,6 +24,7 @@ import { useShowAboutListener } from './lib/hooks/useShowAboutListener';
 import { useOverlaySettingsSync } from './lib/hooks/useOverlaySettingsSync';
 import { useOpenSettingsListener } from './lib/hooks/useOpenSettingsListener';
 import { useEscapeCancel } from './lib/hooks/useEscapeCancel';
+import { useSilenceAutoStop } from './lib/hooks/useSilenceAutoStop';
 import { useAutoUpdater } from './lib/hooks/useAutoUpdater';
 import { UpdateModal } from './components/UpdateModal';
 import type { UpdateStatus } from './lib/updater';
@@ -125,7 +130,7 @@ function App() {
     window.addEventListener('focus', check);
     return () => window.removeEventListener('focus', check);
   }, []);
-  const { historyEntries, addEntry, updateEntry, clearHistory } = useHistoryManagement();
+  const { historyEntries, addEntry, updateEntry, togglePin, clearUnpinnedEntries, clearHistory } = useHistoryManagement();
   const {
     status, recordingDuration, error: recordingError,
     handleStart, handleStop, toggleRecording, statsVersion,
@@ -141,6 +146,15 @@ function App() {
   useDoubleTapToggle({ enabled: hotkeysArmed && settings.recordingMode === 'double_tap', initialized, accessibilityGranted, doubleTapKey: settings.doubleTapKey, status, onToggle: toggleRecording });
   useCombinedToggle({ enabled: hotkeysArmed && settings.recordingMode === 'both', initialized, accessibilityGranted, triggerKey: settings.doubleTapKey, status, onStart: handleStart, onStop: handleStop, onToggle: toggleRecording });
   useEscapeCancel({ status, enabled: hotkeysArmed && initialized && accessibilityGranted === true });
+  // Hands-free finish for double-tap recordings. Deliberately not armed in
+  // Hold Down or Both: there the key release owns the stop, and ending a
+  // recording while the trigger is still held would be wrong.
+  useSilenceAutoStop({
+    enabled: hotkeysArmed && settings.recordingMode === 'double_tap',
+    status,
+    silenceMs: settings.autoStopSilenceMs,
+    onAutoStop: handleStop,
+  });
   // Independent AX-selection transform hotkey (issue #312). Enabled only when
   // the user has configured a transform key; drives capture -> instruction ->
   // review via the transform-review popover window.
@@ -186,10 +200,147 @@ function App() {
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [mainTab, setMainTab] = useState<'record' | 'file'>('record');
+  // Bumped to move focus into the history search box (command palette action).
+  const [historySearchToken, setHistorySearchToken] = useState<number | undefined>(undefined);
+  const focusHistorySearch = useCallback(() => {
+    setMainTab('record');
+    setIsSettingsOpen(false);
+    setHistorySearchToken((token) => (token ?? 0) + 1);
+  }, []);
 
   // Overlay gear button asks the main window to open the Settings panel.
   const openSettings = useCallback(() => setIsSettingsOpen(true), []);
   useOpenSettingsListener(openSettings);
+
+  // ---- Command palette (⌘K) ----------------------------------------------
+  const [isPaletteOpen, setIsPaletteOpen] = useState(false);
+  const [settingsPageRequest, setSettingsPageRequest] = useState<{ page: string; token: number } | null>(null);
+  const openSettingsPage = useCallback((page: string) => {
+    setSettingsPageRequest((previous) => ({ page, token: (previous?.token ?? 0) + 1 }));
+    setIsSettingsOpen(true);
+  }, []);
+
+  const openLogViewer = useCallback(() => {
+    invoke('open_log_viewer').catch((e: unknown) =>
+      flog.warn('main', 'Failed to open log viewer', { error: String(e) }));
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const shortcut = mainWindowShortcut(event);
+      if (!shortcut) return;
+      event.preventDefault();
+      if (shortcut === 'palette') setIsPaletteOpen((open) => !open);
+      else if (shortcut === 'search') { setIsPaletteOpen(false); focusHistorySearch(); }
+      else if (shortcut === 'settings') { setIsPaletteOpen(false); setIsSettingsOpen(true); }
+      else openLogViewer();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [focusHistorySearch, openLogViewer]);
+
+  const commands = useMemo<PaletteCommand[]>(() => {
+    const isRecording = status === 'recording';
+    const lastEntry = historyEntries[historyEntries.length - 1];
+    const items: PaletteCommand[] = [
+      {
+        id: 'recording-toggle',
+        title: isRecording ? 'Stop recording' : 'Start recording',
+        section: 'Recording',
+        keywords: ['dictate', 'microphone', 'transcribe'],
+        run: () => { void (isRecording ? handleStop() : handleStart()); },
+      },
+      {
+        id: 'app-disable-toggle',
+        title: settings.disabled ? 'Enable Murmur' : 'Disable Murmur',
+        section: 'Recording',
+        keywords: ['pause', 'mute', 'hotkey'],
+        hint: settings.disabled ? 'currently off' : undefined,
+        run: () => updateSettings({ disabled: !settings.disabled }),
+      },
+      {
+        id: 'history-search',
+        title: 'Search transcripts',
+        section: 'History',
+        keywords: ['find', 'filter', 'history'],
+        run: focusHistorySearch,
+      },
+      {
+        id: 'history-copy-last',
+        title: 'Copy last transcript',
+        section: 'History',
+        keywords: ['clipboard', 'again'],
+        run: async () => {
+          if (!lastEntry) return;
+          await navigator.clipboard.writeText(lastEntry.text).catch((e: unknown) =>
+            flog.warn('main', 'Palette copy failed', { error: String(e) }));
+        },
+      },
+      {
+        id: 'history-export',
+        title: 'Export history to a Markdown file',
+        section: 'History',
+        keywords: ['save', 'download', 'markdown'],
+        run: async () => {
+          await saveHistoryExport(historyEntries, 'markdown').catch((e: unknown) =>
+            flog.warn('main', 'Palette export failed', { error: String(e) }));
+        },
+      },
+      {
+        id: 'tab-record',
+        title: 'Go to Record',
+        section: 'Navigation',
+        keywords: ['history', 'main'],
+        run: () => { setIsSettingsOpen(false); setMainTab('record'); },
+      },
+      {
+        id: 'tab-file',
+        title: 'Go to Transcribe File',
+        section: 'Navigation',
+        keywords: ['import', 'audio', 'wav'],
+        run: () => { setIsSettingsOpen(false); setMainTab('file'); },
+      },
+      ...SETTINGS_CATEGORIES.map((category) => ({
+        id: `settings-${category.id}`,
+        title: `Settings: ${category.label}`,
+        section: 'Settings',
+        keywords: ['preferences', 'options'],
+        run: () => openSettingsPage(category.id),
+      })),
+      {
+        id: 'logs',
+        title: 'Open log viewer',
+        section: 'Diagnostics',
+        keywords: ['events', 'debug', 'runs', 'performance'],
+        run: openLogViewer,
+      },
+      {
+        id: 'check-updates',
+        title: 'Check for updates',
+        section: 'App',
+        keywords: ['version', 'upgrade'],
+        run: () => { void checkForUpdate(); },
+      },
+      {
+        id: 'about',
+        title: 'About Murmur',
+        section: 'App',
+        keywords: ['version', 'credits'],
+        run: () => setShowAbout(true),
+      },
+      {
+        id: 'rerun-setup',
+        title: 'Re-run setup assistant',
+        section: 'App',
+        keywords: ['onboarding', 'permissions', 'wizard'],
+        run: () => { setIsSettingsOpen(false); resetOnboarding(); setOnboardingState('needed'); },
+      },
+    ];
+    return items;
+  }, [
+    status, historyEntries, settings.disabled, updateSettings, handleStart, handleStop,
+    focusHistorySearch, openSettingsPage, openLogViewer, checkForUpdate, setShowAbout,
+  ]);
 
   const error = initError || recordingError;
 
@@ -256,8 +407,11 @@ function App() {
             <>
               <TranscriptionView
                 historyEntries={historyEntries}
-                onClearHistory={clearHistory}
+                onClearUnpinned={clearUnpinnedEntries}
+                onClearAllHistory={clearHistory}
                 onUpdateHistoryEntry={updateEntry}
+                onTogglePin={togglePin}
+                focusSearchToken={historySearchToken}
               />
 
               {error && (
@@ -285,7 +439,7 @@ function App() {
           onUpdateSettings={updateSettings}
           status={status}
           onResetStats={handleResetStats}
-          onViewLogs={() => invoke('open_log_viewer').catch((e: unknown) => flog.warn('main', 'Failed to open log viewer', { error: String(e) }))}
+          onViewLogs={openLogViewer}
           onRerunSetup={() => {
             setIsSettingsOpen(false);
             resetOnboarding();
@@ -295,9 +449,16 @@ function App() {
           onCheckForUpdate={checkForUpdate}
           updateStatus={updateStatus}
           configureError={configureError}
+          pageRequest={settingsPageRequest}
         />
         )}
       </div>
+
+      <CommandPalette
+        isOpen={isPaletteOpen}
+        onClose={() => setIsPaletteOpen(false)}
+        commands={commands}
+      />
 
       <AboutModal
         isOpen={showAbout}
