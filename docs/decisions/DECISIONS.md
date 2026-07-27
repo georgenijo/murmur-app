@@ -6,6 +6,18 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 ---
 
+## 2026-07-27: Workflow features stay local, opt-in, and fail-safe
+
+**Decision:** Three main-window workflow features ship together — the history workspace (search/filter/pin/export), Stop on Silence, and the ⌘K command palette — under three shared constraints. (1) **Export is a document sink, not a file-write primitive:** `save_text_export` refuses anything outside `.json`/`.md`/`.txt`, non-absolute paths, dotfiles, directories, missing parents, and payloads over 8 MB, and publishes atomically; `teachingContext` is excluded from every export format. (2) **Stop on Silence is Double-Tap only and must hear speech before it can arm**, with a threshold that only ever rises above an absolute floor — on a quiet microphone it does nothing rather than cutting the speaker off, and any out-of-allow-list persisted duration coerces to Off. (3) **The palette owns no behavior:** each row carries a `run` callback from `App.tsx`, so there is exactly one definition of each action.
+
+**Rationale:** All three touch surfaces where a wrong default is expensive: writing files the user did not ask for, ending a recording early, and duplicating action semantics. Pinning is bounded separately from the rolling trim (50 unpinned + 25 pinned) so exempting entries cannot grow localStorage without limit, and pinning past the ceiling is refused visibly instead of silently dropping the oldest pin.
+
+**Status:** active
+
+**References:** `docs/features/history-workspace.md`; `docs/features/silence-auto-stop.md`; `docs/features/command-palette.md`; branch `feat/workflow-boosters`.
+
+---
+
 ## 2026-07-22: Diagnostics accelerator metrics stay honest (#354)
 
 **Decision:** Diagnostics will not display GPU or ANE utilization percentages. The production follow-up may ship exact backend identity, request timing, real-time factor or token throughput, correctly scoped RSS, the existing explicitly host-wide CPU percentage, and `GPU utilization unavailable` / `Accelerator utilization unavailable`. Public Metal timestamps, counters, and allocation accounting remain developer-only until Murmur's pinned runtime exposes an integration seam and a production rehearsal proves it.

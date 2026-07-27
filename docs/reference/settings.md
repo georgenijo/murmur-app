@@ -41,6 +41,7 @@ interface Settings {
   recordingMode: RecordingMode;
   doubleTapKey: DoubleTapKey;
   hotkeyMissFeedback: boolean;
+  autoStopSilenceMs: number;               // 0 = off (default)
   microphone: string;
   disabled: boolean;
 
@@ -120,6 +121,7 @@ model-selection side effects.
 | `recordingMode` | `RecordingMode` | `'hold_down'` | `'hold_down'`, `'double_tap'`, `'both'` | How recording is triggered via keyboard. Hold-down: press-and-hold to record. Double-tap: double-tap to start, single-tap to stop. Both: combined mode with deferred hold promotion. |
 | `doubleTapKey` | `DoubleTapKey` | `'shift_l'` | `'shift_l'` (Shift), `'alt_l'` (Option), `'ctrl_r'` (Control) | The modifier key used for recording triggers. Used by all three recording modes as the trigger key. Label in the settings UI changes based on `recordingMode`. |
 | `hotkeyMissFeedback` | `boolean` | `false` | `true` / `false` | In Double-Tap or Both mode, briefly flashes the overlay amber when the 400ms second-tap window expires. It does not fire for holds, modifier shortcuts, processing skips, or successful gestures. Frontend/overlay only. |
+| `autoStopSilenceMs` | `number` | `0` | `0` (Off), `1500`, `2500`, `4000` | Trailing silence after which a hands-free **Double-Tap** recording stops itself. Never applied in Hold Down or Both, where the key release owns the stop. The detector arms only after it has heard speech, so a silent start never self-terminates. Any value outside the allow-list — including a tampered or absent one — coerces back to Off. Frontend only. See [features/silence-auto-stop.md](../features/silence-auto-stop.md). |
 | `vadSensitivity` | `number` | `50` | 0-100, step 5 in UI | Voice Activity Detection sensitivity. Higher values keep more audio; lower values trim silence more aggressively. The backend converts this to a threshold: `1.0 - (sensitivity / 100.0)`. Clamped to 0-100 by the backend. |
 | `disabled` | `boolean` | `false` | `true` / `false` | Global disable. Mirrors the tray "Disable Murmur" check item and the overlay's power button; the hover quick-settings card stays reachable while disabled so the overlay can turn Murmur back on. |
 | `idleTimeoutMinutes` | `number` | `5` | `5`, `15`, `0` (Never) | How long an idle loaded model stays resident before the runtime releases it. `0` keeps it loaded indefinitely. |
@@ -230,6 +232,7 @@ When settings change, `useSettings.updateSettings` pushes the following fields t
 | `doubleTapKey` | _(sent via `update_keyboard_key`)_ | Via keyboard hooks |
 | `recordingMode` | _(controls which hook is active)_ | Frontend only |
 | `hotkeyMissFeedback` | _(controls overlay rejection feedback)_ | Frontend only |
+| `autoStopSilenceMs` | _(drives the frontend silence detector)_ | Frontend only |
 | `microphone` | _(sent as param to `start_native_recording`)_ | Per recording |
 | `launchAtLogin` | _(sent via autostart plugin)_ | Via OS API |
 | `benchmarkOutputDir` | _(sent as param to `save_benchmark_report` / `open_benchmark_output_folder`)_ | On save/reveal |
@@ -245,7 +248,7 @@ Other data persisted to localStorage by the application (not part of the `Settin
 
 | Key | Purpose | Used By |
 |-----|---------|---------|
-| `dictation-history` | Transcription history entries (max 50) | `useHistoryManagement` |
+| `dictation-history` | Transcription history entries (max 50 unpinned + 25 pinned) | `useHistoryManagement` |
 | `dictation-stats` | Cumulative transcription statistics | `lib/stats.ts` |
 | `skipped-update-version` | Version string the user chose to skip | `useAutoUpdater` |
 | `updater-last-check` | Timestamp of last update check | `useAutoUpdater` |

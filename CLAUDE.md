@@ -25,12 +25,15 @@ Start here for orientation:
 
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — System structure: module map, data flows, windows, threads, design decisions
 - **[docs/FEATURES.md](docs/FEATURES.md)** — What ships, breadth-first, with links into each feature doc
-- **[docs/reference/](docs/reference/)** — `commands.md` (105 Tauri commands), `events.md`, `hooks.md`, `settings.md`
+- **[docs/reference/](docs/reference/)** — `commands.md` (106 Tauri commands), `events.md`, `hooks.md`, `settings.md`
 
 Read these before working on a feature:
 
 - **[docs/onboarding.md](docs/onboarding.md)** — Setup, permissions, model installation, logs
 - **[docs/features/onboarding-flow.md](docs/features/onboarding-flow.md)** — First-launch setup assistant (permissions wizard + model download)
+- **[docs/features/history-workspace.md](docs/features/history-workspace.md)** — Transcript search, filters, pinning, and export
+- **[docs/features/command-palette.md](docs/features/command-palette.md)** — ⌘K launcher and main-window shortcuts
+- **[docs/features/silence-auto-stop.md](docs/features/silence-auto-stop.md)** — Hands-free trailing-silence finish for double-tap recordings
 - **[docs/features/recording-modes.md](docs/features/recording-modes.md)** — Hold-down and double-tap modes, state machine, rdev threading
 - **[docs/features/transcription.md](docs/features/transcription.md)** — Audio capture, whisper pipeline, status flow
 - **[docs/features/cli-command-formatting.md](docs/features/cli-command-formatting.md)** — Spoken CLI detection, grammar, lexicon, safety
@@ -60,11 +63,12 @@ Read these before working on a feature:
 
 | File | Purpose |
 |------|---------|
-| `lib.rs` | App wiring: mod declarations, `State`, `MutexExt`, 105 registered commands, setup, tray, `run()` |
+| `lib.rs` | App wiring: mod declarations, `State`, `MutexExt`, 106 registered commands, setup, tray, `run()` |
 | `commands/mod.rs` | Re-exports command sub-modules |
 | `commands/recording.rs` | `IdleGuard`, dictation pipeline, file transcription, vocab scan, IDE context commands |
 | `commands/permissions.rs` | Permission check/request/reset and audio device commands (incl. in-app mic TCC prompt) |
 | `commands/keyboard.rs` | Dictation + transform listener commands, global disable |
+| `commands/export.rs` | `save_text_export` — validated, atomic user-chosen text export sink |
 | `commands/logging.rs` | Log commands, delegates to telemetry.rs |
 | `commands/models.rs` | Model catalog/status queries and the download pipeline |
 | `commands/knowledge.rs` | Personal knowledge store CRUD, resolve, preview, export/import |
@@ -119,7 +123,11 @@ Read these before working on a feature:
 | `lib/settings.ts` | Settings types, defaults, localStorage persistence |
 | `lib/onboarding.ts` | First-launch setup-assistant completion flag |
 | `lib/events.ts` | Event types, stream/level definitions, color constants |
-| `lib/history.ts` | History entry types and localStorage persistence |
+| `lib/history.ts` | History entries, trim/pin budgets, search + match segmentation, export rendering |
+| `lib/historyExport.ts` | Clipboard and save-dialog wrappers for history exports |
+| `lib/commandPalette.ts` | Palette command type, tiered scoring, filtering, selection movement |
+| `lib/keyboardShortcuts.ts` | Pure main-window keydown → action mapping (⌘K/⌘F/⌘,/⌘L) |
+| `lib/silenceAutoStop.ts` | Deterministic trailing-silence detector (pure per-sample fold) |
 | `lib/stats.ts` | Usage metrics: words, WPM, recordings, tokens |
 | `lib/dictation.ts` | Tauri command wrappers for dictation pipeline |
 | `lib/updater.ts` | Semver parsing, min-version checking, update utilities |
@@ -129,7 +137,8 @@ Read these before working on a feature:
 | `lib/hooks/useCombinedToggle.ts` | Both mode (hold-down + double-tap simultaneous) |
 | `lib/hooks/useRecordingState.ts` | Recording status, transcription, toggle logic |
 | `lib/hooks/useAutoUpdater.ts` | OTA updates, min-version enforcement |
-| `lib/hooks/useHistoryManagement.ts` | Transcription history with localStorage persistence |
+| `lib/hooks/useHistoryManagement.ts` | Transcription history: add/update/pin/clear with localStorage persistence |
+| `lib/hooks/useSilenceAutoStop.ts` | Ends a hands-free double-tap recording after trailing silence |
 | `lib/hooks/useInitialization.ts` | One-time init sequence (initDictation + configure) |
 | `lib/hooks/useShowAboutListener.ts` | Listens for show-about tray event |
 | `lib/hooks/useEventStore.ts` | Structured event log buffer with live streaming |
@@ -158,6 +167,8 @@ Read these before working on a feature:
 | `lib/transformFlow.ts` | Pure reducer for transform press/release |
 | `lib/transformReview.ts` | Review state/error types + content guards |
 | `components/onboarding/OnboardingFlow.tsx` | First-launch setup assistant (permissions + model wizard) |
+| `components/CommandPalette.tsx` | ⌘K command palette dialog |
+| `components/history/HistoryPanel.tsx` | History workspace: search, filters, pins, export menu |
 | `components/settings/SettingsPanel.tsx` | Settings UI with mode switching (incl. Transform page) |
 | `components/settings/TransformsManager.tsx` | Saved transform CRUD UI |
 | `components/transform-review/` | Review popover UI (diff, actions, mock driver) |

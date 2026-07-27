@@ -121,7 +121,7 @@ Rust is the sole author of every overlay and popover pixel: `geometry_for()` and
 
 | Module | Purpose |
 |--------|---------|
-| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 105 registered commands, setup, tray, run loop |
+| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 106 registered commands, setup, tray, run loop |
 | `alloc.rs` | Custom macOS malloc zone ("RustHeapZone") so Rust heap is accounted separately from whisper.cpp's FFI heap |
 | `audio.rs` | cpal capture, mono mix, 16kHz resample, `audio-level` emission |
 | `audio_decode.rs` | Decoding imported audio files for `transcribe_file` |
@@ -131,6 +131,7 @@ Rust is the sole author of every overlay and popover pixel: `geometry_for()` and
 | `correct_and_teach.rs` | Bounded local diff proposals from a user's edit; never writes without confirmation |
 | `correction.rs` | Smart Correction matcher (exact + fuzzy tiers) |
 | `dictation_context.rs` | Immutable per-recording context snapshot resolution |
+| `commands/export.rs` | `save_text_export`: validated, atomic sink for user-chosen text exports |
 | `evaluation.rs` | Versioned fixture evaluation harness (`murmur-eval`) |
 | `file_output.rs` | Numbered `.txt` / `.wav` output |
 | `frontmost.rs` | Native frontmost-app query + running-application list |
@@ -312,7 +313,7 @@ Two rules keep the multi-window state coherent:
 
 ## Tauri Commands
 
-105 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
+106 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
 
 ## Events
 

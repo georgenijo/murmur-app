@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The 105 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
+The 106 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -167,6 +167,12 @@ For Rust → frontend events see [events.md](events.md). For the hooks that call
 | `clear_logs` | — | `Result<(), String>` | Removes log files (including rotated and JSONL variants) and clears the ring buffer. |
 | `log_frontend` | `level`, `message`, `transform_pass_id: Option<u64>` | `()` | Routes a frontend message through Rust tracing with `source="frontend"`, optionally correlated to a transform pass. |
 | `open_log_viewer` | — | `Result<(), String>` | Shows and focuses the log-viewer window. |
+
+## Export (`commands/export.rs`)
+
+| Command | Parameters | Returns | Description |
+|---------|-----------|---------|-------------|
+| `save_text_export` | `path: String`, `contents: String` | `Result<u64, String>` | Writes a user-authored text export (transcript history today) to a path chosen in the native save dialog, returning bytes written. Refuses relative paths, directories, dotfiles, missing parents, extensions outside `.json`/`.md`/`.txt`, and payloads over 8 MB. The write is atomic (temp sibling, then rename). |
 
 ## Overlay (`commands/overlay.rs`)
 
