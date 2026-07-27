@@ -265,18 +265,17 @@ function App() {
         keywords: ['find', 'filter', 'history'],
         run: focusHistorySearch,
       },
-      {
+      // Offered only when there is something to act on, so no row is a dead end.
+      ...(lastEntry ? [{
         id: 'history-copy-last',
         title: 'Copy last transcript',
         section: 'History',
         keywords: ['clipboard', 'again'],
         run: async () => {
-          if (!lastEntry) return;
           await navigator.clipboard.writeText(lastEntry.text).catch((e: unknown) =>
             flog.warn('main', 'Palette copy failed', { error: String(e) }));
         },
-      },
-      {
+      }, {
         id: 'history-export',
         title: 'Export history to a Markdown file',
         section: 'History',
@@ -285,7 +284,7 @@ function App() {
           await saveHistoryExport(historyEntries, 'markdown').catch((e: unknown) =>
             flog.warn('main', 'Palette export failed', { error: String(e) }));
         },
-      },
+      }] : []),
       {
         id: 'tab-record',
         title: 'Go to Record',

@@ -22,11 +22,13 @@ Control is accepted in place of Command for keyboard-only setups. Adding Option 
 | Section | Commands |
 |---------|----------|
 | Recording | Start / Stop recording · Enable / Disable Murmur |
-| History | Search transcripts · Copy last transcript · Export history to a Markdown file |
+| History | Search transcripts · Copy last transcript* · Export history to a Markdown file* |
 | Navigation | Go to Record · Go to Transcribe File |
 | Settings | One row per page: Recording, Transcription, Transform, Text & Vocabulary, Delivery, Performance, General |
 | Diagnostics | Open log viewer |
 | App | Check for updates · About Murmur · Re-run setup assistant |
+
+\* Offered only when history is non-empty, so no row is a dead end.
 
 Rows whose meaning depends on state are labelled with the state, not the toggle: while recording, the row reads *Stop recording*; while Murmur is disabled, *Enable Murmur*.
 
