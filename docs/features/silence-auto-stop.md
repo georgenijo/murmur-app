@@ -2,15 +2,23 @@
 
 ## Overview
 
-A double-tap recording runs until you tap again. That is the right default when you are steering the recording, and the wrong one when your hands are somewhere else — you finish a sentence, walk to the whiteboard, and the recorder is still running.
+A toggle-started recording runs until you stop it. That is the right default when you are steering the recording, and the wrong one when your hands are somewhere else — you finish a sentence, walk to the whiteboard, and the recorder is still running.
 
 Stop on Silence ends a hands-free recording after a chosen run of quiet. It is off by default, and when it is on it is designed so that its worst failure mode is *doing nothing*.
 
 ## Where it applies
 
-**Double-Tap mode only.** In Hold Down — and in the hold half of Both — the key release owns the stop, and ending a recording while the trigger is still physically held would be wrong. The setting therefore only appears on the Recording page when the trigger is Double-Tap, and the hook is armed only for that mode.
+**Any recording that was not started by holding the trigger key.** That is:
 
-Tapping to stop always still works. Auto-stop is an extra way for a recording to end, never the only one.
+- **Double-Tap** — every recording.
+- **Both** — double-tap-started recordings auto-stop; hold-started ones end on release, so both gestures keep their natural meaning.
+- **Hold Down** — recordings started from the main-window button, the overlay click, and locked mode. Those are toggle-started and otherwise only end on another click.
+
+The one exclusion is a recording in flight while the trigger key is physically held: there the key release owns the stop, and ending a recording while you are still pressing the button that means "I'm still going" would be wrong.
+
+How the hook knows: `useRecordingOrigin` tracks the origin from the keyboard events. `hold-down-start` marks the in-flight recording `'hold'`; `hold-down-stop`, `hold-down-cancel`, and `double-tap-toggle` reset to `'toggle'`, which is also the default — button, overlay, and locked-mode starts emit no keyboard event at all. While the origin is `'hold'` the detector ignores samples entirely, so nothing is ever accumulated that could fire in the moments around the key release, and a cancelled speculative hold in Both mode cannot leave the next toggle-started recording disarmed.
+
+Stopping manually always still works. Auto-stop is an extra way for a recording to end, never the only one.
 
 ## How it decides
 
@@ -56,13 +64,14 @@ Visible in the log viewer's Events tab like any other recording event.
 | File | Role |
 |------|------|
 | `app/src/lib/silenceAutoStop.ts` | Thresholds, state, and the pure per-sample fold |
-| `app/src/lib/hooks/useSilenceAutoStop.ts` | Subscription, per-recording reset, single call out |
+| `app/src/lib/hooks/useSilenceAutoStop.ts` | Subscription, per-recording reset, the hold-origin gate, single call out |
+| `app/src/lib/hooks/useRecordingOrigin.ts` | Tracks whether the in-flight recording is hold-started |
 | `app/src/lib/settings.ts` | `autoStopSilenceMs`, its option list, and its validation |
 | `app/src/components/settings/SettingsPanel.tsx` | The Recording page control |
-| `app/src/App.tsx` | Arms the hook for Double-Tap and points it at `handleStop` |
+| `app/src/App.tsx` | Arms the hook and points it at `handleStop` |
 
 ## Tests
 
 - `app/src/lib/silenceAutoStop.test.ts` — arming, cumulative speech, the exact stop point, latching, silence reset on resumed speech, the disabled path, the sample-gap cap, backwards timestamps, non-finite levels, a microphone that never clears the floor, and room tone under a loud peak.
-- `app/src/lib/hooks/useSilenceAutoStop.test.tsx` — fires once, never on a silent recording, ignores levels while disabled/off/not recording, resets per recording, and unsubscribes on unmount.
+- `app/src/lib/hooks/useSilenceAutoStop.test.tsx` — fires once, never on a silent recording, ignores levels while disabled/off/not recording, resets per recording, never fires for a hold-started recording, re-arms after a hold ends, survives the Both-mode tap-then-cancel sequence, and unsubscribes on unmount.
 - `app/src/lib/settings.test.ts` — the duration allow-list and its coercions.

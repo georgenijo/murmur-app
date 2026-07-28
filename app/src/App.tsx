@@ -146,11 +146,12 @@ function App() {
   useDoubleTapToggle({ enabled: hotkeysArmed && settings.recordingMode === 'double_tap', initialized, accessibilityGranted, doubleTapKey: settings.doubleTapKey, status, onToggle: toggleRecording });
   useCombinedToggle({ enabled: hotkeysArmed && settings.recordingMode === 'both', initialized, accessibilityGranted, triggerKey: settings.doubleTapKey, status, onStart: handleStart, onStop: handleStop, onToggle: toggleRecording });
   useEscapeCancel({ status, enabled: hotkeysArmed && initialized && accessibilityGranted === true });
-  // Hands-free finish for double-tap recordings. Deliberately not armed in
-  // Hold Down or Both: there the key release owns the stop, and ending a
-  // recording while the trigger is still held would be wrong.
+  // Hands-free finish for any recording not started by holding the trigger
+  // key (double-tap, button, overlay, locked mode). The hook tracks the
+  // origin itself and ignores hold-started recordings, where the key release
+  // owns the stop.
   useSilenceAutoStop({
-    enabled: hotkeysArmed && settings.recordingMode === 'double_tap',
+    enabled: hotkeysArmed,
     status,
     silenceMs: settings.autoStopSilenceMs,
     onAutoStop: handleStop,

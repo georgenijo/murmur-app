@@ -33,7 +33,7 @@ Read these before working on a feature:
 - **[docs/features/onboarding-flow.md](docs/features/onboarding-flow.md)** — First-launch setup assistant (permissions wizard + model download)
 - **[docs/features/history-workspace.md](docs/features/history-workspace.md)** — Transcript search, filters, and export
 - **[docs/features/command-palette.md](docs/features/command-palette.md)** — ⌘K launcher and main-window shortcuts
-- **[docs/features/silence-auto-stop.md](docs/features/silence-auto-stop.md)** — Hands-free trailing-silence finish for double-tap recordings
+- **[docs/features/silence-auto-stop.md](docs/features/silence-auto-stop.md)** — Hands-free trailing-silence finish for recordings not started by holding the key
 - **[docs/features/recording-modes.md](docs/features/recording-modes.md)** — Hold-down and double-tap modes, state machine, rdev threading
 - **[docs/features/transcription.md](docs/features/transcription.md)** — Audio capture, whisper pipeline, status flow
 - **[docs/features/cli-command-formatting.md](docs/features/cli-command-formatting.md)** — Spoken CLI detection, grammar, lexicon, safety
@@ -138,7 +138,8 @@ Read these before working on a feature:
 | `lib/hooks/useRecordingState.ts` | Recording status, transcription, toggle logic |
 | `lib/hooks/useAutoUpdater.ts` | OTA updates, min-version enforcement |
 | `lib/hooks/useHistoryManagement.ts` | Transcription history: add/update/clear with localStorage persistence |
-| `lib/hooks/useSilenceAutoStop.ts` | Ends a hands-free double-tap recording after trailing silence |
+| `lib/hooks/useSilenceAutoStop.ts` | Ends a hands-free (not hold-started) recording after trailing silence |
+| `lib/hooks/useRecordingOrigin.ts` | Tracks whether the in-flight recording is hold- or toggle-started |
 | `lib/hooks/useInitialization.ts` | One-time init sequence (initDictation + configure) |
 | `lib/hooks/useShowAboutListener.ts` | Listens for show-about tray event |
 | `lib/hooks/useEventStore.ts` | Structured event log buffer with live streaming |

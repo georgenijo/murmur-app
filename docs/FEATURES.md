@@ -37,9 +37,9 @@ Current as of **v0.21.3**. This is the breadth-first inventory of what ships; ea
 
 ### Stop on silence — [features/silence-auto-stop.md](features/silence-auto-stop.md)
 
-- Opt-in hands-free finish for **Double-Tap** recordings: 1.5s / 2.5s / 4s of trailing quiet ends the recording.
-- Arms only after it has heard speech, and its threshold only ever rises above an absolute floor — on a quiet mic it does nothing rather than cutting you off.
-- Never applied in Hold Down or Both, where the key release owns the stop. Tapping to stop always still works.
+- Opt-in hands-free finish for toggle-started recordings: 1.5s / 2.5s / 4s of trailing quiet ends the recording.
+- Applies to any recording **not started by holding the trigger key** — double-tap, the main-window button, the overlay click, and locked mode, in every recording mode. While the key is physically held, the release owns the stop.
+- Arms only after it has heard speech, and its threshold only ever rises above an absolute floor — on a quiet mic it does nothing rather than cutting you off. Stopping manually always still works.
 
 ---
 

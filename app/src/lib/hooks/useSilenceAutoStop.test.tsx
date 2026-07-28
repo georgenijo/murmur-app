@@ -5,11 +5,13 @@ import { useSilenceAutoStop } from './useSilenceAutoStop';
 import type { DictationStatus } from '../types';
 
 let levelHandler: ((event: { payload: number }) => void) | null = null;
+const originHandlers = new Map<string, () => void>();
 const unlisten = vi.fn();
 
 vi.mock('@tauri-apps/api/event', () => ({
   listen: (event: string, handler: (e: { payload: number }) => void) => {
     if (event === 'audio-level') levelHandler = handler;
+    else originHandlers.set(event, () => handler({ payload: 0 } as never));
     return Promise.resolve(unlisten);
   },
 }));
@@ -58,11 +60,19 @@ describe('useSilenceAutoStop', () => {
     });
   }
 
+  /** Fire one of the keyboard-origin events (hold-down-start, …). */
+  async function emitOrigin(event: string) {
+    await act(async () => {
+      originHandlers.get(event)?.();
+    });
+  }
+
   beforeEach(() => {
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
     levelHandler = null;
+    originHandlers.clear();
     unlisten.mockClear();
     now = 1_000_000;
     vi.spyOn(Date, 'now').mockImplementation(() => now);
@@ -134,6 +144,55 @@ describe('useSilenceAutoStop', () => {
     await emit(0.3, 800);
     await emit(0.0, 2400);
     expect(onAutoStop).toHaveBeenCalledTimes(2);
+  });
+
+  it('never fires for a hold-started recording', async () => {
+    const onAutoStop = vi.fn();
+    await render({ onAutoStop });
+    await emitOrigin('hold-down-start');
+    await emit(0.3, 800);
+    await emit(0.0, 10_000);
+    expect(onAutoStop).not.toHaveBeenCalled();
+  });
+
+  it('re-arms for the next toggle recording after a hold ends', async () => {
+    const onAutoStop = vi.fn();
+    await render({ onAutoStop });
+    await emitOrigin('hold-down-start');
+    await emit(0.3, 800);
+    await emit(0.0, 5000);
+    expect(onAutoStop).not.toHaveBeenCalled();
+    await emitOrigin('hold-down-stop');
+
+    await render({ status: 'idle', onAutoStop });
+    await render({ status: 'recording', onAutoStop });
+    await emit(0.3, 800);
+    await emit(0.0, 2400);
+    expect(onAutoStop).toHaveBeenCalledOnce();
+  });
+
+  it('does not stay disarmed after a cancelled speculative hold (Both-mode short tap)', async () => {
+    const onAutoStop = vi.fn();
+    await render({ onAutoStop });
+    // Short tap in Both mode: eager hold start, then a cancel instead of a stop.
+    await emitOrigin('hold-down-start');
+    await emitOrigin('hold-down-cancel');
+    // The follow-up double-tap starts a fresh toggle recording.
+    await render({ status: 'idle', onAutoStop });
+    await render({ status: 'recording', onAutoStop });
+    await emit(0.3, 800);
+    await emit(0.0, 2400);
+    expect(onAutoStop).toHaveBeenCalledOnce();
+  });
+
+  it('treats a double-tap after a stale hold origin as toggle-started', async () => {
+    const onAutoStop = vi.fn();
+    await render({ onAutoStop });
+    await emitOrigin('hold-down-start');
+    await emitOrigin('double-tap-toggle');
+    await emit(0.3, 800);
+    await emit(0.0, 2400);
+    expect(onAutoStop).toHaveBeenCalledOnce();
   });
 
   it('unsubscribes on unmount', async () => {

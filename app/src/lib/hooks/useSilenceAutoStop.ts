@@ -6,10 +6,11 @@ import {
   reduceSilenceSample,
   type SilenceAutoStopState,
 } from '../silenceAutoStop';
+import { useRecordingOrigin } from './useRecordingOrigin';
 import type { DictationStatus } from '../types';
 
 interface UseSilenceAutoStopProps {
-  /** Off unless the user enabled it for a hands-free recording mode. */
+  /** Off unless the user enabled it. */
   enabled: boolean;
   status: DictationStatus;
   /** Trailing silence that ends the recording; 0 disables the detector. */
@@ -21,12 +22,19 @@ interface UseSilenceAutoStopProps {
 /**
  * End a hands-free recording after a run of trailing silence.
  *
+ * "Hands-free" means any recording that was **not started by holding the
+ * trigger key**: double-tap, the main-window button, the overlay click, and
+ * locked mode. While a hold-started recording is in flight the detector
+ * ignores samples entirely — there the key release owns the stop, and ending
+ * a recording while the trigger is still physically held would be wrong.
+ *
  * Reuses the `audio-level` RMS stream the overlay waveform already listens to,
  * so no extra audio path or permission is involved. All of the decision logic
  * lives in `reduceSilenceSample`; this hook only owns subscription, per-recording
- * reset, and the single call out.
+ * reset, the origin gate, and the single call out.
  */
 export function useSilenceAutoStop({ enabled, status, silenceMs, onAutoStop }: UseSilenceAutoStopProps) {
+  const getOrigin = useRecordingOrigin();
   const stateRef = useRef<SilenceAutoStopState>(initialSilenceState());
   const enabledRef = useRef(enabled);
   const statusRef = useRef(status);
@@ -51,6 +59,9 @@ export function useSilenceAutoStop({ enabled, status, silenceMs, onAutoStop }: U
     listen<number>('audio-level', (event) => {
       if (!enabledRef.current || statusRef.current !== 'recording') return;
       if (silenceMsRef.current <= 0) return;
+      // Hold-started recordings never accumulate silence, so nothing can fire
+      // in the moments between the key release and the status transition.
+      if (getOrigin() === 'hold') return;
       const result = reduceSilenceSample(
         stateRef.current,
         { level: event.payload, atMs: Date.now() },
@@ -67,5 +78,5 @@ export function useSilenceAutoStop({ enabled, status, silenceMs, onAutoStop }: U
       if (cancelled) { fn(); } else { unlisten = fn; }
     }).catch(() => {});
     return () => { cancelled = true; unlisten?.(); };
-  }, []);
+  }, [getOrigin]);
 }
