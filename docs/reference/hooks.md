@@ -30,7 +30,13 @@ All three are always called (Rules of Hooks) and switched by the `enabled` prop 
 Imported-file transcription: file selection, `transcribe_file`, and the `file-transcription-status-changed` busy state. Adds the result to history through the same `addEntry` path as live dictation.
 
 ### `useHistoryManagement`
-Transcription history with localStorage persistence (`dictation-history`, max 50 entries), clear-with-confirmation, and the Correct-and-Teach entry point on the newest entry.
+Transcription history with localStorage persistence (`dictation-history`, rolling 200-entry cap). Owns add / update / clear. Search, filtering, and export live in `lib/history.ts`; see [features/history-workspace.md](../features/history-workspace.md).
+
+### `useSilenceAutoStop`
+Ends a hands-free recording after a run of trailing silence — any recording **not started by holding the trigger key**. Folds the existing `audio-level` samples through the pure `reduceSilenceSample` detector, resets per recording, ignores samples while the origin is `'hold'`, and calls `onAutoStop` at most once. Inert unless `enabled` and `silenceMs > 0`. See [features/silence-auto-stop.md](../features/silence-auto-stop.md).
+
+### `useRecordingOrigin`
+Tracks how the in-flight recording started. Returns `{ getOrigin, resetOrigin }` over `'hold' | 'toggle'`: `hold-down-start` marks it `'hold'`; `hold-down-stop` and `double-tap-toggle` reset to `'toggle'`, the default — button, overlay, and locked-mode starts emit no keyboard event at all (`hold-down-cancel` is handled defensively but never emitted by the current backend). `useSilenceAutoStop` calls `resetOrigin` when status leaves `'recording'`, so a `'hold'` whose stop event was lost (Escape cancel, dead rdev thread) cannot outlive its recording.
 
 ---
 

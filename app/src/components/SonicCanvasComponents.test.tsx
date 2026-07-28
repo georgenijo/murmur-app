@@ -56,7 +56,7 @@ describe('Sonic Canvas component details', () => {
             timestamp: Date.UTC(2026, 6, 18, 12),
             duration: 3.1949375,
           }]}
-          onClearHistory={vi.fn()}
+          onClear={vi.fn()}
           onUpdateEntry={vi.fn()}
         />,
       );
@@ -101,9 +101,7 @@ describe('Sonic Canvas component details', () => {
   });
 
   it('preserves history copy and confirmed clear actions', async () => {
-    const onClearHistory = vi.fn();
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
-    localStorage.setItem('dictation-history', 'saved');
+    const onClear = vi.fn();
 
     await act(async () => {
       root.render(
@@ -114,7 +112,7 @@ describe('Sonic Canvas component details', () => {
             timestamp: Date.UTC(2026, 6, 18, 12),
             duration: 3,
           }]}
-          onClearHistory={onClearHistory}
+          onClear={onClear}
           onUpdateEntry={vi.fn()}
         />,
       );
@@ -125,9 +123,12 @@ describe('Sonic Canvas component details', () => {
     await act(async () => copyButton.click());
     expect(writeText).toHaveBeenCalledWith('Keep every interaction working');
 
+    // Clearing is a two-step confirm — the first click only arms it.
     await act(async () => clearButton.click());
-    expect(onClearHistory).toHaveBeenCalledOnce();
-    expect(localStorage.getItem('dictation-history')).toBeNull();
+    expect(onClear).not.toHaveBeenCalled();
+    expect(clearButton.textContent).toBe('Click again to confirm');
+    await act(async () => clearButton.click());
+    expect(onClear).toHaveBeenCalledOnce();
   });
 
   it('offers Correct and Teach only on the newest history entry', async () => {
@@ -135,7 +136,7 @@ describe('Sonic Canvas component details', () => {
       root.render(<HistoryPanel entries={[
         { id: 'older', text: 'older transcript', timestamp: 1, duration: 1 },
         { id: 'newer', text: 'newest transcript', timestamp: 2, duration: 1 },
-      ]} onClearHistory={vi.fn()} onUpdateEntry={vi.fn()} />);
+      ]} onClear={vi.fn()} onUpdateEntry={vi.fn()} />);
     });
     const actions = Array.from(container.querySelectorAll('button')).filter((candidate) => candidate.textContent === 'Correct and Teach');
     expect(actions).toHaveLength(1);

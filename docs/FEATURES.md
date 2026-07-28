@@ -1,6 +1,6 @@
 # Murmur — Feature Map
 
-Current as of **v0.21.2**. This is the breadth-first inventory of what ships; each area links to its detailed feature doc. For system structure see [ARCHITECTURE.md](ARCHITECTURE.md).
+Current as of **v0.21.3**. This is the breadth-first inventory of what ships; each area links to its detailed feature doc. For system structure see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ---
 
@@ -34,6 +34,12 @@ Current as of **v0.21.2**. This is the breadth-first inventory of what ships; ea
 - Modifier+letter combos are rejected so normal typing never triggers recording.
 - Optional amber overlay flash when a double-tap's second-tap window expires (`hotkeyMissFeedback`, off by default).
 - Global disable from the tray ("Disable Murmur") or the overlay's power button.
+
+### Stop on silence — [features/silence-auto-stop.md](features/silence-auto-stop.md)
+
+- Opt-in hands-free finish for toggle-started recordings: 1.5s / 2.5s / 4s of trailing quiet ends the recording.
+- Applies to any recording **not started by holding the trigger key** — double-tap, the main-window button, the overlay click, and locked mode, in every recording mode. While the key is physically held, the release owns the stop.
+- Arms only after it has heard speech, and its threshold only ever rises above an absolute floor — on a quiet mic it does nothing rather than cutting you off. Stopping manually always still works.
 
 ---
 
@@ -122,7 +128,13 @@ Hold a dedicated key with text selected in any app, speak an instruction, review
 ## 6. Interface
 
 ### Main window
-Status indicator, recording controls, transcription history (50 entries, click to copy, Correct-and-Teach entry point), usage stats (words, WPM, recordings, approximate tokens), permissions banner, update and about modals. Hides on close.
+Status indicator, recording controls, the transcript history workspace, usage stats (words, WPM, recordings, approximate tokens), permissions banner, update and about modals. Hides on close.
+
+### History workspace — [features/history-workspace.md](features/history-workspace.md)
+Search with match highlighting (tokens are ANDed) and Mic/File filters over a rolling 200-entry history. Export exactly what is on screen as Markdown, plain text, or JSON — to the clipboard or, through a validated extension-allow-listed atomic write, to a file. Teaching context is never exported.
+
+### Command palette — [features/command-palette.md](features/command-palette.md)
+`⌘K` opens a keyboard-first launcher for every settings page and the common main-window actions, with deterministic tiered ranking. `⌘F` focuses transcript search, `⌘,` opens Settings, `⌘L` opens the log viewer.
 
 ### Overlay — [features/overlay.md](features/overlay.md)
 Notch-anchored Dynamic Island. Idle sits flush with the notch showing a small mic tab; recording expands with a red dot and a 7-bar waveform driven by real audio levels at 60fps via direct DOM writes; processing shows a spinner. Hover for 150ms opens a compact quick-settings card (intent-gated, so a graze doesn't pop it). Single click stops; double-click toggles locked mode. Non-activating — clicks never steal focus. Geometry comes entirely from Rust and re-derives on display changes.
@@ -174,7 +186,7 @@ Every transform-key hold is recorded as a content-free `TransformAttemptV1` with
 
 | Area | Location |
 |------|----------|
-| Rust backend | `app/src-tauri/src/` — 105 Tauri commands |
+| Rust backend | `app/src-tauri/src/` — 106 Tauri commands |
 | Frontend | `app/src/` — React 18 + TypeScript + Tailwind 4 |
 | LLM sidecar | `app/src-tauri/sidecars/local-llm/`, protocol in `crates/local-llm-protocol` |
 | Diagnostics MCP tool | `tools/murmur-diag/` |

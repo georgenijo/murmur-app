@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import {
+  AUTO_STOP_SILENCE_OPTIONS,
   AVAILABLE_MODEL_OPTIONS,
   DEFAULT_SETTINGS,
   DOUBLE_TAP_KEY_OPTIONS,
@@ -147,6 +148,9 @@ interface SettingsPanelProps {
   onCheckForUpdate: () => Promise<void>;
   updateStatus: UpdateStatus;
   configureError: string | null;
+  /** Page to show, from the command palette. The token makes a repeat request
+   *  for the page you are already on still register. */
+  pageRequest?: { page: string; token: number } | null;
 }
 
 export const SETTINGS_CATEGORIES = [
@@ -158,6 +162,14 @@ export const SETTINGS_CATEGORIES = [
   { id: 'performance', label: 'Performance' },
   { id: 'general', label: 'General' },
 ] as const;
+
+/** Coerce a requested page id back to a real page — an unknown id opens the
+ *  first page rather than rendering an empty pane. */
+export function resolvePage(page: string | undefined): string {
+  return SETTINGS_CATEGORIES.some((category) => category.id === page)
+    ? page as string
+    : SETTINGS_CATEGORIES[0].id;
+}
 
 export function effectiveAutoPaste(settings: Pick<Settings, 'autoPaste' | 'saveTranscript' | 'saveAudio'>): boolean {
   return settings.autoPaste && !settings.saveTranscript && !settings.saveAudio;
@@ -191,9 +203,16 @@ export function SettingsPanel({
   onCheckForUpdate,
   updateStatus,
   configureError,
+  pageRequest = null,
 }: SettingsPanelProps) {
   const { byName: runtimeByName } = useModelRuntimeCatalog(isOpen);
-  const [activeCat, setActiveCat] = useState<string>('recording');
+  const [activeCat, setActiveCat] = useState<string>(() => resolvePage(pageRequest?.page));
+  const requestTokenRef = useRef(pageRequest?.token);
+  useEffect(() => {
+    if (!pageRequest || pageRequest.token === requestTokenRef.current) return;
+    requestTokenRef.current = pageRequest.token;
+    setActiveCat(resolvePage(pageRequest.page));
+  }, [pageRequest]);
   const [version, setVersion] = useState('');
   const [confirmReset, setConfirmReset] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -479,6 +498,32 @@ export function SettingsPanel({
               <p className="mt-1 text-xs text-on-surface-variant">{keyHelp}</p>
             </div>
             {(isDoubleTap || isBoth) && <SettingToggle title="Hotkey Timing Feedback" description="Flash the overlay when a tap misses the double-tap window." checked={settings.hotkeyMissFeedback} onChange={() => onUpdateSettings({ hotkeyMissFeedback: !settings.hotkeyMissFeedback })} />}
+            <div>
+              <label className="mb-2 block text-sm font-medium text-on-surface">Stop on Silence</label>
+              <div className="flex gap-2">
+                {AUTO_STOP_SILENCE_OPTIONS.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    // Locked mid-recording like the sibling trigger controls:
+                    // the detector reads this value live, so a change now
+                    // would retune the recording already in flight.
+                    disabled={isRecording}
+                    aria-pressed={settings.autoStopSilenceMs === option.value}
+                    onClick={() => onUpdateSettings({ autoStopSilenceMs: option.value })}
+                    className={`flex-1 rounded-lg border px-3 py-2 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${settings.autoStopSilenceMs === option.value ? 'border-primary bg-primary text-on-primary' : 'border-outline-variant/30 bg-surface-container-lowest text-on-surface hover:bg-surface-container'}`}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+              <p className="mt-1 text-xs text-on-surface-variant">
+                Finish a recording automatically after this much quiet. Applies when you didn't
+                start by holding the key — a held recording ends when you let go. It only arms
+                once Murmur has heard you speak, so a silent start never stops itself, and you
+                can still stop manually at any time.
+              </p>
+            </div>
           </SettingsSection>
 
           <SettingsSection pageId="transform" activePage={activeCat} title="Transform" subtitle="Selected-text rewrite with a local on-device model">

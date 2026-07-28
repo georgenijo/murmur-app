@@ -1,1 +1,1 @@
-export { SettingsPanel } from './SettingsPanel';
+export { SettingsPanel, SETTINGS_CATEGORIES } from './SettingsPanel';
