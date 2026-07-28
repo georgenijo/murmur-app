@@ -9,6 +9,7 @@ interface WhatsNewModalProps {
 }
 
 export function WhatsNewModal({ update, onDismiss }: WhatsNewModalProps) {
+  const dialogRef = useRef<HTMLDivElement>(null);
   const doneRef = useRef<HTMLButtonElement>(null);
   const onDismissRef = useRef(onDismiss);
   onDismissRef.current = onDismiss;
@@ -23,10 +24,19 @@ export function WhatsNewModal({ update, onDismiss }: WhatsNewModalProps) {
         event.preventDefault();
         onDismissRef.current();
       } else if (event.key === 'Tab') {
-        // This dialog has one action; keep keyboard focus from escaping into
-        // the obscured app behind it.
+        const focusable = Array.from(
+          dialogRef.current?.querySelectorAll<HTMLElement>(
+            'a[href], button:not(:disabled), [tabindex]:not([tabindex="-1"])',
+          ) ?? [],
+        );
+        if (focusable.length === 0) return;
+
         event.preventDefault();
-        doneRef.current?.focus();
+        const currentIndex = focusable.indexOf(document.activeElement as HTMLElement);
+        const nextIndex = event.shiftKey
+          ? (currentIndex <= 0 ? focusable.length - 1 : currentIndex - 1)
+          : (currentIndex === focusable.length - 1 ? 0 : currentIndex + 1);
+        focusable[nextIndex]?.focus();
       }
     };
     document.addEventListener('keydown', onKeyDown);
@@ -49,6 +59,7 @@ export function WhatsNewModal({ update, onDismiss }: WhatsNewModalProps) {
       }}
     >
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="whats-new-title"

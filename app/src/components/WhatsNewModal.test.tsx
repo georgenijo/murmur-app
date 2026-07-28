@@ -68,4 +68,36 @@ describe('WhatsNewModal', () => {
     });
     expect(onDismiss).toHaveBeenCalledTimes(2);
   });
+
+  it('cycles focus through release-note links and lets keyboard users activate them', async () => {
+    await act(async () => {
+      root.render(
+        <WhatsNewModal
+          update={{
+            version: '0.22.0',
+            notes: '[Read the full release notes](https://example.com/release)',
+          }}
+          onDismiss={onDismiss}
+        />,
+      );
+      vi.advanceTimersByTime(60);
+    });
+
+    const link = container.querySelector('a') as HTMLAnchorElement;
+    const onLinkClick = vi.fn((event: MouseEvent) => event.preventDefault());
+    link.addEventListener('click', onLinkClick);
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+    });
+    expect(document.activeElement).toBe(link);
+
+    await act(async () => link.click());
+    expect(onLinkClick).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+    });
+    expect(document.activeElement?.textContent).toContain('Start using Murmur');
+  });
 });
