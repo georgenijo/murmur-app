@@ -40,11 +40,11 @@ interface RunsViewProps {
 }
 
 function outcomeClasses(status: PerformanceRunV1['outcome']['status']): string {
-  if (status === 'success') return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/35 dark:text-emerald-300';
+  if (status === 'success') return 'bg-success/10 text-success  ';
   if (status === 'noSpeech' || status === 'cancelled') {
-    return 'bg-stone-200 text-stone-700 dark:bg-stone-700 dark:text-stone-300';
+    return 'bg-surface-container-high text-on-surface  ';
   }
-  return 'bg-red-100 text-red-700 dark:bg-red-900/35 dark:text-red-300';
+  return 'bg-error/10 text-error  ';
 }
 
 export function RunsView({
@@ -141,7 +141,7 @@ export function RunsView({
             <select
               value={kind}
               onChange={event => setKind(event.target.value as 'all' | PerformanceRunKindV1)}
-              className="mt-1 block rounded-lg border border-outline-variant/20 bg-surface-container-lowest px-2 py-1.5 text-xs normal-case tracking-normal text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+              className="mt-1 block rounded-lg border border-on-surface-variant bg-surface-container-lowest px-2 py-1.5 text-xs normal-case tracking-normal text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
             >
               <option value="all">All kinds</option>
               <option value="dictation">Dictation</option>
@@ -154,7 +154,7 @@ export function RunsView({
             <select
               value={outcome}
               onChange={event => setOutcome(event.target.value as OutcomeFilter)}
-              className="mt-1 block rounded-lg border border-outline-variant/20 bg-surface-container-lowest px-2 py-1.5 text-xs normal-case tracking-normal text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+              className="mt-1 block rounded-lg border border-on-surface-variant bg-surface-container-lowest px-2 py-1.5 text-xs normal-case tracking-normal text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
             >
               <option value="all">All outcomes</option>
               <option value="success">Success</option>

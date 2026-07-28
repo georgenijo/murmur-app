@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type CSSProperties } from 'react';
 import { useResourceMonitor, ResourceReading } from '../lib/hooks/useResourceMonitor';
 
 const STORAGE_KEY = 'resource-monitor-collapsed';
@@ -60,29 +60,33 @@ export function ResourceMonitor() {
   };
 
   return (
-    // CSS vars for chart line colors — theme-aware so SVG strokes match dark mode.
+    // Semantic CSS vars keep SVG strokes synchronized with every appearance preset.
     <div
-      className="shrink-0 rounded-lg border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800/50 overflow-hidden [--cpu-stroke:#57534e] dark:[--cpu-stroke:#a8a29e] [--mem-stroke:#f59e0b] dark:[--mem-stroke:#fbbf24]"
+      className="shrink-0 rounded-lg border border-outline-variant/40 bg-surface-container-low overflow-hidden"
+      style={{
+        '--cpu-stroke': 'var(--murmur-on-surface-variant)',
+        '--mem-stroke': 'var(--murmur-warning)',
+      } as CSSProperties}
     >
       {/* Header row */}
       <button
         onClick={toggle}
-        className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-stone-100 dark:hover:bg-stone-700/50 transition-colors"
+        className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-surface-container transition-colors"
       >
-        <span className="text-xs font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wider">
+        <span className="text-xs font-medium text-on-surface-variant uppercase tracking-wider">
           Resources
         </span>
         <div className="flex items-center gap-3">
-            <span className="text-xs text-stone-500 dark:text-stone-400">
-              <span className="text-stone-600 dark:text-stone-300 font-medium">Host CPU</span>
+            <span className="text-xs text-on-surface-variant">
+              <span className="text-on-surface-variant font-medium">Host CPU</span>
             {' '}{cpuNow}{cpuNow === '—' ? '' : '%'}
           </span>
-          <span className="text-xs text-stone-500 dark:text-stone-400">
-            <span className="text-amber-600 dark:text-amber-400 font-medium">Murmur RSS</span>
+          <span className="text-xs text-on-surface-variant">
+            <span className="text-primary font-medium">Murmur RSS</span>
             {' '}{memNow} MB
           </span>
           <svg
-            className={`w-3.5 h-3.5 text-stone-400 transition-transform duration-200 ${isCollapsed ? 'rotate-180' : ''}`}
+            className={`w-3.5 h-3.5 text-on-surface-variant transition-transform duration-200 ${isCollapsed ? 'rotate-180' : ''}`}
             fill="none"
             viewBox="0 0 24 24"
             stroke="currentColor"
@@ -110,7 +114,7 @@ export function ResourceMonitor() {
                 x2={CHART_W} y2={CHART_H * (1 - p)}
                 stroke="currentColor"
                 strokeWidth="0.5"
-                className="text-stone-200 dark:text-stone-700"
+                className="text-outline-variant/30"
                 strokeDasharray="2,2"
               />
             ))}
@@ -137,11 +141,11 @@ export function ResourceMonitor() {
           </svg>
           {/* Legend — swatches use the same CSS vars as the polylines */}
           <div className="flex gap-3 mt-1">
-            <span className="flex items-center gap-1 text-xs text-stone-500 dark:text-stone-400">
+            <span className="flex items-center gap-1 text-xs text-on-surface-variant">
               <span className="inline-block w-2.5 h-0.5 rounded" style={{ background: 'var(--cpu-stroke)' }} />
               Host CPU %
             </span>
-            <span className="flex items-center gap-1 text-xs text-stone-500 dark:text-stone-400">
+            <span className="flex items-center gap-1 text-xs text-on-surface-variant">
               <span className="inline-block w-2.5 h-0.5 rounded" style={{ background: 'var(--mem-stroke)' }} />
               Murmur RSS MB
             </span>

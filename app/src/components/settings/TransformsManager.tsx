@@ -126,11 +126,11 @@ function TransformEditor({
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
-          className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface"
+          className="w-full rounded-lg border border-on-surface-variant bg-surface px-3 py-2 text-sm text-on-surface"
           placeholder="e.g. meeting notes"
         />
         {shadowWarning && (
-          <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">{shadowWarning}</p>
+          <p className="mt-1 text-xs text-primary">{shadowWarning}</p>
         )}
       </div>
       <div>
@@ -146,7 +146,7 @@ function TransformEditor({
           value={instruction}
           onChange={(e) => setInstruction(e.target.value)}
           rows={4}
-          className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface"
+          className="w-full rounded-lg border border-on-surface-variant bg-surface px-3 py-2 text-sm text-on-surface"
           placeholder="Rewrite as concise meeting notes with action items…"
         />
         {overInstructionLimit && (

@@ -22,7 +22,7 @@ export function RecordingControls({ status, initialized, onStart, onStop, trigge
         <button
           onClick={onStop}
           disabled={!initialized}
-          className="flex items-center gap-2 rounded-xl bg-error px-7 py-3 text-on-primary shadow-lg shadow-error/20 transition-[filter,transform] hover:brightness-95 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
+          className="flex items-center gap-2 rounded-xl border-2 border-error bg-surface-container-lowest px-7 py-3 font-semibold text-error shadow-lg shadow-error/20 ring-4 ring-error/10 transition-[background-color,transform] hover:bg-error/10 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
         >
           <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
             <rect x="5" y="5" width="10" height="10" rx="1" />

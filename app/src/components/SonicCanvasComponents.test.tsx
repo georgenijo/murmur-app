@@ -100,6 +100,30 @@ describe('Sonic Canvas component details', () => {
     expect(onStop).toHaveBeenCalledOnce();
   });
 
+  it('keeps Stop Recording prominent without an unsupported solid-error text pair', async () => {
+    await act(async () => {
+      root.render(
+        <RecordingControls
+          status="recording"
+          initialized
+          onStart={vi.fn()}
+          onStop={vi.fn()}
+          triggerKey="shift_l"
+        />,
+      );
+    });
+
+    const stop = container.querySelector('button')!;
+    expect(stop.classList).toContain('border-2');
+    expect(stop.classList).toContain('border-error');
+    expect(stop.classList).toContain('bg-surface-container-lowest');
+    expect(stop.classList).toContain('text-error');
+    expect(stop.classList).toContain('font-semibold');
+    expect(stop.classList).toContain('hover:bg-error/10');
+    expect(stop.classList).not.toContain('bg-error');
+    expect(stop.classList).not.toContain('text-on-primary');
+  });
+
   it('preserves history copy and confirmed clear actions', async () => {
     const onClear = vi.fn();
 

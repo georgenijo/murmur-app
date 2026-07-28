@@ -1,6 +1,6 @@
 # React Hooks Reference
 
-The 28 custom React hooks under `app/src/lib/hooks/`, grouped by the window that uses them. Hooks are where nearly all frontend behavior lives — `App.tsx` and `OverlayWidget.tsx` are thin composition shells.
+The 29 custom React hooks under `app/src/lib/hooks/`, grouped by the window that uses them. Hooks are where nearly all frontend behavior lives — `App.tsx` and `OverlayWidget.tsx` are thin composition shells.
 
 For the commands these hooks call see [commands.md](commands.md). For the events they subscribe to see [events.md](events.md). For settings managed by `useSettings` see [settings.md](settings.md).
 
@@ -61,6 +61,33 @@ The other direction: listens for `settings-changed` emitted by the overlay's qui
 
 ### `useShowAboutListener`
 Listens for `show-about`. **Currently inert** — the tray menu no longer has an About item, so nothing emits this event.
+
+---
+
+## Appearance (main and log viewer)
+
+### `useAppearance`
+
+Main-window controller for the independent `murmur-appearance` document. It
+loads and sanitizes authoritative configuration, recomputes the light/dark
+cache, applies the current concrete appearance, owns application-level native
+`setTheme`, and exposes mode/color/reset/import/export actions to Appearance
+Settings. Main is the only writer and emits one revisioned
+`appearance-changed` event per committed edit or repair.
+
+Its System-mode `matchMedia` listener applies OS changes locally without
+emitting. Setup and cleanup are idempotent under React Strict Mode.
+
+### Log-viewer appearance controller
+
+The log viewer installs the same runtime applier as a read-only consumer. It
+reloads newer `appearance-changed` revisions with a bounded retry, ignores
+stale events, recognizes the explicit high-water-to-`1` repair rollover, and
+owns its own emit-free System-mode media listener. It never writes appearance
+or calls native `setTheme`.
+
+The overlay and transform-review roots intentionally install neither
+controller.
 
 ---
 

@@ -39,6 +39,7 @@ import type { DictationStatus } from '../../lib/types';
 import type { UpdateStatus } from '../../lib/updater';
 import { Select } from '../ui/Select';
 import { AppOverridesEditor } from './AppOverridesEditor';
+import { AppearanceSettings } from './AppearanceSettings';
 import { KnowledgeManager } from './KnowledgeManager';
 import { PerformanceLab } from './PerformanceLab';
 import { SettingsSection } from './SettingsSection';
@@ -63,7 +64,7 @@ function Toggle({ label, checked, onChange, disabled = false }: {
       onClick={onChange}
       className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 ${checked ? 'bg-primary' : 'bg-surface-container-highest'}`}
     >
-      <span className={`inline-block h-4 w-4 rounded-full bg-on-primary shadow transition-transform ${checked ? 'translate-x-6' : 'translate-x-1'}`} />
+      <span className={`inline-block h-4 w-4 rounded-full shadow transition-transform ${checked ? 'translate-x-6 bg-on-primary' : 'translate-x-1 bg-on-surface-variant'}`} />
     </button>
   );
 }
@@ -160,6 +161,7 @@ export const SETTINGS_CATEGORIES = [
   { id: 'text-vocabulary', label: 'Text & Vocabulary' },
   { id: 'delivery', label: 'Delivery' },
   { id: 'performance', label: 'Performance' },
+  { id: 'appearance', label: 'Appearance' },
   { id: 'general', label: 'General' },
 ] as const;
 
@@ -471,7 +473,7 @@ export function SettingsPanel({
             <div>
               <label className="mb-2 block text-sm font-medium text-on-surface">Microphone</label>
               <Select value={settings.microphone} onChange={(microphone) => onUpdateSettings({ microphone })} disabled={isRecording} items={[{ value: 'system_default', label: 'System Default' }, ...audioDevices.map((name) => ({ value: name, label: name }))]} />
-              {missingDevice && <p className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">Selected device not found — Murmur will use System Default.</p>}
+              {missingDevice && <p className="mt-2 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-on-surface">Selected device not found — Murmur will use System Default.</p>}
             </div>
             <div>
               <p className="mb-2 text-sm font-medium text-on-surface">Voice Detection</p>
@@ -484,10 +486,10 @@ export function SettingsPanel({
                   <button key={option.value} type="button" disabled={isRecording} onClick={() => onUpdateSettings({ recordingMode: option.value as RecordingMode })} className={`flex-1 rounded-lg border px-3 py-2 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${settings.recordingMode === option.value ? 'border-primary bg-primary text-on-primary' : 'border-outline-variant/30 bg-surface-container-lowest text-on-surface hover:bg-surface-container'}`}>{option.label}</button>
                 ))}
               </div>
-              {isRecording && <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">Stop recording before changing mode.</p>}
+              {isRecording && <p className="mt-1 text-xs text-primary">Stop recording before changing mode.</p>}
             </div>
             {accessibilityGranted === false && (
-              <div className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+              <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-on-surface">
                 <span>Accessibility permission is required for keyboard detection.</span>
                 <button type="button" onClick={requestAccessibility} className="ml-auto underline">Grant</button>
               </div>
@@ -529,7 +531,7 @@ export function SettingsPanel({
           <SettingsSection pageId="transform" activePage={activeCat} title="Transform" subtitle="Selected-text rewrite with a local on-device model">
             <div className="rounded-xl border border-primary/20 bg-primary/5 p-3">
               <p className="text-sm font-medium text-on-surface">Local only · Apple Silicon</p>
-              <p className="mt-1 text-xs text-on-surface-variant">
+              <p className="mt-1 text-xs text-on-surface">
                 Hold a dedicated shortcut, speak an instruction, and review a proposed rewrite before
                 anything is written. The model stays on-device ({TRANSFORM_MODEL_SIZE_LABEL} download).
                 Never auto-applies.
@@ -562,7 +564,7 @@ export function SettingsPanel({
                   <p className="text-xs text-error">{transformKeyError}</p>
                 )}
                 {accessibilityGranted === false && (
-                  <div className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+                  <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-on-surface">
                     <span>Accessibility permission is required for transform capture and apply.</span>
                     <button type="button" onClick={requestAccessibility} className="ml-auto underline">Grant</button>
                   </div>
@@ -636,7 +638,7 @@ export function SettingsPanel({
                 )}
               </div>
               {transformModel?.runtimeDisabled && (
-                <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">
+                <p className="mt-2 text-xs text-primary">
                   The transform runtime was disabled after repeated faults. Reset it to try again.
                 </p>
               )}
@@ -658,9 +660,9 @@ export function SettingsPanel({
               />
               <p className="mt-1 text-xs text-on-surface-variant">Parakeet Core ML is recommended on supported Macs. Larger models can be more accurate but use more storage and memory.</p>
               {selectedRuntime && <p className="mt-1 text-xs text-on-surface-variant" data-testid="model-runtime-status">{selectedRuntime.label}: {selectedRuntime.backend} / {selectedRuntime.accelerator} / {selectedRuntime.size} · {selectedRuntime.installState} · {selectedRuntime.lifecycleState}</p>}
-              {isRecording && <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">Stop recording before changing model.</p>}
+              {isRecording && <p className="mt-1 text-xs text-primary">Stop recording before changing model.</p>}
               {modelAvailable === false && modelDownload.phase === 'idle' && (
-                <div className="mt-2 flex items-center rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+                <div className="mt-2 flex items-center rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-on-surface">
                   <span>Model not downloaded</span><button type="button" onClick={() => void downloadModel()} className="ml-auto underline">Download</button>
                 </div>
               )}
@@ -728,11 +730,11 @@ export function SettingsPanel({
           <SettingsSection pageId="delivery" activePage={activeCat} title="Delivery" subtitle="Clipboard, paste, file output, and app-specific overrides">
             <div className="rounded-xl border border-primary/20 bg-primary/5 p-3">
               <h2 className="text-sm font-medium text-on-surface">Always copied to clipboard</h2>
-              <p className="mt-1 text-xs text-on-surface-variant">Every completed transcription is copied first. Auto-paste and file output only change what happens next.</p>
+              <p className="mt-1 text-xs text-on-surface">Every completed transcription is copied first. Auto-paste and file output only change what happens next.</p>
             </div>
             <SettingToggle title="Auto-Paste" label="Auto paste" description={autoPasteDeliveryDescription(settings)} checked={autoPasteOn} disabled={saveToFile} onChange={() => onUpdateSettings({ autoPaste: !settings.autoPaste })} />
-            {settings.autoPaste && saveToFile && <p role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">Auto-paste is paused; the stored preference remains on.</p>}
-            {autoPasteOn && accessibilityGranted !== null && <div className={`flex items-center gap-2 text-xs ${accessibilityGranted ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}`}><span>{accessibilityGranted ? 'Accessibility permission granted' : 'Accessibility permission required'}</span>{accessibilityGranted === false && <button type="button" onClick={requestAccessibility} className="underline">Grant</button>}</div>}
+            {settings.autoPaste && saveToFile && <p role="status" className="rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-on-surface">Auto-paste is paused; the stored preference remains on.</p>}
+            {autoPasteOn && accessibilityGranted !== null && <div className={`flex items-center gap-2 text-xs ${accessibilityGranted ? 'text-success ' : 'text-primary '}`}><span>{accessibilityGranted ? 'Accessibility permission granted' : 'Accessibility permission required'}</span>{accessibilityGranted === false && <button type="button" onClick={requestAccessibility} className="underline">Grant</button>}</div>}
             {autoPasteOn && <PasteDelaySlider value={settings.autoPasteDelayMs} onCommit={(autoPasteDelayMs) => onUpdateSettings({ autoPasteDelayMs })} />}
             <SettingToggle title="Save Transcript to File" description="Write each completed transcription to a .txt file." checked={settings.saveTranscript} onChange={() => onUpdateSettings({ saveTranscript: !settings.saveTranscript })} />
             <SettingToggle title="Save Audio to File" description="Write each recording to a .wav file." checked={settings.saveAudio} onChange={() => onUpdateSettings({ saveAudio: !settings.saveAudio })} />
@@ -755,6 +757,10 @@ export function SettingsPanel({
             <PerformanceLab status={status} settings={settings} onUpdateSettings={onUpdateSettings} />
           </SettingsSection>
 
+          <SettingsSection pageId="appearance" activePage={activeCat} title="Appearance" subtitle="Theme, contrast, and color customization">
+            <AppearanceSettings />
+          </SettingsSection>
+
           <SettingsSection pageId="general" activePage={activeCat} title="General" subtitle="Startup, support, updates, and app information">
             <SettingToggle title="Launch at Login" description="Start Murmur automatically when you log in." checked={settings.launchAtLogin} onChange={() => onUpdateSettings({ launchAtLogin: !settings.launchAtLogin })} />
             <button type="button" onClick={onRerunSetup} className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs font-medium text-on-surface-variant transition-colors hover:bg-surface-container hover:text-primary">Run Setup Assistant</button>
@@ -763,7 +769,7 @@ export function SettingsPanel({
             <button type="button" aria-label={confirmReset ? 'Confirm reset statistics' : 'Reset statistics'} onClick={resetStats} className={`w-full rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${confirmReset ? 'border-error/40 bg-error/10 text-error' : 'border-outline-variant/30 bg-surface-container-lowest text-on-surface-variant hover:bg-surface-container hover:text-primary'}`}>{confirmReset ? 'Confirm Reset' : 'Reset Stats'}</button>
             <div>
               <button type="button" onClick={() => void onCheckForUpdate()} disabled={updateStatus.phase === 'checking' || updateStatus.phase === 'downloading'} className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs font-medium text-on-surface-variant transition-colors hover:bg-surface-container hover:text-primary disabled:cursor-not-allowed disabled:opacity-50">{updateStatus.phase === 'checking' ? 'Checking…' : 'Check for Updates'}</button>
-              {updateStatus.phase === 'up-to-date' && <p className="mt-1.5 text-xs text-emerald-600 dark:text-emerald-400">You’re up to date.</p>}
+              {updateStatus.phase === 'up-to-date' && <p className="mt-1.5 text-xs text-success">You’re up to date.</p>}
               {updateStatus.phase === 'available' && <p className="mt-1.5 text-xs text-primary">v{updateStatus.version} available</p>}
               {updateStatus.phase === 'error' && <p className="mt-1.5 text-xs text-error">Update check failed.</p>}
             </div>

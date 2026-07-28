@@ -6,6 +6,44 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 ---
 
+## 2026-07-28: Appearance is a revisioned local semantic-token document (#377)
+
+**Decision:** Murmur themes the main and log-viewer webviews from a separate
+`murmur-appearance` document. Concrete `data-appearance` selectors, a strictly
+validated resolved-token cache, and a parser-blocking same-origin bootstrap
+land as one contract. Main is the only writer, user-change emitter, and owner
+of application-level native `setTheme`; both themed windows handle System-mode
+OS changes locally without emitting. Overlay and transform-review remain
+unsynchronized transparent, always-dark glass. Theme-file exchange uses
+main-window-gated 64 KiB UTF-8 Rust transport with atomic sibling-temp writes
+and never uses the clipboard. Untouched Sonic remains byte-for-byte compatible
+with the shipped palette; all mutable/custom paths enforce the expanded
+all-surface and tinted-status contrast matrix.
+Diagnostics preserve at-a-glance stream identity by combining the existing
+contrast-checked semantic surfaces, foregrounds, and opaque markers rather than
+adding stream-specific palette slots; warning levels use the warning token.
+The recording Stop action stays visually dominant through an opaque surface,
+strong error border, error label, and safe error-tint hover. It does not place
+`on-primary` on error because the deliberately small schema has no `on-error`
+pair and does not guarantee that combination.
+
+**Rationale:** Separating appearance from dictation settings prevents unrelated
+cross-window settings traffic and preserves immutable recording semantics.
+Concrete selector state makes forced appearance agree across Tailwind,
+semantic tokens, first paint, and native chrome. A narrow bounded transport
+keeps schema/color authority in the tested frontend while preventing partial
+exports and clipboard regressions. Grandfathering only untouched Sonic resolves
+the direct conflict between exact reset parity and the newer status-matrix
+contract without giving user-controlled colors an accessibility escape hatch.
+
+**Status:** active
+
+**References:** issue #377;
+[`docs/features/appearance.md`](../features/appearance.md);
+[`docs/draft/theme-engine-converged-plan.md`](../draft/theme-engine-converged-plan.md).
+
+---
+
 ## 2026-07-27: Workflow features stay local, opt-in, and fail-safe
 
 **Decision:** Three main-window workflow features ship together — the history workspace (search/filter/export), Stop on Silence, and the ⌘K command palette — under three shared constraints. (1) **Export is a document sink, not a file-write primitive:** `save_text_export` refuses anything outside `.json`/`.md`/`.txt`, non-absolute paths, dotfiles, directories, missing parents, and payloads over 8 MB, and publishes atomically; `teachingContext` is excluded from every export format. (2) **Stop on Silence applies to any recording not started by holding the trigger key and must hear speech before it can arm**, with a threshold that only ever rises above an absolute floor — on a quiet microphone it does nothing rather than cutting the speaker off, and any out-of-allow-list persisted duration coerces to Off. (Originally shipped Double-Tap-only; widened to the origin rule after device testing, 2026-07-28 — while the key is physically held, the release owns the stop.) (3) **The palette owns no behavior:** each row carries a `run` callback from `App.tsx`, so there is exactly one definition of each action.

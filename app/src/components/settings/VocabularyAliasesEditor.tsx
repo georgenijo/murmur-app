@@ -95,9 +95,9 @@ export function VocabularyAliasesEditor({
                 autoComplete="off"
                 autoCorrect="off"
                 spellCheck={false}
-                className="min-w-0 flex-1 rounded-lg border border-outline-variant/30 bg-surface-container px-3 py-2 text-xs text-on-surface focus:outline-none focus:ring-2 focus:ring-primary"
+                className="min-w-0 flex-1 rounded-lg border border-on-surface-variant bg-surface-container px-3 py-2 text-xs text-on-surface focus:outline-none focus:ring-2 focus:ring-primary"
               />
-              <span className="rounded-full bg-primary/10 px-2 py-1 text-[10px] font-medium text-primary">Global</span>
+              <span className="rounded-full bg-primary/10 px-2 py-1 text-[10px] font-medium text-on-surface">Global</span>
               <button
                 type="button"
                 role="switch"
@@ -106,13 +106,13 @@ export function VocabularyAliasesEditor({
                 onClick={() => patchEntry(index, { enabled: !entry.enabled })}
                 className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full ${entry.enabled ? 'bg-primary' : 'bg-surface-container-highest'}`}
               >
-                <span className={`inline-block h-3.5 w-3.5 rounded-full bg-on-primary shadow transition-transform ${entry.enabled ? 'translate-x-4' : 'translate-x-1'}`} />
+                <span className={`inline-block h-3.5 w-3.5 rounded-full shadow transition-transform ${entry.enabled ? 'translate-x-4 bg-on-primary' : 'translate-x-1 bg-on-surface-variant'}`} />
               </button>
               <button
                 type="button"
                 aria-label={`Delete ${entry.written || `term ${index + 1}`}`}
                 onClick={() => update(draft.filter((_, entryIndex) => entryIndex !== index))}
-                className="text-xs text-on-surface-variant underline hover:text-red-600"
+                className="text-xs text-on-surface-variant underline hover:text-error"
               >
                 Delete
               </button>
@@ -132,14 +132,14 @@ export function VocabularyAliasesEditor({
               autoComplete="off"
               autoCorrect="off"
               spellCheck={false}
-              className="mt-1 w-full rounded-lg border border-outline-variant/30 bg-surface-container px-3 py-2 text-xs text-on-surface focus:outline-none focus:ring-2 focus:ring-primary"
+              className="mt-1 w-full rounded-lg border border-on-surface-variant bg-surface-container px-3 py-2 text-xs text-on-surface focus:outline-none focus:ring-2 focus:ring-primary"
             />
           </div>
         ))}
       </div>
 
       {error && (
-        <p role="alert" className="mt-2 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-700 dark:text-red-300">
+        <p role="alert" className="mt-2 rounded-lg bg-error/10 px-3 py-2 text-xs text-error">
           {error}
         </p>
       )}
@@ -160,7 +160,7 @@ export function VocabularyAliasesEditor({
             aria-label="Alias preview input"
             value={previewInput}
             onChange={(event) => { setPreviewInput(event.target.value); setPreviewOutput(''); }}
-            className="min-w-0 flex-1 rounded-lg border border-outline-variant/30 bg-surface-container px-3 py-2 text-xs text-on-surface focus:outline-none focus:ring-2 focus:ring-primary"
+            className="min-w-0 flex-1 rounded-lg border border-on-surface-variant bg-surface-container px-3 py-2 text-xs text-on-surface focus:outline-none focus:ring-2 focus:ring-primary"
           />
           <button
             type="button"

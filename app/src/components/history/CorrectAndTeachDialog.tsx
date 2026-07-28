@@ -236,7 +236,7 @@ export function CorrectAndTeachDialog({ entry, onClose, onSaveCorrection }: Prop
         {step === 'edit' && (
           <div className="mt-4 space-y-4">
             <label className="block text-xs font-medium text-on-surface">Corrected transcript
-              <textarea ref={correctedTextareaRef} aria-label="Corrected transcript" value={correctedText} onChange={(event) => setCorrectedText(event.target.value)} maxLength={8_192} className="mt-1 min-h-36 w-full resize-y rounded-xl border border-outline-variant/40 bg-surface-container-lowest px-3 py-2 text-sm leading-relaxed text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary" />
+              <textarea ref={correctedTextareaRef} aria-label="Corrected transcript" value={correctedText} onChange={(event) => setCorrectedText(event.target.value)} maxLength={8_192} className="mt-1 min-h-36 w-full resize-y rounded-xl border border-on-surface-variant bg-surface-container-lowest px-3 py-2 text-sm leading-relaxed text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary" />
             </label>
             <p className="text-xs text-on-surface-variant">This changes history only. It cannot alter text that was already copied, pasted, or saved to a file.</p>
             {error && <Alert>{error}</Alert>}
@@ -250,7 +250,7 @@ export function CorrectAndTeachDialog({ entry, onClose, onSaveCorrection }: Prop
         {step === 'automatic_review' && outcome?.kind === 'unsafe' && (
           <div className="mt-4 space-y-4">
             <h3 ref={reviewHeadingRef} tabIndex={-1} className="sr-only">Automatic correction review</h3>
-            <div className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+            <div className="rounded-xl border border-primary/30 bg-primary/10 p-3 text-sm text-on-surface">
               <strong>No automatic rule suggested.</strong>
               <p className="mt-1 text-xs">{outcome.reason}</p>
             </div>
@@ -286,7 +286,7 @@ export function CorrectAndTeachDialog({ entry, onClose, onSaveCorrection }: Prop
           <div className="mt-4 space-y-4">
             <div className="rounded-xl border border-primary/25 bg-primary/5 p-3">
               <h3 className="text-sm font-semibold text-on-surface">Teach specific term</h3>
-              <p className="mt-1 text-xs text-on-surface-variant">Choose the exact heard term or short phrase, then enter exactly how Murmur should write it.</p>
+              <p className="mt-1 text-xs text-on-surface">Choose the exact heard term or short phrase, then enter exactly how Murmur should write it.</p>
             </div>
             <label className="block text-xs font-medium text-on-surface">Select from the heard transcript
               <textarea
@@ -298,7 +298,7 @@ export function CorrectAndTeachDialog({ entry, onClose, onSaveCorrection }: Prop
                 onSelect={captureHeardSelection}
                 onKeyUp={captureHeardSelection}
                 onMouseUp={captureHeardSelection}
-                className="mt-1 min-h-24 w-full resize-y rounded-xl border border-outline-variant/40 bg-surface-container-lowest px-3 py-2 text-sm leading-relaxed text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+                className="mt-1 min-h-24 w-full resize-y rounded-xl border border-on-surface-variant bg-surface-container-lowest px-3 py-2 text-sm leading-relaxed text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
               />
             </label>
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -308,10 +308,10 @@ export function CorrectAndTeachDialog({ entry, onClose, onSaveCorrection }: Prop
             <p role="status" aria-live="polite" className="sr-only">{selection.end > selection.start ? `${selection.end - selection.start} characters selected` : 'No heard text selected'}</p>
             <div className="grid gap-3 sm:grid-cols-2">
               <label className="block text-xs font-medium text-on-surface">Exact heard term
-                <input ref={specificSourceRef} aria-label="Exact heard term" value={specificSource} onChange={(event) => setSpecificSource(event.target.value)} maxLength={256} className="mt-1 w-full rounded-lg border border-outline-variant/40 bg-surface-container-lowest px-3 py-2 text-sm outline-none focus:border-primary focus:ring-1 focus:ring-primary" />
+                <input ref={specificSourceRef} aria-label="Exact heard term" value={specificSource} onChange={(event) => setSpecificSource(event.target.value)} maxLength={256} className="mt-1 w-full rounded-lg border border-on-surface-variant bg-surface-container-lowest px-3 py-2 text-sm outline-none focus:border-primary focus:ring-1 focus:ring-primary" />
               </label>
               <label className="block text-xs font-medium text-on-surface">Exact written replacement
-                <input aria-label="Exact written replacement" value={specificReplacement} onChange={(event) => setSpecificReplacement(event.target.value)} maxLength={256} className="mt-1 w-full rounded-lg border border-outline-variant/40 bg-surface-container-lowest px-3 py-2 text-sm outline-none focus:border-primary focus:ring-1 focus:ring-primary" />
+                <input aria-label="Exact written replacement" value={specificReplacement} onChange={(event) => setSpecificReplacement(event.target.value)} maxLength={256} className="mt-1 w-full rounded-lg border border-on-surface-variant bg-surface-container-lowest px-3 py-2 text-sm outline-none focus:border-primary focus:ring-1 focus:ring-primary" />
               </label>
             </div>
             <p className="text-xs text-on-surface-variant">Each side is limited to eight tokens and 256 characters. Heard text must match a whole term in this example.</p>
@@ -347,7 +347,7 @@ function SpecificTermAction({ onClick }: { onClick: () => void }) {
   return (
     <div className="rounded-xl border border-outline-variant/30 bg-surface-container-lowest p-3">
       <p className="text-xs text-on-surface-variant">Need a narrower rule? Choose the exact term or short phrase yourself.</p>
-      <button type="button" onClick={onClick} className="mt-2 rounded-lg border border-primary/40 px-3 py-2 text-xs font-semibold text-primary hover:bg-primary/10">Teach specific term</button>
+      <button type="button" onClick={onClick} className="mt-2 rounded-lg border border-primary/40 px-3 py-2 text-xs font-semibold text-on-surface hover:bg-primary/10">Teach specific term</button>
     </div>
   );
 }
@@ -381,16 +381,16 @@ function ReviewStep({
     <div className="mt-4 space-y-4">
       <h3 ref={headingRef} tabIndex={-1} className="sr-only">Review learned correction</h3>
       <div className="rounded-xl border border-primary/30 bg-primary/5 p-4">
-        <p className="text-[11px] font-semibold uppercase tracking-wide text-primary">Exact rule</p>
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-on-surface">Exact rule</p>
         <p className="mt-2 break-words text-sm text-on-surface"><span className="rounded bg-surface-container px-1.5 py-1 font-mono">{outcome.source}</span> <span aria-hidden="true">→</span> <span className="rounded bg-surface-container px-1.5 py-1 font-mono">{outcome.replacement}</span></p>
-        <p className="mt-2 text-xs text-on-surface-variant">Affects {outcome.occurrenceCount} exact {outcome.occurrenceCount === 1 ? 'occurrence' : 'occurrences'} in this example. Matching is local, case-insensitive, and word-boundary constrained.</p>
+        <p className="mt-2 text-xs text-on-surface">Affects {outcome.occurrenceCount} exact {outcome.occurrenceCount === 1 ? 'occurrence' : 'occurrences'} in this example. Matching is local, case-insensitive, and word-boundary constrained.</p>
       </div>
       <div className="grid gap-3 sm:grid-cols-2">
         <Example label="Before" text={outcome.originalText} />
         <Example label="After" text={outcome.correctedText} />
       </div>
       <label className="block text-xs font-medium text-on-surface">Use this correction in
-        <select aria-label="Learned correction scope" value={JSON.stringify(scope)} onChange={(event) => onScope(JSON.parse(event.target.value) as KnowledgeScope)} className="mt-1 w-full rounded-lg border border-outline-variant/40 bg-surface-container-lowest px-3 py-2 text-sm outline-none focus:border-primary">
+        <select aria-label="Learned correction scope" value={JSON.stringify(scope)} onChange={(event) => onScope(JSON.parse(event.target.value) as KnowledgeScope)} className="mt-1 w-full rounded-lg border border-on-surface-variant bg-surface-container-lowest px-3 py-2 text-sm outline-none focus:border-primary">
           {outcome.scopeOptions.map((option) => <option key={JSON.stringify(option.scope)} value={JSON.stringify(option.scope)}>{scopeLabel(option.scope)}{option.scope.kind === 'app' && option.label !== option.scope.bundleId ? ` (${option.label})` : ''}</option>)}
         </select>
       </label>
@@ -407,7 +407,7 @@ function ReviewStep({
 }
 
 function Alert({ children }: { children: ReactNode }) {
-  return <p role="alert" className="rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-700 dark:text-red-300">{children}</p>;
+  return <p role="alert" className="rounded-lg bg-error/10 px-3 py-2 text-xs text-error">{children}</p>;
 }
 
 function Example({ label, text }: { label: string; text: string }) {

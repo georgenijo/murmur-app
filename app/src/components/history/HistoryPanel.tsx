@@ -30,7 +30,7 @@ function HighlightedText({ text, query }: { text: string; query: string }) {
   return (
     <>
       {segments.map((segment, index) => segment.match ? (
-        <mark key={index} className="rounded-sm bg-amber-200/70 px-0.5 text-on-surface dark:bg-amber-500/30">{segment.text}</mark>
+        <mark key={index} className="rounded-sm bg-warning/10 px-0.5 text-warning">{segment.text}</mark>
       ) : (
         <span key={index}>{segment.text}</span>
       ))}
@@ -53,8 +53,10 @@ export function HistoryPanel({
   const [confirmClear, setConfirmClear] = useState(false);
   const copyGroupId = useId();
   const saveGroupId = useId();
+  const exportPanelId = useId();
   const searchRef = useRef<HTMLInputElement>(null);
   const exportRef = useRef<HTMLDivElement>(null);
+  const exportButtonRef = useRef<HTMLButtonElement>(null);
   const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -78,7 +80,10 @@ export function HistoryPanel({
       if (!exportRef.current?.contains(event.target as Node)) setExportOpen(false);
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setExportOpen(false);
+      if (event.key === 'Escape') {
+        setExportOpen(false);
+        exportButtonRef.current?.focus();
+      }
     };
     document.addEventListener('mousedown', onPointerDown);
     document.addEventListener('keydown', onKeyDown);
@@ -92,6 +97,11 @@ export function HistoryPanel({
     setNotice(message);
     if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
     noticeTimerRef.current = setTimeout(() => setNotice(null), 4000);
+  };
+
+  const closeExportAndFocus = () => {
+    exportButtonRef.current?.focus();
+    setExportOpen(false);
   };
 
   const visible = useMemo(
@@ -115,7 +125,7 @@ export function HistoryPanel({
   };
 
   const handleCopyExport = async (format: HistoryExportFormat) => {
-    setExportOpen(false);
+    closeExportAndFocus();
     try {
       const count = await copyHistoryExport(visible, format);
       showNotice(`Copied ${count} ${count === 1 ? 'entry' : 'entries'} to the clipboard.`);
@@ -126,7 +136,7 @@ export function HistoryPanel({
   };
 
   const handleSaveExport = async (format: HistoryExportFormat) => {
-    setExportOpen(false);
+    closeExportAndFocus();
     try {
       const path = await saveHistoryExport(visible, format);
       if (path) showNotice(`Saved ${visible.length} ${visible.length === 1 ? 'entry' : 'entries'}.`);
@@ -177,22 +187,28 @@ export function HistoryPanel({
               onKeyDown={(event) => { if (event.key === 'Escape' && query) { event.stopPropagation(); setQuery(''); } }}
               placeholder="Search transcripts"
               aria-label="Search transcripts"
-              className="w-full rounded-lg bg-surface-container-lowest py-1.5 pl-8 pr-2 text-sm text-on-surface shadow-sm placeholder:text-on-surface-variant focus:outline-none focus-visible:ring-2 focus-visible:ring-primary [&::-webkit-search-cancel-button]:appearance-none"
+              className="w-full rounded-lg border border-on-surface-variant bg-surface-container-lowest py-1.5 pl-8 pr-2 text-sm text-on-surface shadow-sm placeholder:text-on-surface-variant focus:outline-none focus-visible:ring-2 focus-visible:ring-primary [&::-webkit-search-cancel-button]:appearance-none"
             />
           </div>
           <div ref={exportRef} className="relative shrink-0">
             <button
+              ref={exportButtonRef}
               type="button"
               onClick={() => setExportOpen((open) => !open)}
-              aria-haspopup="menu"
               aria-expanded={exportOpen}
+              aria-controls={exportPanelId}
               disabled={visible.length === 0}
               className="rounded-lg bg-surface-container-lowest px-2.5 py-1.5 text-xs font-medium text-on-surface-variant shadow-sm transition-colors hover:bg-surface-container hover:text-on-surface disabled:cursor-not-allowed disabled:opacity-40 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
             >
               Export ▾
             </button>
             {exportOpen && (
-              <div role="menu" className="absolute right-0 z-20 mt-1 w-52 overflow-hidden rounded-xl bg-surface-container-lowest py-1 shadow-lg ring-1 ring-outline-variant/30">
+              <div
+                id={exportPanelId}
+                role="group"
+                aria-label="History export actions"
+                className="absolute right-0 z-20 mt-1 w-52 overflow-hidden rounded-xl bg-surface-container-lowest py-1 shadow-lg ring-1 ring-outline-variant/30"
+              >
                 {/* Both groups render the same format names, so each group is
                     labelled and each item carries the verb explicitly —
                     otherwise a screen reader announces "Markdown" twice. */}
@@ -203,7 +219,6 @@ export function HistoryPanel({
                   {HISTORY_EXPORT_FORMATS.map((format) => (
                     <button
                       key={`copy-${format.value}`}
-                      role="menuitem"
                       type="button"
                       aria-label={`Copy ${visible.length} shown as ${format.label}`}
                       onClick={() => void handleCopyExport(format.value)}
@@ -221,7 +236,6 @@ export function HistoryPanel({
                   {HISTORY_EXPORT_FORMATS.map((format) => (
                     <button
                       key={`save-${format.value}`}
-                      role="menuitem"
                       type="button"
                       aria-label={`Save ${visible.length} shown as ${format.label}`}
                       onClick={() => void handleSaveExport(format.value)}
@@ -264,18 +278,18 @@ export function HistoryPanel({
         {visible.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-10 text-on-surface-variant">
             <p className="text-sm">No matching transcripts</p>
-            <button type="button" onClick={() => { setQuery(''); setFilter('all'); }} className="mt-2 rounded-md px-2 py-1 text-xs font-medium text-primary hover:bg-primary/10">Reset filters</button>
+            <button type="button" onClick={() => { setQuery(''); setFilter('all'); }} className="mt-2 rounded-md px-2 py-1 text-xs font-medium text-on-surface hover:bg-surface-container">Reset filters</button>
           </div>
         ) : visible.map((entry) => {
           const wordCount = entry.text.trim() ? entry.text.trim().split(/\s+/).length : 0;
           const isNewest = entry.id === newestId;
           return (
-            <article key={entry.id} className={`group w-full rounded-xl p-3.5 text-left shadow-sm transition-[box-shadow,background-color] hover:shadow-md ${copiedId === entry.id ? 'bg-emerald-50 dark:bg-emerald-950/40' : 'bg-surface-container-lowest hover:bg-surface-container-low'}`}>
+            <article key={entry.id} className={`group w-full rounded-xl border p-3.5 text-left shadow-sm transition-[box-shadow,background-color] hover:shadow-md ${copiedId === entry.id ? 'border-success bg-surface-container-lowest' : 'border-outline-variant/30 bg-surface-container-lowest hover:bg-surface-container-low'}`}>
               <div className="mb-1 flex items-center justify-between gap-2">
                 <div className="flex min-w-0 items-center gap-2">
                   <span className="shrink-0 text-xs text-on-surface-variant">{formatTimestamp(entry.timestamp)}</span>
                   {entrySource(entry) === 'file' ? (
-                    <span title={entry.sourceName} className="inline-flex max-w-[180px] min-w-0 items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
+                    <span title={entry.sourceName} className="inline-flex max-w-[180px] min-w-0 items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-on-surface">
                       <svg className="h-2.5 w-2.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" /></svg>
                       <span className="truncate">{entry.sourceName || 'File'}</span>
                     </span>
@@ -290,7 +304,7 @@ export function HistoryPanel({
                   <span className="rounded-full bg-surface-container px-2 py-0.5 text-[10px] font-medium text-on-surface-variant">{wordCount} {wordCount === 1 ? 'word' : 'words'}</span>
                   <span className="text-xs text-on-surface-variant">{formatDuration(entry.duration)}</span>
                   {copiedId === entry.id ? (
-                    <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400">Copied!</span>
+                    <span className="text-xs font-medium text-success">Copied!</span>
                   ) : (
                     <button type="button" onClick={() => void handleCopy(entry)} aria-label={`Copy transcription from ${formatTimestamp(entry.timestamp)}`} className="rounded-md px-2 py-1 text-xs font-medium text-on-surface-variant hover:bg-surface-container hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-primary">Copy</button>
                   )}
@@ -301,7 +315,7 @@ export function HistoryPanel({
               </p>
               {isNewest && (
                 <div className="mt-3 border-t border-outline-variant/20 pt-2">
-                  <button type="button" onClick={() => setTeachingEntry(entry)} className="rounded-md px-2 py-1 text-xs font-semibold text-primary hover:bg-primary/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary">Correct and Teach</button>
+                  <button type="button" onClick={() => setTeachingEntry(entry)} className="rounded-md px-2 py-1 text-xs font-semibold text-on-surface hover:bg-primary/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary">Correct and Teach</button>
                 </div>
               )}
             </article>

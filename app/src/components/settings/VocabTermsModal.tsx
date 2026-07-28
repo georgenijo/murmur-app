@@ -148,14 +148,14 @@ export function VocabTermsModal({
         aria-modal="true"
         aria-labelledby="vocab-terms-title"
         tabIndex={-1}
-        className="flex max-h-[82vh] w-full max-w-[560px] flex-col overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-2xl dark:border-stone-700 dark:bg-stone-900"
+        className="flex max-h-[82vh] w-full max-w-[560px] flex-col overflow-hidden rounded-2xl border border-outline-variant/40 bg-surface-container-lowest shadow-2xl"
       >
         {/* header */}
-        <div className="border-b border-stone-200 px-[18px] pb-3 pt-4 dark:border-stone-800">
+        <div className="border-b border-outline-variant/40 px-[18px] pb-3 pt-4">
           <div className="flex items-center justify-between">
             <div
               id="vocab-terms-title"
-              className="text-[15px] font-semibold text-stone-800 dark:text-stone-200"
+              className="text-[15px] font-semibold text-on-surface"
             >
               Scanned vocabulary
             </div>
@@ -163,32 +163,32 @@ export function VocabTermsModal({
               type="button"
               onClick={onClose}
               aria-label="Close"
-              className="flex h-[26px] w-[26px] items-center justify-center rounded-md border border-stone-300 text-sm leading-none text-stone-500 transition-colors hover:border-stone-400 hover:text-stone-700 dark:border-stone-700 dark:text-stone-400 dark:hover:border-stone-500 dark:hover:text-stone-200"
+              className="flex h-[26px] w-[26px] items-center justify-center rounded-md border border-outline-variant/40 text-sm leading-none text-on-surface-variant transition-colors hover:border-outline-variant/40 hover:text-on-surface"
             >
               ✕
             </button>
           </div>
-          <div className="mt-1 truncate text-[11px] text-stone-500 dark:text-stone-500">
+          <div className="mt-1 truncate text-[11px] text-on-surface-variant">
             {folder ? `${folder} · ` : ''}
             {ranked.length} identifiers ranked by frequency
           </div>
           <div className="mt-2.5 flex flex-wrap gap-2">
-            <span className="flex items-center gap-1.5 rounded-md border border-blue-400/40 px-2 py-[3px] text-[10px] text-blue-500 dark:text-blue-400">
-              <span className="h-2 w-2 rounded-sm bg-blue-500 dark:bg-blue-400" />
+            <span className="flex items-center gap-1.5 rounded-md border border-primary/40 px-2 py-[3px] text-[10px] text-primary">
+              <span className="h-2 w-2 rounded-sm bg-primary" />
               top {whisperCount} → Whisper prompt
             </span>
-            <span className="flex items-center gap-1.5 rounded-md border border-green-500/35 px-2 py-[3px] text-[10px] text-green-600 dark:text-green-500">
-              <span className="h-2 w-2 rounded-sm bg-green-500" />
+            <span className="flex items-center gap-1.5 rounded-md border border-success/35 px-2 py-[3px] text-[10px] text-success">
+              <span className="h-2 w-2 rounded-sm bg-success" />
               all {ranked.length} → Smart Correction
             </span>
           </div>
         </div>
 
         {/* tools: search + sort */}
-        <div className="flex items-center gap-2.5 border-b border-stone-200 px-[18px] py-[11px] dark:border-stone-800">
-          <div className="flex flex-1 items-center gap-2 rounded-lg border border-stone-300 bg-stone-50 px-[11px] py-[7px] dark:border-stone-700 dark:bg-stone-950">
+        <div className="flex items-center gap-2.5 border-b border-outline-variant/40 px-[18px] py-[11px]">
+          <div className="flex flex-1 items-center gap-2 rounded-lg border border-on-surface-variant bg-surface-container-low px-[11px] py-[7px]">
             <svg
-              className="shrink-0 text-stone-500"
+              className="shrink-0 text-on-surface-variant"
               width="13"
               height="13"
               viewBox="0 0 24 24"
@@ -207,13 +207,13 @@ export function VocabTermsModal({
               aria-label="Filter scanned terms"
               autoComplete="off"
               spellCheck={false}
-              className="min-w-0 flex-1 border-none bg-transparent text-xs text-stone-800 outline-none placeholder:text-stone-400 dark:text-stone-200 dark:placeholder:text-stone-600"
+              className="min-w-0 flex-1 border-none bg-transparent text-xs text-on-surface outline-none placeholder:text-on-surface-variant"
             />
           </div>
           <select
             value={sortMode}
             onChange={(e) => setSortMode(e.target.value as SortMode)}
-            className="cursor-pointer rounded-lg border border-stone-300 bg-stone-50 px-2.5 py-[7px] text-[11px] text-stone-600 dark:border-stone-700 dark:bg-stone-950 dark:text-stone-300"
+            className="cursor-pointer rounded-lg border border-on-surface-variant bg-surface-container-low px-2.5 py-[7px] text-[11px] text-on-surface-variant"
           >
             <option value="freq">Sort: frequency</option>
             <option value="alpha">Sort: A–Z</option>
@@ -223,7 +223,7 @@ export function VocabTermsModal({
         {/* list */}
         <div className="flex-1 overflow-y-auto py-1.5">
           {rows.length === 0 ? (
-            <div className="px-[18px] py-8 text-center text-xs text-stone-400 dark:text-stone-600">
+            <div className="px-[18px] py-8 text-center text-xs text-on-surface-variant">
               No terms match.
             </div>
           ) : (
@@ -232,12 +232,12 @@ export function VocabTermsModal({
         </div>
 
         {/* footer */}
-        <div className="flex items-center justify-between border-t border-stone-200 px-[18px] py-2.5 text-[11px] text-stone-500 dark:border-stone-800 dark:text-stone-500">
+        <div className="flex items-center justify-between border-t border-outline-variant/40 px-[18px] py-2.5 text-[11px] text-on-surface-variant">
           <span>{countLabel}</span>
           <button
             type="button"
             onClick={handleCopyAll}
-            className="rounded-md border border-stone-300 bg-white px-3 py-1.5 text-[11px] font-semibold text-stone-600 transition-colors hover:border-stone-400 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-300 dark:hover:border-stone-500"
+            className="rounded-md border border-outline-variant/40 bg-surface-container-lowest px-3 py-1.5 text-[11px] font-semibold text-on-surface-variant transition-colors hover:border-outline-variant/40"
           >
             {copied ? 'Copied ✓' : 'Copy all'}
           </button>
@@ -301,37 +301,37 @@ function TermRows({
 function Divider({ label, tone }: { label: string; tone: 'whisper' | 'below' }) {
   return (
     <div
-      className={`sticky top-0 z-[1] flex items-center gap-2 bg-white px-[18px] pb-1.5 pt-2 text-[10px] uppercase tracking-wider dark:bg-stone-900 ${
+      className={`sticky top-0 z-[1] flex items-center gap-2 bg-surface-container-lowest px-[18px] pb-1.5 pt-2 text-[10px] uppercase tracking-wider ${
         tone === 'whisper'
-          ? 'text-blue-500 dark:text-blue-400'
-          : 'text-stone-500 dark:text-stone-500'
+          ? 'text-primary '
+          : 'text-on-surface-variant '
       }`}
     >
       <span>{label}</span>
-      <span className="h-px flex-1 bg-stone-200 dark:bg-stone-800" />
+      <span className="h-px flex-1 bg-surface-container-high" />
     </div>
   );
 }
 
 function TermRow({ row, inWhisper }: { row: RankedRow; inWhisper: boolean }) {
   return (
-    <div className="flex items-center gap-2.5 px-[18px] py-[5px] text-xs hover:bg-stone-50 dark:hover:bg-stone-800/40">
-      <span className="w-[30px] shrink-0 text-right text-[10px] tabular-nums text-stone-400 dark:text-stone-600">
+    <div className="flex items-center gap-2.5 px-[18px] py-[5px] text-xs hover:bg-surface-container-low">
+      <span className="w-[30px] shrink-0 text-right text-[10px] tabular-nums text-on-surface-variant">
         {row.rank}
       </span>
       <span
         className={`h-2 w-2 shrink-0 rounded-sm ${
-          inWhisper ? 'bg-blue-500 dark:bg-blue-400' : 'bg-green-500 opacity-60'
+          inWhisper ? 'bg-primary ' : 'bg-success opacity-60'
         }`}
       />
       <span
         className={`flex-1 truncate font-mono ${
-          inWhisper ? 'text-stone-800 dark:text-stone-200' : 'text-stone-500 dark:text-stone-400'
+          inWhisper ? 'text-on-surface ' : 'text-on-surface-variant '
         }`}
       >
         {row.term}
       </span>
-      <span className="shrink-0 text-[10px] tabular-nums text-stone-400 dark:text-stone-500">
+      <span className="shrink-0 text-[10px] tabular-nums text-on-surface-variant">
         {row.freq}×
       </span>
     </div>

@@ -8,9 +8,12 @@ For the hook that manages settings, see [hooks.md](hooks.md). For the backend co
 
 ## Settings Overview
 
-All settings are stored in `localStorage` under the key `dictation-settings` as a single JSON object.
+Dictation settings are stored in `localStorage` under the key
+`dictation-settings` as a single JSON object. Appearance is an independent
+versioned document under `murmur-appearance`; it is never merged into this
+interface or emitted through `dictation-settings`.
 
-The native Settings window has seven pages in this order (`SETTINGS_CATEGORIES` in `SettingsPanel.tsx`):
+The native Settings window has eight pages in this order (`SETTINGS_CATEGORIES` in `SettingsPanel.tsx`):
 
 1. **Recording** — microphone, voice detection, recording trigger, and shortcut feedback
 2. **Transcription** — one model selector, language, model lifecycle/download state, and idle release
@@ -19,6 +22,7 @@ The native Settings window has seven pages in this order (`SETTINGS_CATEGORIES` 
 5. **Delivery** — clipboard-first behavior, auto-paste, file output, and app overrides
 6. **Performance** — the directional local Performance Lab
 7. **General** — launch at login, setup, logs, statistics, updates, and version
+8. **Appearance** — System/Light/Dark mode, Sonic/custom colors, integer contrast from -100 through 100 (default 0), reset, and local theme-file exchange
 
 Changing pages only changes presentation. It does not rename, discard, or
 reinterpret persisted fields. A round-trip compatibility test serializes and
@@ -249,6 +253,7 @@ Other data persisted to localStorage by the application (not part of the `Settin
 | Key | Purpose | Used By |
 |-----|---------|---------|
 | `dictation-history` | Transcription history entries (rolling max 200) | `useHistoryManagement` |
+| `murmur-appearance` | Versioned appearance mode/theme configuration plus a strictly validated derived light/dark token cache. Independent from `Settings`; imports discard and regenerate revision/cache data. | Main appearance controller (writer/native theme), log-viewer appearance controller (read-only) |
 | `dictation-stats` | Cumulative transcription statistics | `lib/stats.ts` |
 | `skipped-update-version` | Version string the user chose to skip | `useAutoUpdater` |
 | `updater-last-check` | Timestamp of last update check | `useAutoUpdater` |

@@ -122,25 +122,25 @@ export function PermissionsBanner() {
   }
 
   return (
-    <div className="bg-amber-50 dark:bg-amber-900/30 px-4 py-3">
+    <div className="bg-primary/10 px-4 py-3">
       <div className="flex items-start justify-between gap-3">
         <div className="flex-1">
-          <h3 className="text-sm font-medium text-amber-800 dark:text-amber-200">
+          <h3 className="text-sm font-medium text-on-surface">
             Permissions Required
           </h3>
           <div className="mt-2 space-y-2">
             {/* Microphone Permission */}
             <div className="flex items-center gap-2">
               <span className={`w-2 h-2 rounded-full ${
-                micOk ? 'bg-emerald-500' : 'bg-red-500'
+                micOk ? 'bg-success' : 'bg-error'
               }`} />
-              <span className="text-sm text-amber-700 dark:text-amber-300">
+              <span className="text-sm text-on-surface">
                 Microphone: {micOk ? 'Granted' : 'Required for recording'}
               </span>
               {micDenied && (
                 <button
                   onClick={handleOpenMicrophone}
-                  className="text-xs text-amber-600 dark:text-amber-400 underline hover:no-underline"
+                  className="text-xs text-on-surface underline hover:no-underline"
                 >
                   Open Settings
                 </button>
@@ -152,16 +152,19 @@ export function PermissionsBanner() {
               <div className="ml-4 space-y-1">
                 <button
                   onClick={handleResetMicrophone}
-                  className="text-xs text-amber-600/80 dark:text-amber-400/80 underline hover:no-underline"
+                  className="text-xs text-on-surface underline hover:no-underline"
                 >
                   Still not working? Reset &amp; Open Settings
                 </button>
-                <p className="text-xs text-amber-600/70 dark:text-amber-400/70">
+                <p className="text-xs text-on-surface">
                   Clears Murmur's stale Microphone entry, then opens System Settings.
                   macOS will re-prompt the next time you record.
                 </p>
                 {micResetError && (
-                  <p className="text-xs text-red-600 dark:text-red-400">
+                  <p
+                    role="alert"
+                    className="rounded-md border border-error bg-surface-container-lowest px-2 py-1 text-xs text-error"
+                  >
                     {micResetError}
                   </p>
                 )}
@@ -172,16 +175,16 @@ export function PermissionsBanner() {
             <div className="flex items-center gap-2">
               <span className={`w-2 h-2 rounded-full ${
                 permissions.accessibility === 'granted'
-                  ? 'bg-emerald-500'
-                  : 'bg-red-500'
+                  ? 'bg-success'
+                  : 'bg-error'
               }`} />
-              <span className="text-sm text-amber-700 dark:text-amber-300">
+              <span className="text-sm text-on-surface">
                 Accessibility: {permissions.accessibility === 'granted' ? 'Granted' : 'Required for text pasting'}
               </span>
               {permissions.accessibility !== 'granted' && (
                 <button
                   onClick={handleOpenAccessibility}
-                  className="text-xs text-amber-600 dark:text-amber-400 underline hover:no-underline"
+                  className="text-xs text-on-surface underline hover:no-underline"
                 >
                   Open Settings
                 </button>
@@ -193,16 +196,19 @@ export function PermissionsBanner() {
               <div className="ml-4 space-y-1">
                 <button
                   onClick={handleResetAccessibility}
-                  className="text-xs text-amber-600/80 dark:text-amber-400/80 underline hover:no-underline"
+                  className="text-xs text-on-surface underline hover:no-underline"
                 >
                   Still not working? Reset &amp; Open Settings
                 </button>
-                <p className="text-xs text-amber-600/70 dark:text-amber-400/70">
+                <p className="text-xs text-on-surface">
                   Clears Murmur's stale Accessibility entry, then opens System Settings.
                   You'll still need to turn Murmur back on manually.
                 </p>
                 {resetError && (
-                  <p className="text-xs text-red-600 dark:text-red-400">
+                  <p
+                    role="alert"
+                    className="rounded-md border border-error bg-surface-container-lowest px-2 py-1 text-xs text-error"
+                  >
                     {resetError}
                   </p>
                 )}
@@ -212,7 +218,7 @@ export function PermissionsBanner() {
 
           <button
             onClick={checkPermissions}
-            className="mt-2 text-xs text-amber-600 dark:text-amber-400 hover:underline"
+            className="mt-2 text-xs text-on-surface hover:underline"
           >
             Re-check permissions
           </button>
@@ -220,7 +226,7 @@ export function PermissionsBanner() {
 
         <button
           onClick={() => setDismissed(true)}
-          className="text-amber-500 hover:text-amber-700 dark:hover:text-amber-300"
+          className="rounded-md p-0.5 text-on-surface transition-colors hover:bg-surface-container-lowest"
           aria-label="Dismiss"
         >
           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">

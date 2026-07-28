@@ -215,3 +215,8 @@ See [docs/reference/commands.md](../reference/commands.md) (Overlay section) and
 ## Transparent window caveat
 
 The shared `styles.css` gives `body` an opaque surface background. The overlay's body carries the `overlay-window` class (`overlay.html`), which scopes it back to transparent — without it the whole overlay window frame paints as a dark box around the island.
+
+The Appearance Theme Engine deliberately does not synchronize this window.
+Overlay glass remains always dark, and its body remains transparent in System,
+Light, and Dark modes. Appearance application must never set an `html` or
+`body` background that can override this invariant.

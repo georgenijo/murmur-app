@@ -32,11 +32,11 @@ interface RunDetailProps {
 }
 
 function outcomeClasses(status: PerformanceRunV1['outcome']['status']): string {
-  if (status === 'success') return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/35 dark:text-emerald-300';
+  if (status === 'success') return 'bg-success/10 text-success  ';
   if (status === 'noSpeech' || status === 'cancelled') {
-    return 'bg-stone-200 text-stone-700 dark:bg-stone-700 dark:text-stone-300';
+    return 'bg-surface-container-high text-on-surface  ';
   }
-  return 'bg-red-100 text-red-700 dark:bg-red-900/35 dark:text-red-300';
+  return 'bg-error/10 text-error  ';
 }
 
 function SummaryCard({
@@ -114,7 +114,7 @@ function WaterfallRow({ timing, maximum }: { timing: StageTimingV1; maximum: num
   const outcomeColor = timing.outcome === 'failed'
     ? 'bg-error'
     : timing.outcome === 'fallback'
-      ? 'bg-amber-500'
+      ? 'bg-primary'
       : 'bg-primary';
 
   return (
@@ -190,7 +190,7 @@ export function RunDetail({ run, onBack, onShowEvents }: RunDetailProps) {
         <button
           type="button"
           onClick={() => onShowEvents(correlationFilterForRun(run))}
-          className="rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-on-primary shadow-sm hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          className="rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-on-primary shadow-sm hover:bg-primary-dim focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
         >
           Show correlated Events
         </button>

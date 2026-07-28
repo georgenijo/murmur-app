@@ -44,18 +44,18 @@ function StatusBanner({ availability, message, recoveryAtMs, onRetry }: {
   onRetry: () => void;
 }) {
   if (availability === 'ready') return (
-    <div className="flex items-center gap-2 rounded-lg border border-emerald-300/60 bg-emerald-50 px-3 py-2 text-xs text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-300" role="status">
-      <span className="h-2 w-2 rounded-full bg-emerald-500" /> Local store ready
+    <div className="flex items-center gap-2 rounded-lg border border-success/60 bg-success/10 px-3 py-2 text-xs text-success" role="status">
+      <span className="h-2 w-2 rounded-full bg-success" /> Local store ready
     </div>
   );
   if (availability === 'unavailable') return (
-    <div className="flex items-center justify-between gap-3 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-800 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300" role="alert">
+    <div className="flex items-center justify-between gap-3 rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-xs text-error" role="alert">
       <span>{message ?? 'The local knowledge store is unavailable.'}</span>
       <button type="button" onClick={onRetry} className="shrink-0 font-semibold underline">Retry</button>
     </div>
   );
   return (
-    <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200" role="status">
+    <div className="rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-on-surface" role="status">
       <strong>{availability === 'recovered' ? 'Recovered from a local backup.' : 'Started with a new local store.'}</strong>{' '}
       {message}{recoveryAtMs ? ` (${formatUpdated(recoveryAtMs)})` : ''}
     </div>
@@ -78,7 +78,7 @@ function ConfirmDialog({ title, children, confirmLabel, dangerous = false, disab
         <div className="mt-2 text-sm text-on-surface-variant">{children}</div>
         <div className="mt-5 flex justify-end gap-2">
           <button type="button" onClick={onCancel} className="rounded-lg border border-outline-variant/40 px-3 py-2 text-xs font-medium">Cancel</button>
-          <button type="button" disabled={disabled} onClick={onConfirm} className={`rounded-lg px-3 py-2 text-xs font-semibold text-white disabled:opacity-40 ${dangerous ? 'bg-red-600' : 'bg-primary'}`}>{confirmLabel}</button>
+          <button type="button" disabled={disabled} onClick={onConfirm} className={`rounded-lg px-3 py-2 text-xs font-semibold disabled:opacity-40 ${dangerous ? 'border border-error/30 bg-error/10 text-error' : 'bg-primary text-on-primary'}`}>{confirmLabel}</button>
         </div>
       </div>
     </div>
@@ -174,26 +174,26 @@ export function KnowledgeManager({ active, profiles }: Props) {
         <div className="mt-3 flex flex-wrap gap-2">
           <button type="button" onClick={() => void chooseExport().catch(() => {})} disabled={unavailable} className="rounded-lg border border-outline-variant/40 px-3 py-1.5 text-xs font-medium disabled:opacity-40">Export…</button>
           <button type="button" onClick={() => void chooseImport()} disabled={unavailable} className="rounded-lg border border-outline-variant/40 px-3 py-1.5 text-xs font-medium disabled:opacity-40">Import…</button>
-          <button type="button" onClick={() => setDeleteAllOpen(true)} disabled={unavailable || knowledge.status.recordCount === 0} className="rounded-lg border border-red-300 px-3 py-1.5 text-xs font-medium text-red-700 disabled:opacity-40 dark:border-red-800 dark:text-red-300">Delete all…</button>
+          <button type="button" onClick={() => setDeleteAllOpen(true)} disabled={unavailable || knowledge.status.recordCount === 0} className="rounded-lg border border-error/30 px-3 py-1.5 text-xs font-medium text-error disabled:opacity-40">Delete all…</button>
           <span className="ml-auto self-center text-xs text-on-surface-variant">{knowledge.status.recordCount} stored locally · schema v{knowledge.status.schemaVersion}</span>
         </div>
       </div>
 
       <div className="grid gap-2 md:grid-cols-[minmax(180px,1fr)_repeat(3,minmax(105px,auto))]">
-        <input value={query} onChange={(event) => setQuery(event.target.value)} aria-label="Search personal knowledge" placeholder="Search knowledge…" className="rounded-lg border border-outline-variant/40 bg-surface-container-lowest px-3 py-2 text-xs outline-none focus:border-primary" />
-        <select aria-label="Filter knowledge type" value={kind} onChange={(event) => setKind(event.target.value as KnowledgeKind | 'all')} className="rounded-lg border border-outline-variant/40 bg-surface-container-lowest px-2 py-2 text-xs">
+        <input value={query} onChange={(event) => setQuery(event.target.value)} aria-label="Search personal knowledge" placeholder="Search knowledge…" className="rounded-lg border border-on-surface-variant bg-surface-container-lowest px-3 py-2 text-xs outline-none focus:border-primary" />
+        <select aria-label="Filter knowledge type" value={kind} onChange={(event) => setKind(event.target.value as KnowledgeKind | 'all')} className="rounded-lg border border-on-surface-variant bg-surface-container-lowest px-2 py-2 text-xs">
           <option value="all">All types</option><option value="replacement_rule">Replacements</option><option value="vocabulary_term">Vocabulary</option><option value="snippet">Snippets</option><option value="transform">Transforms</option>
         </select>
-        <select aria-label="Filter enabled state" value={enabled} onChange={(event) => setEnabled(event.target.value as typeof enabled)} className="rounded-lg border border-outline-variant/40 bg-surface-container-lowest px-2 py-2 text-xs">
+        <select aria-label="Filter enabled state" value={enabled} onChange={(event) => setEnabled(event.target.value as typeof enabled)} className="rounded-lg border border-on-surface-variant bg-surface-container-lowest px-2 py-2 text-xs">
           <option value="all">Any state</option><option value="enabled">Enabled</option><option value="disabled">Disabled</option>
         </select>
-        <select aria-label="Filter visibility" value={scope} onChange={(event) => setScope(event.target.value as typeof scope)} className="rounded-lg border border-outline-variant/40 bg-surface-container-lowest px-2 py-2 text-xs">
+        <select aria-label="Filter visibility" value={scope} onChange={(event) => setScope(event.target.value as typeof scope)} className="rounded-lg border border-on-surface-variant bg-surface-container-lowest px-2 py-2 text-xs">
           <option value="all">Any visibility</option><option value="global">Global</option><option value="app">App</option><option value="project">Project</option>
         </select>
       </div>
 
-      {(actionError || knowledge.error) && <p role="alert" className="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-800 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300">{actionError ?? knowledge.error}</p>}
-      {notice && <p role="status" className="rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-300">{notice}</p>}
+      {(actionError || knowledge.error) && <p role="alert" className="rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">{actionError ?? knowledge.error}</p>}
+      {notice && <p role="status" className="rounded-lg border border-success/30 bg-success/10 px-3 py-2 text-xs text-success">{notice}</p>}
 
       <div className="overflow-hidden rounded-xl border border-outline-variant/30">
         <div className="flex items-center justify-between bg-surface-container px-3 py-2 text-xs text-on-surface-variant">
@@ -213,7 +213,7 @@ export function KnowledgeManager({ active, profiles }: Props) {
                   aria-label={`${entry.enabled ? 'Disable' : 'Enable'} ${payloadTitle(entry.payload)}`}
                   onClick={() => void run(() => setKnowledgeEnabled(entry, !entry.enabled), entry.enabled ? 'Knowledge disabled.' : 'Knowledge enabled.').catch(() => {})}
                   className={`relative mt-0.5 inline-flex h-5 w-9 shrink-0 items-center rounded-full ${entry.enabled ? 'bg-primary' : 'bg-surface-container-highest'}`}
-                ><span className={`h-3.5 w-3.5 rounded-full bg-on-primary shadow transition-transform ${entry.enabled ? 'translate-x-4' : 'translate-x-1'}`} /></button>
+                ><span className={`h-3.5 w-3.5 rounded-full shadow transition-transform ${entry.enabled ? 'translate-x-4 bg-on-primary' : 'translate-x-1 bg-on-surface-variant'}`} /></button>
                 <button type="button" onClick={() => setEditing(entry)} className="min-w-0 flex-1 text-left">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="rounded bg-surface-container px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-on-surface-variant">{KIND_LABELS[entry.payload.kind]}</span>
@@ -224,7 +224,7 @@ export function KnowledgeManager({ active, profiles }: Props) {
                 </button>
                 <div className="flex shrink-0 gap-1">
                   <button type="button" onClick={() => setEditing(entry)} aria-label={`Edit ${payloadTitle(entry.payload)}`} className="rounded-md px-2 py-1 text-xs font-medium hover:bg-surface-container">Edit</button>
-                  <button type="button" onClick={() => setDeleteTarget(entry)} aria-label={`Delete ${payloadTitle(entry.payload)}`} className="rounded-md px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-50 dark:text-red-300 dark:hover:bg-red-950/30">Delete</button>
+                  <button type="button" onClick={() => setDeleteTarget(entry)} aria-label={`Delete ${payloadTitle(entry.payload)}`} className="rounded-md px-2 py-1 text-xs font-medium text-error hover:bg-error/10">Delete</button>
                 </div>
               </li>
             ))}
@@ -255,7 +255,7 @@ export function KnowledgeManager({ active, profiles }: Props) {
       {deleteAllOpen && <ConfirmDialog title="Delete all personal knowledge?" confirmLabel="Delete everything" dangerous disabled={deletePhrase !== 'DELETE'} onCancel={() => { setDeleteAllOpen(false); setDeletePhrase(''); }} onConfirm={() => void run(() => deleteAllKnowledge(knowledge.status.storeRevision), 'All personal knowledge deleted.').then(() => { setDeleteAllOpen(false); setDeletePhrase(''); }).catch(() => {})}>
         <p>This permanently deletes all knowledge plus local recovery backups. Export first if you may need it later.</p>
         <label className="mt-3 block text-xs font-medium text-on-surface">Type DELETE to confirm
-          <input autoFocus aria-label="Type DELETE to confirm" value={deletePhrase} onChange={(event) => setDeletePhrase(event.target.value)} className="mt-1 w-full rounded-lg border border-red-300 bg-surface-container-lowest px-3 py-2 font-mono text-sm text-on-surface outline-none focus:border-red-500" />
+          <input autoFocus aria-label="Type DELETE to confirm" value={deletePhrase} onChange={(event) => setDeletePhrase(event.target.value)} className="mt-1 w-full rounded-lg border border-error bg-surface-container-lowest px-3 py-2 font-mono text-sm text-on-surface outline-none focus:border-error focus:ring-2 focus:ring-error" />
         </label>
       </ConfirmDialog>}
     </div>

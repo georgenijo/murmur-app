@@ -133,7 +133,7 @@ export function ModelDownloadPanel({ initialModel, onComplete, onDownloadingChan
                   {model.label}
                 </span>
                 {installedModels?.[model.name] ? (
-                  <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[11px] font-medium text-primary">
+                  <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[11px] font-medium text-on-surface">
                     Installed
                   </span>
                 ) : (
