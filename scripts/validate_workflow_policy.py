@@ -360,6 +360,9 @@ def validate_promotion_policy(workflow: str) -> int:
     assert "release versions differ" in workflow
     assert "already_published=true" in workflow
     assert "contains unexpected asset" in workflow
+    assert 'gh release view "$TAG"' in workflow
+    assert "--json body --jq .body > release-notes.md" in workflow
+    assert "--release-notes release-notes.md" in workflow
     assert workflow.index("scripts/release_artifacts.py validate") < workflow.index(
         "Create automatic release tag"
     )

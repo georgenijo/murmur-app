@@ -9,6 +9,9 @@ import {
   getLastCheckTimestamp,
   setLastCheckTimestamp,
   isDueForCheck,
+  setPendingUpdate,
+  clearPendingUpdate,
+  getPendingUpdateForVersion,
   CHECK_INTERVAL_MS,
 } from './updater';
 
@@ -123,5 +126,60 @@ describe('check interval', () => {
   it('isDueForCheck returns true when timestamp is old enough', () => {
     setLastCheckTimestamp(Date.now() - CHECK_INTERVAL_MS - 1);
     expect(isDueForCheck()).toBe(true);
+  });
+});
+
+describe('post-update release notes', () => {
+  beforeEach(() => localStorage.clear());
+
+  it('returns the saved notes for the exact installed version', () => {
+    setPendingUpdate({
+      version: '0.22.0',
+      notes: '## New Features\n\n- Added a post-update summary.',
+    });
+
+    expect(getPendingUpdateForVersion('0.22.0')).toEqual({
+      version: '0.22.0',
+      notes: '## New Features\n\n- Added a post-update summary.',
+    });
+  });
+
+  it('accepts an equivalent v-prefixed installed version', () => {
+    setPendingUpdate({ version: 'v0.22.0', notes: 'Bug fixes.' });
+
+    expect(getPendingUpdateForVersion('0.22.0')?.version).toBe('v0.22.0');
+  });
+
+  it('removes stale notes when the installed version does not match', () => {
+    setPendingUpdate({ version: '0.22.0', notes: 'Old notes.' });
+
+    expect(getPendingUpdateForVersion('0.23.0')).toBeNull();
+    expect(getPendingUpdateForVersion('0.22.0')).toBeNull();
+  });
+
+  it('does not confuse prerelease and final builds with the same core semver', () => {
+    setPendingUpdate({ version: '0.22.0-beta.1', notes: 'Preview notes.' });
+
+    expect(getPendingUpdateForVersion('0.22.0')).toBeNull();
+  });
+
+  it('rejects invalid versions even when both strings match', () => {
+    setPendingUpdate({ version: 'not-a-version', notes: 'Invalid notes.' });
+
+    expect(getPendingUpdateForVersion('not-a-version')).toBeNull();
+  });
+
+  it('fails closed and removes malformed storage', () => {
+    localStorage.setItem('pending-update-release-notes', '{broken');
+
+    expect(getPendingUpdateForVersion('0.22.0')).toBeNull();
+    expect(localStorage.getItem('pending-update-release-notes')).toBeNull();
+  });
+
+  it('can be dismissed permanently', () => {
+    setPendingUpdate({ version: '0.22.0', notes: 'Notes.' });
+    clearPendingUpdate();
+
+    expect(getPendingUpdateForVersion('0.22.0')).toBeNull();
   });
 });

@@ -21,6 +21,7 @@ const scrimAllowlist = new Set([
   "components/AboutModal.tsx",
   "components/CommandPalette.tsx",
   "components/UpdateModal.tsx",
+  "components/WhatsNewModal.tsx",
   "components/history/CorrectAndTeachDialog.tsx",
   "components/settings/KnowledgeEditorModal.tsx",
   "components/settings/KnowledgeManager.tsx",

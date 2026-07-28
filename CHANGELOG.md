@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- After an automatic update relaunches, Murmur now shows a one-time What's New summary with the release's features and fixes. Generated GitHub release notes are embedded directly in the updater manifest so the same sanitized Markdown is available before and after installation (#379).
 - **Local Appearance Theme Engine** adds System, Light, and Dark modes; accessible custom accent, background, foreground, and contrast controls; synchronized main/log-viewer semantic tokens and native title bars; flash-free cached first paint; exact Sonic reset; and bounded atomic JSON import/export that never touches the clipboard. Overlay and transform-review transparency and always-dark glass remain unchanged (#377).
 
 ### Fixed

@@ -45,12 +45,18 @@ class ReleaseArtifactTests(unittest.TestCase):
     def test_valid_artifacts_and_manifest_signatures_match_sig_assets(self) -> None:
         validated_path = self.root / "validated.json"
         validate_release(self.artifacts, SHA, RUN_ID, validated_path)
+        release_notes_path = self.root / "release-notes.md"
+        release_notes_path.write_text(
+            "## New Features\n\n- Added post-update release notes.\n",
+            encoding="utf-8",
+        )
         modern_path, legacy_path = write_updater_manifests(
             validated_path,
             "v1.2.3",
             "owner/repo",
             "https://example.invalid/bridge.app.tar.gz",
             "bridge-signature",
+            release_notes_path,
             self.root / "manifests",
         )
 
@@ -69,6 +75,27 @@ class ReleaseArtifactTests(unittest.TestCase):
         self.assertEqual(
             legacy["platforms"]["linux-x86_64"]["signature"], "linux-signature"
         )
+        self.assertEqual(
+            modern["notes"],
+            "## New Features\n\n- Added post-update release notes.",
+        )
+
+    def test_manifest_generation_requires_nonempty_release_notes(self) -> None:
+        validated_path = self.root / "validated.json"
+        validate_release(self.artifacts, SHA, RUN_ID, validated_path)
+        release_notes_path = self.root / "release-notes.md"
+        release_notes_path.write_text(" \n", encoding="utf-8")
+
+        with self.assertRaisesRegex(ArtifactError, "must not be empty"):
+            write_updater_manifests(
+                validated_path,
+                "v1.2.3",
+                "owner/repo",
+                "https://example.invalid/bridge.app.tar.gz",
+                "bridge-signature",
+                release_notes_path,
+                self.root / "manifests",
+            )
 
     def test_commit_sha_mismatch_fails_closed(self) -> None:
         with self.assertRaisesRegex(ArtifactError, "commit_sha mismatch"):
