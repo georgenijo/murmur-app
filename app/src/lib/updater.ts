@@ -1,5 +1,7 @@
 const SKIPPED_VERSION_KEY = 'skipped-update-version';
 const LAST_CHECK_KEY = 'updater-last-check';
+const PENDING_UPDATE_KEY = 'pending-update-release-notes';
+const MAX_RELEASE_NOTES_LENGTH = 50_000;
 export const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 const LATEST_JSON_URL =
@@ -82,6 +84,72 @@ export function setLastCheckTimestamp(ts: number): void {
 
 export function isDueForCheck(): boolean {
   return Date.now() - getLastCheckTimestamp() >= CHECK_INTERVAL_MS;
+}
+
+// --- Post-update release notes ---
+
+export interface CompletedUpdate {
+  version: string;
+  notes: string;
+}
+
+/**
+ * Save the release payload before Tauri replaces and relaunches the app.
+ * localStorage survives the install, while in-memory updater state does not.
+ */
+export function setPendingUpdate(update: CompletedUpdate): void {
+  try {
+    localStorage.setItem(PENDING_UPDATE_KEY, JSON.stringify({
+      version: update.version,
+      notes: update.notes.slice(0, MAX_RELEASE_NOTES_LENGTH),
+    }));
+  } catch { /* ignore */ }
+}
+
+export function clearPendingUpdate(): void {
+  try {
+    localStorage.removeItem(PENDING_UPDATE_KEY);
+  } catch { /* ignore */ }
+}
+
+/**
+ * Return release notes only when the relaunched app is the exact version that
+ * was downloaded. Mismatched or malformed payloads are stale and are removed.
+ */
+export function getPendingUpdateForVersion(currentVersion: string): CompletedUpdate | null {
+  try {
+    const stored = localStorage.getItem(PENDING_UPDATE_KEY);
+    if (!stored) return null;
+
+    const parsed: unknown = JSON.parse(stored);
+    if (
+      typeof parsed !== 'object' ||
+      parsed === null ||
+      !('version' in parsed) ||
+      !('notes' in parsed) ||
+      typeof parsed.version !== 'string' ||
+      typeof parsed.notes !== 'string' ||
+      normalizedVersionIdentity(parsed.version) === null ||
+      normalizedVersionIdentity(currentVersion) === null ||
+      normalizedVersionIdentity(parsed.version) !== normalizedVersionIdentity(currentVersion)
+    ) {
+      clearPendingUpdate();
+      return null;
+    }
+
+    return {
+      version: parsed.version,
+      notes: parsed.notes.slice(0, MAX_RELEASE_NOTES_LENGTH),
+    };
+  } catch {
+    clearPendingUpdate();
+    return null;
+  }
+}
+
+function normalizedVersionIdentity(version: string): string | null {
+  if (!parseSemver(version)) return null;
+  return version.trim().replace(/^v/, '');
 }
 
 // --- min_version fetch ---

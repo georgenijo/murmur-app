@@ -27,7 +27,8 @@ import { useEscapeCancel } from './lib/hooks/useEscapeCancel';
 import { useSilenceAutoStop } from './lib/hooks/useSilenceAutoStop';
 import { useAutoUpdater } from './lib/hooks/useAutoUpdater';
 import { UpdateModal } from './components/UpdateModal';
-import type { UpdateStatus } from './lib/updater';
+import { WhatsNewModal } from './components/WhatsNewModal';
+import type { CompletedUpdate, UpdateStatus } from './lib/updater';
 import { StatsBar } from './components/StatsBar';
 const ResourceMonitor = lazy(() => import('./components/ResourceMonitor').then(m => ({ default: m.ResourceMonitor })));
 const UsageDashboard = lazy(() => import('./components/UsageDashboard').then(m => ({ default: m.UsageDashboard })));
@@ -169,7 +170,7 @@ function App() {
   const { showAbout, setShowAbout } = useShowAboutListener();
   const updater = useAutoUpdater();
 
-  // DEV ONLY: cycle through mock update modal states for visual testing
+  // DEV ONLY: cycle through updater and post-update modal states for visual testing
   const devUpdateIndex = useRef(-1);
   const devMockStates: UpdateStatus[] = import.meta.env.DEV ? [
     { phase: 'available', version: '0.7.0', notes: '## What\'s New\n- OTA auto-updater\n- Bug fixes\n- Performance improvements', isForced: false },
@@ -178,11 +179,21 @@ function App() {
     { phase: 'error', message: 'Network request failed: could not resolve host', isForced: false },
   ] : [];
   const [devUpdateStatus, setDevUpdateStatus] = useState<UpdateStatus | null>(null);
+  const [devCompletedUpdate, setDevCompletedUpdate] = useState<CompletedUpdate | null>(null);
 
   const checkForUpdate = useCallback(async () => {
     if (import.meta.env.DEV) {
-      devUpdateIndex.current = (devUpdateIndex.current + 1) % devMockStates.length;
-      setDevUpdateStatus(devMockStates[devUpdateIndex.current]);
+      devUpdateIndex.current = (devUpdateIndex.current + 1) % (devMockStates.length + 1);
+      if (devUpdateIndex.current === 0) {
+        setDevUpdateStatus(null);
+        setDevCompletedUpdate({
+          version: '0.22.0',
+          notes: '## New Features\n\n- Faster local transcription\n- Selected-text transforms\n\n## Bug Fixes\n\n- More reliable microphone startup\n- Smoother overlay behavior',
+        });
+      } else {
+        setDevCompletedUpdate(null);
+        setDevUpdateStatus(devMockStates[devUpdateIndex.current - 1]);
+      }
       return;
     }
     return updater.checkForUpdate();
@@ -198,6 +209,14 @@ function App() {
     updater.skipVersion();
   }, [devUpdateStatus, updater.skipVersion]);
   const startDownload = updater.startDownload;
+  const completedUpdate = devCompletedUpdate ?? updater.completedUpdate;
+  const dismissCompletedUpdate = useCallback(() => {
+    if (devCompletedUpdate) {
+      setDevCompletedUpdate(null);
+      return;
+    }
+    updater.dismissCompletedUpdate();
+  }, [devCompletedUpdate, updater.dismissCompletedUpdate]);
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [mainTab, setMainTab] = useState<'record' | 'file'>('record');
@@ -462,11 +481,17 @@ function App() {
         isOpen={showAbout}
         onClose={() => setShowAbout(false)}
       />
-      <UpdateModal
-        status={updateStatus}
-        onDownload={startDownload}
-        onSkip={skipVersion}
-        onDismiss={dismissUpdate}
+      {!completedUpdate && (
+        <UpdateModal
+          status={updateStatus}
+          onDownload={startDownload}
+          onSkip={skipVersion}
+          onDismiss={dismissUpdate}
+        />
+      )}
+      <WhatsNewModal
+        update={completedUpdate}
+        onDismiss={dismissCompletedUpdate}
       />
     </div>
   );

@@ -451,12 +451,19 @@ jobs:
             exit 1
           fi
           BRIDGE_SIG=$(curl --fail --silent --show-error --location "$BRIDGE_SIG_URL")
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json body --jq .body > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "ERROR: $TAG has no generated release notes"
+            exit 1
+          fi
           python3 scripts/release_artifacts.py manifests \
             --validated validated-release.json \
             --tag "$TAG" \
             --repository "$GITHUB_REPOSITORY" \
             --bridge-url "$BRIDGE_URL" \
             --bridge-signature "$BRIDGE_SIG" \
+            --release-notes release-notes.md \
             --output-dir manifests
 
           PUB_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)

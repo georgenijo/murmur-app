@@ -43,6 +43,16 @@ When a new version is available and the current version is above `min_version`:
 2. **Downloading** — Progress bar with percentage. Progress reported via Tauri's `downloadAndInstall` callback.
 3. **Ready** — "Installing and relaunching..." text displayed.
 4. **Relaunch** — App restarts automatically via `@tauri-apps/plugin-process`.
+5. **What's New** — After the relaunched binary confirms that it is the
+   downloaded version, a one-time modal shows that release's features, fixes,
+   and other changes.
+
+Before download begins, the app stores a bounded `{ version, notes }` payload in
+localStorage under `pending-update-release-notes`. The payload is intentionally
+kept until the user dismisses the post-update modal, so an app quit while the
+modal is open does not lose it. A fresh install has no pending payload and never
+shows the modal. A malformed payload or one whose version does not exactly match
+the running app is removed without being displayed.
 
 ### Forced Updates
 
@@ -78,6 +88,21 @@ The updater includes a semver parser (`updater.ts`) that:
 
 Release notes from the manifest are rendered as Markdown using `react-markdown` with `rehype-sanitize` (default sanitization schema). Custom HTML in release notes is stripped by the sanitizer.
 
+The promotion workflow creates the draft GitHub release with generated notes,
+then reads that exact Markdown body into `latest-v2.json`. Manifest generation
+fails if the body is missing or empty. `.github/release.yml` groups merged pull
+requests into **New Features** (`enhancement`), **Bug Fixes** (`bug`), and
+**Other Changes** categories.
+
+The same sanitized notes appear in two places:
+
+- the update-available dialog, before download
+- the one-time What's New dialog, after the updated app relaunches
+
+For a useful customer-facing summary, release pull requests should carry either
+the `enhancement` or `bug` label when applicable. Unlabeled pull requests remain
+visible under Other Changes.
+
 ## Signed Updates
 
 Updates are signed with ed25519. The public key is embedded in `tauri.conf.json` as a base64-encoded minisign public key. The Tauri updater plugin handles signature verification automatically — unsigned or incorrectly signed updates are rejected.
@@ -99,11 +124,17 @@ type UpdateStatus =
 
 The update modal renders for `available`, `downloading`, `ready`, and `error` phases. The `idle`, `checking`, and `up-to-date` phases return null (no modal).
 
+Post-update notes use separate `CompletedUpdate` state rather than adding a
+phase to `UpdateStatus`; this prevents the Settings update checker from treating
+an already-installed release as an available update.
+
 ## Settings Integration
 
 - The "Check for Updates" button in the About section of settings triggers a manual check. It is disabled during `checking` or `downloading` phases.
 - Status text shows: "Checking...", "You're up to date", "vX.Y.Z available", or "Update check failed".
 - Skipped version is stored in localStorage under `skipped-update-version`.
+- Pending post-update notes are stored under `pending-update-release-notes` and
+  removed when dismissed or when the running version does not match.
 
 ## Dependencies
 

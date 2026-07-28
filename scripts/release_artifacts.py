@@ -319,6 +319,7 @@ def write_updater_manifests(
     repository: str,
     bridge_url: str,
     bridge_signature: str,
+    release_notes_path: Path,
     output_dir: Path,
 ) -> tuple[Path, Path]:
     if not re.fullmatch(r"v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", tag):
@@ -328,6 +329,11 @@ def write_updater_manifests(
     bridge_signature = bridge_signature.strip()
     if not bridge_url.startswith("https://") or not bridge_signature:
         raise ArtifactError("bridge updater URL and signature are required")
+    if not release_notes_path.is_file():
+        raise ArtifactError("release notes file is required")
+    release_notes = release_notes_path.read_text(encoding="utf-8").strip()
+    if not release_notes:
+        raise ArtifactError("release notes must not be empty")
 
     validated = json.loads(validated_path.read_text(encoding="utf-8"))
     macos = validated["platforms"]["macos"]
@@ -349,7 +355,7 @@ def write_updater_manifests(
                 "signature": linux["signature"],
             },
         },
-        "notes": f"See release notes at https://github.com/{repository}/releases/tag/{tag}",
+        "notes": release_notes,
     }
     legacy = {
         "version": version,
@@ -411,6 +417,7 @@ def _parser() -> argparse.ArgumentParser:
     manifests.add_argument("--repository", required=True)
     manifests.add_argument("--bridge-url", required=True)
     manifests.add_argument("--bridge-signature", required=True)
+    manifests.add_argument("--release-notes", type=Path, required=True)
     manifests.add_argument("--output-dir", type=Path, required=True)
     return parser
 
@@ -468,6 +475,7 @@ def main() -> None:
                 args.repository,
                 args.bridge_url,
                 args.bridge_signature,
+                args.release_notes,
                 args.output_dir,
             )
             print(f"wrote updater manifests: {modern}, {legacy}")
