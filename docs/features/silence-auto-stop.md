@@ -16,7 +16,9 @@ Stop on Silence ends a hands-free recording after a chosen run of quiet. It is o
 
 The one exclusion is a recording in flight while the trigger key is physically held: there the key release owns the stop, and ending a recording while you are still pressing the button that means "I'm still going" would be wrong.
 
-How the hook knows: `useRecordingOrigin` tracks the origin from the keyboard events. `hold-down-start` marks the in-flight recording `'hold'`; `hold-down-stop`, `hold-down-cancel`, and `double-tap-toggle` reset to `'toggle'`, which is also the default — button, overlay, and locked-mode starts emit no keyboard event at all. While the origin is `'hold'` the detector ignores samples entirely, so nothing is ever accumulated that could fire in the moments around the key release, and a cancelled speculative hold in Both mode cannot leave the next toggle-started recording disarmed.
+How the hook knows: `useRecordingOrigin` tracks the origin from the keyboard events. `hold-down-start` marks the in-flight recording `'hold'`; `hold-down-stop` and `double-tap-toggle` reset to `'toggle'`, which is also the default — button, overlay, and locked-mode starts emit no keyboard event at all. (`hold-down-cancel` is handled defensively too, though the backend's deferred-hold design currently never emits it.) While the origin is `'hold'` the detector ignores samples entirely, so nothing is ever accumulated that could fire in the moments around the key release.
+
+The origin is per-recording, not just per-event: it resets whenever status leaves `'recording'`. A `hold-down-stop` can go missing — Escape cancels a hold recording while suppressing the release's stop event, and a dead rdev thread mid-hold loses the release entirely — and without the status-tied reset a stranded `'hold'` would silently disable auto-stop for every later toggle-started recording. The reset fires only on the transition *out of* recording, so a transition between non-recording states can never wipe a freshly latched hold before its recording starts.
 
 Stopping manually always still works. Auto-stop is an extra way for a recording to end, never the only one.
 

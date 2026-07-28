@@ -36,7 +36,7 @@ Transcription history with localStorage persistence (`dictation-history`, rollin
 Ends a hands-free recording after a run of trailing silence — any recording **not started by holding the trigger key**. Folds the existing `audio-level` samples through the pure `reduceSilenceSample` detector, resets per recording, ignores samples while the origin is `'hold'`, and calls `onAutoStop` at most once. Inert unless `enabled` and `silenceMs > 0`. See [features/silence-auto-stop.md](../features/silence-auto-stop.md).
 
 ### `useRecordingOrigin`
-Tracks how the in-flight recording started. Returns a stable getter for `'hold' | 'toggle'`: `hold-down-start` marks it `'hold'`; `hold-down-stop`, `hold-down-cancel`, and `double-tap-toggle` reset to `'toggle'`, the default — button, overlay, and locked-mode starts emit no keyboard event at all.
+Tracks how the in-flight recording started. Returns `{ getOrigin, resetOrigin }` over `'hold' | 'toggle'`: `hold-down-start` marks it `'hold'`; `hold-down-stop` and `double-tap-toggle` reset to `'toggle'`, the default — button, overlay, and locked-mode starts emit no keyboard event at all (`hold-down-cancel` is handled defensively but never emitted by the current backend). `useSilenceAutoStop` calls `resetOrigin` when status leaves `'recording'`, so a `'hold'` whose stop event was lost (Escape cancel, dead rdev thread) cannot outlive its recording.
 
 ---
 

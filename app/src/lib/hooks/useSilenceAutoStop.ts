@@ -34,7 +34,7 @@ interface UseSilenceAutoStopProps {
  * reset, the origin gate, and the single call out.
  */
 export function useSilenceAutoStop({ enabled, status, silenceMs, onAutoStop }: UseSilenceAutoStopProps) {
-  const getOrigin = useRecordingOrigin();
+  const { getOrigin, resetOrigin } = useRecordingOrigin();
   const stateRef = useRef<SilenceAutoStopState>(initialSilenceState());
   const enabledRef = useRef(enabled);
   const statusRef = useRef(status);
@@ -46,12 +46,18 @@ export function useSilenceAutoStop({ enabled, status, silenceMs, onAutoStop }: U
 
   // Every recording starts from a clean state — peak, armed and the silence run
   // are all per-recording, and a latched stop must not leak into the next one.
+  // The origin is per-recording too: clearing it exactly on the transition out
+  // of 'recording' heals a 'hold' whose stop event was never delivered (Escape
+  // cancel, dead rdev thread), while a transition between non-recording states
+  // can never wipe a freshly latched hold before its recording starts.
   useEffect(() => {
     if (statusRef.current !== status) {
+      const wasRecording = statusRef.current === 'recording';
       statusRef.current = status;
       stateRef.current = initialSilenceState();
+      if (wasRecording) resetOrigin();
     }
-  }, [status]);
+  }, [status, resetOrigin]);
 
   useEffect(() => {
     let cancelled = false;

@@ -171,13 +171,31 @@ describe('useSilenceAutoStop', () => {
     expect(onAutoStop).toHaveBeenCalledOnce();
   });
 
-  it('does not stay disarmed after a cancelled speculative hold (Both-mode short tap)', async () => {
+  it('does not stay disarmed after a cancelled speculative hold (legacy hold-down-cancel)', async () => {
     const onAutoStop = vi.fn();
     await render({ onAutoStop });
-    // Short tap in Both mode: eager hold start, then a cancel instead of a stop.
+    // hold-down-cancel is a legacy event the current backend never emits
+    // (deferred-hold: short taps in Both mode emit nothing) — handled
+    // defensively so a start-then-cancel sequence can never strand the origin.
     await emitOrigin('hold-down-start');
     await emitOrigin('hold-down-cancel');
     // The follow-up double-tap starts a fresh toggle recording.
+    await render({ status: 'idle', onAutoStop });
+    await render({ status: 'recording', onAutoStop });
+    await emit(0.3, 800);
+    await emit(0.0, 2400);
+    expect(onAutoStop).toHaveBeenCalledOnce();
+  });
+
+  it('heals a hold origin stranded without its stop event once the recording ends', async () => {
+    const onAutoStop = vi.fn();
+    await render({ onAutoStop });
+    // Escape cancels a hold recording and suppresses the release's
+    // hold-down-stop, so no keyboard event ever resets the origin. The
+    // recording ending (status leaving 'recording') must heal it, or every
+    // later button/overlay recording silently loses auto-stop.
+    await emitOrigin('hold-down-start');
+    await emit(0.3, 800);
     await render({ status: 'idle', onAutoStop });
     await render({ status: 'recording', onAutoStop });
     await emit(0.3, 800);
