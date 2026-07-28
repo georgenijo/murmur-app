@@ -132,7 +132,8 @@ glass surfaces.
 |--------|---------|
 | `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 108 registered commands, setup, tray, run loop |
 | `alloc.rs` | Custom macOS malloc zone ("RustHeapZone") so Rust heap is accounted separately from whisper.cpp's FFI heap |
-| `audio.rs` | cpal capture, mono mix, 16kHz resample, `audio-level` emission |
+| `audio.rs` | cpal capture worker, phase telemetry, mono mix, 16kHz resample, `audio-level` emission |
+| `audio_lifecycle.rs` | App-lifetime single-owner supervisor; async start, generation cancellation, deadlines, recovery, and worker joining |
 | `audio_decode.rs` | Decoding imported audio files for `transcribe_file` |
 | `benchmark.rs` | Performance Lab: fixture corpus, scoring (raw/normalized/delivered WER), reports |
 | `cleanup.rs` | Filler removal and capitalization |
@@ -173,7 +174,7 @@ Commands live under `commands/` (`recording`, `permissions`, `keyboard`, `export
 ### `state.rs` — Shared State
 
 ```rust
-enum DictationStatus { Idle, Recording, Processing }
+enum DictationStatus { Idle, Starting, Recording, Recovering, Processing }
 enum TransformStatus { /* Idle, Capturing, Listening, Thinking, ReviewPending, ... */ }
 
 struct AppState {
@@ -323,7 +324,7 @@ Two rules keep the multi-window state coherent:
 
 ## Tauri Commands
 
-108 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
+109 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
 
 ## Events
 

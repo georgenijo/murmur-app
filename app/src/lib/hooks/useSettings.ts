@@ -56,6 +56,12 @@ export function useSettings() {
     setSettings(newSettings);
     saveSettings(newSettings);
 
+    if ('microphone' in updates && updates.microphone !== previousSettings.microphone) {
+      invoke('cancel_audio_initialization', { reason: 'device_changed' }).catch((err) => {
+        console.error('Failed to cancel audio initialization after device change:', err);
+      });
+    }
+
     if ('launchAtLogin' in updates) {
       const attemptedValue = newSettings.launchAtLogin;
       const action = attemptedValue ? enable : disable;

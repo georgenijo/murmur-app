@@ -34,7 +34,9 @@ export function useCombinedToggle({ enabled, initialized, accessibilityGranted, 
   useEffect(() => {
     if (!enabled) return;
     if (holdActiveRef.current) return;
-    invoke('set_keyboard_recording', { recording: status === 'recording' }).catch(() => {});
+    invoke('set_keyboard_recording', {
+      recording: status === 'recording' || status === 'starting',
+    }).catch(() => {});
   }, [enabled, status]);
 
   useEffect(() => {

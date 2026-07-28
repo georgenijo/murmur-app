@@ -102,6 +102,19 @@ Only the expired second-tap window is surfaced. Existing structured diagnostics 
 
 ## Shared Infrastructure
 
+### Audio startup lifecycle
+
+All three modes treat `Starting` as an active, cancelable attempt. Hold release
+or a second toggle while `Starting` cancels initialization and moves the app to
+`Recovering`; it does not wait for the Core Audio call or pretend the microphone
+is idle. Double-Tap and Both synchronize `Starting` as active to the Rust
+detector, so the next single tap cancels. Silence auto-stop remains disarmed
+until the readiness-driven `Recording` transition.
+
+The hold/toggle origin is latched across `Starting` and resets after either a
+normal recording end or a pre-readiness cancellation. Model preparation begins
+when startup is accepted so model loading still overlaps microphone latency.
+
 ### Threading
 
 - Both modes share a single `rdev::listen()` background thread (spawned once, lives for app lifetime)

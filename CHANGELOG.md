@@ -9,10 +9,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ### Added
 
 - **Local Appearance Theme Engine** adds System, Light, and Dark modes; accessible custom accent, background, foreground, and contrast controls; synchronized main/log-viewer semantic tokens and native title bars; flash-free cached first paint; exact Sonic reset; and bounded atomic JSON import/export that never touches the clipboard. Overlay and transform-review transparency and always-dark glass remain unchanged (#377).
+- Microphone initialization now has explicit Starting and Recovering states, visible and cancelable startup, a 5-second still-connecting signal, a 30-second hard deadline, and truthful guidance when macOS audio teardown remains blocked (#380).
 
 ### Fixed
 
 - Escape now cancels selected-text transforms during capture, instruction listening, and local-model thinking, while ready/failed reviews retain their existing popover-local Escape behavior (#347).
+- Slow Core Audio initialization can no longer detach timed-out capture threads or allow overlapping microphone owners. One supervisor retains and joins every worker, rejects starts during recovery, suppresses late readiness and samples from cancelled generations, and starts recording duration only after the stream is ready (#380).
+- Display-change notification storms are coalesced for 125ms and ignored when the complete monitor/notch snapshot is unchanged, avoiding repeated overlay repositioning during an identical macOS event burst (#380).
 
 ## [0.21.1] - 2026-07-23
 

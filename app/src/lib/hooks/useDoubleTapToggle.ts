@@ -19,7 +19,9 @@ export function useDoubleTapToggle({ enabled, initialized, accessibilityGranted,
   // Keep the backend in sync with recording state
   useEffect(() => {
     if (!enabled) return;
-    invoke('set_keyboard_recording', { recording: status === 'recording' }).catch(() => {});
+    invoke('set_keyboard_recording', {
+      recording: status === 'recording' || status === 'starting',
+    }).catch(() => {});
   }, [enabled, status]);
 
   useEffect(() => {

@@ -31,6 +31,7 @@ export function OverlayWidget() {
   // by the broadcast `transform-state-changed` event; the overlay is a
   // separate webview so it listens directly.
   const [transforming, setTransforming] = useState(false);
+  const [stillConnecting, setStillConnecting] = useState(false);
   const hotkeyMissFeedbackRef = useRef(false);
   const statusRef = useRef<DictationStatus>('idle');
 
@@ -60,7 +61,24 @@ export function OverlayWidget() {
     transforming,
     runtime.showSecureField,
     runtime.showTransformBusy,
+    runtime.showMicrophoneFailure,
+    stillConnecting,
   );
+
+  useEffect(() => {
+    if (status !== 'starting') setStillConnecting(false);
+  }, [status]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    listen('audio-initialization-stalled', () => {
+      setStillConnecting(true);
+    }).then((fn) => {
+      if (cancelled) fn(); else unlisten = fn;
+    });
+    return () => { cancelled = true; unlisten?.(); };
+  }, []);
 
   // Track the transform flow's thinking phase for the overlay indicator.
   useEffect(() => {
@@ -174,6 +192,7 @@ export function OverlayWidget() {
           geometry={geometry}
           expanded={expanded}
           status={status}
+          stillConnecting={stillConnecting}
           showTapMissed={visual.showTapMissedLabel}
           disabled={runtime.disabled}
           autoPaste={settingsMirror.autoPaste}

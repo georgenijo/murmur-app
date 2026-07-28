@@ -11,7 +11,11 @@ For commands see [commands.md](commands.md). For the hooks that consume these ev
 | Event | Payload | Source | When it fires | Listeners |
 |-------|---------|--------|---------------|-----------|
 | `audio-level` | `f32` (RMS 0.0–1.0) | `audio.rs` | Continuously during capture, throttled to ~60fps (16ms minimum gap). | Overlay (`useWaveform`), main window (`useRecordingState`). |
-| `recording-status-changed` | `string` — `"idle"` \| `"recording"` \| `"processing"` | `commands/recording.rs` | Every dictation state transition. Suppressed when the recording has been superseded by a newer generation. | Main window (`useRecordingState`), overlay (visual state). |
+| `recording-status-changed` | `string` — `"idle"` \| `"starting"` \| `"recording"` \| `"recovering"` \| `"processing"` | `commands/recording.rs` | Every dictation state transition. Suppressed when the recording has been superseded by a newer generation. | Main window (`useRecordingState`), overlay (visual state). |
+| `audio-initialization-stalled` | `{recordingId}` | `commands/recording.rs` | The current generation has spent 5 seconds in `Starting`; this is informational, not failure. | Overlay slow-connecting cue. |
+| `audio-recovery-started` | `{recordingId, reason}` | `commands/recording.rs` | A starting/recording owner was cancelled and remains tracked until its worker exits. | Overlay recovering cue and diagnostics. |
+| `recording-initialization-failed` | `{recordingId, error}` | `commands/recording.rs` | Initialization failed or crossed the 30-second hard deadline. Emitted exactly once per generation. | Main error surface; overlay bounded failure flash. |
+| `recording-recovery-stalled` | `{recordingId}` | `commands/recording.rs` | The cancelled worker has remained blocked for the recovery grace period. | Main persistent, truthfully scoped restart guidance. |
 | `transcription-complete` | `{recordingId, text, duration, teachingContext}` | `commands/recording.rs` | After a non-empty transcription is delivered. Broadcast to all windows. `teachingContext` seeds Correct and Teach. | Main window (`useRecordingState` → history, stats, display). |
 | `recording-cancelled` | `{recordingId}` | `commands/recording.rs` | A recording was discarded without transcription (speculative Both-mode hold, explicit cancel). | Main window, overlay (clears in-flight UI). |
 | `auto-paste-failed` | `string` (hint) | `commands/recording.rs` via `injector.rs` | Auto-paste failed or timed out. The text is already on the clipboard. | Main window (`useRecordingState`, shown for 5s). |

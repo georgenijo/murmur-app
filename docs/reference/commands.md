@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The 108 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
+The 109 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -15,9 +15,10 @@ For Rust → frontend events see [events.md](events.md). For the hooks that call
 | `init_dictation` | — | `Result<JSON, String>` | Static `{"type":"initialized","state":"idle"}` marker. |
 | `get_status` | — | `Result<JSON, String>` | Current status, model name, and language. |
 | `configure_dictation` | `options: JSON` | `Result<JSON, String>` | Pushes settings into `DictationState`: model, language, auto-paste and delay (clamped 10–500), VAD sensitivity (0–100), punctuation, file output, vocabulary entries, voice commands, app profiles, cleanup/formatting/correction toggles, code-vocab folder, idle timeout. A model change reselects the runtime backend, deferring across an active recording generation. Rejects conflicting vocabulary/command configurations without mutating prior state. |
-| `start_native_recording` | `device_name: Option<String>` | `Result<JSON, String>` | Starts cpal capture, resolves the immutable per-recording context, and warms the model concurrently. Idle → Recording. |
-| `stop_native_recording` | — | `Result<JSON, String>` | Stops capture and runs VAD → inference → transcript transform → delivery. Recordings under 0.3s are discarded. |
-| `cancel_native_recording` | — | `Result<(), String>` | Discards an in-progress recording without transcribing (used for speculative Both-mode holds). |
+| `start_native_recording` | `device_name: Option<String>`, `origin: Option<String>` | `Result<JSON, String>` | Resolves the immutable context, claims the single audio owner, starts model preparation, emits `starting`, and returns without waiting for Core Audio. Readiness later emits `recording`. |
+| `stop_native_recording` | — | `Result<JSON, String>` | Cancels a `starting` attempt, or stops a ready capture and runs VAD → inference → transcript transform → delivery. Recordings under 0.3s are discarded. |
+| `cancel_native_recording` | — | `Result<(), String>` | Cancels initialization into `recovering`, or discards an active recording/processing run without delivery. |
+| `cancel_audio_initialization` | `reason: "device_changed"` | `Result<(), String>` | Cancels only a `starting` attempt after the selected microphone changes; a ready recording is left alone. |
 | `process_audio` | `audio_data: String` | `Result<JSON, String>` | Runs the full pipeline over base64-encoded 16kHz mono WAV. |
 | `transcribe_file` | `file_path: String` | `Result<JSON, String>` | Decodes and transcribes an audio file through the same pipeline with live-only stages skipped. Emits `file-transcription-status-changed`. |
 | `transform_status` | — | `TransformStatus` | Current selected-text transform state (used to arbitrate against dictation). |

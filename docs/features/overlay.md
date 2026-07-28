@@ -145,6 +145,14 @@ Small mic SVG icon at 40% white opacity (dimmed further to 15% when globally dis
 ### Recording
 The red pulsing dot occupies the visible left wing and the animated 7-bar waveform occupies the right wing. The `m:ss` elapsed timer renders in the dropdown row (visible on hover-expand), not in a wing. No transcript text is displayed while recording. (Width is constant across all states.)
 
+### Starting and Recovering
+
+Starting uses a blue pulse; after the backend's 5-second signal it becomes an
+amber "Still connecting" cue. Clicking or toggling again cancels. Recovering
+uses an amber spinner and dropdown label until the owned Core Audio thread
+exits. Initialization failure gets a bounded red warning flash; a recovery that
+remains blocked surfaces persistent guidance in the main recording-error area.
+
 ### Processing
 Spinning circle in the left wing; the waveform is hidden (visible only while recording). No transcript text is displayed while processing.
 
@@ -193,11 +201,11 @@ An `NSApplicationDidChangeScreenParametersNotification` observer is registered a
 - Lid open/close
 - Display configuration changes
 
-When triggered, the observer:
-1. Re-detects notch dimensions via NSScreen APIs
-2. Updates the cached `State.notch_info`
-3. Repositions the overlay window
-4. Emits `overlay-geometry-changed` to the frontend carrying a full `OverlayGeometry` (never null — `geometry_for()` always resolves, using the synthetic fallback notch when none is present)
+Notifications enter a trailing 125ms debounce. After the burst, Murmur compares
+the full display snapshot (notch/menu-bar geometry, monitor bounds and origin,
+and scale). Only a changed snapshot updates `State.notch_info`, repositions the
+overlay, and emits `overlay-geometry-changed`; isolated but identical
+notifications are logged once and otherwise ignored.
 
 The frontend `useOverlayGeometry` hook listens for `overlay-geometry-changed` and updates its geometry state accordingly; `useOverlayExpansion` treats the same event as an authoritative reset (see [Expansion Controller](#expansion-controller)).
 

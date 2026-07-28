@@ -9,7 +9,7 @@ For the commands these hooks call see [commands.md](commands.md). For the events
 ## Recording and dictation (main window)
 
 ### `useRecordingState`
-The dictation state machine. Owns `status` (`idle` / `recording` / `processing`), audio level, locked mode, and the error/hint banners. Subscribes to `recording-status-changed`, `transcription-complete`, `recording-cancelled`, `audio-level`, `auto-paste-failed`, and `file-output-failed`; invokes `start_native_recording` / `stop_native_recording` / `cancel_native_recording`.
+The dictation state machine. Owns `status` (`idle` / `starting` / `recording` / `recovering` / `processing`), audio level, locked mode, and the error/hint banners. Subscribes to `recording-status-changed`, the audio initialization/recovery signals, `transcription-complete`, `recording-cancelled`, `audio-level`, `auto-paste-failed`, and `file-output-failed`; invokes `start_native_recording` / `stop_native_recording` / `cancel_native_recording`.
 
 **`transcription-complete` is the single source of truth** for history and stats — entries are never added in `handleStop()`, because the overlay can start a recording independently and that would double-count.
 
