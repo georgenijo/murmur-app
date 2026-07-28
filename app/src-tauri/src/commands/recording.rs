@@ -1,8 +1,9 @@
+use crate::audio_lifecycle::{self, AudioCancelReason, AudioLifecycleEvent, AudioStartError};
 use crate::dictation_context::{self, DictationContextSnapshot, ResolverInputs, SessionOverrides};
 use crate::model_runtime::{self, PreparationReason};
 use crate::performance_metrics::{
-    AcceleratorV1, ContentFreeInputSummaryV1, ModelWarmStateV1, PerformanceStageV1,
-    PerformanceRunGuard, RunCorrelationV1, RunOutcomeV1, RuntimeBackendV1, RuntimeIdentityV1,
+    AcceleratorV1, ContentFreeInputSummaryV1, ModelWarmStateV1, PerformanceRunGuard,
+    PerformanceStageV1, RunCorrelationV1, RunOutcomeV1, RuntimeBackendV1, RuntimeIdentityV1,
     RuntimeRoleV1, StableRunErrorV1, StageOutcomeV1, StageTimingV1,
 };
 use crate::state::{AppState, DictationStatus};
@@ -366,10 +367,18 @@ impl Drop for SharedBackendChangeGuard {
     }
 }
 
-/// Start loading the selected model after audio capture is live, overlapping the
-/// expensive cold initialization with the user's speech. The normal pipeline
-/// still calls `load_model`, so it either observes a hit or waits on this same
-/// backend lock when a very short recording ends before preparation completes.
+fn status_allows_model_preparation(status: DictationStatus) -> bool {
+    matches!(
+        status,
+        DictationStatus::Starting | DictationStatus::Recording
+    )
+}
+
+/// Start loading the selected model as soon as microphone initialization is
+/// accepted. Preparation is mic-independent, so it overlaps both Core Audio
+/// startup and the user's speech. The normal pipeline still calls `load_model`,
+/// so it either observes a hit or waits on this same backend lock when a very
+/// short recording ends before preparation completes.
 fn spawn_model_preparation(app_handle: tauri::AppHandle, model_name: String, recording_id: u64) {
     let queued_at = std::time::Instant::now();
     let _ = tauri::async_runtime::spawn_blocking(move || {
@@ -378,7 +387,7 @@ fn spawn_model_preparation(app_handle: tauri::AppHandle, model_name: String, rec
         let is_active = {
             let dictation = state.app_state.dictation.lock_or_recover();
             state.app_state.recording_id.load(Ordering::SeqCst) == recording_id
-                && dictation.status == DictationStatus::Recording
+                && status_allows_model_preparation(dictation.status)
                 && state
                     .app_state
                     .active_context(recording_id)
@@ -393,7 +402,7 @@ fn spawn_model_preparation(app_handle: tauri::AppHandle, model_name: String, rec
         let is_still_active = {
             let dictation = state.app_state.dictation.lock_or_recover();
             state.app_state.recording_id.load(Ordering::SeqCst) == recording_id
-                && dictation.status == DictationStatus::Recording
+                && status_allows_model_preparation(dictation.status)
                 && state
                     .app_state
                     .active_context(recording_id)
@@ -2151,15 +2160,146 @@ pub fn clear_ide_context(
         .status(bundle_id))
 }
 
+/// Receive generation-scoped lifecycle notifications from the app-lifetime
+/// audio supervisor. The supervisor owns Core Audio and thread teardown; this
+/// bridge owns the dictation state/event/performance contract.
+pub(crate) fn handle_audio_lifecycle(
+    app_handle: tauri::AppHandle,
+    recording_id: u64,
+    event: AudioLifecycleEvent,
+) {
+    let state = app_handle.state::<State>();
+    let is_current = || state.app_state.recording_id.load(Ordering::SeqCst) == recording_id;
+
+    match event {
+        AudioLifecycleEvent::Ready => {
+            let mut dictation = state.app_state.dictation.lock_or_recover();
+            if !is_current() || dictation.status != DictationStatus::Starting {
+                tracing::warn!(
+                    target: "audio",
+                    recording_id,
+                    status = ?dictation.status,
+                    "stale audio readiness ignored by dictation lifecycle"
+                );
+                return;
+            }
+            dictation.status = DictationStatus::Recording;
+            *state.app_state.last_transcription_at.lock_or_recover() =
+                Some(std::time::Instant::now());
+            let _ = app_handle.emit("recording-status-changed", "recording");
+            tracing::info!(
+                target: "pipeline",
+                recording_id,
+                "start_native_recording: audio ready"
+            );
+        }
+        AudioLifecycleEvent::StillConnecting => {
+            let dictation = state.app_state.dictation.lock_or_recover();
+            if is_current() && dictation.status == DictationStatus::Starting {
+                let _ = app_handle.emit(
+                    "audio-initialization-stalled",
+                    serde_json::json!({ "recordingId": recording_id }),
+                );
+            }
+        }
+        AudioLifecycleEvent::Recovering { reason } => {
+            {
+                let mut dictation = state.app_state.dictation.lock_or_recover();
+                if !is_current()
+                    || !matches!(
+                        dictation.status,
+                        DictationStatus::Starting | DictationStatus::Recording
+                    )
+                {
+                    return;
+                }
+                dictation.status = DictationStatus::Recovering;
+            }
+            state.app_state.clear_active_context(recording_id);
+            let _ = app_handle.emit("recording-status-changed", "recovering");
+            let _ = app_handle.emit(
+                "audio-recovery-started",
+                serde_json::json!({
+                    "recordingId": recording_id,
+                    "reason": reason.as_str(),
+                }),
+            );
+            if reason != AudioCancelReason::HardDeadline {
+                let _ = state.performance.complete(
+                    &RunCorrelationV1::Dictation { recording_id },
+                    RunOutcomeV1::Cancelled {
+                        stage: PerformanceStageV1::CaptureFinalization,
+                    },
+                    Vec::new(),
+                    None,
+                    None,
+                );
+            }
+            if reason == AudioCancelReason::User {
+                let _ = app_handle.emit(
+                    "recording-cancelled",
+                    serde_json::json!({ "recordingId": recording_id }),
+                );
+            }
+        }
+        AudioLifecycleEvent::InitializationFailed { error } => {
+            if !is_current() {
+                return;
+            }
+            state.app_state.clear_active_context(recording_id);
+            let _ = state.performance.complete(
+                &RunCorrelationV1::Dictation { recording_id },
+                RunOutcomeV1::Failed {
+                    stage: PerformanceStageV1::CaptureFinalization,
+                    error_code: StableRunErrorV1::AudioCaptureFailed,
+                },
+                Vec::new(),
+                None,
+                None,
+            );
+            let _ = app_handle.emit(
+                "recording-initialization-failed",
+                serde_json::json!({
+                    "recordingId": recording_id,
+                    "error": error,
+                }),
+            );
+        }
+        AudioLifecycleEvent::RecoveryStalled => {
+            if is_current() {
+                let _ = app_handle.emit(
+                    "recording-recovery-stalled",
+                    serde_json::json!({ "recordingId": recording_id }),
+                );
+            }
+        }
+        AudioLifecycleEvent::Idle => {
+            let mut dictation = state.app_state.dictation.lock_or_recover();
+            if !is_current()
+                || !matches!(
+                    dictation.status,
+                    DictationStatus::Starting | DictationStatus::Recovering
+                )
+            {
+                return;
+            }
+            dictation.status = DictationStatus::Idle;
+            state.app_state.clear_active_context(recording_id);
+            keyboard::set_processing(false);
+            let _ = app_handle.emit("recording-status-changed", "idle");
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn start_native_recording(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, State>,
     device_name: Option<String>,
+    origin: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    // Hold through cpal readiness and the recording event. A quick release can
-    // invoke stop while start_recording is waiting for its capture thread; the
-    // stop command must observe the fully-started recorder, never a midpoint.
+    // This lock covers only the synchronous ownership transition. Core Audio
+    // initialization happens on the supervisor and never waits under it.
     let _transition = state.app_state.recording_transition.lock().await;
     if keyboard::is_app_disabled() {
         tracing::info!(target: "pipeline", "start_native_recording: app disabled — ignoring");
@@ -2239,11 +2379,25 @@ pub async fn start_native_recording(
             }));
         }
         match dictation.status {
+            DictationStatus::Starting => {
+                tracing::warn!(target: "pipeline", "start_native_recording: already starting");
+                return Ok(serde_json::json!({
+                    "type": "already_starting",
+                    "state": "starting"
+                }));
+            }
             DictationStatus::Recording => {
                 tracing::warn!(target: "pipeline", "start_native_recording: already recording");
                 return Ok(serde_json::json!({
                     "type": "already_recording",
                     "state": "recording"
+                }));
+            }
+            DictationStatus::Recovering => {
+                tracing::warn!(target: "pipeline", "start_native_recording: audio recovering");
+                return Ok(serde_json::json!({
+                    "type": "audio_recovering",
+                    "state": "recovering"
                 }));
             }
             DictationStatus::Processing => {
@@ -2264,7 +2418,7 @@ pub async fn start_native_recording(
                 // pending undo still needs.
                 crate::transform_apply::clear_session(&state.app_state);
                 let rid = state.app_state.next_recording_id();
-                dictation.status = DictationStatus::Recording;
+                dictation.status = DictationStatus::Starting;
                 rid
             }
         }
@@ -2300,14 +2454,31 @@ pub async fn start_native_recording(
             || context.context_capture.local_project_index,
         "dictation context resolved"
     );
-    tracing::info!(target: "pipeline", "start_native_recording: device={} recording_id={}", device_name.as_deref().unwrap_or("system_default"), rid);
-    if let Err(e) = audio::start_recording(Some(app_handle.clone()), device_name) {
-        tracing::error!(target: "audio", "start_native_recording: audio failed: {}", e);
+    let origin = match origin.as_deref() {
+        Some("hold") => "hold",
+        _ => "toggle",
+    };
+    tracing::info!(
+        target: "pipeline",
+        device = device_name.as_deref().unwrap_or("system_default"),
+        recording_id = rid,
+        origin,
+        "start_native_recording"
+    );
+    // Publish Starting before the worker can report Ready. Otherwise a very
+    // fast device open could emit Recording first and this command would then
+    // overwrite the frontend with a stale Starting event.
+    let _ = app_handle.emit("recording-status-changed", "starting");
+    if let Err(error) =
+        audio_lifecycle::start_dictation_recording(app_handle.clone(), device_name, rid, origin)
+    {
+        tracing::error!(target: "audio", "start_native_recording: audio failed: {}", error);
         state.app_state.clear_active_context(rid);
         let mut dictation = state.app_state.dictation.lock_or_recover();
         if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
             dictation.status = DictationStatus::Idle;
         }
+        let _ = app_handle.emit("recording-status-changed", "idle");
         let _ = state.performance.complete(
             &RunCorrelationV1::Dictation { recording_id: rid },
             RunOutcomeV1::Failed {
@@ -2318,11 +2489,19 @@ pub async fn start_native_recording(
             None,
             None,
         );
-        return Err(e);
+        return match error {
+            AudioStartError::AlreadyStarting => Ok(serde_json::json!({
+                "type": "already_starting",
+                "state": "starting"
+            })),
+            AudioStartError::AudioRecovering => Ok(serde_json::json!({
+                "type": "audio_recovering",
+                "state": "recovering"
+            })),
+            other => Err(other.to_string()),
+        };
     }
-    *state.app_state.last_transcription_at.lock_or_recover() = Some(std::time::Instant::now());
-    let _ = app_handle.emit("recording-status-changed", "recording");
-    tracing::info!(target: "pipeline", "start_native_recording: started");
+    tracing::info!(target: "pipeline", "start_native_recording: starting");
     spawn_model_preparation(
         app_handle.clone(),
         context.transcription.model_name.clone(),
@@ -2330,8 +2509,8 @@ pub async fn start_native_recording(
     );
 
     Ok(serde_json::json!({
-        "type": "recording_started",
-        "state": "recording"
+        "type": "recording_starting",
+        "state": "starting"
     }))
 }
 
@@ -2341,9 +2520,10 @@ pub async fn stop_native_recording(
     state: tauri::State<'_, State>,
 ) -> Result<serde_json::Value, String> {
     let transition = state.app_state.recording_transition.lock().await;
-    // Atomic check-and-set + rid capture in a single lock to avoid TOCTOU gap
-    let rid = {
+    // Atomic check-and-set + generation capture in a single lock.
+    let (status, rid) = {
         let mut dictation = state.app_state.dictation.lock_or_recover();
+        let rid = state.app_state.recording_id.load(Ordering::SeqCst);
         match dictation.status {
             DictationStatus::Processing => {
                 return Ok(serde_json::json!({
@@ -2358,12 +2538,27 @@ pub async fn stop_native_recording(
                     "state": "idle"
                 }));
             }
+            DictationStatus::Starting => (DictationStatus::Starting, rid),
+            DictationStatus::Recovering => {
+                return Ok(serde_json::json!({
+                    "type": "audio_recovering",
+                    "state": "recovering"
+                }));
+            }
             DictationStatus::Recording => {
                 dictation.status = DictationStatus::Processing;
-                state.app_state.recording_id.load(Ordering::SeqCst)
+                (DictationStatus::Recording, rid)
             }
         }
     };
+    if status == DictationStatus::Starting {
+        drop(transition);
+        audio_lifecycle::cancel_dictation_initialization(rid, AudioCancelReason::User)?;
+        return Ok(serde_json::json!({
+            "type": "recording_cancelled",
+            "state": "recovering"
+        }));
+    }
     let mut performance_guard = state.performance.guard(
         RunCorrelationV1::Dictation { recording_id: rid },
         PerformanceStageV1::CaptureFinalization,
@@ -2390,16 +2585,16 @@ pub async fn stop_native_recording(
 
     // Phase: Audio teardown + 16kHz resample
     let t_total = std::time::Instant::now();
-    let samples = audio::stop_recording().map_err(|e| {
+    // Processing is already committed, so concurrent calls cannot claim the
+    // microphone. Release the transition guard before the supervisor wait.
+    drop(transition);
+    let samples = audio_lifecycle::stop_dictation_recording(rid).map_err(|e| {
         tracing::error!(target: "audio", "stop_native_recording: stop_recording failed: {}", e);
         if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
             let _ = app_handle.emit("recording-status-changed", "idle");
         }
         e
     })?;
-    // Audio is now detached from the recorder state. Let cancel or another
-    // rejected start inspect Processing while inference continues.
-    drop(transition);
     tracing::info!(target: "pipeline", "audio teardown + resample: {:?}", t_total.elapsed());
     performance_guard.record(StageTimingV1::measured(
         PerformanceStageV1::CaptureFinalization,
@@ -2543,15 +2738,21 @@ pub async fn stop_native_recording(
     if !text.is_empty() {
         let teaching_context = crate::correct_and_teach::teaching_context(
             context.app.bundle_id.as_deref(),
-            context.matched_profile.as_ref().map(|profile| profile.label.as_str()),
+            context
+                .matched_profile
+                .as_ref()
+                .map(|profile| profile.label.as_str()),
             context.teaching_project_root.as_deref(),
         );
-        let _ = app_handle.emit("transcription-complete", serde_json::json!({
-            "recordingId": rid,
-            "text": text,
-            "duration": recording_secs,
-            "teachingContext": teaching_context
-        }));
+        let _ = app_handle.emit(
+            "transcription-complete",
+            serde_json::json!({
+                "recordingId": rid,
+                "text": text,
+                "duration": recording_secs,
+                "teachingContext": teaching_context
+            }),
+        );
     }
 
     Ok(serde_json::json!({
@@ -2563,7 +2764,10 @@ pub async fn stop_native_recording(
 
 /// Cancel an in-progress recording or transcription.
 ///
-/// - **Recording**: stops audio capture, discards samples, resets to Idle.
+/// - **Starting**: requests cancellation and remains Recovering until the owned
+///   audio thread exits.
+/// - **Recording**: requests cancellation and remains Recovering until the
+///   owned audio thread exits; captured samples are discarded.
 /// - **Processing**: marks the current recording_id as cancelled so the
 ///   pipeline discards its result at the next checkpoint; immediately
 ///   emits idle status so the UI resets without waiting for whisper.
@@ -2573,40 +2777,42 @@ pub async fn cancel_native_recording(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, State>,
 ) -> Result<(), String> {
-    let _transition = state.app_state.recording_transition.lock().await;
+    let transition = state.app_state.recording_transition.lock().await;
     let (prev_status, rid) = {
         let mut dictation = state.app_state.dictation.lock_or_recover();
         let prev = dictation.status;
         let rid = state.app_state.recording_id.load(Ordering::SeqCst);
         match prev {
             DictationStatus::Idle => return Ok(()),
-            DictationStatus::Recording | DictationStatus::Processing => {
+            DictationStatus::Starting | DictationStatus::Recording => {}
+            DictationStatus::Recovering => return Ok(()),
+            DictationStatus::Processing => {
                 dictation.status = DictationStatus::Idle;
             }
         }
         (prev, rid)
     };
+    if matches!(
+        prev_status,
+        DictationStatus::Starting | DictationStatus::Recording
+    ) {
+        drop(transition);
+        audio_lifecycle::cancel_dictation_capture(rid, AudioCancelReason::User)?;
+        return Ok(());
+    }
     state.app_state.clear_active_context(rid);
 
-    let stop_err = match prev_status {
-        DictationStatus::Recording => {
-            // Stop audio capture and discard samples
-            if let Err(e) = audio::stop_recording() {
-                tracing::error!(target: "audio", "cancel_native_recording: stop_recording failed: {}", e);
-                Some(e)
-            } else {
-                tracing::info!(target: "pipeline", "cancel_native_recording: recording discarded");
-                None
-            }
-        }
+    match prev_status {
         DictationStatus::Processing => {
-            // Mark current recording as cancelled — pipeline will check at next checkpoint
+            // Mark current recording as cancelled — pipeline will check at next checkpoint.
             state.app_state.cancel_recording(rid);
             tracing::info!(target: "pipeline", "cancel_native_recording: processing cancelled (recording_id={})", rid);
-            None
         }
-        DictationStatus::Idle => unreachable!(),
-    };
+        DictationStatus::Idle
+        | DictationStatus::Starting
+        | DictationStatus::Recording
+        | DictationStatus::Recovering => unreachable!(),
+    }
 
     // Always emit feedback so the UI resets, even if stop_recording failed
     keyboard::set_processing(false);
@@ -2616,31 +2822,29 @@ pub async fn cancel_native_recording(
         serde_json::json!({ "recordingId": rid }),
     );
 
-    let stage = match prev_status {
-        DictationStatus::Recording => PerformanceStageV1::CaptureFinalization,
-        DictationStatus::Processing => PerformanceStageV1::InferenceDecode,
-        DictationStatus::Idle => unreachable!(),
-    };
-    let outcome = if stop_err.is_some() {
-        RunOutcomeV1::Failed {
-            stage,
-            error_code: StableRunErrorV1::AudioCaptureFailed,
-        }
-    } else {
-        RunOutcomeV1::Cancelled { stage }
-    };
     let _ = state.performance.complete(
         &RunCorrelationV1::Dictation { recording_id: rid },
-        outcome,
+        RunOutcomeV1::Cancelled {
+            stage: PerformanceStageV1::InferenceDecode,
+        },
         Vec::new(),
         None,
         None,
     );
 
-    match stop_err {
-        Some(e) => Err(e),
-        None => Ok(()),
-    }
+    Ok(())
+}
+
+/// Cancel only an in-flight microphone initialization after an environment
+/// change. A live recording is deliberately left alone.
+#[tauri::command]
+pub fn cancel_audio_initialization(reason: String) -> Result<(), String> {
+    let reason = match reason.as_str() {
+        "device_changed" => AudioCancelReason::DeviceChanged,
+        _ => return Err("Unsupported audio initialization cancellation reason".to_string()),
+    };
+    audio_lifecycle::cancel_starting_for_environment_change(reason);
+    Ok(())
 }
 
 #[tauri::command]
@@ -2991,6 +3195,19 @@ mod tests {
     use super::*;
     use std::collections::VecDeque;
     use std::path::PathBuf;
+
+    #[test]
+    fn model_preparation_starts_at_accepted_start_and_stops_during_recovery() {
+        assert!(status_allows_model_preparation(DictationStatus::Starting));
+        assert!(status_allows_model_preparation(DictationStatus::Recording));
+        assert!(!status_allows_model_preparation(
+            DictationStatus::Recovering
+        ));
+        assert!(!status_allows_model_preparation(DictationStatus::Idle));
+        assert!(!status_allows_model_preparation(
+            DictationStatus::Processing
+        ));
+    }
 
     struct RetryTestBackend {
         responses: VecDeque<String>,

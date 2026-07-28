@@ -1,8 +1,7 @@
-use crate::state::WHISPER_SAMPLE_RATE;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Sample, SampleFormat};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use tauri::Emitter;
@@ -21,9 +20,6 @@ pub fn compute_peak(samples: &[f32]) -> f32 {
     samples.iter().map(|s| s.abs()).fold(0.0_f32, f32::max)
 }
 
-/// Build an input stream that converts interleaved multi-channel samples to mono f32,
-/// computes RMS for each buffer chunk and emits an "audio-level" event if an AppHandle
-/// is provided.
 /// Minimum gap between `audio-level` events (~60 fps).
 const AUDIO_LEVEL_THROTTLE_MS: u64 = 16;
 
@@ -40,8 +36,9 @@ macro_rules! build_mono_input_stream {
             .build_input_stream(
                 &$config.into(),
                 move |data: &[$sample_type], _: &_| {
-                    // Stop accumulating once recording is over — prevents unbounded
-                    // buffer growth if the cpal stream outlives the recording session.
+                    // Starting/recovering generations keep this false. That
+                    // suppresses samples and level events until the supervisor
+                    // accepts readiness for the current owner.
                     if !active_ref.load(Ordering::Relaxed) {
                         return;
                     }
@@ -54,7 +51,6 @@ macro_rules! build_mono_input_stream {
                         })
                         .collect();
 
-                    // Emit audio level throttled to ~60 fps
                     if let Some(ref handle) = app_handle_opt {
                         let now = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
@@ -68,57 +64,78 @@ macro_rules! build_mono_input_stream {
                         }
                     }
 
-                    if let Ok(mut s) = samples_ref.lock() {
-                        s.extend(mono);
+                    if let Ok(mut samples) = samples_ref.lock() {
+                        samples.extend(mono);
                     }
                 },
                 $err_fn,
                 None,
             )
-            .map_err(|e| format!("Failed to build stream: {}", e))?
+            .map_err(|error| format!("Failed to build stream: {error}"))?
     }};
 }
 
-// Commands to send to the audio thread
-enum AudioCommand {
+/// Commands sent by the lifecycle supervisor to the single capture worker.
+pub(crate) enum AudioCommand {
     Stop,
 }
 
-// Global state — the OnceLock holds the RecordingState container, but the sample
-// buffer inside is created fresh for each recording (Option<Arc<...>>).
-static RECORDING_STATE: std::sync::OnceLock<Mutex<RecordingState>> = std::sync::OnceLock::new();
-
-struct RecordingState {
-    command_sender: Option<Sender<AudioCommand>>,
-    thread_handle: Option<JoinHandle<()>>,
-    /// Per-recording sample buffer. Created fresh on start, taken on stop.
-    /// The cpal callback holds an Arc clone — when the stream drops and the
-    /// thread joins, that clone drops too. Next recording gets a fresh Vec.
-    shared: Option<Arc<Mutex<Vec<f32>>>>,
-    /// Atomic flag shared with the cpal callback. Set to `false` on stop so
-    /// the callback stops accumulating samples even if the stream hasn't been
-    /// fully torn down yet (prevents unbounded buffer growth).
-    active: Arc<AtomicBool>,
-    /// Device sample rate for the current/last recording.
-    sample_rate: u32,
-    /// Wall-clock instant when recording started.
-    started_at: Option<std::time::Instant>,
-    /// Name of the audio input device used for the current/last recording.
-    device_name: Option<String>,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AudioInitPhase {
+    DeviceEnumeration,
+    ConfigLookup,
+    StreamBuild,
+    StreamPlay,
+    ReadySignal,
 }
 
-fn get_state() -> &'static Mutex<RecordingState> {
-    RECORDING_STATE.get_or_init(|| {
-        Mutex::new(RecordingState {
-            command_sender: None,
-            thread_handle: None,
-            shared: None,
-            active: Arc::new(AtomicBool::new(false)),
-            sample_rate: WHISPER_SAMPLE_RATE,
-            started_at: None,
-            device_name: None,
-        })
-    })
+impl AudioInitPhase {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::DeviceEnumeration => "device_enumeration",
+            Self::ConfigLookup => "config_lookup",
+            Self::StreamBuild => "stream_build",
+            Self::StreamPlay => "stream_play",
+            Self::ReadySignal => "ready_signal",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum AudioWorkerEvent {
+    PhaseEntered {
+        owner: crate::audio_lifecycle::AudioOwner,
+        phase: AudioInitPhase,
+    },
+    PhaseExited {
+        owner: crate::audio_lifecycle::AudioOwner,
+        phase: AudioInitPhase,
+        elapsed_ms: u64,
+    },
+    Ready {
+        owner: crate::audio_lifecycle::AudioOwner,
+        sample_rate: u32,
+        device_name: String,
+    },
+    InitFailed {
+        owner: crate::audio_lifecycle::AudioOwner,
+        error: String,
+    },
+    StreamStopped {
+        owner: crate::audio_lifecycle::AudioOwner,
+    },
+    ThreadExited {
+        owner: crate::audio_lifecycle::AudioOwner,
+    },
+}
+
+pub(crate) struct AudioWorkerSpec {
+    pub owner: crate::audio_lifecycle::AudioOwner,
+    pub command_receiver: Receiver<AudioCommand>,
+    pub shared: Arc<Mutex<Vec<f32>>>,
+    pub active: Arc<AtomicBool>,
+    pub app_handle: Option<tauri::AppHandle>,
+    pub device_name: Option<String>,
 }
 
 /// List available input device names.
@@ -126,122 +143,138 @@ pub fn list_input_devices() -> Result<Vec<String>, String> {
     let host = cpal::default_host();
     let devices = host
         .input_devices()
-        .map_err(|e| format!("Failed to enumerate input devices: {}", e))?;
-    let names: Vec<String> = devices.filter_map(|d| d.name().ok()).collect();
-    Ok(names)
+        .map_err(|error| format!("Failed to enumerate input devices: {error}"))?;
+    Ok(devices.filter_map(|device| device.name().ok()).collect())
 }
 
+/// Transform instruction capture retains its ready-before-listening contract,
+/// but its capture thread is owned by the same supervisor as dictation.
 pub fn start_recording(
     app_handle: Option<tauri::AppHandle>,
     device_name: Option<String>,
+    transform_pass_id: u64,
 ) -> Result<(), String> {
-    let state = get_state();
-    let mut state_guard = state.lock().unwrap_or_else(|poisoned| {
-        tracing::warn!(target: "audio", "start_recording: recording state mutex was poisoned, recovering");
-        poisoned.into_inner()
+    crate::audio_lifecycle::start_transform_recording(app_handle, device_name, transform_pass_id)
+}
+
+pub(crate) fn spawn_capture_worker(
+    spec: AudioWorkerSpec,
+    event_sender: Sender<AudioWorkerEvent>,
+) -> Result<JoinHandle<()>, String> {
+    thread::Builder::new()
+        .name(format!("murmur-audio-{}", spec.owner.telemetry_id()))
+        .spawn(move || {
+            let owner = spec.owner;
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run_audio_capture(spec, &event_sender)
+            }));
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    tracing::error!(
+                        target: "audio",
+                        owner = owner.telemetry_id(),
+                        "Audio capture error: {}",
+                        error
+                    );
+                    let _ = event_sender.send(AudioWorkerEvent::InitFailed { owner, error });
+                }
+                Err(_) => {
+                    let error = "Audio capture thread panicked".to_string();
+                    tracing::error!(
+                        target: "audio",
+                        owner = owner.telemetry_id(),
+                        "{}",
+                        error
+                    );
+                    let _ = event_sender.send(AudioWorkerEvent::InitFailed { owner, error });
+                }
+            }
+            let _ = event_sender.send(AudioWorkerEvent::ThreadExited { owner });
+        })
+        .map_err(|error| format!("Failed to spawn audio thread: {error}"))
+}
+
+fn timed_phase<T>(
+    owner: crate::audio_lifecycle::AudioOwner,
+    phase: AudioInitPhase,
+    event_sender: &Sender<AudioWorkerEvent>,
+    operation: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let started = std::time::Instant::now();
+    let _ = event_sender.send(AudioWorkerEvent::PhaseEntered { owner, phase });
+    let result = operation();
+    let _ = event_sender.send(AudioWorkerEvent::PhaseExited {
+        owner,
+        phase,
+        elapsed_ms: started.elapsed().as_millis() as u64,
     });
-
-    // Stop any existing recording
-    if state_guard.command_sender.is_some() {
-        drop(state_guard);
-        stop_recording()?;
-        state_guard = state.lock().unwrap_or_else(|poisoned| {
-            tracing::warn!(target: "audio", "start_recording: recording state mutex was poisoned, recovering");
-            poisoned.into_inner()
-        });
-    }
-
-    // Create a brand-new buffer for this recording — no stale data possible
-    let new_buffer = Arc::new(Mutex::new(Vec::<f32>::new()));
-    state_guard.shared = Some(Arc::clone(&new_buffer));
-    let active = Arc::new(AtomicBool::new(true));
-    state_guard.active = Arc::clone(&active);
-    tracing::info!(target: "audio", "start_recording: created fresh sample buffer");
-
-    let (cmd_tx, cmd_rx) = channel::<AudioCommand>();
-    let (ready_tx, ready_rx) = channel::<Result<(u32, String), String>>();
-
-    // Spawn audio thread
-    let handle = thread::spawn(move || {
-        if let Err(e) = run_audio_capture(
-            cmd_rx,
-            new_buffer,
-            active,
-            ready_tx.clone(),
-            app_handle,
-            device_name,
-        ) {
-            tracing::error!(target: "audio", "Audio capture error: {}", e);
-            let _ = ready_tx.send(Err(e));
-        }
-    });
-
-    state_guard.command_sender = Some(cmd_tx);
-    state_guard.thread_handle = Some(handle);
-
-    // Wait for thread to signal ready (with timeout)
-    let init_result = match ready_rx.recv_timeout(std::time::Duration::from_secs(5)) {
-        Ok(Ok((device_sample_rate, actual_device_name))) => {
-            state_guard.sample_rate = device_sample_rate;
-            state_guard.device_name = Some(actual_device_name);
-            state_guard.started_at = Some(std::time::Instant::now());
-            Ok(())
-        }
-        Ok(Err(e)) => Err(e),
-        Err(_) => Err("Audio thread failed to initialize within timeout".to_string()),
-    };
-
-    if init_result.is_err() {
-        if let Some(sender) = state_guard.command_sender.take() {
-            let _ = sender.send(AudioCommand::Stop);
-        }
-        state_guard.thread_handle.take();
-        state_guard.shared.take();
-    }
-
-    init_result
+    result
 }
 
 fn run_audio_capture(
-    cmd_rx: Receiver<AudioCommand>,
-    shared: Arc<Mutex<Vec<f32>>>,
-    active: Arc<AtomicBool>,
-    ready_tx: Sender<Result<(u32, String), String>>,
-    app_handle: Option<tauri::AppHandle>,
-    device_name: Option<String>,
+    spec: AudioWorkerSpec,
+    event_sender: &Sender<AudioWorkerEvent>,
 ) -> Result<(), String> {
+    let AudioWorkerSpec {
+        owner,
+        command_receiver,
+        shared,
+        active,
+        app_handle,
+        device_name,
+    } = spec;
     let host = cpal::default_host();
 
-    let device = if let Some(ref name) = device_name {
-        match host.input_devices() {
-            Ok(mut devices) => match devices.find(|d| d.name().ok().as_deref() == Some(name)) {
-                Some(d) => d,
-                None => {
-                    tracing::warn!(target: "audio", "Requested device '{}' not found, falling back to default", name);
-                    host.default_input_device().ok_or_else(|| {
-                        "No input device available. Please grant microphone permission.".to_string()
-                    })?
+    let device = timed_phase(
+        owner,
+        AudioInitPhase::DeviceEnumeration,
+        event_sender,
+        || {
+            if let Some(ref requested_name) = device_name {
+                match host.input_devices() {
+                    Ok(mut devices) => match devices
+                        .find(|device| device.name().ok().as_deref() == Some(requested_name))
+                    {
+                        Some(device) => Ok(device),
+                        None => {
+                            tracing::warn!(
+                                target: "audio",
+                                "Requested device '{}' not found, falling back to default",
+                                requested_name
+                            );
+                            host.default_input_device().ok_or_else(|| {
+                                "No input device available. Please grant microphone permission."
+                                    .to_string()
+                            })
+                        }
+                    },
+                    Err(error) => {
+                        tracing::warn!(
+                            target: "audio",
+                            "Failed to enumerate devices: {}, falling back to default",
+                            error
+                        );
+                        host.default_input_device().ok_or_else(|| {
+                            "No input device available. Please grant microphone permission."
+                                .to_string()
+                        })
+                    }
                 }
-            },
-            Err(e) => {
-                tracing::warn!(target: "audio", "Failed to enumerate devices: {}, falling back to default", e);
+            } else {
                 host.default_input_device().ok_or_else(|| {
                     "No input device available. Please grant microphone permission.".to_string()
-                })?
+                })
             }
-        }
-    } else {
-        host.default_input_device().ok_or_else(|| {
-            "No input device available. Please grant microphone permission.".to_string()
-        })?
-    };
+        },
+    )?;
 
     let actual_name = device.name().unwrap_or_else(|_| "unknown".to_string());
-
-    let config = device
-        .default_input_config()
-        .map_err(|e| format!("Failed to get input config: {}", e))?;
-
+    let config = timed_phase(owner, AudioInitPhase::ConfigLookup, event_sender, || {
+        device
+            .default_input_config()
+            .map_err(|error| format!("Failed to get input config: {error}"))
+    })?;
     let device_sample_rate = config.sample_rate().0;
     let sample_format = config.sample_format();
     let channels = config.channels() as usize;
@@ -251,128 +284,84 @@ fn run_audio_capture(
     } else {
         "<redacted>".to_string()
     };
-    tracing::info!(target: "audio", "run_audio_capture: device='{}', sample_rate={}, channels={}, format={:?}",
-        telemetry_device, device_sample_rate, channels, sample_format);
+    tracing::info!(
+        target: "audio",
+        owner = owner.telemetry_id(),
+        device = telemetry_device,
+        sample_rate = device_sample_rate,
+        channels,
+        format = ?sample_format,
+        "run_audio_capture"
+    );
 
-    let err_fn = |err| tracing::error!(target: "audio", "Audio stream error: {}", err);
+    let err_fn = |error| tracing::error!(target: "audio", "Audio stream error: {}", error);
+    let stream =
+        timed_phase(
+            owner,
+            AudioInitPhase::StreamBuild,
+            event_sender,
+            || match sample_format {
+                SampleFormat::F32 => Ok(build_mono_input_stream!(
+                    device,
+                    config,
+                    shared,
+                    channels,
+                    err_fn,
+                    f32,
+                    app_handle.clone(),
+                    active
+                )),
+                SampleFormat::I16 => Ok(build_mono_input_stream!(
+                    device, config, shared, channels, err_fn, i16, app_handle, active
+                )),
+                _ => Err(format!("Unsupported sample format: {sample_format:?}")),
+            },
+        )?;
 
-    let stream = match sample_format {
-        SampleFormat::F32 => build_mono_input_stream!(
-            device,
-            config,
-            shared,
-            channels,
-            err_fn,
-            f32,
-            app_handle.clone(),
-            active
-        ),
-        SampleFormat::I16 => build_mono_input_stream!(
-            device, config, shared, channels, err_fn, i16, app_handle, active
-        ),
-        _ => return Err(format!("Unsupported sample format: {:?}", sample_format)),
-    };
+    timed_phase(owner, AudioInitPhase::StreamPlay, event_sender, || {
+        stream
+            .play()
+            .map_err(|error| format!("Failed to start stream: {error}"))
+    })?;
 
-    stream
-        .play()
-        .map_err(|e| format!("Failed to start stream: {}", e))?;
+    timed_phase(owner, AudioInitPhase::ReadySignal, event_sender, || {
+        event_sender
+            .send(AudioWorkerEvent::Ready {
+                owner,
+                sample_rate: device_sample_rate,
+                device_name: actual_name,
+            })
+            .map_err(|_| "Audio lifecycle supervisor stopped".to_string())
+    })?;
 
-    // Signal ready with the device sample rate and name
-    let _ = ready_tx.send(Ok((device_sample_rate, actual_name.clone())));
-
-    // Wait for stop command
     loop {
-        match cmd_rx.recv_timeout(std::time::Duration::from_millis(100)) {
+        match command_receiver.recv_timeout(std::time::Duration::from_millis(100)) {
             Ok(AudioCommand::Stop) => break,
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
 
-    // Explicitly pause before dropping to ensure CoreAudio stops calling us
     let _ = stream.pause();
-
+    let _ = event_sender.send(AudioWorkerEvent::StreamStopped { owner });
     Ok(())
 }
 
 pub fn stop_recording() -> Result<Vec<f32>, String> {
-    let state = get_state();
-    let mut state_guard = state.lock().unwrap_or_else(|poisoned| {
-        tracing::warn!(target: "audio", "stop_recording: recording state mutex was poisoned, recovering");
-        poisoned.into_inner()
-    });
-
-    // Signal the callback to stop accumulating BEFORE sending Stop.
-    // This prevents buffer growth even if the cpal stream lingers.
-    state_guard.active.store(false, Ordering::SeqCst);
-
-    // Send stop command
-    if let Some(sender) = state_guard.command_sender.take() {
-        let _ = sender.send(AudioCommand::Stop);
-    }
-
-    // Wait for thread to finish — this also drops the cpal stream and
-    // the callback's Arc clone, so no more writes to the buffer.
-    if let Some(handle) = state_guard.thread_handle.take() {
-        let _ = handle.join();
-    }
-
-    // Take this recording's buffer — leaves None for next recording
-    let buffer = state_guard.shared.take();
-    let started_at = state_guard.started_at.take();
-    let sample_rate = state_guard.sample_rate;
-
-    let samples = if let Some(buf) = buffer {
-        let mut guard = buf.lock().unwrap_or_else(|poisoned| {
-            tracing::warn!(target: "audio", "stop_recording: samples mutex was poisoned, recovering");
-            poisoned.into_inner()
-        });
-        let raw_count = guard.len();
-        let raw_duration = if sample_rate > 0 {
-            raw_count as f64 / sample_rate as f64
-        } else {
-            0.0
-        };
-        if let Some(started) = started_at {
-            tracing::info!(target: "audio", "stop_recording: raw_samples={}, sample_rate={}, wall_secs={:.1}, audio_secs={:.1}",
-                raw_count, sample_rate, started.elapsed().as_secs_f64(), raw_duration);
-        } else {
-            tracing::info!(target: "audio", "stop_recording: raw_samples={}, sample_rate={}, duration_secs={:.1} (no timestamp)",
-                raw_count, sample_rate, raw_duration);
-        }
-        std::mem::take(&mut *guard)
-        // guard drops, buf drops — buffer is gone, zero stale data
-    } else {
-        tracing::info!(target: "audio", "stop_recording: no buffer (was not recording)");
-        Vec::new()
-    };
-
-    // Resample to Whisper's required sample rate if needed
-    if sample_rate != WHISPER_SAMPLE_RATE && !samples.is_empty() {
-        Ok(resample(&samples, sample_rate, WHISPER_SAMPLE_RATE))
-    } else {
-        Ok(samples)
-    }
+    crate::audio_lifecycle::stop_current_recording()
 }
 
-#[allow(dead_code)]
+pub fn cancel_recording(reason: crate::audio_lifecycle::AudioCancelReason) -> Result<(), String> {
+    crate::audio_lifecycle::cancel_current(reason)
+}
+
 pub fn is_recording() -> bool {
-    if let Some(state) = RECORDING_STATE.get() {
-        if let Ok(guard) = state.lock() {
-            return guard.command_sender.is_some();
-        }
-    }
-    false
+    crate::audio_lifecycle::is_audio_active()
 }
 
 /// Return the device name from the most recent recording session.
 pub fn last_device_name() -> Option<String> {
-    if let Some(state) = RECORDING_STATE.get() {
-        if let Ok(guard) = state.lock() {
-            return guard.device_name.clone();
-        }
-    }
-    None
+    crate::audio_lifecycle::last_device_name()
 }
 
 #[cfg(test)]
@@ -386,29 +375,24 @@ mod tests {
 
     #[test]
     fn rms_silence_is_zero() {
-        let result = compute_rms(&[0.0f32; 100]);
-        assert_eq!(result, 0.0);
+        assert_eq!(compute_rms(&[0.0f32; 100]), 0.0);
     }
 
     #[test]
     fn rms_full_amplitude_is_one() {
-        let samples = vec![1.0f32; 100];
-        let result = compute_rms(&samples);
+        let result = compute_rms(&[1.0f32; 100]);
         assert!((result - 1.0).abs() < 1e-6, "expected 1.0, got {result}");
     }
 
     #[test]
     fn rms_alternating_signs_is_one() {
-        // [1, -1, 1, -1] → each sample squared = 1, mean = 1, sqrt = 1
-        let samples = vec![1.0f32, -1.0, 1.0, -1.0];
-        let result = compute_rms(&samples);
+        let result = compute_rms(&[1.0f32, -1.0, 1.0, -1.0]);
         assert!((result - 1.0).abs() < 1e-6, "expected 1.0, got {result}");
     }
 
     #[test]
     fn rms_half_amplitude() {
-        let samples = vec![0.5f32; 100];
-        let result = compute_rms(&samples);
+        let result = compute_rms(&[0.5f32; 100]);
         assert!((result - 0.5).abs() < 1e-6, "expected 0.5, got {result}");
     }
 
@@ -429,14 +413,12 @@ mod tests {
 
     #[test]
     fn peak_positive() {
-        let samples = vec![0.1f32, 0.5, 0.3, 0.2];
-        assert!((compute_peak(&samples) - 0.5).abs() < 1e-6);
+        assert!((compute_peak(&[0.1f32, 0.5, 0.3, 0.2]) - 0.5).abs() < 1e-6);
     }
 
     #[test]
     fn peak_negative() {
-        let samples = vec![0.1f32, -0.8, 0.3, 0.2];
-        assert!((compute_peak(&samples) - 0.8).abs() < 1e-6);
+        assert!((compute_peak(&[0.1f32, -0.8, 0.3, 0.2]) - 0.8).abs() < 1e-6);
     }
 }
 
@@ -455,7 +437,6 @@ pub fn resample(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
         let src_idx = i as f64 * ratio;
         let idx = src_idx as usize;
         let frac = src_idx - idx as f64;
-
         let sample = if idx + 1 < samples.len() {
             samples[idx] * (1.0 - frac as f32) + samples[idx + 1] * frac as f32
         } else if idx < samples.len() {
@@ -463,7 +444,6 @@ pub fn resample(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
         } else {
             0.0
         };
-
         resampled.push(sample);
     }
 

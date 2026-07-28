@@ -11,7 +11,9 @@ pub use crate::transcriber::WHISPER_SAMPLE_RATE;
 #[serde(rename_all = "lowercase")]
 pub enum DictationStatus {
     Idle,
+    Starting,
     Recording,
+    Recovering,
     Processing,
 }
 
@@ -290,9 +292,9 @@ struct ActiveDictationContext {
 
 pub struct AppState {
     pub dictation: Mutex<DictationState>,
-    /// Serializes recorder start/stop/cancel transitions. Audio startup waits
-    /// for the cpal stream to become ready, so a fast key release must not tear
-    /// the recorder down until that startup has fully completed.
+    /// Serializes recorder start/stop/cancel command transitions. Microphone
+    /// initialization itself is asynchronous and owned by `audio_lifecycle`;
+    /// this lock is never held while waiting for Core Audio or a channel.
     pub recording_transition: tokio::sync::Mutex<()>,
     pub model_runtime: ModelRuntimeManager,
     pub last_transcription_at: Mutex<Option<Instant>>,

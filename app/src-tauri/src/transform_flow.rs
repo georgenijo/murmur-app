@@ -59,6 +59,7 @@ use crate::selection::{SelectionError, TransformSnapshot};
 use crate::state::{AppState, DictationStatus, TransformStatus};
 use crate::transform_apply::{self, ApplyError};
 use crate::MutexExt;
+use tauri::Manager;
 
 /// Minimum hold before a transform-key release is treated as a real
 /// instruction rather than an accidental tap. Enforced frontend-side (the
@@ -1102,6 +1103,70 @@ fn emit_transform_hidden(app: &tauri::AppHandle) {
     let _ = app.emit("transform-review-hidden", ());
 }
 
+/// Handle asynchronous microphone lifecycle events for transform instruction
+/// capture. Dictation owns its own status bridge; transform capture keeps
+/// `DictationStatus::Idle`, so terminal audio failure must tear down the exact
+/// transform pass here instead of waiting for a key release.
+pub(crate) fn handle_audio_lifecycle(
+    app_handle: tauri::AppHandle,
+    transform_pass_id: u64,
+    event: crate::audio_lifecycle::AudioLifecycleEvent,
+) {
+    let state = app_handle.state::<crate::State>();
+    if state.app_state.active_transform_pass_id() != Some(transform_pass_id) {
+        return;
+    }
+
+    match event {
+        crate::audio_lifecycle::AudioLifecycleEvent::Ready => {
+            crate::transform_trace::audio(transform_pass_id, "armed", "ok", 0, 0);
+        }
+        crate::audio_lifecycle::AudioLifecycleEvent::InitializationFailed { .. } => {
+            if !matches!(
+                state.app_state.transform_status(),
+                TransformStatus::Capturing | TransformStatus::Listening
+            ) {
+                return;
+            }
+            crate::transform_trace::audio(transform_pass_id, "armed", "error", 0, 0);
+            crate::transform_trace::resolution(
+                transform_pass_id,
+                "failed",
+                "audio_start",
+                Some("audio_start_failed"),
+            );
+            state.app_state.set_transform_status(TransformStatus::Idle);
+            complete_transform_performance(
+                &state,
+                transform_pass_id,
+                RunOutcomeV1::Failed {
+                    stage: PerformanceStageV1::InstructionCapture,
+                    error_code: StableRunErrorV1::AudioCaptureFailed,
+                },
+                None,
+            );
+            transform_apply::clear_session(&state.app_state);
+            let _ = crate::commands::transform_popover::hide_popover_internal(&app_handle);
+            emit_transform_hidden(&app_handle);
+            state.app_state.clear_transform_pass(transform_pass_id);
+            state.transform_diagnostics.phase(
+                transform_pass_id,
+                "instructionCapture",
+                "failed",
+                None,
+                Some("audio_start_failed"),
+            );
+            state
+                .transform_diagnostics
+                .finish(transform_pass_id, "failed");
+        }
+        crate::audio_lifecycle::AudioLifecycleEvent::StillConnecting
+        | crate::audio_lifecycle::AudioLifecycleEvent::Recovering { .. }
+        | crate::audio_lifecycle::AudioLifecycleEvent::RecoveryStalled
+        | crate::audio_lifecycle::AudioLifecycleEvent::Idle => {}
+    }
+}
+
 pub(crate) struct TauriFlowEffects<'a> {
     pub app: &'a tauri::AppHandle,
     pub state: &'a crate::State,
@@ -1582,7 +1647,9 @@ pub(crate) async fn start_transform_capture(
     // an aborted pass.
     if model_ready {
         let audio_start_started = std::time::Instant::now();
-        if let Err(e) = crate::audio::start_recording(Some(app_handle.clone()), device_name) {
+        if let Err(e) =
+            crate::audio::start_recording(Some(app_handle.clone()), device_name, transform_pass_id)
+        {
             crate::transform_trace::audio(transform_pass_id, "armed", "error", 0, 0);
             crate::transform_trace::resolution(
                 transform_pass_id,
@@ -1625,7 +1692,6 @@ pub(crate) async fn start_transform_capture(
                 .finish(transform_pass_id, "failed");
             return Err(e);
         }
-        crate::transform_trace::audio(transform_pass_id, "armed", "ok", 0, 0);
     }
 
     let capture_started = std::time::Instant::now();
@@ -1724,7 +1790,8 @@ pub(crate) async fn start_transform_capture(
         // failed popover, or a cancel racing the capture) — the pre-armed mic
         // must not stay live.
         if crate::audio::is_recording() {
-            let samples = crate::audio::stop_recording().unwrap_or_default();
+            let _ = crate::audio::cancel_recording(crate::audio_lifecycle::AudioCancelReason::User);
+            let samples: Vec<f32> = Vec::new();
             crate::transform_trace::audio(
                 transform_pass_id,
                 "stopped",
@@ -1757,7 +1824,9 @@ pub(crate) async fn start_transform_capture(
         // down if the flow was cancelled out from under us.
         if state.app_state.transform_status() != TransformStatus::Listening {
             if crate::audio::is_recording() {
-                let samples = crate::audio::stop_recording().unwrap_or_default();
+                let _ =
+                    crate::audio::cancel_recording(crate::audio_lifecycle::AudioCancelReason::User);
+                let samples: Vec<f32> = Vec::new();
                 crate::transform_trace::audio(
                     transform_pass_id,
                     "stopped",
@@ -2158,7 +2227,9 @@ pub(crate) async fn retry_transform_instruction(
     fx.emit_state(ReviewState::Listening, None);
     let _attempt = state.app_state.next_instruction_attempt();
 
-    if let Err(e) = crate::audio::start_recording(Some(app_handle.clone()), device_name) {
+    if let Err(e) =
+        crate::audio::start_recording(Some(app_handle.clone()), device_name, transform_pass_id)
+    {
         crate::transform_trace::audio(transform_pass_id, "armed", "error", 0, 0);
         crate::transform_trace::resolution(
             transform_pass_id,
@@ -2173,12 +2244,12 @@ pub(crate) async fn retry_transform_instruction(
         state.app_state.clear_transform_pass(transform_pass_id);
         return Err(e);
     }
-    crate::transform_trace::audio(transform_pass_id, "armed", "ok", 0, 0);
     // Same mic-leak re-check as start_transform_capture (item 10): a cancel
     // that raced in during audio startup must not leave the mic live.
     if state.app_state.transform_status() != TransformStatus::Listening {
         if crate::audio::is_recording() {
-            let samples = crate::audio::stop_recording().unwrap_or_default();
+            let _ = crate::audio::cancel_recording(crate::audio_lifecycle::AudioCancelReason::User);
+            let samples: Vec<f32> = Vec::new();
             crate::transform_trace::audio(
                 transform_pass_id,
                 "stopped",
@@ -2388,7 +2459,8 @@ pub(crate) fn cancel_transform(
         TransformStatus::Capturing | TransformStatus::Listening
     ) && crate::audio::is_recording()
     {
-        let samples = crate::audio::stop_recording().unwrap_or_default();
+        let _ = crate::audio::cancel_recording(crate::audio_lifecycle::AudioCancelReason::User);
+        let samples: Vec<f32> = Vec::new();
         crate::transform_trace::audio(
             transform_pass_id,
             "stopped",
