@@ -31,7 +31,7 @@ Read these before working on a feature:
 
 - **[docs/onboarding.md](docs/onboarding.md)** — Setup, permissions, model installation, logs
 - **[docs/features/onboarding-flow.md](docs/features/onboarding-flow.md)** — First-launch setup assistant (permissions wizard + model download)
-- **[docs/features/history-workspace.md](docs/features/history-workspace.md)** — Transcript search, filters, pinning, and export
+- **[docs/features/history-workspace.md](docs/features/history-workspace.md)** — Transcript search, filters, and export
 - **[docs/features/command-palette.md](docs/features/command-palette.md)** — ⌘K launcher and main-window shortcuts
 - **[docs/features/silence-auto-stop.md](docs/features/silence-auto-stop.md)** — Hands-free trailing-silence finish for double-tap recordings
 - **[docs/features/recording-modes.md](docs/features/recording-modes.md)** — Hold-down and double-tap modes, state machine, rdev threading
@@ -123,7 +123,7 @@ Read these before working on a feature:
 | `lib/settings.ts` | Settings types, defaults, localStorage persistence |
 | `lib/onboarding.ts` | First-launch setup-assistant completion flag |
 | `lib/events.ts` | Event types, stream/level definitions, color constants |
-| `lib/history.ts` | History entries, trim/pin budgets, search + match segmentation, export rendering |
+| `lib/history.ts` | History entries, rolling trim, search + match segmentation, export rendering |
 | `lib/historyExport.ts` | Clipboard and save-dialog wrappers for history exports |
 | `lib/commandPalette.ts` | Palette command type, tiered scoring, filtering, selection movement |
 | `lib/keyboardShortcuts.ts` | Pure main-window keydown → action mapping (⌘K/⌘F/⌘,/⌘L) |
@@ -137,7 +137,7 @@ Read these before working on a feature:
 | `lib/hooks/useCombinedToggle.ts` | Both mode (hold-down + double-tap simultaneous) |
 | `lib/hooks/useRecordingState.ts` | Recording status, transcription, toggle logic |
 | `lib/hooks/useAutoUpdater.ts` | OTA updates, min-version enforcement |
-| `lib/hooks/useHistoryManagement.ts` | Transcription history: add/update/pin/clear with localStorage persistence |
+| `lib/hooks/useHistoryManagement.ts` | Transcription history: add/update/clear with localStorage persistence |
 | `lib/hooks/useSilenceAutoStop.ts` | Ends a hands-free double-tap recording after trailing silence |
 | `lib/hooks/useInitialization.ts` | One-time init sequence (initDictation + configure) |
 | `lib/hooks/useShowAboutListener.ts` | Listens for show-about tray event |
@@ -168,7 +168,7 @@ Read these before working on a feature:
 | `lib/transformReview.ts` | Review state/error types + content guards |
 | `components/onboarding/OnboardingFlow.tsx` | First-launch setup assistant (permissions + model wizard) |
 | `components/CommandPalette.tsx` | ⌘K command palette dialog |
-| `components/history/HistoryPanel.tsx` | History workspace: search, filters, pins, export menu |
+| `components/history/HistoryPanel.tsx` | History workspace: search, filters, export menu |
 | `components/settings/SettingsPanel.tsx` | Settings UI with mode switching (incl. Transform page) |
 | `components/settings/TransformsManager.tsx` | Saved transform CRUD UI |
 | `components/transform-review/` | Review popover UI (diff, actions, mock driver) |

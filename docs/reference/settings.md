@@ -248,7 +248,7 @@ Other data persisted to localStorage by the application (not part of the `Settin
 
 | Key | Purpose | Used By |
 |-----|---------|---------|
-| `dictation-history` | Transcription history entries (max 50 unpinned + 25 pinned) | `useHistoryManagement` |
+| `dictation-history` | Transcription history entries (rolling max 200) | `useHistoryManagement` |
 | `dictation-stats` | Cumulative transcription statistics | `lib/stats.ts` |
 | `skipped-update-version` | Version string the user chose to skip | `useAutoUpdater` |
 | `updater-last-check` | Timestamp of last update check | `useAutoUpdater` |

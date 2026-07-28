@@ -15,50 +15,20 @@ export interface HistoryEntry {
   sourceName?: string;
   /** Local recording-start scope metadata used only for explicit teaching. */
   teachingContext?: TeachingContext;
-  /** User-pinned. Pinned entries are exempt from the rolling trim and from
-   *  "Clear history"; absent on entries saved before this field existed. */
-  pinned?: boolean;
 }
 
 const STORAGE_KEY = 'dictation-history';
 
-/** Rolling cap on ordinary (unpinned) entries. */
-const MAX_ENTRIES = 50;
+/** Rolling cap on stored entries. */
+const MAX_ENTRIES = 200;
 
 /**
- * Hard ceiling on pinned entries. Pinned entries are exempt from the rolling
- * trim, so they need their own bound — otherwise a user who keeps pinning would
- * grow the localStorage blob without limit.
- */
-export const MAX_PINNED_ENTRIES = 25;
-
-export function isPinned(entry: HistoryEntry): boolean {
-  return entry.pinned === true;
-}
-
-/**
- * Drop the oldest entries beyond the caps, keeping pinned and unpinned entries
- * under independent budgets and preserving the stored oldest-first order.
- *
- * Indices, not ids, decide what survives: ids are millisecond timestamps and
- * two entries created in the same millisecond can collide.
+ * Drop the oldest entries beyond the cap, preserving the stored oldest-first
+ * order. Index-based: ids are millisecond timestamps and two entries created
+ * in the same millisecond can collide.
  */
 export function trimHistory(entries: HistoryEntry[]): HistoryEntry[] {
-  let pinnedKept = 0;
-  let unpinnedKept = 0;
-  const keep = new Array<boolean>(entries.length).fill(false);
-  for (let i = entries.length - 1; i >= 0; i--) {
-    if (isPinned(entries[i])) {
-      if (pinnedKept < MAX_PINNED_ENTRIES) {
-        keep[i] = true;
-        pinnedKept++;
-      }
-    } else if (unpinnedKept < MAX_ENTRIES) {
-      keep[i] = true;
-      unpinnedKept++;
-    }
-  }
-  return entries.filter((_, index) => keep[index]);
+  return entries.slice(-MAX_ENTRIES);
 }
 
 export function loadHistory(): HistoryEntry[] {
@@ -104,7 +74,7 @@ export function addHistoryEntry(
 
 /**
  * Monotonic suffix so two entries created inside the same millisecond can't
- * share an id (which would make React keys and pin toggles ambiguous).
+ * share an id (which would make React keys and entry updates ambiguous).
  */
 let entrySequence = 0;
 function nextEntryId(): string {
@@ -120,30 +90,6 @@ export function updateHistoryEntry(
   return entries.map((entry) => entry.id === id ? { ...entry, text } : entry);
 }
 
-/** How many more entries may be pinned before the ceiling is reached. */
-export function remainingPinSlots(entries: HistoryEntry[]): number {
-  return Math.max(0, MAX_PINNED_ENTRIES - entries.filter(isPinned).length);
-}
-
-/**
- * Toggle one entry's pinned flag. Pinning past `MAX_PINNED_ENTRIES` is refused
- * — the same array is returned unchanged so callers can detect the no-op by
- * identity and explain the cap instead of silently dropping the request.
- * Unpinning is always allowed.
- */
-export function togglePinned(entries: HistoryEntry[], id: string): HistoryEntry[] {
-  const target = entries.find((entry) => entry.id === id);
-  if (!target) return entries;
-  if (!isPinned(target) && remainingPinSlots(entries) === 0) return entries;
-  return entries.map((entry) =>
-    entry.id === id ? { ...entry, pinned: !isPinned(entry) } : entry);
-}
-
-/** Remove every unpinned entry, keeping pinned ones in order. */
-export function removeUnpinned(entries: HistoryEntry[]): HistoryEntry[] {
-  return entries.filter(isPinned);
-}
-
 export function clearHistory(): void {
   localStorage.removeItem(STORAGE_KEY);
 }
@@ -152,13 +98,12 @@ export function clearHistory(): void {
 // Search and filtering
 // ---------------------------------------------------------------------------
 
-export type HistoryFilter = 'all' | 'recording' | 'file' | 'pinned';
+export type HistoryFilter = 'all' | 'recording' | 'file';
 
 export const HISTORY_FILTER_OPTIONS: { value: HistoryFilter; label: string }[] = [
   { value: 'all', label: 'All' },
   { value: 'recording', label: 'Mic' },
   { value: 'file', label: 'File' },
-  { value: 'pinned', label: 'Pinned' },
 ];
 
 export function entrySource(entry: HistoryEntry): HistorySource {
@@ -177,7 +122,7 @@ function matchesTokens(entry: HistoryEntry, tokens: string[]): boolean {
 }
 
 /**
- * Apply the source/pinned chip and the search box. Order is preserved, so the
+ * Apply the source chip and the search box. Order is preserved, so the
  * caller still owns presentation order.
  */
 export function filterHistory(
@@ -187,22 +132,19 @@ export function filterHistory(
   const tokens = searchTokens(options.query ?? '');
   const filter = options.filter ?? 'all';
   return entries.filter((entry) => {
-    if (filter === 'pinned' && !isPinned(entry)) return false;
     if ((filter === 'recording' || filter === 'file') && entrySource(entry) !== filter) return false;
     return matchesTokens(entry, tokens);
   });
 }
 
 /**
- * Presentation order: pinned entries first, then newest first inside each
- * group. Stable for equal timestamps (falls back to stored order).
+ * Presentation order: newest first. Stable for equal timestamps (falls back
+ * to stored order).
  */
 export function sortForDisplay(entries: HistoryEntry[]): HistoryEntry[] {
   return entries
     .map((entry, index) => ({ entry, index }))
     .sort((a, b) => {
-      const pinDelta = Number(isPinned(b.entry)) - Number(isPinned(a.entry));
-      if (pinDelta !== 0) return pinDelta;
       const timeDelta = b.entry.timestamp - a.entry.timestamp;
       if (timeDelta !== 0) return timeDelta;
       return b.index - a.index;
@@ -320,7 +262,7 @@ function sourceLabel(entry: HistoryEntry): string {
  * Render entries for export, newest first.
  *
  * Only what the user can already see is written out: text, timestamp,
- * duration, source and pin state. `teachingContext` (bundle ids and project
+ * duration and source. `teachingContext` (bundle ids and project
  * roots captured at recording start) is deliberately excluded — it is local
  * scope metadata for teaching, not part of a transcript the user shares.
  */
@@ -342,7 +284,6 @@ export function formatHistoryExport(
         durationSeconds: entry.duration,
         source: entrySource(entry),
         ...(entry.sourceName ? { sourceName: entry.sourceName } : {}),
-        pinned: isPinned(entry),
         text: entry.text,
       })),
     }, null, 2)}\n`;
@@ -362,7 +303,6 @@ export function formatHistoryExport(
         '',
         `- Source: ${sourceLabel(entry)}`,
         `- Duration: ${formatDuration(entry.duration)}`,
-        ...(isPinned(entry) ? ['- Pinned: yes'] : []),
         '',
         entry.text,
         '',
@@ -376,7 +316,6 @@ export function formatHistoryExport(
       formatExportTimestamp(entry.timestamp),
       sourceLabel(entry),
       formatDuration(entry.duration),
-      ...(isPinned(entry) ? ['pinned'] : []),
     ].join(' · ');
     return `[${meta}]\n${entry.text}`;
   });

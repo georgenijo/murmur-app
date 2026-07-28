@@ -2,7 +2,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HistoryPanel } from './HistoryPanel';
-import { MAX_PINNED_ENTRIES, type HistoryEntry } from '../../lib/history';
+import { type HistoryEntry } from '../../lib/history';
 
 const invoke = vi.fn().mockResolvedValue(0);
 const save = vi.fn().mockResolvedValue('/Users/me/Documents/murmur-history.md');
@@ -23,7 +23,7 @@ function entry(overrides: Partial<HistoryEntry> & { id: string }): HistoryEntry 
 const ENTRIES: HistoryEntry[] = [
   entry({ id: 'mic', text: 'ship the Tauri release notes' }),
   entry({ id: 'file', text: 'imported meeting audio', source: 'file', sourceName: 'standup.wav' }),
-  entry({ id: 'pinned', text: 'remember the invariant', pinned: true }),
+  entry({ id: 'note', text: 'remember the invariant', timestamp: Date.UTC(2026, 6, 18, 13) }),
 ];
 
 describe('HistoryPanel', () => {
@@ -40,10 +40,8 @@ describe('HistoryPanel', () => {
       root.render(
         <HistoryPanel
           entries={ENTRIES}
-          onClearUnpinned={vi.fn()}
-          onClearAll={vi.fn()}
+          onClear={vi.fn()}
           onUpdateEntry={vi.fn()}
-          onTogglePin={vi.fn()}
           {...props}
         />,
       );
@@ -81,10 +79,9 @@ describe('HistoryPanel', () => {
     expect(container.querySelector('input[type="search"]')).toBeNull();
   });
 
-  it('orders pinned entries first and badges them', async () => {
+  it('orders entries newest first', async () => {
     await render();
     expect(cardText()[0]).toContain('remember the invariant');
-    expect(cardText()[0]).toContain('Pinned');
   });
 
   it('filters as you type and highlights the match', async () => {
@@ -103,36 +100,11 @@ describe('HistoryPanel', () => {
     expect(cardText()).toHaveLength(3);
   });
 
-  it('filters by source and by pinned', async () => {
+  it('filters by source', async () => {
     await render();
     await act(async () => byText('File')!.click());
     expect(cardText()).toHaveLength(1);
     expect(cardText()[0]).toContain('standup.wav');
-
-    await act(async () => byText('Pinned 1')!.click());
-    expect(cardText()).toHaveLength(1);
-    expect(cardText()[0]).toContain('remember the invariant');
-  });
-
-  it('toggles a pin through the callback', async () => {
-    const onTogglePin = vi.fn();
-    await render({ onTogglePin });
-    const pin = container.querySelector('[aria-label^="Pin transcription"]') as HTMLButtonElement;
-    await act(async () => pin.click());
-    expect(onTogglePin).toHaveBeenCalledOnce();
-  });
-
-  it('explains the pin ceiling instead of silently dropping the request', async () => {
-    const onTogglePin = vi.fn();
-    const full = [
-      ...Array.from({ length: MAX_PINNED_ENTRIES }, (_, i) => entry({ id: `p${i}`, pinned: true })),
-      entry({ id: 'extra', text: 'one more' }),
-    ];
-    await render({ entries: full, onTogglePin });
-    const pin = container.querySelector('[aria-label^="Pin transcription"]') as HTMLButtonElement;
-    await act(async () => pin.click());
-    expect(onTogglePin).not.toHaveBeenCalled();
-    expect(container.textContent).toContain('Pin limit reached');
   });
 
   it('copies only the visible entries as markdown', async () => {
@@ -175,21 +147,16 @@ describe('HistoryPanel', () => {
     expect(container.textContent).not.toContain('Saved');
   });
 
-  it('offers a pinned-safe clear and a separate clear-all', async () => {
-    const onClearUnpinned = vi.fn();
-    const onClearAll = vi.fn();
-    await render({ onClearUnpinned, onClearAll });
+  it('clears only after a second confirming click', async () => {
+    const onClear = vi.fn();
+    await render({ onClear });
 
-    const clear = byText('Clear 2 unpinned')!;
+    const clear = byText('Clear History')!;
     await act(async () => clear.click());
+    expect(onClear).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('Click again to confirm');
     await act(async () => clear.click());
-    expect(onClearUnpinned).toHaveBeenCalledOnce();
-    expect(onClearAll).not.toHaveBeenCalled();
-
-    const clearAll = byText('Clear all')!;
-    await act(async () => clearAll.click());
-    await act(async () => clearAll.click());
-    expect(onClearAll).toHaveBeenCalledOnce();
+    expect(onClear).toHaveBeenCalledOnce();
   });
 
   it('focuses the search box when the focus token changes', async () => {

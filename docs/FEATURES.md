@@ -131,7 +131,7 @@ Hold a dedicated key with text selected in any app, speak an instruction, review
 Status indicator, recording controls, the transcript history workspace, usage stats (words, WPM, recordings, approximate tokens), permissions banner, update and about modals. Hides on close.
 
 ### History workspace — [features/history-workspace.md](features/history-workspace.md)
-Search with match highlighting (tokens are ANDed), Mic/File/Pinned filters, and pinning that exempts an entry from the rolling 50-entry trim and from "Clear history". Export exactly what is on screen as Markdown, plain text, or JSON — to the clipboard or, through a validated extension-allow-listed atomic write, to a file. Teaching context is never exported.
+Search with match highlighting (tokens are ANDed) and Mic/File filters over a rolling 200-entry history. Export exactly what is on screen as Markdown, plain text, or JSON — to the clipboard or, through a validated extension-allow-listed atomic write, to a file. Teaching context is never exported.
 
 ### Command palette — [features/command-palette.md](features/command-palette.md)
 `⌘K` opens a keyboard-first launcher for every settings page and the common main-window actions, with deterministic tiered ranking. `⌘F` focuses transcript search, `⌘,` opens Settings, `⌘L` opens the log viewer.

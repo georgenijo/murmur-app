@@ -2,14 +2,11 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
   HISTORY_EXPORT_FORMATS,
   HISTORY_FILTER_OPTIONS,
-  MAX_PINNED_ENTRIES,
   entrySource,
   filterHistory,
   formatDuration,
   formatTimestamp,
-  isPinned,
   matchSegments,
-  remainingPinSlots,
   sortForDisplay,
   type HistoryEntry,
   type HistoryExportFormat,
@@ -21,12 +18,9 @@ import { CorrectAndTeachDialog } from './CorrectAndTeachDialog';
 
 interface HistoryPanelProps {
   entries: HistoryEntry[];
-  /** Clear every entry the user has not pinned. */
-  onClearUnpinned: () => void;
-  /** Clear everything, pinned entries included. */
-  onClearAll: () => void;
+  /** Clear the whole history. */
+  onClear: () => void;
   onUpdateEntry: (id: string, text: string) => void;
-  onTogglePin: (id: string) => void;
   /** Bumped by the command palette to move focus into the search box. */
   focusSearchToken?: number;
 }
@@ -44,21 +38,10 @@ function HighlightedText({ text, query }: { text: string; query: string }) {
   );
 }
 
-function PinIcon({ filled }: { filled: boolean }) {
-  return (
-    <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill={filled ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth={1.8} aria-hidden="true">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M15 4l5 5-3 1-3.5 3.5L13 17l-6-6 3.5-.5L14 7l1-3z" />
-      <path strokeLinecap="round" d="M7 17l-3 3" />
-    </svg>
-  );
-}
-
 export function HistoryPanel({
   entries,
-  onClearUnpinned,
-  onClearAll,
+  onClear,
   onUpdateEntry,
-  onTogglePin,
   focusSearchToken,
 }: HistoryPanelProps) {
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -67,7 +50,7 @@ export function HistoryPanel({
   const [filter, setFilter] = useState<HistoryFilter>('all');
   const [exportOpen, setExportOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
-  const [confirmClear, setConfirmClear] = useState<null | 'unpinned' | 'all'>(null);
+  const [confirmClear, setConfirmClear] = useState(false);
   const copyGroupId = useId();
   const saveGroupId = useId();
   const searchRef = useRef<HTMLInputElement>(null);
@@ -115,10 +98,8 @@ export function HistoryPanel({
     () => sortForDisplay(filterHistory(entries, { query, filter })),
     [entries, query, filter],
   );
-  const pinnedCount = entries.filter(isPinned).length;
-  const unpinnedCount = entries.length - pinnedCount;
   // Correct-and-Teach only ever targets the newest entry in the whole history,
-  // not the first row on screen — pinning and filtering reorder the list.
+  // not the first row on screen — sorting and filtering reorder the list.
   const newestId = entries[entries.length - 1]?.id;
 
   const handleCopy = async (entry: HistoryEntry) => {
@@ -131,14 +112,6 @@ export function HistoryPanel({
       showNotice('Could not copy to the clipboard.');
       flog.warn('main', 'History copy failed', { error: String(err) });
     }
-  };
-
-  const handleTogglePin = (entry: HistoryEntry) => {
-    if (!isPinned(entry) && remainingPinSlots(entries) === 0) {
-      showNotice(`Pin limit reached (${MAX_PINNED_ENTRIES}). Unpin something first.`);
-      return;
-    }
-    onTogglePin(entry.id);
   };
 
   const handleCopyExport = async (format: HistoryExportFormat) => {
@@ -165,16 +138,15 @@ export function HistoryPanel({
 
   // Two-step confirm rather than window.confirm: the main window is a
   // non-activating utility surface and a native modal steals focus from it.
-  const handleClear = (scope: 'unpinned' | 'all') => {
+  const handleClear = () => {
     if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
-    if (confirmClear !== scope) {
-      setConfirmClear(scope);
-      confirmTimerRef.current = setTimeout(() => setConfirmClear(null), 4000);
+    if (!confirmClear) {
+      setConfirmClear(true);
+      confirmTimerRef.current = setTimeout(() => setConfirmClear(false), 4000);
       return;
     }
-    setConfirmClear(null);
-    if (scope === 'all') onClearAll();
-    else onClearUnpinned();
+    setConfirmClear(false);
+    onClear();
   };
 
   if (entries.length === 0) {
@@ -274,7 +246,6 @@ export function HistoryPanel({
               className={`rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary ${filter === option.value ? 'bg-primary text-on-primary' : 'bg-surface-container-lowest text-on-surface-variant hover:bg-surface-container'}`}
             >
               {option.label}
-              {option.value === 'pinned' && pinnedCount > 0 ? ` ${pinnedCount}` : ''}
             </button>
           ))}
           <span className="ml-auto text-[11px] text-on-surface-variant">
@@ -297,10 +268,9 @@ export function HistoryPanel({
           </div>
         ) : visible.map((entry) => {
           const wordCount = entry.text.trim() ? entry.text.trim().split(/\s+/).length : 0;
-          const pinned = isPinned(entry);
           const isNewest = entry.id === newestId;
           return (
-            <article key={entry.id} className={`group w-full rounded-xl p-3.5 text-left shadow-sm transition-[box-shadow,background-color] hover:shadow-md ${copiedId === entry.id ? 'bg-emerald-50 dark:bg-emerald-950/40' : 'bg-surface-container-lowest hover:bg-surface-container-low'} ${pinned ? 'ring-1 ring-primary/30' : ''}`}>
+            <article key={entry.id} className={`group w-full rounded-xl p-3.5 text-left shadow-sm transition-[box-shadow,background-color] hover:shadow-md ${copiedId === entry.id ? 'bg-emerald-50 dark:bg-emerald-950/40' : 'bg-surface-container-lowest hover:bg-surface-container-low'}`}>
               <div className="mb-1 flex items-center justify-between gap-2">
                 <div className="flex min-w-0 items-center gap-2">
                   <span className="shrink-0 text-xs text-on-surface-variant">{formatTimestamp(entry.timestamp)}</span>
@@ -315,22 +285,10 @@ export function HistoryPanel({
                       Mic
                     </span>
                   )}
-                  {pinned && (
-                    <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">Pinned</span>
-                  )}
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
                   <span className="rounded-full bg-surface-container px-2 py-0.5 text-[10px] font-medium text-on-surface-variant">{wordCount} {wordCount === 1 ? 'word' : 'words'}</span>
                   <span className="text-xs text-on-surface-variant">{formatDuration(entry.duration)}</span>
-                  <button
-                    type="button"
-                    onClick={() => handleTogglePin(entry)}
-                    aria-pressed={pinned}
-                    aria-label={`${pinned ? 'Unpin' : 'Pin'} transcription from ${formatTimestamp(entry.timestamp)}`}
-                    className={`rounded-md p-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary ${pinned ? 'text-primary hover:bg-primary/10' : 'text-on-surface-variant hover:bg-surface-container hover:text-primary'}`}
-                  >
-                    <PinIcon filled={pinned} />
-                  </button>
                   {copiedId === entry.id ? (
                     <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400">Copied!</span>
                   ) : (
@@ -353,24 +311,11 @@ export function HistoryPanel({
 
       <div className="mt-3 flex shrink-0 gap-2 pt-1">
         <button
-          onClick={() => handleClear(pinnedCount > 0 ? 'unpinned' : 'all')}
-          disabled={pinnedCount > 0 && unpinnedCount === 0}
-          className="flex-1 rounded-lg bg-surface-container-lowest px-3 py-2 text-sm font-medium text-on-surface-variant shadow-sm transition-colors hover:bg-surface-container hover:text-error disabled:cursor-not-allowed disabled:opacity-40 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          onClick={handleClear}
+          className="flex-1 rounded-lg bg-surface-container-lowest px-3 py-2 text-sm font-medium text-on-surface-variant shadow-sm transition-colors hover:bg-surface-container hover:text-error focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
         >
-          {confirmClear === 'unpinned' || (confirmClear === 'all' && pinnedCount === 0)
-            ? 'Click again to confirm'
-            : pinnedCount > 0
-              ? `Clear ${unpinnedCount} unpinned`
-              : 'Clear History'}
+          {confirmClear ? 'Click again to confirm' : 'Clear History'}
         </button>
-        {pinnedCount > 0 && (
-          <button
-            onClick={() => handleClear('all')}
-            className="rounded-lg bg-surface-container-lowest px-3 py-2 text-sm font-medium text-on-surface-variant shadow-sm transition-colors hover:bg-surface-container hover:text-error focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-          >
-            {confirmClear === 'all' ? 'Confirm clear all' : 'Clear all'}
-          </button>
-        )}
       </div>
 
       {teachingEntry && (

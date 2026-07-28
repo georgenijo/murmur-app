@@ -130,7 +130,7 @@ function App() {
     window.addEventListener('focus', check);
     return () => window.removeEventListener('focus', check);
   }, []);
-  const { historyEntries, addEntry, updateEntry, togglePin, clearUnpinnedEntries, clearHistory } = useHistoryManagement();
+  const { historyEntries, addEntry, updateEntry, clearHistory } = useHistoryManagement();
   const {
     status, recordingDuration, error: recordingError,
     handleStart, handleStop, toggleRecording, statsVersion,
@@ -406,10 +406,8 @@ function App() {
             <>
               <TranscriptionView
                 historyEntries={historyEntries}
-                onClearUnpinned={clearUnpinnedEntries}
-                onClearAllHistory={clearHistory}
+                onClearHistory={clearHistory}
                 onUpdateHistoryEntry={updateEntry}
-                onTogglePin={togglePin}
                 focusSearchToken={historySearchToken}
               />
 

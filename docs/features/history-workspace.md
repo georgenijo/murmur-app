@@ -2,9 +2,9 @@
 
 ## Overview
 
-Transcription history is where a dictated line goes to be found again. The workspace turns the plain reverse-chronological list into something you can work in: search it, narrow it, keep the entries that matter, and take a set of them out of the app as Markdown, plain text, or JSON.
+Transcription history is where a dictated line goes to be found again. The workspace turns the plain reverse-chronological list into something you can work in: search it, narrow it, and take a set of entries out of the app as Markdown, plain text, or JSON.
 
-Everything here is local. History lives in `localStorage` under `dictation-history`, and the only thing that leaves the app is an export the user explicitly asks for.
+Everything here is local. History lives in `localStorage` under `dictation-history` with a rolling 200-entry cap (`trimHistory` drops the oldest beyond it, by index so same-millisecond ids can't confuse it), and the only thing that leaves the app is an export the user explicitly asks for. An entry worth keeping past the cap belongs in an export or the knowledge store, not in a special history state.
 
 ## Search
 
@@ -18,19 +18,13 @@ The search box filters as you type.
 
 ## Filters
 
-Four chips: **All**, **Mic**, **File**, **Pinned**. Entries saved before the `source` field existed count as `Mic`. The pinned chip carries the current pin count. Filters compose with the search query.
+Three chips: **All**, **Mic**, **File**. Entries saved before the `source` field existed count as `Mic`. Filters compose with the search query.
 
 The counter on the right reads `N of M` while anything is filtered, and just the total otherwise.
 
-## Pinning
+## Clearing
 
-Pin an entry to keep it. Pinning has three consequences:
-
-1. **Pinned entries are exempt from the rolling trim.** Ordinary entries keep a 50-entry budget; pinned entries have their own budget of 25. Both are enforced by index (not by id) in `trimHistory`, so entries created inside the same millisecond can't confuse it.
-2. **Pinned entries sort to the top**, newest first inside each group.
-3. **"Clear history" skips them.** With pins present, the primary button becomes `Clear N unpinned` and a separate `Clear all` appears next to it. Both are two-step confirms that disarm after four seconds — deliberately not `window.confirm`, since a native modal steals focus from the main window.
-
-Pinning past the ceiling is refused rather than silently dropping the oldest pin: `togglePinned` returns the same array, and the panel says so (`Pin limit reached (25). Unpin something first.`). Unpinning is always allowed.
+`Clear History` removes everything. It is a two-step confirm that disarms after four seconds — deliberately not `window.confirm`, since a native modal steals focus from the main window.
 
 ## Export
 
@@ -38,11 +32,11 @@ The **Export** menu acts on **exactly what is currently shown** — filters and 
 
 | Format | Shape |
 |--------|-------|
-| Markdown | `# Murmur transcript history`, an export stamp, then one `##` section per entry with source, duration, and pin state |
+| Markdown | `# Murmur transcript history`, an export stamp, then one `##` section per entry with source and duration |
 | Plain text | `[timestamp · source · duration]` header line per entry, blank-line separated |
 | JSON | `{ schema: "murmur.history.v1", exportedAt, count, entries: [...] }` |
 
-Each format can go to the clipboard or to a file. The two menu groups repeat the same format names, so each is a labelled `role="group"` and every item carries the verb in its accessible name ("Copy 5 shown as Markdown", "Save 5 shown as Markdown"). Entries are ordered exactly as displayed (pinned first, then newest first), and timestamps are rendered as local `YYYY-MM-DD HH:MM:SS` so an export reads the same on every machine.
+Each format can go to the clipboard or to a file. The two menu groups repeat the same format names, so each is a labelled `role="group"` and every item carries the verb in its accessible name ("Copy 5 shown as Markdown", "Save 5 shown as Markdown"). Entries are ordered exactly as displayed (newest first), and timestamps are rendered as local `YYYY-MM-DD HH:MM:SS` so an export reads the same on every machine.
 
 **`teachingContext` is never exported.** The bundle id and project root captured at recording start are local scope metadata for Correct-and-Teach, not part of a transcript the user is sharing. All three formats are asserted against this in tests.
 
@@ -62,20 +56,20 @@ Cancelling the dialog is a no-op — no command call, no message.
 
 ## Correct and Teach
 
-Correct-and-Teach still targets **the newest entry in the whole history**, not the first row on screen. Pinning and filtering reorder the list, so the button is anchored to `entries[entries.length - 1]` and travels with that entry wherever it is displayed.
+Correct-and-Teach still targets **the newest entry in the whole history**, not the first row on screen. Sorting and filtering reorder the list, so the button is anchored to `entries[entries.length - 1]` and travels with that entry wherever it is displayed.
 
 ## Files
 
 | File | Role |
 |------|------|
-| `app/src/lib/history.ts` | Entry shape, trim/pin/filter/sort, match segmentation, export rendering |
+| `app/src/lib/history.ts` | Entry shape, trim/filter/sort, match segmentation, export rendering |
 | `app/src/lib/historyExport.ts` | Clipboard and save-dialog wrappers around the pure renderer |
-| `app/src/lib/hooks/useHistoryManagement.ts` | State + persistence, including pin and pinned-safe clear |
+| `app/src/lib/hooks/useHistoryManagement.ts` | State + persistence: add, update, clear |
 | `app/src/components/history/HistoryPanel.tsx` | Search, chips, cards, export menu, clear actions |
 | `app/src-tauri/src/commands/export.rs` | `save_text_export` — validation and atomic write |
 
 ## Tests
 
-- `app/src/lib/history.test.ts` — trim budgets, duplicate ids, pin ceiling, filters, sorting, match segmentation (including regex metacharacters and reassembly), all three export formats, and the teaching-context exclusion.
-- `app/src/components/history/HistoryPanel.test.tsx` — search/filter/pin interaction, the pin-ceiling message, export scope, dialog cancellation, and the two-step clears.
+- `app/src/lib/history.test.ts` — the 200-entry trim, duplicate ids, filters, sorting, match segmentation (including regex metacharacters and reassembly), all three export formats, and the teaching-context exclusion.
+- `app/src/components/history/HistoryPanel.test.tsx` — search/filter interaction, export scope, dialog cancellation, and the two-step clear.
 - `app/src-tauri/src/commands/export.rs` — the full validation matrix plus atomic overwrite and temp-file placement.

@@ -8,16 +8,11 @@ import {
   formatExportTimestamp,
   formatHistoryExport,
   historyExportFileName,
-  isPinned,
   loadHistory,
   matchSegments,
-  MAX_PINNED_ENTRIES,
-  removeUnpinned,
-  remainingPinSlots,
   saveHistory,
   searchTokens,
   sortForDisplay,
-  togglePinned,
   trimHistory,
   updateHistoryEntry,
   type HistoryEntry,
@@ -34,38 +29,24 @@ function entry(overrides: Partial<HistoryEntry> & { id: string }): HistoryEntry 
 }
 
 describe('trimHistory', () => {
-  it('keeps the newest 50 unpinned entries', () => {
-    const entries = Array.from({ length: 60 }, (_, i) =>
+  it('keeps the newest 200 entries', () => {
+    const entries = Array.from({ length: 210 }, (_, i) =>
       entry({ id: `e${i}`, text: `entry ${i}` }));
     const trimmed = trimHistory(entries);
-    expect(trimmed).toHaveLength(50);
+    expect(trimmed).toHaveLength(200);
     expect(trimmed[0].id).toBe('e10');
-    expect(trimmed[49].id).toBe('e59');
+    expect(trimmed[199].id).toBe('e209');
   });
 
-  it('exempts pinned entries from the rolling trim', () => {
-    const entries = [
-      entry({ id: 'keeper', text: 'important', pinned: true }),
-      ...Array.from({ length: 60 }, (_, i) => entry({ id: `e${i}` })),
-    ];
-    const trimmed = trimHistory(entries);
-    expect(trimmed).toHaveLength(51);
-    expect(trimmed[0].id).toBe('keeper');
-    expect(trimmed.filter((e) => !isPinned(e))).toHaveLength(50);
-  });
-
-  it('bounds pinned entries too, dropping the oldest pins first', () => {
-    const entries = Array.from({ length: MAX_PINNED_ENTRIES + 5 }, (_, i) =>
-      entry({ id: `p${i}`, pinned: true }));
-    const trimmed = trimHistory(entries);
-    expect(trimmed).toHaveLength(MAX_PINNED_ENTRIES);
-    expect(trimmed[0].id).toBe('p5');
+  it('leaves a list under the cap untouched', () => {
+    const entries = Array.from({ length: 200 }, (_, i) => entry({ id: `e${i}` }));
+    expect(trimHistory(entries)).toHaveLength(200);
   });
 
   it('preserves stored order and survives duplicate ids', () => {
     const entries = [
       entry({ id: 'same', text: 'first' }),
-      entry({ id: 'same', text: 'second', pinned: true }),
+      entry({ id: 'same', text: 'second' }),
       entry({ id: 'other', text: 'third' }),
     ];
     expect(trimHistory(entries).map((e) => e.text)).toEqual(['first', 'second', 'third']);
@@ -78,9 +59,9 @@ describe('persistence', () => {
   });
 
   it('round-trips through localStorage and trims on save', () => {
-    const entries = Array.from({ length: 55 }, (_, i) => entry({ id: `e${i}` }));
+    const entries = Array.from({ length: 205 }, (_, i) => entry({ id: `e${i}` }));
     saveHistory(entries);
-    expect(loadHistory()).toHaveLength(50);
+    expect(loadHistory()).toHaveLength(200);
   });
 
   it('returns an empty list when the stored blob is not an array', () => {
@@ -102,46 +83,11 @@ describe('addHistoryEntry', () => {
     expect(entries[0].id).not.toBe(entries[1].id);
   });
 
-  it('keeps pinned entries when the cap is reached', () => {
-    let entries: HistoryEntry[] = [entry({ id: 'pin', pinned: true })];
-    for (let i = 0; i < 60; i++) entries = addHistoryEntry(entries, `text ${i}`, 1);
-    expect(entries.filter(isPinned)).toHaveLength(1);
-    expect(entries.filter((e) => !isPinned(e))).toHaveLength(50);
-  });
-});
-
-describe('pinning', () => {
-  it('toggles a single entry', () => {
-    const entries = [entry({ id: 'a' }), entry({ id: 'b' })];
-    const pinned = togglePinned(entries, 'b');
-    expect(isPinned(pinned[1])).toBe(true);
-    expect(isPinned(pinned[0])).toBe(false);
-    expect(isPinned(togglePinned(pinned, 'b')[1])).toBe(false);
-  });
-
-  it('refuses to pin past the ceiling and returns the same array', () => {
-    const entries = [
-      ...Array.from({ length: MAX_PINNED_ENTRIES }, (_, i) => entry({ id: `p${i}`, pinned: true })),
-      entry({ id: 'extra' }),
-    ];
-    expect(remainingPinSlots(entries)).toBe(0);
-    expect(togglePinned(entries, 'extra')).toBe(entries);
-  });
-
-  it('still allows unpinning at the ceiling', () => {
-    const entries = Array.from({ length: MAX_PINNED_ENTRIES }, (_, i) =>
-      entry({ id: `p${i}`, pinned: true }));
-    expect(isPinned(togglePinned(entries, 'p0')[0])).toBe(false);
-  });
-
-  it('ignores unknown ids', () => {
-    const entries = [entry({ id: 'a' })];
-    expect(togglePinned(entries, 'missing')).toBe(entries);
-  });
-
-  it('removeUnpinned keeps only pinned entries', () => {
-    const entries = [entry({ id: 'a' }), entry({ id: 'b', pinned: true }), entry({ id: 'c' })];
-    expect(removeUnpinned(entries).map((e) => e.id)).toEqual(['b']);
+  it('trims to the cap as new entries arrive', () => {
+    let entries: HistoryEntry[] = [];
+    for (let i = 0; i < 210; i++) entries = addHistoryEntry(entries, `text ${i}`, 1);
+    expect(entries).toHaveLength(200);
+    expect(entries[entries.length - 1].text).toBe('text 209');
   });
 });
 
@@ -167,7 +113,7 @@ describe('filterHistory', () => {
   const entries = [
     entry({ id: 'mic', text: 'ship the Tauri release notes' }),
     entry({ id: 'file', text: 'imported meeting audio', source: 'file', sourceName: 'standup.wav' }),
-    entry({ id: 'pinned', text: 'remember the rust invariant', pinned: true }),
+    entry({ id: 'note', text: 'remember the rust invariant' }),
   ];
 
   it('returns everything with no query or filter', () => {
@@ -189,15 +135,11 @@ describe('filterHistory', () => {
 
   it('filters by source', () => {
     expect(filterHistory(entries, { filter: 'file' }).map((e) => e.id)).toEqual(['file']);
-    expect(filterHistory(entries, { filter: 'recording' }).map((e) => e.id)).toEqual(['mic', 'pinned']);
-  });
-
-  it('filters by pinned', () => {
-    expect(filterHistory(entries, { filter: 'pinned' }).map((e) => e.id)).toEqual(['pinned']);
+    expect(filterHistory(entries, { filter: 'recording' }).map((e) => e.id)).toEqual(['mic', 'note']);
   });
 
   it('combines a filter and a query', () => {
-    expect(filterHistory(entries, { filter: 'pinned', query: 'tauri' })).toEqual([]);
+    expect(filterHistory(entries, { filter: 'file', query: 'tauri' })).toEqual([]);
   });
 
   it('treats a missing source as a recording', () => {
@@ -207,18 +149,18 @@ describe('filterHistory', () => {
   });
 
   it('preserves stored order', () => {
-    expect(filterHistory(entries, { query: 'e' }).map((e) => e.id)).toEqual(['mic', 'file', 'pinned']);
+    expect(filterHistory(entries, { query: 'e' }).map((e) => e.id)).toEqual(['mic', 'file', 'note']);
   });
 });
 
 describe('sortForDisplay', () => {
-  it('puts pinned first, then newest first', () => {
+  it('puts newest first', () => {
     const entries = [
       entry({ id: 'old', timestamp: 100 }),
       entry({ id: 'new', timestamp: 300 }),
-      entry({ id: 'pin', timestamp: 200, pinned: true }),
+      entry({ id: 'mid', timestamp: 200 }),
     ];
-    expect(sortForDisplay(entries).map((e) => e.id)).toEqual(['pin', 'new', 'old']);
+    expect(sortForDisplay(entries).map((e) => e.id)).toEqual(['new', 'mid', 'old']);
   });
 
   it('is stable for equal timestamps (newest stored last wins)', () => {
@@ -324,24 +266,22 @@ describe('formatHistoryExport', () => {
       duration: 65,
       source: 'file',
       sourceName: 'notes.m4a',
-      pinned: true,
     }),
   ];
 
-  it('writes markdown newest/pinned first with metadata', () => {
+  it('writes markdown newest first with metadata', () => {
     const md = formatHistoryExport(entries, 'markdown', exportedAt);
     expect(md).toContain('# Murmur transcript history');
     expect(md).toContain('Exported 2026-07-27 14:32:00 · 2 entries');
     expect(md.indexOf('second transcript')).toBeLessThan(md.indexOf('first transcript'));
     expect(md).toContain('- Source: notes.m4a');
     expect(md).toContain('- Duration: 1m 5s');
-    expect(md).toContain('- Pinned: yes');
     expect(md.endsWith('\n')).toBe(true);
   });
 
   it('writes plain text blocks', () => {
     const txt = formatHistoryExport(entries, 'text', exportedAt);
-    expect(txt).toContain('[2026-07-27 10:00:00 · notes.m4a · 1m 5s · pinned]');
+    expect(txt).toContain('[2026-07-27 10:00:00 · notes.m4a · 1m 5s]');
     expect(txt).toContain('[2026-07-27 09:00:00 · Mic · 4s]');
     expect(txt).toContain('first transcript');
   });
@@ -351,7 +291,6 @@ describe('formatHistoryExport', () => {
     expect(parsed.schema).toBe('murmur.history.v1');
     expect(parsed.count).toBe(2);
     expect(parsed.entries[0].id).toBe('b');
-    expect(parsed.entries[0].pinned).toBe(true);
     expect(parsed.entries[0].sourceName).toBe('notes.m4a');
     expect(parsed.entries[1].source).toBe('recording');
   });
