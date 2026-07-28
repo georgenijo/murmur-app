@@ -19,16 +19,34 @@ export function CommandPalette({ isOpen, onClose, commands }: CommandPaletteProp
   const [selected, setSelected] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
+  const paletteRef = useRef<HTMLDivElement>(null);
+  const previouslyFocusedRef = useRef<HTMLElement | null>(null);
+  const restoreFocusRef = useRef(false);
 
   const results = useMemo(() => filterCommands(commands, query), [commands, query]);
 
   useEffect(() => {
     if (!isOpen) return;
+    previouslyFocusedRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    restoreFocusRef.current = true;
+    const paletteNode = paletteRef.current;
     setQuery('');
     setSelected(0);
     // Focus after paint so the palette wins over whatever had focus before.
     const id = requestAnimationFrame(() => inputRef.current?.focus());
-    return () => cancelAnimationFrame(id);
+    return () => {
+      cancelAnimationFrame(id);
+      const activeElement = document.activeElement;
+      const focusStayedInPalette =
+        activeElement === document.body ||
+        (activeElement instanceof Node && paletteNode?.contains(activeElement));
+      if (restoreFocusRef.current || focusStayedInPalette) {
+        previouslyFocusedRef.current?.focus();
+      }
+      previouslyFocusedRef.current = null;
+      restoreFocusRef.current = false;
+    };
   }, [isOpen]);
 
   useEffect(() => setSelected(0), [query]);
@@ -46,6 +64,8 @@ export function CommandPalette({ isOpen, onClose, commands }: CommandPaletteProp
   const runSelected = () => {
     const command = results[selected];
     if (!command) return;
+    // The command may intentionally move focus to its destination.
+    restoreFocusRef.current = false;
     onClose();
     void command.run();
   };
@@ -73,7 +93,8 @@ export function CommandPalette({ isOpen, onClose, commands }: CommandPaletteProp
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/30 pt-[12vh] backdrop-blur-[2px]"
+      ref={paletteRef}
+      className="fixed inset-0 z-50 flex items-start justify-center bg-black/50 pt-[12vh] backdrop-blur-[2px]"
       onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}
     >
       <div
@@ -94,6 +115,9 @@ export function CommandPalette({ isOpen, onClose, commands }: CommandPaletteProp
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Type a command…"
             aria-label="Command"
+            role="combobox"
+            aria-expanded="true"
+            aria-autocomplete="list"
             aria-controls="command-palette-results"
             aria-activedescendant={results[selected] ? `command-${results[selected].id}` : undefined}
             className="w-full bg-transparent text-sm text-on-surface placeholder:text-on-surface-variant focus:outline-none"
@@ -112,17 +136,24 @@ export function CommandPalette({ isOpen, onClose, commands }: CommandPaletteProp
             <li className="px-3.5 py-6 text-center text-sm text-on-surface-variant">No matching command</li>
           )}
           {results.map((command, index) => (
-            <li key={command.id} id={`command-${command.id}`} role="option" aria-selected={index === selected}>
+            <li key={command.id} role="none">
               <button
+                id={`command-${command.id}`}
+                role="option"
+                aria-selected={index === selected}
                 type="button"
                 tabIndex={-1}
                 onMouseMove={() => setSelected(index)}
-                onClick={() => { onClose(); void command.run(); }}
+                onClick={() => {
+                  restoreFocusRef.current = false;
+                  onClose();
+                  void command.run();
+                }}
                 className={`flex w-full items-center gap-3 px-3.5 py-2 text-left text-sm transition-colors ${index === selected ? 'bg-primary/10 text-on-surface' : 'text-on-surface hover:bg-surface-container'}`}
               >
                 <span className="min-w-0 flex-1 truncate">{command.title}</span>
                 {command.hint && (
-                  <span className="shrink-0 text-[11px] text-on-surface-variant">{command.hint}</span>
+                  <span className="shrink-0 text-[11px] text-on-surface">{command.hint}</span>
                 )}
                 <span className="shrink-0 rounded-full bg-surface-container px-2 py-0.5 text-[10px] font-medium text-on-surface-variant">
                   {command.section}

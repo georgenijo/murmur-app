@@ -21,10 +21,15 @@ export function StreamChips({ active, onToggle }: StreamChipsProps) {
             className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-all ${
               isActive
                 ? `${colors.bg} ${colors.text} ring-1 ring-current/20`
-                : 'bg-stone-100 dark:bg-stone-800 text-stone-400 dark:text-stone-500'
+                : 'bg-surface-container text-on-surface-variant'
             }`}
           >
-            <span className={`w-1.5 h-1.5 rounded-full ${isActive ? colors.dot : 'bg-stone-300 dark:bg-stone-600'}`} />
+            <span
+              aria-hidden="true"
+              className={`h-1.5 w-1.5 rounded-full ${
+                isActive ? colors.dot : 'bg-on-surface-variant'
+              }`}
+            />
             {stream}
           </button>
         );

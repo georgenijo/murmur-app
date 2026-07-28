@@ -17,7 +17,11 @@ export function EventRow({ event }: EventRowProps) {
   const timeStr = event.timestamp.replace(/.*T/, '').replace('Z', '');
 
   return (
-    <div className={event.level === 'error' ? 'bg-error/10' : ''}>
+    <div
+      className={event.level === 'error'
+        ? 'border-l-4 border-error bg-surface-container-lowest'
+        : ''}
+    >
       <div
         className={`grid grid-cols-[88px_52px_88px_minmax(0,1fr)] items-baseline gap-2 px-3 py-1.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary ${hasData ? 'cursor-pointer hover:bg-surface-container-low' : ''}`}
         onClick={() => hasData && setExpanded(!expanded)}
@@ -39,7 +43,11 @@ export function EventRow({ event }: EventRowProps) {
         <span className={`text-[10px] font-semibold uppercase ${levelColor}`}>
           {event.level}
         </span>
-        <span className={`inline-flex w-fit items-center rounded px-1.5 py-0.5 text-[10px] font-semibold ${streamColors.bg} ${streamColors.text}`}>
+        <span className={`inline-flex w-fit items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold ${streamColors.bg} ${streamColors.text}`}>
+          <span
+            aria-hidden="true"
+            className={`h-1.5 w-1.5 shrink-0 rounded-full ${streamColors.dot}`}
+          />
           {event.stream}
         </span>
         <span className="flex min-w-0 items-start gap-1 text-xs text-on-surface">

@@ -81,6 +81,7 @@ All transform events carry a `transformPassId` where a pass exists, so a delayed
 
 | Event | Payload | Source | When it fires | Listeners |
 |-------|---------|--------|---------------|-----------|
+| `appearance-changed` | `{revision, reason}` where `reason` is `"user"` \| `"repair"` \| `"reset"` \| `"import"` | Main window appearance controller | After main commits a user edit, reset, import, derived-cache repair, or explicit high-water revision rollover to `1` in `murmur-appearance`. The event carries no colors or file contents. System-mode OS changes do not emit. | Log viewer appearance controller; it reloads storage with a bounded retry, ignores stale revisions, and accepts the single high-water-to-`1` repair rollover. |
 | `settings-changed` | `()` | `useSettings`, `useOverlaySettingsMirror` | A window mutates persisted settings, so the other windows re-read localStorage. | Main window, overlay. |
 | `open-settings` | `()` | `useOverlaySettingsMirror` | The overlay's quick-settings card asks the main window to open Settings. | Main window (`useOpenSettingsListener`). |
 
@@ -106,3 +107,16 @@ type LevelName  = 'trace' | 'debug' | 'info' | 'warn' | 'error';
 ```
 
 Streams correspond to Rust tracing targets; levels to standard tracing severities. Color mappings for both live in `app/src/lib/events.ts`.
+
+### AppearanceChangedEvent
+
+```typescript
+interface AppearanceChangedEvent {
+  revision: number;
+  reason: 'user' | 'repair' | 'reset' | 'import';
+}
+```
+
+Main is the only emitter. The log viewer is read-only. Each themed window
+handles `matchMedia('(prefers-color-scheme: dark)')` locally while the saved
+mode is System, so OS transitions cannot create an event loop.

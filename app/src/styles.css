@@ -1,5 +1,7 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where([data-appearance="dark"], [data-appearance="dark"] *));
+
 :root {
   color-scheme: light;
   --murmur-background: #f7fafc;
@@ -16,6 +18,8 @@
   --murmur-on-surface-variant: #586065;
   --murmur-outline-variant: #abb3b9;
   --murmur-error: #a83836;
+  --murmur-success: #146333;
+  --murmur-warning: #654500;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -35,6 +39,8 @@
     --murmur-on-surface-variant: #abb3b9;
     --murmur-outline-variant: #586065;
     --murmur-error: #fa746f;
+    --murmur-success: #66d99a;
+    --murmur-warning: #f4bd65;
   }
 }
 
@@ -54,6 +60,8 @@
   --color-on-surface-variant: var(--murmur-on-surface-variant);
   --color-outline-variant: var(--murmur-outline-variant);
   --color-error: var(--murmur-error);
+  --color-success: var(--murmur-success);
+  --color-warning: var(--murmur-warning);
 }
 
 body {

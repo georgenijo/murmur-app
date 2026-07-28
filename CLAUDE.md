@@ -25,7 +25,7 @@ Start here for orientation:
 
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — System structure: module map, data flows, windows, threads, design decisions
 - **[docs/FEATURES.md](docs/FEATURES.md)** — What ships, breadth-first, with links into each feature doc
-- **[docs/reference/](docs/reference/)** — `commands.md` (106 Tauri commands), `events.md`, `hooks.md`, `settings.md`
+- **[docs/reference/](docs/reference/)** — `commands.md` (108 Tauri commands), `events.md`, `hooks.md`, `settings.md`
 
 Read these before working on a feature:
 
@@ -63,7 +63,7 @@ Read these before working on a feature:
 
 | File | Purpose |
 |------|---------|
-| `lib.rs` | App wiring: mod declarations, `State`, `MutexExt`, 106 registered commands, setup, tray, `run()` |
+| `lib.rs` | App wiring: mod declarations, `State`, `MutexExt`, 108 registered commands, setup, tray, `run()` |
 | `commands/mod.rs` | Re-exports command sub-modules |
 | `commands/recording.rs` | `IdleGuard`, dictation pipeline, file transcription, vocab scan, IDE context commands |
 | `commands/permissions.rs` | Permission check/request/reset and audio device commands (incl. in-app mic TCC prompt) |
@@ -75,6 +75,7 @@ Read these before working on a feature:
 | `commands/correct_and_teach.rs` | Bounded correction proposals + confirm/discard |
 | `commands/benchmark.rs` | Performance Lab run/cancel/save/reveal |
 | `commands/performance.rs` | Local run history, resource window, clear |
+| `commands/theme.rs` | Main-window-gated, bounded theme-file import/export transport |
 | `commands/transform_diagnostics.rs` | Per-pass attempt records and consented content captures |
 | `commands/tray.rs` | Tray icon rendering (`make_tray_icon_data`, `update_tray_icon`) |
 | `commands/overlay.rs` | Notch detection, `OverlayGeometry` contract (`geometry_for()`), `set_overlay_expanded`, show/hide/show-main-window |

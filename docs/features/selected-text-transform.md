@@ -149,6 +149,10 @@ Settings → **Transform**:
 - The popover's `NSWindow` treatment (level, `_setPreventsActivation:`, shadow) is raw AppKit and **must** run on the main thread — macOS 26 hard-traps (`EXC_BREAKPOINT`, "Must only be used from the main thread") on off-main `NSWindow` mutation. The flow's effects run in async command context (tokio worker), so `native_window::set_window_level_and_activation` dispatches the raw calls through `run_on_main_thread`, matching the AX write paths in `selection.rs` / `injector` / `transform_apply.rs`. Tauri's own window methods (`set_size`/`set_position`/`show`/`hide`/`set_focus`) already hop to main internally.
 - Native smoke canary for this crash class: **press the transform hold key on a built `.app`** (not `?mock=1`, not `tauri dev`). It exercises the real off-main window path and reproduced #325 immediately.
 
+The transform-review popover is intentionally outside Appearance Theme Engine
+synchronization. Its body remains transparent and its review surface remains
+always-dark glass in every main-window appearance.
+
 ## Related modules
 
 | Area | Path |

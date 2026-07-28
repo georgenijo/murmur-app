@@ -150,7 +150,7 @@ export function LogViewerApp() {
                     value: current.value,
                   }))}
                   aria-label="Correlation field"
-                  className="rounded-lg border border-outline-variant/20 bg-surface-container-lowest px-2 py-1 text-xs text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+                  className="rounded-lg border border-on-surface-variant bg-surface-container-lowest px-2 py-1 text-xs text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
                 >
                   {(Object.keys(CORRELATION_FIELD_LABELS) as CorrelationField[]).map(field => (
                     <option key={field} value={field}>{CORRELATION_FIELD_LABELS[field]}</option>
@@ -167,7 +167,7 @@ export function LogViewerApp() {
                   }))}
                   placeholder="All"
                   aria-label={`Filter by ${CORRELATION_FIELD_LABELS[correlation.field]}`}
-                  className="w-28 rounded-lg border border-outline-variant/20 bg-surface-container-lowest px-2 py-1 font-mono text-xs text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+                  className="w-28 rounded-lg border border-on-surface-variant bg-surface-container-lowest px-2 py-1 font-mono text-xs text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
                 />
               </label>
               <LevelFilter active={activeLevels} onToggle={toggleLevel} />

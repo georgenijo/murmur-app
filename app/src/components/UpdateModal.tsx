@@ -57,7 +57,7 @@ export function UpdateModal({ status, onDownload, onSkip, onDismiss }: UpdateMod
 
           {/* Icon */}
           <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10">
-            <svg className="h-6 w-6 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="h-6 w-6 text-on-surface" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
             </svg>
           </div>
@@ -73,7 +73,7 @@ export function UpdateModal({ status, onDownload, onSkip, onDismiss }: UpdateMod
           )}
 
           {isForced && (
-            <p className="text-xs text-amber-600 dark:text-amber-400 text-center mb-3">
+            <p className="text-xs text-primary text-center mb-3">
               This update is required to continue using the app.
             </p>
           )}
@@ -110,8 +110,8 @@ export function UpdateModal({ status, onDownload, onSkip, onDismiss }: UpdateMod
 
           {/* Error state */}
           {isError && (
-            <div className="mb-4 px-3 py-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
-              <p className="text-xs text-red-600 dark:text-red-400">{status.message}</p>
+            <div className="mb-4 px-3 py-2 bg-error/10 border border-error/30 rounded-lg">
+              <p className="text-xs text-error">{status.message}</p>
             </div>
           )}
 

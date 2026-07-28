@@ -48,18 +48,24 @@ function reportLabel(report: NormalizedDiagnosticReport): string {
 
 function sourceClasses(source: NormalizedDiagnosticReport['source']): string {
   return source === 'local'
-    ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/35 dark:text-blue-300'
-    : 'bg-violet-100 text-violet-700 dark:bg-violet-900/35 dark:text-violet-300';
+    ? 'bg-primary/10 text-on-surface'
+    : 'bg-primary/10 text-on-surface';
 }
 
 function statusClasses(status: DiagnosticComparison['status']): string {
   if (status === 'compatible') {
-    return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/35 dark:text-emerald-300';
+    return 'bg-success/10 text-success  ';
   }
   if (status === 'warning') {
-    return 'bg-amber-100 text-amber-800 dark:bg-amber-900/35 dark:text-amber-200';
+    return 'bg-primary/10 text-on-surface';
   }
-  return 'bg-red-100 text-red-700 dark:bg-red-900/35 dark:text-red-300';
+  return 'bg-error/10 text-error  ';
+}
+
+function issueClasses(severity: DiagnosticComparison['issues'][number]['severity']): string {
+  return severity === 'blocker'
+    ? 'border-error/20 bg-error/10 text-error'
+    : 'border-primary/20 bg-primary/10 text-on-surface';
 }
 
 function titleCase(value: string): string {
@@ -193,7 +199,7 @@ function ReportCard({
       {report.privacyWarnings.map(warning => (
         <p
           key={warning}
-          className="mt-2 rounded-lg border border-amber-500/20 bg-amber-500/10 px-2.5 py-2 text-[11px] leading-4 text-amber-800 dark:text-amber-200"
+          className="mt-2 rounded-lg border border-primary/20 bg-primary/10 px-2.5 py-2 text-[11px] leading-4 text-on-surface"
         >
           {warning}
         </p>
@@ -231,11 +237,7 @@ function CompatibilityGate({
           {comparison.issues.map(issue => (
             <li
               key={`${issue.code}-${issue.field}`}
-              className={`rounded-lg border px-2.5 py-2 text-xs ${
-                issue.severity === 'blocker'
-                  ? 'border-error/20 bg-error/10 text-error'
-                  : 'border-amber-500/20 bg-amber-500/10 text-amber-800 dark:text-amber-200'
-              }`}
+              className={`rounded-lg border px-2.5 py-2 text-xs ${issueClasses(issue.severity)}`}
             >
               <span className="font-semibold">{titleCase(issue.severity)} · {issue.field}</span>
               <span className="ml-1">{issue.message}</span>
@@ -243,7 +245,7 @@ function CompatibilityGate({
           ))}
         </ul>
       ) : (
-        <p className="mt-3 rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-2.5 py-2 text-xs text-emerald-700 dark:text-emerald-300">
+        <p className="mt-3 rounded-lg border border-success/20 bg-success/10 px-2.5 py-2 text-xs text-success">
           These reports are compatible for like-for-like deltas.
         </p>
       )}
@@ -415,7 +417,7 @@ export function ReportCompareView() {
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <label className="cursor-pointer rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-on-primary shadow-sm hover:opacity-90 focus-within:ring-2 focus-within:ring-primary focus-within:ring-offset-2">
+          <label className="cursor-pointer rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-on-primary shadow-sm hover:bg-primary-dim focus-within:ring-2 focus-within:ring-primary focus-within:ring-offset-2">
             Import JSON
             <input
               data-testid="diagnostic-report-input"
@@ -463,7 +465,7 @@ export function ReportCompareView() {
                 aria-label="Baseline report"
                 value={baselineId}
                 onChange={event => setBaselineId(event.target.value)}
-                className="mt-1 block w-full rounded-lg border border-outline-variant/20 bg-surface-container-lowest px-2.5 py-2 text-xs normal-case tracking-normal text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+                className="mt-1 block w-full rounded-lg border border-on-surface-variant bg-surface-container-lowest px-2.5 py-2 text-xs normal-case tracking-normal text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
               >
                 {reports.map(entry => <option key={entry.id} value={entry.id}>{reportLabel(entry.report)}</option>)}
               </select>
@@ -474,7 +476,7 @@ export function ReportCompareView() {
                 aria-label="Candidate report"
                 value={candidateId}
                 onChange={event => setCandidateId(event.target.value)}
-                className="mt-1 block w-full rounded-lg border border-outline-variant/20 bg-surface-container-lowest px-2.5 py-2 text-xs normal-case tracking-normal text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+                className="mt-1 block w-full rounded-lg border border-on-surface-variant bg-surface-container-lowest px-2.5 py-2 text-xs normal-case tracking-normal text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
               >
                 <option value="">Choose a second report</option>
                 {reports.map(entry => <option key={entry.id} value={entry.id}>{reportLabel(entry.report)}</option>)}
@@ -488,7 +490,7 @@ export function ReportCompareView() {
           </div>
 
           {baseline && candidate && baseline.id === candidate.id && (
-            <div role="status" className="rounded-xl border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+            <div role="status" className="rounded-xl border border-primary/20 bg-primary/10 px-3 py-2 text-xs text-on-surface">
               Choose two different reports to compare.
             </div>
           )}

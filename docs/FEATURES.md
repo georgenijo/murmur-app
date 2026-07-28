@@ -140,7 +140,10 @@ Search with match highlighting (tokens are ANDed) and Mic/File filters over a ro
 Notch-anchored Dynamic Island. Idle sits flush with the notch showing a small mic tab; recording expands with a red dot and a 7-bar waveform driven by real audio levels at 60fps via direct DOM writes; processing shows a spinner. Hover for 150ms opens a compact quick-settings card (intent-gated, so a graze doesn't pop it). Single click stops; double-click toggles locked mode. Non-activating — clicks never steal focus. Geometry comes entirely from Rust and re-derives on display changes.
 
 ### Settings — [reference/settings.md](reference/settings.md)
-Seven task-oriented pages: **Recording**, **Transcription**, **Transform**, **Text & Vocabulary**, **Delivery**, **Performance**, **General**. Knowledge management lives under Text & Vocabulary.
+Eight task-oriented pages: **Recording**, **Transcription**, **Transform**, **Text & Vocabulary**, **Delivery**, **Performance**, **General**, **Appearance**. Knowledge management lives under Text & Vocabulary.
+
+### Appearance — [features/appearance.md](features/appearance.md)
+Local System/Light/Dark appearance with accessible custom accent, background, foreground, and contrast controls. Main and log viewer synchronize through a revisioned local document and agree with native title-bar appearance; the transparent overlay and transform review remain unsynchronized always-dark glass. Import/export is bounded, atomic, UTF-8 JSON and never touches the clipboard.
 
 ### Onboarding — [features/onboarding-flow.md](features/onboarding-flow.md)
 First-launch wizard: Welcome → Microphone → Accessibility → Model download → Done. The mic step fires the native macOS prompt in-app; both permission steps poll live so a grant made in System Settings flips the step on return; denied/stale-TCC states get inline reset-and-retry. Already-downloaded models are detected and badged. Existing installs with permissions and a model are grandfathered. Re-runnable from Settings → General.
@@ -186,7 +189,7 @@ Every transform-key hold is recorded as a content-free `TransformAttemptV1` with
 
 | Area | Location |
 |------|----------|
-| Rust backend | `app/src-tauri/src/` — 106 Tauri commands |
+| Rust backend | `app/src-tauri/src/` — 108 Tauri commands |
 | Frontend | `app/src/` — React 18 + TypeScript + Tailwind 4 |
 | LLM sidecar | `app/src-tauri/sidecars/local-llm/`, protocol in `crates/local-llm-protocol` |
 | Diagnostics MCP tool | `tools/murmur-diag/` |

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **Local Appearance Theme Engine** adds System, Light, and Dark modes; accessible custom accent, background, foreground, and contrast controls; synchronized main/log-viewer semantic tokens and native title bars; flash-free cached first paint; exact Sonic reset; and bounded atomic JSON import/export that never touches the clipboard. Overlay and transform-review transparency and always-dark glass remain unchanged (#377).
+
 ### Fixed
 
 - Escape now cancels selected-text transforms during capture, instruction listening, and local-model thinking, while ready/failed reviews retain their existing popover-local Escape behavior (#347).

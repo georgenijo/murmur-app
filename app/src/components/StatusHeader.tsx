@@ -10,8 +10,8 @@ interface StatusHeaderProps {
 
 function getStatusDotColor(status: DictationStatus, initialized: boolean): string {
   if (status === 'recording') return 'bg-error';
-  if (status === 'processing') return 'bg-amber-500';
-  if (initialized) return 'bg-emerald-500';
+  if (status === 'processing') return 'bg-primary';
+  if (initialized) return 'bg-success';
   return 'bg-outline-variant';
 }
 

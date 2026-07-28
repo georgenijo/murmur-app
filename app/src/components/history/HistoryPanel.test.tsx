@@ -111,8 +111,9 @@ describe('HistoryPanel', () => {
     await render();
     await type('tauri');
     await act(async () => byText('Export ▾')!.click());
-    const copyMarkdown = Array.from(container.querySelectorAll('[role="menuitem"]'))
-      .find((item) => item.textContent === 'Markdown') as HTMLButtonElement;
+    const copyMarkdown = container.querySelector(
+      'button[aria-label="Copy 1 shown as Markdown"]',
+    ) as HTMLButtonElement;
     await act(async () => copyMarkdown.click());
     const calls = writeText.mock.calls;
     const written = calls[calls.length - 1][0] as string;
@@ -125,8 +126,9 @@ describe('HistoryPanel', () => {
   it('saves an export through the native dialog and the validated command', async () => {
     await render();
     await act(async () => byText('Export ▾')!.click());
-    const saveJson = Array.from(container.querySelectorAll('[role="menuitem"]'))
-      .find((item) => item.textContent === 'JSON…') as HTMLButtonElement;
+    const saveJson = container.querySelector(
+      'button[aria-label="Save 3 shown as JSON"]',
+    ) as HTMLButtonElement;
     await act(async () => saveJson.click());
     expect(save).toHaveBeenCalledOnce();
     expect(save.mock.calls[0][0].defaultPath).toMatch(/^murmur-history-.*\.json$/);
@@ -140,8 +142,9 @@ describe('HistoryPanel', () => {
     save.mockResolvedValueOnce(null);
     await render();
     await act(async () => byText('Export ▾')!.click());
-    const saveMarkdown = Array.from(container.querySelectorAll('[role="menuitem"]'))
-      .find((item) => item.textContent === 'Markdown…') as HTMLButtonElement;
+    const saveMarkdown = container.querySelector(
+      'button[aria-label="Save 3 shown as Markdown"]',
+    ) as HTMLButtonElement;
     await act(async () => saveMarkdown.click());
     expect(invoke.mock.calls.filter(([name]) => name === 'save_text_export')).toHaveLength(0);
     expect(container.textContent).not.toContain('Saved');
@@ -163,5 +166,21 @@ describe('HistoryPanel', () => {
     await render();
     await render({ focusSearchToken: 1 });
     expect(document.activeElement).toBe(container.querySelector('input[type="search"]'));
+  });
+
+  it('uses a disclosure group and restores Export focus on Escape', async () => {
+    await render();
+    const trigger = byText('Export ▾')!;
+    await act(async () => trigger.click());
+    const firstAction = container.querySelector(
+      'button[aria-label="Copy 3 shown as Markdown"]',
+    ) as HTMLButtonElement;
+    firstAction.focus();
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    });
+    expect(container.querySelector('[aria-label="History export actions"]')).toBeNull();
+    expect(container.querySelector('[role="menu"]')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
   });
 });

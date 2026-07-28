@@ -91,7 +91,7 @@ describe('KnowledgeManager', () => {
     container.remove();
   });
 
-  it('shows searchable scoped records and supports edit, disable, and delete', async () => {
+  it('shows searchable scoped records and supports edit, disable, delete', async () => {
     expect(container.textContent).toContain('Tory');
     expect(container.textContent).toContain('App · com.apple.Terminal');
     expect(container.querySelector('[aria-label="Search personal knowledge"]')).not.toBeNull();

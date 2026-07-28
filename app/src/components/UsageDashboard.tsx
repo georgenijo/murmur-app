@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, type CSSProperties } from 'react';
 import {
   loadStats,
   getRecentDays,
@@ -97,23 +97,34 @@ export function UsageDashboard({ statsVersion }: UsageDashboardProps) {
   const heatH = 7 * STEP - GAP;
 
   return (
-    // Stone/amber palette. CSS vars drive SVG fills/strokes so they track dark mode.
-    <div className="shrink-0 rounded-lg border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800/50 overflow-hidden [--heat-0:#e7e5e4] dark:[--heat-0:#292524] [--heat-1:#fde68a] dark:[--heat-1:#78350f] [--heat-2:#fcd34d] dark:[--heat-2:#b45309] [--heat-3:#f59e0b] dark:[--heat-3:#d97706] [--heat-4:#d97706] dark:[--heat-4:#fbbf24] [--bar-fill:#f59e0b] dark:[--bar-fill:#fbbf24] [--wpm-stroke:#57534e] dark:[--wpm-stroke:#a8a29e]">
+    // Semantic CSS vars keep SVG fills/strokes synchronized with custom themes.
+    <div
+      className="shrink-0 rounded-lg border border-outline-variant/40 bg-surface-container-low overflow-hidden"
+      style={{
+        '--heat-0': 'var(--murmur-surface-container-high)',
+        '--heat-1': 'color-mix(in srgb, var(--murmur-warning) 25%, var(--murmur-background))',
+        '--heat-2': 'color-mix(in srgb, var(--murmur-warning) 45%, var(--murmur-background))',
+        '--heat-3': 'color-mix(in srgb, var(--murmur-warning) 70%, var(--murmur-background))',
+        '--heat-4': 'var(--murmur-warning)',
+        '--bar-fill': 'var(--murmur-warning)',
+        '--wpm-stroke': 'var(--murmur-on-surface-variant)',
+      } as CSSProperties}
+    >
       {/* Header row */}
       <button
         onClick={toggle}
-        className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-stone-100 dark:hover:bg-stone-700/50 transition-colors"
+        className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-surface-container transition-colors"
       >
-        <span className="text-xs font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wider">
+        <span className="text-xs font-medium text-on-surface-variant uppercase tracking-wider">
           Insights
         </span>
         <div className="flex items-center gap-3">
-          <span className="text-xs text-stone-500 dark:text-stone-400">
-            <span className="text-amber-600 dark:text-amber-400 font-medium">Streak</span>
+          <span className="text-xs text-on-surface-variant">
+            <span className="text-primary font-medium">Streak</span>
             {' '}{streak} {streak === 1 ? 'day' : 'days'}
           </span>
           <svg
-            className={`w-3.5 h-3.5 text-stone-400 transition-transform duration-200 ${isCollapsed ? 'rotate-180' : ''}`}
+            className={`w-3.5 h-3.5 text-on-surface-variant transition-transform duration-200 ${isCollapsed ? 'rotate-180' : ''}`}
             fill="none"
             viewBox="0 0 24 24"
             stroke="currentColor"
@@ -150,7 +161,7 @@ export function UsageDashboard({ statsVersion }: UsageDashboardProps) {
                 )),
               )}
             </svg>
-            <div className="flex items-center gap-1.5 mt-1.5 text-[10px] text-stone-500 dark:text-stone-400">
+            <div className="flex items-center gap-1.5 mt-1.5 text-[10px] text-on-surface-variant">
               <span>Less</span>
               {[0, 1, 2, 3, 4].map(level => (
                 <span
@@ -210,7 +221,7 @@ export function UsageDashboard({ statsVersion }: UsageDashboardProps) {
                   x2={CHART_W} y2={CHART_H * (1 - p)}
                   stroke="currentColor"
                   strokeWidth="0.5"
-                  className="text-stone-200 dark:text-stone-700"
+                  className="text-outline-variant/30"
                   strokeDasharray="2,2"
                 />
               ))}
@@ -246,7 +257,7 @@ function wpmPoints(days: DaySummary[], maxWpm: number): string {
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div>
-      <div className="text-[10px] font-medium text-stone-400 dark:text-stone-500 uppercase tracking-wider mb-1.5">
+      <div className="text-[10px] font-medium text-on-surface-variant uppercase tracking-wider mb-1.5">
         {title}
       </div>
       {children}
@@ -258,7 +269,7 @@ function DayAxis({ days }: { days: DaySummary[] }) {
   return (
     <div className="flex justify-between mt-1 px-0.5">
       {days.map(day => (
-        <span key={day.key} className="text-[9px] text-stone-400 dark:text-stone-500 tabular-nums">
+        <span key={day.key} className="text-[9px] text-on-surface-variant tabular-nums">
           {shortDay(day.date)}
         </span>
       ))}

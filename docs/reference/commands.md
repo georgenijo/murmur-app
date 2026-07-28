@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The 106 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
+The 108 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -129,6 +129,18 @@ For Rust → frontend events see [events.md](events.md). For the hooks that call
 | `inspect_knowledge_import` | `path: String` | `Result<KnowledgeImportSummary, String>` | Validates an import and reports new / duplicate / conflicting records without writing. |
 | `import_knowledge_from_file` | `path: String` | `Result<KnowledgeImportResult, String>` | Atomically imports validated new records; never overwrites local records. |
 | `delete_all_knowledge` | `expected_revision: u64` | `Result<u64, String>` | Deletes all records and in-store recovery artifacts after typed confirmation. |
+
+## Appearance file transport (`commands/theme.rs`)
+
+These commands are strictly gated to the main webview. The native dialog
+plugin selects a path; these commands perform only bounded transport. Theme
+schema validation, preview, resolution, and cache generation stay in the
+frontend.
+
+| Command | Parameters | Returns | Description |
+|---------|-----------|---------|-------------|
+| `read_theme_file` | `path: String` | `Result<String, String>` | Reads at most 64 KiB of UTF-8 from a regular, non-symlink file. Returns clear errors for invalid paths, oversized files, invalid UTF-8, and I/O failure. |
+| `write_theme_file` | `path: String`, `contents: String` | `Result<(), String>` | Rejects content over 64 KiB and symlink/non-regular destinations, writes and fsyncs a unique sibling temporary file, atomically renames it over the destination, then syncs the parent directory. New Unix files use mode `0600`; replacements preserve the existing regular target's permissions. A failed write/publish cleans the temporary file and preserves an existing target. |
 
 ## Correct and Teach (`commands/correct_and_teach.rs`)
 

@@ -369,7 +369,7 @@ function App() {
   return (
     <div className="h-screen bg-background text-on-surface flex flex-col font-[-apple-system,BlinkMacSystemFont,'Segoe_UI',Roboto,sans-serif]">
       {import.meta.env.DEV && (
-        <div className="bg-amber-400 text-amber-900 text-xs font-semibold text-center py-0.5 tracking-widest uppercase select-none">
+        <div className="bg-warning/10 text-warning text-xs font-semibold text-center py-0.5 tracking-widest uppercase select-none">
           Dev
         </div>
       )}
@@ -413,8 +413,8 @@ function App() {
               />
 
               {error && (
-                <div className="shrink-0 px-4 py-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
-                  <p className="text-red-600 dark:text-red-400 text-sm">{error}</p>
+                <div className="shrink-0 px-4 py-3 bg-error/10 border border-error/30 rounded-lg">
+                  <p className="text-error text-sm">{error}</p>
                 </div>
               )}
 

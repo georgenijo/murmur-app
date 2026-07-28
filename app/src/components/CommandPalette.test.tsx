@@ -137,7 +137,7 @@ describe('CommandPalette', () => {
   it('runs a command on click', async () => {
     await render();
     await act(async () => {
-      (rows()[2].querySelector('button') as HTMLButtonElement).click();
+      (rows()[2] as HTMLButtonElement).click();
     });
     expect(runs.delivery).toHaveBeenCalledOnce();
     expect(onClose).toHaveBeenCalledOnce();
@@ -164,5 +164,41 @@ describe('CommandPalette', () => {
     await render(true);
     expect(input().value).toBe('');
     expect(rows()).toHaveLength(3);
+  });
+
+  it('restores focus to the invoking control when dismissed', async () => {
+    const trigger = document.createElement('button');
+    document.body.appendChild(trigger);
+    trigger.focus();
+    await render();
+    expect(document.activeElement).toBe(input());
+    await render(false);
+    expect(document.activeElement).toBe(trigger);
+    trigger.remove();
+  });
+
+  it('does not steal focus back after a command moves it', async () => {
+    const trigger = document.createElement('button');
+    const destination = document.createElement('button');
+    document.body.append(trigger, destination);
+    trigger.focus();
+    runs.record.mockImplementation(() => destination.focus());
+    await render();
+    await press('Enter');
+    await render(false);
+    expect(document.activeElement).toBe(destination);
+    trigger.remove();
+    destination.remove();
+  });
+
+  it('restores focus after a command that does not move it', async () => {
+    const trigger = document.createElement('button');
+    document.body.appendChild(trigger);
+    trigger.focus();
+    await render();
+    await press('Enter');
+    await render(false);
+    expect(document.activeElement).toBe(trigger);
+    trigger.remove();
   });
 });

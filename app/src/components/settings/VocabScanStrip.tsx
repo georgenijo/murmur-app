@@ -39,8 +39,8 @@ const ROW_ICON: Record<WalkerRow['kind'], string> = {
 };
 
 const ROW_CLASS: Record<WalkerRow['kind'], string> = {
-  file: 'text-stone-500 dark:text-stone-500',
-  skip: 'text-stone-400 dark:text-stone-600 line-through opacity-60',
+  file: 'text-on-surface-variant ',
+  skip: 'text-on-surface-variant  line-through opacity-60',
 };
 
 /**
@@ -72,14 +72,14 @@ export function VocabScanStrip({
   // Status dot color.
   const dotClass =
     status === 'scanning'
-      ? 'bg-amber-500 animate-pulse'
+      ? 'bg-primary animate-pulse'
       : status === 'done'
-        ? 'bg-green-500'
+        ? 'bg-success'
         : status === 'empty'
-          ? 'bg-amber-500'
+          ? 'bg-primary'
           : status === 'superseded'
-            ? 'bg-stone-400 dark:bg-stone-500'
-          : 'bg-stone-400 dark:bg-stone-500';
+            ? 'bg-surface-container-highest '
+          : 'bg-surface-container-highest ';
 
   // Header label + sub copy per state. The terminal 'done'/'empty' status lands a
   // few ms before invoke() resolves (the backend's final progress tick sets it),
@@ -116,13 +116,13 @@ export function VocabScanStrip({
   const actionDisabled = !scanning && !folder;
 
   return (
-    <div className="mt-3.5 overflow-hidden rounded-xl border border-stone-200 bg-stone-50 dark:border-stone-800 dark:bg-stone-950">
+    <div className="mt-3.5 overflow-hidden rounded-xl border border-outline-variant/40 bg-surface-container-low">
       {/* status row */}
       <div className="flex items-center gap-2.5 px-3 py-3">
         <span className={`h-2 w-2 shrink-0 rounded-full ${dotClass}`} />
         <div className="min-w-0 flex-1">
-          <div className="text-xs font-medium text-stone-700 dark:text-stone-300">{label}</div>
-          <div className="mt-0.5 truncate text-[11px] tabular-nums text-stone-500 dark:text-stone-500">
+          <div className="text-xs font-medium text-on-surface">{label}</div>
+          <div className="mt-0.5 truncate text-[11px] tabular-nums text-on-surface-variant">
             {sub}
           </div>
         </div>
@@ -132,8 +132,8 @@ export function VocabScanStrip({
           disabled={actionDisabled}
           className={`shrink-0 whitespace-nowrap rounded-md border px-3 py-1.5 text-[11px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
             scanning
-              ? 'border-stone-300 text-stone-500 hover:border-stone-400 dark:border-stone-700 dark:text-stone-400'
-              : 'border-stone-300 bg-white text-stone-700 hover:border-stone-400 dark:border-stone-600 dark:bg-stone-800 dark:text-stone-200 dark:hover:border-stone-400'
+              ? 'border-outline-variant/40 text-on-surface-variant hover:border-outline-variant/40  '
+              : 'border-outline-variant/40 bg-surface-container-lowest text-on-surface hover:border-outline-variant/40    '
           }`}
         >
           {actionLabel}
@@ -141,19 +141,19 @@ export function VocabScanStrip({
       </div>
 
       {/* progress bar */}
-      <div className="h-[3px] w-full overflow-hidden bg-stone-200 dark:bg-stone-800">
+      <div className="h-[3px] w-full overflow-hidden bg-surface-container-high">
         <div
-          className="h-full bg-amber-500 transition-[width] duration-300 ease-out"
+          className="h-full bg-primary transition-[width] duration-300 ease-out"
           style={{ width: scanning ? '66%' : settled ? '100%' : '0%' }}
         />
       </div>
 
       {/* live walker (scanning only) */}
       {scanning && (
-        <div className="relative max-h-[172px] overflow-hidden border-t border-stone-200 px-3 pb-3 pt-1 dark:border-stone-800">
-          <div className="pointer-events-none absolute inset-x-0 top-0 z-[2] h-4 bg-gradient-to-b from-stone-50 to-transparent dark:from-stone-950" />
+        <div className="relative max-h-[172px] overflow-hidden border-t border-outline-variant/40 px-3 pb-3 pt-1">
+          <div className="pointer-events-none absolute inset-x-0 top-0 z-[2] h-4 bg-gradient-to-b from-surface-container-low to-transparent" />
           {walker.length === 0 ? (
-            <div className="py-2 font-mono text-[11px] text-stone-400 dark:text-stone-600">
+            <div className="py-2 font-mono text-[11px] text-on-surface-variant">
               Walking…
             </div>
           ) : (
@@ -175,7 +175,7 @@ export function VocabScanStrip({
 
       {/* result card (done / empty) */}
       {showResult && summary && (
-        <div className="border-t border-stone-200 px-3 py-3 dark:border-stone-800">
+        <div className="border-t border-outline-variant/40 px-3 py-3">
           <div className="flex flex-wrap gap-4">
             <Stat num={summary.terms.toLocaleString()} cap="terms" />
             <Stat num={summary.files.toLocaleString()} cap="files read" />
@@ -219,20 +219,20 @@ export function VocabScanStrip({
           {/* sample-term chips */}
           {summary.adopted && summary.sampleTerms.length > 0 && (
             <div className="mt-3">
-              <div className="mb-1.5 text-[10px] uppercase tracking-wide text-stone-500 dark:text-stone-500">
+              <div className="mb-1.5 text-[10px] uppercase tracking-wide text-on-surface-variant">
                 Top terms found
               </div>
               <div className="flex flex-wrap gap-1.5">
                 {summary.sampleTerms.map((term) => (
                   <span
                     key={term}
-                    className="rounded-md border border-stone-200 bg-stone-100 px-2 py-0.5 font-mono text-[11px] text-stone-700 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-300"
+                    className="rounded-md border border-outline-variant/40 bg-surface-container px-2 py-0.5 font-mono text-[11px] text-on-surface"
                   >
                     {term}
                   </span>
                 ))}
                 {summary.terms > summary.sampleTerms.length && (
-                  <span className="rounded-md px-2 py-0.5 font-mono text-[11px] text-stone-400 dark:text-stone-500">
+                  <span className="rounded-md px-2 py-0.5 font-mono text-[11px] text-on-surface-variant">
                     +{summary.terms - summary.sampleTerms.length} more
                   </span>
                 )}
@@ -242,7 +242,7 @@ export function VocabScanStrip({
                     ref={viewAllRef}
                     type="button"
                     onClick={() => setModalOpen(true)}
-                    className="ml-0.5 cursor-pointer text-[11px] font-semibold text-blue-500 underline hover:no-underline dark:text-blue-400"
+                    className="ml-0.5 cursor-pointer text-[11px] font-semibold text-primary underline hover:no-underline"
                   >
                     View all {summary.rankedTerms.length} →
                   </button>
@@ -269,10 +269,10 @@ export function VocabScanStrip({
 function Stat({ num, cap }: { num: string; cap: string }) {
   return (
     <div className="flex flex-col">
-      <span className="text-lg font-semibold tabular-nums text-stone-800 dark:text-stone-200">
+      <span className="text-lg font-semibold tabular-nums text-on-surface">
         {num}
       </span>
-      <span className="mt-px text-[10px] uppercase tracking-wide text-stone-500 dark:text-stone-500">
+      <span className="mt-px text-[10px] uppercase tracking-wide text-on-surface-variant">
         {cap}
       </span>
     </div>
@@ -281,7 +281,7 @@ function Stat({ num, cap }: { num: string; cap: string }) {
 
 function WarnBox({ children }: { children: React.ReactNode }) {
   return (
-    <div className="mt-3 flex gap-2 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-600 dark:bg-amber-500/[0.08] dark:text-amber-500">
+    <div className="mt-3 flex gap-2 rounded-lg border border-primary/25 bg-primary/10 px-3 py-2 text-[11px] leading-relaxed text-on-surface">
       <svg
         className="mt-px shrink-0"
         width="14"

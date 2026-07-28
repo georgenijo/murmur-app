@@ -113,6 +113,15 @@ Main and log-viewer hide on close instead of being destroyed. The overlay and tr
 
 Rust is the sole author of every overlay and popover pixel: `geometry_for()` and `popover_geometry_for()` are pure functions asserted by checked-in fixtures on both sides (cargo test + vitest). The frontend never hardcodes dimensions.
 
+Main and log-viewer are the only themed webviews. Each resolves System mode
+locally to a concrete `data-appearance` and uses a parser-blocking,
+same-origin bootstrap plus a strictly validated resolved-token cache to avoid a
+wrong-theme first paint. Main is the sole appearance writer, revisioned
+`appearance-changed` emitter, and owner of application-level native `setTheme`;
+log-viewer is a read-only consumer. Local OS appearance changes emit no event.
+Overlay and transform-review remain unsynchronized transparent, always-dark
+glass surfaces.
+
 ---
 
 ## Rust Backend (`app/src-tauri/src/`)
@@ -121,7 +130,7 @@ Rust is the sole author of every overlay and popover pixel: `geometry_for()` and
 
 | Module | Purpose |
 |--------|---------|
-| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 106 registered commands, setup, tray, run loop |
+| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 108 registered commands, setup, tray, run loop |
 | `alloc.rs` | Custom macOS malloc zone ("RustHeapZone") so Rust heap is accounted separately from whisper.cpp's FFI heap |
 | `audio.rs` | cpal capture, mono mix, 16kHz resample, `audio-level` emission |
 | `audio_decode.rs` | Decoding imported audio files for `transcribe_file` |
@@ -159,7 +168,7 @@ Rust is the sole author of every overlay and popover pixel: `geometry_for()` and
 | `vocab.rs`, `vocabulary_alias.rs` | Code-vocabulary scanning and explicit spoken aliases |
 | `voice_commands.rs` | Typed voice command execution and variable expansion |
 
-Commands live under `commands/` (`recording`, `permissions`, `keyboard`, `export`, `logging`, `models`, `knowledge`, `correct_and_teach`, `benchmark`, `performance`, `transform_model`, `transform_popover`, `transform_diagnostics`, `overlay`, `native_window`, `tray`).
+Commands live under `commands/` (`recording`, `permissions`, `keyboard`, `export`, `logging`, `models`, `knowledge`, `correct_and_teach`, `benchmark`, `performance`, `theme`, `transform_model`, `transform_popover`, `transform_diagnostics`, `overlay`, `native_window`, `tray`). Theme resolution remains frontend-only; `commands/theme.rs` is a main-window-gated, 64 KiB UTF-8 file-transport boundary with regular-file reads and atomic sibling-temp writes.
 
 ### `state.rs` — Shared State
 
@@ -308,12 +317,13 @@ Two rules keep the multi-window state coherent:
 
 - **`transcription-complete` is the single source of truth** for history and stats. Entries are added only from the Rust event, never in `handleStop()` — otherwise an overlay-initiated recording double-counts.
 - **The overlay reads settings from localStorage directly** (`useOverlaySettingsMirror`), not through React context or IPC. There is no shared context across windows.
+- **Appearance has a separate ownership domain.** Main is the only writer and user-change emitter for `murmur-appearance`; log-viewer reloads newer revisions, while both themed windows handle System-mode media changes locally without emitting.
 
 ---
 
 ## Tauri Commands
 
-106 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
+108 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
 
 ## Events
 
@@ -432,3 +442,5 @@ Plus tokio `spawn_blocking` for VAD (its context is `!Send`), downloads, and inj
 | `IdleGuard` RAII | Guarantees status reset on every error path in the pipeline |
 | Clipboard-first delivery | Reliable across all apps; auto-paste is layered on top and never the only path |
 | Per-window least privilege | Overlay and transform popover get minimal capabilities; only the main window gets the full set |
+| Main-only native appearance | Main owns application `setTheme`; log-viewer follows it, and transparent glass windows never join theme synchronization |
+| Bounded theme transport | Dialogs select paths; main-window-gated Rust commands read/write at most 64 KiB of UTF-8 and publish exports atomically without touching the clipboard |

@@ -20,8 +20,8 @@ export function LevelFilter({ active, onToggle }: LevelFilterProps) {
             aria-pressed={isActive}
             className={`px-2 py-0.5 rounded text-xs font-medium transition-colors ${
               isActive
-                ? 'bg-stone-800 dark:bg-stone-200 text-white dark:text-stone-900'
-                : 'bg-stone-100 dark:bg-stone-800 text-stone-400 dark:text-stone-500 hover:bg-stone-200 dark:hover:bg-stone-700'
+                ? 'bg-primary text-on-primary'
+                : 'bg-surface-container text-on-surface-variant hover:bg-surface-container-high'
             }`}
           >
             {level}

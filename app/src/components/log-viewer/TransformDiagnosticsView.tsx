@@ -144,7 +144,7 @@ export function TransformDiagnosticsView() {
         </div>
         <div className="flex items-center gap-2">
           {arm.armed && (
-            <span className="rounded-full bg-amber-100 px-2.5 py-1 text-[11px] font-medium text-amber-800 dark:bg-amber-900/35 dark:text-amber-200">
+            <span className="rounded-full bg-primary/10 px-2.5 py-1 text-[11px] font-medium text-on-surface">
               Next transform armed{arm.expiresAtMs ? ` until ${new Date(arm.expiresAtMs).toLocaleTimeString()}` : ''}
             </span>
           )}
