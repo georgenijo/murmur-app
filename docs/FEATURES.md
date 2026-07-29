@@ -179,6 +179,7 @@ Every transform-key hold is recorded as a content-free `TransformAttemptV1` with
 
 - macOS 14+ on Apple Silicon (Core ML/ANE); Whisper and CPU Parakeet also build for Linux.
 - Developer ID signed and notarized; hardened runtime; sidecar ships with split entitlements; release finalization fails closed on any unexpected bundle executable.
+- Release builds use `opt-level = "s"`, LTO off, 16 parallel codegen units, and panic abort; stripping remains disabled so Tauri can patch the updater bundle-type marker.
 - **Auto-updater** — [features/auto-updater.md](features/auto-updater.md). Background check on launch and every 24h against `latest-v2.json`, ed25519-signed, min-version enforcement (no skip/dismiss when required), skip/dismiss otherwise, progress and auto-relaunch.
 - **Privacy boundaries**: release `pipeline` events drop all strings; `transform` events are restricted to an explicit stable vocabulary in *all* builds; knowledge content and selected paths are excluded from logs; instructions never enter history or stats; audio and transcripts are written to disk only when the user turns file output on.
 - All local data is inspectable and deletable from within the app.

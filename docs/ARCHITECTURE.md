@@ -393,8 +393,8 @@ Release finalization **fails closed** on any unexpected executable in the bundle
 ```toml
 [profile.release]
 panic = "abort"
-codegen-units = 1
-lto = true
+codegen-units = 16
+lto = false
 opt-level = "s"
 strip = false   # retain Tauri's updater bundle-type marker
 ```
