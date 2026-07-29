@@ -66,7 +66,7 @@ export function WhatsNewModal({ update, onDismiss }: WhatsNewModalProps) {
         aria-describedby="whats-new-description"
         className="flex max-h-[82vh] w-full max-w-[520px] flex-col overflow-hidden rounded-3xl border border-outline-variant/25 bg-surface-container-lowest shadow-2xl"
       >
-        <div className="relative overflow-hidden border-b border-outline-variant/20 px-6 pb-5 pt-6">
+        <div className="relative shrink-0 overflow-hidden border-b border-outline-variant/20 px-6 pb-5 pt-6">
           <div className="absolute -right-12 -top-16 h-44 w-44 rounded-full bg-primary/10 blur-3xl" />
           <div className="relative">
             <div className="mb-4 flex items-start justify-between gap-4">
@@ -112,7 +112,7 @@ export function WhatsNewModal({ update, onDismiss }: WhatsNewModalProps) {
           )}
         </div>
 
-        <div className="border-t border-outline-variant/20 bg-surface-container-low/45 px-6 py-4">
+        <div className="shrink-0 border-t border-outline-variant/20 bg-surface-container-low/45 px-6 py-4">
           <button
             ref={doneRef}
             type="button"
