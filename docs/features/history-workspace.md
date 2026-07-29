@@ -8,13 +8,18 @@ Everything here is local. History lives in `localStorage` under `dictation-histo
 
 ## Search
 
-The search box filters as you type.
+Search rests as a compact icon so it does not dominate the history toolbar. Hover previews the field; clicking the icon, focusing the input, or invoking the app-wide search shortcut pins it open. An active non-empty query also keeps the field visible after focus leaves.
+
+- Leaving a hover-only preview collapses it.
+- Leaving while the input is focused does not collapse it or steal focus.
+- Clicking elsewhere collapses an empty search; a non-empty search remains visible so an active filter is never hidden.
+- Escape or the close button clears the query, releases focus, and collapses the field. If the pointer is still over the field, hover is suppressed until it genuinely leaves so the just-closed field cannot immediately reopen.
+- Motion uses the app's reduced-motion contract; width and content transitions are removed when reduced motion is requested.
 
 - Matching is case-insensitive and searches the transcript text plus, for imported files, the source file name.
 - Multiple words are **ANDed** — `tauri release` keeps only entries containing both. Narrowing a query never widens the result set.
 - Matches are highlighted in place. `matchSegments` splits an entry into alternating plain/matched runs, merging overlapping and adjacent ranges so two tokens that overlap (`there` and `here` in "therein") produce one highlight rather than nested ones. Original casing is preserved, and the segments always reassemble to the original text exactly.
 - Highlight ranges are capped per entry, so a one-character query cannot emit thousands of spans for a long transcript.
-- Escape clears the query when it is non-empty.
 
 ## Filters
 
