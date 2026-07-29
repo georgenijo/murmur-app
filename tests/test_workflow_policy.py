@@ -198,6 +198,59 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             validate_linux_cache_policy(mutated)
 
+    def test_appimage_tooling_policy_rejects_mutations(self) -> None:
+        action = (ROOT / ".github/actions/setup-linux-build/action.yml").read_text()
+        mutations = {
+            "plugin URL": (
+                "https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/"
+                "download/continuous/linuxdeploy-plugin-appimage-x86_64.AppImage",
+                "https://example.invalid/plugin.AppImage",
+            ),
+            "plugin checksum": (
+                "1da16a46fa5e058ae740e7c35ed0d36d86cb869ac9cc8a5fd9a1847d7978d99a",
+                "0" * 64,
+            ),
+            "plugin path": (
+                "$HOME/.cache/tauri/linuxdeploy-plugin-appimage-x86_64.AppImage",
+                "$HOME/.cache/tauri/untrusted-plugin.AppImage",
+            ),
+            "plugin checksum pipeline": (
+                'echo "$PLUGIN_SHA256  $PLUGIN_PATH" | sha256sum --check --strict',
+                'echo "plugin checksum validation skipped"',
+            ),
+            "runtime URL": (
+                "https://github.com/AppImage/type2-runtime/releases/download/"
+                "continuous/runtime-x86_64",
+                "https://example.invalid/runtime-x86_64",
+            ),
+            "runtime checksum": (
+                "1cc49bcf1e2ccd593c379adb17c9f85a36d619088296504de95b1d06215aebbf",
+                "0" * 64,
+            ),
+            "runtime directory": (
+                "${XDG_CACHE_HOME:-$HOME/.cache}/appimageify",
+                "$HOME/.cache/untrusted-runtime",
+            ),
+            "runtime path": (
+                "$RUNTIME_DIR/runtime-x86_64",
+                "$RUNTIME_DIR/untrusted-runtime",
+            ),
+            "runtime checksum pipeline": (
+                'echo "$RUNTIME_SHA256  $RUNTIME_PATH" | sha256sum --check --strict',
+                'echo "runtime checksum validation skipped"',
+            ),
+            "runtime executable permission": (
+                'chmod +x "$RUNTIME_PATH"',
+                'chmod +x "$RUNTIME_PATH" || true',
+            ),
+        }
+        for name, (expected, replacement) in mutations.items():
+            with self.subTest(name=name):
+                mutated = action.replace(expected, replacement, 1)
+                self.assertNotEqual(action, mutated)
+                with self.assertRaises(AssertionError):
+                    validate_linux_cache_policy(mutated)
+
     def test_cuda_stub_paths_reject_empty_loader_segments(self) -> None:
         action = (ROOT / ".github/actions/setup-linux-build/action.yml").read_text()
         mutated_action = action.replace(

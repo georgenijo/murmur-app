@@ -163,7 +163,7 @@ runs:
         RUNTIME_PATH="$RUNTIME_DIR/runtime-x86_64"
         curl --fail --location --retry 3 "$RUNTIME_URL" --output "$RUNTIME_PATH"
         echo "$RUNTIME_SHA256  $RUNTIME_PATH" | sha256sum --check --strict
-        chmod +x "$RUNTIME_PATH" || true
+        chmod +x "$RUNTIME_PATH"
 
         echo "$HOME/.cache/tauri" >> "$GITHUB_PATH"
 
