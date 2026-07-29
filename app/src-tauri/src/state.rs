@@ -33,7 +33,9 @@ pub enum TransformStatus {
     Idle,
     /// Reading the AX selection (`selection::capture_selection`).
     Capturing,
-    /// Selection captured; waiting for a follow-up spoken instruction.
+    /// Selection captured; the microphone owner is still initializing.
+    Connecting,
+    /// Selection captured and microphone ready; recording the instruction.
     Listening,
     /// Running the transform (LLM call or equivalent) on the captured text.
     Thinking,
@@ -59,6 +61,7 @@ impl TransformStatus {
         match self {
             Self::Idle => "idle",
             Self::Capturing => "capturing",
+            Self::Connecting => "connecting",
             Self::Listening => "listening",
             Self::Thinking => "thinking",
             Self::ReviewPending => "review_pending",
@@ -661,6 +664,7 @@ mod tests {
         let state = AppState::default();
         for status in [
             TransformStatus::Capturing,
+            TransformStatus::Connecting,
             TransformStatus::Listening,
             TransformStatus::Thinking,
             TransformStatus::ReviewPending,
@@ -744,6 +748,7 @@ mod tests {
     fn every_non_idle_transform_status_blocks_recording_start() {
         for status in [
             TransformStatus::Capturing,
+            TransformStatus::Connecting,
             TransformStatus::Listening,
             TransformStatus::Thinking,
             TransformStatus::ReviewPending,
@@ -786,6 +791,7 @@ mod tests {
         for status in [
             TransformStatus::Idle,
             TransformStatus::Capturing,
+            TransformStatus::Connecting,
             TransformStatus::Listening,
             TransformStatus::Thinking,
             TransformStatus::ReviewPending,
@@ -805,6 +811,7 @@ mod tests {
         let cases = [
             (TransformStatus::Idle, "idle"),
             (TransformStatus::Capturing, "capturing"),
+            (TransformStatus::Connecting, "connecting"),
             (TransformStatus::Listening, "listening"),
             (TransformStatus::Thinking, "thinking"),
             (TransformStatus::ReviewPending, "review_pending"),

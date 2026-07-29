@@ -76,11 +76,13 @@ The **transcript transform pipeline** (`transcript_transform.rs`) runs stages in
 ```text
 Transform hold key down (rdev, assigns a monotonic transform_pass_id)
     |
-Mic arms immediately (before capture — Chromium capture can take >1s)
+Async mic ownership starts immediately (before capture — Chromium capture can take >1s)
     |
 selection.rs freezes an AX selection snapshot
     |-- secure/password field --> fail closed, no popover content
     +-- no AX selection --> AX retry ladder, then sentinel-guarded synthetic Cmd+C
+    |
+Popover shows 'connecting' until selection + exact mic owner are both ready
     |
 Popover shows 'listening' (non-focusable, never steals focus)
     |
@@ -175,7 +177,7 @@ Commands live under `commands/` (`recording`, `permissions`, `keyboard`, `export
 
 ```rust
 enum DictationStatus { Idle, Starting, Recording, Recovering, Processing }
-enum TransformStatus { /* Idle, Capturing, Listening, Thinking, ReviewPending, ... */ }
+enum TransformStatus { /* Idle, Capturing, Connecting, Listening, Thinking, ReviewPending, ... */ }
 
 struct AppState {
     dictation: Mutex<DictationState>,

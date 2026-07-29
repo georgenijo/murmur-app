@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 - **Local Appearance Theme Engine** adds System, Light, and Dark modes; accessible custom accent, background, foreground, and contrast controls; synchronized main/log-viewer semantic tokens and native title bars; flash-free cached first paint; exact Sonic reset; and bounded atomic JSON import/export that never touches the clipboard. Overlay and transform-review transparency and always-dark glass remain unchanged (#377).
 - Microphone initialization now has explicit Starting and Recovering states, visible and cancelable startup, a 5-second still-connecting signal, a 30-second hard deadline, and truthful guidance when macOS audio teardown remains blocked (#380).
+- Selected-text transform capture now remains in Connecting until both its frozen selection and exact microphone owner are ready; slow startup and recovery are visible, and releasing before readiness offers Retry instead of silently losing speech (#380).
 
 ### Fixed
 

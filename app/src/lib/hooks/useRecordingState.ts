@@ -202,7 +202,12 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
       try {
         setError('');
         const res = await startRecording(microphoneRef.current, origin);
-        if (isDictationStatus(res.state)) {
+        // These two responses may describe a transform-owned supervisor
+        // attempt while dictation itself is Idle. Lifecycle events remain the
+        // authority; never let a later invoke response overwrite them.
+        const responseOwnsDictationState = res.type !== 'audio_recovering'
+          && res.type !== 'already_starting';
+        if (responseOwnsDictationState && isDictationStatus(res.state)) {
           // A fast device can emit Recording before the invoke promise resolves.
           // Never let the older `recording_starting` response move that newer
           // lifecycle event backwards.

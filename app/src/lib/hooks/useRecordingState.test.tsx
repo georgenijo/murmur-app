@@ -107,6 +107,22 @@ describe('useRecordingState transition ordering', () => {
     expect(current.status).toBe('recording');
   });
 
+  it('does not let a transform-owned supervisor response overwrite dictation idle', async () => {
+    for (const type of ['audio_recovering', 'already_starting']) {
+      mocks.startRecording.mockImplementationOnce(async () => {
+        mocks.listeners.get('recording-status-changed')?.({ payload: 'starting' });
+        mocks.listeners.get('recording-status-changed')?.({ payload: 'idle' });
+        return {
+          type,
+          state: type === 'audio_recovering' ? 'recovering' : 'starting',
+        };
+      });
+
+      await act(async () => current.handleStart());
+      expect(current.status).toBe('idle');
+    }
+  });
+
   it('starts duration at readiness rather than start acceptance', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-07-28T16:00:00Z'));

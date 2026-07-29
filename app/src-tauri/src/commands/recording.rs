@@ -2278,7 +2278,9 @@ pub(crate) fn handle_audio_lifecycle(
             if !is_current()
                 || !matches!(
                     dictation.status,
-                    DictationStatus::Starting | DictationStatus::Recovering
+                    DictationStatus::Starting
+                        | DictationStatus::Recording
+                        | DictationStatus::Recovering
                 )
             {
                 return;
@@ -2492,11 +2494,11 @@ pub async fn start_native_recording(
         return match error {
             AudioStartError::AlreadyStarting => Ok(serde_json::json!({
                 "type": "already_starting",
-                "state": "starting"
+                "state": "idle"
             })),
             AudioStartError::AudioRecovering => Ok(serde_json::json!({
                 "type": "audio_recovering",
-                "state": "recovering"
+                "state": "idle"
             })),
             other => Err(other.to_string()),
         };
@@ -2553,7 +2555,11 @@ pub async fn stop_native_recording(
     };
     if status == DictationStatus::Starting {
         drop(transition);
-        audio_lifecycle::cancel_dictation_initialization(rid, AudioCancelReason::User)?;
+        // Cancel the exact owner even if readiness races with this command
+        // after the status snapshot. A starting-only cancellation could
+        // otherwise no-op while the command falsely reports cancellation and
+        // leaves a newly live stream running.
+        audio_lifecycle::cancel_dictation_capture(rid, AudioCancelReason::User)?;
         return Ok(serde_json::json!({
             "type": "recording_cancelled",
             "state": "recovering"

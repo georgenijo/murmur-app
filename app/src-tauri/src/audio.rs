@@ -147,9 +147,10 @@ pub fn list_input_devices() -> Result<Vec<String>, String> {
     Ok(devices.filter_map(|device| device.name().ok()).collect())
 }
 
-/// Transform instruction capture retains its ready-before-listening contract,
-/// but its capture thread is owned by the same supervisor as dictation.
-pub fn start_recording(
+/// Start transform instruction audio asynchronously under the shared
+/// supervisor. The transform flow enters its public Listening state only
+/// after the matching lifecycle Ready event is accepted.
+pub fn start_transform_capture_audio(
     app_handle: Option<tauri::AppHandle>,
     device_name: Option<String>,
     transform_pass_id: u64,
