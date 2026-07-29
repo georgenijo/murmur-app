@@ -83,7 +83,7 @@ Read these before working on a feature:
 | `commands/transform_model.rs` | Transform LLM model download/status/remove/reset |
 | `commands/transform_popover.rs` | Transform review window geometry + show/hide/focusable |
 | `keyboard.rs` | Hold-down, double-tap, and transform-hold detectors; shared rdev listener thread |
-| `audio.rs` | cpal capture, mono conversion, 16kHz resampling |
+| `audio.rs` / `audio_lifecycle.rs` | cpal capture plus the single-owner async initialization supervisor, cancellation/recovery, join ownership, mono conversion, and 16kHz resampling |
 | `audio_decode.rs` | Imported audio-file decoding |
 | `transcriber/` | `TranscriptionBackend` trait + whisper / parakeet / coreml backends |
 | `model_runtime.rs` | Model catalog + serialized load/warm/readiness/unload lifecycle |

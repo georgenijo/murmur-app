@@ -59,6 +59,7 @@ use crate::selection::{SelectionError, TransformSnapshot};
 use crate::state::{AppState, DictationStatus, TransformStatus};
 use crate::transform_apply::{self, ApplyError};
 use crate::MutexExt;
+use tauri::Manager;
 
 /// Minimum hold before a transform-key release is treated as a real
 /// instruction rather than an accidental tap. Enforced frontend-side (the
@@ -79,7 +80,9 @@ fn transform_correlation(transform_pass_id: u64) -> RunCorrelationV1 {
 fn performance_stage_for_transform_status(status: TransformStatus) -> PerformanceStageV1 {
     match status {
         TransformStatus::Capturing => PerformanceStageV1::SelectedTextCapture,
-        TransformStatus::Listening => PerformanceStageV1::InstructionCapture,
+        TransformStatus::Connecting | TransformStatus::Listening => {
+            PerformanceStageV1::InstructionCapture
+        }
         TransformStatus::Thinking => PerformanceStageV1::Generation,
         TransformStatus::ReviewPending | TransformStatus::Idle => PerformanceStageV1::ReviewReady,
         TransformStatus::Applying => PerformanceStageV1::Apply,
@@ -254,6 +257,8 @@ fn append_transform_follow_up(
 /// name and an optional error code are ever emitted — never any text content.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReviewState {
+    Connecting,
+    Recovering,
     Listening,
     Thinking,
     Ready,
@@ -264,6 +269,8 @@ pub enum ReviewState {
 impl ReviewState {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Connecting => "connecting",
+            Self::Recovering => "recovering",
             Self::Listening => "listening",
             Self::Thinking => "thinking",
             Self::Ready => "ready",
@@ -382,6 +389,7 @@ pub fn apply_error_code(error: ApplyError) -> &'static str {
 pub enum FlowState {
     Idle,
     Capturing,
+    Connecting,
     Listening,
     Thinking,
     /// Proposal shown, awaiting Approve / Retry / Cancel.
@@ -406,6 +414,8 @@ pub enum FlowEvent {
     CaptureSecure,
     /// Any other capture failure (no_selection / too_large / ax / denied).
     CaptureError,
+    /// The exact transform audio owner reached accepted readiness.
+    AudioReady,
     /// Transform hotkey released — stop listening, transcribe + transform.
     InstructionRequested,
     /// Transcribed instruction was blank.
@@ -485,13 +495,13 @@ fn cancel_from(_state: FlowState) -> FlowDecision {
 }
 
 /// Re-arm listening on the SAME frozen snapshot (Retry = re-speak).
-fn retry_to_listening() -> FlowDecision {
+fn retry_to_connecting() -> FlowDecision {
     go(
-        FlowState::Listening,
+        FlowState::Connecting,
         vec![
             FlowAction::SetExpanded(false),
             FlowAction::SetFocusable(false),
-            FlowAction::Emit(ReviewState::Listening),
+            FlowAction::Emit(ReviewState::Connecting),
             FlowAction::StartInstructionCapture,
         ],
     )
@@ -512,12 +522,12 @@ pub fn decide(state: FlowState, event: FlowEvent) -> FlowDecision {
 
         // ---- Capturing ------------------------------------------------------
         (S::Capturing, E::CaptureOk) => go(
-            S::Listening,
+            S::Connecting,
             vec![
                 StartSession,
                 ShowPopover,
                 SetFocusable(false),
-                Emit(ReviewState::Listening),
+                Emit(ReviewState::Connecting),
                 StartInstructionCapture,
             ],
         ),
@@ -530,6 +540,22 @@ pub fn decide(state: FlowState, event: FlowEvent) -> FlowDecision {
         ),
         (S::Capturing, E::Cancel) => cancel_from(state),
         (S::Capturing, _) => ignore(S::Capturing),
+
+        // ---- Connecting -----------------------------------------------------
+        (S::Connecting, E::AudioReady) => go(S::Listening, vec![Emit(ReviewState::Listening)]),
+        (S::Connecting, E::InstructionRequested) => go(
+            S::Failed,
+            vec![
+                StopInstructionCapture,
+                SetFocusable(true),
+                Emit(ReviewState::Failed),
+            ],
+        ),
+        (S::Connecting, E::Cancel) => go(
+            S::Idle,
+            vec![StopInstructionCapture, HidePopover, ClearSession],
+        ),
+        (S::Connecting, _) => ignore(S::Connecting),
 
         // ---- Listening ------------------------------------------------------
         (S::Listening, E::InstructionRequested) => go(
@@ -568,12 +594,12 @@ pub fn decide(state: FlowState, event: FlowEvent) -> FlowDecision {
 
         // ---- Review (proposal shown) ---------------------------------------
         (S::Review, E::Approve) => go(S::Applying, vec![ApplyResult]),
-        (S::Review, E::Retry) => retry_to_listening(),
+        (S::Review, E::Retry) => retry_to_connecting(),
         (S::Review, E::Cancel) => cancel_from(state),
         (S::Review, _) => ignore(S::Review),
 
         // ---- Failed (error popover) ----------------------------------------
-        (S::Failed, E::Retry) => retry_to_listening(),
+        (S::Failed, E::Retry) => retry_to_connecting(),
         (S::Failed, E::Cancel) => cancel_from(state),
         // A new hotkey press supersedes a failed popover.
         (S::Failed, E::StartRequested) => go(S::Capturing, vec![ClearSession]),
@@ -647,11 +673,13 @@ fn snapshot_anchor(snapshot: &TransformSnapshot) -> Option<AnchorRect> {
     })
 }
 
-/// Outcome of `core_start_capture`, telling the command whether to arm audio.
+/// Outcome of `core_start_capture`, telling the command whether selection
+/// capture completed while the asynchronous audio owner remains valid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StartOutcome {
-    /// Session frozen, popover shown listening — start the instruction audio.
-    Listening,
+    /// Session frozen and popover shown. Audio may still be Connecting; the
+    /// lifecycle Ready event is the only transition into Listening.
+    CaptureReady,
     /// Aborted (secure field, capture error, or model not downloaded) — no
     /// audio, nothing further for the command to do.
     Aborted,
@@ -728,10 +756,10 @@ where
         Ok(snapshot) => {
             // Cancel during slow AX capture must not resurrect the flow:
             // session re-install + mic arm + popover while the reducer thinks
-            // not-holding would wedge Listening with no release coming.
+            // not-holding would wedge the transform with no release coming.
             if !app_state.try_transition_transform_status(
                 TransformStatus::Capturing,
-                TransformStatus::Listening,
+                TransformStatus::Connecting,
             ) {
                 return StartOutcome::Aborted;
             }
@@ -739,8 +767,25 @@ where
             transform_apply::start_session(app_state, snapshot);
             fx.show_popover(anchor);
             fx.set_focusable(false);
-            fx.emit_state(ReviewState::Listening, None);
-            StartOutcome::Listening
+            if !enter_transform_listening_if_ready(
+                app_state,
+                fx,
+                transform_pass_id,
+                crate::audio_lifecycle::is_transform_recording(transform_pass_id),
+                true,
+            ) {
+                if app_state.transform_status() != TransformStatus::Connecting {
+                    transform_apply::clear_session(app_state);
+                    fx.hide_popover();
+                    return StartOutcome::Aborted;
+                }
+                fx.emit_state(
+                    ReviewState::Connecting,
+                    crate::audio_lifecycle::is_transform_still_connecting(transform_pass_id)
+                        .then_some("audio_stalled"),
+                );
+            }
+            StartOutcome::CaptureReady
         }
         Err(SelectionError::SecureField) => {
             // Never show content UI for a password field — abort silently.
@@ -1100,6 +1145,140 @@ fn record_sidecar_metrics(
 fn emit_transform_hidden(app: &tauri::AppHandle) {
     use tauri::Emitter;
     let _ = app.emit("transform-review-hidden", ());
+}
+
+fn enter_transform_listening_if_ready(
+    app_state: &AppState,
+    fx: &dyn FlowEffects,
+    transform_pass_id: u64,
+    audio_ready: bool,
+    selection_ready: bool,
+) -> bool {
+    if !audio_ready
+        || !selection_ready
+        || app_state.active_transform_pass_id() != Some(transform_pass_id)
+    {
+        return false;
+    }
+    if app_state.transform_status() == TransformStatus::Listening {
+        return true;
+    }
+    if app_state
+        .try_transition_transform_status(TransformStatus::Connecting, TransformStatus::Listening)
+    {
+        fx.emit_state(ReviewState::Listening, None);
+        true
+    } else {
+        false
+    }
+}
+
+/// Handle asynchronous microphone lifecycle events for transform instruction
+/// capture. Dictation owns its own status bridge; transform capture keeps
+/// `DictationStatus::Idle`, so terminal audio failure must tear down the exact
+/// transform pass here instead of waiting for a key release.
+pub(crate) fn handle_audio_lifecycle(
+    app_handle: tauri::AppHandle,
+    transform_pass_id: u64,
+    event: crate::audio_lifecycle::AudioLifecycleEvent,
+) {
+    let state = app_handle.state::<crate::State>();
+    if state.app_state.active_transform_pass_id() != Some(transform_pass_id) {
+        return;
+    }
+
+    match event {
+        crate::audio_lifecycle::AudioLifecycleEvent::Ready => {
+            crate::transform_trace::audio(transform_pass_id, "armed", "ok", 0, 0);
+            let fx = TauriFlowEffects {
+                app: &app_handle,
+                state: &state,
+            };
+            let selection_ready = transform_apply::session_snapshot(&state.app_state).is_some();
+            enter_transform_listening_if_ready(
+                &state.app_state,
+                &fx,
+                transform_pass_id,
+                true,
+                selection_ready,
+            );
+        }
+        crate::audio_lifecycle::AudioLifecycleEvent::InitializationFailed { .. } => {
+            if !matches!(
+                state.app_state.transform_status(),
+                TransformStatus::Capturing
+                    | TransformStatus::Connecting
+                    | TransformStatus::Listening
+            ) {
+                return;
+            }
+            crate::transform_trace::audio(transform_pass_id, "armed", "error", 0, 0);
+            crate::transform_trace::resolution(
+                transform_pass_id,
+                "failed",
+                "audio_start",
+                Some("audio_start_failed"),
+            );
+            state.app_state.set_transform_status(TransformStatus::Idle);
+            complete_transform_performance(
+                &state,
+                transform_pass_id,
+                RunOutcomeV1::Failed {
+                    stage: PerformanceStageV1::InstructionCapture,
+                    error_code: StableRunErrorV1::AudioCaptureFailed,
+                },
+                None,
+            );
+            transform_apply::clear_session(&state.app_state);
+            let _ = crate::commands::transform_popover::hide_popover_internal(&app_handle);
+            emit_transform_hidden(&app_handle);
+            state.app_state.clear_transform_pass(transform_pass_id);
+            state.transform_diagnostics.phase(
+                transform_pass_id,
+                "instructionCapture",
+                "failed",
+                None,
+                Some("audio_start_failed"),
+            );
+            state
+                .transform_diagnostics
+                .finish(transform_pass_id, "failed");
+        }
+        crate::audio_lifecycle::AudioLifecycleEvent::StillConnecting => {
+            if state.app_state.transform_status() == TransformStatus::Connecting {
+                TauriFlowEffects {
+                    app: &app_handle,
+                    state: &state,
+                }
+                .emit_state(ReviewState::Connecting, Some("audio_stalled"));
+            }
+        }
+        crate::audio_lifecycle::AudioLifecycleEvent::Recovering { .. } => {
+            if matches!(
+                state.app_state.transform_status(),
+                TransformStatus::Connecting | TransformStatus::Listening
+            ) {
+                TauriFlowEffects {
+                    app: &app_handle,
+                    state: &state,
+                }
+                .emit_state(ReviewState::Recovering, None);
+            }
+        }
+        crate::audio_lifecycle::AudioLifecycleEvent::RecoveryStalled => {
+            if matches!(
+                state.app_state.transform_status(),
+                TransformStatus::Connecting | TransformStatus::Listening
+            ) {
+                TauriFlowEffects {
+                    app: &app_handle,
+                    state: &state,
+                }
+                .emit_state(ReviewState::Recovering, Some("audio_recovery_stalled"));
+            }
+        }
+        crate::audio_lifecycle::AudioLifecycleEvent::Idle => {}
+    }
 }
 
 pub(crate) struct TauriFlowEffects<'a> {
@@ -1582,7 +1761,11 @@ pub(crate) async fn start_transform_capture(
     // an aborted pass.
     if model_ready {
         let audio_start_started = std::time::Instant::now();
-        if let Err(e) = crate::audio::start_recording(Some(app_handle.clone()), device_name) {
+        if let Err(e) = crate::audio::start_transform_capture_audio(
+            Some(app_handle.clone()),
+            device_name,
+            transform_pass_id,
+        ) {
             crate::transform_trace::audio(transform_pass_id, "armed", "error", 0, 0);
             crate::transform_trace::resolution(
                 transform_pass_id,
@@ -1625,7 +1808,6 @@ pub(crate) async fn start_transform_capture(
                 .finish(transform_pass_id, "failed");
             return Err(e);
         }
-        crate::transform_trace::audio(transform_pass_id, "armed", "ok", 0, 0);
     }
 
     let capture_started = std::time::Instant::now();
@@ -1702,7 +1884,7 @@ pub(crate) async fn start_transform_capture(
     })
     .await;
 
-    if outcome != StartOutcome::Listening {
+    if outcome != StartOutcome::CaptureReady {
         // cancel_transform marks cancellation before tearing down the pass,
         // while a slow AX capture may still be unwinding. Use that monotonic
         // marker instead of inferring from Idle/active state: this command can
@@ -1724,7 +1906,8 @@ pub(crate) async fn start_transform_capture(
         // failed popover, or a cancel racing the capture) — the pre-armed mic
         // must not stay live.
         if crate::audio::is_recording() {
-            let samples = crate::audio::stop_recording().unwrap_or_default();
+            let _ = crate::audio::cancel_recording(crate::audio_lifecycle::AudioCancelReason::User);
+            let samples: Vec<f32> = Vec::new();
             crate::transform_trace::audio(
                 transform_pass_id,
                 "stopped",
@@ -1750,14 +1933,17 @@ pub(crate) async fn start_transform_capture(
     {
         // Mic-leak window (item 10): `cancel_transform` is lock-free and does
         // not take `recording_transition`, so a short-tap cancel can land
-        // between `core_start_capture` returning Listening and the mic actually
-        // coming up here. At that instant the cancel saw `is_recording() ==
-        // false` and did NOT stop anything, so without this re-check the mic
-        // would stay live with status no longer Listening. Re-verify and tear
-        // down if the flow was cancelled out from under us.
-        if state.app_state.transform_status() != TransformStatus::Listening {
+        // between `core_start_capture` returning and async microphone
+        // readiness. Re-verify that this pass still owns either Connecting or
+        // Listening, and tear down if cancellation won.
+        if !matches!(
+            state.app_state.transform_status(),
+            TransformStatus::Connecting | TransformStatus::Listening
+        ) {
             if crate::audio::is_recording() {
-                let samples = crate::audio::stop_recording().unwrap_or_default();
+                let _ =
+                    crate::audio::cancel_recording(crate::audio_lifecycle::AudioCancelReason::User);
+                let samples: Vec<f32> = Vec::new();
                 crate::transform_trace::audio(
                     transform_pass_id,
                     "stopped",
@@ -1809,10 +1995,48 @@ pub(crate) async fn finish_transform_instruction(
     let (samples, mut performance_guard) = {
         let _transition = state.app_state.recording_transition.lock().await;
 
-        // Tolerate a stray release: only proceed from Listening.
-        if state.app_state.active_transform_pass_id() != Some(transform_pass_id)
-            || state.app_state.transform_status() != TransformStatus::Listening
-        {
+        if state.app_state.active_transform_pass_id() != Some(transform_pass_id) {
+            return Ok(());
+        }
+        // If the key is released before the microphone is ready, fail
+        // truthfully instead of later entering Listening with no release left
+        // to stop it. The frozen selection stays available for Retry.
+        if state.app_state.try_transition_transform_status(
+            TransformStatus::Connecting,
+            TransformStatus::ReviewPending,
+        ) {
+            let _ = crate::audio::cancel_recording(crate::audio_lifecycle::AudioCancelReason::User);
+            fx.set_focusable(true);
+            fx.emit_state(ReviewState::Failed, Some("audio_not_ready"));
+            crate::transform_trace::resolution(
+                transform_pass_id,
+                "failed",
+                "audio_start",
+                Some("audio_not_ready"),
+            );
+            complete_transform_performance(
+                &state,
+                transform_pass_id,
+                RunOutcomeV1::Failed {
+                    stage: PerformanceStageV1::InstructionCapture,
+                    error_code: StableRunErrorV1::AudioCaptureFailed,
+                },
+                None,
+            );
+            state.transform_diagnostics.phase(
+                transform_pass_id,
+                "instructionCapture",
+                "failed",
+                None,
+                Some("audio_not_ready"),
+            );
+            state
+                .transform_diagnostics
+                .finish(transform_pass_id, "failed");
+            return Ok(());
+        }
+        // Tolerate a stray release from any state other than Listening.
+        if state.app_state.transform_status() != TransformStatus::Listening {
             return Ok(());
         }
 
@@ -2145,20 +2369,24 @@ pub(crate) async fn retry_transform_instruction(
         return Ok(());
     }
 
-    if !state
-        .app_state
-        .try_transition_transform_status(TransformStatus::ReviewPending, TransformStatus::Listening)
-    {
+    if !state.app_state.try_transition_transform_status(
+        TransformStatus::ReviewPending,
+        TransformStatus::Connecting,
+    ) {
         // Not in review — ignore.
         return Ok(());
     }
 
     fx.set_expanded(false);
     fx.set_focusable(false);
-    fx.emit_state(ReviewState::Listening, None);
+    fx.emit_state(ReviewState::Connecting, None);
     let _attempt = state.app_state.next_instruction_attempt();
 
-    if let Err(e) = crate::audio::start_recording(Some(app_handle.clone()), device_name) {
+    if let Err(e) = crate::audio::start_transform_capture_audio(
+        Some(app_handle.clone()),
+        device_name,
+        transform_pass_id,
+    ) {
         crate::transform_trace::audio(transform_pass_id, "armed", "error", 0, 0);
         crate::transform_trace::resolution(
             transform_pass_id,
@@ -2173,12 +2401,15 @@ pub(crate) async fn retry_transform_instruction(
         state.app_state.clear_transform_pass(transform_pass_id);
         return Err(e);
     }
-    crate::transform_trace::audio(transform_pass_id, "armed", "ok", 0, 0);
     // Same mic-leak re-check as start_transform_capture (item 10): a cancel
     // that raced in during audio startup must not leave the mic live.
-    if state.app_state.transform_status() != TransformStatus::Listening {
+    if !matches!(
+        state.app_state.transform_status(),
+        TransformStatus::Connecting | TransformStatus::Listening
+    ) {
         if crate::audio::is_recording() {
-            let samples = crate::audio::stop_recording().unwrap_or_default();
+            let _ = crate::audio::cancel_recording(crate::audio_lifecycle::AudioCancelReason::User);
+            let samples: Vec<f32> = Vec::new();
             crate::transform_trace::audio(
                 transform_pass_id,
                 "stopped",
@@ -2385,10 +2616,11 @@ pub(crate) fn cancel_transform(
     // which is mutually excluded while the transform status is non-Idle.
     if matches!(
         prev,
-        TransformStatus::Capturing | TransformStatus::Listening
+        TransformStatus::Capturing | TransformStatus::Connecting | TransformStatus::Listening
     ) && crate::audio::is_recording()
     {
-        let samples = crate::audio::stop_recording().unwrap_or_default();
+        let _ = crate::audio::cancel_recording(crate::audio_lifecycle::AudioCancelReason::User);
+        let samples: Vec<f32> = Vec::new();
         crate::transform_trace::audio(
             transform_pass_id,
             "stopped",
@@ -2792,10 +3024,14 @@ pub async fn run_happy_path_for_test(
     };
 
     // Claim the flow the way the command does, then run the capture core.
+    app_state.activate_transform_pass(1);
     assert!(app_state
         .try_transition_transform_status(TransformStatus::Idle, TransformStatus::Capturing));
     let outcome = core_start_capture(&app_state, &fx, true, async move { Ok(snapshot) }).await;
-    assert_eq!(outcome, StartOutcome::Listening);
+    assert_eq!(outcome, StartOutcome::CaptureReady);
+    assert!(enter_transform_listening_if_ready(
+        &app_state, &fx, 1, true, true,
+    ));
 
     // Release: thinking, then transform.
     assert!(enter_thinking(&app_state, &fx));
@@ -2826,9 +3062,10 @@ mod tests {
 
     // ---- Pure state machine ------------------------------------------------
 
-    const ALL_STATES: [FlowState; 8] = [
+    const ALL_STATES: [FlowState; 9] = [
         FlowState::Idle,
         FlowState::Capturing,
+        FlowState::Connecting,
         FlowState::Listening,
         FlowState::Thinking,
         FlowState::Review,
@@ -2837,11 +3074,12 @@ mod tests {
         FlowState::Applied,
     ];
 
-    const ALL_EVENTS: [FlowEvent; 16] = [
+    const ALL_EVENTS: [FlowEvent; 17] = [
         FlowEvent::StartRequested,
         FlowEvent::CaptureOk,
         FlowEvent::CaptureSecure,
         FlowEvent::CaptureError,
+        FlowEvent::AudioReady,
         FlowEvent::InstructionRequested,
         FlowEvent::InstructionBlank,
         FlowEvent::TransformOk,
@@ -2892,12 +3130,18 @@ mod tests {
             FlowState::Capturing
         );
         let cap = decide(FlowState::Capturing, FlowEvent::CaptureOk);
-        assert_eq!(cap.next, FlowState::Listening);
+        assert_eq!(cap.next, FlowState::Connecting);
         assert!(cap.actions.contains(&FlowAction::StartSession));
         assert!(cap
             .actions
-            .contains(&FlowAction::Emit(ReviewState::Listening)));
+            .contains(&FlowAction::Emit(ReviewState::Connecting)));
         assert!(cap.actions.contains(&FlowAction::StartInstructionCapture));
+
+        let listening = decide(FlowState::Connecting, FlowEvent::AudioReady);
+        assert_eq!(listening.next, FlowState::Listening);
+        assert!(listening
+            .actions
+            .contains(&FlowAction::Emit(ReviewState::Listening)));
 
         let think = decide(FlowState::Listening, FlowEvent::InstructionRequested);
         assert_eq!(think.next, FlowState::Thinking);
@@ -2943,6 +3187,7 @@ mod tests {
     fn cancel_is_valid_from_every_live_state() {
         for state in [
             FlowState::Capturing,
+            FlowState::Connecting,
             FlowState::Listening,
             FlowState::Thinking,
             FlowState::Review,
@@ -2969,14 +3214,26 @@ mod tests {
     fn retry_re_speaks_on_the_same_snapshot() {
         for state in [FlowState::Review, FlowState::Failed] {
             let d = decide(state, FlowEvent::Retry);
-            assert_eq!(d.next, FlowState::Listening);
+            assert_eq!(d.next, FlowState::Connecting);
             assert!(d.actions.contains(&FlowAction::StartInstructionCapture));
             assert!(d
                 .actions
-                .contains(&FlowAction::Emit(ReviewState::Listening)));
+                .contains(&FlowAction::Emit(ReviewState::Connecting)));
             // Retry keeps the session — it never clears it.
             assert!(!d.actions.contains(&FlowAction::ClearSession));
         }
+    }
+
+    #[test]
+    fn release_before_audio_ready_fails_instead_of_entering_listening_late() {
+        let decision = decide(FlowState::Connecting, FlowEvent::InstructionRequested);
+        assert_eq!(decision.next, FlowState::Failed);
+        assert!(decision
+            .actions
+            .contains(&FlowAction::StopInstructionCapture));
+        assert!(decision
+            .actions
+            .contains(&FlowAction::Emit(ReviewState::Failed)));
     }
 
     #[test]
@@ -3002,6 +3259,7 @@ mod tests {
     fn press_while_mid_flow_is_ignored() {
         for state in [
             FlowState::Capturing,
+            FlowState::Connecting,
             FlowState::Listening,
             FlowState::Thinking,
         ] {
@@ -3135,10 +3393,11 @@ mod tests {
     // ---- Async core with a fake selection provider -------------------------
 
     #[tokio::test]
-    async fn core_start_capture_ok_freezes_session_and_lists() {
+    async fn core_start_capture_ok_freezes_session_while_audio_connects() {
         use std::time::Instant;
         let app_state = AppState::default();
         let fx = RecordingFlowEffects::new();
+        app_state.activate_transform_pass(1);
         assert!(app_state
             .try_transition_transform_status(TransformStatus::Idle, TransformStatus::Capturing));
 
@@ -3152,11 +3411,32 @@ mod tests {
         };
         let outcome = core_start_capture(&app_state, &fx, true, async move { Ok(snapshot) }).await;
 
-        assert_eq!(outcome, StartOutcome::Listening);
-        assert_eq!(app_state.transform_status(), TransformStatus::Listening);
+        assert_eq!(outcome, StartOutcome::CaptureReady);
+        assert_eq!(app_state.transform_status(), TransformStatus::Connecting);
         assert!(transform_apply::session_snapshot(&app_state).is_some());
-        assert_eq!(fx.emitted_states(), vec!["listening".to_string()]);
+        assert_eq!(fx.emitted_states(), vec!["connecting".to_string()]);
         assert!(fx.popover_shown());
+    }
+
+    #[test]
+    fn transform_listening_requires_both_selection_and_audio_readiness() {
+        let app_state = AppState::default();
+        let fx = RecordingFlowEffects::new();
+        app_state.activate_transform_pass(2);
+        app_state.set_transform_status(TransformStatus::Connecting);
+
+        assert!(!enter_transform_listening_if_ready(
+            &app_state, &fx, 2, false, true,
+        ));
+        assert!(!enter_transform_listening_if_ready(
+            &app_state, &fx, 2, true, false,
+        ));
+        assert_eq!(app_state.transform_status(), TransformStatus::Connecting);
+        assert!(enter_transform_listening_if_ready(
+            &app_state, &fx, 2, true, true,
+        ));
+        assert_eq!(app_state.transform_status(), TransformStatus::Listening);
+        assert_eq!(fx.emitted_states(), vec!["listening".to_string()]);
     }
 
     #[tokio::test]
@@ -3276,6 +3556,7 @@ mod tests {
         for status in [
             TransformStatus::Idle,
             TransformStatus::Capturing,
+            TransformStatus::Connecting,
             TransformStatus::Listening,
             TransformStatus::Thinking,
             TransformStatus::Applying,
@@ -3323,6 +3604,7 @@ mod tests {
         let fx = RecordingFlowEffects::new();
         for status in [
             TransformStatus::Capturing,
+            TransformStatus::Connecting,
             TransformStatus::Listening,
             TransformStatus::Thinking,
             TransformStatus::Applying,

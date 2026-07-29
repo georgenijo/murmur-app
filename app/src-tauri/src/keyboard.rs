@@ -1356,6 +1356,7 @@ fn choose_transform_escape_target(
             Some(active_pass_id)
         }
         crate::state::TransformStatus::Capturing
+        | crate::state::TransformStatus::Connecting
         | crate::state::TransformStatus::Listening
         | crate::state::TransformStatus::Thinking
         // ReviewPending is included in the global handoff because the status
@@ -2488,8 +2489,9 @@ mod tests {
     fn escape_marker_does_not_tear_down_active_transform_phases() {
         for (pass_id, status) in [
             (51, crate::state::TransformStatus::Capturing),
-            (52, crate::state::TransformStatus::Listening),
-            (53, crate::state::TransformStatus::Thinking),
+            (52, crate::state::TransformStatus::Connecting),
+            (53, crate::state::TransformStatus::Listening),
+            (54, crate::state::TransformStatus::Thinking),
         ] {
             let app_state = crate::state::AppState::default();
             app_state.activate_transform_pass(pass_id);
@@ -2513,6 +2515,7 @@ mod tests {
         );
         for status in [
             TransformStatus::Capturing,
+            TransformStatus::Connecting,
             TransformStatus::Listening,
             TransformStatus::Thinking,
             // Deterministic seam for ReviewPending-before-set_focusable(true).

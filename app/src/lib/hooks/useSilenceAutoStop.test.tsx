@@ -203,6 +203,19 @@ describe('useSilenceAutoStop', () => {
     expect(onAutoStop).toHaveBeenCalledOnce();
   });
 
+  it('heals a hold origin when initialization is cancelled before readiness', async () => {
+    const onAutoStop = vi.fn();
+    await render({ status: 'idle', onAutoStop });
+    await emitOrigin('hold-down-start');
+    await render({ status: 'starting', onAutoStop });
+    await render({ status: 'recovering', onAutoStop });
+    await render({ status: 'idle', onAutoStop });
+    await render({ status: 'recording', onAutoStop });
+    await emit(0.3, 800);
+    await emit(0.0, 2400);
+    expect(onAutoStop).toHaveBeenCalledOnce();
+  });
+
   it('treats a double-tap after a stale hold origin as toggle-started', async () => {
     const onAutoStop = vi.fn();
     await render({ onAutoStop });

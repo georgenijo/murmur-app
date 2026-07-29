@@ -11,7 +11,9 @@ pub use crate::transcriber::WHISPER_SAMPLE_RATE;
 #[serde(rename_all = "lowercase")]
 pub enum DictationStatus {
     Idle,
+    Starting,
     Recording,
+    Recovering,
     Processing,
 }
 
@@ -31,7 +33,9 @@ pub enum TransformStatus {
     Idle,
     /// Reading the AX selection (`selection::capture_selection`).
     Capturing,
-    /// Selection captured; waiting for a follow-up spoken instruction.
+    /// Selection captured; the microphone owner is still initializing.
+    Connecting,
+    /// Selection captured and microphone ready; recording the instruction.
     Listening,
     /// Running the transform (LLM call or equivalent) on the captured text.
     Thinking,
@@ -57,6 +61,7 @@ impl TransformStatus {
         match self {
             Self::Idle => "idle",
             Self::Capturing => "capturing",
+            Self::Connecting => "connecting",
             Self::Listening => "listening",
             Self::Thinking => "thinking",
             Self::ReviewPending => "review_pending",
@@ -290,9 +295,9 @@ struct ActiveDictationContext {
 
 pub struct AppState {
     pub dictation: Mutex<DictationState>,
-    /// Serializes recorder start/stop/cancel transitions. Audio startup waits
-    /// for the cpal stream to become ready, so a fast key release must not tear
-    /// the recorder down until that startup has fully completed.
+    /// Serializes recorder start/stop/cancel command transitions. Microphone
+    /// initialization itself is asynchronous and owned by `audio_lifecycle`;
+    /// this lock is never held while waiting for Core Audio or a channel.
     pub recording_transition: tokio::sync::Mutex<()>,
     pub model_runtime: ModelRuntimeManager,
     pub last_transcription_at: Mutex<Option<Instant>>,
@@ -659,6 +664,7 @@ mod tests {
         let state = AppState::default();
         for status in [
             TransformStatus::Capturing,
+            TransformStatus::Connecting,
             TransformStatus::Listening,
             TransformStatus::Thinking,
             TransformStatus::ReviewPending,
@@ -742,6 +748,7 @@ mod tests {
     fn every_non_idle_transform_status_blocks_recording_start() {
         for status in [
             TransformStatus::Capturing,
+            TransformStatus::Connecting,
             TransformStatus::Listening,
             TransformStatus::Thinking,
             TransformStatus::ReviewPending,
@@ -784,6 +791,7 @@ mod tests {
         for status in [
             TransformStatus::Idle,
             TransformStatus::Capturing,
+            TransformStatus::Connecting,
             TransformStatus::Listening,
             TransformStatus::Thinking,
             TransformStatus::ReviewPending,
@@ -803,6 +811,7 @@ mod tests {
         let cases = [
             (TransformStatus::Idle, "idle"),
             (TransformStatus::Capturing, "capturing"),
+            (TransformStatus::Connecting, "connecting"),
             (TransformStatus::Listening, "listening"),
             (TransformStatus::Thinking, "thinking"),
             (TransformStatus::ReviewPending, "review_pending"),

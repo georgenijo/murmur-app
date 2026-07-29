@@ -134,7 +134,7 @@ function App() {
   const { historyEntries, addEntry, updateEntry, clearHistory } = useHistoryManagement();
   const {
     status, recordingDuration, error: recordingError,
-    handleStart, handleStop, toggleRecording, statsVersion,
+    handleStart, handleHoldStart, handleStop, toggleRecording, statsVersion,
   } = useRecordingState({ addEntry, microphone: settings.microphone });
   const [statsResetVersion, setStatsResetVersion] = useState(0);
   const combinedStatsVersion = statsVersion + statsResetVersion;
@@ -143,9 +143,9 @@ function App() {
   // can be granted mid-wizard, and a hold/double-tap must not start a recording
   // behind the OnboardingFlow screen.
   const hotkeysArmed = onboardingState === 'done';
-  useHoldDownToggle({ enabled: hotkeysArmed && settings.recordingMode === 'hold_down', initialized, accessibilityGranted, holdDownKey: settings.doubleTapKey, onStart: handleStart, onStop: handleStop });
+  useHoldDownToggle({ enabled: hotkeysArmed && settings.recordingMode === 'hold_down', initialized, accessibilityGranted, holdDownKey: settings.doubleTapKey, onStart: handleHoldStart, onStop: handleStop });
   useDoubleTapToggle({ enabled: hotkeysArmed && settings.recordingMode === 'double_tap', initialized, accessibilityGranted, doubleTapKey: settings.doubleTapKey, status, onToggle: toggleRecording });
-  useCombinedToggle({ enabled: hotkeysArmed && settings.recordingMode === 'both', initialized, accessibilityGranted, triggerKey: settings.doubleTapKey, status, onStart: handleStart, onStop: handleStop, onToggle: toggleRecording });
+  useCombinedToggle({ enabled: hotkeysArmed && settings.recordingMode === 'both', initialized, accessibilityGranted, triggerKey: settings.doubleTapKey, status, onStart: handleHoldStart, onStop: handleStop, onToggle: toggleRecording });
   useEscapeCancel({ status, enabled: hotkeysArmed && initialized && accessibilityGranted === true });
   // Hands-free finish for any recording not started by holding the trigger
   // key (double-tap, button, overlay, locked mode). The hook tracks the
@@ -260,12 +260,16 @@ function App() {
   }, [focusHistorySearch, openLogViewer]);
 
   const commands = useMemo<PaletteCommand[]>(() => {
-    const isRecording = status === 'recording';
+    const isRecording = status === 'recording' || status === 'starting';
     const lastEntry = historyEntries[historyEntries.length - 1];
     const items: PaletteCommand[] = [
       {
         id: 'recording-toggle',
-        title: isRecording ? 'Stop recording' : 'Start recording',
+        title: status === 'starting'
+          ? 'Cancel microphone connection'
+          : isRecording
+            ? 'Stop recording'
+            : 'Start recording',
         section: 'Recording',
         keywords: ['dictate', 'microphone', 'transcribe'],
         run: () => { void (isRecording ? handleStop() : handleStart()); },

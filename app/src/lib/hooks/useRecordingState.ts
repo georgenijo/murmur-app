@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { startRecording, stopRecording } from '../dictation';
+import { cancelRecording, startRecording, stopRecording } from '../dictation';
 import { isDictationStatus } from '../types';
 import type { DictationStatus } from '../types';
 import { updateStats } from '../stats';
@@ -68,7 +68,12 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
           setRecordingStartTime(now);
         }
         // When recording stops, clear recordingStartTime.
-        if (event.payload === 'idle' || event.payload === 'processing') {
+        if (
+          event.payload === 'idle'
+          || event.payload === 'starting'
+          || event.payload === 'recovering'
+          || event.payload === 'processing'
+        ) {
           recordingStartTimeRef.current = null;
           setRecordingStartTime(null);
         }
@@ -82,6 +87,34 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
       if (cancelled) { fn(); } else { unlisten = fn; }
     });
     return () => { cancelled = true; unlisten?.(); };
+  }, []);
+
+  // Audio initialization failures are terminal for the attempt, but the
+  // backend may remain Recovering while the owned Core Audio thread unwinds.
+  // Keep the error visible across the later idle transition.
+  useEffect(() => {
+    let cancelled = false;
+    const unlistens: (() => void)[] = [];
+    listen<{ error?: unknown }>('recording-initialization-failed', (event) => {
+      const message = typeof event.payload?.error === 'string'
+        ? event.payload.error
+        : 'Microphone initialization failed.';
+      setError(message);
+    }).then((fn) => {
+      if (cancelled) fn(); else unlistens.push(fn);
+    });
+    listen('recording-recovery-stalled', () => {
+      setError(
+        'Murmur is still waiting for macOS audio to release the microphone. '
+        + 'Restarting Murmur clears this attempt, but macOS audio may still need time to recover.',
+      );
+    }).then((fn) => {
+      if (cancelled) fn(); else unlistens.push(fn);
+    });
+    return () => {
+      cancelled = true;
+      unlistens.forEach((fn) => fn());
+    };
   }, []);
 
   // Subscribe to live audio level for waveform visualisation
@@ -156,9 +189,9 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
     return () => { cancelled = true; unlisten?.(); };
   }, [addEntry]);
 
-  const handleStart = useCallback(async () => {
+  const beginRecording = useCallback(async (origin: 'toggle' | 'hold') => {
     flog.info('recording', 'handleStart called', {
-      isStarting: isStartingRef.current, status: statusRef.current,
+      isStarting: isStartingRef.current, status: statusRef.current, origin,
     });
     if (startOperationRef.current) {
       await startOperationRef.current;
@@ -168,22 +201,31 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
     const operation = (async () => {
       try {
         setError('');
-        const res = await startRecording(microphoneRef.current);
-        if (isDictationStatus(res.state)) {
-          statusRef.current = res.state;
-          setStatus(res.state);
-        }
-        if (res.type === 'recording_started') {
-          if (!recordingStartTimeRef.current) {
-            const now = Date.now();
-            flog.info('recording', 'setting recordingStartTime', { value: now });
-            recordingStartTimeRef.current = now;
-            setRecordingStartTime(now);
+        const res = await startRecording(microphoneRef.current, origin);
+        // These two responses may describe a transform-owned supervisor
+        // attempt while dictation itself is Idle. Lifecycle events remain the
+        // authority; never let a later invoke response overwrite them.
+        const responseOwnsDictationState = res.type !== 'audio_recovering'
+          && res.type !== 'already_starting';
+        if (responseOwnsDictationState && isDictationStatus(res.state)) {
+          // A fast device can emit Recording before the invoke promise resolves.
+          // Never let the older `recording_starting` response move that newer
+          // lifecycle event backwards.
+          const staleStartingResponse = res.state === 'starting'
+            && statusRef.current !== 'idle'
+            && statusRef.current !== 'starting';
+          if (!staleStartingResponse) {
+            statusRef.current = res.state;
+            setStatus(res.state);
           }
-        } else {
+        }
+        if (res.type !== 'recording_starting') {
           if (res.type === 'error') setError(res.error || 'Unknown error');
           else if (res.type === 'busy_benchmarking') setError('Wait for the benchmark to finish.');
           else if (res.type === 'busy_transcribing_file') setError('Wait for the file transcription to finish.');
+          else if (res.type === 'audio_recovering') {
+            setError('Microphone cleanup is still in progress. Try again when Murmur is ready.');
+          }
         }
       } catch (err) {
         statusRef.current = 'idle';
@@ -205,6 +247,9 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
     }
   }, []);
 
+  const handleStart = useCallback(() => beginRecording('toggle'), [beginRecording]);
+  const handleHoldStart = useCallback(() => beginRecording('hold'), [beginRecording]);
+
   const handleStop = useCallback(async () => {
     flog.info('recording', 'handleStop called', {
       isStopping: isStoppingRef.current, status: statusRef.current,
@@ -213,14 +258,17 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
     if (isStoppingRef.current) return;
     isStoppingRef.current = true;
     try {
-      // Hold-down release can arrive while native audio startup is still in
-      // flight. Wait for its result so Processing cannot precede Recording.
-      if (startOperationRef.current) {
-        flog.info('recording', 'handleStop waiting for recording startup');
-        await startOperationRef.current;
+      if (statusRef.current === 'starting') {
+        flog.info('recording', 'handleStop cancelling audio initialization');
+        await cancelRecording();
+        return;
+      }
+      if (statusRef.current === 'recovering') {
+        setError('Microphone cleanup is still in progress. Try again when Murmur is ready.');
+        return;
       }
       if (statusRef.current !== 'recording') {
-        flog.info('recording', 'handleStop ignored after startup', {
+        flog.info('recording', 'handleStop ignored', {
           status: statusRef.current,
         });
         return;
@@ -260,8 +308,8 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
   // Stable toggle for hotkey use — reads status from ref
   const toggleRecording = useCallback(async () => {
     flog.info('recording', 'toggleRecording', { status: statusRef.current });
-    if (statusRef.current === 'processing') return;
-    if (statusRef.current === 'recording') {
+    if (statusRef.current === 'processing' || statusRef.current === 'recovering') return;
+    if (statusRef.current === 'recording' || statusRef.current === 'starting') {
       await handleStop();
     } else {
       await handleStart();
@@ -286,6 +334,7 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
     error,
     setError,
     handleStart,
+    handleHoldStart,
     handleStop,
     toggleRecording,
     audioLevel,

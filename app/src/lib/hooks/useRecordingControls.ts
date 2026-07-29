@@ -37,10 +37,10 @@ export function useRecordingControls({
 
   useEffect(() => { lockedRef.current = lockedMode; }, [lockedMode]);
 
-  // When status returns to idle, locked mode is automatically reset — mirrors
-  // the idle branch of the original combined "status changed" effect.
+  // A cancelled startup enters Recovering before Idle, so release locked mode
+  // at that boundary instead of making the overlay look armed during cleanup.
   useEffect(() => {
-    if (status === 'idle') setLockedMode(false);
+    if (status === 'idle' || status === 'recovering') setLockedMode(false);
   }, [status]);
 
   // Clear the pending single-click debounce timer on unmount.
@@ -56,7 +56,7 @@ export function useRecordingControls({
       target: (e.target as HTMLElement).tagName,
     });
     const currentStatus = statusRef.current;
-    if (currentStatus === 'processing') return;
+    if (currentStatus === 'processing' || currentStatus === 'recovering') return;
     if (disabledRef.current && currentStatus === 'idle') return;
     if (clickTimerRef.current) {
       clearTimeout(clickTimerRef.current);
@@ -67,6 +67,15 @@ export function useRecordingControls({
       return;
     }
     const currentLocked = lockedRef.current;
+    if (currentStatus === 'starting') {
+      setLockedMode(false);
+      try {
+        await invoke('cancel_native_recording');
+      } catch (err) {
+        flog.error('overlay', 'cancel_native_recording error', { error: String(err) });
+      }
+      return;
+    }
     if (!currentLocked) {
       // Enter locked mode — start recording
       setLockedMode(true);
@@ -83,9 +92,12 @@ export function useRecordingControls({
             }
           } catch { /* ignore parse errors */ }
           flog.info('overlay', 'invoking start_native_recording', { deviceName });
-          const res = await invoke<DictationResponse>('start_native_recording', { deviceName });
+          const res = await invoke<DictationResponse>('start_native_recording', {
+            deviceName,
+            origin: 'toggle',
+          });
           flog.info('overlay', 'start_native_recording result', { type: res.type, state: res.state });
-          if (res.type !== 'recording_started') {
+          if (res.type !== 'recording_starting') {
             flog.warn('overlay', 'recording start declined', { type: res.type });
             setLockedMode(false);
           }
@@ -123,7 +135,14 @@ export function useRecordingControls({
       clickTimerRef.current = null;
       flog.info('overlay', 'click fired', { locked: lockedRef.current, status: statusRef.current });
       // Single click stops recording (regardless of locked mode)
-      if (statusRef.current === 'recording') {
+      if (statusRef.current === 'starting') {
+        setLockedMode(false);
+        try {
+          await invoke('cancel_native_recording');
+        } catch {
+          // status will sync via event
+        }
+      } else if (statusRef.current === 'recording') {
         setLockedMode(false);
         try {
           await invoke('stop_native_recording');

@@ -76,11 +76,13 @@ The **transcript transform pipeline** (`transcript_transform.rs`) runs stages in
 ```text
 Transform hold key down (rdev, assigns a monotonic transform_pass_id)
     |
-Mic arms immediately (before capture — Chromium capture can take >1s)
+Async mic ownership starts immediately (before capture — Chromium capture can take >1s)
     |
 selection.rs freezes an AX selection snapshot
     |-- secure/password field --> fail closed, no popover content
     +-- no AX selection --> AX retry ladder, then sentinel-guarded synthetic Cmd+C
+    |
+Popover shows 'connecting' until selection + exact mic owner are both ready
     |
 Popover shows 'listening' (non-focusable, never steals focus)
     |
@@ -132,7 +134,8 @@ glass surfaces.
 |--------|---------|
 | `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 108 registered commands, setup, tray, run loop |
 | `alloc.rs` | Custom macOS malloc zone ("RustHeapZone") so Rust heap is accounted separately from whisper.cpp's FFI heap |
-| `audio.rs` | cpal capture, mono mix, 16kHz resample, `audio-level` emission |
+| `audio.rs` | cpal capture worker, phase telemetry, mono mix, 16kHz resample, `audio-level` emission |
+| `audio_lifecycle.rs` | App-lifetime single-owner supervisor; async start, generation cancellation, deadlines, recovery, and worker joining |
 | `audio_decode.rs` | Decoding imported audio files for `transcribe_file` |
 | `benchmark.rs` | Performance Lab: fixture corpus, scoring (raw/normalized/delivered WER), reports |
 | `cleanup.rs` | Filler removal and capitalization |
@@ -173,8 +176,8 @@ Commands live under `commands/` (`recording`, `permissions`, `keyboard`, `export
 ### `state.rs` — Shared State
 
 ```rust
-enum DictationStatus { Idle, Recording, Processing }
-enum TransformStatus { /* Idle, Capturing, Listening, Thinking, ReviewPending, ... */ }
+enum DictationStatus { Idle, Starting, Recording, Recovering, Processing }
+enum TransformStatus { /* Idle, Capturing, Connecting, Listening, Thinking, ReviewPending, ... */ }
 
 struct AppState {
     dictation: Mutex<DictationState>,
@@ -323,7 +326,7 @@ Two rules keep the multi-window state coherent:
 
 ## Tauri Commands
 
-108 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
+109 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
 
 ## Events
 

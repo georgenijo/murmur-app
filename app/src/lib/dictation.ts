@@ -15,10 +15,14 @@ export async function initDictation(): Promise<DictationResponse> {
   return await invoke('init_dictation');
 }
 
-export async function startRecording(deviceName?: string): Promise<DictationResponse> {
+export async function startRecording(
+  deviceName?: string,
+  origin: 'toggle' | 'hold' = 'toggle',
+): Promise<DictationResponse> {
   try {
     return await invoke('start_native_recording', {
       deviceName: deviceName && deviceName !== DEFAULT_SETTINGS.microphone ? deviceName : null,
+      origin,
     });
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);

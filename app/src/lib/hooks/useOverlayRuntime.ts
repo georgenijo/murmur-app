@@ -14,6 +14,7 @@ const CANCELLED_FLASH_MS = 800;
 const SECURE_FIELD_FLASH_MS = 800;
 /** How long the transform-busy refusal flash shows (issue #329). */
 const TRANSFORM_BUSY_FLASH_MS = 800;
+const MICROPHONE_FAILURE_FLASH_MS = 1200;
 
 export interface UseOverlayRuntimeArgs {
   /** Current dictation status (reactive value, not just a ref). */
@@ -45,6 +46,8 @@ export interface OverlayRuntime {
    * (issue #329).
    */
   showTransformBusy: boolean;
+  /** Bounded microphone-initialization failure flash. */
+  showMicrophoneFailure: boolean;
   disabled: boolean;
   setDisabled: (value: boolean) => void;
   /** Ref mirror of `disabled`, read synchronously by useRecordingControls. */
@@ -72,6 +75,7 @@ export function useOverlayRuntime({
   const [showCancelled, setShowCancelled] = useState(false);
   const [showSecureField, setShowSecureField] = useState(false);
   const [showTransformBusy, setShowTransformBusy] = useState(false);
+  const [showMicrophoneFailure, setShowMicrophoneFailure] = useState(false);
   const disabledRef = useRef(disabled);
   const hotkeyMissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -147,6 +151,27 @@ export function useOverlayRuntime({
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    listen('recording-initialization-failed', () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      setShowMicrophoneFailure(true);
+      timeoutId = setTimeout(() => {
+        if (!cancelled) setShowMicrophoneFailure(false);
+        timeoutId = null;
+      }, MICROPHONE_FAILURE_FLASH_MS);
+    }).then((fn) => {
+      if (cancelled) fn(); else unlisten = fn;
+    });
+    return () => {
+      cancelled = true;
+      if (timeoutId) clearTimeout(timeoutId);
+      unlisten?.();
+    };
+  }, []);
+
   // Brief flash when the transform flow refuses a secure/password field
   // (issue #312 PR-C2). Mirrors the recording-cancelled flash mechanism.
   useEffect(() => {
@@ -206,5 +231,14 @@ export function useOverlayRuntime({
     return () => { cancelled = true; unlisten?.(); };
   }, [setDisabled]);
 
-  return { showCancelled, showSecureField, showTransformBusy, showHotkeyMiss, disabled, setDisabled, disabledRef };
+  return {
+    showCancelled,
+    showSecureField,
+    showTransformBusy,
+    showMicrophoneFailure,
+    showHotkeyMiss,
+    disabled,
+    setDisabled,
+    disabledRef,
+  };
 }

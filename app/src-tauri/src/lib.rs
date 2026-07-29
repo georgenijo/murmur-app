@@ -1,6 +1,7 @@
 #[cfg(target_os = "macos")]
 mod alloc;
 mod audio;
+mod audio_lifecycle;
 mod audio_decode;
 // `pub` so the headless benchmark runner (tests/headless_benchmark.rs) can
 // call `benchmark::run` directly with a mock AppHandle; not part of any
@@ -119,6 +120,9 @@ pub(crate) struct State {
     /// (physical-or-synthetic-notch width, measured menu-bar height) from the
     /// primary NSScreen. Refreshed on the main thread after display changes.
     pub(crate) notch_info: Mutex<Option<(f64, f64)>>,
+    /// Complete primary-display snapshot used to coalesce native screen
+    /// notifications and skip geometrically identical updates.
+    pub(crate) display_snapshot: Mutex<Option<commands::overlay::DisplaySnapshot>>,
     /// The selection-bounds anchor from the most recent `show_transform_popover`
     /// call, so `set_transform_popover_expanded` can resize/reposition for a
     /// new size class without the caller re-supplying the anchor.
@@ -225,6 +229,7 @@ pub fn run() {
             performance: performance_metrics::PerformanceMetrics::default(),
             transform_diagnostics: transform_diagnostics::TransformDiagnostics::default(),
             notch_info: Mutex::new(None),
+            display_snapshot: Mutex::new(None),
             transform_popover_anchor: Mutex::new(None),
             transform_main_was_visible: Mutex::new(None),
             transform_runtime: std::sync::Arc::new(llm_sidecar::LlmSidecar::new()),
@@ -237,6 +242,7 @@ pub fn run() {
             commands::recording::start_native_recording,
             commands::recording::stop_native_recording,
             commands::recording::cancel_native_recording,
+            commands::recording::cancel_audio_initialization,
             commands::recording::count_vocab_tokens,
             commands::recording::preview_vocabulary_aliases,
             commands::recording::transcribe_file,
@@ -427,10 +433,13 @@ pub fn run() {
             }
 
             // Cache notch dimensions on the main thread (safe for NSScreen APIs).
-            let notch = commands::overlay::detect_notch_info();
+            let display_snapshot =
+                commands::overlay::capture_display_snapshot(app.handle());
+            let notch = display_snapshot.notch_info;
             {
                 let state = app.state::<State>();
                 *state.notch_info.lock_or_recover() = notch;
+                *state.display_snapshot.lock_or_recover() = Some(display_snapshot);
             }
 
             // Re-enable mouse events on the overlay window.
@@ -452,6 +461,7 @@ pub fn run() {
             // Listen for display config changes (monitor plug/unplug, lid open/close)
             // to re-detect notch info and reposition the overlay.
             commands::overlay::register_screen_change_observer(app.handle().clone());
+            audio_lifecycle::register_sleep_wake_observer();
 
             // Overwrite the transform-review window's initial size from Rust's
             // COMPACT_W/COMPACT_H so tauri.conf.json's matching literal is only

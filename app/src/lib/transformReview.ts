@@ -8,7 +8,14 @@
 // wired in PR-C2. This file locks the contract shape now so both the mock
 // driver and the eventual real driver produce/consume the same thing.
 
-export type ReviewState = 'listening' | 'thinking' | 'ready' | 'failed' | 'applied';
+export type ReviewState =
+  | 'connecting'
+  | 'recovering'
+  | 'listening'
+  | 'thinking'
+  | 'ready'
+  | 'failed'
+  | 'applied';
 
 // Kept in sync with the Rust code producers in `transform_flow.rs`
 // (`selection_error_code` / `transform_error_code` / `apply_error_code`). Any
@@ -32,6 +39,9 @@ export type ReviewErrorCode =
   | 'model_load_failed'
   | 'disabled'
   | 'busy'
+  | 'audio_stalled'
+  | 'audio_recovery_stalled'
+  | 'audio_not_ready'
   | 'no_instruction'
   | 'no_selection'
   | 'too_large'
@@ -44,7 +54,7 @@ export type ReviewErrorCode =
   | 'not_applied';
 
 const REVIEW_STATES: readonly ReviewState[] = [
-  'listening', 'thinking', 'ready', 'failed', 'applied',
+  'connecting', 'recovering', 'listening', 'thinking', 'ready', 'failed', 'applied',
 ];
 
 const REVIEW_ERROR_CODES: readonly ReviewErrorCode[] = [
@@ -53,7 +63,8 @@ const REVIEW_ERROR_CODES: readonly ReviewErrorCode[] = [
   'generation_timeout', 'helper_spawn_failed', 'handshake_protocol_failed',
   'process_exit', 'model_verification_failed',
   'model_load_failed',
-  'disabled', 'busy', 'no_instruction', 'no_selection', 'too_large', 'ax_unavailable',
+  'disabled', 'busy', 'audio_stalled', 'audio_recovery_stalled', 'audio_not_ready',
+  'no_instruction', 'no_selection', 'too_large', 'ax_unavailable',
   'accessibility_denied', 'target_gone', 'selection_changed',
   'clipboard_unavailable', 'paste_failed', 'not_applied',
 ];
@@ -84,6 +95,9 @@ export const REVIEW_ERROR_COPY: Record<ReviewErrorCode, string> = {
   model_load_failed: 'Local model or Metal backend failed to load',
   disabled: 'Transform temporarily disabled — try again shortly',
   busy: 'Busy — try again in a moment',
+  audio_stalled: 'Still connecting to the microphone…',
+  audio_recovery_stalled: 'Still waiting for macOS audio to recover…',
+  audio_not_ready: "The microphone wasn't ready — try again",
   no_instruction: "Didn't catch an instruction — hold the key and speak",
   no_selection: 'Select some text first',
   too_large: 'Selection is too large to transform',

@@ -102,6 +102,19 @@ Only the expired second-tap window is surfaced. Existing structured diagnostics 
 
 ## Shared Infrastructure
 
+### Audio startup lifecycle
+
+All three modes treat `Starting` as an active, cancelable attempt. Hold release
+or a second toggle while `Starting` cancels initialization and moves the app to
+`Recovering`; it does not wait for the Core Audio call or pretend the microphone
+is idle. Double-Tap and Both synchronize `Starting` as active to the Rust
+detector, so the next single tap cancels. Silence auto-stop remains disarmed
+until the readiness-driven `Recording` transition.
+
+The hold/toggle origin is latched across `Starting` and resets after either a
+normal recording end or a pre-readiness cancellation. Model preparation begins
+when startup is accepted so model loading still overlaps microphone latency.
+
 ### Threading
 
 - Both modes share a single `rdev::listen()` background thread (spawned once, lives for app lifetime)
@@ -113,7 +126,7 @@ Only the expired second-tap window is surfaced. Existing structured diagnostics 
 
 ### Escape cancellation
 
-The shared rdev listener emits `escape-cancel` before mode-specific handling and resets the hold-down, double-tap, and transform detectors so a later trigger-key release cannot advance a cancelled flow. Its content-free payload is `{ transformPassId }`: the exact active/queued transform pass for Capturing, Listening, Thinking, or ReviewPending, or `null` when Escape did not target a transform. Rust snapshots active ownership on both sides of the status read and fails closed if it changes, then publishes the exact pass's cancellation marker before emitting. `useTransformFlow` mirrors the detector reset only when that ID still matches its local held pass, so a delayed Escape for pass N cannot reset pass N+1. The main-window cancellation listener sends `cancel_transform({ transformPassId })` without an asynchronous status lookup; the backend no-ops unless that exact pass still owns the flow. Including ReviewPending closes the transition-before-focus gap; once the Ready/Failed popover is focusable its local Esc may race the global route, but both carry the same exact pass ID and duplicate cancellation is an idempotent no-op. Applying is left untouched, and a `null` payload falls back to dictation recording/processing cancellation. In-flight duplicate suppression is bounded and keyed per target, so pass N cannot suppress cancellation of N+1.
+The shared rdev listener emits `escape-cancel` before mode-specific handling and resets the hold-down, double-tap, and transform detectors so a later trigger-key release cannot advance a cancelled flow. Its content-free payload is `{ transformPassId }`: the exact active/queued transform pass for Capturing, Connecting, Listening, Thinking, or ReviewPending, or `null` when Escape did not target a transform. Rust snapshots active ownership on both sides of the status read and fails closed if it changes, then publishes the exact pass's cancellation marker before emitting. `useTransformFlow` mirrors the detector reset only when that ID still matches its local held pass, so a delayed Escape for pass N cannot reset pass N+1. The main-window cancellation listener sends `cancel_transform({ transformPassId })` without an asynchronous status lookup; the backend no-ops unless that exact pass still owns the flow. Including ReviewPending closes the transition-before-focus gap; once the Ready/Failed popover is focusable its local Esc may race the global route, but both carry the same exact pass ID and duplicate cancellation is an idempotent no-op. Applying is left untouched, and a `null` payload falls back to dictation recording/processing cancellation. In-flight duplicate suppression is bounded and keyed per target, so pass N cannot suppress cancellation of N+1.
 
 ### Tests
 

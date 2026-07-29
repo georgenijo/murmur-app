@@ -46,6 +46,7 @@ interface OverlayDropdownProps {
   geometry: OverlayGeometry;
   expanded: boolean;
   status: DictationStatus;
+  stillConnecting: boolean;
   showTapMissed: boolean;
   disabled: boolean;
   autoPaste: boolean;
@@ -66,6 +67,7 @@ export function OverlayDropdown({
   geometry,
   expanded,
   status,
+  stillConnecting,
   showTapMissed,
   disabled,
   autoPaste,
@@ -140,7 +142,7 @@ export function OverlayDropdown({
           notch. Recording timer takes precedence; the "Tap missed" label shows
           during a hotkey-miss flash. Absolutely positioned so the buttons stay
           centered. */}
-      {(status === 'recording' || showTapMissed) && (
+      {(status === 'recording' || status === 'starting' || status === 'recovering' || showTapMissed) && (
         <span
           className="absolute left-[10px] top-0 bottom-[6px] flex items-center pointer-events-none"
           aria-live={showTapMissed ? 'polite' : undefined}
@@ -150,9 +152,17 @@ export function OverlayDropdown({
             <span className="text-amber-300 font-medium" style={{ fontSize: 11 }}>
               Tap missed
             </span>
-          ) : (
+          ) : status === 'recording' ? (
             <span className="text-white/60 tabular-nums" style={{ fontSize: 11 }}>
               {formatElapsed(elapsed)}
+            </span>
+          ) : status === 'starting' ? (
+            <span className={stillConnecting ? 'text-amber-300 font-medium' : 'text-sky-300 font-medium'} style={{ fontSize: 11 }}>
+              {stillConnecting ? 'Still connecting' : 'Connecting'}
+            </span>
+          ) : (
+            <span className="text-amber-300 font-medium" style={{ fontSize: 11 }}>
+              Audio recovering
             </span>
           )}
         </span>

@@ -28,6 +28,14 @@ pub struct AppliedSurface {
     pub window_h: f64,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct DisplaySnapshot {
+    pub(crate) notch_info: Option<(f64, f64)>,
+    monitor_position: Option<(i32, i32)>,
+    monitor_size: Option<(u32, u32)>,
+    scale_factor: Option<f64>,
+}
+
 // Private geometry constants — the ONLY place these magic numbers live.
 //
 // The native window stays at the full active width (`notch_w + 2*WING`) so
@@ -179,6 +187,23 @@ pub(crate) fn detect_notch_info() -> Option<(f64, f64)> {
     None
 }
 
+pub(crate) fn capture_display_snapshot(app_handle: &tauri::AppHandle) -> DisplaySnapshot {
+    let notch_info = detect_notch_info();
+    let monitor = app_handle.primary_monitor().ok().flatten();
+    DisplaySnapshot {
+        notch_info,
+        monitor_position: monitor.as_ref().map(|monitor| {
+            let position = monitor.position();
+            (position.x, position.y)
+        }),
+        monitor_size: monitor.as_ref().map(|monitor| {
+            let size = monitor.size();
+            (size.width, size.height)
+        }),
+        scale_factor: monitor.as_ref().map(|monitor| monitor.scale_factor()),
+    }
+}
+
 /// Subscribe to macOS display configuration changes (plug/unplug monitor, lid open/close).
 /// Re-detects notch info, repositions the overlay, and notifies the frontend.
 #[cfg(target_os = "macos")]
@@ -190,22 +215,62 @@ pub(crate) fn register_screen_change_observer(app_handle: tauri::AppHandle) {
     let notification_name =
         NSNotificationName::from_str("NSApplicationDidChangeScreenParametersNotification");
 
-    let block = block2::RcBlock::new(move |_notification: std::ptr::NonNull<NSNotification>| {
-        tracing::info!(target: "system", "screen parameters changed — re-detecting notch info");
-        let notch = detect_notch_info();
-        let handle = &app_handle;
-        // Update cached notch info
-        {
-            let state = handle.state::<State>();
-            *state.notch_info.lock_or_recover() = notch;
-        }
-        // Reposition overlay window
-        if let Some(overlay) = handle.get_webview_window("overlay") {
-            position_overlay_default(&overlay, notch);
-        }
-        // Notify frontend
-        let _ = handle.emit("overlay-geometry-changed", geometry_for(notch));
-    });
+    const SCREEN_CHANGE_DEBOUNCE: std::time::Duration =
+        std::time::Duration::from_millis(125);
+    let (notification_sender, notification_receiver) = std::sync::mpsc::channel::<()>();
+    let worker_handle = app_handle.clone();
+    std::thread::Builder::new()
+        .name("murmur-screen-change".to_string())
+        .spawn(move || {
+            while notification_receiver.recv().is_ok() {
+                while notification_receiver
+                    .recv_timeout(SCREEN_CHANGE_DEBOUNCE)
+                    .is_ok()
+                {}
+                let handle = worker_handle.clone();
+                let schedule_handle = handle.clone();
+                if let Err(error) = schedule_handle.run_on_main_thread(move || {
+                    let snapshot = capture_display_snapshot(&handle);
+                    let notch = snapshot.notch_info;
+                    let changed = {
+                        let state = handle.state::<State>();
+                        let mut cached = state.display_snapshot.lock_or_recover();
+                        if cached.as_ref() == Some(&snapshot) {
+                            false
+                        } else {
+                            *cached = Some(snapshot.clone());
+                            *state.notch_info.lock_or_recover() = notch;
+                            true
+                        }
+                    };
+                    tracing::info!(
+                        target: "system",
+                        changed,
+                        "screen parameter notifications coalesced"
+                    );
+                    if !changed {
+                        return;
+                    }
+                    if let Some(overlay) = handle.get_webview_window("overlay") {
+                        position_overlay_default(&overlay, notch);
+                    }
+                    let _ = handle.emit("overlay-geometry-changed", geometry_for(notch));
+                }) {
+                    tracing::warn!(
+                        target: "system",
+                        "screen change main-thread dispatch failed: {}",
+                        error
+                    );
+                }
+            }
+        })
+        .expect("screen change debounce worker must spawn");
+
+    let block = block2::RcBlock::new(
+        move |_notification: std::ptr::NonNull<NSNotification>| {
+            let _ = notification_sender.send(());
+        },
+    );
 
     unsafe {
         let center = NSNotificationCenter::defaultCenter();
@@ -495,6 +560,37 @@ mod tests {
             centered_physical_position((0, 0), (5120, 2880), 2.0, 152.0),
             (2408, 0)
         );
+    }
+
+    #[test]
+    fn complete_display_snapshot_detects_every_geometry_dimension() {
+        let baseline = DisplaySnapshot {
+            notch_info: Some((185.0, 32.0)),
+            monitor_position: Some((0, 0)),
+            monitor_size: Some((3024, 1964)),
+            scale_factor: Some(2.0),
+        };
+        assert_eq!(baseline, baseline.clone());
+        for changed in [
+            DisplaySnapshot {
+                notch_info: Some((184.0, 32.0)),
+                ..baseline.clone()
+            },
+            DisplaySnapshot {
+                monitor_position: Some((3024, 0)),
+                ..baseline.clone()
+            },
+            DisplaySnapshot {
+                monitor_size: Some((2560, 1440)),
+                ..baseline.clone()
+            },
+            DisplaySnapshot {
+                scale_factor: Some(1.0),
+                ..baseline.clone()
+            },
+        ] {
+            assert_ne!(baseline, changed);
+        }
     }
 
     #[test]

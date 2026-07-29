@@ -64,27 +64,27 @@ async fn happy_path_capture_finish_ready_produces_proposal() {
     let fixture = fixture_model();
     let sidecar = happy_sidecar(&fixture);
 
-    let report = run_happy_path_for_test(
-        &sidecar,
-        "Rewrite this politely.",
-        "gimme the report now",
-    )
-    .await;
+    let report =
+        run_happy_path_for_test(&sidecar, "Rewrite this politely.", "gimme the report now").await;
 
     // The flow emitted exactly the forward sequence — never an error state.
     assert_eq!(
         report.emitted_states,
         vec![
+            "connecting".to_string(),
             "listening".to_string(),
             "thinking".to_string(),
             "ready".to_string()
         ],
-        "expected listening -> thinking -> ready",
+        "expected connecting -> listening -> thinking -> ready",
     );
     // The proposal from the mock helper landed on the session.
     assert_eq!(report.proposed.as_deref(), Some("mock-output"));
     // The instruction was frozen onto the session for the review popover.
-    assert_eq!(report.instruction.as_deref(), Some("Rewrite this politely."));
+    assert_eq!(
+        report.instruction.as_deref(),
+        Some("Rewrite this politely.")
+    );
     // The listening popover was shown.
     assert!(report.popover_shown);
     // Healthy helper is kept resident for reuse.

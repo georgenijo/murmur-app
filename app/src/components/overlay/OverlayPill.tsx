@@ -50,10 +50,22 @@ export function OverlayPill({
             <span className="w-3 h-3 rounded-full border border-amber-400 text-amber-300 text-[8px] leading-none flex items-center justify-center font-bold">
               !
             </span>
+          ) : indicator.kind === 'microphoneFailure' ? (
+            <span className="w-3 h-3 rounded-full border border-red-400 text-red-300 text-[8px] leading-none flex items-center justify-center font-bold">
+              !
+            </span>
+          ) : indicator.kind === 'starting' ? (
+            <span
+              className={`w-2.5 h-2.5 rounded-full block ${indicator.slow ? 'bg-amber-400' : 'bg-sky-400'}`}
+              style={{ animation: 'pulse 1s ease-in-out infinite' }}
+              aria-label={indicator.slow ? 'still connecting microphone' : 'connecting microphone'}
+            />
           ) : indicator.kind === 'recording' ? (
             <div className="w-2.5 h-2.5 rounded-full bg-red-500" style={{ animation: 'pulse 0.8s ease-in-out infinite' }} />
           ) : indicator.kind === 'processing' ? (
             <span className="w-3 h-3 border-[1.5px] border-white/20 border-t-white/70 rounded-full animate-spin block" />
+          ) : indicator.kind === 'recovering' ? (
+            <span className="w-3 h-3 border-[1.5px] border-amber-400/30 border-t-amber-300 rounded-full animate-spin block" aria-label="recovering microphone" />
           ) : indicator.kind === 'secureField' ? (
             // Brief flash when a secure/password field is refused (issue #312).
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-label="secure field">

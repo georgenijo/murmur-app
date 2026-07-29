@@ -52,10 +52,13 @@ export function useSilenceAutoStop({ enabled, status, silenceMs, onAutoStop }: U
   // can never wipe a freshly latched hold before its recording starts.
   useEffect(() => {
     if (statusRef.current !== status) {
-      const wasRecording = statusRef.current === 'recording';
+      const previousStatus = statusRef.current;
+      const wasRecording = previousStatus === 'recording';
+      const cancelledBeforeReady = status === 'idle'
+        && (previousStatus === 'starting' || previousStatus === 'recovering');
       statusRef.current = status;
       stateRef.current = initialSilenceState();
-      if (wasRecording) resetOrigin();
+      if (wasRecording || cancelledBeforeReady) resetOrigin();
     }
   }, [status, resetOrigin]);
 

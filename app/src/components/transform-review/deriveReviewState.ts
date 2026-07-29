@@ -69,6 +69,22 @@ export function deriveReviewState(input: ReviewStateInput): ReviewViewModel {
   const { state, errorCode, instruction, thinkingElapsedMs } = input;
 
   switch (state) {
+    case 'connecting':
+      return {
+        ...baseViewModel(state, 'Connecting…'),
+        statusText: errorCode === 'audio_stalled'
+          ? REVIEW_ERROR_COPY.audio_stalled
+          : 'Connecting to microphone…',
+      };
+
+    case 'recovering':
+      return {
+        ...baseViewModel(state, 'Recovering…'),
+        statusText: errorCode === 'audio_recovery_stalled'
+          ? REVIEW_ERROR_COPY.audio_recovery_stalled
+          : 'Releasing microphone…',
+      };
+
     case 'listening':
       return {
         ...baseViewModel(state, 'Listening…'),

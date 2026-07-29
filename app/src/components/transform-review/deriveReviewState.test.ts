@@ -15,6 +15,30 @@ function input(overrides: Partial<ReviewStateInput> = {}): ReviewStateInput {
 }
 
 describe('deriveReviewState', () => {
+  it('connecting: never claims to be listening and surfaces a slow microphone', () => {
+    const initial = deriveReviewState(input({ state: 'connecting' }));
+    expect(initial.chipText).toBe('Connecting…');
+    expect(initial.showWaveform).toBe(false);
+    expect(initial.statusText).toBe('Connecting to microphone…');
+
+    const stalled = deriveReviewState(input({
+      state: 'connecting',
+      errorCode: 'audio_stalled',
+    }));
+    expect(stalled.statusText).toBe('Still connecting to the microphone…');
+  });
+
+  it('recovering: shows truthful teardown guidance without recording controls', () => {
+    const vm = deriveReviewState(input({
+      state: 'recovering',
+      errorCode: 'audio_recovery_stalled',
+    }));
+    expect(vm.chipText).toBe('Recovering…');
+    expect(vm.statusText).toBe('Still waiting for macOS audio to recover…');
+    expect(vm.showWaveform).toBe(false);
+    expect(vm.keyboardActionsActive).toBe(false);
+  });
+
   it('listening: shows the placeholder chip, waveform, and release hint', () => {
     const vm = deriveReviewState(input({ state: 'listening' }));
     expect(vm.chipText).toBe('Listening…');
@@ -86,7 +110,9 @@ describe('deriveReviewState', () => {
   });
 
   it('every state shows the on-device badge', () => {
-    const states: ReviewStateInput['state'][] = ['listening', 'thinking', 'ready', 'failed', 'applied'];
+    const states: ReviewStateInput['state'][] = [
+      'connecting', 'recovering', 'listening', 'thinking', 'ready', 'failed', 'applied',
+    ];
     for (const state of states) {
       expect(deriveReviewState(input({ state })).showOnDeviceBadge).toBe(true);
     }

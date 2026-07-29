@@ -11,7 +11,21 @@ Transcription processing is local. Network access occurs for model setup and may
 ## Audio Capture (`audio.rs`)
 
 - Uses `cpal` to record from the default input device on a background thread
-- Channel-based synchronization: recording thread signals readiness via `mpsc::channel` before `start_recording()` returns, preventing race conditions
+- An app-lifetime supervisor is the single microphone owner. It owns each
+  capture worker and join handle from spawn through exit; a cancelled or
+  deadline-expired Core Audio call remains tracked in `Recovering` and blocks
+  new starts until the worker actually exits.
+- Dictation start returns after ownership is accepted, without waiting for
+  Core Audio. The worker reports device enumeration, config lookup, stream
+  build, play, readiness, stop, and exit events back to the supervisor.
+- `Starting` emits a still-connecting signal after 5 seconds and hard-cancels
+  after 30 seconds. A late readiness signal is stopped without enabling sample
+  or level callbacks. There is no automatic retry.
+- The callback's active gate stays false until readiness is accepted for the
+  current `recording_id`; stale/cancelled attempts therefore emit no levels or
+  samples.
+- Recording duration begins at accepted readiness, not at the user's initial
+  activation.
 - Multi-channel to mono conversion (averages channels)
 - Resamples to 16kHz (expected sample rate for the backend)
 - Samples stored as `Vec<f32>` in memory — no temp files
@@ -119,13 +133,15 @@ The `download_model` command streams Murmur-managed Whisper and sherpa downloads
 ## Status Flow
 
 ```
-Idle → Recording (on start) → Processing (on stop) → Idle (after transcription)
+Idle → Starting → Recording → Processing → Idle
+           └────→ Recovering ────────────→ Idle
 ```
 
 Status is managed in `DictationState` behind a `Mutex` with poison recovery (`MutexExt` trait).
-Recorder start, stop, and cancel also share an async transition mutex. The lock
-is held until cpal confirms startup or audio teardown completes, preventing a
-fast hotkey release from stopping a recorder that is still starting.
+Recorder start, stop, and cancel also share a short-lived async transition
+mutex for synchronous ownership commits. No Core Audio operation or supervisor
+channel wait occurs while the recording-state mutex is held; a fast hotkey
+release can therefore cancel a recorder that is still starting.
 
 Model state is separate from recording status. `get_model_runtime_catalog` and
 `get_model_runtime_status` expose catalog metadata plus install/lifecycle state.

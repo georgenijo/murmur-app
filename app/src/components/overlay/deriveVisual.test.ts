@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { deriveVisual, type OverlayIndicator } from './deriveVisual';
 import type { DictationStatus } from '../../lib/types';
 
-const STATUSES: DictationStatus[] = ['idle', 'recording', 'processing'];
+const STATUSES: DictationStatus[] = ['idle', 'starting', 'recording', 'recovering', 'processing'];
 const BOOLS = [false, true];
 
 /**
@@ -18,7 +18,9 @@ function expectedIndicator(
 ): OverlayIndicator {
   if (showCancelled) return { kind: 'cancelled' };
   if (showHotkeyMiss) return { kind: 'hotkeyMiss' };
+  if (status === 'starting') return { kind: 'starting', slow: false };
   if (status === 'recording') return { kind: 'recording' };
+  if (status === 'recovering') return { kind: 'recovering' };
   if (status === 'processing') return { kind: 'processing' };
   return { kind: 'idle', dimmed: disabled };
 }
@@ -76,6 +78,22 @@ describe('deriveVisual', () => {
   it('transform-busy default-off leaves existing call sites unchanged', () => {
     const visual = deriveVisual('idle', false, false, false);
     expect(visual.indicator).toEqual({ kind: 'idle', dimmed: false });
+  });
+
+  it('distinguishes ordinary and slow microphone initialization', () => {
+    expect(deriveVisual('starting', false, false, false).indicator).toEqual({
+      kind: 'starting',
+      slow: false,
+    });
+    expect(
+      deriveVisual('starting', false, false, false, false, false, false, false, true).indicator,
+    ).toEqual({ kind: 'starting', slow: true });
+  });
+
+  it('microphone failure flash beats active lifecycle indicators', () => {
+    expect(
+      deriveVisual('recovering', false, false, false, false, false, false, true).indicator,
+    ).toEqual({ kind: 'microphoneFailure' });
   });
 
   // Issue #339 gap 1: cancelled and secure-field co-asserted. Reordering
