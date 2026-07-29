@@ -22,7 +22,9 @@
 //! - `wrong_version_on_startup_phase` — a later startup completion has a bad version
 //!
 //! The real supervisor spawns with `env_clear`, so these vars only exist for the
-//! mock via the supervisor's test-only constructor.
+//! mock via the supervisor's test-only constructor. Tests may also set
+//! `MOCK_TRANSFORM_RECEIPT_FILE` to create a synchronization marker after the
+//! helper receives a Transform frame.
 
 use std::io::Write;
 use std::sync::mpsc;
@@ -224,6 +226,9 @@ fn main() {
                     PhaseState::Completed,
                     Some(0),
                 );
+                if let Ok(path) = std::env::var("MOCK_TRANSFORM_RECEIPT_FILE") {
+                    let _ = std::fs::write(path, b"received");
+                }
                 match scenario.as_str() {
                     "crash_on_transform" => std::process::exit(101),
                     "malformed_on_transform" => {

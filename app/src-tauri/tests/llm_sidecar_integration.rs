@@ -360,7 +360,15 @@ async fn cooperative_cancel_mid_request_helper_receives_cancel_and_busy_clears()
     // the blocking loop, and clear busy promptly — aborting only the outer
     // tokio future is not enough (BusyGuard lives in spawn_blocking).
     let fixture = fixture_model();
-    let sidecar = sidecar("slow_honor_cancel", &fixture);
+    let receipt_marker = fixture._dir.path().join("transform-received");
+    let sidecar = Arc::new(LlmSidecar::for_test(config_with(
+        "slow_honor_cancel",
+        &fixture,
+        vec![(
+            "MOCK_TRANSFORM_RECEIPT_FILE".to_string(),
+            receipt_marker.to_string_lossy().into_owned(),
+        )],
+    )));
 
     let s = Arc::clone(&sidecar);
     let handle = tokio::spawn(async move {
@@ -373,16 +381,20 @@ async fn cooperative_cancel_mid_request_helper_receives_cancel_and_busy_clears()
         .await
     });
 
-    // Wait until the in-flight slot is claimed.
-    let mut claimed = false;
+    // `busy` is claimed before model verification, helper spawn, and the Ready
+    // handshake. Wait for the mock's receipt marker so this test cannot race
+    // startup cancellation (which correctly reaps a partially started helper).
+    let mut received = false;
     for _ in 0..100 {
-        if sidecar.is_transform_busy() {
-            claimed = true;
+        if receipt_marker.exists() {
+            received = true;
             break;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    assert!(claimed, "transform never became busy");
+    assert!(received, "helper never received the Transform request");
+    assert!(sidecar.is_transform_busy());
+    assert!(sidecar.has_live_child());
 
     let started = std::time::Instant::now();
     // Cancel the CURRENT in-flight request via the supervisor entry point;
