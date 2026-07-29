@@ -276,7 +276,42 @@ def validate_linux_cache_policy(action: str) -> None:
         in linuxdeploy
     )
     assert 'LINUXDEPLOY_PATH="$HOME/.cache/tauri/linuxdeploy-x86_64.AppImage"' in linuxdeploy
-    assert "sha256sum --check --strict" in linuxdeploy
+    assert (
+        'echo "$LINUXDEPLOY_SHA256  $LINUXDEPLOY_PATH" | sha256sum --check --strict'
+        in linuxdeploy
+    )
+    assert (
+        "https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/"
+        "download/continuous/linuxdeploy-plugin-appimage-x86_64.AppImage"
+    ) in linuxdeploy
+    assert (
+        'PLUGIN_SHA256="1da16a46fa5e058ae740e7c35ed0d36d86cb869ac9cc8a5fd9a1847d7978d99a"'
+        in linuxdeploy
+    )
+    assert (
+        'PLUGIN_PATH="$HOME/.cache/tauri/'
+        'linuxdeploy-plugin-appimage-x86_64.AppImage"'
+    ) in linuxdeploy
+    assert (
+        'echo "$PLUGIN_SHA256  $PLUGIN_PATH" | sha256sum --check --strict'
+        in linuxdeploy
+    )
+    assert (
+        "https://github.com/AppImage/type2-runtime/releases/download/continuous/"
+        "runtime-x86_64"
+    ) in linuxdeploy
+    assert (
+        'RUNTIME_SHA256="1cc49bcf1e2ccd593c379adb17c9f85a36d619088296504de95b1d06215aebbf"'
+        in linuxdeploy
+    )
+    assert 'RUNTIME_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/appimageify"' in linuxdeploy
+    assert 'RUNTIME_PATH="$RUNTIME_DIR/runtime-x86_64"' in linuxdeploy
+    assert (
+        'echo "$RUNTIME_SHA256  $RUNTIME_PATH" | sha256sum --check --strict'
+        in linuxdeploy
+    )
+    assert 'chmod +x "$RUNTIME_PATH"' in linuxdeploy
+    assert 'chmod +x "$RUNTIME_PATH" || true' not in linuxdeploy
 
     prepare = named_step_block(action, "Prepare CUDA cache restore path", 4)
     assert 'sudo mkdir -p "/usr/local/cuda-${CUDA_MM}"' in prepare
