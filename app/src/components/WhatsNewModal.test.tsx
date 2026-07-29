@@ -49,6 +49,31 @@ describe('WhatsNewModal', () => {
     expect(document.activeElement?.textContent).toContain('Start using Murmur');
   });
 
+  it('keeps the header and action visible while only the release notes scroll', async () => {
+    await act(async () => {
+      root.render(
+        <WhatsNewModal
+          update={{
+            version: '0.22.0',
+            notes: Array.from({ length: 30 }, (_, index) => `- Change ${index + 1}`).join('\n'),
+          }}
+          onDismiss={onDismiss}
+        />,
+      );
+    });
+
+    const title = container.querySelector('#whats-new-title') as HTMLHeadingElement;
+    const action = container.querySelector('button') as HTMLButtonElement;
+    const header = title.parentElement?.parentElement;
+    const footer = action.parentElement;
+    const notes = container.querySelector('.overflow-y-auto');
+
+    expect(header?.classList.contains('shrink-0')).toBe(true);
+    expect(footer?.classList.contains('shrink-0')).toBe(true);
+    expect(notes?.contains(title)).toBe(false);
+    expect(notes?.contains(action)).toBe(false);
+  });
+
   it('dismisses from the primary action and Escape', async () => {
     await act(async () => {
       root.render(
