@@ -32,7 +32,7 @@ profiles and every stored field retain their values across the Settings redesign
 | Inherit | Preserves the current global/profile behavior byte-for-byte. |
 | Conversational | Removes filler and repeated words, tidies capitalization, keeps wording, and disables automatic command formatting. |
 | Polished prose | Applies conversational cleanup, deterministic vocabulary correction, and explicitly cued prose structure. |
-| Code / technical | Preserves technical surface text, enables deterministic vocabulary correction, and enables reviewed command formatting. |
+| Code / technical | Preserves technical surface text, activates enabled developer vocabulary, enables deterministic vocabulary correction, and enables reviewed command formatting. |
 | Verbatim | Bypasses cleanup, spoken commands, correction, prose formatting, and command formatting. |
 | Notes | Removes filler without forcing sentence capitalization, applies deterministic correction, and formats explicitly cued lists, paragraphs, lines, and symbols. |
 
@@ -71,7 +71,7 @@ Context capture is deny-by-default. A profile may explicitly grant only its boun
 
 This policy is separate from delivery. Murmur remains clipboard-first: the completed transcript is still written to the clipboard, and existing auto-paste behavior is unchanged. IDE project context does not change those denials: it reads only user-selected roots through the bounded local index described in [Local IDE Symbols and `@file` Context](ide-context.md). Unmatched profiles and app names that merely look like IDEs remain no-ops.
 
-Writing styles also do not change the ASR model, language, vocabulary inputs, prompt, file-saving behavior, clipboard write, auto-paste timing, or destination. Style telemetry contains only the stable resolved enum plus the existing matched-profile boolean; bundle identifiers, labels, setting values, and transcript content are never logged.
+Writing styles do not change the ASR model, language, file-saving behavior, clipboard write, auto-paste timing, or destination. The explicit Code / technical style activates the globally enabled developer-vocabulary pool for that matching app; Local IDE project context is the other activation signal. Other styles and unmatched apps never receive scanned or built-in developer terms. Preferred spellings retain their own global/app/project scopes. Style telemetry contains only the stable resolved enum plus the existing matched-profile boolean; bundle identifiers, labels, setting values, and transcript content are never logged.
 
 Vocabulary aliases use this same immutable context. Global aliases always apply. Typed app aliases require the matching snapshot bundle identifier; typed project aliases additionally require the matching profile's enabled local project context and configured root. Settings currently creates global aliases first. No alias path re-detects the frontmost app.
 

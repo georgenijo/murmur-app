@@ -149,6 +149,17 @@ pub struct AppProfile {
     pub ide_project_roots: Vec<String>,
 }
 
+impl AppProfile {
+    /// Developer vocabulary is intentionally opt-in per destination app.
+    ///
+    /// A technical writing style or local IDE context is an explicit user
+    /// signal. Bundle IDs and app labels are never guessed, so ordinary prose
+    /// apps cannot inherit a globally scanned code vocabulary by accident.
+    pub(crate) fn enables_code_vocabulary(&self) -> bool {
+        self.ide_context_enabled || self.writing_style == Some(WritingStyle::CodeTechnical)
+    }
+}
+
 /// A user-defined voice command: when `phrase` is spoken (matched
 /// case-insensitively on word boundaries), it is replaced by `replacement`.
 /// Applied after the built-in command set, so users can extend — not override —
@@ -249,6 +260,19 @@ pub struct DictationState {
     /// Tier 2 phonetic / edit-distance "sounds-like" matching. Gated under
     /// `correction_enabled`.
     pub correction_fuzzy: bool,
+}
+
+impl DictationState {
+    pub(crate) fn code_vocabulary_enabled_for(&self, bundle_id: Option<&str>) -> bool {
+        self.code_vocab_enabled
+            && bundle_id
+                .and_then(|bundle_id| {
+                    self.app_profiles
+                        .iter()
+                        .find(|profile| profile.bundle_id == bundle_id)
+                })
+                .is_some_and(AppProfile::enables_code_vocabulary)
+    }
 }
 
 impl Default for DictationState {
