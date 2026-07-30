@@ -224,6 +224,45 @@ async fn ship(
     matches!(result, Ok(resp) if resp.status().is_success())
 }
 
+/// Current audio-input picture, serialized stably so a change is detectable
+/// by string comparison. Runs blocking Core Audio enumeration.
+fn audio_state() -> String {
+    use cpal::traits::{DeviceTrait, HostTrait};
+    let host = cpal::default_host();
+    let default_input = host.default_input_device().and_then(|d| d.name().ok());
+    let mut inputs: Vec<String> = host
+        .input_devices()
+        .map(|it| it.filter_map(|d| d.name().ok()).collect())
+        .unwrap_or_default();
+    inputs.sort();
+    serde_json::json!({
+        "default_input": default_input,
+        "input_devices": inputs,
+        "app_version": env!("CARGO_PKG_VERSION"),
+    })
+    .to_string()
+}
+
+async fn ship_state(
+    client: &reqwest::Client,
+    endpoint: &str,
+    install_id: &str,
+    device: &DeviceInfo,
+    body: String,
+) -> bool {
+    let result = client
+        .post(endpoint)
+        .header("Authorization", format!("Bearer {}", TOKEN))
+        .header("X-Install-Id", install_id)
+        .header("X-App-Version", env!("CARGO_PKG_VERSION"))
+        .header("X-Device-Name", &device.name)
+        .header("Content-Type", "application/json")
+        .body(body)
+        .send()
+        .await;
+    matches!(result, Ok(resp) if resp.status().is_success())
+}
+
 async fn tick(client: &reqwest::Client, endpoint: &str, device: &DeviceInfo) {
     let (Some(state_file), Some(log)) = (state_path(), jsonl_path()) else {
         return;
@@ -277,8 +316,24 @@ pub fn start() {
         };
         tokio::time::sleep(std::time::Duration::from_secs(STARTUP_DELAY_SECS)).await;
         let device = collect_device_info();
+        let state_endpoint = endpoint.replace("/ingest", "/state");
+        let state_install_id = state_path().map(|p| load_state(&p).install_id);
+        let mut last_snapshot: Option<String> = None;
         loop {
             tick(&client, &endpoint, &device).await;
+            // Event-driven device/state snapshot: POST only when it changes.
+            if let Some(install_id) = &state_install_id {
+                let snap = tokio::task::spawn_blocking(audio_state)
+                    .await
+                    .unwrap_or_default();
+                if !snap.is_empty() && last_snapshot.as_deref() != Some(snap.as_str()) {
+                    if ship_state(&client, &state_endpoint, install_id, &device, snap.clone())
+                        .await
+                    {
+                        last_snapshot = Some(snap);
+                    }
+                }
+            }
             tokio::time::sleep(std::time::Duration::from_secs(TICK_SECS)).await;
         }
     });
