@@ -125,10 +125,7 @@ impl CorrectionMatcherSet {
                 let project_root = unambiguous_project_root(&bundle_id, app_profiles);
                 let learned = applicable_learned_pairs(knowledge, Some(&bundle_id), project_root);
                 let code_terms_enabled = !contextual_code_terms
-                    || app_profiles
-                        .iter()
-                        .find(|profile| profile.bundle_id == bundle_id)
-                        .is_some_and(AppProfile::enables_code_vocabulary);
+                    || crate::state::app_profiles_enable_code_vocabulary(app_profiles, &bundle_id);
                 let matcher = Arc::new(build_matcher(
                     if code_terms_enabled { base_terms } else { &[] },
                     &applicable,
@@ -807,6 +804,55 @@ mod tests {
         assert_eq!(
             set.select(Some("com.example.IDE")).apply(prose),
             technical_expected
+        );
+    }
+
+    #[test]
+    fn contextual_code_terms_follow_duplicate_profile_resolution() {
+        let mut first = AppProfile {
+            bundle_id: "com.example.Editor".to_string(),
+            label: "first".to_string(),
+            auto_paste_override: None,
+            cleanup_override: None,
+            cli_formatting_override: None,
+            smart_formatting_override: None,
+            writing_style: None,
+            ide_context_enabled: false,
+            ide_project_roots: Vec::new(),
+        };
+        let mut second = first.clone();
+        second.label = "second".to_string();
+        second.writing_style = Some(crate::state::WritingStyle::CodeTechnical);
+
+        let terms = vec!["toBe".to_string()];
+        let set = CorrectionMatcherSet::build_with_contextual_code_terms(
+            &terms,
+            &[],
+            &[first.clone(), second],
+            &[],
+            false,
+            false,
+        );
+        assert_eq!(
+            set.select(Some("com.example.Editor"))
+                .apply("going to be ready"),
+            "going toBe ready"
+        );
+
+        first.ide_context_enabled = true;
+        first.writing_style = Some(crate::state::WritingStyle::Conversational);
+        let set = CorrectionMatcherSet::build_with_contextual_code_terms(
+            &terms,
+            &[],
+            &[first],
+            &[],
+            false,
+            false,
+        );
+        assert_eq!(
+            set.select(Some("com.example.Editor"))
+                .apply("going to be ready"),
+            "going toBe ready"
         );
     }
 
