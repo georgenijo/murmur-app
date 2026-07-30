@@ -128,6 +128,17 @@ glass surfaces.
 
 ## Rust Backend (`app/src-tauri/src/`)
 
+### Phase-0 capture helper boundary
+
+Issue #407 packages a signed `murmur-capture-helper` prototype beside the main
+binary. It is not used by production recording. The explicit
+`--capture-helper-probe` path proves version/nonce handshake, content-free
+callback health, cooperative cancel, bounded process-group kill, and confirmed
+exit. The callback records atomics only and never retains or transports PCM.
+Release builds validate the helper's fixed identifier, shared Team ID, hardened
+runtime, and exact microphone sandbox entitlements before spawn. See the
+[Phase-0 ADR](decisions/2026-07-30-capture-helper-phase-0.md).
+
 ### Module map
 
 | Module | Purpose |
@@ -137,6 +148,8 @@ glass surfaces.
 | `audio.rs` | CPAL 0.18 capture worker, stable device-ID selection, typed error/phase telemetry, first-buffer readiness, mono mix, 16kHz resample, `audio-level` emission |
 | `audio_lifecycle.rs` | App-lifetime single-owner supervisor; async start, generation cancellation, deadlines, generation-gated publication, and strict worker ownership through exit |
 | `audio_decode.rs` | Decoding imported audio files for `transcribe_file` |
+| `capture_helper_probe.rs` | Probe-only capture-helper handshake, callback-health observation, cancel, and confirmed termination evidence |
+| `code_signing.rs` / `managed_child.rs` | Runtime helper identity validation and direct-child/process-group ownership primitives |
 | `benchmark.rs` | Performance Lab: fixture corpus, scoring (raw/normalized/delivered WER), reports |
 | `cleanup.rs` | Filler removal and capitalization |
 | `cli_command.rs` | Spoken CLI command grammar and lexicon |

@@ -10,6 +10,12 @@ Transcription processing is local. Network access occurs for model setup and may
 
 ## Audio Capture (`audio.rs`)
 
+> **Phase-0 boundary (#407):** the bundle contains a probe-only signed capture
+> helper used to validate TCC attribution and hard-kill recovery. Production
+> dictation and transform capture still use the in-process lifecycle below.
+> No routing changes belong to this spike; see
+> [the decision record](../decisions/2026-07-30-capture-helper-phase-0.md).
+
 - Uses CPAL 0.18.1 to record on a background thread. `system_default` resolves
   the live OS default; an explicit selection is the backend-native stable ID
   (`kAudioDevicePropertyDeviceUID` on CoreAudio), never a display name.

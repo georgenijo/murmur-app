@@ -6,6 +6,18 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 ---
 
+## 2026-07-30: Capture helper uses a direct managed child; production waits for notarized TCC proof (#407)
+
+**Decision:** Package the Phase-0 `murmur-capture-helper` as an exact signed external binary with a fixed code identity, microphone-only sandbox capabilities, runtime Security.framework validation, nonce-framed private IPC, and direct process-group ownership. Cooperative cancel is bounded at 250 ms before group `SIGKILL`; a new helper is forbidden until direct-PID exit and an empty owned process group are confirmed. The callback retains no PCM and touches atomics only. The helper is probe-only; #409 owns production routing.
+
+**Rationale:** Deterministic kill semantics can be proven without risking the shipped recording path. Apple's responsible-code behavior predicts that a non-daemonized child may attribute TCC to Murmur, but unsigned/ad-hoc behavior and CI cannot prove the install/update/System Settings experience. Production capture therefore remains blocked until the complete downloaded notarized-bundle TCC matrix passes.
+
+**Status:** provisional — kill/packaging implementation landed; signed/notarized interactive TCC evidence is an external release gate
+
+**References:** issue #407; ADR [`2026-07-30-capture-helper-phase-0.md`](2026-07-30-capture-helper-phase-0.md); evidence matrix [`../evidence/407-capture-helper-phase-0.json`](../evidence/407-capture-helper-phase-0.json)
+
+---
+
 ## 2026-07-30: In-process CPAL readiness requires retained PCM and strict ownership (#406)
 
 **Decision:** The stabilization path uses CPAL 0.18.1 with raw backend device

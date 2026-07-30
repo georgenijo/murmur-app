@@ -11,15 +11,15 @@
 ## Setup
 
 ```bash
-# Build the local-LLM sidecar FIRST — on macOS, tauri dev/build and even
+# Build the bundled helpers FIRST — on macOS, tauri dev/build and even
 # cargo check/test fail on a fresh clone until this binary exists.
 python3 scripts/build_local_llm_sidecar.py
 
 cd app && npm install
 ```
 
-The sidecar lands at
-`app/src-tauri/binaries/murmur-llm-sidecar-aarch64-apple-darwin`. It is
+The helpers land under `app/src-tauri/binaries/` as target-triple-suffixed
+`murmur-llm-sidecar` and `murmur-capture-helper` executables. They are
 gitignored and rebuilt by release CI. The script is a no-op on non-arm64-macOS.
 
 ## Development
