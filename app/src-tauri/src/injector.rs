@@ -345,6 +345,23 @@ fn focused_field_state() -> FocusedFieldState {
             tracing::warn!(target: "pipeline", "focused_field_state: native AX query timed out; allowing paste");
             return FocusedFieldState::Unknown;
         }
+        Err(native_err)
+            if should_bypass_osascript_for_no_value(
+                &native_err,
+                frontmost_application_is_finder(),
+            ) =>
+        {
+            // kAXErrorNoValue means the target app exposes no focused AX
+            // element. Apps with web-backed editors can report this even while
+            // their editor accepts Cmd+V. The compatibility query reaches the
+            // same AX subsystem through System Events and adds process-launch
+            // latency without improving the answer, so preserve the existing
+            // fail-open behavior immediately. Finder remains on the fallback
+            // path because its desktop/file views are the reason this safety
+            // check exists.
+            tracing::warn!(target: "pipeline", "focused_field_state: native AX query returned no focused element; allowing paste without osascript fallback");
+            return FocusedFieldState::Unknown;
+        }
         Err(native_err) => {
             tracing::warn!(target: "pipeline", "focused_field_state: native AX query failed: {}; falling back to osascript", native_err);
             match focused_role_osascript() {
@@ -364,6 +381,30 @@ fn is_native_ax_timeout(error: &str) -> bool {
     // kAXErrorCannotComplete is returned when the target app does not answer
     // within the per-element messaging timeout.
     error.contains("returned -25204")
+}
+
+#[cfg(target_os = "macos")]
+fn is_native_ax_no_value(error: &str) -> bool {
+    // kAXErrorNoValue is returned when the requested attribute exists but the
+    // target app currently supplies no value for it.
+    error.contains("returned -25212")
+}
+
+#[cfg(target_os = "macos")]
+fn should_bypass_osascript_for_no_value(error: &str, frontmost_is_finder: Option<bool>) -> bool {
+    is_native_ax_no_value(error) && frontmost_is_finder == Some(false)
+}
+
+#[cfg(target_os = "macos")]
+fn frontmost_application_is_finder() -> Option<bool> {
+    use objc2_app_kit::NSWorkspace;
+
+    let application = NSWorkspace::sharedWorkspace().frontmostApplication()?;
+    Some(
+        application
+            .bundleIdentifier()
+            .is_some_and(|bundle_id| bundle_id.to_string() == "com.apple.finder"),
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -996,6 +1037,31 @@ mod focus_tests {
             "AX focused-element query returned -25204"
         ));
         assert!(!is_native_ax_timeout("AX role query returned -25205"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn ax_no_value_detection_matches_no_value_only() {
+        assert!(is_native_ax_no_value(
+            "AX focused-element query returned -25212"
+        ));
+        assert!(!is_native_ax_no_value(
+            "AX focused-element query returned -25204"
+        ));
+        assert!(!is_native_ax_no_value("AX role query returned -25205"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn ax_no_value_bypasses_osascript_except_for_finder_or_unknown_target() {
+        let error = "AX focused-element query returned -25212";
+        assert!(should_bypass_osascript_for_no_value(error, Some(false)));
+        assert!(!should_bypass_osascript_for_no_value(error, Some(true)));
+        assert!(!should_bypass_osascript_for_no_value(error, None));
+        assert!(!should_bypass_osascript_for_no_value(
+            "AX role query returned -25205",
+            Some(false)
+        ));
     }
 
     #[cfg(target_os = "macos")]
