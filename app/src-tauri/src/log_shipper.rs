@@ -246,6 +246,12 @@ pub fn start() {
         tracing::info!(target: "system", "log shipper disabled via MURMUR_LOG_SHIPPER=off");
         return;
     }
+    // Dev builds (`tauri dev`) stay off the fleet dashboard entirely; set
+    // MURMUR_LOG_ENDPOINT explicitly when the shipper itself is under test.
+    if cfg!(debug_assertions) && std::env::var("MURMUR_LOG_ENDPOINT").is_err() {
+        tracing::info!(target: "system", "log shipper disabled: dev build");
+        return;
+    }
     // CI smoke tests launch the real bundle; their logs are noise on the
     // fleet dashboard (GitHub Actions and most CI systems set CI=true).
     if std::env::var("CI").is_ok_and(|v| !v.is_empty()) {
