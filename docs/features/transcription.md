@@ -10,32 +10,44 @@ Transcription processing is local. Network access occurs for model setup and may
 
 ## Audio Capture (`audio.rs`)
 
-- Uses `cpal` to record from the default input device on a background thread
+- Uses CPAL 0.18.1 to record on a background thread. `system_default` resolves
+  the live OS default; an explicit selection is the backend-native stable ID
+  (`kAudioDevicePropertyDeviceUID` on CoreAudio), never a display name.
+  Display names are presentation-only. A missing/ambiguous explicit selection
+  fails as `device_unavailable` and never falls back to another microphone.
 - An app-lifetime supervisor is the single microphone owner. It owns each
-  live capture worker and join handle. If a cancelled or deadline-expired Core
-  Audio call does not return, the supervisor closes that generation's callback
-  gate, releases logical ownership, and transfers its join handle to one
-  app-lifetime reaper thread. The quarantined worker can no longer emit samples,
-  levels, or readiness for a newer generation, and a new start is accepted
-  without waiting for macOS to return.
+  live capture worker and join handle. Cancellation or deadline expiry closes
+  that generation's publication gate and requests stop, but ownership remains
+  in `Recovering` until the worker exits and is joined. Rapid retries therefore
+  cannot create overlapping in-process CoreAudio owners.
 - Dictation start returns after ownership is accepted, without waiting for
   Core Audio. The worker reports device enumeration, config lookup, stream
-  build, play, readiness, stop, and exit events back to the supervisor.
+  build, play, first-buffer wait, stop, runtime failure, and exit events back to
+  the supervisor.
 - `Starting` emits a still-connecting signal after 5 seconds and hard-cancels
-  after 30 seconds. A late readiness signal is stopped without enabling sample
-  or level callbacks. Recovery briefly reports the cancellation reason and then
-  returns to `Idle`; there is no automatic retry.
-- The callback's active gate stays false until readiness is accepted for the
-  current `recording_id`; stale/cancelled attempts therefore emit no levels or
-  samples.
-- macOS does not expose a safe way to cancel a synchronous `cpal`/Core Audio
-  stream build. A call that remains blocked therefore retains its worker thread
-  until the OS returns or the app exits. Repeated OS hangs can temporarily
-  retain one worker per failed attempt; the reaper polls and joins each one as
-  soon as it exits.
+  after 30 seconds. `stream.play()` means only that start was requested:
+  `Recording` is reached only after the callback has retained a nonempty mono
+  buffer. Play-success with no callback fails as `first_buffer_timeout`, so a
+  successful zero-sample recording cannot begin.
+- PCM retention and waveform publication are separate gates. The callback
+  retains the first buffer before signalling readiness and continues retaining
+  this generation's PCM while the supervisor accepts it. Levels remain disabled
+  until that exact owner is accepted; stale/recovering workers cannot publish.
+- Stream construction passes `Some(10s)` to CPAL. CPAL 0.18 CoreAudio applies
+  that deadline to sample-rate convergence, but some synchronous AudioUnit
+  creation/configuration/initialization calls remain uninterruptible in-process.
+  If one blocks, Murmur retains exclusive ownership rather than detaching the
+  worker or accepting a competing retry. Process isolation is the final fault
+  boundary.
+- CPAL errors are reduced immediately to stable content-free kinds
+  (`permission_denied`, `device_unavailable`, `device_busy`, `device_changed`,
+  `stream_invalidated`, `invalid_input`, `resource_exhausted`, and bounded
+  fallback kinds). Phase/error telemetry never includes a device label, UID,
+  raw backend message, or audio/transcript content.
 - Recording duration begins at accepted readiness, not at the user's initial
   activation.
-- Multi-channel to mono conversion (averages channels)
+- Multi-channel to mono conversion (averages channels) supports every PCM
+  sample type CPAL may select, including signed/unsigned 24- and 32-bit formats.
 - Resamples to 16kHz (expected sample rate for the backend)
 - Samples stored as `Vec<f32>` in memory — no temp files
 

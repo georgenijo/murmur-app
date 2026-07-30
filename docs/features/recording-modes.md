@@ -106,13 +106,13 @@ Only the expired second-tap window is surfaced. Existing structured diagnostics 
 
 All three modes treat `Starting` as an active, cancelable attempt. Hold release
 or a second toggle while `Starting` cancels initialization and moves the app to
-`Recovering` long enough to publish the cancellation reason, then returns to
-`Idle` without waiting for a blocked Core Audio call. The cancelled generation's
-callback gate remains closed and its worker is transferred to a background
-reaper, so late readiness cannot affect the next attempt. Double-Tap and Both
+`Recovering`, closes that generation's publication gate, and requests stop.
+The supervisor retains exclusive ownership until the worker exits; a retry
+during recovery is rejected, so blocked CoreAudio calls can never overlap.
+Late callback events cannot activate a new generation. Double-Tap and Both
 synchronize `Starting` as active to the Rust detector, so the next single tap
-cancels. Silence auto-stop remains disarmed until the readiness-driven
-`Recording` transition.
+cancels. Silence auto-stop remains disarmed until the first retained nonempty
+buffer drives the `Recording` transition.
 
 The hold/toggle origin is latched across `Starting` and resets after either a
 normal recording end or a pre-readiness cancellation. Model preparation begins

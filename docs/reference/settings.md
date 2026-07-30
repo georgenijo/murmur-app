@@ -194,7 +194,7 @@ New text replacements and snippets are Rust-owned knowledge records rather than 
 
 | Setting | Type | Default | Valid Options/Range | Description |
 |---------|------|---------|-------------------|-------------|
-| `microphone` | `string` | `'system_default'` | `'system_default'` or any device name from `list_audio_devices` | Audio input device for recording. When set to `'system_default'`, the frontend sends `null` to the backend, which uses the system default input device. Available devices are fetched via the `list_audio_devices` command when the settings panel opens. |
+| `microphone` | `string` | `'system_default'` | `'system_default'` or a descriptor `id` from `list_audio_devices` | Stable audio input ID for recording. On CoreAudio this is the raw device UID, without CPAL's host prefix. Display names are presentation-only. When set to `'system_default'`, the frontend sends `null` and the backend uses the live system default. A missing explicit ID fails closed; it never records from another physical microphone. Unique legacy display-name values migrate to the matching stable ID when the settings panel enumerates devices; duplicate or missing names remain unresolved and require reselection. |
 | `launchAtLogin` | `boolean` | `false` | `true` / `false` | Whether the app starts automatically on macOS login. Uses `@tauri-apps/plugin-autostart` with `MacosLauncher::LaunchAgent`. On mount, the hook checks the actual OS autostart state and reconciles with the stored setting (handles the case where the user removed the login item from System Settings). |
 
 ---

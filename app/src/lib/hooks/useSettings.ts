@@ -4,6 +4,10 @@ import { emit, listen } from '@tauri-apps/api/event';
 import { Settings, loadSettings, saveSettings } from '../settings';
 import { configure, buildConfigureOptions } from '../dictation';
 import { enable, disable, isEnabled } from '@tauri-apps/plugin-autostart';
+import {
+  migrateLegacyMicrophoneId,
+  type AudioDeviceDescriptor,
+} from '../audioDevices';
 
 let lastAutostartOp: Promise<void> = Promise.resolve();
 
@@ -12,6 +16,32 @@ export function useSettings() {
   const [configureError, setConfigureError] = useState<string | null>(null);
   const settingsRef = useRef(settings);
   const configureVersionRef = useRef(0);
+
+  // Migrate pre-CPAL-0.18 display-name selections during app settings
+  // initialization, not when Settings happens to be opened. Only a unique
+  // display-name match is persisted as the backend-native stable ID;
+  // ambiguous/missing names remain unresolved so the UI requires reselection.
+  useEffect(() => {
+    let cancelled = false;
+    invoke<AudioDeviceDescriptor[]>('list_audio_devices')
+      .then((devices) => {
+        if (cancelled || !Array.isArray(devices)) return;
+        const current = settingsRef.current;
+        const microphone = migrateLegacyMicrophoneId(current.microphone, devices);
+        if (microphone === current.microphone) return;
+        const migrated = { ...current, microphone };
+        settingsRef.current = migrated;
+        setSettings(migrated);
+        saveSettings(migrated);
+      })
+      .catch(() => {
+        // Enumeration failure is fail-closed: preserve the unresolved legacy
+        // value rather than silently replacing it with System Default.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Sync launchAtLogin with OS state on mount.
   // Handles the case where a user removed the login item from System Settings.

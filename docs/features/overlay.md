@@ -149,9 +149,9 @@ The red pulsing dot occupies the visible left wing and the animated 7-bar wavefo
 
 Starting uses a blue pulse; after the backend's 5-second signal it becomes an
 amber "Still connecting" cue. Clicking or toggling again cancels. Recovering
-uses an amber spinner and dropdown label for the brief cancellation transition;
-the app then returns to Idle without waiting for the detached Core Audio thread
-to exit. Initialization failure gets a bounded red warning flash. A normal
+uses an amber spinner and dropdown label during cancellation recovery; the app
+returns to Idle only after the exclusively owned Core Audio thread exits.
+Initialization failure gets a bounded red warning flash. A normal
 recording stop whose teardown remains blocked surfaces persistent guidance in
 the main recording-error area.
 

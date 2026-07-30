@@ -6,6 +6,28 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 ---
 
+## 2026-07-30: In-process CPAL readiness requires retained PCM and strict ownership (#406)
+
+**Decision:** The stabilization path uses CPAL 0.18.1 with raw backend device
+IDs, explicit-device fail-closed selection, typed content-free errors, and
+first-retained-buffer readiness. `stream.play()` is not readiness. PCM received
+before supervisor acceptance is preserved while waveform publication remains
+generation-gated. Cancellation and deadlines never detach a worker: Murmur
+retains exclusive ownership until that worker exits, rejecting competing starts.
+
+**Rationale:** CPAL's CoreAudio build timeout bounds sample-rate convergence but
+does not make every synchronous AudioUnit operation cancellable. Detaching a
+blocked in-process worker would permit overlapping HAL owners and turn a timeout
+into a more dangerous race. Strict ownership contains that residual until the
+process-isolated capture helper supplies a hard-kill fault boundary.
+
+**Status:** active
+
+**References:** issue #406; `audio.rs`; `audio_lifecycle.rs`;
+[`transcription.md`](../features/transcription.md).
+
+---
+
 ## 2026-07-30: Zero-config default-on diagnostic log shipping (PR #393)
 
 **Decision:** Every install ships its privacy-stripped `events.jsonl` to `https://georgenijo.com/murmur/ingest` (stdlib Python receiver + nginx on whoop-vm) with no setup, no UI, and no consent toggle. Installs are identified by a random UUID, never hostname. Opt-out is the `MURMUR_LOG_SHIPPER=off` env var only. The endpoint URL and bearer token are compile-time constants; the JSONL file is the retry queue (offset advances only on 2xx).

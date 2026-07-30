@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
+import {
+  audioDeviceSelectOptions,
+  selectedDeviceExists,
+  type AudioDeviceDescriptor,
+} from '../../lib/audioDevices';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import {
@@ -301,10 +306,10 @@ export function SettingsPanel({
     }
   }, [settings.model]);
 
-  const [audioDevices, setAudioDevices] = useState<string[]>([]);
+  const [audioDevices, setAudioDevices] = useState<AudioDeviceDescriptor[]>([]);
   useEffect(() => {
     if (!isOpen) return;
-    invoke<string[]>('list_audio_devices').then(setAudioDevices).catch(() => setAudioDevices([]));
+    invoke<AudioDeviceDescriptor[]>('list_audio_devices').then(setAudioDevices).catch(() => setAudioDevices([]));
   }, [isOpen]);
 
   // ---- Transform model block (#312 D1) ------------------------------------
@@ -418,7 +423,7 @@ export function SettingsPanel({
     : isDoubleTap ? 'Double-tap to start and single-tap to stop.' : 'Hold to start and release to stop.';
   const missingDevice = settings.microphone !== DEFAULT_SETTINGS.microphone
     && audioDevices.length > 0
-    && !audioDevices.includes(settings.microphone);
+    && !selectedDeviceExists(settings.microphone, audioDevices);
   const englishOnly = selectedRuntime ? !selectedRuntime.capabilities.multilingual : true;
   const downloadProgress = modelDownload.phase === 'downloading'
     ? modelDownloadPercent(modelDownload.progress)
@@ -472,8 +477,8 @@ export function SettingsPanel({
           <SettingsSection pageId="recording" activePage={activeCat} title="Recording" subtitle="Microphone, voice detection, and shortcuts">
             <div>
               <label className="mb-2 block text-sm font-medium text-on-surface">Microphone</label>
-              <Select value={settings.microphone} onChange={(microphone) => onUpdateSettings({ microphone })} disabled={isRecording} items={[{ value: 'system_default', label: 'System Default' }, ...audioDevices.map((name) => ({ value: name, label: name }))]} />
-              {missingDevice && <p className="mt-2 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-on-surface">Selected device not found — Murmur will use System Default.</p>}
+              <Select value={settings.microphone} onChange={(microphone) => onUpdateSettings({ microphone })} disabled={isRecording} items={[{ value: 'system_default', label: 'System Default' }, ...audioDeviceSelectOptions(audioDevices)]} />
+              {missingDevice && <p className="mt-2 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-on-surface">Selected device not found — choose an available microphone or System Default.</p>}
             </div>
             <div>
               <p className="mb-2 text-sm font-medium text-on-surface">Voice Detection</p>

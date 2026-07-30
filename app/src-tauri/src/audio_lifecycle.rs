@@ -1,4 +1,7 @@
-use crate::audio::{self, AudioCommand, AudioWorkerEvent, AudioWorkerSpec};
+use crate::audio::{
+    self, AudioCommand, AudioFailure, AudioFailureKind, AudioInitPhase, AudioWorkerEvent,
+    AudioWorkerEventSender, AudioWorkerSpec,
+};
 use crate::state::WHISPER_SAMPLE_RATE;
 use std::fmt;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -38,6 +41,7 @@ impl AudioOwner {
 pub enum AudioCancelReason {
     User,
     DeviceChanged,
+    RuntimeFailure,
     SystemSleep,
     SystemWake,
     HardDeadline,
@@ -48,6 +52,7 @@ impl AudioCancelReason {
         match self {
             Self::User => "user",
             Self::DeviceChanged => "device_changed",
+            Self::RuntimeFailure => "runtime_failure",
             Self::SystemSleep => "system_sleep",
             Self::SystemWake => "system_wake",
             Self::HardDeadline => "hard_deadline",
@@ -59,8 +64,13 @@ impl AudioCancelReason {
 pub(crate) enum AudioLifecycleEvent {
     Ready,
     StillConnecting,
-    Recovering { reason: AudioCancelReason },
-    InitializationFailed { error: String },
+    Recovering {
+        reason: AudioCancelReason,
+    },
+    InitializationFailed {
+        error: String,
+        kind: AudioFailureKind,
+    },
     RecoveryStalled,
     Idle,
 }
@@ -71,7 +81,7 @@ pub(crate) enum AudioStartError {
     AudioRecovering,
     AlreadyRecording,
     SpawnFailed(String),
-    InitializationFailed(String),
+    InitializationFailed(AudioFailure),
     Cancelled,
     SupervisorUnavailable,
 }
@@ -84,9 +94,8 @@ impl fmt::Display for AudioStartError {
                 formatter.write_str("Audio is still recovering from the previous attempt")
             }
             Self::AlreadyRecording => formatter.write_str("Audio is already recording"),
-            Self::SpawnFailed(error) | Self::InitializationFailed(error) => {
-                formatter.write_str(error)
-            }
+            Self::SpawnFailed(error) => formatter.write_str(error),
+            Self::InitializationFailed(error) => fmt::Display::fmt(error, formatter),
             Self::Cancelled => formatter.write_str("Audio initialization was cancelled"),
             Self::SupervisorUnavailable => {
                 formatter.write_str("Audio lifecycle supervisor is unavailable")
@@ -99,6 +108,7 @@ impl fmt::Display for AudioStartError {
 enum AttemptPhase {
     Starting,
     Recording,
+    Recovering,
     Stopping,
 }
 
@@ -116,7 +126,6 @@ struct PublicState {
     phase: AtomicU8,
     still_connecting: std::sync::atomic::AtomicBool,
     owner: Mutex<Option<AudioOwner>>,
-    last_device_name: Mutex<Option<String>>,
 }
 
 impl Default for PublicState {
@@ -125,7 +134,6 @@ impl Default for PublicState {
             phase: AtomicU8::new(PublicPhase::Idle as u8),
             still_connecting: std::sync::atomic::AtomicBool::new(false),
             owner: Mutex::new(None),
-            last_device_name: Mutex::new(None),
         }
     }
 }
@@ -196,7 +204,7 @@ trait WorkerFactory: Send + Sync + 'static {
     fn spawn(
         &self,
         spec: AudioWorkerSpec,
-        event_sender: Sender<AudioWorkerEvent>,
+        event_sender: AudioWorkerEventSender,
     ) -> Result<JoinHandle<()>, String>;
 }
 
@@ -206,7 +214,7 @@ impl WorkerFactory for ProductionWorkerFactory {
     fn spawn(
         &self,
         spec: AudioWorkerSpec,
-        event_sender: Sender<AudioWorkerEvent>,
+        event_sender: AudioWorkerEventSender,
     ) -> Result<JoinHandle<()>, String> {
         #[cfg(debug_assertions)]
         if should_inject_hung_stream_build() {
@@ -299,7 +307,7 @@ impl LifecycleSink for ProductionLifecycleSink {
 struct StartRequest {
     owner: AudioOwner,
     app_handle: Option<tauri::AppHandle>,
-    device_name: Option<String>,
+    device_id: Option<String>,
     origin: String,
     wait_until_ready: bool,
     response: Sender<Result<(), AudioStartError>>,
@@ -319,6 +327,11 @@ enum SupervisorMessage {
     },
     Worker(AudioWorkerEvent),
     #[cfg(test)]
+    CheckDeadlines {
+        elapsed: Duration,
+        response: Sender<()>,
+    },
+    #[cfg(test)]
     Shutdown(Sender<()>),
 }
 
@@ -333,21 +346,15 @@ struct Attempt {
     still_connecting_emitted: bool,
     failure_reported: bool,
     stopping_guidance_emitted: bool,
-    initialization_error: Option<String>,
+    failure: Option<AudioFailure>,
+    init_phase: AudioInitPhase,
     command_sender: Sender<AudioCommand>,
     thread_handle: Option<JoinHandle<()>>,
     shared: Arc<Mutex<Vec<f32>>>,
     active: Arc<std::sync::atomic::AtomicBool>,
     sample_rate: u32,
-    device_name: Option<String>,
     start_response: Option<Sender<Result<(), AudioStartError>>>,
     stop_response: Option<Sender<Result<Vec<f32>, String>>>,
-}
-
-struct AbandonedWorker {
-    owner: AudioOwner,
-    abandoned_at: Instant,
-    handle: JoinHandle<()>,
 }
 
 #[derive(Clone)]
@@ -357,65 +364,6 @@ struct AudioSupervisor {
 }
 
 static SUPERVISOR: OnceLock<AudioSupervisor> = OnceLock::new();
-static ABANDONED_REAPER: OnceLock<Sender<AbandonedWorker>> = OnceLock::new();
-
-/// Own join handles after a cancelled generation releases logical microphone
-/// ownership. Rust cannot interrupt the synchronous Core Audio call, so this
-/// single polling thread joins each worker only after macOS lets it return.
-fn abandoned_reaper() -> &'static Sender<AbandonedWorker> {
-    ABANDONED_REAPER.get_or_init(|| {
-        let (sender, receiver) = mpsc::channel::<AbandonedWorker>();
-        std::thread::Builder::new()
-            .name("murmur-audio-reaper".to_string())
-            .spawn(move || {
-                let mut workers = Vec::<AbandonedWorker>::new();
-                loop {
-                    let received = if workers.is_empty() {
-                        receiver
-                            .recv()
-                            .map_err(|_| RecvTimeoutError::Disconnected)
-                    } else {
-                        receiver.recv_timeout(Duration::from_millis(100))
-                    };
-                    match received {
-                        Ok(worker) => {
-                            let owner = worker.owner;
-                            workers.push(worker);
-                            tracing::warn!(
-                                target: "audio",
-                                owner = owner.telemetry_id(),
-                                owner_kind = owner.kind(),
-                                abandoned_workers = workers.len(),
-                                "audio worker remains blocked in macOS and is being reaped asynchronously"
-                            );
-                        }
-                        Err(RecvTimeoutError::Timeout) => {}
-                        Err(RecvTimeoutError::Disconnected) => return,
-                    }
-                    let mut index = 0;
-                    while index < workers.len() {
-                        if workers[index].handle.is_finished() {
-                            let worker = workers.swap_remove(index);
-                            let panicked = worker.handle.join().is_err();
-                            tracing::info!(
-                                target: "audio",
-                                owner = worker.owner.telemetry_id(),
-                                owner_kind = worker.owner.kind(),
-                                abandoned_ms = worker.abandoned_at.elapsed().as_millis() as u64,
-                                panicked,
-                                remaining_abandoned_workers = workers.len(),
-                                "abandoned audio worker exited and was reaped"
-                            );
-                        } else {
-                            index += 1;
-                        }
-                    }
-                }
-            })
-            .expect("audio reaper thread must spawn");
-        sender
-    })
-}
 
 fn supervisor() -> &'static AudioSupervisor {
     SUPERVISOR.get_or_init(|| {
@@ -433,23 +381,13 @@ fn spawn_supervisor(
     config: SupervisorConfig,
 ) -> AudioSupervisor {
     let (sender, receiver) = mpsc::channel::<SupervisorMessage>();
-    let (worker_event_sender, worker_event_receiver) = mpsc::channel::<AudioWorkerEvent>();
     let public = Arc::new(PublicState::default());
-
-    let forward_sender = sender.clone();
-    std::thread::Builder::new()
-        .name("murmur-audio-events".to_string())
-        .spawn(move || {
-            while let Ok(event) = worker_event_receiver.recv() {
-                if forward_sender
-                    .send(SupervisorMessage::Worker(event))
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        })
-        .expect("audio event forwarder thread must spawn");
+    let worker_message_sender = sender.clone();
+    let worker_event_sender = AudioWorkerEventSender::new(move |event| {
+        worker_message_sender
+            .send(SupervisorMessage::Worker(event))
+            .map_err(|_| ())
+    });
 
     let public_for_thread = Arc::clone(&public);
     std::thread::Builder::new()
@@ -471,7 +409,7 @@ fn spawn_supervisor(
 
 fn run_supervisor(
     receiver: Receiver<SupervisorMessage>,
-    worker_event_sender: Sender<AudioWorkerEvent>,
+    worker_event_sender: AudioWorkerEventSender,
     factory: Arc<dyn WorkerFactory>,
     sink: Arc<dyn LifecycleSink>,
     public: Arc<PublicState>,
@@ -487,6 +425,16 @@ fn run_supervisor(
                     let _ = response.send(());
                     return;
                 }
+                #[cfg(test)]
+                if let SupervisorMessage::CheckDeadlines { elapsed, response } = message {
+                    let now = attempt
+                        .as_ref()
+                        .map(|current| current.accepted_at + elapsed)
+                        .unwrap_or_else(Instant::now);
+                    handle_deadlines_at(&mut attempt, sink.as_ref(), &public, config, now);
+                    let _ = response.send(());
+                    continue;
+                }
                 handle_message(
                     message,
                     &mut attempt,
@@ -497,7 +445,7 @@ fn run_supervisor(
                 );
             }
             Err(RecvTimeoutError::Timeout) => {
-                handle_deadlines(&mut attempt, sink.as_ref(), &public, config);
+                handle_deadlines_at(&mut attempt, sink.as_ref(), &public, config, Instant::now());
             }
             Err(RecvTimeoutError::Disconnected) => return,
         }
@@ -517,6 +465,9 @@ fn deadline_wait(attempt: Option<&Attempt>, config: SupervisorConfig) -> Duratio
         AttemptPhase::Stopping if !attempt.stopping_guidance_emitted => {
             attempt.stopping_started_at.unwrap_or(now) + config.recovery_guidance_after
         }
+        AttemptPhase::Recovering if !attempt.stopping_guidance_emitted => {
+            attempt.stopping_started_at.unwrap_or(now) + config.recovery_guidance_after
+        }
         _ => now + Duration::from_secs(60),
     };
     deadline.saturating_duration_since(now)
@@ -525,7 +476,7 @@ fn deadline_wait(attempt: Option<&Attempt>, config: SupervisorConfig) -> Duratio
 fn handle_message(
     message: SupervisorMessage,
     attempt: &mut Option<Attempt>,
-    worker_event_sender: &Sender<AudioWorkerEvent>,
+    worker_event_sender: &AudioWorkerEventSender,
     factory: &dyn WorkerFactory,
     sink: &dyn LifecycleSink,
     public: &PublicState,
@@ -544,7 +495,7 @@ fn handle_message(
                 return;
             }
             if current.phase == AttemptPhase::Starting {
-                abandon_attempt(attempt, AudioCancelReason::User, sink, public, false);
+                begin_recovery(attempt, AudioCancelReason::User, sink, public, None);
                 let _ = response.send(Ok(Vec::new()));
                 return;
             }
@@ -559,6 +510,11 @@ fn handle_message(
                     public.set_phase(PublicPhase::Stopping);
                 }
                 AttemptPhase::Starting => unreachable!("starting was handled above"),
+                AttemptPhase::Recovering => {
+                    let _ = response.send(Err(
+                        "Audio is still recovering from the previous attempt".to_string(),
+                    ));
+                }
                 AttemptPhase::Stopping => {
                     let _ = response.send(Err("Audio is already stopping".to_string()));
                 }
@@ -582,7 +538,7 @@ fn handle_message(
                 false
             };
             if should_abandon {
-                abandon_attempt(attempt, reason, sink, public, false);
+                begin_recovery(attempt, reason, sink, public, None);
             }
             let cancelled = should_abandon;
             let _ = response.send(Ok(cancelled));
@@ -591,6 +547,8 @@ fn handle_message(
             handle_worker_event(event, attempt, sink, public);
         }
         #[cfg(test)]
+        SupervisorMessage::CheckDeadlines { .. } => unreachable!(),
+        #[cfg(test)]
         SupervisorMessage::Shutdown(_) => unreachable!(),
     }
 }
@@ -598,7 +556,7 @@ fn handle_message(
 fn handle_start(
     request: StartRequest,
     attempt: &mut Option<Attempt>,
-    worker_event_sender: &Sender<AudioWorkerEvent>,
+    worker_event_sender: &AudioWorkerEventSender,
     factory: &dyn WorkerFactory,
     public: &PublicState,
 ) {
@@ -606,7 +564,7 @@ fn handle_start(
         let error = match current.phase {
             AttemptPhase::Starting => AudioStartError::AlreadyStarting,
             AttemptPhase::Recording => AudioStartError::AlreadyRecording,
-            AttemptPhase::Stopping => AudioStartError::AudioRecovering,
+            AttemptPhase::Recovering | AttemptPhase::Stopping => AudioStartError::AudioRecovering,
         };
         let _ = request.response.send(Err(error));
         return;
@@ -622,7 +580,7 @@ fn handle_start(
         shared: Arc::clone(&shared),
         active: Arc::clone(&active),
         app_handle: request.app_handle.clone(),
-        device_name: request.device_name,
+        device_id: request.device_id,
     };
     let thread_handle = match factory.spawn(spec, worker_event_sender.clone()) {
         Ok(handle) => handle,
@@ -658,13 +616,13 @@ fn handle_start(
         still_connecting_emitted: false,
         failure_reported: false,
         stopping_guidance_emitted: false,
-        initialization_error: None,
+        failure: None,
+        init_phase: AudioInitPhase::DeviceEnumeration,
         command_sender,
         thread_handle: Some(thread_handle),
         shared,
         active,
         sample_rate: WHISPER_SAMPLE_RATE,
-        device_name: None,
         start_response,
         stop_response: None,
     });
@@ -682,8 +640,9 @@ fn handle_worker_event(
     let owner = match &event {
         AudioWorkerEvent::PhaseEntered { owner, .. }
         | AudioWorkerEvent::PhaseExited { owner, .. }
-        | AudioWorkerEvent::Ready { owner, .. }
+        | AudioWorkerEvent::FirstBuffer { owner, .. }
         | AudioWorkerEvent::InitFailed { owner, .. }
+        | AudioWorkerEvent::RuntimeFailed { owner, .. }
         | AudioWorkerEvent::StreamStopped { owner }
         | AudioWorkerEvent::ThreadExited { owner } => *owner,
     };
@@ -707,6 +666,7 @@ fn handle_worker_event(
 
     match event {
         AudioWorkerEvent::PhaseEntered { phase, .. } => {
+            current.init_phase = phase;
             tracing::info!(
                 target: "audio",
                 owner = owner.telemetry_id(),
@@ -727,22 +687,28 @@ fn handle_worker_event(
                 "audio initialization phase exited"
             );
         }
-        AudioWorkerEvent::Ready {
-            sample_rate,
-            device_name,
-            ..
-        } => match current.phase {
+        AudioWorkerEvent::FirstBuffer { sample_rate, .. } => match current.phase {
             AttemptPhase::Starting => {
+                if current
+                    .shared
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .is_empty()
+                {
+                    tracing::error!(
+                        target: "audio",
+                        owner = owner.telemetry_id(),
+                        error_kind = AudioFailureKind::InvalidInput.as_str(),
+                        phase = AudioInitPhase::FirstBufferWait.as_str(),
+                        "empty first-buffer event ignored"
+                    );
+                    return;
+                }
                 current.sample_rate = sample_rate;
-                current.device_name = Some(device_name.clone());
                 current.ready_at = Some(Instant::now());
                 current.active.store(true, Ordering::SeqCst);
                 public.still_connecting.store(false, Ordering::SeqCst);
                 current.phase = AttemptPhase::Recording;
-                *public
-                    .last_device_name
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(device_name);
                 public.set_phase(PublicPhase::Recording);
                 tracing::info!(
                     target: "audio",
@@ -761,7 +727,7 @@ fn handle_worker_event(
                     let _ = response.send(Ok(()));
                 }
             }
-            AttemptPhase::Recording | AttemptPhase::Stopping => {
+            AttemptPhase::Recording | AttemptPhase::Recovering | AttemptPhase::Stopping => {
                 tracing::warn!(
                     target: "audio",
                     owner = owner.telemetry_id(),
@@ -769,10 +735,24 @@ fn handle_worker_event(
                 );
             }
         },
-        AudioWorkerEvent::InitFailed { error, .. } => {
-            current.initialization_error = Some(error.clone());
+        AudioWorkerEvent::InitFailed { failure, .. } => {
+            current.failure = Some(failure.clone());
             if let Some(response) = current.start_response.take() {
-                let _ = response.send(Err(AudioStartError::InitializationFailed(error)));
+                let _ = response.send(Err(AudioStartError::InitializationFailed(failure)));
+            }
+        }
+        AudioWorkerEvent::RuntimeFailed { failure, .. } => {
+            if matches!(
+                current.phase,
+                AttemptPhase::Starting | AttemptPhase::Recording
+            ) {
+                begin_recovery(
+                    attempt,
+                    AudioCancelReason::RuntimeFailure,
+                    sink,
+                    public,
+                    Some(failure),
+                );
             }
         }
         AudioWorkerEvent::StreamStopped { .. } => {
@@ -817,13 +797,12 @@ fn finish_attempt(attempt: &mut Option<Attempt>, sink: &dyn LifecycleSink, publi
             }
         }
         AttemptPhase::Starting => {
-            let error = finished
-                .initialization_error
-                .take()
-                .unwrap_or_else(|| "Audio initialization ended before readiness".to_string());
-            report_failure_once(&mut finished, sink, error.clone());
+            let failure = finished.failure.take().unwrap_or_else(|| {
+                AudioFailure::new(AudioFailureKind::BackendError, finished.init_phase)
+            });
+            report_failure_once(&mut finished, sink, failure.clone());
             if let Some(response) = finished.start_response.take() {
-                let _ = response.send(Err(AudioStartError::InitializationFailed(error)));
+                let _ = response.send(Err(AudioStartError::InitializationFailed(failure)));
             }
             sink.notify(
                 finished.app_handle.as_ref(),
@@ -835,8 +814,15 @@ fn finish_attempt(attempt: &mut Option<Attempt>, sink: &dyn LifecycleSink, publi
             report_failure_once(
                 &mut finished,
                 sink,
-                "Audio capture stopped unexpectedly".to_string(),
+                AudioFailure::new(AudioFailureKind::BackendError, AudioInitPhase::Runtime),
             );
+            sink.notify(
+                finished.app_handle.as_ref(),
+                finished.owner,
+                AudioLifecycleEvent::Idle,
+            );
+        }
+        AttemptPhase::Recovering => {
             sink.notify(
                 finished.app_handle.as_ref(),
                 finished.owner,
@@ -884,59 +870,50 @@ fn recording_duration_since_ready(ready_at: Option<Instant>, now: Instant) -> Du
         .unwrap_or_default()
 }
 
-fn abandon_attempt(
+fn begin_recovery(
     attempt: &mut Option<Attempt>,
     reason: AudioCancelReason,
     sink: &dyn LifecycleSink,
     public: &PublicState,
-    report_failure: bool,
+    failure: Option<AudioFailure>,
 ) {
-    let Some(mut abandoned) = attempt.take() else {
+    let Some(current) = attempt.as_mut() else {
         return;
     };
-    abandoned.active.store(false, Ordering::SeqCst);
-    let _ = abandoned.command_sender.send(AudioCommand::Stop);
+    if matches!(
+        current.phase,
+        AttemptPhase::Recovering | AttemptPhase::Stopping
+    ) {
+        return;
+    }
+    current.active.store(false, Ordering::SeqCst);
+    let _ = current.command_sender.send(AudioCommand::Stop);
+    current.phase = AttemptPhase::Recovering;
+    current.stopping_started_at = Some(Instant::now());
     public.set_phase(PublicPhase::Recovering);
     tracing::info!(
         target: "audio",
-        owner = abandoned.owner.telemetry_id(),
-        owner_kind = abandoned.owner.kind(),
+        owner = current.owner.telemetry_id(),
+        owner_kind = current.owner.kind(),
         cancellation_reason = reason.as_str(),
-        "audio attempt detached for asynchronous recovery"
+        "audio attempt entered recovery; ownership retained until worker exit"
     );
     sink.notify(
-        abandoned.app_handle.as_ref(),
-        abandoned.owner,
+        current.app_handle.as_ref(),
+        current.owner,
         AudioLifecycleEvent::Recovering { reason },
     );
-    if let Some(response) = abandoned.start_response.take() {
+    if let Some(response) = current.start_response.take() {
         let _ = response.send(Err(AudioStartError::Cancelled));
     }
-    if report_failure {
-        report_failure_once(
-            &mut abandoned,
-            sink,
-            "Microphone initialization exceeded the 30 second deadline".to_string(),
-        );
+    if let Some(failure) = failure {
+        current.failure = Some(failure.clone());
+        report_failure_once(current, sink, failure);
     }
     public.still_connecting.store(false, Ordering::SeqCst);
-    public.clear_owner(abandoned.owner);
-    public.set_phase(PublicPhase::Idle);
-    sink.notify(
-        abandoned.app_handle.as_ref(),
-        abandoned.owner,
-        AudioLifecycleEvent::Idle,
-    );
-    if let Some(handle) = abandoned.thread_handle.take() {
-        let _ = abandoned_reaper().send(AbandonedWorker {
-            owner: abandoned.owner,
-            abandoned_at: Instant::now(),
-            handle,
-        });
-    }
 }
 
-fn report_failure_once(attempt: &mut Attempt, sink: &dyn LifecycleSink, error: String) {
+fn report_failure_once(attempt: &mut Attempt, sink: &dyn LifecycleSink, failure: AudioFailure) {
     if attempt.failure_reported {
         return;
     }
@@ -945,26 +922,31 @@ fn report_failure_once(attempt: &mut Attempt, sink: &dyn LifecycleSink, error: S
         target: "audio",
         owner = attempt.owner.telemetry_id(),
         owner_kind = attempt.owner.kind(),
-        error = error.as_str(),
-        "audio initialization failed"
+        error_kind = failure.kind.as_str(),
+        phase = failure.phase.as_str(),
+        "audio lifecycle failed"
     );
     sink.notify(
         attempt.app_handle.as_ref(),
         attempt.owner,
-        AudioLifecycleEvent::InitializationFailed { error },
+        AudioLifecycleEvent::InitializationFailed {
+            error: failure.to_string(),
+            kind: failure.kind,
+        },
     );
 }
 
-fn handle_deadlines(
+fn handle_deadlines_at(
     attempt: &mut Option<Attempt>,
     sink: &dyn LifecycleSink,
     public: &PublicState,
     config: SupervisorConfig,
+    now: Instant,
 ) {
     let Some(current) = attempt.as_ref() else {
         return;
     };
-    let elapsed = current.accepted_at.elapsed();
+    let elapsed = now.saturating_duration_since(current.accepted_at);
     let should_emit_still_connecting = current.phase == AttemptPhase::Starting
         && !current.still_connecting_emitted
         && elapsed >= config.still_connecting_after;
@@ -988,16 +970,31 @@ fn handle_deadlines(
     if attempt.as_ref().is_some_and(|current| {
         current.phase == AttemptPhase::Starting && elapsed >= config.hard_deadline
     }) {
-        abandon_attempt(attempt, AudioCancelReason::HardDeadline, sink, public, true);
+        let phase = attempt
+            .as_ref()
+            .map(|current| current.init_phase)
+            .unwrap_or(AudioInitPhase::DeviceEnumeration);
+        let kind = if phase == AudioInitPhase::FirstBufferWait {
+            AudioFailureKind::FirstBufferTimeout
+        } else {
+            AudioFailureKind::InitializationTimeout
+        };
+        begin_recovery(
+            attempt,
+            AudioCancelReason::HardDeadline,
+            sink,
+            public,
+            Some(AudioFailure::new(kind, phase)),
+        );
         return;
     }
     let current = attempt.as_mut().expect("attempt was checked above");
     match current.phase {
-        AttemptPhase::Stopping
+        AttemptPhase::Stopping | AttemptPhase::Recovering
             if !current.stopping_guidance_emitted
-                && current
-                    .stopping_started_at
-                    .is_some_and(|started| started.elapsed() >= config.recovery_guidance_after) =>
+                && current.stopping_started_at.is_some_and(|started| {
+                    now.saturating_duration_since(started) >= config.recovery_guidance_after
+                }) =>
         {
             current.stopping_guidance_emitted = true;
             tracing::warn!(
@@ -1019,7 +1016,7 @@ fn handle_deadlines(
 fn send_start(
     owner: AudioOwner,
     app_handle: Option<tauri::AppHandle>,
-    device_name: Option<String>,
+    device_id: Option<String>,
     origin: &str,
     wait_until_ready: bool,
 ) -> Result<(), AudioStartError> {
@@ -1029,7 +1026,7 @@ fn send_start(
         .send(SupervisorMessage::Start(StartRequest {
             owner,
             app_handle,
-            device_name,
+            device_id,
             origin: origin.to_string(),
             wait_until_ready,
             response: response_sender,
@@ -1047,14 +1044,14 @@ fn send_start(
 
 pub(crate) fn start_dictation_recording(
     app_handle: tauri::AppHandle,
-    device_name: Option<String>,
+    device_id: Option<String>,
     recording_id: u64,
     origin: &str,
 ) -> Result<(), AudioStartError> {
     send_start(
         AudioOwner::Dictation(recording_id),
         Some(app_handle),
-        device_name,
+        device_id,
         origin,
         false,
     )
@@ -1062,13 +1059,13 @@ pub(crate) fn start_dictation_recording(
 
 pub(crate) fn start_transform_recording(
     app_handle: Option<tauri::AppHandle>,
-    device_name: Option<String>,
+    device_id: Option<String>,
     transform_pass_id: u64,
 ) -> Result<(), String> {
     send_start(
         AudioOwner::Transform(transform_pass_id),
         app_handle,
-        device_name,
+        device_id,
         "transform",
         false,
     )
@@ -1162,15 +1159,6 @@ pub(crate) fn is_transform_still_connecting(transform_pass_id: u64) -> bool {
         .is_still_connecting_for(AudioOwner::Transform(transform_pass_id))
 }
 
-pub(crate) fn last_device_name() -> Option<String> {
-    supervisor()
-        .public
-        .last_device_name
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clone()
-}
-
 #[cfg(target_os = "macos")]
 pub(crate) fn register_sleep_wake_observer() {
     use objc2_app_kit::{
@@ -1250,28 +1238,156 @@ mod tests {
 
     struct BlockingFactory {
         gate: Gate,
+        retry_gate: Option<Gate>,
         spawn_count: Arc<AtomicUsize>,
         active_flags: Arc<Mutex<Vec<Arc<AtomicBool>>>>,
         phase: AudioInitPhase,
+        phase_entered: Option<Sender<()>>,
     }
 
     struct BlockingTeardownFactory {
         gate: Gate,
     }
 
+    struct NoCallbackFactory {
+        first_buffer_wait_entered: Sender<()>,
+    }
+
+    impl WorkerFactory for NoCallbackFactory {
+        fn spawn(
+            &self,
+            spec: AudioWorkerSpec,
+            event_sender: AudioWorkerEventSender,
+        ) -> Result<JoinHandle<()>, String> {
+            let first_buffer_wait_entered = self.first_buffer_wait_entered.clone();
+            Ok(std::thread::spawn(move || {
+                let owner = spec.owner;
+                for phase in [
+                    AudioInitPhase::DeviceEnumeration,
+                    AudioInitPhase::ConfigLookup,
+                    AudioInitPhase::StreamBuild,
+                    AudioInitPhase::StreamPlay,
+                ] {
+                    let _ = event_sender.send(AudioWorkerEvent::PhaseEntered { owner, phase });
+                    let _ = event_sender.send(AudioWorkerEvent::PhaseExited {
+                        owner,
+                        phase,
+                        elapsed_ms: 0,
+                    });
+                }
+                let _ = event_sender.send(AudioWorkerEvent::PhaseEntered {
+                    owner,
+                    phase: AudioInitPhase::FirstBufferWait,
+                });
+                let _ = first_buffer_wait_entered.send(());
+                let _ = spec.command_receiver.recv();
+                let _ = event_sender.send(AudioWorkerEvent::StreamStopped { owner });
+                let _ = event_sender.send(AudioWorkerEvent::ThreadExited { owner });
+            }))
+        }
+    }
+
+    struct RuntimeFailureFactory;
+
+    struct OrderedReadyFactory {
+        first_buffer_enqueued: Sender<()>,
+        release_spawn: Gate,
+        samples: Vec<f32>,
+    }
+
+    impl WorkerFactory for OrderedReadyFactory {
+        fn spawn(
+            &self,
+            spec: AudioWorkerSpec,
+            event_sender: AudioWorkerEventSender,
+        ) -> Result<JoinHandle<()>, String> {
+            let first_buffer_enqueued = self.first_buffer_enqueued.clone();
+            let samples = self.samples.clone();
+            let handle = std::thread::spawn(move || {
+                let owner = spec.owner;
+                spec.shared.lock().unwrap().extend_from_slice(&samples);
+                event_sender
+                    .send(AudioWorkerEvent::FirstBuffer {
+                        owner,
+                        sample_rate: WHISPER_SAMPLE_RATE,
+                    })
+                    .unwrap();
+                first_buffer_enqueued.send(()).unwrap();
+                let _ = spec.command_receiver.recv();
+                let _ = event_sender.send(AudioWorkerEvent::StreamStopped { owner });
+                let _ = event_sender.send(AudioWorkerEvent::ThreadExited { owner });
+            });
+            // Keep the supervisor inside Start while the worker appends PCM and
+            // enqueues readiness. Tests can then enqueue stop/deadline messages
+            // behind readiness before allowing Start to return.
+            self.release_spawn.wait();
+            Ok(handle)
+        }
+    }
+
+    impl WorkerFactory for RuntimeFailureFactory {
+        fn spawn(
+            &self,
+            spec: AudioWorkerSpec,
+            event_sender: AudioWorkerEventSender,
+        ) -> Result<JoinHandle<()>, String> {
+            Ok(std::thread::spawn(move || {
+                let owner = spec.owner;
+                spec.shared.lock().unwrap().push(0.5);
+                let _ = event_sender.send(AudioWorkerEvent::FirstBuffer {
+                    owner,
+                    sample_rate: WHISPER_SAMPLE_RATE,
+                });
+                let _ = event_sender.send(AudioWorkerEvent::RuntimeFailed {
+                    owner,
+                    failure: AudioFailure::new(
+                        AudioFailureKind::DeviceBusy,
+                        AudioInitPhase::Runtime,
+                    ),
+                });
+                let _ = spec.command_receiver.recv();
+                let _ = event_sender.send(AudioWorkerEvent::StreamStopped { owner });
+                let _ = event_sender.send(AudioWorkerEvent::ThreadExited { owner });
+            }))
+        }
+    }
+
+    struct SpecCaptureFactory {
+        specs: Arc<Mutex<Vec<(AudioOwner, Option<String>)>>>,
+    }
+
+    impl WorkerFactory for SpecCaptureFactory {
+        fn spawn(
+            &self,
+            spec: AudioWorkerSpec,
+            event_sender: AudioWorkerEventSender,
+        ) -> Result<JoinHandle<()>, String> {
+            self.specs
+                .lock()
+                .unwrap()
+                .push((spec.owner, spec.device_id.clone()));
+            Ok(std::thread::spawn(move || {
+                let owner = spec.owner;
+                let _ = spec.command_receiver.recv();
+                let _ = event_sender.send(AudioWorkerEvent::StreamStopped { owner });
+                let _ = event_sender.send(AudioWorkerEvent::ThreadExited { owner });
+            }))
+        }
+    }
+
     impl WorkerFactory for BlockingTeardownFactory {
         fn spawn(
             &self,
             spec: AudioWorkerSpec,
-            event_sender: Sender<AudioWorkerEvent>,
+            event_sender: AudioWorkerEventSender,
         ) -> Result<JoinHandle<()>, String> {
             let gate = self.gate.clone();
             Ok(std::thread::spawn(move || {
                 let owner = spec.owner;
-                let _ = event_sender.send(AudioWorkerEvent::Ready {
+                spec.shared.lock().unwrap().push(0.25);
+                let _ = event_sender.send(AudioWorkerEvent::FirstBuffer {
                     owner,
                     sample_rate: WHISPER_SAMPLE_RATE,
-                    device_name: "test".to_string(),
                 });
                 let _ = spec.command_receiver.recv();
                 let _ = event_sender.send(AudioWorkerEvent::StreamStopped { owner });
@@ -1285,28 +1401,36 @@ mod tests {
         fn spawn(
             &self,
             spec: AudioWorkerSpec,
-            event_sender: Sender<AudioWorkerEvent>,
+            event_sender: AudioWorkerEventSender,
         ) -> Result<JoinHandle<()>, String> {
-            self.spawn_count.fetch_add(1, Ordering::SeqCst);
+            let spawn_index = self.spawn_count.fetch_add(1, Ordering::SeqCst);
             self.active_flags
                 .lock()
                 .unwrap()
                 .push(Arc::clone(&spec.active));
-            let gate = self.gate.clone();
+            let gate = if spawn_index == 0 {
+                self.gate.clone()
+            } else {
+                self.retry_gate.clone().unwrap_or_else(|| self.gate.clone())
+            };
             let phase = self.phase;
+            let phase_entered = self.phase_entered.clone();
             Ok(std::thread::spawn(move || {
                 let owner = spec.owner;
                 let _ = event_sender.send(AudioWorkerEvent::PhaseEntered { owner, phase });
+                if let Some(phase_entered) = phase_entered {
+                    let _ = phase_entered.send(());
+                }
                 gate.wait();
                 let _ = event_sender.send(AudioWorkerEvent::PhaseExited {
                     owner,
                     phase,
                     elapsed_ms: 1,
                 });
-                let _ = event_sender.send(AudioWorkerEvent::Ready {
+                spec.shared.lock().unwrap().push(0.25);
+                let _ = event_sender.send(AudioWorkerEvent::FirstBuffer {
                     owner,
                     sample_rate: WHISPER_SAMPLE_RATE,
-                    device_name: "test".to_string(),
                 });
                 while let Ok(command) = spec.command_receiver.recv() {
                     if matches!(command, AudioCommand::Stop) {
@@ -1352,9 +1476,11 @@ mod tests {
         let supervisor = spawn_supervisor(
             Arc::new(BlockingFactory {
                 gate: gate.clone(),
+                retry_gate: None,
                 spawn_count: Arc::clone(&spawn_count),
                 active_flags: Arc::clone(&active_flags),
                 phase,
+                phase_entered: None,
             }),
             sink.clone(),
             config,
@@ -1366,13 +1492,21 @@ mod tests {
         supervisor: &AudioSupervisor,
         owner: AudioOwner,
     ) -> Receiver<Result<(), AudioStartError>> {
+        start_with_device(supervisor, owner, None)
+    }
+
+    fn start_with_device(
+        supervisor: &AudioSupervisor,
+        owner: AudioOwner,
+        device_id: Option<String>,
+    ) -> Receiver<Result<(), AudioStartError>> {
         let (sender, receiver) = mpsc::channel();
         supervisor
             .sender
             .send(SupervisorMessage::Start(StartRequest {
                 owner,
                 app_handle: None,
-                device_name: None,
+                device_id,
                 origin: "hold".to_string(),
                 wait_until_ready: false,
                 response: sender,
@@ -1418,6 +1552,18 @@ mod tests {
         let _ = receiver.recv_timeout(Duration::from_secs(1));
     }
 
+    fn check_deadlines(supervisor: &AudioSupervisor, elapsed: Duration) {
+        let (sender, receiver) = mpsc::channel();
+        supervisor
+            .sender
+            .send(SupervisorMessage::CheckDeadlines {
+                elapsed,
+                response: sender,
+            })
+            .unwrap();
+        receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+    }
+
     fn wait_until(message: &str, predicate: impl Fn() -> bool) {
         let deadline = Instant::now() + Duration::from_secs(1);
         while !predicate() {
@@ -1460,7 +1606,7 @@ mod tests {
     }
 
     #[test]
-    fn cancel_releases_owner_and_late_ready_never_becomes_recording() {
+    fn cancel_retains_owner_until_exit_and_late_buffer_never_becomes_recording() {
         for phase in [
             AudioInitPhase::DeviceEnumeration,
             AudioInitPhase::StreamBuild,
@@ -1473,11 +1619,17 @@ mod tests {
             let active = Arc::clone(&active_flags.lock().unwrap()[0]);
             assert!(!active.load(Ordering::SeqCst));
             assert_eq!(cancel(&supervisor, owner).recv().unwrap(), Ok(true));
-            assert!(!supervisor.public.is_active());
+            assert!(
+                supervisor.public.is_active(),
+                "recovery must retain exclusive ownership until the worker exits"
+            );
             gate.open();
+            wait_until("recovering worker did not exit", || {
+                !supervisor.public.is_active()
+            });
             assert!(
                 !active.load(Ordering::SeqCst),
-                "abandoned attempts must never accept samples or emit levels"
+                "recovering attempts must never publish levels"
             );
             let events = sink.events.lock().unwrap().clone();
             assert!(events.iter().any(|(_, event)| matches!(
@@ -1498,50 +1650,59 @@ mod tests {
     }
 
     #[test]
-    fn benchmark_cancelled_hang_and_immediate_retry() {
+    fn cancelled_hang_rejects_retry_until_owned_worker_exits() {
         let (supervisor, gate, spawn_count, _, _) =
             harness(AudioInitPhase::StreamBuild, SupervisorConfig::default());
         let first = AudioOwner::Dictation(30);
         assert_eq!(start(&supervisor, first).recv().unwrap(), Ok(()));
 
-        let recovery_started = Instant::now();
         assert_eq!(cancel(&supervisor, first).recv().unwrap(), Ok(true));
-        let recovery_us = recovery_started.elapsed().as_micros() as u64;
-        assert!(!supervisor.public.is_active());
+        assert!(supervisor.public.is_active());
 
-        let retry_started = Instant::now();
         let second = AudioOwner::Dictation(31);
-        assert_eq!(start(&supervisor, second).recv().unwrap(), Ok(()));
-        let retry_accepted_us = retry_started.elapsed().as_micros() as u64;
-        assert_eq!(spawn_count.load(Ordering::SeqCst), 2);
-        assert_eq!(cancel(&supervisor, second).recv().unwrap(), Ok(true));
-
-        println!(
-            "audio_recovery_benchmark recovery_us={recovery_us} retry_accepted_us={retry_accepted_us}"
+        assert_eq!(
+            start(&supervisor, second).recv().unwrap(),
+            Err(AudioStartError::AudioRecovering)
         );
+        assert_eq!(spawn_count.load(Ordering::SeqCst), 1);
+
         gate.open();
+        wait_until("owned worker did not exit", || {
+            !supervisor.public.is_active()
+        });
         shutdown(&supervisor);
     }
 
     #[test]
-    fn hard_deadline_reports_failure_once_and_allows_immediate_retry() {
-        let config = SupervisorConfig {
-            still_connecting_after: Duration::from_millis(5),
-            hard_deadline: Duration::from_millis(12),
-            recovery_guidance_after: Duration::from_millis(10),
-        };
-        let (supervisor, gate, spawn_count, sink, _) =
-            harness(AudioInitPhase::ConfigLookup, config);
+    fn hard_deadline_reports_failure_once_and_blocks_retry_until_exit() {
+        let gate = Gate::closed();
+        let retry_gate = Gate::closed();
+        let spawn_count = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::new(RecordingSink::default());
+        let active_flags = Arc::new(Mutex::new(Vec::new()));
+        let (phase_sender, phase_receiver) = mpsc::channel();
+        let supervisor = spawn_supervisor(
+            Arc::new(BlockingFactory {
+                gate: gate.clone(),
+                retry_gate: Some(retry_gate.clone()),
+                spawn_count: Arc::clone(&spawn_count),
+                active_flags,
+                phase: AudioInitPhase::ConfigLookup,
+                phase_entered: Some(phase_sender),
+            }),
+            sink.clone(),
+            SupervisorConfig::default(),
+        );
         let owner = AudioOwner::Dictation(4);
         assert_eq!(start(&supervisor, owner).recv().unwrap(), Ok(()));
-        wait_until("hard deadline did not report failure", || {
-            sink.events
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|(_, event)| matches!(event, AudioLifecycleEvent::InitializationFailed { .. }))
-        });
-        assert!(!supervisor.public.is_active());
+        phase_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("worker never entered config lookup");
+        check_deadlines(
+            &supervisor,
+            HARD_INITIALIZATION_DEADLINE + Duration::from_secs(1),
+        );
+        assert!(supervisor.public.is_active());
         {
             let events = sink.events.lock().unwrap();
             assert_eq!(
@@ -1557,7 +1718,25 @@ mod tests {
             assert!(events
                 .iter()
                 .any(|(_, event)| *event == AudioLifecycleEvent::StillConnecting));
+            assert!(events.iter().any(|(_, event)| matches!(
+                event,
+                AudioLifecycleEvent::InitializationFailed {
+                    kind: AudioFailureKind::InitializationTimeout,
+                    ..
+                }
+            )));
         }
+        assert_eq!(
+            start(&supervisor, AudioOwner::Dictation(5))
+                .recv_timeout(Duration::from_millis(100))
+                .unwrap(),
+            Err(AudioStartError::AudioRecovering)
+        );
+        assert_eq!(spawn_count.load(Ordering::SeqCst), 1);
+        gate.open();
+        wait_until("deadline-expired worker did not exit", || {
+            !supervisor.public.is_active()
+        });
         assert_eq!(
             start(&supervisor, AudioOwner::Dictation(5))
                 .recv_timeout(Duration::from_millis(100))
@@ -1565,21 +1744,26 @@ mod tests {
             Ok(())
         );
         assert_eq!(spawn_count.load(Ordering::SeqCst), 2);
+        phase_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("retry worker never entered config lookup");
         assert_eq!(
             cancel(&supervisor, AudioOwner::Dictation(5))
                 .recv_timeout(Duration::from_millis(100))
                 .unwrap(),
             Ok(true)
         );
-        gate.open();
-        assert!(!supervisor.public.is_active());
+        retry_gate.open();
+        wait_until("retry worker did not exit", || {
+            !supervisor.public.is_active()
+        });
         shutdown(&supervisor);
     }
 
     #[test]
     fn complete_teardown_allows_a_successful_retry() {
         let (supervisor, gate, spawn_count, _, _) =
-            harness(AudioInitPhase::ReadySignal, SupervisorConfig::default());
+            harness(AudioInitPhase::FirstBufferWait, SupervisorConfig::default());
         let first = AudioOwner::Dictation(6);
         assert_eq!(start(&supervisor, first).recv().unwrap(), Ok(()));
         assert_eq!(cancel(&supervisor, first).recv().unwrap(), Ok(true));
@@ -1627,8 +1811,11 @@ mod tests {
                 .unwrap(),
             Ok(Vec::new())
         );
-        assert!(!supervisor.public.is_active());
+        assert!(supervisor.public.is_active());
         gate.open();
+        wait_until("stopped initializing worker did not exit", || {
+            !supervisor.public.is_active()
+        });
         shutdown(&supervisor);
     }
 
@@ -1640,10 +1827,9 @@ mod tests {
         assert_eq!(start(&supervisor, owner).recv().unwrap(), Ok(()));
         supervisor
             .sender
-            .send(SupervisorMessage::Worker(AudioWorkerEvent::Ready {
+            .send(SupervisorMessage::Worker(AudioWorkerEvent::FirstBuffer {
                 owner: AudioOwner::Dictation(8),
                 sample_rate: WHISPER_SAMPLE_RATE,
-                device_name: "stale".to_string(),
             }))
             .unwrap();
         // The cancel response is a FIFO barrier proving the stale Ready event
@@ -1658,6 +1844,134 @@ mod tests {
             .any(|(_, event)| *event == AudioLifecycleEvent::Ready));
         gate.open();
         wait_until("stale-generation attempt did not finish", || {
+            !supervisor.public.is_active()
+        });
+        shutdown(&supervisor);
+    }
+
+    #[test]
+    fn empty_first_buffer_event_cannot_enter_recording() {
+        let (supervisor, gate, _, sink, active_flags) =
+            harness(AudioInitPhase::StreamPlay, SupervisorConfig::default());
+        let owner = AudioOwner::Dictation(10);
+        assert_eq!(start(&supervisor, owner).recv().unwrap(), Ok(()));
+        supervisor
+            .sender
+            .send(SupervisorMessage::Worker(AudioWorkerEvent::FirstBuffer {
+                owner,
+                sample_rate: WHISPER_SAMPLE_RATE,
+            }))
+            .unwrap();
+        assert_eq!(cancel(&supervisor, owner).recv().unwrap(), Ok(true));
+        assert!(!active_flags.lock().unwrap()[0].load(Ordering::SeqCst));
+        assert!(!sink
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(_, event)| *event == AudioLifecycleEvent::Ready));
+        gate.open();
+        wait_until("empty-buffer attempt did not exit", || {
+            !supervisor.public.is_active()
+        });
+        shutdown(&supervisor);
+    }
+
+    #[test]
+    fn first_buffer_enqueued_before_stop_returns_retained_pcm_exactly_once() {
+        let release_spawn = Gate::closed();
+        let (first_buffer_sender, first_buffer_receiver) = mpsc::channel();
+        let expected = vec![0.25, -0.5, 0.75];
+        let supervisor = spawn_supervisor(
+            Arc::new(OrderedReadyFactory {
+                first_buffer_enqueued: first_buffer_sender,
+                release_spawn: release_spawn.clone(),
+                samples: expected.clone(),
+            }),
+            Arc::new(RecordingSink::default()),
+            SupervisorConfig::default(),
+        );
+        let owner = AudioOwner::Dictation(70);
+        let start_response = start(&supervisor, owner);
+        first_buffer_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("worker did not append and enqueue its first buffer");
+
+        let (stop_sender, stop_receiver) = mpsc::channel();
+        supervisor
+            .sender
+            .send(SupervisorMessage::Stop {
+                owner: Some(owner),
+                response: stop_sender,
+            })
+            .unwrap();
+        release_spawn.open();
+
+        assert_eq!(start_response.recv().unwrap(), Ok(()));
+        assert_eq!(stop_receiver.recv().unwrap(), Ok(expected));
+        wait_until("stopped worker did not finish", || {
+            !supervisor.public.is_active()
+        });
+
+        let (second_stop_sender, second_stop_receiver) = mpsc::channel();
+        supervisor
+            .sender
+            .send(SupervisorMessage::Stop {
+                owner: Some(owner),
+                response: second_stop_sender,
+            })
+            .unwrap();
+        assert_eq!(second_stop_receiver.recv().unwrap(), Ok(Vec::new()));
+        shutdown(&supervisor);
+    }
+
+    #[test]
+    fn first_buffer_enqueued_before_deadline_wins_the_deadline_race() {
+        let release_spawn = Gate::closed();
+        let (first_buffer_sender, first_buffer_receiver) = mpsc::channel();
+        let sink = Arc::new(RecordingSink::default());
+        let supervisor = spawn_supervisor(
+            Arc::new(OrderedReadyFactory {
+                first_buffer_enqueued: first_buffer_sender,
+                release_spawn: release_spawn.clone(),
+                samples: vec![0.5],
+            }),
+            sink.clone(),
+            SupervisorConfig::default(),
+        );
+        let owner = AudioOwner::Dictation(71);
+        let start_response = start(&supervisor, owner);
+        first_buffer_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("worker did not append and enqueue its first buffer");
+
+        let (deadline_sender, deadline_receiver) = mpsc::channel();
+        supervisor
+            .sender
+            .send(SupervisorMessage::CheckDeadlines {
+                elapsed: HARD_INITIALIZATION_DEADLINE + Duration::from_secs(1),
+                response: deadline_sender,
+            })
+            .unwrap();
+        release_spawn.open();
+
+        assert_eq!(start_response.recv().unwrap(), Ok(()));
+        deadline_receiver.recv().unwrap();
+        assert!(supervisor.public.is_recording_for(owner));
+        assert!(!sink.events.lock().unwrap().iter().any(|(_, event)| {
+            matches!(event, AudioLifecycleEvent::InitializationFailed { .. })
+        }));
+
+        let (stop_sender, stop_receiver) = mpsc::channel();
+        supervisor
+            .sender
+            .send(SupervisorMessage::Stop {
+                owner: Some(owner),
+                response: stop_sender,
+            })
+            .unwrap();
+        assert_eq!(stop_receiver.recv().unwrap(), Ok(vec![0.5]));
+        wait_until("deadline-race worker did not finish", || {
             !supervisor.public.is_active()
         });
         shutdown(&supervisor);
@@ -1704,6 +2018,128 @@ mod tests {
             });
             shutdown(&supervisor);
         }
+    }
+
+    #[test]
+    fn play_success_without_callback_fails_as_first_buffer_timeout() {
+        let sink = Arc::new(RecordingSink::default());
+        let (phase_sender, phase_receiver) = mpsc::channel();
+        let supervisor = spawn_supervisor(
+            Arc::new(NoCallbackFactory {
+                first_buffer_wait_entered: phase_sender,
+            }),
+            sink.clone(),
+            SupervisorConfig::default(),
+        );
+        let owner = AudioOwner::Dictation(80);
+        assert_eq!(start(&supervisor, owner).recv().unwrap(), Ok(()));
+        phase_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("worker never entered the explicit first-buffer wait phase");
+        check_deadlines(
+            &supervisor,
+            HARD_INITIALIZATION_DEADLINE + Duration::from_secs(1),
+        );
+        assert!(sink.events.lock().unwrap().iter().any(|(_, event)| {
+            matches!(
+                event,
+                AudioLifecycleEvent::InitializationFailed {
+                    kind: AudioFailureKind::FirstBufferTimeout,
+                    ..
+                }
+            )
+        }));
+        assert!(
+            !sink
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, event)| *event == AudioLifecycleEvent::Ready),
+            "play success cannot become Recording without retained PCM"
+        );
+        wait_until("no-callback worker did not exit after timeout", || {
+            !supervisor.public.is_active()
+        });
+        shutdown(&supervisor);
+    }
+
+    #[test]
+    fn runtime_cpal_failure_reaches_supervisor_as_content_free_kind() {
+        let sink = Arc::new(RecordingSink::default());
+        let supervisor = spawn_supervisor(
+            Arc::new(RuntimeFailureFactory),
+            sink.clone(),
+            SupervisorConfig::default(),
+        );
+        let owner = AudioOwner::Transform(81);
+        assert_eq!(start(&supervisor, owner).recv().unwrap(), Ok(()));
+        wait_until("runtime failure did not reach lifecycle sink", || {
+            sink.events.lock().unwrap().iter().any(|(_, event)| {
+                matches!(
+                    event,
+                    AudioLifecycleEvent::InitializationFailed {
+                        kind: AudioFailureKind::DeviceBusy,
+                        ..
+                    }
+                )
+            })
+        });
+        wait_until("runtime-failed worker did not exit", || {
+            !supervisor.public.is_active()
+        });
+        shutdown(&supervisor);
+    }
+
+    #[test]
+    fn dictation_and_transform_share_system_default_and_explicit_id_contracts() {
+        let specs = Arc::new(Mutex::new(Vec::new()));
+        let supervisor = spawn_supervisor(
+            Arc::new(SpecCaptureFactory {
+                specs: Arc::clone(&specs),
+            }),
+            Arc::new(RecordingSink::default()),
+            SupervisorConfig::default(),
+        );
+        for (owner, device_id) in [
+            (AudioOwner::Dictation(90), None),
+            (AudioOwner::Transform(90), None),
+            (
+                AudioOwner::Dictation(91),
+                Some("raw-coreaudio-uid".to_string()),
+            ),
+            (
+                AudioOwner::Transform(91),
+                Some("raw-coreaudio-uid".to_string()),
+            ),
+        ] {
+            assert_eq!(
+                start_with_device(&supervisor, owner, device_id)
+                    .recv()
+                    .unwrap(),
+                Ok(())
+            );
+            assert_eq!(cancel(&supervisor, owner).recv().unwrap(), Ok(true));
+            wait_until("spec-capture worker did not exit", || {
+                !supervisor.public.is_active()
+            });
+        }
+        assert_eq!(
+            *specs.lock().unwrap(),
+            vec![
+                (AudioOwner::Dictation(90), None),
+                (AudioOwner::Transform(90), None),
+                (
+                    AudioOwner::Dictation(91),
+                    Some("raw-coreaudio-uid".to_string())
+                ),
+                (
+                    AudioOwner::Transform(91),
+                    Some("raw-coreaudio-uid".to_string())
+                ),
+            ]
+        );
+        shutdown(&supervisor);
     }
 
     #[test]
@@ -1763,7 +2199,7 @@ mod tests {
             response_receiver
                 .recv_timeout(Duration::from_secs(1))
                 .unwrap(),
-            Ok(Vec::new())
+            Ok(vec![0.25])
         );
         wait_until("stopping worker was not joined", || {
             !supervisor.public.is_active()

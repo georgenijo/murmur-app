@@ -46,7 +46,7 @@ hound = "3.5"
 symphonia = { version = "0.5", default-features = false, features = ["wav", "pcm", "mp3", "isomp4", "aac", "alac"] }
 dirs = "5"
 uuid = { version = "1", features = ["v4"] }
-cpal = "0.15"
+cpal = "=0.18.1"
 rdev = { git = "https://github.com/georgenijo/rdev", rev = "9f510e406327b797eaf2acdc30adcda3dc1e1bb3", features = ["macos_keyboard_only", "macos_no_modifier_event_name", "macos_test_force_tap_timeout"] }
 memory-stats = "1"
 reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls"] }

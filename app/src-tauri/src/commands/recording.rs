@@ -715,8 +715,12 @@ async fn run_transcription_pipeline(
     // Pre-VAD signal level logging for mic diagnosis
     let rms = audio::compute_rms(samples);
     let peak = audio::compute_peak(samples);
-    let device = audio::last_device_name().unwrap_or_else(|| "unknown".to_string());
-    tracing::info!(target: "pipeline", "audio rms={:.4} peak={:.4} (device={})", rms, peak, device);
+    tracing::info!(
+        target: "pipeline",
+        rms,
+        peak,
+        "captured audio signal summary"
+    );
 
     // Checkpoint 1: cancelled before VAD?
     if app_state.is_cancelled(recording_id) {
@@ -2167,8 +2171,8 @@ pub fn clear_ide_context(
 /// Receive generation-scoped lifecycle notifications from the app-lifetime
 /// audio supervisor. The supervisor owns Core Audio and thread teardown; this
 /// bridge owns the dictation state/event/performance contract.
-pub(crate) fn handle_audio_lifecycle(
-    app_handle: tauri::AppHandle,
+pub(crate) fn handle_audio_lifecycle<R: tauri::Runtime>(
+    app_handle: tauri::AppHandle<R>,
     recording_id: u64,
     event: AudioLifecycleEvent,
 ) {
@@ -2228,7 +2232,10 @@ pub(crate) fn handle_audio_lifecycle(
                     "reason": reason.as_str(),
                 }),
             );
-            if reason != AudioCancelReason::HardDeadline {
+            if !matches!(
+                reason,
+                AudioCancelReason::HardDeadline | AudioCancelReason::RuntimeFailure
+            ) {
                 let _ = state.performance.complete(
                     &RunCorrelationV1::Dictation { recording_id },
                     RunOutcomeV1::Cancelled {
@@ -2246,7 +2253,7 @@ pub(crate) fn handle_audio_lifecycle(
                 );
             }
         }
-        AudioLifecycleEvent::InitializationFailed { error } => {
+        AudioLifecycleEvent::InitializationFailed { error, kind } => {
             if !is_current() {
                 return;
             }
@@ -2266,6 +2273,7 @@ pub(crate) fn handle_audio_lifecycle(
                 serde_json::json!({
                     "recordingId": recording_id,
                     "error": error,
+                    "errorKind": kind.as_str(),
                 }),
             );
         }
@@ -2466,7 +2474,7 @@ pub async fn start_native_recording(
     };
     tracing::info!(
         target: "pipeline",
-        device = device_name.as_deref().unwrap_or("system_default"),
+        device_selection = if device_name.is_some() { "explicit" } else { "system_default" },
         recording_id = rid,
         origin,
         "start_native_recording"
@@ -2774,10 +2782,10 @@ pub async fn stop_native_recording(
 
 /// Cancel an in-progress recording or transcription.
 ///
-/// - **Starting**: requests cancellation, briefly reports Recovering, detaches
-///   the owned audio thread for asynchronous cleanup, and returns to Idle.
-/// - **Recording**: follows the same Recovering-to-Idle transition and detached
-///   cleanup; captured samples are discarded.
+/// - **Starting**: requests cancellation and reports Recovering while retaining
+///   exclusive ownership until the audio thread exits, then returns to Idle.
+/// - **Recording**: follows the same strict Recovering-to-Idle ownership
+///   transition; captured samples are discarded.
 /// - **Processing**: marks the current recording_id as cancelled so the
 ///   pipeline discards its result at the next checkpoint; immediately
 ///   emits idle status so the UI resets without waiting for whisper.
@@ -3207,6 +3215,7 @@ mod tests {
     use super::*;
     use std::collections::VecDeque;
     use std::path::PathBuf;
+    use tauri::Listener;
 
     #[test]
     fn model_preparation_starts_at_accepted_start_and_stops_during_recovery() {
@@ -3219,6 +3228,100 @@ mod tests {
         assert!(!status_allows_model_preparation(
             DictationStatus::Processing
         ));
+    }
+
+    #[test]
+    fn runtime_failure_bridge_emits_recovery_before_failure_and_records_one_failed_run() {
+        let root = tempfile::tempdir().expect("performance diagnostics temp dir");
+        let performance = crate::performance_metrics::PerformanceMetrics::default();
+        performance
+            .initialize(root.path().to_path_buf(), None)
+            .expect("initialize performance diagnostics");
+
+        let recording_id = 406;
+        performance
+            .begin_dictation(recording_id, Vec::new())
+            .expect("begin dictation diagnostic");
+
+        let app_state = AppState::default();
+        app_state.recording_id.store(recording_id, Ordering::SeqCst);
+        app_state.dictation.lock_or_recover().status = DictationStatus::Recording;
+
+        let app = tauri::test::mock_builder()
+            .manage(State {
+                app_state,
+                benchmark: Arc::new(crate::benchmark::BenchmarkCoordinator::new()),
+                knowledge: crate::knowledge_store::KnowledgeStore::default(),
+                correct_and_teach: crate::correct_and_teach::CorrectAndTeachState::default(),
+                performance: performance.clone(),
+                transform_diagnostics: crate::transform_diagnostics::TransformDiagnostics::default(
+                ),
+                notch_info: std::sync::Mutex::new(None),
+                display_snapshot: std::sync::Mutex::new(None),
+                transform_popover_anchor: std::sync::Mutex::new(None),
+                transform_main_was_visible: std::sync::Mutex::new(None),
+                transform_runtime: Arc::new(crate::llm_sidecar::LlmSidecar::new()),
+            })
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build mock Tauri app");
+        let app_handle = app.handle().clone();
+
+        let emitted = Arc::new(std::sync::Mutex::new(Vec::new()));
+        for event_name in ["audio-recovery-started", "recording-initialization-failed"] {
+            let emitted = Arc::clone(&emitted);
+            app_handle.listen_any(event_name, move |_| {
+                emitted
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(event_name);
+            });
+        }
+
+        handle_audio_lifecycle(
+            app_handle.clone(),
+            recording_id,
+            AudioLifecycleEvent::Recovering {
+                reason: AudioCancelReason::RuntimeFailure,
+            },
+        );
+        assert!(
+            performance
+                .list(10)
+                .expect("list runs after recovery")
+                .runs
+                .is_empty(),
+            "runtime recovery must not prematurely persist a cancelled terminal"
+        );
+
+        handle_audio_lifecycle(
+            app_handle,
+            recording_id,
+            AudioLifecycleEvent::InitializationFailed {
+                error: "typed runtime failure".to_string(),
+                kind: audio::AudioFailureKind::StreamInvalidated,
+            },
+        );
+
+        assert_eq!(
+            *emitted
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            vec!["audio-recovery-started", "recording-initialization-failed"],
+            "the production bridge must preserve recovery-before-failure order"
+        );
+        let runs = performance.list(10).expect("list completed runs").runs;
+        assert_eq!(
+            runs.len(),
+            1,
+            "exactly one terminal diagnostic is persisted"
+        );
+        assert_eq!(
+            runs[0].outcome,
+            RunOutcomeV1::Failed {
+                stage: PerformanceStageV1::CaptureFinalization,
+                error_code: StableRunErrorV1::AudioCaptureFailed,
+            }
+        );
     }
 
     struct RetryTestBackend {

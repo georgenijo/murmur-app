@@ -41,7 +41,7 @@ Hotkey event (rdev listener thread)
 Frontend hook (useHoldDownToggle / useDoubleTapToggle / useCombinedToggle)
     |
 invoke('start_native_recording')
-    |-- cpal capture begins
+    |-- CPAL 0.18 capture starts; first retained nonempty callback establishes readiness
     |-- immutable DictationContextSnapshot resolved (global settings + per-app profile)
     +-- spawn_model_preparation() warms the model *concurrently with speech*
     |
@@ -134,8 +134,8 @@ glass surfaces.
 |--------|---------|
 | `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 110 registered commands, setup, tray, run loop |
 | `alloc.rs` | Custom macOS malloc zone ("RustHeapZone") so Rust heap is accounted separately from whisper.cpp's FFI heap |
-| `audio.rs` | cpal capture worker, phase telemetry, mono mix, 16kHz resample, `audio-level` emission |
-| `audio_lifecycle.rs` | App-lifetime single-owner supervisor; async start, generation cancellation, deadlines, callback quarantine, and background reaping of blocked workers |
+| `audio.rs` | CPAL 0.18 capture worker, stable device-ID selection, typed error/phase telemetry, first-buffer readiness, mono mix, 16kHz resample, `audio-level` emission |
+| `audio_lifecycle.rs` | App-lifetime single-owner supervisor; async start, generation cancellation, deadlines, generation-gated publication, and strict worker ownership through exit |
 | `audio_decode.rs` | Decoding imported audio files for `transcribe_file` |
 | `benchmark.rs` | Performance Lab: fixture corpus, scoring (raw/normalized/delivered WER), reports |
 | `cleanup.rs` | Filler removal and capitalization |

@@ -43,7 +43,7 @@ For Rust → frontend events see [events.md](events.md). For the hooks that call
 | `request_microphone_permission` | — | `Result<(), String>` | Opens the Microphone privacy pane. |
 | `reset_microphone_permission` | — | `Result<(), String>` | Clears a stale microphone TCC entry. |
 | `open_system_preferences` | — | `Result<(), String>` | Opens System Settings to the Microphone pane. |
-| `list_audio_devices` | — | `Result<Vec<String>, String>` | Input device names via cpal. |
+| `list_audio_devices` | — | `Result<Vec<AudioDeviceDescriptor>, String>` | CPAL input descriptors: backend-native stable `id` plus presentation-only `name`. |
 
 ## Keyboard (`commands/keyboard.rs`)
 
