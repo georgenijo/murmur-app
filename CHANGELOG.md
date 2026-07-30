@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.23.6] - 2026-07-30
+
+### Fixed
+
+- Development builds (`tauri dev`) no longer upload diagnostic logs (#397).
+- Restored auto-updater release manifests; v0.23.3-v0.23.5 were published without them and could not be discovered by the updater.
+
 ## [0.23.5] - 2026-07-30
 
 ### Added
