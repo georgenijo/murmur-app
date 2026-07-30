@@ -10,6 +10,7 @@ from scripts.capture_helper_evidence import (
     ALLOWED_PROBE_OUTCOMES,
     CAPTURE_ENTITLEMENTS,
     EvidenceError,
+    PROBE_OUTCOME_CONTRACTS,
     structured_signature_evidence,
     validate_probe_evidence,
 )
@@ -365,12 +366,29 @@ class ReleaseArtifactTests(unittest.TestCase):
         self.assertEqual(
             validate_probe_evidence(self.CAPTURE_PROBE, 0), self.CAPTURE_PROBE
         )
-        for outcome in ALLOWED_PROBE_OUTCOMES:
-            with self.subTest(allowed_outcome=outcome):
-                validate_probe_evidence(
-                    {**self.CAPTURE_PROBE, "outcome": outcome},
-                    0 if outcome == "ok" else 2,
-                )
+        self.assertEqual(set(PROBE_OUTCOME_CONTRACTS), set(ALLOWED_PROBE_OUTCOMES))
+        for outcome, contracts in PROBE_OUTCOME_CONTRACTS.items():
+            for phase, callback_seen, termination, exit_code, exit_signal in contracts:
+                with self.subTest(
+                    allowed_outcome=outcome,
+                    phase=phase,
+                    callback_seen=callback_seen,
+                ):
+                    payload = {
+                        **self.CAPTURE_PROBE,
+                        "outcome": outcome,
+                        "last_phase": phase,
+                        "first_callback_ms": 8 if callback_seen else None,
+                        "termination": termination,
+                        "exit_code": exit_code,
+                        "exit_signal": exit_signal,
+                    }
+                    self.assertEqual(
+                        validate_probe_evidence(
+                            payload, 0 if outcome == "ok" else 2
+                        ),
+                        payload,
+                    )
         for outcome in (
             "signature_invalid",
             "spawn_failed",
@@ -407,6 +425,92 @@ class ReleaseArtifactTests(unittest.TestCase):
                 with self.assertRaises(EvidenceError):
                     validate_probe_evidence(payload, probe_exit)
 
+    def test_capture_probe_rejects_cross_field_contract_mutations(self) -> None:
+        for outcome, contracts in PROBE_OUTCOME_CONTRACTS.items():
+            for phase, callback_seen, termination, exit_code, exit_signal in contracts:
+                baseline = {
+                    **self.CAPTURE_PROBE,
+                    "outcome": outcome,
+                    "last_phase": phase,
+                    "first_callback_ms": 8 if callback_seen else None,
+                    "termination": termination,
+                    "exit_code": exit_code,
+                    "exit_signal": exit_signal,
+                }
+                mutations = (
+                    {**baseline, "last_phase": None},
+                    {
+                        **baseline,
+                        "first_callback_ms": None if callback_seen else 8,
+                    },
+                    {
+                        **baseline,
+                        "termination": "exited"
+                        if termination == "cooperative"
+                        else "cooperative",
+                    },
+                    {
+                        **baseline,
+                        "termination": "hard_kill",
+                        "exit_code": None,
+                        "exit_signal": 9,
+                    },
+                    {**baseline, "exit_code": 77},
+                )
+                for mutation in mutations:
+                    with self.subTest(outcome=outcome, mutation=mutation):
+                        with self.assertRaises(EvidenceError):
+                            validate_probe_evidence(
+                                mutation, 0 if outcome == "ok" else 2
+                            )
+
+    def test_capture_probe_rejects_reported_adversarial_combinations(self) -> None:
+        contradictions = (
+            (
+                {
+                    **self.CAPTURE_PROBE,
+                    "last_phase": None,
+                    "first_callback_ms": None,
+                    "termination": "hard_kill",
+                    "exit_code": None,
+                    "exit_signal": 9,
+                },
+                0,
+            ),
+            (
+                {
+                    **self.CAPTURE_PROBE,
+                    "outcome": "no_first_callback",
+                    "first_callback_ms": 8,
+                },
+                2,
+            ),
+            (
+                {
+                    **self.CAPTURE_PROBE,
+                    "outcome": "permission_denied",
+                    "last_phase": "active",
+                    "termination": "exited",
+                },
+                2,
+            ),
+            (
+                {
+                    **self.CAPTURE_PROBE,
+                    "outcome": "callback_stalled",
+                    "last_phase": None,
+                    "first_callback_ms": None,
+                    "termination": "exited",
+                    "exit_code": 77,
+                },
+                2,
+            ),
+        )
+        for payload, probe_exit in contradictions:
+            with self.subTest(payload=payload):
+                with self.assertRaisesRegex(EvidenceError, "contract"):
+                    validate_probe_evidence(payload, probe_exit)
+
     def test_signature_evidence_allowlists_fields_and_drops_runner_paths(self) -> None:
         team_id = "ABCDE12345"
         runner_path = "/Users/runner/work/private/repo/murmur-capture-helper"
@@ -420,6 +524,8 @@ class ReleaseArtifactTests(unittest.TestCase):
             f"Executable={runner_path}\n"
             'designated => identifier "com.localdictation.capture-helper" '
             "and anchor apple generic "
+            "and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ "
+            "and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ "
             f'and certificate leaf[subject.OU] = "{team_id}"'
         )
         evidence = structured_signature_evidence(
@@ -427,6 +533,7 @@ class ReleaseArtifactTests(unittest.TestCase):
         )
         serialized = json.dumps(evidence)
         self.assertNotIn(runner_path, serialized)
+        self.assertNotIn("anchor apple generic", serialized)
         self.assertEqual(
             set(evidence),
             {
@@ -435,11 +542,35 @@ class ReleaseArtifactTests(unittest.TestCase):
                 "team_id",
                 "architecture",
                 "hardened_runtime",
-                "designated_requirement",
+                "designated_requirement_profile",
+                "designated_requirement_sha256",
                 "entitlement_sha256",
                 "entitlement_keys",
             },
         )
+
+    def test_signature_evidence_rejects_extra_path_bearing_requirement_clause(
+        self,
+    ) -> None:
+        team_id = "ABCDE12345"
+        runner_path = "/Users/runner/work/private/repo"
+        details = (
+            "Identifier=com.localdictation.capture-helper\n"
+            f"TeamIdentifier={team_id}\n"
+            "flags=0x10000(runtime)\n"
+        )
+        requirement = (
+            'designated => identifier "com.localdictation.capture-helper" '
+            "and anchor apple generic "
+            "and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ "
+            "and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ "
+            f'and certificate leaf[subject.OU] = "{team_id}" '
+            f'and info["trace"] = "{runner_path}"'
+        )
+        with self.assertRaisesRegex(EvidenceError, "exact canonical"):
+            structured_signature_evidence(
+                details, requirement, CAPTURE_ENTITLEMENTS, "arm64"
+            )
 
 
 if __name__ == "__main__":

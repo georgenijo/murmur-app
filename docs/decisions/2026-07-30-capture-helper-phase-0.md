@@ -56,9 +56,13 @@ The prototype is reachable only through the explicit
 transcription, device selection, and transform capture remain on the existing
 in-process path. Issue #409 owns production routing.
 
-The default probe observes for five seconds. Interactive revocation testing can
-use `--capture-helper-probe --observe-seconds <1..300>`; parsing is exact and
-the upper bound is enforced before the helper starts.
+The default probe observes the active callback phase for five seconds. Its
+separate five-second handshake bound must first accept the complete
+Enumeration → Stream Open → Ready → Awaiting First Callback → First Callback →
+Active sequence, so launch latency never shortens the requested observation.
+Interactive revocation testing can use
+`--capture-helper-probe --observe-seconds <1..300>`; parsing is exact and the
+upper bound is enforced before the helper starts.
 
 The child-management and runtime signature-validation primitives are generic.
 The local-LLM sidecar now uses the same signature gate; a later focused

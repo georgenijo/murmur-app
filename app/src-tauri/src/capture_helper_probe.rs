@@ -158,16 +158,8 @@ impl HelperProtocol {
         }
     }
 
-    fn ready(&self) -> bool {
-        matches!(
-            self.state,
-            HelperProtocolState::AwaitAwaitingFirstCallback
-                | HelperProtocolState::AwaitFirstCallback
-                | HelperProtocolState::AwaitActive
-                | HelperProtocolState::Active
-                | HelperProtocolState::Stopping
-                | HelperProtocolState::Stopped
-        )
+    fn awaiting_first_callback(&self) -> bool {
+        self.state == HelperProtocolState::AwaitFirstCallback
     }
 
     fn begin_cancel(&mut self) {
@@ -365,19 +357,24 @@ impl CaptureProbeSupervisor {
         });
 
         let handshake_deadline = Instant::now() + self.plan.handshake_timeout();
-        let observe_deadline = Instant::now() + self.plan.observe_for();
+        let mut observe_deadline = None;
         let mut last_phase = None;
         let mut first_callback_ms = None;
+        let mut active_seen = false;
+        let mut timed_out_waiting_for_callback = false;
         let mut protocol = HelperProtocol::new();
         let mut result = Ok(());
-        while Instant::now() < observe_deadline {
-            let phase_deadline = if protocol.ready() {
-                observe_deadline
-            } else {
-                handshake_deadline.min(observe_deadline)
-            };
+        loop {
+            let phase_deadline = observe_deadline.unwrap_or(handshake_deadline);
             if Instant::now() >= phase_deadline {
-                if !protocol.ready() {
+                if observe_deadline.is_none() {
+                    if protocol.awaiting_first_callback() {
+                        timed_out_waiting_for_callback = true;
+                    } else {
+                        result = Err(CaptureProbeError::HandshakeTimeout);
+                    }
+                }
+                if !active_seen && first_callback_ms.is_some() {
                     result = Err(CaptureProbeError::HandshakeTimeout);
                 }
                 break;
@@ -386,7 +383,13 @@ impl CaptureProbeSupervisor {
                 .recv_timeout((phase_deadline - Instant::now()).min(Duration::from_millis(50)))
             {
                 Ok(HelperEvent::Frame(frame)) => match protocol.accept(frame, &nonce) {
-                    Ok(AcceptedFrame::Phase(phase)) => last_phase = Some(phase),
+                    Ok(AcceptedFrame::Phase(phase)) => {
+                        last_phase = Some(phase);
+                        if phase == CapturePhase::Active {
+                            active_seen = true;
+                            observe_deadline = Some(Instant::now() + self.plan.observe_for());
+                        }
+                    }
                     Ok(AcceptedFrame::Ready | AcceptedFrame::Health) => {}
                     Ok(AcceptedFrame::FirstCallback(callback_latency_ms)) => {
                         first_callback_ms = Some(callback_latency_ms)
@@ -488,8 +491,8 @@ impl CaptureProbeSupervisor {
         ownership.take();
 
         let outcome = match result {
-            Ok(()) if protocol.ready() && first_callback_ms.is_some() => "ok",
-            Ok(()) if protocol.ready() => "no_first_callback",
+            Ok(()) if timed_out_waiting_for_callback => "no_first_callback",
+            Ok(()) if active_seen && first_callback_ms.is_some() => "ok",
             Ok(()) => CaptureProbeError::HandshakeTimeout.as_str(),
             Err(error) => error.as_str(),
         };

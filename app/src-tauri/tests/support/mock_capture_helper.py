@@ -103,9 +103,18 @@ def main() -> None:
     if scenario == "open_block":
         block_forever()
     write_frame(base("ready", nonce))
+    if scenario == "ready_without_awaiting":
+        block_forever()
+    if scenario == "first_callback_without_awaiting":
+        write_frame(base("firstCallback", nonce, callbackLatencyMs=1))
+        block_forever()
     write_frame(base("phase", nonce, phase="awaitingFirstCallback"))
     if scenario != "starts_without_callbacks":
         write_frame(base("firstCallback", nonce, callbackLatencyMs=1))
+        if scenario == "missing_active":
+            block_forever()
+        if scenario == "delayed_active":
+            time.sleep(0.25)
         write_frame(base("phase", nonce, phase="active"))
     if scenario == "phase_regression":
         write_frame(base("phase", nonce, phase="enumeration"))

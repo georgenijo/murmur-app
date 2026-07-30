@@ -32,18 +32,55 @@ PROBE_FIELDS = {
     "process_group_empty",
     "audio_content_retained",
 }
-ALLOWED_PROBE_OUTCOMES = {
-    "ok",
-    "no_first_callback",
-    "permission_denied",
-    "no_input_device",
-    "enumeration_failed",
-    "configuration_failed",
-    "stream_open_failed",
-    "stream_start_failed",
-    "stream_error",
-    "callback_stalled",
+ProbeContract = tuple[str, bool, str, int | None, int | None]
+PROBE_OUTCOME_CONTRACTS: dict[str, frozenset[ProbeContract]] = {
+    # Successful observation always reaches the first callback and then the
+    # helper's cooperative stopping phase.
+    "ok": frozenset({("stopping", True, "cooperative", 0, None)}),
+    # A deliberately shortened observation may cancel before the helper's
+    # three-second callback-stall deadline.
+    "no_first_callback": frozenset(
+        {("stopping", False, "cooperative", 0, None)}
+    ),
+    # Hardware/TCC failures are emitted after their named phase and the helper
+    # returns Ok after recording the failure frame.
+    "permission_denied": frozenset(
+        {
+            ("enumeration", False, "exited", 0, None),
+            ("stream_open", False, "exited", 0, None),
+        }
+    ),
+    "no_input_device": frozenset(
+        {("enumeration", False, "exited", 0, None)}
+    ),
+    "enumeration_failed": frozenset(
+        {("enumeration", False, "exited", 0, None)}
+    ),
+    "configuration_failed": frozenset(
+        {("stream_open", False, "exited", 0, None)}
+    ),
+    "stream_open_failed": frozenset(
+        {("stream_open", False, "exited", 0, None)}
+    ),
+    "stream_start_failed": frozenset(
+        {("stream_open", False, "exited", 0, None)}
+    ),
+    # Runtime failures may happen before the first callback or after active
+    # capture. Callback presence must agree with the last recorded phase.
+    "stream_error": frozenset(
+        {
+            ("awaiting_first_callback", False, "exited", 0, None),
+            ("active", True, "exited", 0, None),
+        }
+    ),
+    "callback_stalled": frozenset(
+        {
+            ("awaiting_first_callback", False, "exited", 0, None),
+            ("active", True, "exited", 0, None),
+        }
+    ),
 }
+ALLOWED_PROBE_OUTCOMES = frozenset(PROBE_OUTCOME_CONTRACTS)
 ALLOWED_PHASES = {
     None,
     "enumeration",
@@ -65,6 +102,38 @@ def _nonnegative_int(value: object, label: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise EvidenceError(f"{label} must be a non-negative integer")
     return value
+
+
+def _designated_requirement_profile(
+    requirement: str, identifier: str, team_id: str
+) -> tuple[str, str]:
+    """Validate a complete known-safe requirement and return normalized facts."""
+
+    normalized = " ".join(requirement.split())
+    identity = (
+        rf'identifier\s+"{re.escape(identifier)}"\s+and\s+'
+        r"anchor\s+apple\s+generic"
+    )
+    team = (
+        r"certificate\s+leaf\[subject\.OU\]\s*=\s*"
+        rf'(?:{re.escape(team_id)}|"{re.escape(team_id)}")'
+    )
+    profiles = {
+        "developer_id_application": re.compile(
+            rf"{identity}\s+and\s+"
+            r"certificate\s+1\[field\.1\.2\.840\.113635\.100\.6\.2\.6\]"
+            r"(?:\s+/\*\s*exists\s*\*/)?\s+and\s+"
+            r"certificate\s+leaf\[field\.1\.2\.840\.113635\.100\.6\.1\.13\]"
+            r"(?:\s+/\*\s*exists\s*\*/)?\s+and\s+"
+            rf"{team}"
+        )
+    }
+    for profile, pattern in profiles.items():
+        if pattern.fullmatch(normalized):
+            return profile, normalized
+    raise EvidenceError(
+        "capture-helper designated requirement is not an exact canonical profile"
+    )
 
 
 def validate_probe_evidence(payload: object, probe_exit: int) -> dict[str, Any]:
@@ -104,6 +173,17 @@ def validate_probe_evidence(payload: object, probe_exit: int) -> dict[str, Any]:
         raise EvidenceError("capture-helper process group must be confirmed empty")
     if payload["audio_content_retained"] is not False:
         raise EvidenceError("capture-helper evidence must prove no retained audio")
+    observed_contract: ProbeContract = (
+        payload["last_phase"],
+        first_callback is not None,
+        payload["termination"],
+        exit_code,
+        exit_signal,
+    )
+    if observed_contract not in PROBE_OUTCOME_CONTRACTS[outcome]:
+        raise EvidenceError(
+            "capture-helper outcome contradicts phase, callback, or exit contract"
+        )
     expected_exit = 0 if outcome == "ok" else 2
     if probe_exit != expected_exit:
         raise EvidenceError(
@@ -140,13 +220,9 @@ def structured_signature_evidence(
         re.MULTILINE,
     )
     requirement = requirement_match.group(1).strip() if requirement_match else ""
-    required_fragments = (
-        f'identifier "{CAPTURE_HELPER_IDENTIFIER}"',
-        "anchor apple generic",
-        f'certificate leaf[subject.OU] = "{team_id}"',
+    requirement_profile, normalized_requirement = _designated_requirement_profile(
+        requirement, CAPTURE_HELPER_IDENTIFIER, team_id
     )
-    if not requirement or any(fragment not in requirement for fragment in required_fragments):
-        raise EvidenceError("capture-helper designated requirement is not pinned")
 
     entitlement_bytes = plistlib.dumps(entitlements, sort_keys=True)
     return {
@@ -155,7 +231,10 @@ def structured_signature_evidence(
         "team_id": team_id,
         "architecture": "arm64",
         "hardened_runtime": True,
-        "designated_requirement": requirement,
+        "designated_requirement_profile": requirement_profile,
+        "designated_requirement_sha256": hashlib.sha256(
+            normalized_requirement.encode("utf-8")
+        ).hexdigest(),
         "entitlement_sha256": hashlib.sha256(entitlement_bytes).hexdigest(),
         "entitlement_keys": sorted(entitlements),
     }

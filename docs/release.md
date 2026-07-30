@@ -31,8 +31,10 @@ Each successful build uploads these 30-day artifacts:
 - `linux-release-<40-character-commit-sha>`
 - `capture-helper-tcc-evidence-<40-character-commit-sha>` (allowlisted,
   content-free structured signature facts and strictly validated
-  non-interactive probe evidence; raw path-bearing `codesign` output is never
-  uploaded; pair with the macOS artifact for the manual #407 TCC matrix)
+  non-interactive probe evidence whose outcome, last phase, callback presence,
+  termination kind, and exit status must form one valid probe contract; raw
+  path-bearing `codesign` output is never uploaded; pair with the macOS artifact
+  for the manual #407 TCC matrix)
 
 Release binaries retain the Tauri bundle-type marker (Cargo release stripping
 is disabled) so the updater can distinguish the deb and AppImage packages.

@@ -88,6 +88,7 @@ fn malformed_or_out_of_order_control_frames_fail_closed() {
         "truncated",
         "oversized",
         "ready_out_of_order",
+        "first_callback_without_awaiting",
         "duplicate_phase",
         "phase_regression",
     ] {
@@ -98,6 +99,44 @@ fn malformed_or_out_of_order_control_frames_fail_closed() {
         assert!(evidence.process_group_empty, "scenario={scenario}");
         assert!(!evidence.audio_content_retained);
     }
+}
+
+#[test]
+fn incomplete_handshakes_never_classify_as_success() {
+    let ready_only = supervisor("ready_without_awaiting").run().unwrap();
+    assert_eq!(ready_only.outcome, "handshake_timeout");
+    assert_eq!(ready_only.last_phase, Some("stream_open"));
+    assert_eq!(ready_only.first_callback_ms, None);
+    assert_eq!(ready_only.termination, "hard_kill");
+
+    let no_callback = supervisor("starts_without_callbacks").run().unwrap();
+    assert_eq!(no_callback.outcome, "no_first_callback");
+    assert_eq!(no_callback.last_phase, Some("awaiting_first_callback"));
+    assert_eq!(no_callback.first_callback_ms, None);
+    assert_eq!(no_callback.termination, "hard_kill");
+
+    let missing_active = supervisor("missing_active").run().unwrap();
+    assert_eq!(missing_active.outcome, "handshake_timeout");
+    assert_eq!(missing_active.last_phase, Some("awaiting_first_callback"));
+    assert_eq!(missing_active.first_callback_ms, Some(1));
+    assert_eq!(missing_active.termination, "hard_kill");
+}
+
+#[test]
+fn active_observation_window_starts_after_the_complete_handshake() {
+    let evidence = supervisor("delayed_active").run().unwrap();
+    assert_eq!(evidence.outcome, "ok");
+    assert_eq!(evidence.termination, "cooperative");
+    assert!(
+        evidence.elapsed_ms >= 650,
+        "active observation was shortened by handshake time: elapsed={}",
+        evidence.elapsed_ms
+    );
+    assert!(
+        evidence.elapsed_ms < 1_000,
+        "handshake plus observation exceeded the total bound: elapsed={}",
+        evidence.elapsed_ms
+    );
 }
 
 #[test]
