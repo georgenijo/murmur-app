@@ -42,6 +42,7 @@ Read these before working on a feature:
 - **[docs/features/vad.md](docs/features/vad.md)** — VAD speech filtering
 - **[docs/features/overlay.md](docs/features/overlay.md)** — Dynamic Island overlay
 - **[docs/features/log-viewer.md](docs/features/log-viewer.md)** — Structured event system and log viewer
+- **[docs/features/log-shipping.md](docs/features/log-shipping.md)** — Zero-config diagnostic log upload to central receiver
 - **[docs/features/auto-updater.md](docs/features/auto-updater.md)** — Auto-update system
 - **[docs/features/models.md](docs/features/models.md)** — Model management and download
 - **[docs/features/per-app-profiles.md](docs/features/per-app-profiles.md)** — Immutable per-recording context, profile precedence, privacy boundaries
@@ -100,6 +101,7 @@ Read these before working on a feature:
 | `transform_presets.rs` | Built-in spoken transform presets (Shorten/Bullets/…) |
 | `transform_diagnostics.rs` / `transform_trace.rs` | Per-pass records, consented captures, pass-scoped correlation |
 | `llm_sidecar.rs` | Host supervisor for signed local-LLM helper (no in-process llama) |
+| `log_shipper.rs` | Zero-config diagnostic log upload (tails events.jsonl → central ingest) |
 | `smart_formatting.rs` | Deterministic prose formatting and same-utterance backtracking |
 | `ide_context.rs` | Memory-only bounded IDE symbol and root-relative file index |
 | `injector.rs` | Clipboard (arboard) + auto-paste (CGEvent, osascript fallback) |

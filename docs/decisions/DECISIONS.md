@@ -6,6 +6,18 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 ---
 
+## 2026-07-30: Zero-config default-on diagnostic log shipping (PR #393)
+
+**Decision:** Every install ships its privacy-stripped `events.jsonl` to `https://georgenijo.com/murmur/ingest` (stdlib Python receiver + nginx on whoop-vm) with no setup, no UI, and no consent toggle. Installs are identified by a random UUID, never hostname. Opt-out is the `MURMUR_LOG_SHIPPER=off` env var only. The endpoint URL and bearer token are compile-time constants; the JSONL file is the retry queue (offset advances only on 2xx).
+
+**Rationale:** George wants "install the update, logs flow" for fleet machines and outside installs alike — any configuration step defeats the purpose. Rejected: PostHog/hosted log services (user logs in third-party custody contradicts the local-first pitch), Tailscale Funnel on a home box (uptime dependency; whoop-vm is already an always-on public origin), and a consent toggle (zero-setup requirement). README updated so "no data leaves your machine" claims are scoped to audio/transcriptions.
+
+**Status:** active
+
+**References:** PR #393; `docs/features/log-shipping.md`; `app/src-tauri/src/log_shipper.rs`; fleet secret `murmur-log-ingest-token`.
+
+---
+
 ## 2026-07-28: Appearance is a revisioned local semantic-token document (#377)
 
 **Decision:** Murmur themes the main and log-viewer webviews from a separate

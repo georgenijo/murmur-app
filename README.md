@@ -2,13 +2,14 @@
 
 # Murmur
 
-Privacy-first voice-to-text for macOS. Hold a key, speak, release — your words land in any app. No cloud, no subscriptions, no data leaves your machine.
+Privacy-first voice-to-text for macOS. Hold a key, speak, release — your words land in any app. No cloud, no subscriptions — audio and your words never leave your machine.
 
 Built with [Tauri 2](https://tauri.app/) (Rust + React), with local transcription through Core ML on the Apple Neural Engine, whisper.cpp on Metal, or sherpa-onnx on CPU.
 
 ## Features
 
-- **100% local** — transcription, text rewriting, and benchmarking all run on-device. Nothing leaves the machine
+- **100% local speech and text** — transcription, text rewriting, and benchmarking all run on-device. Audio and your words never leave the machine
+- **Anonymous diagnostics** — privacy-stripped event logs (timing, errors, pipeline stats — never audio or transcription text) upload to the maintainer for debugging, identified only by a random install ID. Launch with `MURMUR_LOG_SHIPPER=off` to disable
 - **Apple Neural Engine by default** — multilingual Parakeet v3 through Core ML for very low-latency transcription; other engines a click away
 - **Three recording modes** — Hold Down, Double-Tap, or Both (hold and double-tap on the same key)
 - **Clipboard-first output** — text always copied to the clipboard. Optional auto-paste into your focused app, plus optional transcript/audio file output

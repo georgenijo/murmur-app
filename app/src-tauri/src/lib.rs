@@ -21,6 +21,7 @@ mod injector;
 mod keyboard;
 mod knowledge_store;
 pub mod llm_sidecar;
+mod log_shipper;
 mod model_runtime;
 mod performance_metrics;
 mod platform;
@@ -357,6 +358,7 @@ pub fn run() {
         })
         .setup(|app| {
             telemetry::init(app.handle().clone());
+            log_shipper::start();
 
             let performance_root = app.path().app_data_dir()?.join("diagnostics");
             if let Err(error) = app
