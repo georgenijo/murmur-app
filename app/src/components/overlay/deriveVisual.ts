@@ -11,7 +11,10 @@ export type OverlayIndicator =
   | { kind: 'secureField' }
   | { kind: 'transformBusy' }
   | { kind: 'hotkeyMiss' }
+  | { kind: 'microphoneFailure' }
+  | { kind: 'starting'; slow: boolean }
   | { kind: 'recording' }
+  | { kind: 'recovering' }
   | { kind: 'processing' }
   | { kind: 'transforming' }
   | { kind: 'idle'; dimmed: boolean };
@@ -30,19 +33,12 @@ export interface OverlayVisual {
 }
 
 /**
- * Pure derivation of the overlay's top-bar visual state from status + the two
- * transient flash flags + global-disable. No React, no timers — this only
- * encodes "given these four inputs, what does the top bar look like," exactly
- * as the original ternary chain in OverlayWidget.tsx did:
+ * Pure derivation of the overlay's top-bar visual state from status, transient
+ * flashes, and global-disable. No React or timers live here.
  *
- *   showCancelled ? X : showHotkeyMiss ? ! : status==='recording' ? dot
- *     : status==='processing' ? spinner : mic (dimmed if disabled)
- *
- * Priority: cancelled > secure-field flash > transform-busy flash >
- * hotkey-miss > recording > processing > transforming > idle. (Since `status`
- * is a single enum value, recording and processing can never both be true, so
- * their relative order does not change behavior — only idle's position at the
- * end, after both, matters.)
+ * Priority: cancelled > secure-field flash > microphone failure >
+ * transform-busy flash > hotkey-miss > starting > recording > recovering >
+ * processing > transforming > idle.
  *
  * `transforming` and `showSecureField` (issue #312 PR-C2) are the transform
  * flow's overlay affordances: the "transforming…" indicator shown while
@@ -60,22 +56,33 @@ export function deriveVisual(
   transforming: boolean = false,
   showSecureField: boolean = false,
   showTransformBusy: boolean = false,
+  showMicrophoneFailure: boolean = false,
+  stillConnecting: boolean = false,
 ): OverlayVisual {
-  const indicator: OverlayIndicator = showCancelled
-    ? { kind: 'cancelled' }
-    : showSecureField
-      ? { kind: 'secureField' }
-      : showTransformBusy
-        ? { kind: 'transformBusy' }
-        : showHotkeyMiss
-          ? { kind: 'hotkeyMiss' }
-          : status === 'recording'
-            ? { kind: 'recording' }
-            : status === 'processing'
-              ? { kind: 'processing' }
-              : transforming
-                ? { kind: 'transforming' }
-                : { kind: 'idle', dimmed: disabled };
+  let indicator: OverlayIndicator;
+  if (showCancelled) {
+    indicator = { kind: 'cancelled' };
+  } else if (showSecureField) {
+    indicator = { kind: 'secureField' };
+  } else if (showMicrophoneFailure) {
+    indicator = { kind: 'microphoneFailure' };
+  } else if (showTransformBusy) {
+    indicator = { kind: 'transformBusy' };
+  } else if (showHotkeyMiss) {
+    indicator = { kind: 'hotkeyMiss' };
+  } else if (status === 'starting') {
+    indicator = { kind: 'starting', slow: stillConnecting };
+  } else if (status === 'recording') {
+    indicator = { kind: 'recording' };
+  } else if (status === 'recovering') {
+    indicator = { kind: 'recovering' };
+  } else if (status === 'processing') {
+    indicator = { kind: 'processing' };
+  } else if (transforming) {
+    indicator = { kind: 'transforming' };
+  } else {
+    indicator = { kind: 'idle', dimmed: disabled };
+  }
 
   return {
     indicator,

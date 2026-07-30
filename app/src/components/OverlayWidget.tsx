@@ -31,6 +31,7 @@ export function OverlayWidget() {
   // by the broadcast `transform-state-changed` event; the overlay is a
   // separate webview so it listens directly.
   const [transforming, setTransforming] = useState(false);
+  const [stillConnecting, setStillConnecting] = useState(false);
   const hotkeyMissFeedbackRef = useRef(false);
   const statusRef = useRef<DictationStatus>('idle');
 
@@ -60,7 +61,24 @@ export function OverlayWidget() {
     transforming,
     runtime.showSecureField,
     runtime.showTransformBusy,
+    runtime.showMicrophoneFailure,
+    stillConnecting,
   );
+
+  useEffect(() => {
+    if (status !== 'starting') setStillConnecting(false);
+  }, [status]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    listen('audio-initialization-stalled', () => {
+      setStillConnecting(true);
+    }).then((fn) => {
+      if (cancelled) fn(); else unlisten = fn;
+    });
+    return () => { cancelled = true; unlisten?.(); };
+  }, []);
 
   // Track the transform flow's thinking phase for the overlay indicator.
   useEffect(() => {
@@ -122,6 +140,12 @@ export function OverlayWidget() {
   // rather than TS fallback pixels — no mis-sized flash, no fallback constants.
   if (!geometry) return null;
   const topH = geometry.collapsedH;
+  // Only the genuinely off/idle surface tucks the empty right wing beneath the
+  // notch. Recording and processing keep the full top bar even without hover so
+  // their right-side indicators never disappear.
+  const compactIdle = status === 'idle' && !expanded;
+  const pillW = compactIdle ? geometry.pillIdleW : geometry.pillActiveW;
+  const pillMargin = compactIdle ? geometry.pillMarginIdle : geometry.pillMarginActive;
 
   return (
     <div
@@ -145,11 +169,11 @@ export function OverlayWidget() {
         style={{
           position: 'relative',
           borderRadius: '0 0 12px 12px',
-          // One constant island width in every state — the island IS the window.
-          // Only height animates (see OVERLAY_ISLAND_TRANSITION).
-          width: geometry.pillActiveW,
+          // Left anchored: idle tucks only the empty right wing beneath the
+          // notch; hover grows that edge back to the full active rectangle.
+          width: pillW,
           height: topH + (expanded ? geometry.dropdownH : 0),
-          marginLeft: geometry.pillMarginActive,
+          marginLeft: pillMargin,
           background: 'rgba(20, 20, 20, 0.92)',
           boxShadow: visual.showTapMissedLabel ? 'inset 0 -2px 0 rgba(245,158,11,0.9), 0 3px 16px rgba(245,158,11,0.22)' : 'none',
           backdropFilter: 'blur(40px)',
@@ -168,6 +192,7 @@ export function OverlayWidget() {
           geometry={geometry}
           expanded={expanded}
           status={status}
+          stillConnecting={stillConnecting}
           showTapMissed={visual.showTapMissedLabel}
           disabled={runtime.disabled}
           autoPaste={settingsMirror.autoPaste}

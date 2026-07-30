@@ -1,15 +1,36 @@
 import { useState, useEffect } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import {
+  getPerformanceResourceWindow,
+  measuredValue,
+  onPerformanceResourceSample,
+  type ResourceSampleV1,
+} from '../performance';
 
 export interface ResourceReading {
-  cpu_percent: number;
-  memory_mb: number;
-  rss_mb: number;
-  rust_heap_mb: number;
-  ffi_heap_mb: number;
+  observed_at_ms: number;
+  host_cpu_percent: number | null;
+  process_cpu_percent: number | null;
+  rss_mb: number | null;
+  rust_heap_mb: number | null;
+  ffi_heap_mb: number | null;
 }
 
 const MAX_READINGS = 60;
+
+function toMb(bytes: number | null): number | null {
+  return bytes === null ? null : Math.round(bytes / 1_048_576);
+}
+
+function toReading(sample: ResourceSampleV1): ResourceReading {
+  return {
+    observed_at_ms: sample.observedAtMs,
+    host_cpu_percent: measuredValue(sample.host.cpuPercent),
+    process_cpu_percent: measuredValue(sample.mainProcess.cpuPercent),
+    rss_mb: toMb(measuredValue(sample.mainProcess.rssBytes)),
+    rust_heap_mb: toMb(measuredValue(sample.mainProcess.rustHeapBytes)),
+    ffi_heap_mb: toMb(measuredValue(sample.mainProcess.ffiNativeHeapBytes)),
+  };
+}
 
 export function useResourceMonitor(enabled: boolean): ResourceReading[] {
   const [readings, setReadings] = useState<ResourceReading[]>([]);
@@ -17,24 +38,34 @@ export function useResourceMonitor(enabled: boolean): ResourceReading[] {
   useEffect(() => {
     if (!enabled) return;
 
-    // Clear stale readings when re-enabled so the chart starts fresh.
-    setReadings([]);
-
-    const fetchUsage = async () => {
+    let cancelled = false;
+    const append = (sample: ResourceSampleV1) => {
+      if (cancelled) return;
+      const reading = toReading(sample);
+      setReadings(prev => {
+        const withoutDuplicate = prev.filter(
+          existing => existing.observed_at_ms !== reading.observed_at_ms,
+        );
+        const next = [...withoutDuplicate, reading]
+          .sort((left, right) => left.observed_at_ms - right.observed_at_ms);
+        return next.length > MAX_READINGS ? next.slice(-MAX_READINGS) : next;
+      });
+    };
+    const hydrate = async () => {
       try {
-        const usage = await invoke<ResourceReading>('get_resource_usage');
-        setReadings(prev => {
-          const next = [...prev, usage];
-          return next.length > MAX_READINGS ? next.slice(-MAX_READINGS) : next;
-        });
+        const window = await getPerformanceResourceWindow();
+        if (!cancelled) setReadings(window.slice(-MAX_READINGS).map(toReading));
       } catch (e) {
         if (import.meta.env.DEV) console.debug('[useResourceMonitor]', e);
       }
     };
 
-    fetchUsage();
-    const id = setInterval(fetchUsage, 1000);
-    return () => clearInterval(id);
+    void hydrate();
+    const unlisten = onPerformanceResourceSample(append);
+    return () => {
+      cancelled = true;
+      void unlisten.then(stop => stop());
+    };
   }, [enabled]);
 
   return readings;

@@ -78,9 +78,8 @@ export function TransformReviewApp() {
   // object literal every render, so depending on the whole object would make
   // `handleCancel`/`handleApprove`/`handleRetry` (and, transitively, the
   // keydown effect below) re-created and re-subscribed on every render even
-  // though `cancel`/`approve`/`retry` are themselves referentially stable
-  // (`useCallback(..., [])` in both `useTransformReviewDriver` and
-  // `useTransformReviewMockDriver`).
+  // though `approve`/`retry` are referentially stable and `cancel` changes
+  // only when its exact rendered transform pass changes.
   const { cancel, approve, retry } = driver;
 
   const handleCancel = useCallback(() => dismissThen(cancel), [dismissThen, cancel]);

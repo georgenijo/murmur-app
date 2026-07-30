@@ -32,6 +32,15 @@ pub struct CorrectionProposalRequest {
     pub teaching_context: Option<TeachingContext>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpecificCorrectionProposalRequest {
+    pub original_text: String,
+    pub source: String,
+    pub replacement: String,
+    pub teaching_context: Option<TeachingContext>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CorrectionScopeOption {
@@ -90,6 +99,72 @@ impl CorrectAndTeachState {
             Err(reason) => return CorrectionProposalOutcome::Unsafe { reason },
         };
 
+        self.review_candidate(
+            candidate,
+            request.original_text,
+            request.corrected_text,
+            request.teaching_context.as_ref(),
+            dictation,
+            knowledge_voice_command_phrases,
+        )
+    }
+
+    pub fn propose_specific(
+        &self,
+        request: SpecificCorrectionProposalRequest,
+        dictation: &DictationState,
+        knowledge_voice_command_phrases: &[String],
+    ) -> CorrectionProposalOutcome {
+        *self.pending.lock_or_recover() = None;
+        if request.original_text.chars().count() > MAX_TRANSCRIPT_CHARS
+            || tokenize(&request.original_text).len() > MAX_DIFF_TOKENS
+        {
+            return CorrectionProposalOutcome::Unsafe {
+                reason: "This transcript is too long to review a specific learned rule safely."
+                    .to_string(),
+            };
+        }
+        let mut candidate = match validate_rule_candidate(&request.source, &request.replacement) {
+            Ok(candidate) => candidate,
+            Err(reason) => return CorrectionProposalOutcome::Unsafe { reason },
+        };
+        let (corrected_text, occurrence_count) = crate::correction::preview_exact_replacement(
+            &request.original_text,
+            &candidate.source,
+            &candidate.replacement,
+        );
+        if occurrence_count == 0 {
+            return CorrectionProposalOutcome::Unsafe {
+                reason: "The heard term must match at least one whole term in this example."
+                    .to_string(),
+            };
+        }
+        if corrected_text.chars().count() > MAX_TRANSCRIPT_CHARS {
+            return CorrectionProposalOutcome::Unsafe {
+                reason: "Applying that rule would make the review example too long.".to_string(),
+            };
+        }
+        candidate.occurrence_count = occurrence_count;
+
+        self.review_candidate(
+            candidate,
+            request.original_text,
+            corrected_text,
+            request.teaching_context.as_ref(),
+            dictation,
+            knowledge_voice_command_phrases,
+        )
+    }
+
+    fn review_candidate(
+        &self,
+        candidate: RuleCandidate,
+        original_text: String,
+        corrected_text: String,
+        teaching_context: Option<&TeachingContext>,
+        dictation: &DictationState,
+        knowledge_voice_command_phrases: &[String],
+    ) -> CorrectionProposalOutcome {
         if conflicts_with_voice_command(
             &candidate.source,
             dictation,
@@ -100,7 +175,7 @@ impl CorrectAndTeachState {
             };
         }
 
-        let scope_options = available_scopes(request.teaching_context.as_ref(), dictation);
+        let scope_options = available_scopes(teaching_context, dictation);
         let proposal_id = self.next_id.fetch_add(1, Ordering::SeqCst) + 1;
         *self.pending.lock_or_recover() = Some(PendingCorrection {
             proposal_id,
@@ -117,8 +192,8 @@ impl CorrectAndTeachState {
             source: candidate.source,
             replacement: candidate.replacement,
             occurrence_count: candidate.occurrence_count,
-            original_text: request.original_text,
-            corrected_text: request.corrected_text,
+            original_text,
+            corrected_text,
             scope_options,
         }
     }
@@ -226,12 +301,13 @@ fn propose_rule(original: &str, corrected: &str) -> Result<RuleCandidate, String
         return Err("Murmur could not find one bounded spoken-to-written replacement.".to_string());
     }
 
-    let matches = lcs_matches(&before, &after);
+    let matches = unique_normalized_lcs_matches(&before, &after)?;
     let mut hunks = Vec::new();
     let mut before_cursor = 0usize;
     let mut after_cursor = 0usize;
     for (before_match, after_match) in matches
-        .into_iter()
+        .iter()
+        .copied()
         .chain(std::iter::once((before.len(), after.len())))
     {
         if before_cursor != before_match || after_cursor != after_match {
@@ -239,6 +315,24 @@ fn propose_rule(original: &str, corrected: &str) -> Result<RuleCandidate, String
         }
         before_cursor = before_match.saturating_add(1);
         after_cursor = after_match.saturating_add(1);
+    }
+    if hunks.is_empty() {
+        let case_only_changes = matches
+            .iter()
+            .filter(|(before_match, after_match)| {
+                before[*before_match].text != after[*after_match].text
+            })
+            .copied()
+            .collect::<Vec<_>>();
+        if case_only_changes.len() == 1 {
+            let (before_match, after_match) = case_only_changes[0];
+            hunks.push((
+                before_match..before_match.saturating_add(1),
+                after_match..after_match.saturating_add(1),
+            ));
+        } else if case_only_changes.is_empty() {
+            return Err("Whitespace-only edits are not learned automatically.".to_string());
+        }
     }
     if hunks.len() != 1 {
         return Err("This edit changes more than one distinct span, so Murmur will not guess a reusable rule.".to_string());
@@ -259,53 +353,113 @@ fn propose_rule(original: &str, corrected: &str) -> Result<RuleCandidate, String
     let replacement = corrected[after[after_range.start].start..after[after_range.end - 1].end]
         .trim()
         .to_string();
+    let mut candidate = validate_rule_candidate(&source, &replacement)?;
+    candidate.occurrence_count =
+        count_occurrences(&before, &tokenize(&candidate.source)).max(1) as u32;
+    Ok(candidate)
+}
+
+fn validate_rule_candidate(source: &str, replacement: &str) -> Result<RuleCandidate, String> {
+    let source = source.trim().to_string();
+    let replacement = replacement.trim().to_string();
+    let source_tokens = tokenize(&source);
+    let replacement_tokens = tokenize(&replacement);
+    if source_tokens.is_empty() || replacement_tokens.is_empty() {
+        return Err("Heard and replacement text are both required.".to_string());
+    }
+    if source_tokens.len() > MAX_RULE_TOKENS || replacement_tokens.len() > MAX_RULE_TOKENS {
+        return Err("The changed phrase is too broad for a learned rule.".to_string());
+    }
     if source.chars().count() > MAX_RULE_CHARS || replacement.chars().count() > MAX_RULE_CHARS {
-        return Err("The changed phrase is too long for an automatic learned rule.".to_string());
+        return Err("The changed phrase is too long for a learned rule.".to_string());
     }
     if !source.chars().any(char::is_alphanumeric) || !replacement.chars().any(char::is_alphanumeric)
     {
         return Err(
-            "Punctuation or whitespace-only edits are not learned automatically.".to_string(),
+            "Punctuation or whitespace-only edits cannot be learned.".to_string(),
         );
     }
     if collapse_whitespace(&source) == collapse_whitespace(&replacement) {
-        return Err("Whitespace-only edits are not learned automatically.".to_string());
+        return Err("Whitespace-only edits cannot be learned.".to_string());
     }
-
     Ok(RuleCandidate {
-        occurrence_count: count_occurrences(&before, &tokenize(&source)).max(1) as u32,
         source,
         replacement,
+        occurrence_count: 0,
     })
 }
 
-fn lcs_matches(before: &[Token<'_>], after: &[Token<'_>]) -> Vec<(usize, usize)> {
+fn unique_normalized_lcs_matches(
+    before: &[Token<'_>],
+    after: &[Token<'_>],
+) -> Result<Vec<(usize, usize)>, String> {
+    let before_normalized = before
+        .iter()
+        .map(|token| normalize(token.text))
+        .collect::<Vec<_>>();
+    let after_normalized = after
+        .iter()
+        .map(|token| normalize(token.text))
+        .collect::<Vec<_>>();
     let columns = after.len() + 1;
-    let mut lengths = vec![0u16; (before.len() + 1) * columns];
+    let cells = (before.len() + 1) * columns;
+    let mut suffix_lengths = vec![0u16; cells];
     for left in (0..before.len()).rev() {
         for right in (0..after.len()).rev() {
-            let value = if before[left].text == after[right].text {
-                lengths[(left + 1) * columns + right + 1] + 1
+            let value = if before_normalized[left] == after_normalized[right] {
+                suffix_lengths[(left + 1) * columns + right + 1] + 1
             } else {
-                lengths[(left + 1) * columns + right].max(lengths[left * columns + right + 1])
+                suffix_lengths[(left + 1) * columns + right]
+                    .max(suffix_lengths[left * columns + right + 1])
             };
-            lengths[left * columns + right] = value;
+            suffix_lengths[left * columns + right] = value;
         }
     }
-    let mut matches = Vec::new();
-    let (mut left, mut right) = (0usize, 0usize);
-    while left < before.len() && right < after.len() {
-        if before[left].text == after[right].text {
-            matches.push((left, right));
-            left += 1;
-            right += 1;
-        } else if lengths[(left + 1) * columns + right] >= lengths[left * columns + right + 1] {
-            left += 1;
-        } else {
-            right += 1;
+
+    // A matching pair belongs to some optimal alignment exactly when an
+    // optimal prefix plus that pair plus an optimal suffix reaches the global
+    // LCS length. If the union of all such pairs contains more entries than
+    // one alignment, there is more than one optimal alignment and we fail
+    // closed instead of applying a tie-break.
+    let mut prefix_lengths = vec![0u16; cells];
+    for left in 0..before.len() {
+        for right in 0..after.len() {
+            prefix_lengths[(left + 1) * columns + right + 1] =
+                if before_normalized[left] == after_normalized[right] {
+                    prefix_lengths[left * columns + right] + 1
+                } else {
+                    prefix_lengths[left * columns + right + 1]
+                        .max(prefix_lengths[(left + 1) * columns + right])
+                };
         }
     }
-    matches
+
+    let optimal_length = usize::from(suffix_lengths[0]);
+    let mut viable_matches = Vec::with_capacity(optimal_length);
+    for left in 0..before.len() {
+        for right in 0..after.len() {
+            if before_normalized[left] != after_normalized[right] {
+                continue;
+            }
+            let through_pair = usize::from(prefix_lengths[left * columns + right])
+                + 1
+                + usize::from(suffix_lengths[(left + 1) * columns + right + 1]);
+            if through_pair == optimal_length {
+                viable_matches.push((left, right));
+            }
+        }
+    }
+
+    let uniquely_ordered = viable_matches
+        .windows(2)
+        .all(|matches| matches[0].0 < matches[1].0 && matches[0].1 < matches[1].1);
+    if viable_matches.len() != optimal_length || !uniquely_ordered {
+        return Err(
+            "Repeated or reordered words make this correction ambiguous, so Murmur will not guess a reusable rule."
+                .to_string(),
+        );
+    }
+    Ok(viable_matches)
 }
 
 fn normalize(value: &str) -> String {
@@ -467,6 +621,45 @@ mod tests {
     }
 
     #[test]
+    fn normalized_alignment_uses_unique_case_insensitive_anchors() {
+        let before = tokenize("ASK RED RED NEO TODAY");
+        let after = tokenize("Ask red red Nijo today");
+        assert_eq!(
+            unique_normalized_lcs_matches(&before, &after).unwrap(),
+            vec![(0, 0), (1, 1), (2, 2), (4, 4)]
+        );
+
+        let proposal = propose_rule("ASK GEORGE NEO TODAY", "Ask George Nijo today").unwrap();
+        assert_eq!(proposal.source, "NEO");
+        assert_eq!(proposal.replacement, "Nijo");
+        assert_eq!(proposal.occurrence_count, 1);
+    }
+
+    #[test]
+    fn rejects_multiple_optimal_normalized_alignments() {
+        let before = tokenize("ONE alpha one");
+        let after = tokenize("one beta");
+        assert!(unique_normalized_lcs_matches(&before, &after)
+            .unwrap_err()
+            .contains("ambiguous"));
+        assert!(propose_rule("ONE alpha one", "one beta")
+            .unwrap_err()
+            .contains("ambiguous"));
+    }
+
+    #[test]
+    fn preserves_exact_spelling_with_punctuation_and_unicode_anchors() {
+        for (before, after) in [
+            ("ASK GEORGE NEO, TODAY", "Ask George Nijo, today"),
+            ("ASK JOSÉ NEO TODAY", "Ask José Nijo today"),
+        ] {
+            let proposal = propose_rule(before, after).unwrap();
+            assert_eq!(proposal.source, "NEO");
+            assert_eq!(proposal.replacement, "Nijo");
+        }
+    }
+
+    #[test]
     fn rejects_ambiguous_multiple_edits_and_unbounded_changes() {
         assert!(propose_rule("alpha middle omega", "beta middle delta")
             .unwrap_err()
@@ -480,7 +673,161 @@ mod tests {
         assert!(propose_rule("hello!", "hello?")
             .unwrap_err()
             .contains("Punctuation"));
+        assert!(propose_rule("alpha  beta", "alpha beta")
+            .unwrap_err()
+            .contains("Whitespace"));
+        assert!(propose_rule("alpha beta", "beta alpha").is_err());
+        assert!(propose_rule(
+            "one two three four five six seven eight nine",
+            "a b c d e f g h i"
+        )
+        .unwrap_err()
+        .contains("too broad"));
+        assert!(propose_rule("murmur app is ready", "Murmur App is ready")
+            .unwrap_err()
+            .contains("more than one"));
         assert!(propose_rule(&"a".repeat(MAX_TRANSCRIPT_CHARS + 1), "b").is_err());
+    }
+
+    #[test]
+    fn specific_term_review_is_explicit_bounded_and_word_boundary_constrained() {
+        let state = CorrectAndTeachState::default();
+        let outcome = state.propose_specific(
+            SpecificCorrectionProposalRequest {
+                original_text: "Neo met NEO near neolithic art".to_string(),
+                source: " neo ".to_string(),
+                replacement: " Nijo ".to_string(),
+                teaching_context: None,
+            },
+            &DictationState::default(),
+            &[],
+        );
+        let CorrectionProposalOutcome::Proposal {
+            proposal_id,
+            source,
+            replacement,
+            occurrence_count,
+            original_text,
+            corrected_text,
+            scope_options,
+        } = outcome
+        else {
+            panic!("expected a specific proposal")
+        };
+        assert_eq!(source, "neo");
+        assert_eq!(replacement, "Nijo");
+        assert_eq!(occurrence_count, 2);
+        assert_eq!(original_text, "Neo met NEO near neolithic art");
+        assert_eq!(corrected_text, "Nijo met Nijo near neolithic art");
+        assert_eq!(scope_options.len(), 1);
+        let pending = state
+            .confirmed(proposal_id, &KnowledgeScope::Global)
+            .unwrap();
+        assert_eq!(pending.source, "neo");
+        assert_eq!(pending.replacement, "Nijo");
+    }
+
+    #[test]
+    fn specific_term_review_rejects_missing_and_unbounded_rules() {
+        let state = CorrectAndTeachState::default();
+        for (source, replacement, expected) in [
+            ("missing", "present", "whole term"),
+            ("", "present", "required"),
+            ("present", "", "required"),
+            ("!!!", "present", "Punctuation"),
+        ] {
+            let outcome = state.propose_specific(
+                SpecificCorrectionProposalRequest {
+                    original_text: "present example".to_string(),
+                    source: source.to_string(),
+                    replacement: replacement.to_string(),
+                    teaching_context: None,
+                },
+                &DictationState::default(),
+                &[],
+            );
+            assert!(
+                matches!(outcome, CorrectionProposalOutcome::Unsafe { reason } if reason.contains(expected)),
+                "expected {expected}"
+            );
+        }
+
+        let outcome = state.propose_specific(
+            SpecificCorrectionProposalRequest {
+                original_text: "one two three four five six seven eight nine".to_string(),
+                source: "one two three four five six seven eight nine".to_string(),
+                replacement: "bounded".to_string(),
+                teaching_context: None,
+            },
+            &DictationState::default(),
+            &[],
+        );
+        assert!(
+            matches!(outcome, CorrectionProposalOutcome::Unsafe { reason } if reason.contains("too broad"))
+        );
+        let outcome = state.propose_specific(
+            SpecificCorrectionProposalRequest {
+                original_text: "term".to_string(),
+                source: "term".to_string(),
+                replacement: "x".repeat(MAX_RULE_CHARS + 1),
+                teaching_context: None,
+            },
+            &DictationState::default(),
+            &[],
+        );
+        assert!(
+            matches!(outcome, CorrectionProposalOutcome::Unsafe { reason } if reason.contains("too long"))
+        );
+    }
+
+    #[test]
+    fn specific_term_escape_hatch_does_not_weaken_automatic_alignment_or_conflicts() {
+        assert!(propose_rule("ONE alpha one", "one beta").is_err());
+        let state = CorrectAndTeachState::default();
+        let outcome = state.propose_specific(
+            SpecificCorrectionProposalRequest {
+                original_text: "ONE alpha one".to_string(),
+                source: "alpha".to_string(),
+                replacement: "beta".to_string(),
+                teaching_context: None,
+            },
+            &DictationState::default(),
+            &[],
+        );
+        assert!(matches!(
+            outcome,
+            CorrectionProposalOutcome::Proposal {
+                occurrence_count: 1,
+                ..
+            }
+        ));
+
+        let outcome = state.propose_specific(
+            SpecificCorrectionProposalRequest {
+                original_text: "new line now".to_string(),
+                source: "new line".to_string(),
+                replacement: "newline".to_string(),
+                teaching_context: None,
+            },
+            &DictationState::default(),
+            &[],
+        );
+        assert!(
+            matches!(outcome, CorrectionProposalOutcome::Unsafe { reason } if reason.contains("Voice Commands"))
+        );
+        let outcome = state.propose_specific(
+            SpecificCorrectionProposalRequest {
+                original_text: "my signature".to_string(),
+                source: "my signature".to_string(),
+                replacement: "Regards".to_string(),
+                teaching_context: None,
+            },
+            &DictationState::default(),
+            &["my signature".to_string()],
+        );
+        assert!(
+            matches!(outcome, CorrectionProposalOutcome::Unsafe { reason } if reason.contains("Voice Commands"))
+        );
     }
 
     #[test]

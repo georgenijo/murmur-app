@@ -116,12 +116,22 @@ pub fn memory_breakdown() -> (usize, usize) {
 
 /// Rust heap usage in megabytes (from the RustHeapZone).
 pub fn rust_heap_mb() -> u64 {
-    let (rust_bytes, _) = memory_breakdown();
-    (rust_bytes / 1_048_576) as u64
+    rust_heap_bytes() / 1_048_576
 }
 
 /// C/C++ FFI heap usage in megabytes (total zones minus Rust zone).
 pub fn ffi_heap_mb() -> u64 {
+    ffi_heap_bytes() / 1_048_576
+}
+
+/// Rust heap usage in bytes (from the RustHeapZone).
+pub fn rust_heap_bytes() -> u64 {
+    let (rust_bytes, _) = memory_breakdown();
+    rust_bytes as u64
+}
+
+/// C/C++ FFI heap usage in bytes (all malloc zones minus the Rust zone).
+pub fn ffi_heap_bytes() -> u64 {
     let (rust_bytes, total_bytes) = memory_breakdown();
-    (total_bytes.saturating_sub(rust_bytes) / 1_048_576) as u64
+    total_bytes.saturating_sub(rust_bytes) as u64
 }

@@ -35,20 +35,20 @@ const OVERRIDE_OPTIONS: { value: OverrideChoice; label: string }[] = [
 
 const WRITING_STYLE_SUMMARIES: Record<WritingStyleChoice, string> = {
   inherit: 'Uses your global behavior and the explicit overrides below.',
-  conversational: 'Removes filler and repeated words, tidies capitalization, and keeps your wording.',
-  polished: 'Cleans speech and applies explicitly spoken lists, punctuation, symbols, and corrections.',
+  conversational: 'Removes filler and repeated words, tidies capitalization, keeps your wording.',
+  polished: 'Cleans speech and applies explicitly spoken lists, punctuation, symbols, corrections.',
   code_technical: 'Preserves technical wording and enables deterministic command formatting.',
   verbatim: 'Leaves recognized text unchanged, including filler, spacing, and spoken command words.',
-  notes: 'Removes filler, keeps note-like capitalization, and turns explicit list, paragraph, and line cues into structure.',
+  notes: 'Removes filler, keeps note-like capitalization, and turns explicit list, paragraph, line cues into structure.',
 };
 
 const WRITING_STYLE_CATEGORIES: Record<WritingStyleChoice, string> = {
   inherit: 'Cleanup, corrections, structured writing, and command formatting all inherit.',
-  conversational: 'Cleanup on · Structured writing off · Automatic command formatting off',
-  polished: 'Cleanup on · Preferred spellings on · Structured writing on · Automatic command formatting off',
-  code_technical: 'Cleanup off · Preferred spellings on · Structured writing off · Command formatting on',
+  conversational: 'Cleanup on · Structured writing off Automatic command formatting',
+  polished: 'Cleanup on · Preferred spellings Structured writing Automatic command formatting off',
+  code_technical: 'Cleanup off · Preferred spellings on Structured writing Command formatting',
   verbatim: 'Cleanup, corrections, structured writing, and command formatting all off',
-  notes: 'Cleanup on · Preferred spellings on · Structured writing on · Automatic command formatting off',
+  notes: 'Cleanup on · Preferred spellings Structured writing Automatic command formatting off',
 };
 
 export function overrideChoice(value: boolean | null): OverrideChoice {
@@ -104,7 +104,7 @@ function OverrideSelect({
         aria-label={`${label} for ${appLabel}`}
         value={overrideChoice(value)}
         onChange={(event) => onChange(overrideValue(event.target.value as OverrideChoice))}
-        className="mt-1 w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-2.5 py-2 text-xs text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+        className="mt-1 w-full rounded-lg border border-on-surface-variant bg-surface-container-lowest px-2.5 py-2 text-xs text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
       >
         {OVERRIDE_OPTIONS.map((option) => (
           <option key={option.value} value={option.value}>{option.label}</option>
@@ -229,7 +229,7 @@ export function AppOverridesEditor({ profiles, onChange }: {
               aria-label="Running app"
               value={selectedApp}
               onChange={(event) => setSelectedApp(event.target.value)}
-              className="min-w-0 flex-1 rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+              className="min-w-0 flex-1 rounded-lg border border-on-surface-variant bg-surface-container-lowest px-3 py-2 text-xs text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
             >
               <option value="">Choose a running app…</option>
               {availableApps.map((app) => (
@@ -262,7 +262,7 @@ export function AppOverridesEditor({ profiles, onChange }: {
               placeholder="App name (optional)"
               autoComplete="off"
               spellCheck={false}
-              className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface placeholder:text-on-surface-variant focus:outline-none focus:ring-2 focus:ring-primary"
+              className="w-full rounded-lg border border-on-surface-variant bg-surface-container-lowest px-3 py-2 text-xs text-on-surface placeholder:text-on-surface-variant focus:outline-none focus:ring-2 focus:ring-primary"
             />
             <div className="flex gap-2">
               <input
@@ -275,7 +275,7 @@ export function AppOverridesEditor({ profiles, onChange }: {
                 autoCorrect="off"
                 autoCapitalize="off"
                 spellCheck={false}
-                className="min-w-0 flex-1 rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 font-mono text-xs text-on-surface placeholder:text-on-surface-variant focus:outline-none focus:ring-2 focus:ring-primary"
+                className="min-w-0 flex-1 rounded-lg border border-on-surface-variant bg-surface-container-lowest px-3 py-2 font-mono text-xs text-on-surface placeholder:text-on-surface-variant focus:outline-none focus:ring-2 focus:ring-primary"
               />
               <button
                 type="button"
@@ -347,7 +347,7 @@ export function AppOverridesEditor({ profiles, onChange }: {
                       onClick={() => updateProfile(profile.bundleId, { ideContextEnabled: !profile.ideContextEnabled })}
                       className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary ${profile.ideContextEnabled ? 'bg-primary' : 'bg-surface-container-highest'}`}
                     >
-                      <span className={`inline-block h-4 w-4 rounded-full bg-on-primary shadow transition-transform ${profile.ideContextEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
+                      <span className={`inline-block h-4 w-4 rounded-full shadow transition-transform ${profile.ideContextEnabled ? 'translate-x-6 bg-on-primary' : 'translate-x-1 bg-on-surface-variant'}`} />
                     </button>
                   </div>
                   {profile.ideContextEnabled && (

@@ -11,7 +11,9 @@ pub use crate::transcriber::WHISPER_SAMPLE_RATE;
 #[serde(rename_all = "lowercase")]
 pub enum DictationStatus {
     Idle,
+    Starting,
     Recording,
+    Recovering,
     Processing,
 }
 
@@ -31,7 +33,9 @@ pub enum TransformStatus {
     Idle,
     /// Reading the AX selection (`selection::capture_selection`).
     Capturing,
-    /// Selection captured; waiting for a follow-up spoken instruction.
+    /// Selection captured; the microphone owner is still initializing.
+    Connecting,
+    /// Selection captured and microphone ready; recording the instruction.
     Listening,
     /// Running the transform (LLM call or equivalent) on the captured text.
     Thinking,
@@ -57,6 +61,7 @@ impl TransformStatus {
         match self {
             Self::Idle => "idle",
             Self::Capturing => "capturing",
+            Self::Connecting => "connecting",
             Self::Listening => "listening",
             Self::Thinking => "thinking",
             Self::ReviewPending => "review_pending",
@@ -142,6 +147,33 @@ pub struct AppProfile {
     /// contents remain memory-only and are rebuilt locally.
     #[serde(default)]
     pub ide_project_roots: Vec<String>,
+}
+
+/// Resolve the effective technical-context signal for an app profile. A
+/// technical writing style or local IDE context is an explicit user signal;
+/// bundle IDs and app labels are never guessed.
+///
+/// Duplicate profiles retain the resolver's legacy field semantics: IDE
+/// context is owned by the first matching profile, while an absent or
+/// `Inherit` writing style falls through to the next matching profile.
+pub(crate) fn app_profiles_enable_code_vocabulary(
+    app_profiles: &[AppProfile],
+    bundle_id: &str,
+) -> bool {
+    let mut matching = app_profiles
+        .iter()
+        .filter(|profile| profile.bundle_id == bundle_id);
+    let ide_context_enabled = matching
+        .clone()
+        .next()
+        .is_some_and(|profile| profile.ide_context_enabled);
+    let writing_style = matching.find_map(|profile| {
+        profile
+            .writing_style
+            .filter(|style| *style != WritingStyle::Inherit)
+    });
+
+    ide_context_enabled || writing_style == Some(WritingStyle::CodeTechnical)
 }
 
 /// A user-defined voice command: when `phrase` is spoken (matched
@@ -246,6 +278,15 @@ pub struct DictationState {
     pub correction_fuzzy: bool,
 }
 
+impl DictationState {
+    pub(crate) fn code_vocabulary_enabled_for(&self, bundle_id: Option<&str>) -> bool {
+        self.code_vocab_enabled
+            && bundle_id.is_some_and(|bundle_id| {
+                app_profiles_enable_code_vocabulary(&self.app_profiles, bundle_id)
+            })
+    }
+}
+
 impl Default for DictationState {
     fn default() -> Self {
         Self {
@@ -290,9 +331,9 @@ struct ActiveDictationContext {
 
 pub struct AppState {
     pub dictation: Mutex<DictationState>,
-    /// Serializes recorder start/stop/cancel transitions. Audio startup waits
-    /// for the cpal stream to become ready, so a fast key release must not tear
-    /// the recorder down until that startup has fully completed.
+    /// Serializes recorder start/stop/cancel command transitions. Microphone
+    /// initialization itself is asynchronous and owned by `audio_lifecycle`;
+    /// this lock is never held while waiting for Core Audio or a channel.
     pub recording_transition: tokio::sync::Mutex<()>,
     pub model_runtime: ModelRuntimeManager,
     pub last_transcription_at: Mutex<Option<Instant>>,
@@ -302,6 +343,10 @@ pub struct AppState {
     /// Monotonically increasing opaque ID assigned to every post-recognition
     /// transformation pass (live recordings and imported files).
     pub transcript_session_id: AtomicU64,
+    /// Monotonically increasing ID assigned to each imported-file run. This is
+    /// separate from `recording_id` so diagnostics and structured events can
+    /// correlate file work without pretending it is a microphone recording.
+    pub file_run_id: AtomicU64,
     /// Monotonic revision for settings and vocabulary inputs captured by each
     /// immutable dictation context snapshot.
     pub settings_revision: AtomicU64,
@@ -329,6 +374,18 @@ pub struct AppState {
     /// Current phase of the AX-selection transform pipeline (issue #312).
     /// Independent of `dictation.status` — see `TransformStatus`'s doc comment.
     pub transform_status: Mutex<TransformStatus>,
+    /// Process-local monotonic ID allocator for physical transform-key passes.
+    pub transform_pass_sequence: AtomicU64,
+    /// The pass that currently owns the transform lifecycle. Zero means none.
+    pub active_transform_pass_id: AtomicU64,
+    /// Highest transform pass explicitly cancelled by the user. Selection
+    /// capture runs asynchronously, so it must be able to distinguish a late
+    /// capture abort from an ordinary capture failure even before the cancel
+    /// path has finished clearing `active_transform_pass_id`.
+    cancelled_transform_pass_id: AtomicU64,
+    /// One-based spoken-instruction attempt within the active pass. Retries
+    /// keep the pass ID and advance only this counter.
+    pub transform_instruction_attempt: AtomicU64,
     /// The single active transform session (captured selection + proposed
     /// replacement + applied flag), if any (issue #312, PR-B2). See
     /// `transform_apply::TransformSession` and its setter/getter helpers —
@@ -354,7 +411,8 @@ pub struct AppState {
     /// inner `spawn_blocking` work finishes. Callers must also invoke
     /// `LlmSidecar::cancel_inflight_request` so the blocking loop sends a
     /// protocol Cancel and settles promptly (see `cancel_transform`).
-    pub transform_inflight: Mutex<Option<(tokio::task::AbortHandle, crate::llm_sidecar::CancelToken)>>,
+    pub transform_inflight:
+        Mutex<Option<(tokio::task::AbortHandle, crate::llm_sidecar::CancelToken)>>,
 }
 
 impl AppState {
@@ -365,6 +423,10 @@ impl AppState {
 
     pub fn next_transcript_session_id(&self) -> u64 {
         self.transcript_session_id.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    pub fn next_file_run_id(&self) -> u64 {
+        self.file_run_id.fetch_add(1, Ordering::SeqCst) + 1
     }
 
     pub fn bump_settings_revision(&self) -> u64 {
@@ -423,9 +485,60 @@ impl AppState {
         *self.transform_status.lock_or_recover()
     }
 
+    pub fn next_transform_pass_id(&self) -> u64 {
+        self.transform_pass_sequence.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    pub fn active_transform_pass_id(&self) -> Option<u64> {
+        match self.active_transform_pass_id.load(Ordering::SeqCst) {
+            0 => None,
+            id => Some(id),
+        }
+    }
+
+    pub fn activate_transform_pass(&self, pass_id: u64) {
+        debug_assert_ne!(pass_id, 0);
+        self.transform_instruction_attempt
+            .store(1, Ordering::SeqCst);
+        self.active_transform_pass_id
+            .store(pass_id, Ordering::SeqCst);
+    }
+
+    pub fn clear_transform_pass(&self, pass_id: u64) -> bool {
+        self.active_transform_pass_id
+            .compare_exchange(pass_id, 0, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    }
+
+    pub fn mark_transform_pass_cancelled(&self, pass_id: u64) {
+        self.cancelled_transform_pass_id
+            .fetch_max(pass_id, Ordering::SeqCst);
+    }
+
+    pub fn is_transform_pass_cancelled(&self, pass_id: u64) -> bool {
+        pass_id != 0 && self.cancelled_transform_pass_id.load(Ordering::SeqCst) >= pass_id
+    }
+
+    pub fn current_instruction_attempt(&self) -> u64 {
+        self.transform_instruction_attempt
+            .load(Ordering::SeqCst)
+            .max(1)
+    }
+
+    pub fn next_instruction_attempt(&self) -> u64 {
+        self.transform_instruction_attempt
+            .fetch_add(1, Ordering::SeqCst)
+            + 1
+    }
+
     /// Set the transform pipeline phase. Independent of `dictation.status`.
     pub fn set_transform_status(&self, status: TransformStatus) {
-        *self.transform_status.lock_or_recover() = status;
+        let mut current = self.transform_status.lock_or_recover();
+        let from = *current;
+        *current = status;
+        if let Some(pass_id) = self.active_transform_pass_id() {
+            crate::transform_trace::transition(pass_id, from.as_str(), status.as_str(), true);
+        }
     }
 
     /// Atomically check-and-set the transform pipeline phase: transitions to
@@ -435,14 +548,21 @@ impl AppState {
     /// `transform_status() == X` check followed by `set_transform_status(Y)`
     /// would leave open between two concurrent `apply_transform_result`/
     /// `undo_transform` command invocations (issue #312 PR-B2 review).
-    pub fn try_transition_transform_status(&self, from: TransformStatus, to: TransformStatus) -> bool {
+    pub fn try_transition_transform_status(
+        &self,
+        from: TransformStatus,
+        to: TransformStatus,
+    ) -> bool {
         let mut status = self.transform_status.lock_or_recover();
-        if *status == from {
+        let actual = *status;
+        let won = actual == from;
+        if won {
             *status = to;
-            true
-        } else {
-            false
         }
+        if let Some(pass_id) = self.active_transform_pass_id() {
+            crate::transform_trace::transition(pass_id, actual.as_str(), to.as_str(), won);
+        }
+        won
     }
 
     /// Next generation id for a new `TransformSession` (issue #312 PR-B2).
@@ -452,7 +572,9 @@ impl AppState {
     /// longer applies and no-op instead of mutating the session that replaced
     /// it.
     pub fn next_transform_session_generation(&self) -> u64 {
-        self.transform_session_generation.fetch_add(1, Ordering::SeqCst) + 1
+        self.transform_session_generation
+            .fetch_add(1, Ordering::SeqCst)
+            + 1
     }
 
     /// Bump and return the next apply epoch (issue #312 PR-C2, nit N1). Called
@@ -480,6 +602,7 @@ impl Default for AppState {
             idle_timeout_minutes: Mutex::new(5),
             recording_id: AtomicU64::new(0),
             transcript_session_id: AtomicU64::new(0),
+            file_run_id: AtomicU64::new(0),
             settings_revision: AtomicU64::new(0),
             active_context: Mutex::new(None),
             cancelled_id: AtomicU64::new(0),
@@ -488,6 +611,10 @@ impl Default for AppState {
             knowledge_replacements: Mutex::new(Arc::new(Vec::new())),
             ide_context: Mutex::new(crate::ide_context::IdeContextStore::default()),
             transform_status: Mutex::new(TransformStatus::default()),
+            transform_pass_sequence: AtomicU64::new(0),
+            active_transform_pass_id: AtomicU64::new(0),
+            cancelled_transform_pass_id: AtomicU64::new(0),
+            transform_instruction_attempt: AtomicU64::new(1),
             transform_session: Mutex::new(None),
             transform_session_generation: AtomicU64::new(0),
             transform_apply_epoch: AtomicU64::new(0),
@@ -573,6 +700,7 @@ mod tests {
         let state = AppState::default();
         for status in [
             TransformStatus::Capturing,
+            TransformStatus::Connecting,
             TransformStatus::Listening,
             TransformStatus::Thinking,
             TransformStatus::ReviewPending,
@@ -597,12 +725,14 @@ mod tests {
         assert_eq!(state.transform_status(), TransformStatus::Idle);
 
         // Correct `from` -- transitions and reports success.
-        assert!(state.try_transition_transform_status(TransformStatus::Idle, TransformStatus::Capturing));
+        assert!(state
+            .try_transition_transform_status(TransformStatus::Idle, TransformStatus::Capturing));
         assert_eq!(state.transform_status(), TransformStatus::Capturing);
 
         // A second call with the same `from` now fails -- status already moved on,
         // modeling two concurrent callers racing for the same transition.
-        assert!(!state.try_transition_transform_status(TransformStatus::Idle, TransformStatus::Capturing));
+        assert!(!state
+            .try_transition_transform_status(TransformStatus::Idle, TransformStatus::Capturing));
         assert_eq!(state.transform_status(), TransformStatus::Capturing);
     }
 
@@ -615,9 +745,46 @@ mod tests {
     }
 
     #[test]
+    fn transform_pass_ids_are_monotonic_and_stale_clears_cannot_remove_new_pass() {
+        let state = AppState::default();
+        let first = state.next_transform_pass_id();
+        let second = state.next_transform_pass_id();
+        assert_eq!((first, second), (1, 2));
+
+        state.activate_transform_pass(first);
+        assert_eq!(state.active_transform_pass_id(), Some(first));
+        state.activate_transform_pass(second);
+        assert!(!state.clear_transform_pass(first));
+        assert_eq!(state.active_transform_pass_id(), Some(second));
+        assert!(state.clear_transform_pass(second));
+        assert_eq!(state.active_transform_pass_id(), None);
+    }
+
+    #[test]
+    fn transform_cancel_marker_is_visible_before_active_pass_is_cleared() {
+        let state = AppState::default();
+        state.activate_transform_pass(11);
+        state.mark_transform_pass_cancelled(11);
+
+        assert!(state.is_transform_pass_cancelled(11));
+        assert_eq!(state.active_transform_pass_id(), Some(11));
+        assert!(!state.is_transform_pass_cancelled(12));
+    }
+
+    #[test]
+    fn retries_keep_pass_id_and_advance_instruction_attempt() {
+        let state = AppState::default();
+        state.activate_transform_pass(7);
+        assert_eq!(state.current_instruction_attempt(), 1);
+        assert_eq!(state.next_instruction_attempt(), 2);
+        assert_eq!(state.active_transform_pass_id(), Some(7));
+    }
+
+    #[test]
     fn every_non_idle_transform_status_blocks_recording_start() {
         for status in [
             TransformStatus::Capturing,
+            TransformStatus::Connecting,
             TransformStatus::Listening,
             TransformStatus::Thinking,
             TransformStatus::ReviewPending,
@@ -660,6 +827,7 @@ mod tests {
         for status in [
             TransformStatus::Idle,
             TransformStatus::Capturing,
+            TransformStatus::Connecting,
             TransformStatus::Listening,
             TransformStatus::Thinking,
             TransformStatus::ReviewPending,
@@ -679,6 +847,7 @@ mod tests {
         let cases = [
             (TransformStatus::Idle, "idle"),
             (TransformStatus::Capturing, "capturing"),
+            (TransformStatus::Connecting, "connecting"),
             (TransformStatus::Listening, "listening"),
             (TransformStatus::Thinking, "thinking"),
             (TransformStatus::ReviewPending, "review_pending"),

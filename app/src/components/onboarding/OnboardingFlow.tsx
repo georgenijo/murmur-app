@@ -213,7 +213,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   };
 
   return (
-    <div className="h-screen bg-stone-50 dark:bg-stone-900 flex flex-col items-center justify-center p-8 font-[-apple-system,BlinkMacSystemFont,'Segoe_UI',Roboto,sans-serif]">
+    <div className="h-screen bg-surface-container-low flex flex-col items-center justify-center p-8 font-[-apple-system,BlinkMacSystemFont,'Segoe_UI',Roboto,sans-serif]">
       <div className="w-full max-w-md">
         {/* Progress dots */}
         <div className="flex items-center justify-center gap-2 mb-8" aria-label={`Step ${stepIndex + 1} of ${STEP_ORDER.length}`}>
@@ -222,10 +222,10 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
               key={s}
               className={`h-1.5 rounded-full transition-all duration-300 ${
                 i === stepIndex
-                  ? 'w-6 bg-blue-500'
+                  ? 'w-6 bg-primary'
                   : i < stepIndex
-                  ? 'w-1.5 bg-blue-400/60'
-                  : 'w-1.5 bg-stone-300 dark:bg-stone-600'
+                  ? 'w-1.5 bg-primary/60'
+                  : 'w-1.5 bg-surface-container-highest '
               }`}
             />
           ))}
@@ -233,20 +233,20 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
 
         {step === 'welcome' && (
           <div className="text-center">
-            <h1 className="text-2xl font-semibold text-stone-800 dark:text-stone-100 mb-2">
+            <h1 className="text-2xl font-semibold text-on-surface mb-2">
               Welcome to Murmur
             </h1>
-            <p className="text-sm text-stone-500 dark:text-stone-400 mb-2">
+            <p className="text-sm text-on-surface-variant mb-2">
               Voice-to-text that runs entirely on your Mac. No cloud, no accounts —
               your audio never leaves this machine.
             </p>
-            <p className="text-sm text-stone-500 dark:text-stone-400 mb-8">
+            <p className="text-sm text-on-surface-variant mb-8">
               Setup takes about a minute: two macOS permissions and a one-time
               model download.
             </p>
             <button
               onClick={goNext}
-              className="w-full py-2.5 px-4 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
+              className="w-full py-2.5 px-4 bg-primary hover:bg-primary text-on-primary text-sm font-medium rounded-lg transition-colors"
             >
               Get Started
             </button>
@@ -264,26 +264,26 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
             {micGranted ? (
               <GrantedCard label="Microphone access granted" />
             ) : micDenied ? (
-              <div className="mb-6 px-4 py-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg space-y-3">
-                <p className="text-sm text-red-700 dark:text-red-300">
+              <div className="mb-6 px-4 py-3 bg-error/10 border border-error/30 rounded-lg space-y-3">
+                <p className="text-sm text-error">
                   Microphone access is denied. Enable Murmur under Privacy &amp;
                   Security → Microphone, then come back — this screen updates
                   automatically.
                 </p>
                 <button
                   onClick={handleOpenMicSettings}
-                  className="w-full py-2 px-4 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg transition-colors"
+                  className="w-full rounded-lg border border-error/30 bg-error/10 px-4 py-2 text-sm font-medium text-error transition-colors"
                 >
                   Open System Settings
                 </button>
                 <div>
                   <button
                     onClick={handleResetMic}
-                    className="text-xs text-red-600/80 dark:text-red-400/80 underline hover:no-underline"
+                    className="text-xs text-error underline hover:no-underline"
                   >
                     Still not working? Reset the permission
                   </button>
-                  <p className="mt-1 text-xs text-red-600/70 dark:text-red-400/70">
+                  <p className="mt-1 text-xs text-error">
                     Clears Murmur's stale Microphone entry so macOS can ask fresh —
                     useful when the toggle is on but recording still fails.
                   </p>
@@ -293,12 +293,12 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
               <div className="mb-6">
                 <button
                   onClick={handleAllowMic}
-                  className="w-full py-2.5 px-4 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
+                  className="w-full py-2.5 px-4 bg-primary hover:bg-primary text-on-primary text-sm font-medium rounded-lg transition-colors"
                 >
                   Allow Microphone Access
                 </button>
                 {micRequested && (
-                  <p className="mt-2 text-xs text-stone-500 dark:text-stone-400 text-center">
+                  <p className="mt-2 text-xs text-on-surface-variant text-center">
                     Waiting for your answer in the macOS dialog…
                   </p>
                 )}
@@ -306,7 +306,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
             )}
 
             {micError && (
-              <p className="mb-4 text-xs text-red-600 dark:text-red-400">{micError}</p>
+              <p className="mb-4 text-xs text-error">{micError}</p>
             )}
 
             <WizardFooter
@@ -334,11 +334,11 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
               <div className="mb-6 space-y-3">
                 <button
                   onClick={handleGrantAx}
-                  className="w-full py-2.5 px-4 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
+                  className="w-full py-2.5 px-4 bg-primary hover:bg-primary text-on-primary text-sm font-medium rounded-lg transition-colors"
                 >
                   Grant Accessibility Access
                 </button>
-                <p className="text-xs text-stone-500 dark:text-stone-400 text-center">
+                <p className="text-xs text-on-surface-variant text-center">
                   macOS opens System Settings — turn on <strong>Murmur</strong> in the
                   list, then come back. This screen updates automatically.
                 </p>
@@ -346,11 +346,11 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
                   <div className="pt-1">
                     <button
                       onClick={handleResetAx}
-                      className="text-xs text-stone-500/90 dark:text-stone-400/90 underline hover:no-underline"
+                      className="text-xs text-on-surface-variant underline hover:no-underline"
                     >
                       Murmur is listed and enabled, but still not detected? Reset the permission
                     </button>
-                    <p className="mt-1 text-xs text-stone-400 dark:text-stone-500">
+                    <p className="mt-1 text-xs text-on-surface-variant">
                       Clears a stale Accessibility entry (common after reinstalling).
                       You'll need to re-enable Murmur in the list afterward.
                     </p>
@@ -360,7 +360,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
             )}
 
             {axError && (
-              <p className="mb-4 text-xs text-red-600 dark:text-red-400">{axError}</p>
+              <p className="mb-4 text-xs text-error">{axError}</p>
             )}
 
             <WizardFooter
@@ -376,10 +376,10 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
 
         {step === 'model' && (
           <div>
-            <h1 className="text-xl font-semibold text-stone-800 dark:text-stone-100 mb-1">
+            <h1 className="text-xl font-semibold text-on-surface mb-1">
               Transcription Model
             </h1>
-            <p className="text-sm text-stone-500 dark:text-stone-400 mb-6">
+            <p className="text-sm text-on-surface-variant mb-6">
               Murmur transcribes with a local model — downloaded once, then everything
               runs offline.
             </p>
@@ -403,7 +403,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
                   <div className="mt-3 text-center">
                     <button
                       onClick={goBack}
-                      className="text-xs text-stone-400 dark:text-stone-500 hover:text-stone-600 dark:hover:text-stone-300 transition-colors"
+                      className="text-xs text-on-surface-variant hover:text-on-surface-variant transition-colors"
                     >
                       Back
                     </button>
@@ -416,10 +416,10 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
 
         {step === 'done' && (
           <div>
-            <h1 className="text-xl font-semibold text-stone-800 dark:text-stone-100 mb-1 text-center">
+            <h1 className="text-xl font-semibold text-on-surface mb-1 text-center">
               You're all set
             </h1>
-            <p className="text-sm text-stone-500 dark:text-stone-400 mb-6 text-center">
+            <p className="text-sm text-on-surface-variant mb-6 text-center">
               Here's how everything looks:
             </p>
 
@@ -429,13 +429,13 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
               <SummaryRow ok={modelInstalled === true} label="Model" okText="Installed" missingText="Not verified — the app will ask again if it's missing" />
             </div>
 
-            <div className="mb-6 px-4 py-3 bg-stone-100 dark:bg-stone-800 rounded-lg">
-              <p className="text-sm text-stone-700 dark:text-stone-300 font-medium mb-1">
+            <div className="mb-6 px-4 py-3 bg-surface-container rounded-lg">
+              <p className="text-sm text-on-surface font-medium mb-1">
                 Try it out
               </p>
-              <p className="text-xs text-stone-500 dark:text-stone-400">
+              <p className="text-xs text-on-surface-variant">
                 {recordingMode === 'double_tap' ? 'Double-tap ' : 'Hold '}
-                <kbd className="px-1 py-0.5 rounded bg-white dark:bg-stone-700 border border-stone-300 dark:border-stone-600 font-mono text-[10px]">{KEY_LABELS[triggerKey]}</kbd>
+                <kbd className="px-1 py-0.5 rounded bg-surface-container-lowest border border-outline-variant/40 font-mono text-[10px]">{KEY_LABELS[triggerKey]}</kbd>
                 {recordingMode === 'double_tap'
                   ? ' to start recording and tap it once to stop'
                   : recordingMode === 'both'
@@ -449,7 +449,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
 
             <button
               onClick={() => onComplete(installedModel)}
-              className="w-full py-2.5 px-4 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
+              className="w-full py-2.5 px-4 bg-primary hover:bg-primary text-on-primary text-sm font-medium rounded-lg transition-colors"
             >
               Start Using Murmur
             </button>
@@ -464,30 +464,30 @@ function StepHeading({ title, subtitle, granted }: { title: string; subtitle: st
   return (
     <div className="mb-6">
       <div className="flex items-center gap-2 mb-1">
-        <h1 className="text-xl font-semibold text-stone-800 dark:text-stone-100">{title}</h1>
+        <h1 className="text-xl font-semibold text-on-surface">{title}</h1>
         {granted && <CheckIcon />}
       </div>
-      <p className="text-sm text-stone-500 dark:text-stone-400">{subtitle}</p>
+      <p className="text-sm text-on-surface-variant">{subtitle}</p>
     </div>
   );
 }
 
 function GrantedCard({ label }: { label: string }) {
   return (
-    <div className="mb-6 px-4 py-3 bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 rounded-lg flex items-center gap-2">
+    <div className="mb-6 px-4 py-3 bg-success/10 border border-success/30 rounded-lg flex items-center gap-2">
       <CheckIcon />
-      <span className="text-sm text-emerald-700 dark:text-emerald-300">{label}</span>
+      <span className="text-sm text-success">{label}</span>
     </div>
   );
 }
 
 function SummaryRow({ ok, label, okText, missingText }: { ok: boolean; label: string; okText: string; missingText: string }) {
   return (
-    <div className="flex items-start gap-2 px-4 py-2.5 bg-white dark:bg-stone-800 border border-stone-200 dark:border-stone-700 rounded-lg">
-      <span className={`mt-1 w-2 h-2 shrink-0 rounded-full ${ok ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+    <div className="flex items-start gap-2 px-4 py-2.5 bg-surface-container-lowest border border-outline-variant/40 rounded-lg">
+      <span className={`mt-1 w-2 h-2 shrink-0 rounded-full ${ok ? 'bg-success' : 'bg-primary'}`} />
       <div className="min-w-0">
-        <span className="text-sm font-medium text-stone-700 dark:text-stone-200">{label}</span>
-        <span className="text-sm text-stone-500 dark:text-stone-400"> — {ok ? okText : missingText}</span>
+        <span className="text-sm font-medium text-on-surface">{label}</span>
+        <span className="text-sm text-on-surface-variant"> — {ok ? okText : missingText}</span>
       </div>
     </div>
   );
@@ -512,7 +512,7 @@ function WizardFooter({
     <div className="flex items-center justify-between">
       <button
         onClick={onBack}
-        className="text-xs text-stone-400 dark:text-stone-500 hover:text-stone-600 dark:hover:text-stone-300 transition-colors"
+        className="text-xs text-on-surface-variant hover:text-on-surface-variant transition-colors"
       >
         Back
       </button>
@@ -520,7 +520,7 @@ function WizardFooter({
         {skippable && (
           <button
             onClick={onNext}
-            className="text-xs text-stone-400 dark:text-stone-500 hover:text-stone-600 dark:hover:text-stone-300 transition-colors"
+            className="text-xs text-on-surface-variant hover:text-on-surface-variant transition-colors"
           >
             {skipLabel}
           </button>
@@ -528,7 +528,7 @@ function WizardFooter({
         <button
           onClick={onNext}
           disabled={!nextEnabled}
-          className="py-2 px-5 bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors"
+          className="py-2 px-5 bg-primary hover:bg-primary disabled:opacity-40 disabled:cursor-not-allowed text-on-primary text-sm font-medium rounded-lg transition-colors"
         >
           {nextLabel}
         </button>
@@ -539,7 +539,7 @@ function WizardFooter({
 
 function CheckIcon() {
   return (
-    <svg className="w-4 h-4 text-emerald-500 shrink-0" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+    <svg className="w-4 h-4 text-success shrink-0" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
       <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
     </svg>
   );

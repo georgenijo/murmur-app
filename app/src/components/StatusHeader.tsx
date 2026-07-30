@@ -10,13 +10,17 @@ interface StatusHeaderProps {
 
 function getStatusDotColor(status: DictationStatus, initialized: boolean): string {
   if (status === 'recording') return 'bg-error';
-  if (status === 'processing') return 'bg-amber-500';
-  if (initialized) return 'bg-emerald-500';
+  if (status === 'starting') return 'bg-primary';
+  if (status === 'recovering') return 'bg-warning';
+  if (status === 'processing') return 'bg-primary';
+  if (initialized) return 'bg-success';
   return 'bg-outline-variant';
 }
 
 function getStatusText(status: DictationStatus, initialized: boolean, duration: number): string {
   if (status === 'recording') return `Recording ${duration}s`;
+  if (status === 'starting') return 'Connecting microphone...';
+  if (status === 'recovering') return 'Recovering microphone...';
   if (status === 'processing') return 'Processing...';
   if (initialized) return 'Ready';
   return 'Initializing...';
@@ -37,7 +41,7 @@ export function StatusHeader({ status, initialized, recordingDuration, onSetting
         <div className="flex items-center gap-2 rounded-full bg-surface-container-low px-3 py-1.5 text-xs font-semibold text-on-surface">
           <span
             aria-hidden="true"
-            className={`h-2 w-2 rounded-full ${statusDotColor} ${status === 'recording' || status === 'processing' ? 'animate-pulse' : ''}`}
+            className={`h-2 w-2 rounded-full ${statusDotColor} ${status !== 'idle' ? 'animate-pulse' : ''}`}
           />
           <span>{statusText}</span>
         </div>

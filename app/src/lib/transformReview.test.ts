@@ -8,21 +8,38 @@ import {
 
 describe('isTransformStateChangedEvent', () => {
   it('accepts a bare state with no errorCode', () => {
-    expect(isTransformStateChangedEvent({ state: 'listening' })).toBe(true);
+    expect(isTransformStateChangedEvent({ state: 'listening', transformPassId: 1 })).toBe(true);
   });
 
   it('accepts a state with a known errorCode', () => {
-    expect(isTransformStateChangedEvent({ state: 'failed', errorCode: 'timeout' })).toBe(true);
+    expect(isTransformStateChangedEvent({
+      state: 'failed',
+      errorCode: 'timeout',
+      transformPassId: 2,
+    })).toBe(true);
   });
 
   it('accepts a state with an unrecognized errorCode instead of rejecting the whole event', () => {
     // Regression: an unknown errorCode used to invalidate the entire event,
     // leaving the popover stuck rendering its prior state forever.
-    expect(isTransformStateChangedEvent({ state: 'failed', errorCode: 'some_future_code' })).toBe(true);
+    expect(isTransformStateChangedEvent({
+      state: 'failed',
+      errorCode: 'some_future_code',
+      transformPassId: 3,
+    })).toBe(true);
   });
 
   it('rejects a payload with an invalid state', () => {
-    expect(isTransformStateChangedEvent({ state: 'not_a_state' })).toBe(false);
+    expect(isTransformStateChangedEvent({
+      state: 'not_a_state',
+      transformPassId: 4,
+    })).toBe(false);
+  });
+
+  it('rejects a missing or invalid transform pass ID', () => {
+    expect(isTransformStateChangedEvent({ state: 'ready' })).toBe(false);
+    expect(isTransformStateChangedEvent({ state: 'ready', transformPassId: 0 })).toBe(false);
+    expect(isTransformStateChangedEvent({ state: 'ready', transformPassId: 1.5 })).toBe(false);
   });
 
   it('rejects non-object payloads', () => {

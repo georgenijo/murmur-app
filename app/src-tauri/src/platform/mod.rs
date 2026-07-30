@@ -11,7 +11,7 @@
 )]
 mod current;
 
-pub(crate) fn cpu_percent() -> f32 {
+pub(crate) fn cpu_percent() -> Option<f32> {
     current::cpu_percent()
 }
 
@@ -41,13 +41,11 @@ pub(super) fn cpu_percent_between(previous: CpuTicks, current: CpuTicks) -> f32 
 pub(super) fn update_cpu_percent(
     previous: &mut Option<CpuTicks>,
     current: Option<CpuTicks>,
-) -> f32 {
+) -> Option<f32> {
     let Some(current) = current else {
-        return 0.0;
+        return None;
     };
-    let percent = previous
-        .map(|sample| cpu_percent_between(sample, current))
-        .unwrap_or(0.0);
+    let percent = previous.map(|sample| cpu_percent_between(sample, current));
     *previous = Some(current);
     percent
 }
@@ -76,11 +74,24 @@ mod tests {
         let baseline = CpuTicks::new(1_000, 4_000);
         let mut previous = Some(baseline);
 
-        assert_eq!(update_cpu_percent(&mut previous, None), 0.0);
+        assert_eq!(update_cpu_percent(&mut previous, None), None);
         assert_eq!(previous, Some(baseline));
         assert_eq!(
             update_cpu_percent(&mut previous, Some(CpuTicks::new(1_025, 4_075))),
-            25.0
+            Some(25.0)
+        );
+    }
+
+    #[test]
+    fn first_sample_is_unavailable_instead_of_zero() {
+        let mut previous = None;
+        assert_eq!(
+            update_cpu_percent(&mut previous, Some(CpuTicks::new(1_000, 4_000))),
+            None
+        );
+        assert_eq!(
+            update_cpu_percent(&mut previous, Some(CpuTicks::new(1_025, 4_075))),
+            Some(25.0)
         );
     }
 }

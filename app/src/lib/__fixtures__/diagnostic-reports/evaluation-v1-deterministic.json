@@ -1,0 +1,108 @@
+{
+  "reportVersion": 1,
+  "fixtureVersion": 1,
+  "generatedAt": "2026-07-21T13:00:00Z",
+  "tier": "deterministic",
+  "privacy": {
+    "localOnly": true,
+    "historyIngestion": false,
+    "networkUsed": false,
+    "systemClipboardUsed": false,
+    "fixtureProvenanceRequired": true
+  },
+  "environment": {
+    "appVersion": "0.19.0",
+    "os": "macos",
+    "arch": "aarch64",
+    "machineLabel": "local-mac",
+    "logicalCpus": 8
+  },
+  "summary": {
+    "total": 1,
+    "passed": 1,
+    "failed": 0,
+    "skipped": 0,
+    "aggregateRawWer": 0,
+    "aggregateNormalizedWer": 0,
+    "aggregateCer": 0,
+    "transformationMatchRate": 1,
+    "commandExactMatchRate": 1,
+    "noChangePreservationRate": 1,
+    "deliveryMatchRate": 1
+  },
+  "cases": [
+    {
+      "id": "deterministic-short",
+      "status": "passed",
+      "failures": [],
+      "provenance": {
+        "kind": "curatedSynthetic",
+        "source": "PRIVATE_PROVENANCE_SENTINEL",
+        "containsRealUserData": false,
+        "deletion": "PRIVATE_DELETION_SENTINEL"
+      },
+      "context": {
+        "bundleId": "PRIVATE_BUNDLE_SENTINEL",
+        "matchedProfile": "PRIVATE_PROFILE_SENTINEL",
+        "fixtureOnly": true
+      },
+      "model": null,
+      "recognition": {
+        "expectedRaw": "PRIVATE_EXPECTED_RAW_SENTINEL",
+        "actualRaw": "PRIVATE_ACTUAL_RAW_SENTINEL",
+        "rawWordErrors": 0,
+        "normalizedWordErrors": 0,
+        "referenceWords": 4,
+        "normalizedReferenceWords": 4,
+        "referenceCharacters": 22,
+        "characterErrors": 0,
+        "rawWer": 0,
+        "normalizedWer": 0,
+        "cer": 0,
+        "boundedAlternativeMatch": true
+      },
+      "transformation": {
+        "expectedFinal": "PRIVATE_EXPECTED_FINAL_SENTINEL",
+        "actualFinal": "PRIVATE_ACTUAL_FINAL_SENTINEL",
+        "exactMatch": true,
+        "commandExactMatch": true,
+        "noChangePreserved": true,
+        "stages": [
+          {
+            "name": "smartFormatting",
+            "outcome": "applied",
+            "changed": true,
+            "durationUs": 120,
+            "text": "PRIVATE_STAGE_TEXT_SENTINEL",
+            "expectationMatch": true
+          }
+        ]
+      },
+      "delivery": {
+        "expected": "PRIVATE_DELIVERY_EXPECTED_SENTINEL",
+        "delivered": "PRIVATE_DELIVERY_ACTUAL_SENTINEL",
+        "exactMatch": true,
+        "attempts": 1,
+        "partialCount": 0,
+        "firstPartialMs": null,
+        "firstPartialApplicability": "notApplicable",
+        "finalOnly": true
+      },
+      "latency": {
+        "rawAsrMs": 10,
+        "transformationMs": 5,
+        "finalizationMs": 1,
+        "deliveryMs": 2,
+        "totalMs": 18
+      },
+      "runtime": {
+        "incrementalCompletion": "notApplicableFinalOnly",
+        "fallbackUsed": false,
+        "fallbackStages": [],
+        "memoryBeforeMb": 100,
+        "memoryAfterMb": 102,
+        "memoryDeltaMb": 2
+      }
+    }
+  ]
+}

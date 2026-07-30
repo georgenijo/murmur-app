@@ -1,6 +1,7 @@
 #[cfg(target_os = "macos")]
 mod alloc;
 mod audio;
+mod audio_lifecycle;
 mod audio_decode;
 // `pub` so the headless benchmark runner (tests/headless_benchmark.rs) can
 // call `benchmark::run` directly with a mock AppHandle; not part of any
@@ -22,6 +23,7 @@ mod knowledge_store;
 pub mod llm_sidecar;
 mod log_shipper;
 mod model_runtime;
+mod performance_metrics;
 mod platform;
 mod resource_monitor;
 mod selection;
@@ -31,8 +33,10 @@ pub mod telemetry;
 pub mod transcriber;
 mod transcript_transform;
 mod transform_apply;
+mod transform_diagnostics;
 pub mod transform_flow;
 mod transform_presets;
+mod transform_trace;
 mod vad;
 mod vocab;
 mod vocabulary_alias;
@@ -54,6 +58,16 @@ pub fn ffi_heap_mb() -> u64 {
     alloc::ffi_heap_mb()
 }
 
+#[cfg(target_os = "macos")]
+pub fn rust_heap_bytes() -> u64 {
+    alloc::rust_heap_bytes()
+}
+
+#[cfg(target_os = "macos")]
+pub fn ffi_heap_bytes() -> u64 {
+    alloc::ffi_heap_bytes()
+}
+
 #[cfg(not(target_os = "macos"))]
 pub fn rust_heap_mb() -> u64 {
     0
@@ -61,6 +75,16 @@ pub fn rust_heap_mb() -> u64 {
 
 #[cfg(not(target_os = "macos"))]
 pub fn ffi_heap_mb() -> u64 {
+    0
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn rust_heap_bytes() -> u64 {
+    0
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn ffi_heap_bytes() -> u64 {
     0
 }
 
@@ -91,8 +115,15 @@ pub(crate) struct State {
     pub(crate) benchmark: std::sync::Arc<benchmark::BenchmarkCoordinator>,
     pub(crate) knowledge: knowledge_store::KnowledgeStore,
     pub(crate) correct_and_teach: correct_and_teach::CorrectAndTeachState,
-    /// Cached notch dimensions (notch_width, menu_bar_height) from setup (main thread).
+    pub(crate) performance: performance_metrics::PerformanceMetrics,
+    pub(crate) transform_diagnostics: transform_diagnostics::TransformDiagnostics,
+    /// Cached overlay screen geometry
+    /// (physical-or-synthetic-notch width, measured menu-bar height) from the
+    /// primary NSScreen. Refreshed on the main thread after display changes.
     pub(crate) notch_info: Mutex<Option<(f64, f64)>>,
+    /// Complete primary-display snapshot used to coalesce native screen
+    /// notifications and skip geometrically identical updates.
+    pub(crate) display_snapshot: Mutex<Option<commands::overlay::DisplaySnapshot>>,
     /// The selection-bounds anchor from the most recent `show_transform_popover`
     /// call, so `set_transform_popover_expanded` can resize/reposition for a
     /// new size class without the caller re-supplying the anchor.
@@ -196,7 +227,10 @@ pub fn run() {
             benchmark: std::sync::Arc::new(benchmark::BenchmarkCoordinator::new()),
             knowledge: knowledge_store::KnowledgeStore::default(),
             correct_and_teach: correct_and_teach::CorrectAndTeachState::default(),
+            performance: performance_metrics::PerformanceMetrics::default(),
+            transform_diagnostics: transform_diagnostics::TransformDiagnostics::default(),
             notch_info: Mutex::new(None),
+            display_snapshot: Mutex::new(None),
             transform_popover_anchor: Mutex::new(None),
             transform_main_was_visible: Mutex::new(None),
             transform_runtime: std::sync::Arc::new(llm_sidecar::LlmSidecar::new()),
@@ -209,6 +243,7 @@ pub fn run() {
             commands::recording::start_native_recording,
             commands::recording::stop_native_recording,
             commands::recording::cancel_native_recording,
+            commands::recording::cancel_audio_initialization,
             commands::recording::count_vocab_tokens,
             commands::recording::preview_vocabulary_aliases,
             commands::recording::transcribe_file,
@@ -218,6 +253,7 @@ pub fn run() {
             commands::recording::refresh_ide_context,
             commands::recording::clear_ide_context,
             commands::correct_and_teach::propose_learned_correction,
+            commands::correct_and_teach::propose_specific_learned_correction,
             commands::correct_and_teach::confirm_learned_correction,
             commands::correct_and_teach::discard_learned_correction_proposal,
             commands::permissions::open_system_preferences,
@@ -261,10 +297,23 @@ pub fn run() {
             commands::knowledge::inspect_knowledge_import,
             commands::knowledge::import_knowledge_from_file,
             commands::knowledge::delete_all_knowledge,
+            commands::export::save_text_export,
+            commands::theme::read_theme_file,
+            commands::theme::write_theme_file,
             commands::logging::get_log_contents,
             commands::logging::clear_logs,
             commands::logging::log_frontend,
             commands::logging::open_log_viewer,
+            commands::performance::list_performance_runs,
+            commands::performance::get_performance_run,
+            commands::performance::get_performance_resource_window,
+            commands::performance::clear_performance_diagnostics,
+            commands::transform_diagnostics::arm_next_transform_diagnostic_capture,
+            commands::transform_diagnostics::get_transform_diagnostic_capture_status,
+            commands::transform_diagnostics::list_transform_attempts,
+            commands::transform_diagnostics::list_transform_diagnostic_captures,
+            commands::transform_diagnostics::get_transform_diagnostic_capture,
+            commands::transform_diagnostics::delete_transform_diagnostic_capture,
             commands::models::check_model_exists,
             commands::models::check_specific_model_exists,
             commands::models::get_model_runtime_catalog,
@@ -310,6 +359,32 @@ pub fn run() {
         .setup(|app| {
             telemetry::init(app.handle().clone());
             log_shipper::start();
+
+            let performance_root = app.path().app_data_dir()?.join("diagnostics");
+            if let Err(error) = app
+                .state::<State>()
+                .performance
+                .initialize(performance_root.clone(), Some(app.handle().clone()))
+            {
+                tracing::warn!(
+                    target: "system",
+                    diagnostics_available = false,
+                    "performance diagnostics store unavailable: {}",
+                    error
+                );
+            }
+            if let Err(error) = app
+                .state::<State>()
+                .transform_diagnostics
+                .initialize(performance_root.join("transforms"))
+            {
+                tracing::warn!(
+                    target: "system",
+                    diagnostics_available = false,
+                    "transform diagnostics store unavailable: {}",
+                    error
+                );
+            }
 
             let knowledge_root = app.path().app_data_dir()?.join("knowledge");
             let knowledge_status = app.state::<State>().knowledge.initialize(knowledge_root);
@@ -360,10 +435,13 @@ pub fn run() {
             }
 
             // Cache notch dimensions on the main thread (safe for NSScreen APIs).
-            let notch = commands::overlay::detect_notch_info();
+            let display_snapshot =
+                commands::overlay::capture_display_snapshot(app.handle());
+            let notch = display_snapshot.notch_info;
             {
                 let state = app.state::<State>();
                 *state.notch_info.lock_or_recover() = notch;
+                *state.display_snapshot.lock_or_recover() = Some(display_snapshot);
             }
 
             // Re-enable mouse events on the overlay window.
@@ -385,6 +463,7 @@ pub fn run() {
             // Listen for display config changes (monitor plug/unplug, lid open/close)
             // to re-detect notch info and reposition the overlay.
             commands::overlay::register_screen_change_observer(app.handle().clone());
+            audio_lifecycle::register_sleep_wake_observer();
 
             // Overwrite the transform-review window's initial size from Rust's
             // COMPACT_W/COMPACT_H so tauri.conf.json's matching literal is only

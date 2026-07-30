@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => {
   return {
     startRecording: vi.fn(),
     stopRecording: vi.fn(),
+    cancelRecording: vi.fn(),
     listeners,
     listen: vi.fn(async (event: string, handler: (event: { payload: unknown }) => void) => {
       listeners.set(event, handler);
@@ -20,6 +21,7 @@ const mocks = vi.hoisted(() => {
 vi.mock('../dictation', () => ({
   startRecording: mocks.startRecording,
   stopRecording: mocks.stopRecording,
+  cancelRecording: mocks.cancelRecording,
 }));
 
 vi.mock('@tauri-apps/api/event', () => ({
@@ -37,12 +39,6 @@ vi.mock('../log', () => ({
 import { useRecordingState } from './useRecordingState';
 
 type RecordingState = ReturnType<typeof useRecordingState>;
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => { resolve = done; });
-  return { promise, resolve };
-}
 
 describe('useRecordingState transition ordering', () => {
   let container: HTMLDivElement;
@@ -71,46 +67,89 @@ describe('useRecordingState transition ordering', () => {
 
   afterEach(async () => {
     await act(async () => root.unmount());
+    vi.useRealTimers();
     container.remove();
   });
 
-  it('waits for in-flight recorder startup before invoking stop', async () => {
-    const startup = deferred<{ type: string; state: string }>();
-    mocks.startRecording.mockReturnValueOnce(startup.promise);
-    mocks.stopRecording.mockResolvedValueOnce({
-      type: 'transcription',
-      state: 'idle',
-      text: '',
+  it('cancels promptly while microphone initialization is still starting', async () => {
+    mocks.startRecording.mockResolvedValueOnce({
+      type: 'recording_starting',
+      state: 'starting',
     });
+    mocks.cancelRecording.mockResolvedValueOnce(undefined);
 
-    let startPromise!: Promise<void>;
-    await act(async () => {
-      startPromise = current.handleStart();
-      await Promise.resolve();
-    });
-
-    let stopPromise!: Promise<void>;
-    await act(async () => {
-      stopPromise = current.handleStop();
-      await Promise.resolve();
-    });
+    await act(async () => current.handleStart());
+    expect(current.status).toBe('starting');
+    await act(async () => current.handleStop());
 
     expect(mocks.startRecording).toHaveBeenCalledOnce();
     expect(mocks.stopRecording).not.toHaveBeenCalled();
-
-    startup.resolve({ type: 'recording_started', state: 'recording' });
+    expect(mocks.cancelRecording).toHaveBeenCalledOnce();
     await act(async () => {
-      await Promise.all([startPromise, stopPromise]);
+      mocks.listeners.get('recording-status-changed')?.({ payload: 'recovering' });
+      mocks.listeners.get('recording-status-changed')?.({ payload: 'idle' });
+    });
+    expect(current.status).toBe('idle');
+  });
+
+  it('does not let a start response overwrite an earlier readiness event', async () => {
+    mocks.startRecording.mockImplementationOnce(async () => {
+      mocks.listeners.get('recording-status-changed')?.({ payload: 'starting' });
+      mocks.listeners.get('recording-status-changed')?.({ payload: 'recording' });
+      return {
+        type: 'recording_starting',
+        state: 'starting',
+      };
     });
 
-    expect(mocks.stopRecording).toHaveBeenCalledOnce();
-    expect(current.status).toBe('idle');
+    await act(async () => current.handleStart());
+
+    expect(current.status).toBe('recording');
+  });
+
+  it('does not let a transform-owned supervisor response overwrite dictation idle', async () => {
+    for (const type of ['audio_recovering', 'already_starting']) {
+      mocks.startRecording.mockImplementationOnce(async () => {
+        mocks.listeners.get('recording-status-changed')?.({ payload: 'starting' });
+        mocks.listeners.get('recording-status-changed')?.({ payload: 'idle' });
+        return {
+          type,
+          state: type === 'audio_recovering' ? 'recovering' : 'starting',
+        };
+      });
+
+      await act(async () => current.handleStart());
+      expect(current.status).toBe('idle');
+    }
+  });
+
+  it('starts duration at readiness rather than start acceptance', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-28T16:00:00Z'));
+    mocks.startRecording.mockResolvedValueOnce({
+      type: 'recording_starting',
+      state: 'starting',
+    });
+
+    await act(async () => current.handleStart());
+    await act(async () => {
+      vi.advanceTimersByTime(10_000);
+    });
+    expect(current.recordingDuration).toBe(0);
+
+    await act(async () => {
+      mocks.listeners.get('recording-status-changed')?.({ payload: 'recording' });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(2_100);
+    });
+    expect(current.recordingDuration).toBe(2);
   });
 
   it('records history and stats exactly once from the final completion event', async () => {
     mocks.startRecording.mockResolvedValueOnce({
-      type: 'recording_started',
-      state: 'recording',
+      type: 'recording_starting',
+      state: 'starting',
     });
     mocks.stopRecording.mockImplementationOnce(async () => {
       mocks.listeners.get('transcription-complete')?.({
@@ -128,6 +167,9 @@ describe('useRecordingState transition ordering', () => {
     });
 
     await act(async () => current.handleStart());
+    await act(async () => {
+      mocks.listeners.get('recording-status-changed')?.({ payload: 'recording' });
+    });
     await act(async () => current.handleStop());
 
     expect(mocks.addEntry).toHaveBeenCalledTimes(1);

@@ -6,12 +6,65 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- A Core Audio stream build that never returns no longer leaves Murmur in `Recovering` until restart. Deadline-expired and user-cancelled generations close their callback gate, release logical microphone ownership immediately, and are joined by a background reaper if macOS eventually returns, so a fresh recording attempt can start without relaunching (#389).
+
+## [0.23.0] - 2026-07-29
+
 ### Added
+
+- History search now starts as a compact toolbar control, animates open on hover, remains pinned while focused or filtering, and supports predictable Escape/close behavior with accessible keyboard and reduced-motion states (#391).
+
+### Fixed
+
+- Developer vocabulary from project scans and built-in technical terms now activates only for apps explicitly configured with the Code / technical writing style or Local IDE context, preventing identifiers such as `toBe` and `all__` from leaking into ordinary prose (#390).
+- Long What's New release notes now scroll independently while keeping the modal title and primary action visible (#385).
+
+## [0.22.1] - 2026-07-29
+
+### Added
+
+- Microphone initialization now has explicit Starting and Recovering states, visible and cancelable startup, a 5-second still-connecting signal, a 30-second hard deadline, and truthful guidance when macOS audio teardown remains blocked (#380).
+- Selected-text transform capture now remains in Connecting until both its frozen selection and exact microphone owner are ready; slow startup and recovery are visible, and releasing before readiness offers Retry instead of silently losing speech (#380).
+
+### Fixed
+
+- Slow Core Audio initialization can no longer detach timed-out capture threads or allow overlapping microphone owners. One supervisor retains and joins every worker, rejects starts during recovery, suppresses late readiness and samples from cancelled generations, and starts recording duration only after the stream is ready (#380).
+- Display-change notification storms are coalesced for 125ms and ignored when the complete monitor/notch snapshot is unchanged, avoiding repeated overlay repositioning during an identical macOS event burst (#380).
+
+## [0.22.0] - 2026-07-28
+
+### Added
+
+- After an automatic update relaunches, Murmur now shows a one-time What's New summary with the release's features and fixes. Generated GitHub release notes are embedded directly in the updater manifest so the same sanitized Markdown is available before and after installation (#379).
+- **Local Appearance Theme Engine** adds System, Light, and Dark modes; accessible custom accent, background, foreground, and contrast controls; synchronized main/log-viewer semantic tokens and native title bars; flash-free cached first paint; exact Sonic reset; and bounded atomic JSON import/export that never touches the clipboard. Overlay and transform-review transparency and always-dark glass remain unchanged (#377).
+
+### Fixed
+
+- Escape now cancels selected-text transforms during capture, instruction listening, and local-model thinking, while ready/failed reviews retain their existing popover-local Escape behavior (#347).
+
+## [0.21.1] - 2026-07-23
+
+### Fixed
+- Production app bundles now contain only the Murmur executable and signed local-LLM sidecar. The mock sidecar and local evaluation CLI remain available as Cargo examples for development and CI, and release finalization fails closed on any unexpected executable (#324).
+
+## [0.21.0] - 2026-07-23
+
+### Added
+- **Selected-text Transform** captures an explicit selection, records a local instruction, runs a sandboxed on-device language-model sidecar, and presents a review-first proposal with Apply, Retry, Cancel, and bounded Undo. The flow includes independent hotkeys, presets and saved transforms, secure-field fail-closed behavior, clipboard restoration, concurrency guards, and privacy-safe pass tracing (#312, #332).
+- **Persistent Performance and Runs diagnostics** replace the transient metrics view with bounded local run history, CPU and memory timelines, transform-stage correlation, incomplete-run rejection, and a dashboard for comparing latency and resource behavior without capturing dictated text (#351, #352).
+- **Portable diagnostics reports** can be imported into a session-only Reports workspace for schema-validated inspection and side-by-side comparison. Imported data is never silently adopted into local run history, and invalid or oversized reports fail closed (#353).
+- **Exact-term Correct and Teach** lets users select one heard term inside a longer sentence and review the precise replacement before saving it, avoiding accidental sentence-wide learned rules (#349).
 - **Performance Lab report export** — each saved benchmark report can now be copied as full JSON, saved to a configurable folder (default `Documents/Murmur`) under a self-identifying `benchmark-<version>-<machine>-<createdAt>.json` name, and its folder revealed in Finder. An optional auto-save writes every completed run to disk so reports survive the 10-slot in-app cap. All local, no network (#308).
 - **Local dictation evaluation harness** adds strict versioned fixtures, a deterministic no-hardware CI tier, an opt-in installed-model/audio tier, and machine-readable recognition/transformation/delivery reports through `murmur-eval` (#267).
 - **Transform selection capture now works in Chromium/Electron apps** (Brave, Chrome, Slack, …): when the webview exposes no accessible selection — or its accessibility tree fails or times out entirely, as Chromium's routinely does — capture falls back to a sentinel-guarded synthetic Cmd+C that restores the clipboard afterwards. The fallback only reproduces the user's own copy gesture: positively detected password fields and denied Accessibility stay fail-closed, and secure fields refuse Copy system-wide, so against them the fallback can only time out, never read (#329).
 
 ### Fixed
+- Transform diagnostics validate stage names and values before persistence, preserving the telemetry privacy boundary while still allowing performance correlation (#332).
+- Imported diagnostics reject incomplete runs that claim success, preventing misleading comparisons in Reports (#353).
+- Correct and Teach now uses uniquely provable case-insensitive context alignment, so harmless casing differences cannot turn a one-word correction into a broad sentence rule; ambiguous repeated-token alignments fail closed (#348).
+- The transform instruction mic now arms the moment the key is pressed, before selection capture, instead of after it. In Chromium apps capture can take over a second (accessibility warm-up retries + the clipboard fallback), and arming afterwards chopped the start off the spoken instruction — the reproducible "Didn't catch an instruction" in browsers. Audio from an aborted capture (secure field, error, cancel) is stopped and never transcribed (#329).
 - A transform keypress that is refused because dictation, a benchmark, a file transcription, or another transform owns the pipeline now flashes an amber busy indicator on the overlay instead of being silently ignored (#329).
 - Pressing the dictation key with a **ready** (Approve/Retry) transform popover open now dismisses the review — discarding the unaccepted proposal, exactly as Cancel would — and starts recording, instead of silently refusing until the popover was dismissed manually. Extends the #327 failed-review auto-dismiss to all reviews (#329).
 - Rapidly pressing the transform key can no longer surface the hidden main window: the popover focus guard now uses a sticky main-window-visibility snapshot taken at the first popover show of a pass, instead of a per-call snapshot that could observe (and then preserve) a transiently-surfaced main window (#329).
@@ -24,6 +77,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ### Added
 - **Unified Settings and trustworthy Performance Lab state** reorganizes Settings into six task-oriented pages, adds a bounded memory-only running-app picker with manual bundle-ID fallback, and records privacy-safe environment/corpus/execution metadata in versioned benchmark reports while retaining legacy saved runs (#258).
 - **Correct and Teach** lets users edit the newest local history entry, review one bounded high-confidence replacement, and explicitly save it as global, app, or unambiguous project-scoped knowledge. Learned rules persist locally, run deterministically through Smart Correction, and remain inspectable, editable, disableable, exportable, and deletable in Knowledge; ambiguous edits and Voice Command conflicts fail closed (#251).
+- **Teach specific term** adds an explicit Correct and Teach escape hatch for selecting or entering one exact heard term and written replacement when automatic extraction is too broad or safely fails closed. The local review shows whole-term occurrences, before/after output, and scope while preserving confirmation-only persistence and existing knowledge and Voice Command conflicts (#349).
 - A single transcription model catalog and runtime manager now expose backend capabilities, platform/install state, serialized load/warm/readiness/unload lifecycle, and privacy-safe generation-ordered status events for all seven shipped models (#247).
 - **Voice Commands 2.0** upgrades legacy phrase replacements into typed, persistent local commands with multiline snippets, deterministic date/time variables, explicitly permitted clipboard insertion, global/per-app scopes, conflict validation, and a no-paste preview/test UI. Existing pairs migrate idempotently and retain built-in-first literal behavior (#248).
 - **Performance Lab trust overhaul** — benchmark scoring now reports three tiers per model and fixture: raw decoder WER, normalized WER (digit/word, unit, and compound formatting differences no longer count as errors, #270), and delivered WER measuring the text after the production transform pipeline with the whisper dev-vocab prompt applied (#271). Five new stress fixtures (jargon, numbers, disfluent, 64s extra-long, fast speech) de-saturate model ranking (#273), one-time shared Metal/ANE init is measured separately instead of being charged to the first model loaded (#274), and a headless runner (`tests/headless_benchmark.rs`) produces full benchmark reports from the command line. Validation data and remaining caveats: `docs/investigations/benchmark-validation-2026-07-20.md`.

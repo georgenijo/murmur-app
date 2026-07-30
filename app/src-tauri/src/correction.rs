@@ -478,6 +478,56 @@ pub(crate) fn normalize_alias(value: &str) -> String {
         .to_lowercase()
 }
 
+/// Apply one reviewed learned replacement with the same case-insensitive,
+/// Unicode-aware whole-term contract used by the immutable correction matcher.
+/// The count is returned for Correct and Teach review; no matcher state is
+/// mutated and no content leaves the caller.
+pub(crate) fn preview_exact_replacement(
+    text: &str,
+    source: &str,
+    replacement: &str,
+) -> (String, u32) {
+    let spoken = normalize_alias(source).chars().collect::<Vec<_>>();
+    if spoken.is_empty() {
+        return (text.to_string(), 0);
+    }
+
+    let mut output = String::with_capacity(text.len());
+    let mut copy_start = 0usize;
+    let mut scan = 0usize;
+    let mut count = 0u32;
+    while scan < text.len() {
+        let before_ok = text[..scan]
+            .chars()
+            .next_back()
+            .is_none_or(|character| !character.is_alphanumeric());
+        let matched_end = before_ok
+            .then(|| explicit_alias_match_end(text, scan, &spoken))
+            .flatten()
+            .filter(|end| {
+                text[*end..]
+                    .chars()
+                    .next()
+                    .is_none_or(|character| !character.is_alphanumeric())
+            });
+        if let Some(end) = matched_end {
+            output.push_str(&text[copy_start..scan]);
+            output.push_str(replacement);
+            count = count.saturating_add(1);
+            scan = end;
+            copy_start = end;
+        } else {
+            scan += text[scan..]
+                .chars()
+                .next()
+                .expect("scan always points at a character boundary")
+                .len_utf8();
+        }
+    }
+    output.push_str(&text[copy_start..]);
+    (output, count)
+}
+
 /// Split a written identifier into its likely spoken form: lowercase words joined
 /// by spaces. Handles camelCase, PascalCase, snake_case, kebab-case, and
 /// letter↔digit boundaries. `useEffect` → "use effect", `rePivot` → "re pivot",
@@ -649,6 +699,23 @@ mod tests {
         let terms: Vec<String> = terms.iter().map(|s| s.to_string()).collect();
         // include_builtins = true so the abbrev tests (stderr/stdin) exercise them.
         CorrectionMatcher::build(&terms, &[], true, true)
+    }
+
+    #[test]
+    fn reviewed_replacement_preview_uses_production_boundaries() {
+        let (preview, count) =
+            preview_exact_replacement("Neo, NEO and neolithic José", "neo", "Nijo");
+        assert_eq!(preview, "Nijo, Nijo and neolithic José");
+        assert_eq!(count, 2);
+
+        let (preview, count) =
+            preview_exact_replacement("use   recording state", "use recording state", "hook");
+        assert_eq!(preview, "use   recording state");
+        assert_eq!(count, 0);
+
+        let (preview, count) = preview_exact_replacement("JOSÉ josé", "José", "George");
+        assert_eq!(preview, "George George");
+        assert_eq!(count, 2);
     }
 
     // ---- derive_spoken_form ----

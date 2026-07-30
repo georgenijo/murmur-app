@@ -113,6 +113,20 @@ def signature_details(path: Path) -> str:
     return result.stdout + result.stderr
 
 
+def require_exact_macos_executables(
+    app: Path, main_binary: Path, helper: Path
+) -> None:
+    """Fail closed unless the app ships exactly its two production executables."""
+    executable_dir = app / "Contents" / "MacOS"
+    expected = {main_binary.name, helper.name}
+    actual = {path.name for path in executable_dir.iterdir()}
+    if actual != expected:
+        raise SystemExit(
+            "app bundle executables differ: "
+            f"expected={sorted(expected)!r} actual={sorted(actual)!r}"
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--app", type=Path, required=True)
@@ -132,6 +146,7 @@ def main() -> int:
     main_binary = app / "Contents" / "MacOS" / str(main_name)
     if not main_binary.is_file() or main_binary == helper:
         raise SystemExit("app bundle has an invalid main executable")
+    require_exact_macos_executables(app, main_binary, helper)
 
     sign_nested_code(app, args.identity, exclude={helper, main_binary})
     sign(helper, args.identity, args.helper_entitlements, HELPER_IDENTIFIER)

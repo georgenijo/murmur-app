@@ -261,6 +261,20 @@ pub fn show_transform_popover(
     show_popover_internal(&app, state.inner(), anchor)
 }
 
+fn trace_effect_error<T, E>(
+    transform_pass_id: Option<u64>,
+    effect: &'static str,
+    error_code: &'static str,
+    result: Result<T, E>,
+) -> Result<T, E> {
+    if result.is_err() {
+        if let Some(pass_id) = transform_pass_id {
+            crate::transform_trace::effect(pass_id, effect, "error", Some(error_code));
+        }
+    }
+    result
+}
+
 /// Non-command core of `show_transform_popover`, callable directly from the
 /// transform-flow orchestrator (issue #312 PR-C2) with plain references rather
 /// than a `tauri::State` extractor.
@@ -269,6 +283,7 @@ pub(crate) fn show_popover_internal(
     state: &State,
     anchor: Option<Rect>,
 ) -> Result<(), String> {
+    let transform_pass_id = state.app_state.active_transform_pass_id();
     *state.transform_popover_anchor.lock_or_recover() = anchor;
     // Sticky main-window visibility snapshot (issue #329): record it at the
     // FIRST show of a pass only — `set_focusable_internal`'s activation guard
@@ -290,19 +305,34 @@ pub(crate) fn show_popover_internal(
             let screen_frame = active_screen_visible_frame(app, state);
             let geometry = popover_geometry_for(anchor, screen_frame);
             let target = geometry.compact;
-            window
-                .set_size(tauri::LogicalSize::new(target.width, target.height))
+            trace_effect_error(
+                transform_pass_id,
+                "show",
+                "set_size_failed",
+                window.set_size(tauri::LogicalSize::new(target.width, target.height)),
+            )
                 .map_err(|e| e.to_string())?;
-            window
-                .set_position(tauri::LogicalPosition::new(target.x, target.y))
+            trace_effect_error(
+                transform_pass_id,
+                "show",
+                "set_position_failed",
+                window.set_position(tauri::LogicalPosition::new(target.x, target.y)),
+            )
                 .map_err(|e| e.to_string())?;
             apply_popover_window_treatment(&window, true);
-            window.show().map_err(|e| e.to_string())?;
+            trace_effect_error(transform_pass_id, "show", "show_failed", window.show())
+                .map_err(|e| e.to_string())?;
             let _ = window.set_ignore_cursor_events(false);
+            if let Some(pass_id) = transform_pass_id {
+                crate::transform_trace::effect(pass_id, "show", "ok", None);
+            }
             Ok(())
         }
         None => {
             tracing::warn!(target: "system", "show_transform_popover: transform-review window not found — skipping");
+            if let Some(pass_id) = transform_pass_id {
+                crate::transform_trace::effect(pass_id, "show", "error", Some("window_missing"));
+            }
             Ok(())
         }
     }
@@ -316,6 +346,9 @@ pub fn hide_transform_popover(app: tauri::AppHandle) -> Result<(), String> {
 
 /// Non-command core of `hide_transform_popover` (issue #312 PR-C2).
 pub(crate) fn hide_popover_internal(app: &tauri::AppHandle) -> Result<(), String> {
+    let transform_pass_id = app
+        .try_state::<State>()
+        .and_then(|state| state.app_state.active_transform_pass_id());
     // The pass is over — drop the sticky main-visibility snapshot so the next
     // pass re-records it (issue #329). Via `try_state` rather than a `state`
     // parameter so the many existing call sites keep their signature.
@@ -323,9 +356,23 @@ pub(crate) fn hide_popover_internal(app: &tauri::AppHandle) -> Result<(), String
         *state.transform_main_was_visible.lock_or_recover() = None;
     }
     match app.get_webview_window("transform-review") {
-        Some(window) => window.hide().map_err(|e| e.to_string()),
+        Some(window) => trace_effect_error(
+            transform_pass_id,
+            "hide",
+            "hide_failed",
+            window.hide(),
+        )
+        .map(|()| {
+            if let Some(pass_id) = transform_pass_id {
+                crate::transform_trace::effect(pass_id, "hide", "ok", None);
+            }
+        })
+        .map_err(|e| e.to_string()),
         None => {
             tracing::warn!(target: "system", "hide_transform_popover: transform-review window not found — skipping");
+            if let Some(pass_id) = transform_pass_id {
+                crate::transform_trace::effect(pass_id, "hide", "error", Some("window_missing"));
+            }
             Ok(())
         }
     }
@@ -363,6 +410,7 @@ pub(crate) fn set_expanded_internal(
     state: &State,
     expanded: bool,
 ) -> Result<PopoverBox, String> {
+    let transform_pass_id = state.app_state.active_transform_pass_id();
     let anchor = *state.transform_popover_anchor.lock_or_recover();
     let screen_frame = active_screen_visible_frame(app, state);
     let geometry = popover_geometry_for(anchor, screen_frame);
@@ -370,16 +418,30 @@ pub(crate) fn set_expanded_internal(
 
     match app.get_webview_window("transform-review") {
         Some(window) => {
-            window
-                .set_size(tauri::LogicalSize::new(target.width, target.height))
+            trace_effect_error(
+                transform_pass_id,
+                "expand",
+                "set_size_failed",
+                window.set_size(tauri::LogicalSize::new(target.width, target.height)),
+            )
                 .map_err(|e| e.to_string())?;
-            window
-                .set_position(tauri::LogicalPosition::new(target.x, target.y))
+            trace_effect_error(
+                transform_pass_id,
+                "expand",
+                "set_position_failed",
+                window.set_position(tauri::LogicalPosition::new(target.x, target.y)),
+            )
                 .map_err(|e| e.to_string())?;
+            if let Some(pass_id) = transform_pass_id {
+                crate::transform_trace::effect(pass_id, "expand", "ok", None);
+            }
             Ok(target)
         }
         None => {
             tracing::warn!(target: "system", "set_transform_popover_expanded: transform-review window not found");
+            if let Some(pass_id) = transform_pass_id {
+                crate::transform_trace::effect(pass_id, "expand", "error", Some("window_missing"));
+            }
             Err("transform-review window not found".to_string())
         }
     }
@@ -402,8 +464,32 @@ pub fn set_transform_popover_focusable(app: tauri::AppHandle, focusable: bool) -
     set_focusable_internal(&app, focusable)
 }
 
+/// Pure re-hide decision for `set_focusable_internal` (issues #329 + #337).
+/// The main window must be re-hidden after `set_focus` when EITHER:
+///
+/// - the sticky pass-start snapshot says it was hidden (`Some(false)`) — the
+///   #329 guarantee: under rapid repeated presses a per-call check can catch
+///   the window transiently surfaced by a previous `set_focus` and would
+///   wrongly disable the guard; or
+/// - it is hidden RIGHT NOW (`currently_visible == Some(false)`) — the #337
+///   defect-A fix: the user closed the main window mid-pass, so focusing the
+///   popover must not resurrect it, even though the pass-start snapshot says
+///   "visible".
+///
+/// `currently_visible` is `None` when there is no main window (nothing to
+/// re-hide) and `true` on an `is_visible()` error (err on the side of not
+/// force-hiding a window the user may be using).
+fn should_rehide_main(sticky_was_visible: Option<bool>, currently_visible: Option<bool>) -> bool {
+    let sticky_hidden = sticky_was_visible.map(|was| !was).unwrap_or(false);
+    let currently_hidden = currently_visible.map(|is| !is).unwrap_or(false);
+    sticky_hidden || currently_hidden
+}
+
 /// Non-command core of `set_transform_popover_focusable` (issue #312 PR-C2).
 pub(crate) fn set_focusable_internal(app: &tauri::AppHandle, focusable: bool) -> Result<(), String> {
+    let transform_pass_id = app
+        .try_state::<State>()
+        .and_then(|state| state.app_state.active_transform_pass_id());
     match app.get_webview_window("transform-review") {
         Some(window) => {
             apply_popover_window_treatment(&window, !focusable);
@@ -416,16 +502,13 @@ pub(crate) fn set_focusable_internal(app: &tauri::AppHandle, focusable: bool) ->
                 // window — recording "visible" and disabling the re-hide
                 // guard, which leaks the main window onto the screen. Fall
                 // back to a per-call snapshot only if no show recorded one.
-                let main_was_hidden = app
+                let sticky_was_visible = app
                     .try_state::<State>()
-                    .and_then(|s| *s.transform_main_was_visible.lock_or_recover())
-                    .map(|was_visible| !was_visible)
-                    .unwrap_or_else(|| {
-                        main_window
-                            .as_ref()
-                            .map(|w| !w.is_visible().unwrap_or(true))
-                            .unwrap_or(false)
-                    });
+                    .and_then(|s| *s.transform_main_was_visible.lock_or_recover());
+                let currently_visible = main_window
+                    .as_ref()
+                    .map(|w| w.is_visible().unwrap_or(true));
+                let main_was_hidden = should_rehide_main(sticky_was_visible, currently_visible);
 
                 let _ = window.set_focus();
 
@@ -438,10 +521,16 @@ pub(crate) fn set_focusable_internal(app: &tauri::AppHandle, focusable: bool) ->
                     }
                 }
             }
+            if let Some(pass_id) = transform_pass_id {
+                crate::transform_trace::effect(pass_id, "focusable", "ok", None);
+            }
             Ok(())
         }
         None => {
             tracing::warn!(target: "system", "set_transform_popover_focusable: transform-review window not found — skipping");
+            if let Some(pass_id) = transform_pass_id {
+                crate::transform_trace::effect(pass_id, "focusable", "error", Some("window_missing"));
+            }
             Ok(())
         }
     }
@@ -661,5 +750,38 @@ mod tests {
             .unwrap()
             .insert("extraField".into(), serde_json::json!(1));
         assert!(serde_json::from_value::<TransformPopoverGeometry>(value).is_err());
+    }
+
+    // ---- should_rehide_main (issues #329 + #337) ---------------------------
+
+    #[test]
+    fn rehides_when_hidden_at_pass_start_even_if_transiently_surfaced_now() {
+        // The #329 guarantee: rapid repeated presses can catch the main
+        // window transiently surfaced by a previous set_focus. The sticky
+        // pass-start snapshot ("hidden") must keep the guard armed.
+        assert!(should_rehide_main(Some(false), Some(true)));
+        assert!(should_rehide_main(Some(false), Some(false)));
+    }
+
+    #[test]
+    fn rehides_when_user_closed_the_main_window_mid_pass() {
+        // Issue #337 defect A: snapshot says "visible" (it was, at pass
+        // start) but the user closed the window while the transform was
+        // thinking. Focusing the popover must not resurrect it.
+        assert!(should_rehide_main(Some(true), Some(false)));
+        // Same with no snapshot recorded at all.
+        assert!(should_rehide_main(None, Some(false)));
+    }
+
+    #[test]
+    fn does_not_rehide_a_window_that_was_and_is_visible() {
+        assert!(!should_rehide_main(Some(true), Some(true)));
+        assert!(!should_rehide_main(None, Some(true)));
+    }
+
+    #[test]
+    fn does_not_rehide_when_there_is_no_main_window() {
+        assert!(!should_rehide_main(None, None));
+        assert!(!should_rehide_main(Some(true), None));
     }
 }

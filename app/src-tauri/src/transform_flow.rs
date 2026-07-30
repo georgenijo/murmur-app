@@ -27,8 +27,8 @@
 //! ## Privacy (hard invariant)
 //!
 //! Instruction / original / proposed text NEVER reaches an event payload, a
-//! log line, or telemetry. `transform-state-changed` carries only
-//! `{ state, errorCode }` (both stable enums). The review text is pulled by the
+//! log line, or telemetry. `transform-state-changed` carries only content-free
+//! `{ state, errorCode, transformPassId }` metadata. The review text is pulled by the
 //! popover window alone via `get_transform_review_content`. The state-machine
 //! action list and every `emit_*` here are structurally incapable of carrying
 //! that text.
@@ -49,10 +49,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::llm_sidecar::{LlmSidecar, TransformError};
+use crate::performance_metrics::{
+    AcceleratorV1, ContentFreeInputSummaryV1, MeasurementV1, ModelWarmStateV1, PerformanceStageV1,
+    RunCorrelationV1, RunOutcomeV1, RuntimeBackendV1, RuntimeIdentityV1, RuntimeRoleV1,
+    StableRunErrorV1, StageOutcomeV1, StageTimingV1, TransformFollowUpKindV1, TransformFollowUpV1,
+    UnavailableReasonV1,
+};
 use crate::selection::{SelectionError, TransformSnapshot};
 use crate::state::{AppState, DictationStatus, TransformStatus};
 use crate::transform_apply::{self, ApplyError};
 use crate::MutexExt;
+use tauri::Manager;
 
 /// Minimum hold before a transform-key release is treated as a real
 /// instruction rather than an accidental tap. Enforced frontend-side (the
@@ -66,6 +73,182 @@ pub const DEFAULT_TRANSFORM_DEADLINE: Duration = Duration::from_millis(20_000);
 /// How long the "applied" confirmation lingers before the popover auto-hides.
 pub const APPLIED_LINGER_MS: u64 = 4_000;
 
+fn transform_correlation(transform_pass_id: u64) -> RunCorrelationV1 {
+    RunCorrelationV1::SelectedTextTransform { transform_pass_id }
+}
+
+fn performance_stage_for_transform_status(status: TransformStatus) -> PerformanceStageV1 {
+    match status {
+        TransformStatus::Capturing => PerformanceStageV1::SelectedTextCapture,
+        TransformStatus::Connecting | TransformStatus::Listening => {
+            PerformanceStageV1::InstructionCapture
+        }
+        TransformStatus::Thinking => PerformanceStageV1::Generation,
+        TransformStatus::ReviewPending | TransformStatus::Idle => PerformanceStageV1::ReviewReady,
+        TransformStatus::Applying => PerformanceStageV1::Apply,
+    }
+}
+
+fn generation_runtime(warm_state: ModelWarmStateV1) -> RuntimeIdentityV1 {
+    RuntimeIdentityV1 {
+        role: RuntimeRoleV1::Generation,
+        model_id: crate::llm_sidecar::TRANSFORM_MODEL_ID.to_string(),
+        backend: RuntimeBackendV1::LlamaCpp,
+        accelerator: AcceleratorV1::MetalGpu,
+        warm_state,
+    }
+}
+
+fn begin_transform_performance(
+    state: &crate::State,
+    transform_pass_id: u64,
+) -> Option<crate::performance_metrics::PerformanceRunGuard> {
+    let model_name = state
+        .app_state
+        .dictation
+        .lock_or_recover()
+        .model_name
+        .clone();
+    let mut runtimes = crate::commands::recording::runtime_identity_for_role(
+        &model_name,
+        ModelWarmStateV1::Unknown,
+        RuntimeRoleV1::InstructionAsr,
+    );
+    runtimes.push(generation_runtime(ModelWarmStateV1::Unknown));
+    if state
+        .performance
+        .begin_selected_text_transform(transform_pass_id, runtimes)
+        .is_err()
+    {
+        tracing::warn!(
+            target: "system",
+            diagnostics_available = false,
+            transform_pass_id,
+            "transform performance run could not start"
+        );
+        return None;
+    }
+    sample_transform_resources(state);
+    Some(state.performance.guard(
+        transform_correlation(transform_pass_id),
+        PerformanceStageV1::SelectedTextCapture,
+    ))
+}
+
+fn sample_transform_resources(state: &crate::State) {
+    let sample = crate::resource_monitor::sample_resources(&state.transform_runtime);
+    let _ = state.performance.insert_resource_sample(&sample);
+}
+
+fn stage_timing(
+    stage: PerformanceStageV1,
+    duration_ms: MeasurementV1<u64>,
+    outcome: StageOutcomeV1,
+) -> StageTimingV1 {
+    StageTimingV1 {
+        stage,
+        duration_ms,
+        outcome,
+    }
+}
+
+fn record_transform_stage(state: &crate::State, transform_pass_id: u64, timing: StageTimingV1) {
+    let _ = state
+        .performance
+        .record_stage(&transform_correlation(transform_pass_id), timing);
+}
+
+fn update_transform_runtime(
+    state: &crate::State,
+    transform_pass_id: u64,
+    runtime: RuntimeIdentityV1,
+) {
+    let _ = state
+        .performance
+        .update_active(&transform_correlation(transform_pass_id), |active| {
+            if let Some(existing) = active
+                .runtimes
+                .iter_mut()
+                .find(|existing| existing.role == runtime.role)
+            {
+                *existing = runtime;
+            } else {
+                active.runtimes.push(runtime);
+            }
+        });
+}
+
+fn transform_input_summary(
+    audio_duration_ms: Option<u64>,
+    input_bytes: Option<usize>,
+    output: Option<(usize, u32)>,
+) -> ContentFreeInputSummaryV1 {
+    ContentFreeInputSummaryV1 {
+        audio_duration_ms: audio_duration_ms.map_or(
+            MeasurementV1::Unavailable {
+                reason: UnavailableReasonV1::NoSamples,
+            },
+            MeasurementV1::measured,
+        ),
+        input_size_bucket: input_bytes.map_or(
+            MeasurementV1::Unavailable {
+                reason: UnavailableReasonV1::NoSamples,
+            },
+            |bytes| MeasurementV1::measured(crate::performance_metrics::size_bucket(bytes)),
+        ),
+        output_size_bucket: output.map_or(
+            MeasurementV1::Unavailable {
+                reason: UnavailableReasonV1::NoSamples,
+            },
+            |(bytes, _)| MeasurementV1::measured(crate::performance_metrics::size_bucket(bytes)),
+        ),
+        output_token_count: output.map_or(
+            MeasurementV1::Unavailable {
+                reason: UnavailableReasonV1::NoSamples,
+            },
+            |(_, tokens)| MeasurementV1::measured(u64::from(tokens)),
+        ),
+    }
+}
+
+fn complete_transform_performance(
+    state: &crate::State,
+    transform_pass_id: u64,
+    outcome: RunOutcomeV1,
+    input: Option<ContentFreeInputSummaryV1>,
+) {
+    sample_transform_resources(state);
+    let _ = state.performance.complete(
+        &transform_correlation(transform_pass_id),
+        outcome,
+        Vec::new(),
+        input,
+        None,
+    );
+}
+
+fn capture_abort_was_cancelled(app_state: &AppState, transform_pass_id: u64) -> bool {
+    app_state.is_transform_pass_cancelled(transform_pass_id)
+}
+
+fn append_transform_follow_up(
+    state: &crate::State,
+    transform_pass_id: u64,
+    kind: TransformFollowUpKindV1,
+    duration_ms: u64,
+    outcome: StageOutcomeV1,
+) {
+    let _ = state.performance.append_transform_follow_up(
+        transform_pass_id,
+        TransformFollowUpV1 {
+            kind,
+            at_ms: chrono::Utc::now().timestamp_millis(),
+            duration_ms: MeasurementV1::measured(duration_ms),
+            outcome,
+        },
+    );
+}
+
 // ===========================================================================
 // Review state + error-code vocabulary (the ONLY strings that cross to the UI).
 // ===========================================================================
@@ -74,6 +257,8 @@ pub const APPLIED_LINGER_MS: u64 = 4_000;
 /// name and an optional error code are ever emitted — never any text content.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReviewState {
+    Connecting,
+    Recovering,
     Listening,
     Thinking,
     Ready,
@@ -84,6 +269,8 @@ pub enum ReviewState {
 impl ReviewState {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Connecting => "connecting",
+            Self::Recovering => "recovering",
             Self::Listening => "listening",
             Self::Thinking => "thinking",
             Self::Ready => "ready",
@@ -102,6 +289,11 @@ pub fn selection_error_code(error: SelectionError) -> &'static str {
         SelectionError::NoSelection => "no_selection",
         SelectionError::TooLarge => "too_large",
         SelectionError::AxUnavailable => "ax_unavailable",
+        // The secure-field check itself errored (issue #334). The popover
+        // message for ax_unavailable ("Couldn't read the selection") is the
+        // accurate user-facing story; the distinct log string lives in
+        // `SelectionError::as_str`.
+        SelectionError::SecureCheckFailed => "ax_unavailable",
     }
 }
 
@@ -127,6 +319,43 @@ pub fn transform_error_code(error: TransformError) -> &'static str {
         TransformError::Protocol => "crashed",
         TransformError::ResourceLimit => "resource_limit",
         TransformError::Internal => "internal",
+    }
+}
+
+fn transform_error_code_for_phase(
+    error: TransformError,
+    diagnostics: crate::llm_sidecar::SidecarDiagnostics,
+) -> &'static str {
+    use crate::llm_sidecar::SidecarDiagnosticPhase as Phase;
+    match (error, diagnostics.failure_phase) {
+        (
+            TransformError::Timeout,
+            Some(Phase::HostModelVerification | Phase::HelperModelVerification),
+        ) => "model_verification_timeout",
+        (TransformError::Timeout, Some(Phase::BackendInitialization | Phase::ModelLoad)) => {
+            "model_load_timeout"
+        }
+        (TransformError::Timeout, Some(Phase::ReadyHandshake)) => "handshake_timeout",
+        (
+            TransformError::Timeout,
+            Some(Phase::RequestReceipt | Phase::FirstToken | Phase::Generation),
+        ) => "generation_timeout",
+        (TransformError::SpawnFailed, _) => "helper_spawn_failed",
+        (TransformError::HandshakeFailed, Some(Phase::HelperModelVerification)) => {
+            "model_verification_failed"
+        }
+        (
+            TransformError::HandshakeFailed,
+            Some(Phase::BackendInitialization | Phase::ModelLoad),
+        ) => "model_load_failed",
+        (TransformError::HandshakeFailed | TransformError::Protocol, _) => {
+            "handshake_protocol_failed"
+        }
+        (TransformError::Crashed, _) => "process_exit",
+        (TransformError::ModelMismatch | TransformError::ModelUnreadable, _) => {
+            "model_verification_failed"
+        }
+        _ => transform_error_code(error),
     }
 }
 
@@ -160,6 +389,7 @@ pub fn apply_error_code(error: ApplyError) -> &'static str {
 pub enum FlowState {
     Idle,
     Capturing,
+    Connecting,
     Listening,
     Thinking,
     /// Proposal shown, awaiting Approve / Retry / Cancel.
@@ -184,6 +414,8 @@ pub enum FlowEvent {
     CaptureSecure,
     /// Any other capture failure (no_selection / too_large / ax / denied).
     CaptureError,
+    /// The exact transform audio owner reached accepted readiness.
+    AudioReady,
     /// Transform hotkey released — stop listening, transcribe + transform.
     InstructionRequested,
     /// Transcribed instruction was blank.
@@ -263,13 +495,13 @@ fn cancel_from(_state: FlowState) -> FlowDecision {
 }
 
 /// Re-arm listening on the SAME frozen snapshot (Retry = re-speak).
-fn retry_to_listening() -> FlowDecision {
+fn retry_to_connecting() -> FlowDecision {
     go(
-        FlowState::Listening,
+        FlowState::Connecting,
         vec![
             FlowAction::SetExpanded(false),
             FlowAction::SetFocusable(false),
-            FlowAction::Emit(ReviewState::Listening),
+            FlowAction::Emit(ReviewState::Connecting),
             FlowAction::StartInstructionCapture,
         ],
     )
@@ -290,12 +522,12 @@ pub fn decide(state: FlowState, event: FlowEvent) -> FlowDecision {
 
         // ---- Capturing ------------------------------------------------------
         (S::Capturing, E::CaptureOk) => go(
-            S::Listening,
+            S::Connecting,
             vec![
                 StartSession,
                 ShowPopover,
                 SetFocusable(false),
-                Emit(ReviewState::Listening),
+                Emit(ReviewState::Connecting),
                 StartInstructionCapture,
             ],
         ),
@@ -309,10 +541,30 @@ pub fn decide(state: FlowState, event: FlowEvent) -> FlowDecision {
         (S::Capturing, E::Cancel) => cancel_from(state),
         (S::Capturing, _) => ignore(S::Capturing),
 
+        // ---- Connecting -----------------------------------------------------
+        (S::Connecting, E::AudioReady) => go(S::Listening, vec![Emit(ReviewState::Listening)]),
+        (S::Connecting, E::InstructionRequested) => go(
+            S::Failed,
+            vec![
+                StopInstructionCapture,
+                SetFocusable(true),
+                Emit(ReviewState::Failed),
+            ],
+        ),
+        (S::Connecting, E::Cancel) => go(
+            S::Idle,
+            vec![StopInstructionCapture, HidePopover, ClearSession],
+        ),
+        (S::Connecting, _) => ignore(S::Connecting),
+
         // ---- Listening ------------------------------------------------------
         (S::Listening, E::InstructionRequested) => go(
             S::Thinking,
-            vec![StopInstructionCapture, Emit(ReviewState::Thinking), RunTransform],
+            vec![
+                StopInstructionCapture,
+                Emit(ReviewState::Thinking),
+                RunTransform,
+            ],
         ),
         (S::Listening, E::Cancel) => go(
             S::Idle,
@@ -323,7 +575,11 @@ pub fn decide(state: FlowState, event: FlowEvent) -> FlowDecision {
         // ---- Thinking -------------------------------------------------------
         (S::Thinking, E::TransformOk) => go(
             S::Review,
-            vec![SetExpanded(true), SetFocusable(true), Emit(ReviewState::Ready)],
+            vec![
+                SetExpanded(true),
+                SetFocusable(true),
+                Emit(ReviewState::Ready),
+            ],
         ),
         (S::Thinking, E::TransformError) => go(
             S::Failed,
@@ -333,20 +589,17 @@ pub fn decide(state: FlowState, event: FlowEvent) -> FlowDecision {
             S::Failed,
             vec![SetFocusable(true), Emit(ReviewState::Failed)],
         ),
-        (S::Thinking, E::Cancel) => go(
-            S::Idle,
-            vec![CancelInflight, HidePopover, ClearSession],
-        ),
+        (S::Thinking, E::Cancel) => go(S::Idle, vec![CancelInflight, HidePopover, ClearSession]),
         (S::Thinking, _) => ignore(S::Thinking),
 
         // ---- Review (proposal shown) ---------------------------------------
         (S::Review, E::Approve) => go(S::Applying, vec![ApplyResult]),
-        (S::Review, E::Retry) => retry_to_listening(),
+        (S::Review, E::Retry) => retry_to_connecting(),
         (S::Review, E::Cancel) => cancel_from(state),
         (S::Review, _) => ignore(S::Review),
 
         // ---- Failed (error popover) ----------------------------------------
-        (S::Failed, E::Retry) => retry_to_listening(),
+        (S::Failed, E::Retry) => retry_to_connecting(),
         (S::Failed, E::Cancel) => cancel_from(state),
         // A new hotkey press supersedes a failed popover.
         (S::Failed, E::StartRequested) => go(S::Capturing, vec![ClearSession]),
@@ -367,9 +620,7 @@ pub fn decide(state: FlowState, event: FlowEvent) -> FlowDecision {
         // never stranded un-undoable. The command layer carries the undo error
         // code on this `applied` emit (spec-by-test:
         // `decide_undo_error_keeps_applied_and_undo_reachable`).
-        (S::Applying, E::UndoError) => {
-            go(S::Applied, vec![Emit(ReviewState::Applied)])
-        }
+        (S::Applying, E::UndoError) => go(S::Applied, vec![Emit(ReviewState::Applied)]),
         // Cancel during Applying: tear down; ApplyingGuard must not resurrect
         // ReviewPending after the session is cleared (see cancel_transform).
         (S::Applying, E::Cancel) => cancel_from(state),
@@ -403,7 +654,7 @@ pub struct AnchorRect {
 /// Every side effect the async core performs, behind a trait so a recording
 /// fake can stand in for Tauri in tests.
 pub(crate) trait FlowEffects: Send + Sync {
-    /// Emit `transform-state-changed` — state name + optional error code ONLY.
+    /// Emit content-free `transform-state-changed` correlation/state metadata.
     fn emit_state(&self, state: ReviewState, error_code: Option<&str>);
     fn show_popover(&self, anchor: Option<AnchorRect>);
     fn hide_popover(&self);
@@ -422,14 +673,41 @@ fn snapshot_anchor(snapshot: &TransformSnapshot) -> Option<AnchorRect> {
     })
 }
 
-/// Outcome of `core_start_capture`, telling the command whether to arm audio.
+/// Outcome of `core_start_capture`, telling the command whether selection
+/// capture completed while the asynchronous audio owner remains valid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StartOutcome {
-    /// Session frozen, popover shown listening — start the instruction audio.
-    Listening,
+    /// Session frozen and popover shown. Audio may still be Connecting; the
+    /// lifecycle Ready event is the only transition into Listening.
+    CaptureReady,
     /// Aborted (secure field, capture error, or model not downloaded) — no
     /// audio, nothing further for the command to do.
     Aborted,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct SidecarRunMetrics {
+    spawn_load_ms: Option<u64>,
+    generation_ms: Option<u64>,
+    cache_hit: Option<bool>,
+    diagnostics: crate::llm_sidecar::SidecarDiagnostics,
+}
+
+pub(crate) enum TransformRunReport {
+    Ready {
+        metrics: SidecarRunMetrics,
+        output_bytes: usize,
+        output_tokens: u32,
+        finish_reason: &'static str,
+        review_ready_ms: u64,
+    },
+    Failed {
+        metrics: Option<SidecarRunMetrics>,
+        timed_out: bool,
+        stage: PerformanceStageV1,
+        error_code: &'static str,
+    },
+    Cancelled,
 }
 
 /// Core of `start_transform_capture` (see the command). Assumes the caller has
@@ -445,6 +723,7 @@ pub(crate) async fn core_start_capture<Fut>(
 where
     Fut: std::future::Future<Output = Result<TransformSnapshot, SelectionError>>,
 {
+    let transform_pass_id = app_state.active_transform_pass_id().unwrap_or(0);
     if !model_ready {
         // Discoverable error surface: still show the popover, in a failed state.
         // Bail if a short-tap cancel already left Capturing.
@@ -457,6 +736,14 @@ where
         fx.show_popover(None);
         fx.set_focusable(true);
         fx.emit_state(ReviewState::Failed, Some("model_not_downloaded"));
+        if transform_pass_id != 0 {
+            crate::transform_trace::resolution(
+                transform_pass_id,
+                "failed",
+                "capture",
+                Some("model_not_downloaded"),
+            );
+        }
         return StartOutcome::Aborted;
     }
 
@@ -464,15 +751,15 @@ where
     // Content-free outcome log (issue #329): only length buckets and error
     // enums — this was previously never wired, leaving capture failures
     // (e.g. browser AX gaps) invisible in the logs.
-    crate::selection::log_capture_outcome(&capture_result);
+    crate::selection::log_capture_outcome_for_pass(&capture_result, transform_pass_id);
     match capture_result {
         Ok(snapshot) => {
             // Cancel during slow AX capture must not resurrect the flow:
             // session re-install + mic arm + popover while the reducer thinks
-            // not-holding would wedge Listening with no release coming.
+            // not-holding would wedge the transform with no release coming.
             if !app_state.try_transition_transform_status(
                 TransformStatus::Capturing,
-                TransformStatus::Listening,
+                TransformStatus::Connecting,
             ) {
                 return StartOutcome::Aborted;
             }
@@ -480,20 +767,44 @@ where
             transform_apply::start_session(app_state, snapshot);
             fx.show_popover(anchor);
             fx.set_focusable(false);
-            fx.emit_state(ReviewState::Listening, None);
-            StartOutcome::Listening
+            if !enter_transform_listening_if_ready(
+                app_state,
+                fx,
+                transform_pass_id,
+                crate::audio_lifecycle::is_transform_recording(transform_pass_id),
+                true,
+            ) {
+                if app_state.transform_status() != TransformStatus::Connecting {
+                    transform_apply::clear_session(app_state);
+                    fx.hide_popover();
+                    return StartOutcome::Aborted;
+                }
+                fx.emit_state(
+                    ReviewState::Connecting,
+                    crate::audio_lifecycle::is_transform_still_connecting(transform_pass_id)
+                        .then_some("audio_stalled"),
+                );
+            }
+            StartOutcome::CaptureReady
         }
         Err(SelectionError::SecureField) => {
             // Never show content UI for a password field — abort silently.
-            if !app_state.try_transition_transform_status(
-                TransformStatus::Capturing,
-                TransformStatus::Idle,
-            ) {
+            if !app_state
+                .try_transition_transform_status(TransformStatus::Capturing, TransformStatus::Idle)
+            {
                 return StartOutcome::Aborted;
             }
             transform_apply::clear_session(app_state);
             fx.hide_popover();
             fx.flash_secure_field();
+            if transform_pass_id != 0 {
+                crate::transform_trace::resolution(
+                    transform_pass_id,
+                    "failed",
+                    "capture",
+                    Some("secure_field"),
+                );
+            }
             StartOutcome::Aborted
         }
         Err(other) => {
@@ -508,7 +819,16 @@ where
             }
             fx.show_popover(None);
             fx.set_focusable(true);
-            fx.emit_state(ReviewState::Failed, Some(selection_error_code(other)));
+            let error_code = selection_error_code(other);
+            fx.emit_state(ReviewState::Failed, Some(error_code));
+            if transform_pass_id != 0 {
+                crate::transform_trace::resolution(
+                    transform_pass_id,
+                    "failed",
+                    "capture",
+                    Some(error_code),
+                );
+            }
             StartOutcome::Aborted
         }
     }
@@ -517,7 +837,8 @@ where
 /// Transition `Listening -> Thinking` and emit it. Returns `false` if the flow
 /// was no longer `Listening` (e.g. cancelled) — the caller must not proceed.
 pub(crate) fn enter_thinking(app_state: &AppState, fx: &dyn FlowEffects) -> bool {
-    if app_state.try_transition_transform_status(TransformStatus::Listening, TransformStatus::Thinking)
+    if app_state
+        .try_transition_transform_status(TransformStatus::Listening, TransformStatus::Thinking)
     {
         fx.emit_state(ReviewState::Thinking, None);
         true
@@ -538,11 +859,14 @@ pub(crate) async fn run_transform(
     app_state: &AppState,
     fx: &dyn FlowEffects,
     sidecar: &Arc<LlmSidecar>,
-    inflight: &std::sync::Mutex<Option<(tokio::task::AbortHandle, crate::llm_sidecar::CancelToken)>>,
+    inflight: &std::sync::Mutex<
+        Option<(tokio::task::AbortHandle, crate::llm_sidecar::CancelToken)>,
+    >,
     instruction: Result<String, ()>,
     original: String,
     deadline: Duration,
-) {
+) -> TransformRunReport {
+    let transform_pass_id = app_state.active_transform_pass_id().unwrap_or(0);
     let instruction = match instruction {
         Ok(text) if !text.trim().is_empty() => text,
         _ => {
@@ -552,14 +876,27 @@ pub(crate) async fn run_transform(
             ) {
                 fx.set_focusable(true);
                 fx.emit_state(ReviewState::Failed, Some("no_instruction"));
+                if transform_pass_id != 0 {
+                    crate::transform_trace::resolution(
+                        transform_pass_id,
+                        "failed",
+                        "instruction",
+                        Some("no_instruction"),
+                    );
+                }
             }
-            return;
+            return TransformRunReport::Failed {
+                metrics: None,
+                timed_out: false,
+                stage: PerformanceStageV1::InstructionAsr,
+                error_code: "no_instruction",
+            };
         }
     };
     // Cancel during transcription can clear the session before we get here —
     // do not spawn the sidecar on a dead session.
     if !transform_apply::set_instruction(app_state, instruction.clone()) {
-        return;
+        return TransformRunReport::Cancelled;
     }
 
     let sidecar = Arc::clone(sidecar);
@@ -574,7 +911,22 @@ pub(crate) async fn run_transform(
     let cancel = crate::llm_sidecar::CancelToken::new();
     let join = tokio::spawn({
         let cancel = cancel.clone();
-        async move { sidecar.transform(&instr, &input, deadline, cancel).await }
+        async move {
+            if transform_pass_id == 0 {
+                let result = sidecar.transform(&instr, &input, deadline, cancel).await;
+                crate::llm_sidecar::CorrelatedTransformOutcome {
+                    result,
+                    spawn_load_ms: None,
+                    generation_ms: None,
+                    cache_hit: None,
+                    diagnostics: crate::llm_sidecar::SidecarDiagnostics::default(),
+                }
+            } else {
+                sidecar
+                    .transform_for_pass(transform_pass_id, &instr, &input, deadline, cancel)
+                    .await
+            }
+        }
     });
     *inflight.lock_or_recover() = Some((join.abort_handle(), cancel));
     let joined = join.await;
@@ -582,7 +934,7 @@ pub(crate) async fn run_transform(
 
     match joined {
         // Aborted by `cancel_transform`, which already tore the flow down.
-        Err(err) if err.is_cancelled() => {}
+        Err(err) if err.is_cancelled() => TransformRunReport::Cancelled,
         Err(_) => {
             if app_state.try_transition_transform_status(
                 TransformStatus::Thinking,
@@ -590,32 +942,191 @@ pub(crate) async fn run_transform(
             ) {
                 fx.set_focusable(true);
                 fx.emit_state(ReviewState::Failed, Some("internal"));
+                if transform_pass_id != 0 {
+                    crate::transform_trace::resolution(
+                        transform_pass_id,
+                        "failed",
+                        "sidecar",
+                        Some("internal"),
+                    );
+                }
+            }
+            TransformRunReport::Failed {
+                metrics: None,
+                timed_out: false,
+                stage: PerformanceStageV1::Generation,
+                error_code: "internal",
             }
         }
-        Ok(Ok(output)) => {
-            if !app_state.try_transition_transform_status(
-                TransformStatus::Thinking,
-                TransformStatus::ReviewPending,
-            ) {
-                return;
+        Ok(outcome) => {
+            let metrics = SidecarRunMetrics {
+                spawn_load_ms: outcome.spawn_load_ms,
+                generation_ms: outcome.generation_ms,
+                cache_hit: outcome.cache_hit,
+                diagnostics: outcome.diagnostics,
+            };
+            match outcome.result {
+                Ok(output) => {
+                    if !app_state.try_transition_transform_status(
+                        TransformStatus::Thinking,
+                        TransformStatus::ReviewPending,
+                    ) {
+                        return TransformRunReport::Cancelled;
+                    }
+                    let output_bytes = output.output.len();
+                    let output_tokens = output.output_tokens;
+                    let finish_reason = match output.finish_reason {
+                        murmur_local_llm_protocol::FinishReason::Stop => "stop",
+                        murmur_local_llm_protocol::FinishReason::Length => "length",
+                    };
+                    let review_ready_started = std::time::Instant::now();
+                    transform_apply::set_proposed_text(app_state, output.output);
+                    fx.set_expanded(true);
+                    fx.set_focusable(true);
+                    fx.emit_state(ReviewState::Ready, None);
+                    if transform_pass_id != 0 {
+                        crate::transform_trace::resolution(
+                            transform_pass_id,
+                            "ready",
+                            "sidecar",
+                            None,
+                        );
+                    }
+                    TransformRunReport::Ready {
+                        metrics,
+                        output_bytes,
+                        output_tokens,
+                        finish_reason,
+                        review_ready_ms: review_ready_started.elapsed().as_millis() as u64,
+                    }
+                }
+                // Cooperative cancel from the sidecar: cancel_transform already
+                // tore the flow down — do not force ReviewPending.
+                Err(TransformError::Cancelled) => TransformRunReport::Cancelled,
+                Err(error) => {
+                    if app_state.try_transition_transform_status(
+                        TransformStatus::Thinking,
+                        TransformStatus::ReviewPending,
+                    ) {
+                        let error_code = transform_error_code_for_phase(error, metrics.diagnostics);
+                        fx.set_focusable(true);
+                        fx.emit_state(ReviewState::Failed, Some(error_code));
+                        if transform_pass_id != 0 {
+                            crate::transform_trace::resolution(
+                                transform_pass_id,
+                                "failed",
+                                "sidecar",
+                                Some(error_code),
+                            );
+                        }
+                    }
+                    let stage = if metrics.generation_ms.is_some() {
+                        PerformanceStageV1::Generation
+                    } else {
+                        PerformanceStageV1::SidecarSpawnLoad
+                    };
+                    let error_code = transform_error_code_for_phase(error, metrics.diagnostics);
+                    TransformRunReport::Failed {
+                        metrics: Some(metrics),
+                        timed_out: error == TransformError::Timeout,
+                        stage,
+                        error_code,
+                    }
+                }
             }
-            transform_apply::set_proposed_text(app_state, output.output);
-            fx.set_expanded(true);
-            fx.set_focusable(true);
-            fx.emit_state(ReviewState::Ready, None);
         }
-        // Cooperative cancel from the sidecar: cancel_transform already tore
-        // the flow down — do not force ReviewPending.
-        Ok(Err(TransformError::Cancelled)) => {}
-        Ok(Err(error)) => {
-            if app_state.try_transition_transform_status(
-                TransformStatus::Thinking,
-                TransformStatus::ReviewPending,
-            ) {
-                fx.set_focusable(true);
-                fx.emit_state(ReviewState::Failed, Some(transform_error_code(error)));
-            }
+    }
+}
+
+fn record_sidecar_metrics(
+    state: &crate::State,
+    transform_pass_id: u64,
+    metrics: SidecarRunMetrics,
+    succeeded: bool,
+) -> PerformanceStageV1 {
+    let d = metrics.diagnostics;
+    state.transform_diagnostics.process_exit(
+        transform_pass_id,
+        d.process_exit_code,
+        d.process_exit_signal,
+    );
+    for (phase, duration) in [
+        ("host_model_verification", d.host_model_verification_ms),
+        ("helper_spawn", d.helper_spawn_ms),
+        ("helper_model_verification", d.helper_model_verification_ms),
+        ("backend_initialization", d.backend_initialization_ms),
+        ("model_load", d.model_load_ms),
+        ("ready_handshake", d.ready_handshake_ms),
+        ("request_receipt", d.request_receipt_ms),
+        ("first_token", d.first_token_ms),
+    ] {
+        if let Some(duration_ms) = duration {
+            crate::transform_trace::sidecar_phase(
+                transform_pass_id,
+                phase,
+                "completed",
+                duration_ms,
+                None,
+            );
+            state.transform_diagnostics.phase(
+                transform_pass_id,
+                phase,
+                "completed",
+                Some(duration_ms),
+                None,
+            );
         }
+    }
+    if let Some(phase) = d.failure_phase {
+        crate::transform_trace::sidecar_phase(transform_pass_id, phase.as_str(), "failed", 0, None);
+        state
+            .transform_diagnostics
+            .phase(transform_pass_id, phase.as_str(), "failed", None, None);
+    }
+    let warm_state = match metrics.cache_hit {
+        Some(true) => ModelWarmStateV1::Warm,
+        Some(false) => ModelWarmStateV1::ColdLoaded,
+        None => ModelWarmStateV1::Unknown,
+    };
+    update_transform_runtime(state, transform_pass_id, generation_runtime(warm_state));
+
+    let load_outcome = if succeeded || metrics.generation_ms.is_some() {
+        StageOutcomeV1::Completed
+    } else {
+        StageOutcomeV1::Failed
+    };
+    record_transform_stage(
+        state,
+        transform_pass_id,
+        stage_timing(
+            PerformanceStageV1::SidecarSpawnLoad,
+            metrics.spawn_load_ms.map_or(
+                MeasurementV1::Unavailable {
+                    reason: UnavailableReasonV1::NoSamples,
+                },
+                MeasurementV1::measured,
+            ),
+            load_outcome,
+        ),
+    );
+
+    if let Some(generation_ms) = metrics.generation_ms {
+        record_transform_stage(
+            state,
+            transform_pass_id,
+            stage_timing(
+                PerformanceStageV1::Generation,
+                MeasurementV1::measured(generation_ms),
+                if succeeded {
+                    StageOutcomeV1::Completed
+                } else {
+                    StageOutcomeV1::Failed
+                },
+            ),
+        );
+        PerformanceStageV1::Generation
+    } else {
+        PerformanceStageV1::SidecarSpawnLoad
     }
 }
 
@@ -636,6 +1147,140 @@ fn emit_transform_hidden(app: &tauri::AppHandle) {
     let _ = app.emit("transform-review-hidden", ());
 }
 
+fn enter_transform_listening_if_ready(
+    app_state: &AppState,
+    fx: &dyn FlowEffects,
+    transform_pass_id: u64,
+    audio_ready: bool,
+    selection_ready: bool,
+) -> bool {
+    if !audio_ready
+        || !selection_ready
+        || app_state.active_transform_pass_id() != Some(transform_pass_id)
+    {
+        return false;
+    }
+    if app_state.transform_status() == TransformStatus::Listening {
+        return true;
+    }
+    if app_state
+        .try_transition_transform_status(TransformStatus::Connecting, TransformStatus::Listening)
+    {
+        fx.emit_state(ReviewState::Listening, None);
+        true
+    } else {
+        false
+    }
+}
+
+/// Handle asynchronous microphone lifecycle events for transform instruction
+/// capture. Dictation owns its own status bridge; transform capture keeps
+/// `DictationStatus::Idle`, so terminal audio failure must tear down the exact
+/// transform pass here instead of waiting for a key release.
+pub(crate) fn handle_audio_lifecycle(
+    app_handle: tauri::AppHandle,
+    transform_pass_id: u64,
+    event: crate::audio_lifecycle::AudioLifecycleEvent,
+) {
+    let state = app_handle.state::<crate::State>();
+    if state.app_state.active_transform_pass_id() != Some(transform_pass_id) {
+        return;
+    }
+
+    match event {
+        crate::audio_lifecycle::AudioLifecycleEvent::Ready => {
+            crate::transform_trace::audio(transform_pass_id, "armed", "ok", 0, 0);
+            let fx = TauriFlowEffects {
+                app: &app_handle,
+                state: &state,
+            };
+            let selection_ready = transform_apply::session_snapshot(&state.app_state).is_some();
+            enter_transform_listening_if_ready(
+                &state.app_state,
+                &fx,
+                transform_pass_id,
+                true,
+                selection_ready,
+            );
+        }
+        crate::audio_lifecycle::AudioLifecycleEvent::InitializationFailed { .. } => {
+            if !matches!(
+                state.app_state.transform_status(),
+                TransformStatus::Capturing
+                    | TransformStatus::Connecting
+                    | TransformStatus::Listening
+            ) {
+                return;
+            }
+            crate::transform_trace::audio(transform_pass_id, "armed", "error", 0, 0);
+            crate::transform_trace::resolution(
+                transform_pass_id,
+                "failed",
+                "audio_start",
+                Some("audio_start_failed"),
+            );
+            state.app_state.set_transform_status(TransformStatus::Idle);
+            complete_transform_performance(
+                &state,
+                transform_pass_id,
+                RunOutcomeV1::Failed {
+                    stage: PerformanceStageV1::InstructionCapture,
+                    error_code: StableRunErrorV1::AudioCaptureFailed,
+                },
+                None,
+            );
+            transform_apply::clear_session(&state.app_state);
+            let _ = crate::commands::transform_popover::hide_popover_internal(&app_handle);
+            emit_transform_hidden(&app_handle);
+            state.app_state.clear_transform_pass(transform_pass_id);
+            state.transform_diagnostics.phase(
+                transform_pass_id,
+                "instructionCapture",
+                "failed",
+                None,
+                Some("audio_start_failed"),
+            );
+            state
+                .transform_diagnostics
+                .finish(transform_pass_id, "failed");
+        }
+        crate::audio_lifecycle::AudioLifecycleEvent::StillConnecting => {
+            if state.app_state.transform_status() == TransformStatus::Connecting {
+                TauriFlowEffects {
+                    app: &app_handle,
+                    state: &state,
+                }
+                .emit_state(ReviewState::Connecting, Some("audio_stalled"));
+            }
+        }
+        crate::audio_lifecycle::AudioLifecycleEvent::Recovering { .. } => {
+            if matches!(
+                state.app_state.transform_status(),
+                TransformStatus::Connecting | TransformStatus::Listening
+            ) {
+                TauriFlowEffects {
+                    app: &app_handle,
+                    state: &state,
+                }
+                .emit_state(ReviewState::Recovering, None);
+            }
+        }
+        crate::audio_lifecycle::AudioLifecycleEvent::RecoveryStalled => {
+            if matches!(
+                state.app_state.transform_status(),
+                TransformStatus::Connecting | TransformStatus::Listening
+            ) {
+                TauriFlowEffects {
+                    app: &app_handle,
+                    state: &state,
+                }
+                .emit_state(ReviewState::Recovering, Some("audio_recovery_stalled"));
+            }
+        }
+        crate::audio_lifecycle::AudioLifecycleEvent::Idle => {}
+    }
+}
+
 pub(crate) struct TauriFlowEffects<'a> {
     pub app: &'a tauri::AppHandle,
     pub state: &'a crate::State,
@@ -644,11 +1289,20 @@ pub(crate) struct TauriFlowEffects<'a> {
 impl FlowEffects for TauriFlowEffects<'_> {
     fn emit_state(&self, state: ReviewState, error_code: Option<&str>) {
         use tauri::Emitter;
-        // Payload carries ONLY the state name and an optional stable error
-        // code — never any instruction/original/proposed text.
+        // Payload carries only content-free correlation/state metadata. The
+        // pass ID lets the focusable popover scope its local Escape/Cancel to
+        // the review it rendered, so a delayed dismiss cannot cancel N+1.
+        let transform_pass_id = self.state.app_state.active_transform_pass_id();
         let payload = match error_code {
-            Some(code) => serde_json::json!({ "state": state.as_str(), "errorCode": code }),
-            None => serde_json::json!({ "state": state.as_str() }),
+            Some(code) => serde_json::json!({
+                "state": state.as_str(),
+                "errorCode": code,
+                "transformPassId": transform_pass_id,
+            }),
+            None => serde_json::json!({
+                "state": state.as_str(),
+                "transformPassId": transform_pass_id,
+            }),
         };
         let _ = self.app.emit("transform-state-changed", payload);
     }
@@ -663,7 +1317,15 @@ impl FlowEffects for TauriFlowEffects<'_> {
         if let Err(e) =
             crate::commands::transform_popover::show_popover_internal(self.app, self.state, anchor)
         {
-            tracing::warn!(target: "transform", error = %e, "show_popover failed");
+            let _ = e;
+            if let Some(transform_pass_id) = self.state.app_state.active_transform_pass_id() {
+                tracing::warn!(
+                    target: "transform",
+                    transform_pass_id,
+                    error_code = "show_failed",
+                    "show_popover failed"
+                );
+            }
         }
     }
 
@@ -679,10 +1341,18 @@ impl FlowEffects for TauriFlowEffects<'_> {
     }
 
     fn set_expanded(&self, expanded: bool) {
-        if let Err(e) =
-            crate::commands::transform_popover::set_expanded_internal(self.app, self.state, expanded)
-        {
-            tracing::warn!(target: "transform", error = %e, "set_expanded failed");
+        if let Err(e) = crate::commands::transform_popover::set_expanded_internal(
+            self.app, self.state, expanded,
+        ) {
+            let _ = e;
+            if let Some(transform_pass_id) = self.state.app_state.active_transform_pass_id() {
+                tracing::warn!(
+                    target: "transform",
+                    transform_pass_id,
+                    error_code = "expand_failed",
+                    "set_expanded failed"
+                );
+            }
         }
     }
 
@@ -698,7 +1368,7 @@ impl FlowEffects for TauriFlowEffects<'_> {
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(APPLIED_LINGER_MS)).await;
             use tauri::Manager;
-            if let Some(state) = app.try_state::<crate::State>() {
+            let transform_pass_id = if let Some(state) = app.try_state::<crate::State>() {
                 // Only auto-hide if we are still in the applied review (status
                 // Idle + an applied session). A newer flow leaves status
                 // non-Idle, so its popover is never yanked out from under it.
@@ -709,14 +1379,31 @@ impl FlowEffects for TauriFlowEffects<'_> {
                 if !still_applied {
                     return;
                 }
+                let transform_pass_id = transform_apply::session_snapshot(&state.app_state)
+                    .map(|session| session.transform_pass_id)
+                    .or_else(|| state.app_state.active_transform_pass_id());
                 // Free the held selection text once Undo is no longer reachable
                 // from the UI (popover gone). Content is only available via
                 // get_transform_review_content, which returns empty after this.
                 transform_apply::clear_session(&state.app_state);
-            }
+                transform_pass_id
+            } else {
+                None
+            };
             let _ = crate::commands::transform_popover::hide_popover_internal(&app);
             // Linger auto-hide is backend-initiated — reset stale content (item 13).
             emit_transform_hidden(&app);
+            if let (Some(transform_pass_id), Some(state)) =
+                (transform_pass_id, app.try_state::<crate::State>())
+            {
+                crate::transform_trace::resolution(
+                    transform_pass_id,
+                    "applied",
+                    "linger_complete",
+                    None,
+                );
+                state.app_state.clear_transform_pass(transform_pass_id);
+            }
         });
     }
 }
@@ -729,15 +1416,51 @@ impl FlowEffects for TauriFlowEffects<'_> {
 /// shared ASR backend, then the deterministic transcript pipeline with the
 /// **cleanup-only** stage config (`instruction_cleanup`) — NEVER voice
 /// commands, CLI canonicalization, smart formatting, or the IDE-context stage
-/// (an instruction is a prompt, not dictation). `Err(())` means empty audio, a
-/// transcription failure, or a blank transcript — all surface as `no_instruction`.
+/// (an instruction is a prompt, not dictation). Failures stay distinct in
+/// content-free tracing even though all surface as `no_instruction`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InstructionFailure {
+    AudioEmpty,
+    TranscriptionError,
+    TranscriptBlank,
+}
+
+impl InstructionFailure {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::AudioEmpty => "audio_empty",
+            Self::TranscriptionError => "transcription_error",
+            Self::TranscriptBlank => "transcript_blank",
+        }
+    }
+}
+
 async fn transcribe_instruction(
     app_handle: &tauri::AppHandle,
     state: &crate::State,
     samples: &[f32],
-) -> Result<String, ()> {
+    transform_pass_id: u64,
+    attempt: u64,
+) -> Result<String, InstructionFailure> {
+    let started = std::time::Instant::now();
     if samples.is_empty() {
-        return Err(());
+        crate::transform_trace::instruction(
+            transform_pass_id,
+            attempt,
+            InstructionFailure::AudioEmpty.as_str(),
+            None,
+            0,
+        );
+        record_transform_stage(
+            state,
+            transform_pass_id,
+            stage_timing(
+                PerformanceStageV1::InstructionAsr,
+                MeasurementV1::measured(started.elapsed().as_millis() as u64),
+                StageOutcomeV1::Failed,
+            ),
+        );
+        return Err(InstructionFailure::AudioEmpty);
     }
     let (model_name, language, smart_punctuation) = {
         let dictation = state.app_state.dictation.lock_or_recover();
@@ -754,13 +1477,43 @@ async fn transcribe_instruction(
         crate::model_runtime::PreparationReason::Pipeline,
         |backend| backend.transcribe(samples, &language, None, smart_punctuation),
     );
-    let (raw, _load_report) = match raw {
+    let (raw, load_report) = match raw {
         Ok(pair) => pair,
         Err(e) => {
-            tracing::warn!(target: "transform", error = %e, "instruction transcription failed");
-            return Err(());
+            let _ = e;
+            crate::transform_trace::instruction(
+                transform_pass_id,
+                attempt,
+                InstructionFailure::TranscriptionError.as_str(),
+                None,
+                started.elapsed().as_millis() as u64,
+            );
+            record_transform_stage(
+                state,
+                transform_pass_id,
+                stage_timing(
+                    PerformanceStageV1::InstructionAsr,
+                    MeasurementV1::measured(started.elapsed().as_millis() as u64),
+                    StageOutcomeV1::Failed,
+                ),
+            );
+            return Err(InstructionFailure::TranscriptionError);
         }
     };
+    if let Some(runtime) = crate::commands::recording::runtime_identity_for_role(
+        &model_name,
+        if load_report.cache_hit {
+            ModelWarmStateV1::Warm
+        } else {
+            ModelWarmStateV1::ColdLoaded
+        },
+        RuntimeRoleV1::InstructionAsr,
+    )
+    .into_iter()
+    .next()
+    {
+        update_transform_runtime(state, transform_pass_id, runtime);
+    }
 
     let context = crate::transcript_transform::TranscriptContext {
         session_id: state.app_state.next_transcript_session_id(),
@@ -769,18 +1522,69 @@ async fn transcribe_instruction(
         cli_formatting_mode: crate::cli_command::CliFormattingMode::Auto,
         stages: crate::transcript_transform::TranscriptStageConfig::instruction_cleanup(),
     };
-    let cleaned = crate::transcript_transform::transform_transcript(
+    let cleaned = match crate::transcript_transform::transform_transcript(
         raw,
         &context,
         crate::transcript_transform::TranscriptTransformResources::empty(),
-    )
-    .map(|out| out.text)
-    .unwrap_or_default();
+    ) {
+        Ok(output) => output.text,
+        Err(_) => {
+            crate::transform_trace::instruction(
+                transform_pass_id,
+                attempt,
+                InstructionFailure::TranscriptionError.as_str(),
+                None,
+                started.elapsed().as_millis() as u64,
+            );
+            record_transform_stage(
+                state,
+                transform_pass_id,
+                stage_timing(
+                    PerformanceStageV1::InstructionAsr,
+                    MeasurementV1::measured(started.elapsed().as_millis() as u64),
+                    StageOutcomeV1::Failed,
+                ),
+            );
+            return Err(InstructionFailure::TranscriptionError);
+        }
+    };
 
     let trimmed = cleaned.trim().to_string();
     if trimmed.is_empty() {
-        Err(())
+        crate::transform_trace::instruction(
+            transform_pass_id,
+            attempt,
+            InstructionFailure::TranscriptBlank.as_str(),
+            None,
+            started.elapsed().as_millis() as u64,
+        );
+        record_transform_stage(
+            state,
+            transform_pass_id,
+            stage_timing(
+                PerformanceStageV1::InstructionAsr,
+                MeasurementV1::measured(started.elapsed().as_millis() as u64),
+                StageOutcomeV1::Failed,
+            ),
+        );
+        Err(InstructionFailure::TranscriptBlank)
     } else {
+        crate::transform_trace::instruction(
+            transform_pass_id,
+            attempt,
+            "ok",
+            Some(crate::selection::length_bucket(trimmed.len())),
+            started.elapsed().as_millis() as u64,
+        );
+        record_transform_stage(
+            state,
+            transform_pass_id,
+            stage_timing(
+                PerformanceStageV1::InstructionAsr,
+                MeasurementV1::measured(started.elapsed().as_millis() as u64),
+                StageOutcomeV1::Completed,
+            ),
+        );
         Ok(trimmed)
     }
 }
@@ -788,6 +1592,70 @@ async fn transcribe_instruction(
 // ===========================================================================
 // Tauri commands (the thin wrappers the frontend calls).
 // ===========================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TransformStartPassDisposition {
+    Current,
+    Cancelled,
+    Stale,
+}
+
+fn transform_start_pass_disposition(
+    app_state: &AppState,
+    transform_pass_id: u64,
+) -> TransformStartPassDisposition {
+    if app_state.is_transform_pass_cancelled(transform_pass_id) {
+        TransformStartPassDisposition::Cancelled
+    } else if app_state.active_transform_pass_id() == Some(transform_pass_id) {
+        TransformStartPassDisposition::Current
+    } else {
+        TransformStartPassDisposition::Stale
+    }
+}
+
+fn claim_transform_start_status(
+    app_state: &AppState,
+    transform_pass_id: u64,
+) -> Result<(), &'static str> {
+    match transform_start_pass_disposition(app_state, transform_pass_id) {
+        TransformStartPassDisposition::Cancelled => return Err("cancelled"),
+        TransformStartPassDisposition::Stale => return Err("stale_pass"),
+        TransformStartPassDisposition::Current => {}
+    }
+    if !app_state.try_transition_transform_status(TransformStatus::Idle, TransformStatus::Capturing)
+    {
+        return Err("transform_busy");
+    }
+    // Escape publishes the exact pass cancellation marker before emitting the
+    // asynchronous frontend event. Re-check after the claim to close the tiny
+    // race where the marker lands between the pre-claim check and
+    // Idle -> Capturing.
+    if app_state.is_transform_pass_cancelled(transform_pass_id) {
+        let _ = app_state
+            .try_transition_transform_status(TransformStatus::Capturing, TransformStatus::Idle);
+        Err("cancelled")
+    } else {
+        Ok(())
+    }
+}
+
+fn terminalize_cancelled_transform_start(
+    app_state: &AppState,
+    diagnostics: &crate::transform_diagnostics::TransformDiagnostics,
+    transform_pass_id: u64,
+) -> bool {
+    let cleared_active_owner = app_state.clear_transform_pass(transform_pass_id);
+    let (phase, outcome) = if cleared_active_owner {
+        ("cancellation", "cancelled")
+    } else {
+        ("supersession", "superseded")
+    };
+    let terminalized = diagnostics.terminalize_active(transform_pass_id, phase, outcome);
+    if terminalized {
+        crate::transform_trace::resolution(transform_pass_id, outcome, "start", None);
+    }
+    terminalized
+}
 
 /// Begin a transform pass: check preconditions, claim the flow, capture the
 /// selection, and (on success) arm the instruction audio.
@@ -801,39 +1669,67 @@ pub(crate) async fn start_transform_capture(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, crate::State>,
     device_name: Option<String>,
+    transform_pass_id: u64,
 ) -> Result<(), String> {
+    state.transform_diagnostics.begin(transform_pass_id);
     // Serialize against dictation start/stop, taking the same locks in the
     // same order (`recording_transition` then `dictation`) as
     // `start_native_recording`, so the two audio paths can't tear each other's
     // recorder down.
     let _transition = state.app_state.recording_transition.lock().await;
 
-    let claimed = {
+    let claim_result: Result<(), &'static str> = {
         let dictation = state.app_state.dictation.lock_or_recover();
-        if dictation.status != DictationStatus::Idle {
-            tracing::info!(target: "transform", "start_transform_capture: ignored — dictation active");
-            false
+        if transform_start_pass_disposition(&state.app_state, transform_pass_id)
+            == TransformStartPassDisposition::Cancelled
+        {
+            Err("cancelled")
+        } else if state.app_state.active_transform_pass_id() != Some(transform_pass_id) {
+            Err("stale_pass")
+        } else if dictation.status != DictationStatus::Idle {
+            tracing::info!(target: "transform", transform_pass_id, error_code = "dictation_active", "start_transform_capture ignored");
+            Err("dictation_active")
         } else if state.benchmark.is_running() {
-            tracing::info!(target: "transform", "start_transform_capture: ignored — benchmark running");
-            false
+            tracing::info!(target: "transform", transform_pass_id, error_code = "benchmark_running", "start_transform_capture ignored");
+            Err("benchmark_running")
         } else if state
             .app_state
             .file_transcribing
             .load(std::sync::atomic::Ordering::SeqCst)
         {
-            tracing::info!(target: "transform", "start_transform_capture: ignored — file transcription running");
-            false
+            tracing::info!(target: "transform", transform_pass_id, error_code = "file_transcribing", "start_transform_capture ignored");
+            Err("file_transcribing")
         } else if state.transform_runtime.is_transform_busy() {
-            tracing::info!(target: "transform", "start_transform_capture: ignored — transform runtime busy");
-            false
+            tracing::info!(target: "transform", transform_pass_id, error_code = "runtime_busy", "start_transform_capture ignored");
+            Err("runtime_busy")
         } else {
             // Atomic Idle -> Capturing under the dictation lock.
-            state
-                .app_state
-                .try_transition_transform_status(TransformStatus::Idle, TransformStatus::Capturing)
+            claim_transform_start_status(&state.app_state, transform_pass_id)
         }
     };
-    if !claimed {
+    if let Err(error_code) = claim_result {
+        if error_code == "cancelled" {
+            terminalize_cancelled_transform_start(
+                &state.app_state,
+                &state.transform_diagnostics,
+                transform_pass_id,
+            );
+            return Ok(());
+        }
+        state.transform_diagnostics.phase(
+            transform_pass_id,
+            "start",
+            "failed",
+            None,
+            Some(error_code),
+        );
+        state
+            .transform_diagnostics
+            .finish(transform_pass_id, "failed");
+        crate::transform_trace::resolution(transform_pass_id, "failed", "start", Some(error_code));
+        if state.app_state.transform_status() == TransformStatus::Idle {
+            state.app_state.clear_transform_pass(transform_pass_id);
+        }
         // The press was refused because dictation / a benchmark / a file
         // transcription / a mid-flight transform owns the pipeline. Silently
         // eating the keypress reads as "the app is broken" (issue #329) —
@@ -843,6 +1739,7 @@ pub(crate) async fn start_transform_capture(
         let _ = app_handle.emit("transform-busy", ());
         return Ok(());
     }
+    let mut performance_guard = begin_transform_performance(&state, transform_pass_id);
 
     let model_ready = crate::commands::transform_model::transform_model_state()
         == crate::commands::transform_model::TransformModelState::Ready;
@@ -851,32 +1748,209 @@ pub(crate) async fn start_transform_capture(
         app: &app_handle,
         state: &state,
     };
-    let outcome =
-        core_start_capture(&state.app_state, &fx, model_ready, crate::selection::capture_selection(&app_handle))
-            .await;
 
-    if outcome == StartOutcome::Listening {
-        // Arm audio for the spoken instruction. DictationStatus stays Idle —
-        // this audio belongs to the transform flow (TransformStatus::Listening).
-        // Pass the configured input device (same contract as start_native_recording).
-        if let Err(e) = crate::audio::start_recording(Some(app_handle.clone()), device_name) {
-            tracing::error!(target: "transform", error = %e, "instruction audio failed to start");
+    // Arm audio for the spoken instruction BEFORE selection capture, not
+    // after (issue #329): capture can take over a second in Chromium apps
+    // (lazy-AX warm-up retries + the clipboard fallback), and users start
+    // speaking the instant they press the key. Arming afterwards chopped the
+    // first ~1s off the instruction — the reproducible "Didn't catch an
+    // instruction" in browsers while TextEdit (instant capture) worked.
+    // DictationStatus stays Idle — this audio belongs to the transform flow.
+    // If capture then aborts (secure field, error, short-tap cancel), the
+    // Aborted arm below tears the mic down; nothing is ever transcribed from
+    // an aborted pass.
+    if model_ready {
+        let audio_start_started = std::time::Instant::now();
+        if let Err(e) = crate::audio::start_transform_capture_audio(
+            Some(app_handle.clone()),
+            device_name,
+            transform_pass_id,
+        ) {
+            crate::transform_trace::audio(transform_pass_id, "armed", "error", 0, 0);
+            crate::transform_trace::resolution(
+                transform_pass_id,
+                "failed",
+                "audio_start",
+                Some("audio_start_failed"),
+            );
             state.app_state.set_transform_status(TransformStatus::Idle);
+            record_transform_stage(
+                &state,
+                transform_pass_id,
+                stage_timing(
+                    PerformanceStageV1::InstructionCapture,
+                    MeasurementV1::measured(audio_start_started.elapsed().as_millis() as u64),
+                    StageOutcomeV1::Failed,
+                ),
+            );
+            complete_transform_performance(
+                &state,
+                transform_pass_id,
+                RunOutcomeV1::Failed {
+                    stage: PerformanceStageV1::InstructionCapture,
+                    error_code: StableRunErrorV1::AudioCaptureFailed,
+                },
+                None,
+            );
             transform_apply::clear_session(&state.app_state);
             let _ = crate::commands::transform_popover::hide_popover_internal(&app_handle);
             emit_transform_hidden(&app_handle);
+            state.app_state.clear_transform_pass(transform_pass_id);
+            state.transform_diagnostics.phase(
+                transform_pass_id,
+                "instructionCapture",
+                "failed",
+                Some(audio_start_started.elapsed().as_millis() as u64),
+                Some("audio_start_failed"),
+            );
+            state
+                .transform_diagnostics
+                .finish(transform_pass_id, "failed");
             return Err(e);
         }
+    }
+
+    let capture_started = std::time::Instant::now();
+    let capture_result = if model_ready {
+        Some(crate::selection::capture_selection(&app_handle, transform_pass_id).await)
+    } else {
+        None
+    };
+    let capture_succeeded = capture_result.as_ref().is_some_and(|result| result.is_ok());
+    let capture_duration_ms = capture_started.elapsed().as_millis() as u64;
+    match capture_result.as_ref() {
+        Some(Ok(snapshot)) => {
+            let source = if snapshot.range.is_some() || snapshot.bounds.is_some() {
+                "accessibility"
+            } else {
+                "clipboardFallback"
+            };
+            state.transform_diagnostics.selection(
+                transform_pass_id,
+                Ok((
+                    source,
+                    crate::selection::length_bucket(snapshot.text.len()),
+                    snapshot.range.is_some(),
+                    snapshot.bounds.is_some(),
+                    "success",
+                )),
+                Some(&snapshot.text),
+            );
+            state.transform_diagnostics.phase(
+                transform_pass_id,
+                "selectionCapture",
+                "completed",
+                Some(capture_duration_ms),
+                None,
+            );
+        }
+        Some(Err(error)) => {
+            state
+                .transform_diagnostics
+                .selection(transform_pass_id, Err(error.as_str()), None);
+            state.transform_diagnostics.phase(
+                transform_pass_id,
+                "selectionCapture",
+                "failed",
+                Some(capture_duration_ms),
+                Some(error.as_str()),
+            );
+        }
+        None => {
+            state.transform_diagnostics.phase(
+                transform_pass_id,
+                "selectionCapture",
+                "failed",
+                Some(capture_duration_ms),
+                Some("model_not_downloaded"),
+            );
+        }
+    }
+    record_transform_stage(
+        &state,
+        transform_pass_id,
+        stage_timing(
+            PerformanceStageV1::SelectedTextCapture,
+            MeasurementV1::measured(capture_started.elapsed().as_millis() as u64),
+            if capture_succeeded {
+                StageOutcomeV1::Completed
+            } else {
+                StageOutcomeV1::Failed
+            },
+        ),
+    );
+    let outcome = core_start_capture(&state.app_state, &fx, model_ready, async move {
+        capture_result.expect("capture future is polled only when the model is ready")
+    })
+    .await;
+
+    if outcome != StartOutcome::CaptureReady {
+        // cancel_transform marks cancellation before tearing down the pass,
+        // while a slow AX capture may still be unwinding. Use that monotonic
+        // marker instead of inferring from Idle/active state: this command can
+        // resume during the window after cancel forced Idle but before it
+        // clears the active pass.
+        let cancellation_won = capture_abort_was_cancelled(&state.app_state, transform_pass_id);
+        if !cancellation_won {
+            complete_transform_performance(
+                &state,
+                transform_pass_id,
+                RunOutcomeV1::Failed {
+                    stage: PerformanceStageV1::SelectedTextCapture,
+                    error_code: StableRunErrorV1::TransformStageFailed,
+                },
+                None,
+            );
+        }
+        // Capture aborted (secure field, capture error, model-not-ready
+        // failed popover, or a cancel racing the capture) — the pre-armed mic
+        // must not stay live.
+        if crate::audio::is_recording() {
+            let _ = crate::audio::cancel_recording(crate::audio_lifecycle::AudioCancelReason::User);
+            let samples: Vec<f32> = Vec::new();
+            crate::transform_trace::audio(
+                transform_pass_id,
+                "stopped",
+                "capture_aborted",
+                samples.len(),
+                samples.len() as u64 * 1_000 / crate::state::WHISPER_SAMPLE_RATE as u64,
+            );
+        }
+        if !cancellation_won && state.app_state.transform_status() == TransformStatus::Idle {
+            state.app_state.clear_transform_pass(transform_pass_id);
+        }
+        if !cancellation_won {
+            state
+                .transform_diagnostics
+                .finish(transform_pass_id, "failed");
+        }
+        return Ok(());
+    }
+    if let Some(guard) = performance_guard.as_mut() {
+        guard.enter(PerformanceStageV1::InstructionCapture);
+    }
+
+    {
         // Mic-leak window (item 10): `cancel_transform` is lock-free and does
         // not take `recording_transition`, so a short-tap cancel can land
-        // between `core_start_capture` returning Listening and the mic actually
-        // coming up here. At that instant the cancel saw `is_recording() ==
-        // false` and did NOT stop anything, so without this re-check the mic
-        // would stay live with status no longer Listening. Re-verify and tear
-        // down if the flow was cancelled out from under us.
-        if state.app_state.transform_status() != TransformStatus::Listening {
+        // between `core_start_capture` returning and async microphone
+        // readiness. Re-verify that this pass still owns either Connecting or
+        // Listening, and tear down if cancellation won.
+        if !matches!(
+            state.app_state.transform_status(),
+            TransformStatus::Connecting | TransformStatus::Listening
+        ) {
             if crate::audio::is_recording() {
-                let _ = crate::audio::stop_recording();
+                let _ =
+                    crate::audio::cancel_recording(crate::audio_lifecycle::AudioCancelReason::User);
+                let samples: Vec<f32> = Vec::new();
+                crate::transform_trace::audio(
+                    transform_pass_id,
+                    "stopped",
+                    "cancelled",
+                    samples.len(),
+                    samples.len() as u64 * 1_000 / crate::state::WHISPER_SAMPLE_RATE as u64,
+                );
             }
             // cancel_transform already cleared the session / hid the popover;
             // repeat the teardown idempotently so no half-state survives.
@@ -885,6 +1959,9 @@ pub(crate) async fn start_transform_capture(
             emit_transform_hidden(&app_handle);
             return Ok(());
         }
+    }
+    if let Some(guard) = performance_guard {
+        guard.defer();
     }
     Ok(())
 }
@@ -895,39 +1972,183 @@ pub(crate) async fn start_transform_capture(
 pub(crate) async fn finish_transform_instruction(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, crate::State>,
+    transform_pass_id: u64,
 ) -> Result<(), String> {
-    let _transition = state.app_state.recording_transition.lock().await;
-
-    // Tolerate a stray release: only proceed from Listening.
-    if state.app_state.transform_status() != TransformStatus::Listening {
-        return Ok(());
-    }
-
-    let samples = crate::audio::stop_recording().unwrap_or_default();
-
     let fx = TauriFlowEffects {
         app: &app_handle,
         state: &state,
     };
-    if !enter_thinking(&state.app_state, &fx) {
-        // Lost the race to a concurrent cancel.
-        return Ok(());
-    }
+
+    // Hold `recording_transition` ONLY for the audio-stop + state transition,
+    // never across the whisper transcription or the sidecar await (issue
+    // #333). The FIFO-fair mutex means anything parked on it resumes the
+    // moment we release; pre-fix, a dictation keypress made during a long
+    // Thinking phase queued here for up to ~20s+, resumed after the review
+    // reached `ready`, and destroyed it via the parked-review auto-dismiss —
+    // silently, seconds after the physical press. With the lock released
+    // before the heavy work, that press acquires the mutex immediately,
+    // observes `Thinking` via the `blocks_recording()` guard, and is refused
+    // with `busy_transforming` — the pre-#327 behavior — so the review
+    // survives. Concurrency during Thinking is gated by `TransformStatus`,
+    // not by this mutex: every work-starting entry point refuses while the
+    // status is non-Idle.
+    let (samples, mut performance_guard) = {
+        let _transition = state.app_state.recording_transition.lock().await;
+
+        if state.app_state.active_transform_pass_id() != Some(transform_pass_id) {
+            return Ok(());
+        }
+        // If the key is released before the microphone is ready, fail
+        // truthfully instead of later entering Listening with no release left
+        // to stop it. The frozen selection stays available for Retry.
+        if state.app_state.try_transition_transform_status(
+            TransformStatus::Connecting,
+            TransformStatus::ReviewPending,
+        ) {
+            let _ = crate::audio::cancel_recording(crate::audio_lifecycle::AudioCancelReason::User);
+            fx.set_focusable(true);
+            fx.emit_state(ReviewState::Failed, Some("audio_not_ready"));
+            crate::transform_trace::resolution(
+                transform_pass_id,
+                "failed",
+                "audio_start",
+                Some("audio_not_ready"),
+            );
+            complete_transform_performance(
+                &state,
+                transform_pass_id,
+                RunOutcomeV1::Failed {
+                    stage: PerformanceStageV1::InstructionCapture,
+                    error_code: StableRunErrorV1::AudioCaptureFailed,
+                },
+                None,
+            );
+            state.transform_diagnostics.phase(
+                transform_pass_id,
+                "instructionCapture",
+                "failed",
+                None,
+                Some("audio_not_ready"),
+            );
+            state
+                .transform_diagnostics
+                .finish(transform_pass_id, "failed");
+            return Ok(());
+        }
+        // Tolerate a stray release from any state other than Listening.
+        if state.app_state.transform_status() != TransformStatus::Listening {
+            return Ok(());
+        }
+
+        let mut guard = state.performance.guard(
+            transform_correlation(transform_pass_id),
+            PerformanceStageV1::InstructionCapture,
+        );
+        let samples = crate::audio::stop_recording().unwrap_or_default();
+        crate::transform_trace::audio(
+            transform_pass_id,
+            "stopped",
+            if samples.is_empty() { "empty" } else { "ok" },
+            samples.len(),
+            samples.len() as u64 * 1_000 / crate::state::WHISPER_SAMPLE_RATE as u64,
+        );
+        let audio_duration_ms =
+            samples.len() as u64 * 1_000 / crate::state::WHISPER_SAMPLE_RATE as u64;
+        record_transform_stage(
+            &state,
+            transform_pass_id,
+            stage_timing(
+                PerformanceStageV1::InstructionCapture,
+                MeasurementV1::measured(audio_duration_ms),
+                if samples.is_empty() {
+                    StageOutcomeV1::Failed
+                } else {
+                    StageOutcomeV1::Completed
+                },
+            ),
+        );
+        state.transform_diagnostics.phase(
+            transform_pass_id,
+            "instructionCapture",
+            if samples.is_empty() {
+                "failed"
+            } else {
+                "completed"
+            },
+            Some(audio_duration_ms),
+            samples.is_empty().then_some("audio_empty"),
+        );
+
+        if !enter_thinking(&state.app_state, &fx) {
+            // Lost the race to a concurrent cancel.
+            guard.defer();
+            return Ok(());
+        }
+        guard.enter(PerformanceStageV1::InstructionAsr);
+        (samples, Some(guard))
+    };
 
     let original = match transform_apply::session_snapshot(&state.app_state) {
         Some(session) => session.snapshot.text,
         None => {
             // Session vanished (cancelled) — bail cleanly.
             state.app_state.set_transform_status(TransformStatus::Idle);
+            crate::transform_trace::resolution(
+                transform_pass_id,
+                "failed",
+                "instruction",
+                Some("no_session"),
+            );
+            complete_transform_performance(
+                &state,
+                transform_pass_id,
+                RunOutcomeV1::Failed {
+                    stage: PerformanceStageV1::InstructionCapture,
+                    error_code: StableRunErrorV1::InternalEarlyExit,
+                },
+                None,
+            );
+            state.app_state.clear_transform_pass(transform_pass_id);
             return Ok(());
         }
     };
 
-    let instruction = match transcribe_instruction(&app_handle, &state, &samples).await {
-        Ok(raw) => Ok(expand_instruction(&state, &raw)),
-        Err(()) => Err(()),
-    };
-    run_transform(
+    let attempt = state.app_state.current_instruction_attempt();
+    let instruction_asr_started = std::time::Instant::now();
+    let instruction =
+        match transcribe_instruction(&app_handle, &state, &samples, transform_pass_id, attempt)
+            .await
+        {
+            Ok(raw) => {
+                state
+                    .transform_diagnostics
+                    .instruction(transform_pass_id, &raw);
+                state.transform_diagnostics.phase(
+                    transform_pass_id,
+                    "instructionAsr",
+                    "completed",
+                    Some(instruction_asr_started.elapsed().as_millis() as u64),
+                    None,
+                );
+                Ok(expand_instruction(&state, &raw))
+            }
+            Err(error) => {
+                state.transform_diagnostics.phase(
+                    transform_pass_id,
+                    "instructionAsr",
+                    "failed",
+                    Some(instruction_asr_started.elapsed().as_millis() as u64),
+                    Some(error.as_str()),
+                );
+                Err(())
+            }
+        };
+    let audio_duration_ms = samples.len() as u64 * 1_000 / crate::state::WHISPER_SAMPLE_RATE as u64;
+    let input_bytes = original.len();
+    if let Some(guard) = performance_guard.as_mut() {
+        guard.enter(PerformanceStageV1::SidecarSpawnLoad);
+    }
+    let report = run_transform(
         &state.app_state,
         &fx,
         &state.transform_runtime,
@@ -937,6 +2158,141 @@ pub(crate) async fn finish_transform_instruction(
         DEFAULT_TRANSFORM_DEADLINE,
     )
     .await;
+    match report {
+        TransformRunReport::Ready {
+            metrics,
+            output_bytes,
+            output_tokens,
+            finish_reason,
+            review_ready_ms,
+        } => {
+            let warm_state = match metrics.cache_hit {
+                Some(true) => "warm",
+                Some(false) => "cold",
+                None => "unknown",
+            };
+            record_sidecar_metrics(&state, transform_pass_id, metrics, true);
+            record_transform_stage(
+                &state,
+                transform_pass_id,
+                StageTimingV1::measured(PerformanceStageV1::ReviewReady, review_ready_ms),
+            );
+            complete_transform_performance(
+                &state,
+                transform_pass_id,
+                RunOutcomeV1::Success,
+                Some(transform_input_summary(
+                    Some(audio_duration_ms),
+                    Some(input_bytes),
+                    Some((output_bytes, output_tokens)),
+                )),
+            );
+            let snapshot = transform_apply::session_snapshot(&state.app_state);
+            state.transform_diagnostics.sidecar_result(
+                transform_pass_id,
+                Some(warm_state),
+                Some(output_tokens),
+                Some(finish_reason),
+                snapshot
+                    .as_ref()
+                    .and_then(|session| session.proposed.as_deref()),
+            );
+            state.transform_diagnostics.phase(
+                transform_pass_id,
+                "reviewReady",
+                "completed",
+                Some(review_ready_ms),
+                None,
+            );
+            state
+                .transform_diagnostics
+                .finish(transform_pass_id, "ready");
+        }
+        TransformRunReport::Failed {
+            metrics: Some(metrics),
+            timed_out,
+            error_code,
+            ..
+        } => {
+            let terminal_stage = record_sidecar_metrics(&state, transform_pass_id, metrics, false);
+            complete_transform_performance(
+                &state,
+                transform_pass_id,
+                if timed_out {
+                    RunOutcomeV1::TimedOut {
+                        stage: terminal_stage,
+                    }
+                } else {
+                    RunOutcomeV1::Failed {
+                        stage: terminal_stage,
+                        error_code: StableRunErrorV1::TransformStageFailed,
+                    }
+                },
+                Some(transform_input_summary(
+                    Some(audio_duration_ms),
+                    Some(input_bytes),
+                    None,
+                )),
+            );
+            state.transform_diagnostics.phase(
+                transform_pass_id,
+                "sidecar",
+                if timed_out { "timedOut" } else { "failed" },
+                None,
+                Some(error_code),
+            );
+            state.transform_diagnostics.finish(
+                transform_pass_id,
+                if timed_out { "timedOut" } else { "failed" },
+            );
+        }
+        TransformRunReport::Failed {
+            metrics: None,
+            stage,
+            error_code,
+            ..
+        } => {
+            complete_transform_performance(
+                &state,
+                transform_pass_id,
+                RunOutcomeV1::Failed {
+                    stage,
+                    error_code: if stage == PerformanceStageV1::InstructionAsr {
+                        StableRunErrorV1::InferenceFailed
+                    } else {
+                        StableRunErrorV1::InternalEarlyExit
+                    },
+                },
+                Some(transform_input_summary(
+                    Some(audio_duration_ms),
+                    Some(input_bytes),
+                    None,
+                )),
+            );
+            state.transform_diagnostics.phase(
+                transform_pass_id,
+                if stage == PerformanceStageV1::InstructionAsr {
+                    "instructionAsr"
+                } else {
+                    "sidecar"
+                },
+                "failed",
+                None,
+                Some(error_code),
+            );
+            state
+                .transform_diagnostics
+                .finish(transform_pass_id, "failed");
+        }
+        TransformRunReport::Cancelled => {
+            if let Some(guard) = performance_guard {
+                guard.defer();
+            }
+            state
+                .transform_diagnostics
+                .finish(transform_pass_id, "cancelled");
+        }
+    }
     Ok(())
 }
 
@@ -992,6 +2348,7 @@ pub(crate) async fn retry_transform_instruction(
         app: &app_handle,
         state: &state,
     };
+    let transform_pass_id = state.app_state.active_transform_pass_id().unwrap_or(0);
 
     // Retry only means anything with a live session (a frozen snapshot). A
     // failed popover with no session (e.g. model_not_downloaded) has nothing
@@ -1000,34 +2357,66 @@ pub(crate) async fn retry_transform_instruction(
         state.app_state.set_transform_status(TransformStatus::Idle);
         let _ = crate::commands::transform_popover::hide_popover_internal(&app_handle);
         emit_transform_hidden(&app_handle);
+        if transform_pass_id != 0 {
+            crate::transform_trace::resolution(
+                transform_pass_id,
+                "cancelled",
+                "retry_without_session",
+                None,
+            );
+            state.app_state.clear_transform_pass(transform_pass_id);
+        }
         return Ok(());
     }
 
-    if !state
-        .app_state
-        .try_transition_transform_status(TransformStatus::ReviewPending, TransformStatus::Listening)
-    {
+    if !state.app_state.try_transition_transform_status(
+        TransformStatus::ReviewPending,
+        TransformStatus::Connecting,
+    ) {
         // Not in review — ignore.
         return Ok(());
     }
 
     fx.set_expanded(false);
     fx.set_focusable(false);
-    fx.emit_state(ReviewState::Listening, None);
+    fx.emit_state(ReviewState::Connecting, None);
+    let _attempt = state.app_state.next_instruction_attempt();
 
-    if let Err(e) = crate::audio::start_recording(Some(app_handle.clone()), device_name) {
-        tracing::error!(target: "transform", error = %e, "retry audio failed to start");
+    if let Err(e) = crate::audio::start_transform_capture_audio(
+        Some(app_handle.clone()),
+        device_name,
+        transform_pass_id,
+    ) {
+        crate::transform_trace::audio(transform_pass_id, "armed", "error", 0, 0);
+        crate::transform_trace::resolution(
+            transform_pass_id,
+            "failed",
+            "retry_audio_start",
+            Some("audio_start_failed"),
+        );
         state.app_state.set_transform_status(TransformStatus::Idle);
         transform_apply::clear_session(&state.app_state);
         let _ = crate::commands::transform_popover::hide_popover_internal(&app_handle);
         emit_transform_hidden(&app_handle);
+        state.app_state.clear_transform_pass(transform_pass_id);
         return Err(e);
     }
     // Same mic-leak re-check as start_transform_capture (item 10): a cancel
     // that raced in during audio startup must not leave the mic live.
-    if state.app_state.transform_status() != TransformStatus::Listening {
+    if !matches!(
+        state.app_state.transform_status(),
+        TransformStatus::Connecting | TransformStatus::Listening
+    ) {
         if crate::audio::is_recording() {
-            let _ = crate::audio::stop_recording();
+            let _ = crate::audio::cancel_recording(crate::audio_lifecycle::AudioCancelReason::User);
+            let samples: Vec<f32> = Vec::new();
+            crate::transform_trace::audio(
+                transform_pass_id,
+                "stopped",
+                "cancelled",
+                samples.len(),
+                samples.len() as u64 * 1_000 / crate::state::WHISPER_SAMPLE_RATE as u64,
+            );
         }
         transform_apply::clear_session(&state.app_state);
         let _ = crate::commands::transform_popover::hide_popover_internal(&app_handle);
@@ -1045,33 +2434,107 @@ pub(crate) async fn approve_transform(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, crate::State>,
 ) -> Result<(), String> {
+    let performance_started = std::time::Instant::now();
+    let transform_pass_id = transform_apply::session_snapshot(&state.app_state)
+        .map(|session| session.transform_pass_id)
+        .or_else(|| state.app_state.active_transform_pass_id())
+        .unwrap_or(0);
     let fx = TauriFlowEffects {
         app: &app_handle,
         state: &state,
     };
 
-    let mut guard =
-        match transform_apply::ApplyingGuard::try_new(&state.app_state, TransformStatus::ReviewPending)
-        {
-            Some(guard) => guard,
-            None => {
-                fx.emit_state(ReviewState::Failed, Some("busy"));
-                return Err("busy".to_string());
+    let mut guard = match transform_apply::ApplyingGuard::try_new(
+        &state.app_state,
+        TransformStatus::ReviewPending,
+    ) {
+        Some(guard) => guard,
+        None => {
+            fx.emit_state(ReviewState::Failed, Some("busy"));
+            if transform_pass_id != 0 {
+                append_transform_follow_up(
+                    &state,
+                    transform_pass_id,
+                    TransformFollowUpKindV1::Apply,
+                    performance_started.elapsed().as_millis() as u64,
+                    StageOutcomeV1::Failed,
+                );
+                crate::transform_trace::resolution(
+                    transform_pass_id,
+                    "failed",
+                    "apply",
+                    Some("busy"),
+                );
             }
-        };
+            return Err("busy".to_string());
+        }
+    };
 
     match transform_apply::apply_transform(&app_handle, &state.app_state).await {
-        Ok(_via) => {
+        Ok(via) => {
             guard.mark_succeeded(); // status -> Idle; session.applied stays true
             fx.emit_state(ReviewState::Applied, None);
             fx.schedule_linger_hide();
+            if transform_pass_id != 0 {
+                append_transform_follow_up(
+                    &state,
+                    transform_pass_id,
+                    TransformFollowUpKindV1::Apply,
+                    performance_started.elapsed().as_millis() as u64,
+                    StageOutcomeV1::Completed,
+                );
+                crate::transform_trace::effect(transform_pass_id, "apply", via.as_str(), None);
+                crate::transform_trace::resolution(transform_pass_id, "applied", "apply", None);
+                state.transform_diagnostics.phase(
+                    transform_pass_id,
+                    "apply",
+                    "completed",
+                    Some(performance_started.elapsed().as_millis() as u64),
+                    None,
+                );
+                state
+                    .transform_diagnostics
+                    .finish(transform_pass_id, "applied");
+            }
             Ok(())
         }
         Err(error) => {
             // Guard drop restores ReviewPending so Retry stays available.
             fx.set_focusable(true);
-            fx.emit_state(ReviewState::Failed, Some(apply_error_code(error)));
-            Err(apply_error_code(error).to_string())
+            let error_code = apply_error_code(error);
+            fx.emit_state(ReviewState::Failed, Some(error_code));
+            if transform_pass_id != 0 {
+                append_transform_follow_up(
+                    &state,
+                    transform_pass_id,
+                    TransformFollowUpKindV1::Apply,
+                    performance_started.elapsed().as_millis() as u64,
+                    StageOutcomeV1::Failed,
+                );
+                crate::transform_trace::effect(
+                    transform_pass_id,
+                    "apply",
+                    "error",
+                    Some(error_code),
+                );
+                crate::transform_trace::resolution(
+                    transform_pass_id,
+                    "failed",
+                    "apply",
+                    Some(error_code),
+                );
+                state.transform_diagnostics.phase(
+                    transform_pass_id,
+                    "apply",
+                    "failed",
+                    Some(performance_started.elapsed().as_millis() as u64),
+                    Some(error_code),
+                );
+                state
+                    .transform_diagnostics
+                    .finish(transform_pass_id, "applyFailed");
+            }
+            Err(error_code.to_string())
         }
     }
 }
@@ -1081,12 +2544,55 @@ pub(crate) async fn approve_transform(
 /// and hide the popover. Clearing the session before hide means the next
 /// `get_transform_review_content` returns empty — no stale React flash of prior
 /// selection text.
+fn resolve_transform_cancel_pass(
+    active_transform_pass_id: Option<u64>,
+    requested_transform_pass_id: Option<u64>,
+) -> Option<u64> {
+    match requested_transform_pass_id {
+        Some(requested) if active_transform_pass_id == Some(requested) => Some(requested),
+        Some(_) => None,
+        None => active_transform_pass_id,
+    }
+}
+
 #[tauri::command]
-pub(crate) async fn cancel_transform(
+pub(crate) fn cancel_transform(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, crate::State>,
+    transform_pass_id: Option<u64>,
 ) -> Result<(), String> {
-    let prev = state.app_state.transform_status();
+    // Hold the status lock across exact-pass validation and teardown. The rdev
+    // start path reads this same lock before activating a new pass, so it
+    // cannot observe Idle and install N+1 while cancellation for N is still
+    // clearing audio/session/popover state.
+    let mut transform_status = state.app_state.transform_status.lock_or_recover();
+    let active_pass_id = state.app_state.active_transform_pass_id();
+    let Some(transform_pass_id) = resolve_transform_cancel_pass(active_pass_id, transform_pass_id)
+    else {
+        return Ok(());
+    };
+    if !state.app_state.clear_transform_pass(transform_pass_id) {
+        return Ok(());
+    }
+    // Publish the terminal winner before any awaitable/main-thread teardown.
+    // A concurrent selection capture can return immediately after status
+    // becomes Idle and must not persist a failed outcome for a pass the user
+    // already cancelled.
+    state
+        .app_state
+        .mark_transform_pass_cancelled(transform_pass_id);
+    let prev = *transform_status;
+    *transform_status = TransformStatus::Idle;
+    crate::transform_trace::transition(
+        transform_pass_id,
+        prev.as_str(),
+        TransformStatus::Idle.as_str(),
+        true,
+    );
+    let _performance_guard = state.performance.guard(
+        transform_correlation(transform_pass_id),
+        performance_stage_for_transform_status(prev),
+    );
 
     // Cooperative cancel first: the blocking spawn_blocking work only clears
     // BusyGuard when it finishes, so abort alone would leave busy held up to
@@ -1104,19 +2610,66 @@ pub(crate) async fn cancel_transform(
     // after a successful undo — see undo_transform_and_close.)
     let _ = state.app_state.next_transform_apply_epoch();
 
-    // Stop instruction audio only if it was the transform's (Listening).
-    if prev == TransformStatus::Listening && crate::audio::is_recording() {
-        let _ = crate::audio::stop_recording();
+    // Stop instruction audio only if it was the transform's. Since issue #329
+    // the mic is pre-armed during Capturing (before selection capture
+    // completes), so both phases can own live audio — never dictation's,
+    // which is mutually excluded while the transform status is non-Idle.
+    if matches!(
+        prev,
+        TransformStatus::Capturing | TransformStatus::Connecting | TransformStatus::Listening
+    ) && crate::audio::is_recording()
+    {
+        let _ = crate::audio::cancel_recording(crate::audio_lifecycle::AudioCancelReason::User);
+        let samples: Vec<f32> = Vec::new();
+        crate::transform_trace::audio(
+            transform_pass_id,
+            "stopped",
+            "cancelled",
+            samples.len(),
+            samples.len() as u64 * 1_000 / crate::state::WHISPER_SAMPLE_RATE as u64,
+        );
+        if transform_pass_id != 0 {
+            record_transform_stage(
+                &state,
+                transform_pass_id,
+                stage_timing(
+                    PerformanceStageV1::InstructionCapture,
+                    MeasurementV1::measured(
+                        samples.len() as u64 * 1_000 / crate::state::WHISPER_SAMPLE_RATE as u64,
+                    ),
+                    StageOutcomeV1::Completed,
+                ),
+            );
+        }
     }
 
-    // Force Idle even from Applying — ApplyingGuard drop will no-op once status
-    // is no longer Applying (try_transition).
-    state.app_state.set_transform_status(TransformStatus::Idle);
+    // Status is already Idle under `transform_status`; ApplyingGuard drop will
+    // no-op once this lock is released instead of resurrecting ReviewPending.
     transform_apply::clear_session(&state.app_state);
     let _ = crate::commands::transform_popover::hide_popover_internal(&app_handle);
     // Backend-initiated hide (short-tap cancel, mid-hold cleanup, or the
     // popover's own Cancel button all route here): reset stale content (item 13).
     emit_transform_hidden(&app_handle);
+    if transform_pass_id != 0 {
+        let stage = performance_stage_for_transform_status(prev);
+        complete_transform_performance(
+            &state,
+            transform_pass_id,
+            RunOutcomeV1::Cancelled { stage },
+            None,
+        );
+        crate::transform_trace::resolution(transform_pass_id, "cancelled", prev.as_str(), None);
+        state.transform_diagnostics.phase(
+            transform_pass_id,
+            "cancellation",
+            "completed",
+            None,
+            None,
+        );
+        state
+            .transform_diagnostics
+            .finish(transform_pass_id, "cancelled");
+    }
     Ok(())
 }
 
@@ -1137,10 +2690,10 @@ pub(crate) async fn cancel_transform(
 /// keeps this race-safe against a concurrent retry
 /// (`ReviewPending -> Listening`): exactly one side wins.
 pub(crate) fn dismiss_review_for_recording(app_state: &AppState, fx: &dyn FlowEffects) -> bool {
-    if !app_state.try_transition_transform_status(
-        TransformStatus::ReviewPending,
-        TransformStatus::Idle,
-    ) {
+    let transform_pass_id = app_state.active_transform_pass_id();
+    if !app_state
+        .try_transition_transform_status(TransformStatus::ReviewPending, TransformStatus::Idle)
+    {
         return false;
     }
     transform_apply::clear_session(app_state);
@@ -1148,7 +2701,43 @@ pub(crate) fn dismiss_review_for_recording(app_state: &AppState, fx: &dyn FlowEf
     // `transform-review-hidden` reset (item 13), same as every other
     // backend-initiated hide.
     fx.hide_popover();
+    if let Some(transform_pass_id) = transform_pass_id {
+        crate::transform_trace::resolution(
+            transform_pass_id,
+            "cancelled",
+            "pipeline_superseded",
+            None,
+        );
+        app_state.clear_transform_pass(transform_pass_id);
+    }
     true
+}
+
+/// Entry-point prologue for pipeline work other than a dictation recording —
+/// file transcription, the legacy base64 `process_audio` path, and benchmarks
+/// (issue #338). Auto-dismisses a parked (ready/failed) review exactly like
+/// `start_native_recording` does — a parked review never completes on its
+/// own, so refusing with "wait for the transform to finish" would deadlock
+/// the user — then refuses with `refusal` if an ACTIVE transform phase
+/// (Capturing/Listening/Thinking/Applying) still holds the shared pipeline.
+///
+/// Callers may re-check `blocks_recording()` under their own dictation lock
+/// afterwards as a race guard; this prologue is the part every work-starting
+/// entry point must share so parked reviews are handled consistently.
+pub(crate) fn clear_parked_review_for_pipeline_work(
+    app_state: &AppState,
+    fx: &dyn FlowEffects,
+    entry: &'static str,
+    refusal: &str,
+) -> Result<(), String> {
+    if dismiss_review_for_recording(app_state, fx) {
+        tracing::info!(target: "pipeline", entry = entry, "auto-dismissed parked transform review");
+    }
+    if app_state.transform_status().blocks_recording() {
+        tracing::warn!(target: "pipeline", entry = entry, "blocked — transform in progress");
+        return Err(refusal.to_string());
+    }
+    Ok(())
 }
 
 /// Undo an applied transform and close the popover **without** bumping the
@@ -1167,6 +2756,11 @@ pub(crate) async fn undo_transform_and_close(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, crate::State>,
 ) -> Result<(), String> {
+    let performance_started = std::time::Instant::now();
+    let transform_pass_id = transform_apply::session_snapshot(&state.app_state)
+        .map(|session| session.transform_pass_id)
+        .or_else(|| state.app_state.active_transform_pass_id())
+        .unwrap_or(0);
     let fx = TauriFlowEffects {
         app: &app_handle,
         state: &state,
@@ -1177,6 +2771,15 @@ pub(crate) async fn undo_transform_and_close(
             Some(guard) => guard,
             None => {
                 fx.emit_state(ReviewState::Failed, Some("busy"));
+                if transform_pass_id != 0 {
+                    append_transform_follow_up(
+                        &state,
+                        transform_pass_id,
+                        TransformFollowUpKindV1::Undo,
+                        performance_started.elapsed().as_millis() as u64,
+                        StageOutcomeV1::Failed,
+                    );
+                }
                 return Err("busy".to_string());
             }
         };
@@ -1188,6 +2791,28 @@ pub(crate) async fn undo_transform_and_close(
             transform_apply::clear_session(&state.app_state);
             let _ = crate::commands::transform_popover::hide_popover_internal(&app_handle);
             emit_transform_hidden(&app_handle);
+            if transform_pass_id != 0 {
+                append_transform_follow_up(
+                    &state,
+                    transform_pass_id,
+                    TransformFollowUpKindV1::Undo,
+                    performance_started.elapsed().as_millis() as u64,
+                    StageOutcomeV1::Completed,
+                );
+                crate::transform_trace::effect(transform_pass_id, "undo", "ok", None);
+                crate::transform_trace::resolution(transform_pass_id, "undone", "undo", None);
+                state.transform_diagnostics.phase(
+                    transform_pass_id,
+                    "undo",
+                    "completed",
+                    Some(performance_started.elapsed().as_millis() as u64),
+                    None,
+                );
+                state
+                    .transform_diagnostics
+                    .finish(transform_pass_id, "undone");
+                state.app_state.clear_transform_pass(transform_pass_id);
+            }
             Ok(())
         }
         Err(error) => {
@@ -1197,12 +2822,43 @@ pub(crate) async fn undo_transform_and_close(
             // dead Retry — the applied text would become permanently
             // un-undoable. Instead re-emit `applied` carrying the error code so
             // the Applied UI (Undo button) stays reachable while surfacing the
-            // failure. Privacy: state event stays {state, errorCode} only.
+            // failure. Privacy: the state event stays content-free.
             fx.emit_state(ReviewState::Applied, Some(apply_error_code(error)));
             // Re-arm the linger so the error window is deterministic: the
             // approve-time timer may be about to fire (hiding the popover
             // ~instantly) or may have no-op'd mid-undo (leaving it up forever).
             fx.schedule_linger_hide();
+            if transform_pass_id != 0 {
+                append_transform_follow_up(
+                    &state,
+                    transform_pass_id,
+                    TransformFollowUpKindV1::Undo,
+                    performance_started.elapsed().as_millis() as u64,
+                    StageOutcomeV1::Failed,
+                );
+                crate::transform_trace::effect(
+                    transform_pass_id,
+                    "undo",
+                    "error",
+                    Some(apply_error_code(error)),
+                );
+                crate::transform_trace::resolution(
+                    transform_pass_id,
+                    "failed",
+                    "undo",
+                    Some(apply_error_code(error)),
+                );
+                state.transform_diagnostics.phase(
+                    transform_pass_id,
+                    "undo",
+                    "failed",
+                    Some(performance_started.elapsed().as_millis() as u64),
+                    Some(apply_error_code(error)),
+                );
+                state
+                    .transform_diagnostics
+                    .finish(transform_pass_id, "undoFailed");
+            }
             Err(apply_error_code(error).to_string())
         }
     }
@@ -1260,11 +2916,17 @@ impl RecordingFlowEffects {
     }
 
     pub fn popover_shown(&self) -> bool {
-        self.inner.lock().unwrap_or_else(|p| p.into_inner()).popover_shown
+        self.inner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .popover_shown
     }
 
     pub fn secure_flash(&self) -> bool {
-        self.inner.lock().unwrap_or_else(|p| p.into_inner()).secure_flash
+        self.inner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .secure_flash
     }
 }
 
@@ -1275,25 +2937,46 @@ impl FlowEffects for RecordingFlowEffects {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .emitted
-            .push((state.as_str().to_string(), error_code.map(|s| s.to_string())));
+            .push((
+                state.as_str().to_string(),
+                error_code.map(|s| s.to_string()),
+            ));
     }
     fn show_popover(&self, _anchor: Option<AnchorRect>) {
-        self.inner.lock().unwrap_or_else(|p| p.into_inner()).popover_shown = true;
+        self.inner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .popover_shown = true;
     }
     fn hide_popover(&self) {
-        self.inner.lock().unwrap_or_else(|p| p.into_inner()).popover_shown = false;
+        self.inner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .popover_shown = false;
     }
     fn set_focusable(&self, focusable: bool) {
-        self.inner.lock().unwrap_or_else(|p| p.into_inner()).focusable = Some(focusable);
+        self.inner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .focusable = Some(focusable);
     }
     fn set_expanded(&self, expanded: bool) {
-        self.inner.lock().unwrap_or_else(|p| p.into_inner()).expanded = Some(expanded);
+        self.inner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .expanded = Some(expanded);
     }
     fn flash_secure_field(&self) {
-        self.inner.lock().unwrap_or_else(|p| p.into_inner()).secure_flash = true;
+        self.inner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .secure_flash = true;
     }
     fn schedule_linger_hide(&self) {
-        self.inner.lock().unwrap_or_else(|p| p.into_inner()).linger_scheduled = true;
+        self.inner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .linger_scheduled = true;
     }
 }
 
@@ -1341,10 +3024,14 @@ pub async fn run_happy_path_for_test(
     };
 
     // Claim the flow the way the command does, then run the capture core.
+    app_state.activate_transform_pass(1);
     assert!(app_state
         .try_transition_transform_status(TransformStatus::Idle, TransformStatus::Capturing));
     let outcome = core_start_capture(&app_state, &fx, true, async move { Ok(snapshot) }).await;
-    assert_eq!(outcome, StartOutcome::Listening);
+    assert_eq!(outcome, StartOutcome::CaptureReady);
+    assert!(enter_transform_listening_if_ready(
+        &app_state, &fx, 1, true, true,
+    ));
 
     // Release: thinking, then transform.
     assert!(enter_thinking(&app_state, &fx));
@@ -1375,9 +3062,10 @@ mod tests {
 
     // ---- Pure state machine ------------------------------------------------
 
-    const ALL_STATES: [FlowState; 8] = [
+    const ALL_STATES: [FlowState; 9] = [
         FlowState::Idle,
         FlowState::Capturing,
+        FlowState::Connecting,
         FlowState::Listening,
         FlowState::Thinking,
         FlowState::Review,
@@ -1386,11 +3074,12 @@ mod tests {
         FlowState::Applied,
     ];
 
-    const ALL_EVENTS: [FlowEvent; 16] = [
+    const ALL_EVENTS: [FlowEvent; 17] = [
         FlowEvent::StartRequested,
         FlowEvent::CaptureOk,
         FlowEvent::CaptureSecure,
         FlowEvent::CaptureError,
+        FlowEvent::AudioReady,
         FlowEvent::InstructionRequested,
         FlowEvent::InstructionBlank,
         FlowEvent::TransformOk,
@@ -1422,7 +3111,11 @@ mod tests {
                 if decision.actions.is_empty() {
                     assert_eq!(
                         (state, event, decision.next),
-                        (FlowState::Idle, FlowEvent::StartRequested, FlowState::Capturing),
+                        (
+                            FlowState::Idle,
+                            FlowEvent::StartRequested,
+                            FlowState::Capturing
+                        ),
                         "only Idle+StartRequested may have no actions",
                     );
                 }
@@ -1437,10 +3130,18 @@ mod tests {
             FlowState::Capturing
         );
         let cap = decide(FlowState::Capturing, FlowEvent::CaptureOk);
-        assert_eq!(cap.next, FlowState::Listening);
+        assert_eq!(cap.next, FlowState::Connecting);
         assert!(cap.actions.contains(&FlowAction::StartSession));
-        assert!(cap.actions.contains(&FlowAction::Emit(ReviewState::Listening)));
+        assert!(cap
+            .actions
+            .contains(&FlowAction::Emit(ReviewState::Connecting)));
         assert!(cap.actions.contains(&FlowAction::StartInstructionCapture));
+
+        let listening = decide(FlowState::Connecting, FlowEvent::AudioReady);
+        assert_eq!(listening.next, FlowState::Listening);
+        assert!(listening
+            .actions
+            .contains(&FlowAction::Emit(ReviewState::Listening)));
 
         let think = decide(FlowState::Listening, FlowEvent::InstructionRequested);
         assert_eq!(think.next, FlowState::Thinking);
@@ -1448,7 +3149,9 @@ mod tests {
 
         let ready = decide(FlowState::Thinking, FlowEvent::TransformOk);
         assert_eq!(ready.next, FlowState::Review);
-        assert!(ready.actions.contains(&FlowAction::Emit(ReviewState::Ready)));
+        assert!(ready
+            .actions
+            .contains(&FlowAction::Emit(ReviewState::Ready)));
         assert!(ready.actions.contains(&FlowAction::SetFocusable(true)));
 
         let applying = decide(FlowState::Review, FlowEvent::Approve);
@@ -1484,6 +3187,7 @@ mod tests {
     fn cancel_is_valid_from_every_live_state() {
         for state in [
             FlowState::Capturing,
+            FlowState::Connecting,
             FlowState::Listening,
             FlowState::Thinking,
             FlowState::Review,
@@ -1510,12 +3214,26 @@ mod tests {
     fn retry_re_speaks_on_the_same_snapshot() {
         for state in [FlowState::Review, FlowState::Failed] {
             let d = decide(state, FlowEvent::Retry);
-            assert_eq!(d.next, FlowState::Listening);
+            assert_eq!(d.next, FlowState::Connecting);
             assert!(d.actions.contains(&FlowAction::StartInstructionCapture));
-            assert!(d.actions.contains(&FlowAction::Emit(ReviewState::Listening)));
+            assert!(d
+                .actions
+                .contains(&FlowAction::Emit(ReviewState::Connecting)));
             // Retry keeps the session — it never clears it.
             assert!(!d.actions.contains(&FlowAction::ClearSession));
         }
+    }
+
+    #[test]
+    fn release_before_audio_ready_fails_instead_of_entering_listening_late() {
+        let decision = decide(FlowState::Connecting, FlowEvent::InstructionRequested);
+        assert_eq!(decision.next, FlowState::Failed);
+        assert!(decision
+            .actions
+            .contains(&FlowAction::StopInstructionCapture));
+        assert!(decision
+            .actions
+            .contains(&FlowAction::Emit(ReviewState::Failed)));
     }
 
     #[test]
@@ -1539,7 +3257,12 @@ mod tests {
 
     #[test]
     fn press_while_mid_flow_is_ignored() {
-        for state in [FlowState::Capturing, FlowState::Listening, FlowState::Thinking] {
+        for state in [
+            FlowState::Capturing,
+            FlowState::Connecting,
+            FlowState::Listening,
+            FlowState::Thinking,
+        ] {
             let d = decide(state, FlowEvent::StartRequested);
             assert_eq!(d.actions, vec![FlowAction::Ignore]);
             assert_eq!(d.next, state);
@@ -1556,6 +3279,10 @@ mod tests {
             (SelectionError::NoSelection, "no_selection"),
             (SelectionError::TooLarge, "too_large"),
             (SelectionError::AxUnavailable, "ax_unavailable"),
+            // An errored secure-field check surfaces to the user as the
+            // (accurate) "couldn't read the selection" popover code; the
+            // distinct diagnostic string lives in SelectionError::as_str.
+            (SelectionError::SecureCheckFailed, "ax_unavailable"),
         ];
         for (error, expected) in cases {
             assert_eq!(selection_error_code(error), expected);
@@ -1589,12 +3316,54 @@ mod tests {
             assert!(!transform_error_code(error).is_empty());
         }
         // Key discoverable codes are exact.
-        assert_eq!(transform_error_code(TransformError::NotDownloaded), "model_not_downloaded");
+        assert_eq!(
+            transform_error_code(TransformError::NotDownloaded),
+            "model_not_downloaded"
+        );
         assert_eq!(transform_error_code(TransformError::Timeout), "timeout");
         assert_eq!(transform_error_code(TransformError::Crashed), "crashed");
-        assert_eq!(transform_error_code(TransformError::OutputInvalid), "output_invalid");
+        assert_eq!(
+            transform_error_code(TransformError::OutputInvalid),
+            "output_invalid"
+        );
         assert_eq!(transform_error_code(TransformError::Busy), "busy");
         assert_eq!(transform_error_code(TransformError::Disabled), "disabled");
+    }
+
+    #[test]
+    fn sidecar_failures_are_precise_for_the_observed_phase() {
+        use crate::llm_sidecar::{SidecarDiagnosticPhase as Phase, SidecarDiagnostics};
+
+        let diagnostics = |phase| SidecarDiagnostics {
+            failure_phase: Some(phase),
+            ..SidecarDiagnostics::default()
+        };
+        assert_eq!(
+            transform_error_code_for_phase(
+                TransformError::Timeout,
+                diagnostics(Phase::HelperModelVerification),
+            ),
+            "model_verification_timeout"
+        );
+        assert_eq!(
+            transform_error_code_for_phase(TransformError::Timeout, diagnostics(Phase::ModelLoad),),
+            "model_load_timeout"
+        );
+        assert_eq!(
+            transform_error_code_for_phase(TransformError::Timeout, diagnostics(Phase::Generation),),
+            "generation_timeout"
+        );
+        assert_eq!(
+            transform_error_code_for_phase(
+                TransformError::HandshakeFailed,
+                diagnostics(Phase::ReadyHandshake),
+            ),
+            "handshake_protocol_failed"
+        );
+        assert_eq!(
+            transform_error_code_for_phase(TransformError::Crashed, diagnostics(Phase::FirstToken),),
+            "process_exit"
+        );
     }
 
     #[test]
@@ -1615,16 +3384,20 @@ mod tests {
             assert!(!apply_error_code(error).is_empty());
         }
         assert_eq!(apply_error_code(ApplyError::TargetGone), "target_gone");
-        assert_eq!(apply_error_code(ApplyError::SelectionChanged), "selection_changed");
+        assert_eq!(
+            apply_error_code(ApplyError::SelectionChanged),
+            "selection_changed"
+        );
     }
 
     // ---- Async core with a fake selection provider -------------------------
 
     #[tokio::test]
-    async fn core_start_capture_ok_freezes_session_and_lists() {
+    async fn core_start_capture_ok_freezes_session_while_audio_connects() {
         use std::time::Instant;
         let app_state = AppState::default();
         let fx = RecordingFlowEffects::new();
+        app_state.activate_transform_pass(1);
         assert!(app_state
             .try_transition_transform_status(TransformStatus::Idle, TransformStatus::Capturing));
 
@@ -1638,11 +3411,32 @@ mod tests {
         };
         let outcome = core_start_capture(&app_state, &fx, true, async move { Ok(snapshot) }).await;
 
-        assert_eq!(outcome, StartOutcome::Listening);
-        assert_eq!(app_state.transform_status(), TransformStatus::Listening);
+        assert_eq!(outcome, StartOutcome::CaptureReady);
+        assert_eq!(app_state.transform_status(), TransformStatus::Connecting);
         assert!(transform_apply::session_snapshot(&app_state).is_some());
-        assert_eq!(fx.emitted_states(), vec!["listening".to_string()]);
+        assert_eq!(fx.emitted_states(), vec!["connecting".to_string()]);
         assert!(fx.popover_shown());
+    }
+
+    #[test]
+    fn transform_listening_requires_both_selection_and_audio_readiness() {
+        let app_state = AppState::default();
+        let fx = RecordingFlowEffects::new();
+        app_state.activate_transform_pass(2);
+        app_state.set_transform_status(TransformStatus::Connecting);
+
+        assert!(!enter_transform_listening_if_ready(
+            &app_state, &fx, 2, false, true,
+        ));
+        assert!(!enter_transform_listening_if_ready(
+            &app_state, &fx, 2, true, false,
+        ));
+        assert_eq!(app_state.transform_status(), TransformStatus::Connecting);
+        assert!(enter_transform_listening_if_ready(
+            &app_state, &fx, 2, true, true,
+        ));
+        assert_eq!(app_state.transform_status(), TransformStatus::Listening);
+        assert_eq!(fx.emitted_states(), vec!["listening".to_string()]);
     }
 
     #[tokio::test]
@@ -1687,7 +3481,10 @@ mod tests {
         assert_eq!(app_state.transform_status(), TransformStatus::ReviewPending);
         assert_eq!(
             fx.emitted(),
-            vec![("failed".to_string(), Some("model_not_downloaded".to_string()))]
+            vec![(
+                "failed".to_string(),
+                Some("model_not_downloaded".to_string())
+            )]
         );
         assert!(fx.popover_shown());
     }
@@ -1740,7 +3537,10 @@ mod tests {
         let app_state = AppState::default();
         let fx = RecordingFlowEffects::new();
         transform_apply::start_session(&app_state, snapshot_for_dismiss_tests());
-        assert!(transform_apply::set_proposed_text(&app_state, "HELLO".to_string()));
+        assert!(transform_apply::set_proposed_text(
+            &app_state,
+            "HELLO".to_string()
+        ));
         app_state.set_transform_status(TransformStatus::ReviewPending);
 
         assert!(dismiss_review_for_recording(&app_state, &fx));
@@ -1756,6 +3556,7 @@ mod tests {
         for status in [
             TransformStatus::Idle,
             TransformStatus::Capturing,
+            TransformStatus::Connecting,
             TransformStatus::Listening,
             TransformStatus::Thinking,
             TransformStatus::Applying,
@@ -1768,6 +3569,72 @@ mod tests {
             );
             assert_eq!(app_state.transform_status(), status);
         }
+    }
+
+    // ---- clear_parked_review_for_pipeline_work (issue #338) ----------------
+
+    #[test]
+    fn pipeline_work_dismisses_parked_review_and_proceeds() {
+        // Issue #338: a parked (ready/failed) review never completes on its
+        // own — file transcription / process_audio / benchmarks must dismiss
+        // it and proceed, not refuse with "wait for the transform to finish".
+        let app_state = AppState::default();
+        let fx = RecordingFlowEffects::new();
+        transform_apply::start_session(&app_state, snapshot_for_dismiss_tests());
+        assert!(transform_apply::set_proposed_text(
+            &app_state,
+            "HELLO".to_string()
+        ));
+        app_state.set_transform_status(TransformStatus::ReviewPending);
+
+        let result =
+            clear_parked_review_for_pipeline_work(&app_state, &fx, "test_entry", "blocked");
+        assert_eq!(result, Ok(()));
+        assert_eq!(app_state.transform_status(), TransformStatus::Idle);
+        assert!(transform_apply::session_snapshot(&app_state).is_none());
+        assert!(!fx.popover_shown());
+    }
+
+    #[test]
+    fn pipeline_work_refused_while_a_transform_phase_is_active() {
+        // Issue #338 (benchmark side): an ACTIVE transform must refuse the
+        // work — the benchmark path previously ignored transform status
+        // entirely and ran right over it.
+        let app_state = AppState::default();
+        let fx = RecordingFlowEffects::new();
+        for status in [
+            TransformStatus::Capturing,
+            TransformStatus::Connecting,
+            TransformStatus::Listening,
+            TransformStatus::Thinking,
+            TransformStatus::Applying,
+        ] {
+            app_state.set_transform_status(status);
+            let result =
+                clear_parked_review_for_pipeline_work(&app_state, &fx, "test_entry", "blocked");
+            assert_eq!(
+                result,
+                Err("blocked".to_string()),
+                "{:?} must refuse",
+                status
+            );
+            assert_eq!(
+                app_state.transform_status(),
+                status,
+                "{:?} must survive",
+                status
+            );
+        }
+    }
+
+    #[test]
+    fn pipeline_work_is_a_noop_when_transform_is_idle() {
+        let app_state = AppState::default();
+        let fx = RecordingFlowEffects::new();
+        let result =
+            clear_parked_review_for_pipeline_work(&app_state, &fx, "test_entry", "blocked");
+        assert_eq!(result, Ok(()));
+        assert_eq!(app_state.transform_status(), TransformStatus::Idle);
     }
 
     #[tokio::test]
@@ -1888,6 +3755,146 @@ mod tests {
         assert!(fx.emitted_states().is_empty());
     }
 
+    #[test]
+    fn capture_abort_does_not_terminalize_during_cancel_before_pass_clear() {
+        let app_state = AppState::default();
+        app_state.activate_transform_pass(41);
+        app_state.set_transform_status(TransformStatus::Capturing);
+
+        // Mirrors cancel_transform's ordering: publish cancellation first,
+        // then force Idle, with the active pass still present until teardown.
+        app_state.mark_transform_pass_cancelled(41);
+        app_state.set_transform_status(TransformStatus::Idle);
+
+        assert_eq!(app_state.active_transform_pass_id(), Some(41));
+        assert!(capture_abort_was_cancelled(&app_state, 41));
+    }
+
+    #[test]
+    fn cancelled_queued_start_terminalizes_once_and_later_pass_can_claim() {
+        let app_state = AppState::default();
+        let diagnostics = crate::transform_diagnostics::TransformDiagnostics::default();
+
+        diagnostics.begin(41);
+        app_state.activate_transform_pass(41);
+        app_state.mark_transform_pass_cancelled(41);
+
+        assert_eq!(
+            transform_start_pass_disposition(&app_state, 41),
+            TransformStartPassDisposition::Cancelled
+        );
+        assert_eq!(
+            claim_transform_start_status(&app_state, 41),
+            Err("cancelled")
+        );
+        assert_eq!(app_state.transform_status(), TransformStatus::Idle);
+        assert!(terminalize_cancelled_transform_start(
+            &app_state,
+            &diagnostics,
+            41
+        ));
+        assert!(!terminalize_cancelled_transform_start(
+            &app_state,
+            &diagnostics,
+            41
+        ));
+        assert_eq!(app_state.transform_status(), TransformStatus::Idle);
+        assert_eq!(app_state.active_transform_pass_id(), None);
+
+        let attempts = diagnostics.list_attempts(10).attempts;
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(attempts[0].transform_pass_id, 41);
+        assert_eq!(attempts[0].outcome, "cancelled");
+        assert_eq!(
+            attempts[0]
+                .phases
+                .iter()
+                .filter(|phase| phase.phase == "cancellation")
+                .count(),
+            1
+        );
+
+        app_state.activate_transform_pass(42);
+        assert_eq!(
+            transform_start_pass_disposition(&app_state, 42),
+            TransformStartPassDisposition::Current
+        );
+        assert_eq!(claim_transform_start_status(&app_state, 42), Ok(()));
+        assert_eq!(app_state.transform_status(), TransformStatus::Capturing);
+    }
+
+    #[test]
+    fn delayed_cancelled_start_terminalizes_as_superseded_without_clearing_newer_owner() {
+        let app_state = AppState::default();
+        let diagnostics = crate::transform_diagnostics::TransformDiagnostics::default();
+
+        diagnostics.begin(51);
+        app_state.mark_transform_pass_cancelled(51);
+        app_state.activate_transform_pass(52);
+
+        assert!(terminalize_cancelled_transform_start(
+            &app_state,
+            &diagnostics,
+            51
+        ));
+        assert!(!terminalize_cancelled_transform_start(
+            &app_state,
+            &diagnostics,
+            51
+        ));
+        assert_eq!(app_state.active_transform_pass_id(), Some(52));
+
+        let attempts = diagnostics.list_attempts(10).attempts;
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(attempts[0].transform_pass_id, 51);
+        assert_eq!(attempts[0].outcome, "superseded");
+        assert_eq!(
+            attempts[0]
+                .phases
+                .iter()
+                .filter(|phase| phase.phase == "supersession")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn scoped_transform_cancel_never_resolves_to_a_different_pass() {
+        assert_eq!(resolve_transform_cancel_pass(Some(61), Some(61)), Some(61));
+        // A duplicate delivery after the first exact cancellation cleared N
+        // is an idempotent no-op.
+        assert_eq!(resolve_transform_cancel_pass(None, Some(61)), None);
+        // The same delayed duplicate must also leave a newly active N+1 alone.
+        assert_eq!(resolve_transform_cancel_pass(Some(62), Some(61)), None);
+        assert_eq!(resolve_transform_cancel_pass(Some(62), None), Some(62));
+        assert_eq!(resolve_transform_cancel_pass(None, None), None);
+    }
+
+    #[test]
+    fn queued_start_guard_rejects_cancelled_and_unrelated_stale_passes() {
+        let app_state = AppState::default();
+        app_state.activate_transform_pass(8);
+        app_state.mark_transform_pass_cancelled(7);
+
+        assert_eq!(
+            transform_start_pass_disposition(&app_state, 7),
+            TransformStartPassDisposition::Cancelled
+        );
+        assert_eq!(
+            transform_start_pass_disposition(&app_state, 6),
+            TransformStartPassDisposition::Cancelled
+        );
+        assert_eq!(
+            transform_start_pass_disposition(&app_state, 9),
+            TransformStartPassDisposition::Stale
+        );
+        assert_eq!(
+            transform_start_pass_disposition(&app_state, 8),
+            TransformStartPassDisposition::Current
+        );
+        assert_eq!(app_state.transform_status(), TransformStatus::Idle);
+    }
+
     // ---- Spec-by-test divergence points (finding 8) ------------------------
 
     #[test]
@@ -1954,5 +3961,18 @@ mod tests {
         // Contrast: cancel_transform would bump again and break paste-fallback.
         let second = app_state.next_transform_apply_epoch();
         assert_eq!(second, first + 1);
+    }
+
+    #[test]
+    fn instruction_failure_codes_are_stable_and_content_free() {
+        assert_eq!(InstructionFailure::AudioEmpty.as_str(), "audio_empty");
+        assert_eq!(
+            InstructionFailure::TranscriptionError.as_str(),
+            "transcription_error"
+        );
+        assert_eq!(
+            InstructionFailure::TranscriptBlank.as_str(),
+            "transcript_blank"
+        );
     }
 }

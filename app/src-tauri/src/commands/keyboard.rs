@@ -107,7 +107,13 @@ pub fn set_transform_key(app_handle: tauri::AppHandle, hotkey: String) -> Result
     }
     let should_release = keyboard::set_transform_key(&hotkey);
     if should_release {
-        let _ = app_handle.emit("transform-key-released", ());
+        if let Some((pass_id, elapsed_ms)) = keyboard::take_transform_hold_context() {
+            crate::transform_trace::key_stop(pass_id, elapsed_ms, "key_reconfigured");
+            let _ = app_handle.emit(
+                "transform-key-released",
+                serde_json::json!({ "transformPassId": pass_id }),
+            );
+        }
         tracing::info!(target: "keyboard", "Transform key changed while held — emitted released; updated to: {}", hotkey);
     } else {
         tracing::info!(target: "keyboard", "Transform key updated to: {}", hotkey);

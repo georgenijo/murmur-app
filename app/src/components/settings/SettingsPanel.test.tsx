@@ -20,6 +20,7 @@ vi.mock('../../lib/hooks/useVocabScan', () => ({
   useVocabScan: () => ({ status: 'idle', walker: null, stats: null, scan: vi.fn(), cancel: vi.fn() }),
 }));
 vi.mock('./AppOverridesEditor', () => ({ AppOverridesEditor: () => <div>App overrides editor</div> }));
+vi.mock('./AppearanceSettings', () => ({ AppearanceSettings: () => <div>Appearance settings</div> }));
 vi.mock('./KnowledgeManager', () => ({ KnowledgeManager: () => <div>Knowledge manager</div> }));
 vi.mock('./PerformanceLab', () => ({ PerformanceLab: () => <div>Performance lab</div> }));
 vi.mock('./VocabularyAliasesEditor', () => ({ VocabularyAliasesEditor: () => <div>Vocabulary editor</div> }));
@@ -79,7 +80,7 @@ describe('SettingsPanel information architecture', () => {
 
   it('renders ordered pages with Recording selected first (includes Transform)', () => {
     expect(SETTINGS_CATEGORIES.map((category) => category.label)).toEqual([
-      'Recording', 'Transcription', 'Transform', 'Text & Vocabulary', 'Delivery', 'Performance', 'General',
+      'Recording', 'Transcription', 'Transform', 'Text & Vocabulary', 'Delivery', 'Performance', 'Appearance', 'General',
     ]);
     const nav = container.querySelector('nav[aria-label="Settings pages"]') as HTMLElement;
     expect(Array.from(nav.querySelectorAll('button')).slice(1).map((button) => button.textContent)).toEqual(SETTINGS_CATEGORIES.map((category) => category.label));
@@ -92,6 +93,7 @@ describe('SettingsPanel information architecture', () => {
       ['Text & Vocabulary', 'Names & Terms'],
       ['Delivery', 'Always copied to clipboard'],
       ['Performance', 'Performance lab'],
+      ['Appearance', 'Appearance settings'],
       ['General', 'Launch at Login'],
     ] as const) {
       const button = Array.from(container.querySelectorAll('nav button')).find((item) => item.textContent === page) as HTMLButtonElement;

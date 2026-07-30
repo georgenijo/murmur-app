@@ -1,0 +1,128 @@
+import { act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import { WhatsNewModal } from './WhatsNewModal';
+
+describe('WhatsNewModal', () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let onDismiss: Mock<() => void>;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    onDismiss = vi.fn();
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+    vi.useRealTimers();
+  });
+
+  it('renders sanitized release notes for the installed version and focuses the action', async () => {
+    await act(async () => {
+      root.render(
+        <WhatsNewModal
+          update={{
+            version: '0.22.0',
+            notes: '## New Features\n\n- Faster transcription\n\n<script>bad()</script>',
+          }}
+          onDismiss={onDismiss}
+        />,
+      );
+      vi.advanceTimersByTime(60);
+    });
+
+    const dialog = container.querySelector('[role="dialog"]') as HTMLDivElement;
+    expect(dialog.getAttribute('aria-modal')).toBe('true');
+    expect(dialog.textContent).toContain("What's new in Murmur 0.22.0");
+    expect(dialog.textContent).toContain('Faster transcription');
+    expect(dialog.querySelector('script')).toBeNull();
+    expect(document.activeElement?.textContent).toContain('Start using Murmur');
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+    });
+    expect(document.activeElement?.textContent).toContain('Start using Murmur');
+  });
+
+  it('keeps the header and action visible while only the release notes scroll', async () => {
+    await act(async () => {
+      root.render(
+        <WhatsNewModal
+          update={{
+            version: '0.22.0',
+            notes: Array.from({ length: 30 }, (_, index) => `- Change ${index + 1}`).join('\n'),
+          }}
+          onDismiss={onDismiss}
+        />,
+      );
+    });
+
+    const title = container.querySelector('#whats-new-title') as HTMLHeadingElement;
+    const action = container.querySelector('button') as HTMLButtonElement;
+    const header = title.parentElement?.parentElement;
+    const footer = action.parentElement;
+    const notes = container.querySelector('.overflow-y-auto');
+
+    expect(header?.classList.contains('shrink-0')).toBe(true);
+    expect(footer?.classList.contains('shrink-0')).toBe(true);
+    expect(notes?.contains(title)).toBe(false);
+    expect(notes?.contains(action)).toBe(false);
+  });
+
+  it('dismisses from the primary action and Escape', async () => {
+    await act(async () => {
+      root.render(
+        <WhatsNewModal
+          update={{ version: '0.22.0', notes: 'Bug fixes.' }}
+          onDismiss={onDismiss}
+        />,
+      );
+    });
+
+    const button = container.querySelector('button') as HTMLButtonElement;
+    await act(async () => button.click());
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(onDismiss).toHaveBeenCalledTimes(2);
+  });
+
+  it('cycles focus through release-note links and lets keyboard users activate them', async () => {
+    await act(async () => {
+      root.render(
+        <WhatsNewModal
+          update={{
+            version: '0.22.0',
+            notes: '[Read the full release notes](https://example.com/release)',
+          }}
+          onDismiss={onDismiss}
+        />,
+      );
+      vi.advanceTimersByTime(60);
+    });
+
+    const link = container.querySelector('a') as HTMLAnchorElement;
+    const onLinkClick = vi.fn((event: MouseEvent) => event.preventDefault());
+    link.addEventListener('click', onLinkClick);
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+    });
+    expect(document.activeElement).toBe(link);
+
+    await act(async () => link.click());
+    expect(onLinkClick).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+    });
+    expect(document.activeElement?.textContent).toContain('Start using Murmur');
+  });
+});

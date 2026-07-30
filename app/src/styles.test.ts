@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-// @ts-expect-error Node types are intentionally absent from the browser app.
 import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { compile } from 'tailwindcss';
 
 const css = readFileSync('./src/styles.css', 'utf8');
 
@@ -19,6 +20,8 @@ const lightTheme = {
   'on-surface-variant': '#586065',
   'outline-variant': '#abb3b9',
   error: '#a83836',
+  success: '#146333',
+  warning: '#654500',
 } as const;
 
 const darkTheme = {
@@ -36,6 +39,8 @@ const darkTheme = {
   'on-surface-variant': '#abb3b9',
   'outline-variant': '#586065',
   error: '#fa746f',
+  success: '#66d99a',
+  warning: '#f4bd65',
 } as const;
 
 function luminance(hex: string): number {
@@ -56,9 +61,26 @@ function contrast(foreground: string, background: string): number {
 }
 
 describe('Sonic Canvas semantic color tokens', () => {
+  it('compiles dark utilities against the concrete appearance selector', async () => {
+    const compiler = await compile(css, {
+      base: process.cwd(),
+      loadStylesheet: async (id, base) => {
+        const path = id === 'tailwindcss'
+          ? resolve(process.cwd(), 'node_modules/tailwindcss/index.css')
+          : resolve(base, id);
+        return { path, base: dirname(path), content: readFileSync(path, 'utf8') };
+      },
+    });
+    const output = compiler.build(['dark:bg-warning/10']);
+    expect(output).toMatch(
+      /\.dark\\:bg-warning\\\/10\s*\{\s*&:where\(\[data-appearance="dark"\], \[data-appearance="dark"\] \*\)/,
+    );
+  });
+
   it('defines the complete light and dark palettes in the Tailwind v4 stylesheet', () => {
     expect(css).toContain('@theme inline');
     expect(css).toContain('@media (prefers-color-scheme: dark)');
+    expect(css).toContain('@custom-variant dark (&:where([data-appearance="dark"], [data-appearance="dark"] *))');
 
     for (const [token, value] of Object.entries(lightTheme)) {
       expect(css).toContain(`--murmur-${token}: ${value};`);

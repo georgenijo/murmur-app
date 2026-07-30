@@ -28,12 +28,21 @@ pub struct AppliedSurface {
     pub window_h: f64,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct DisplaySnapshot {
+    pub(crate) notch_info: Option<(f64, f64)>,
+    monitor_position: Option<(i32, i32)>,
+    monitor_size: Option<(u32, u32)>,
+    scale_factor: Option<f64>,
+}
+
 // Private geometry constants — the ONLY place these magic numbers live.
 //
-// The island is ONE constant width in every state: `window_w == pill_idle_w ==
-// pill_active_w == notch_w + 2*WING`, with both margins 0. Window and island are
-// the same box, so there is no horizontal hit-area mismatch and nothing animates
-// its width — expansion is height-only.
+// The native window stays at the full active width (`notch_w + 2*WING`) so
+// recording/processing indicators can use either wing immediately. The visual
+// island is narrower only while truly idle and collapsed: `notch_w + WING`.
+// Its left edge stays fixed, which tucks the empty right wing under the notch;
+// hover grows the visible right edge back out without moving the mic wing.
 //
 // WING is the visible strip on each side of the physical notch. The frontend
 // treats each wing as a fixed-width slot of this size and *centers* its content
@@ -46,6 +55,7 @@ const WING: f64 = 36.0;
 const DROPDOWN_H: f64 = 44.0;
 const FALLBACK_NOTCH_W: f64 = 80.0;
 const FALLBACK_NOTCH_H: f64 = 37.0;
+const MAX_REASONABLE_MENU_BAR_H: f64 = 128.0;
 
 fn geometry_for(notch: Option<(f64, f64)>) -> OverlayGeometry {
     let (notch_w, notch_h) = notch.unwrap_or((FALLBACK_NOTCH_W, FALLBACK_NOTCH_H));
@@ -54,8 +64,8 @@ fn geometry_for(notch: Option<(f64, f64)>) -> OverlayGeometry {
         window_w,
         collapsed_h: notch_h,
         expanded_h: notch_h + DROPDOWN_H,
-        // Idle and active widths are identical: the island never changes width.
-        pill_idle_w: window_w,
+        // Idle ends at the notch's right edge; active reveals the right wing.
+        pill_idle_w: notch_w + WING,
         pill_active_w: window_w,
         pill_margin_idle: 0.0,
         pill_margin_active: 0.0,
@@ -75,34 +85,123 @@ fn applied_surface_for(g: &OverlayGeometry, expanded: bool) -> AppliedSurface {
     }
 }
 
+/// Resolve the overlay's obscured center width and collapsed height from one
+/// native screen snapshot.
+///
+/// `safe_top` describes the physical notch on notched Mac displays. It is zero
+/// on ordinary/external displays, where the actual menu-bar height is instead
+/// the gap between the screen frame and its visible frame. Keeping those two
+/// measurements separate avoids extending the synthetic island below a shorter
+/// menu bar (the old fixed 37pt fallback did exactly that).
+fn notch_info_from_screen_measurements(
+    screen_w: f64,
+    frame_top: f64,
+    visible_frame_top: f64,
+    safe_top: f64,
+    auxiliary_left_w: f64,
+    auxiliary_right_w: f64,
+) -> (f64, f64) {
+    let visible_top_gap = (frame_top - visible_frame_top).max(0.0);
+    let measured_menu_bar_h = safe_top.max(visible_top_gap);
+    let menu_bar_h = if measured_menu_bar_h.is_finite()
+        && measured_menu_bar_h > 0.0
+        && measured_menu_bar_h <= MAX_REASONABLE_MENU_BAR_H
+    {
+        measured_menu_bar_h
+    } else {
+        FALLBACK_NOTCH_H
+    };
+
+    let measured_notch_w = screen_w - auxiliary_left_w - auxiliary_right_w;
+    let notch_w = if safe_top.is_finite()
+        && safe_top > 0.0
+        && measured_notch_w.is_finite()
+        && measured_notch_w > 0.0
+        && measured_notch_w < screen_w
+    {
+        measured_notch_w
+    } else {
+        FALLBACK_NOTCH_W
+    };
+
+    (notch_w, menu_bar_h)
+}
+
+fn centered_physical_position(
+    monitor_position: (i32, i32),
+    monitor_size: (u32, u32),
+    scale_factor: f64,
+    overlay_w: f64,
+) -> (i32, i32) {
+    let overlay_physical_w = overlay_w * scale_factor;
+    let x = monitor_position.0 as f64 + (monitor_size.0 as f64 - overlay_physical_w) / 2.0;
+    (x.round() as i32, monitor_position.1)
+}
+
 /// Detect notch width and configure the overlay as a notch-level window.
 /// Uses native NSScreen APIs — no subprocess needed.
 #[cfg(target_os = "macos")]
 pub(crate) fn detect_notch_info() -> Option<(f64, f64)> {
-    // Returns (notch_width, menu_bar_height) in logical points
+    // Returns (notch_or_synthetic_center_width, actual_menu_bar_height) in
+    // logical points.
     use objc2_app_kit::NSScreen;
     use objc2_foundation::MainThreadMarker;
 
-    // SAFETY: detect_notch_info() is only called from Tauri's setup() callback,
-    // which runs on the main thread. MainThreadMarker::new_unchecked() requires
-    // the caller to be on the main thread, which setup() guarantees.
+    // SAFETY: callers are Tauri's setup callback and the screen-change observer
+    // registered on NSOperationQueue::mainQueue. MainThreadMarker requires
+    // exactly that main-thread confinement.
     let mtm = unsafe { MainThreadMarker::new_unchecked() };
-    let screen = NSScreen::mainScreen(mtm)?;
+    // AppKit guarantees the first screen is the one containing the menu bar.
+    // `mainScreen()` can instead follow the key window, which would make the
+    // overlay jump to a secondary display after the main app window moves.
+    let screen = NSScreen::screens(mtm).firstObject()?;
     let insets = screen.safeAreaInsets();
-    if insets.top <= 0.0 {
-        return None; // No notch
-    }
     let frame = screen.frame();
+    let visible_frame = screen.visibleFrame();
     let left_w = screen.auxiliaryTopLeftArea().size.width;
     let right_w = screen.auxiliaryTopRightArea().size.width;
-    let notch_w = frame.size.width - left_w - right_w;
-    tracing::info!(target: "system", "detect_notch_info: notch_w={}, menu_bar_h={}, screen_w={}", notch_w, insets.top, frame.size.width);
-    Some((notch_w, insets.top))
+    let frame_top = frame.origin.y + frame.size.height;
+    let visible_frame_top = visible_frame.origin.y + visible_frame.size.height;
+    let info = notch_info_from_screen_measurements(
+        frame.size.width,
+        frame_top,
+        visible_frame_top,
+        insets.top,
+        left_w,
+        right_w,
+    );
+    tracing::info!(
+        target: "system",
+        "detect_notch_info: notch_w={}, menu_bar_h={}, safe_top={}, visible_top_gap={}, screen_w={}",
+        info.0,
+        info.1,
+        insets.top,
+        (frame_top - visible_frame_top).max(0.0),
+        frame.size.width
+    );
+    Some(info)
 }
 
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn detect_notch_info() -> Option<(f64, f64)> {
     None
+}
+
+pub(crate) fn capture_display_snapshot(app_handle: &tauri::AppHandle) -> DisplaySnapshot {
+    let notch_info = detect_notch_info();
+    let monitor = app_handle.primary_monitor().ok().flatten();
+    DisplaySnapshot {
+        notch_info,
+        monitor_position: monitor.as_ref().map(|monitor| {
+            let position = monitor.position();
+            (position.x, position.y)
+        }),
+        monitor_size: monitor.as_ref().map(|monitor| {
+            let size = monitor.size();
+            (size.width, size.height)
+        }),
+        scale_factor: monitor.as_ref().map(|monitor| monitor.scale_factor()),
+    }
 }
 
 /// Subscribe to macOS display configuration changes (plug/unplug monitor, lid open/close).
@@ -116,22 +215,62 @@ pub(crate) fn register_screen_change_observer(app_handle: tauri::AppHandle) {
     let notification_name =
         NSNotificationName::from_str("NSApplicationDidChangeScreenParametersNotification");
 
-    let block = block2::RcBlock::new(move |_notification: std::ptr::NonNull<NSNotification>| {
-        tracing::info!(target: "system", "screen parameters changed — re-detecting notch info");
-        let notch = detect_notch_info();
-        let handle = &app_handle;
-        // Update cached notch info
-        {
-            let state = handle.state::<State>();
-            *state.notch_info.lock_or_recover() = notch;
-        }
-        // Reposition overlay window
-        if let Some(overlay) = handle.get_webview_window("overlay") {
-            position_overlay_default(&overlay, notch);
-        }
-        // Notify frontend
-        let _ = handle.emit("overlay-geometry-changed", geometry_for(notch));
-    });
+    const SCREEN_CHANGE_DEBOUNCE: std::time::Duration =
+        std::time::Duration::from_millis(125);
+    let (notification_sender, notification_receiver) = std::sync::mpsc::channel::<()>();
+    let worker_handle = app_handle.clone();
+    std::thread::Builder::new()
+        .name("murmur-screen-change".to_string())
+        .spawn(move || {
+            while notification_receiver.recv().is_ok() {
+                while notification_receiver
+                    .recv_timeout(SCREEN_CHANGE_DEBOUNCE)
+                    .is_ok()
+                {}
+                let handle = worker_handle.clone();
+                let schedule_handle = handle.clone();
+                if let Err(error) = schedule_handle.run_on_main_thread(move || {
+                    let snapshot = capture_display_snapshot(&handle);
+                    let notch = snapshot.notch_info;
+                    let changed = {
+                        let state = handle.state::<State>();
+                        let mut cached = state.display_snapshot.lock_or_recover();
+                        if cached.as_ref() == Some(&snapshot) {
+                            false
+                        } else {
+                            *cached = Some(snapshot.clone());
+                            *state.notch_info.lock_or_recover() = notch;
+                            true
+                        }
+                    };
+                    tracing::info!(
+                        target: "system",
+                        changed,
+                        "screen parameter notifications coalesced"
+                    );
+                    if !changed {
+                        return;
+                    }
+                    if let Some(overlay) = handle.get_webview_window("overlay") {
+                        position_overlay_default(&overlay, notch);
+                    }
+                    let _ = handle.emit("overlay-geometry-changed", geometry_for(notch));
+                }) {
+                    tracing::warn!(
+                        target: "system",
+                        "screen change main-thread dispatch failed: {}",
+                        error
+                    );
+                }
+            }
+        })
+        .expect("screen change debounce worker must spawn");
+
+    let block = block2::RcBlock::new(
+        move |_notification: std::ptr::NonNull<NSNotification>| {
+            let _ = notification_sender.send(());
+        },
+    );
 
     unsafe {
         let center = NSNotificationCenter::defaultCenter();
@@ -187,25 +326,44 @@ pub(crate) fn position_overlay_default(
     let overlay_h = g.collapsed_h;
     tracing::info!(target: "system", "position_overlay_default: notch_info={:?}, overlay_w={}, overlay_h={}", notch_info, overlay_w, overlay_h);
 
-    // Resize window to match notch area
-    if let Err(e) = overlay.set_size(tauri::LogicalSize::new(overlay_w, overlay_h)) {
-        tracing::warn!(target: "system", "position_overlay_default: set_size({}, {}) failed: {}", overlay_w, overlay_h, e);
-    }
-
     // Raise above the menu bar so the window can overlap the notch
     raise_window_above_menubar(overlay);
 
-    if let Some(monitor) = overlay.current_monitor().ok().flatten() {
+    // Target the primary/menu-bar display explicitly. `current_monitor()` is
+    // determined by the overlay's old frame and can keep it stranded on a
+    // disconnected or secondary display. Use physical coordinates so mixed
+    // Retina/non-Retina layouts and non-zero monitor origins stay exact.
+    let monitor = overlay
+        .app_handle()
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| overlay.current_monitor().ok().flatten());
+    if let Some(monitor) = monitor {
         let size = monitor.size();
+        let position = monitor.position();
         let sf = monitor.scale_factor();
-        let x = (size.width as f64 / sf - overlay_w) / 2.0;
-        tracing::info!(target: "system", "position_overlay_default: x={}, y=0, sf={}", x, sf);
-        if let Err(e) = overlay.set_position(tauri::LogicalPosition::new(x, 0.0)) {
-            tracing::warn!(target: "system", "position_overlay_default: set_position({}, 0) failed: {}", x, e);
+        let physical_w = (overlay_w * sf).round().max(1.0) as u32;
+        let physical_h = (overlay_h * sf).round().max(1.0) as u32;
+        let (x, y) = centered_physical_position(
+            (position.x, position.y),
+            (size.width, size.height),
+            sf,
+            overlay_w,
+        );
+
+        if let Err(e) = overlay.set_size(tauri::PhysicalSize::new(physical_w, physical_h)) {
+            tracing::warn!(target: "system", "position_overlay_default: set_size({}, {}) failed: {}", physical_w, physical_h, e);
+        }
+        tracing::info!(target: "system", "position_overlay_default: x={}, y={}, sf={}", x, y, sf);
+        if let Err(e) = overlay.set_position(tauri::PhysicalPosition::new(x, y)) {
+            tracing::warn!(target: "system", "position_overlay_default: set_position({}, {}) failed: {}", x, y, e);
         }
     } else {
-        tracing::warn!(target: "system", "position_overlay_default: no current monitor, falling back to (100, 100)");
-        let _ = overlay.set_position(tauri::LogicalPosition::new(100.0, 100.0));
+        tracing::warn!(target: "system", "position_overlay_default: no monitor available, retaining configured position");
+        if let Err(e) = overlay.set_size(tauri::LogicalSize::new(overlay_w, overlay_h)) {
+            tracing::warn!(target: "system", "position_overlay_default: fallback set_size({}, {}) failed: {}", overlay_w, overlay_h, e);
+        }
     }
 }
 
@@ -332,7 +490,11 @@ mod tests {
 
     #[test]
     fn invariants() {
-        for g in [geometry_for(Some((185.0, 32.0))), geometry_for(None)] {
+        for g in [
+            geometry_for(Some((185.0, 32.0))),
+            geometry_for(Some((FALLBACK_NOTCH_W, 30.0))),
+            geometry_for(None),
+        ] {
             assert!(g.window_w >= g.pill_active_w + g.pill_margin_active);
             assert!(g.window_w >= g.pill_idle_w + g.pill_margin_idle);
             assert_eq!(g.expanded_h, g.collapsed_h + g.dropdown_h);
@@ -357,8 +519,78 @@ mod tests {
                 g.dropdown_h,
                 g.wing_w,
             ),
-            (257.0, 32.0, 76.0, 257.0, 257.0, 0.0, 0.0, 44.0, 36.0)
+            (257.0, 32.0, 76.0, 221.0, 257.0, 0.0, 0.0, 44.0, 36.0)
         );
+    }
+
+    #[test]
+    fn external_display_uses_its_measured_menu_bar_height() {
+        let info = notch_info_from_screen_measurements(2560.0, 1440.0, 1410.0, 0.0, 0.0, 0.0);
+        assert_eq!(info, (FALLBACK_NOTCH_W, 30.0));
+
+        let g = geometry_for(Some(info));
+        assert_eq!(g.window_w, 152.0);
+        assert_eq!(g.pill_idle_w, 116.0);
+        assert_eq!(g.pill_active_w, 152.0);
+        assert_eq!(g.collapsed_h, 30.0);
+        assert_eq!(g.expanded_h, 74.0);
+    }
+
+    #[test]
+    fn notched_display_prefers_safe_area_and_auxiliary_widths() {
+        let info = notch_info_from_screen_measurements(1512.0, 982.0, 950.0, 32.0, 663.5, 663.5);
+        assert_eq!(info, (185.0, 32.0));
+    }
+
+    #[test]
+    fn invalid_native_measurements_fail_closed_to_geometry_defaults() {
+        assert_eq!(
+            notch_info_from_screen_measurements(2560.0, 1440.0, 1440.0, f64::NAN, 0.0, 0.0,),
+            (FALLBACK_NOTCH_W, FALLBACK_NOTCH_H)
+        );
+    }
+
+    #[test]
+    fn physical_centering_includes_monitor_origin_and_scale() {
+        assert_eq!(
+            centered_physical_position((5120, 128), (2560, 1440), 1.0, 152.0),
+            (6324, 128)
+        );
+        assert_eq!(
+            centered_physical_position((0, 0), (5120, 2880), 2.0, 152.0),
+            (2408, 0)
+        );
+    }
+
+    #[test]
+    fn complete_display_snapshot_detects_every_geometry_dimension() {
+        let baseline = DisplaySnapshot {
+            notch_info: Some((185.0, 32.0)),
+            monitor_position: Some((0, 0)),
+            monitor_size: Some((3024, 1964)),
+            scale_factor: Some(2.0),
+        };
+        assert_eq!(baseline, baseline.clone());
+        for changed in [
+            DisplaySnapshot {
+                notch_info: Some((184.0, 32.0)),
+                ..baseline.clone()
+            },
+            DisplaySnapshot {
+                monitor_position: Some((3024, 0)),
+                ..baseline.clone()
+            },
+            DisplaySnapshot {
+                monitor_size: Some((2560, 1440)),
+                ..baseline.clone()
+            },
+            DisplaySnapshot {
+                scale_factor: Some(1.0),
+                ..baseline.clone()
+            },
+        ] {
+            assert_ne!(baseline, changed);
+        }
     }
 
     #[test]

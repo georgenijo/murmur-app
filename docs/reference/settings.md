@@ -8,16 +8,21 @@ For the hook that manages settings, see [hooks.md](hooks.md). For the backend co
 
 ## Settings Overview
 
-All settings are stored in `localStorage` under the key `dictation-settings` as a single JSON object.
+Dictation settings are stored in `localStorage` under the key
+`dictation-settings` as a single JSON object. Appearance is an independent
+versioned document under `murmur-appearance`; it is never merged into this
+interface or emitted through `dictation-settings`.
 
-The native Settings window has six pages in this order:
+The native Settings window has eight pages in this order (`SETTINGS_CATEGORIES` in `SettingsPanel.tsx`):
 
 1. **Recording** — microphone, voice detection, recording trigger, and shortcut feedback
 2. **Transcription** — one model selector, language, model lifecycle/download state, and idle release
-3. **Text & Vocabulary** — punctuation, cleanup, names and terms, developer terms, corrections, structured writing, spoken commands, and personal knowledge
-4. **Delivery** — clipboard-first behavior, auto-paste, file output, and app overrides
-5. **Performance** — the directional local Performance Lab
-6. **General** — launch at login, setup, logs, statistics, updates, and version
+3. **Transform** — enable + hold-key picker, local-LLM model status/download/remove/reset, and saved transforms
+4. **Text & Vocabulary** — punctuation, cleanup, names and terms, developer terms, corrections, structured writing, spoken commands, and personal knowledge
+5. **Delivery** — clipboard-first behavior, auto-paste, file output, and app overrides
+6. **Performance** — the directional local Performance Lab
+7. **General** — launch at login, setup, logs, statistics, updates, and version
+8. **Appearance** — System/Light/Dark mode, Sonic/custom colors, integer contrast from -100 through 100 (default 0), reset, and local theme-file exchange
 
 Changing pages only changes presentation. It does not rename, discard, or
 reinterpret persisted fields. A round-trip compatibility test serializes and
@@ -26,20 +31,59 @@ IDE roots.
 
 **Source file:** `app/src/lib/settings.ts`
 
-**TypeScript interface:**
+**TypeScript interface** (full current shape — see `settings.ts` for the per-field comments):
 
 ```typescript
 interface Settings {
+  // Transcription
   model: ModelOption;
-  doubleTapKey: DoubleTapKey;
   language: string;
+  vadSensitivity: number;
+  idleTimeoutMinutes: number;
+
+  // Recording
+  recordingMode: RecordingMode;
+  doubleTapKey: DoubleTapKey;
+  hotkeyMissFeedback: boolean;
+  autoStopSilenceMs: number;               // 0 = off (default)
+  microphone: string;
+  disabled: boolean;
+
+  // Transform (selected-text rewrite)
+  transformHoldKey: TransformKey | null;   // null = disabled (default)
+
+  // Delivery
   autoPaste: boolean;
   autoPasteDelayMs: number;
-  recordingMode: RecordingMode;
-  hotkeyMissFeedback: boolean;
-  microphone: string;
+  saveTranscript: boolean;
+  saveAudio: boolean;
+  outputDir: string;
+
+  // Text intelligence
+  smartPunctuation: boolean;
+  cleanupEnabled: boolean;
+  cleanupRemoveFiller: boolean;
+  cleanupCapitalize: boolean;
+  smartFormattingEnabled: boolean;
+  correctionEnabled: boolean;
+  correctionFuzzy: boolean;
+  voiceCommandsEnabled: boolean;
+  voiceCommands: VoiceCommand[];           // legacy pairs, migration-only
+  vocabularyEntries: VocabularyEntry[];
+  customVocabulary: string;                // @deprecated derived mirror
+  codeVocabEnabled: boolean;
+  codeVocabFolder: string;
+  codeVocabLastScan: VocabScanSummary | null;
+
+  // Per-app
+  appProfiles: AppProfile[];
+
+  // Performance Lab
+  benchmarkOutputDir: string;
+  benchmarkAutoSave: boolean;
+
+  // System
   launchAtLogin: boolean;
-  vadSensitivity: number;
 }
 ```
 
@@ -81,7 +125,16 @@ model-selection side effects.
 | `recordingMode` | `RecordingMode` | `'hold_down'` | `'hold_down'`, `'double_tap'`, `'both'` | How recording is triggered via keyboard. Hold-down: press-and-hold to record. Double-tap: double-tap to start, single-tap to stop. Both: combined mode with deferred hold promotion. |
 | `doubleTapKey` | `DoubleTapKey` | `'shift_l'` | `'shift_l'` (Shift), `'alt_l'` (Option), `'ctrl_r'` (Control) | The modifier key used for recording triggers. Used by all three recording modes as the trigger key. Label in the settings UI changes based on `recordingMode`. |
 | `hotkeyMissFeedback` | `boolean` | `false` | `true` / `false` | In Double-Tap or Both mode, briefly flashes the overlay amber when the 400ms second-tap window expires. It does not fire for holds, modifier shortcuts, processing skips, or successful gestures. Frontend/overlay only. |
+| `autoStopSilenceMs` | `number` | `0` | `0` (Off), `1500`, `2500`, `4000` | Trailing silence after which a recording stops itself. Applies to any recording **not started by holding the trigger key** (double-tap, button, overlay, locked mode); while the key is physically held the release owns the stop. The detector arms only after it has heard speech, so a silent start never self-terminates. Any value outside the allow-list — including a tampered or absent one — coerces back to Off. Frontend only. See [features/silence-auto-stop.md](../features/silence-auto-stop.md). |
 | `vadSensitivity` | `number` | `50` | 0-100, step 5 in UI | Voice Activity Detection sensitivity. Higher values keep more audio; lower values trim silence more aggressively. The backend converts this to a threshold: `1.0 - (sensitivity / 100.0)`. Clamped to 0-100 by the backend. |
+| `disabled` | `boolean` | `false` | `true` / `false` | Global disable. Mirrors the tray "Disable Murmur" check item and the overlay's power button; the hover quick-settings card stays reachable while disabled so the overlay can turn Murmur back on. |
+| `idleTimeoutMinutes` | `number` | `5` | `5`, `15`, `0` (Never) | How long an idle loaded model stays resident before the runtime releases it. `0` keeps it loaded indefinitely. |
+
+### Transform Settings
+
+| Setting | Type | Default | Valid Options/Range | Description |
+|---------|------|---------|-------------------|-------------|
+| `transformHoldKey` | `TransformKey \| null` | `null` | `'alt_r'` (Right Option), `'ctrl_l'` (Left Control), `'shift_r'` (Right Shift), or `null` to disable | The independent hold key for selected-text transform. Deliberately a distinct id set from `doubleTapKey` so the two shortcuts coexist; the picker rejects the active dictation key. Anything unrecognized — including an absent field on pre-feature settings — coerces back to `null` rather than silently arming a shortcut.<br><br>The transform **model**, saved transforms, and presets are not localStorage settings: the model install lives on disk under the app models directory, and saved transforms are knowledge-store records. See [Selected-text Transform](../features/selected-text-transform.md). |
 
 ### Recording Mode Details
 
@@ -107,7 +160,7 @@ model-selection side effects.
 
 ## Vocabulary Settings
 
-`vocabularyEntries` is an array of `{ id, written, aliases, enabled, scope }`. `written` is the canonical surface form used by Whisper prompt bias and post-model correction. `aliases` contains exact spoken variants applied locally on every backend. Settings currently creates `{ kind: 'global' }` scopes; typed app/project scopes are selected from the existing immutable dictation context. The legacy `customVocabulary` string is migration-only and is re-derived from enabled global canonical terms.
+`vocabularyEntries` is an array of `{ id, written, aliases, enabled, scope }`. `written` is the canonical surface form used by Whisper prompt bias and post-model correction. `aliases` contains exact spoken variants applied locally on every backend. Settings currently creates `{ kind: 'global' }` scopes; typed app/project scopes are selected from the existing immutable dictation context. The legacy `customVocabulary` string is migration-only and is re-derived from enabled global canonical terms. Built-in and scanned developer terms are a separate pool: the global toggle makes that pool available, while a matching Code / technical profile or Local IDE project-context opt-in activates it for a recording. Unmatched apps never receive that pool.
 
 Aliases are limited to 16 per entry and values to 256 characters. Ambiguous aliases, canonical collisions, Voice Command collisions, and direct or indirect cycles are rejected atomically.
 
@@ -161,8 +214,10 @@ New text replacements and snippets are Rust-owned knowledge records rather than 
 2. If found, parses as JSON and merges with `DEFAULT_SETTINGS` (stored values override defaults). Legacy comma/newline-separated `customVocabulary` values migrate to enabled global `vocabularyEntries` with no aliases.
 3. Applies migration: if `recordingMode` is missing or invalid (including the legacy `'hotkey'` value), resets to `'hold_down'`.
 4. Strips the legacy `hotkey` field if present.
-5. Validates `model` against the current allow-list. Any invalid or removed model (e.g. `moonshine-tiny`, `moonshine-base`) is reset to `'base.en'`.
-6. If not found or on parse error, returns `DEFAULT_SETTINGS`.
+5. Validates `model` against the platform allow-list. Any invalid or removed model (e.g. `moonshine-tiny`, `moonshine-base`) resets to the platform default — Core ML Parakeet v3 on Apple Silicon macOS, CPU Parakeet elsewhere. `language` is validated against `LANGUAGE_OPTIONS` the same way.
+6. Coerces `transformHoldKey` to `null` unless it matches `TRANSFORM_KEY_OPTIONS`, and sanitizes every structured field — `appProfiles`, `voiceCommands`, `vocabularyEntries`, `codeVocabLastScan` — dropping malformed entries and clamping list lengths so a tampered blob can't reach the Rust side or render bad numbers.
+7. Removes fields from deleted features (`hotkey`, `liveTranscriptPreview`).
+8. If not found or on parse error, returns `DEFAULT_SETTINGS`.
 
 ### Backend Synchronization
 
@@ -181,6 +236,7 @@ When settings change, `useSettings.updateSettings` pushes the following fields t
 | `doubleTapKey` | _(sent via `update_keyboard_key`)_ | Via keyboard hooks |
 | `recordingMode` | _(controls which hook is active)_ | Frontend only |
 | `hotkeyMissFeedback` | _(controls overlay rejection feedback)_ | Frontend only |
+| `autoStopSilenceMs` | _(drives the frontend silence detector)_ | Frontend only |
 | `microphone` | _(sent as param to `start_native_recording`)_ | Per recording |
 | `launchAtLogin` | _(sent via autostart plugin)_ | Via OS API |
 | `benchmarkOutputDir` | _(sent as param to `save_benchmark_report` / `open_benchmark_output_folder`)_ | On save/reveal |
@@ -196,7 +252,8 @@ Other data persisted to localStorage by the application (not part of the `Settin
 
 | Key | Purpose | Used By |
 |-----|---------|---------|
-| `dictation-history` | Transcription history entries (max 50) | `useHistoryManagement` |
+| `dictation-history` | Transcription history entries (rolling max 200) | `useHistoryManagement` |
+| `murmur-appearance` | Versioned appearance mode/theme configuration plus a strictly validated derived light/dark token cache. Independent from `Settings`; imports discard and regenerate revision/cache data. | Main appearance controller (writer/native theme), log-viewer appearance controller (read-only) |
 | `dictation-stats` | Cumulative transcription statistics | `lib/stats.ts` |
 | `skipped-update-version` | Version string the user chose to skip | `useAutoUpdater` |
 | `updater-last-check` | Timestamp of last update check | `useAutoUpdater` |

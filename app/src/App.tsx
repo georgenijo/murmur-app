@@ -1,7 +1,11 @@
-import { useState, useEffect, lazy, Suspense, useCallback, useRef } from 'react';
+import { useState, useEffect, lazy, Suspense, useCallback, useMemo, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { flog } from './lib/log';
-import { SettingsPanel } from './components/settings';
+import { SettingsPanel, SETTINGS_CATEGORIES } from './components/settings';
+import { CommandPalette } from './components/CommandPalette';
+import type { PaletteCommand } from './lib/commandPalette';
+import { isEditableTarget, mainWindowShortcut } from './lib/keyboardShortcuts';
+import { saveHistoryExport } from './lib/historyExport';
 import { PermissionsBanner } from './components/PermissionsBanner';
 import { AboutModal } from './components/AboutModal';
 import { StatusHeader } from './components/StatusHeader';
@@ -20,9 +24,11 @@ import { useShowAboutListener } from './lib/hooks/useShowAboutListener';
 import { useOverlaySettingsSync } from './lib/hooks/useOverlaySettingsSync';
 import { useOpenSettingsListener } from './lib/hooks/useOpenSettingsListener';
 import { useEscapeCancel } from './lib/hooks/useEscapeCancel';
+import { useSilenceAutoStop } from './lib/hooks/useSilenceAutoStop';
 import { useAutoUpdater } from './lib/hooks/useAutoUpdater';
 import { UpdateModal } from './components/UpdateModal';
-import type { UpdateStatus } from './lib/updater';
+import { WhatsNewModal } from './components/WhatsNewModal';
+import type { CompletedUpdate, UpdateStatus } from './lib/updater';
 import { StatsBar } from './components/StatsBar';
 const ResourceMonitor = lazy(() => import('./components/ResourceMonitor').then(m => ({ default: m.ResourceMonitor })));
 const UsageDashboard = lazy(() => import('./components/UsageDashboard').then(m => ({ default: m.UsageDashboard })));
@@ -128,7 +134,7 @@ function App() {
   const { historyEntries, addEntry, updateEntry, clearHistory } = useHistoryManagement();
   const {
     status, recordingDuration, error: recordingError,
-    handleStart, handleStop, toggleRecording, statsVersion,
+    handleStart, handleHoldStart, handleStop, toggleRecording, statsVersion,
   } = useRecordingState({ addEntry, microphone: settings.microphone });
   const [statsResetVersion, setStatsResetVersion] = useState(0);
   const combinedStatsVersion = statsVersion + statsResetVersion;
@@ -137,10 +143,20 @@ function App() {
   // can be granted mid-wizard, and a hold/double-tap must not start a recording
   // behind the OnboardingFlow screen.
   const hotkeysArmed = onboardingState === 'done';
-  useHoldDownToggle({ enabled: hotkeysArmed && settings.recordingMode === 'hold_down', initialized, accessibilityGranted, holdDownKey: settings.doubleTapKey, onStart: handleStart, onStop: handleStop });
+  useHoldDownToggle({ enabled: hotkeysArmed && settings.recordingMode === 'hold_down', initialized, accessibilityGranted, holdDownKey: settings.doubleTapKey, onStart: handleHoldStart, onStop: handleStop });
   useDoubleTapToggle({ enabled: hotkeysArmed && settings.recordingMode === 'double_tap', initialized, accessibilityGranted, doubleTapKey: settings.doubleTapKey, status, onToggle: toggleRecording });
-  useCombinedToggle({ enabled: hotkeysArmed && settings.recordingMode === 'both', initialized, accessibilityGranted, triggerKey: settings.doubleTapKey, status, onStart: handleStart, onStop: handleStop, onToggle: toggleRecording });
+  useCombinedToggle({ enabled: hotkeysArmed && settings.recordingMode === 'both', initialized, accessibilityGranted, triggerKey: settings.doubleTapKey, status, onStart: handleHoldStart, onStop: handleStop, onToggle: toggleRecording });
   useEscapeCancel({ status, enabled: hotkeysArmed && initialized && accessibilityGranted === true });
+  // Hands-free finish for any recording not started by holding the trigger
+  // key (double-tap, button, overlay, locked mode). The hook tracks the
+  // origin itself and ignores hold-started recordings, where the key release
+  // owns the stop.
+  useSilenceAutoStop({
+    enabled: hotkeysArmed,
+    status,
+    silenceMs: settings.autoStopSilenceMs,
+    onAutoStop: handleStop,
+  });
   // Independent AX-selection transform hotkey (issue #312). Enabled only when
   // the user has configured a transform key; drives capture -> instruction ->
   // review via the transform-review popover window.
@@ -154,7 +170,7 @@ function App() {
   const { showAbout, setShowAbout } = useShowAboutListener();
   const updater = useAutoUpdater();
 
-  // DEV ONLY: cycle through mock update modal states for visual testing
+  // DEV ONLY: cycle through updater and post-update modal states for visual testing
   const devUpdateIndex = useRef(-1);
   const devMockStates: UpdateStatus[] = import.meta.env.DEV ? [
     { phase: 'available', version: '0.7.0', notes: '## What\'s New\n- OTA auto-updater\n- Bug fixes\n- Performance improvements', isForced: false },
@@ -163,11 +179,21 @@ function App() {
     { phase: 'error', message: 'Network request failed: could not resolve host', isForced: false },
   ] : [];
   const [devUpdateStatus, setDevUpdateStatus] = useState<UpdateStatus | null>(null);
+  const [devCompletedUpdate, setDevCompletedUpdate] = useState<CompletedUpdate | null>(null);
 
   const checkForUpdate = useCallback(async () => {
     if (import.meta.env.DEV) {
-      devUpdateIndex.current = (devUpdateIndex.current + 1) % devMockStates.length;
-      setDevUpdateStatus(devMockStates[devUpdateIndex.current]);
+      devUpdateIndex.current = (devUpdateIndex.current + 1) % (devMockStates.length + 1);
+      if (devUpdateIndex.current === 0) {
+        setDevUpdateStatus(null);
+        setDevCompletedUpdate({
+          version: '0.22.0',
+          notes: '## New Features\n\n- Faster local transcription\n- Selected-text transforms\n\n## Bug Fixes\n\n- More reliable microphone startup\n- Smoother overlay behavior',
+        });
+      } else {
+        setDevCompletedUpdate(null);
+        setDevUpdateStatus(devMockStates[devUpdateIndex.current - 1]);
+      }
       return;
     }
     return updater.checkForUpdate();
@@ -183,13 +209,161 @@ function App() {
     updater.skipVersion();
   }, [devUpdateStatus, updater.skipVersion]);
   const startDownload = updater.startDownload;
+  const completedUpdate = devCompletedUpdate ?? updater.completedUpdate;
+  const dismissCompletedUpdate = useCallback(() => {
+    if (devCompletedUpdate) {
+      setDevCompletedUpdate(null);
+      return;
+    }
+    updater.dismissCompletedUpdate();
+  }, [devCompletedUpdate, updater.dismissCompletedUpdate]);
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [mainTab, setMainTab] = useState<'record' | 'file'>('record');
+  // Bumped to move focus into the history search box (command palette action).
+  const [historySearchToken, setHistorySearchToken] = useState<number | undefined>(undefined);
+  const focusHistorySearch = useCallback(() => {
+    setMainTab('record');
+    setIsSettingsOpen(false);
+    setHistorySearchToken((token) => (token ?? 0) + 1);
+  }, []);
 
   // Overlay gear button asks the main window to open the Settings panel.
   const openSettings = useCallback(() => setIsSettingsOpen(true), []);
   useOpenSettingsListener(openSettings);
+
+  // ---- Command palette (⌘K) ----------------------------------------------
+  const [isPaletteOpen, setIsPaletteOpen] = useState(false);
+  const [settingsPageRequest, setSettingsPageRequest] = useState<{ page: string; token: number } | null>(null);
+  const openSettingsPage = useCallback((page: string) => {
+    setSettingsPageRequest((previous) => ({ page, token: (previous?.token ?? 0) + 1 }));
+    setIsSettingsOpen(true);
+  }, []);
+
+  const openLogViewer = useCallback(() => {
+    invoke('open_log_viewer').catch((e: unknown) =>
+      flog.warn('main', 'Failed to open log viewer', { error: String(e) }));
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const shortcut = mainWindowShortcut(event, isEditableTarget(event.target));
+      if (!shortcut) return;
+      event.preventDefault();
+      if (shortcut === 'palette') setIsPaletteOpen((open) => !open);
+      else if (shortcut === 'search') { setIsPaletteOpen(false); focusHistorySearch(); }
+      else if (shortcut === 'settings') { setIsPaletteOpen(false); setIsSettingsOpen(true); }
+      else openLogViewer();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [focusHistorySearch, openLogViewer]);
+
+  const commands = useMemo<PaletteCommand[]>(() => {
+    const isRecording = status === 'recording' || status === 'starting';
+    const lastEntry = historyEntries[historyEntries.length - 1];
+    const items: PaletteCommand[] = [
+      {
+        id: 'recording-toggle',
+        title: status === 'starting'
+          ? 'Cancel microphone connection'
+          : isRecording
+            ? 'Stop recording'
+            : 'Start recording',
+        section: 'Recording',
+        keywords: ['dictate', 'microphone', 'transcribe'],
+        run: () => { void (isRecording ? handleStop() : handleStart()); },
+      },
+      {
+        id: 'app-disable-toggle',
+        title: settings.disabled ? 'Enable Murmur' : 'Disable Murmur',
+        section: 'Recording',
+        keywords: ['pause', 'mute', 'hotkey'],
+        hint: settings.disabled ? 'currently off' : undefined,
+        run: () => updateSettings({ disabled: !settings.disabled }),
+      },
+      {
+        id: 'history-search',
+        title: 'Search transcripts',
+        section: 'History',
+        keywords: ['find', 'filter', 'history'],
+        run: focusHistorySearch,
+      },
+      // Offered only when there is something to act on, so no row is a dead end.
+      ...(lastEntry ? [{
+        id: 'history-copy-last',
+        title: 'Copy last transcript',
+        section: 'History',
+        keywords: ['clipboard', 'again'],
+        run: async () => {
+          await navigator.clipboard.writeText(lastEntry.text).catch((e: unknown) =>
+            flog.warn('main', 'Palette copy failed', { error: String(e) }));
+        },
+      }, {
+        id: 'history-export',
+        title: 'Export history to a Markdown file',
+        section: 'History',
+        keywords: ['save', 'download', 'markdown'],
+        run: async () => {
+          await saveHistoryExport(historyEntries, 'markdown').catch((e: unknown) =>
+            flog.warn('main', 'Palette export failed', { error: String(e) }));
+        },
+      }] : []),
+      {
+        id: 'tab-record',
+        title: 'Go to Record',
+        section: 'Navigation',
+        keywords: ['history', 'main'],
+        run: () => { setIsSettingsOpen(false); setMainTab('record'); },
+      },
+      {
+        id: 'tab-file',
+        title: 'Go to Transcribe File',
+        section: 'Navigation',
+        keywords: ['import', 'audio', 'wav'],
+        run: () => { setIsSettingsOpen(false); setMainTab('file'); },
+      },
+      ...SETTINGS_CATEGORIES.map((category) => ({
+        id: `settings-${category.id}`,
+        title: `Settings: ${category.label}`,
+        section: 'Settings',
+        keywords: ['preferences', 'options'],
+        run: () => openSettingsPage(category.id),
+      })),
+      {
+        id: 'logs',
+        title: 'Open log viewer',
+        section: 'Diagnostics',
+        keywords: ['events', 'debug', 'runs', 'performance'],
+        run: openLogViewer,
+      },
+      {
+        id: 'check-updates',
+        title: 'Check for updates',
+        section: 'App',
+        keywords: ['version', 'upgrade'],
+        run: () => { void checkForUpdate(); },
+      },
+      {
+        id: 'about',
+        title: 'About Murmur',
+        section: 'App',
+        keywords: ['version', 'credits'],
+        run: () => setShowAbout(true),
+      },
+      {
+        id: 'rerun-setup',
+        title: 'Re-run setup assistant',
+        section: 'App',
+        keywords: ['onboarding', 'permissions', 'wizard'],
+        run: () => { setIsSettingsOpen(false); resetOnboarding(); setOnboardingState('needed'); },
+      },
+    ];
+    return items;
+  }, [
+    status, historyEntries, settings.disabled, updateSettings, handleStart, handleStop,
+    focusHistorySearch, openSettingsPage, openLogViewer, checkForUpdate, setShowAbout,
+  ]);
 
   const error = initError || recordingError;
 
@@ -218,7 +392,7 @@ function App() {
   return (
     <div className="h-screen bg-background text-on-surface flex flex-col font-[-apple-system,BlinkMacSystemFont,'Segoe_UI',Roboto,sans-serif]">
       {import.meta.env.DEV && (
-        <div className="bg-amber-400 text-amber-900 text-xs font-semibold text-center py-0.5 tracking-widest uppercase select-none">
+        <div className="bg-warning/10 text-warning text-xs font-semibold text-center py-0.5 tracking-widest uppercase select-none">
           Dev
         </div>
       )}
@@ -258,11 +432,12 @@ function App() {
                 historyEntries={historyEntries}
                 onClearHistory={clearHistory}
                 onUpdateHistoryEntry={updateEntry}
+                focusSearchToken={historySearchToken}
               />
 
               {error && (
-                <div className="shrink-0 px-4 py-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
-                  <p className="text-red-600 dark:text-red-400 text-sm">{error}</p>
+                <div className="shrink-0 px-4 py-3 bg-error/10 border border-error/30 rounded-lg">
+                  <p className="text-error text-sm">{error}</p>
                 </div>
               )}
 
@@ -285,7 +460,7 @@ function App() {
           onUpdateSettings={updateSettings}
           status={status}
           onResetStats={handleResetStats}
-          onViewLogs={() => invoke('open_log_viewer').catch((e: unknown) => flog.warn('main', 'Failed to open log viewer', { error: String(e) }))}
+          onViewLogs={openLogViewer}
           onRerunSetup={() => {
             setIsSettingsOpen(false);
             resetOnboarding();
@@ -295,19 +470,32 @@ function App() {
           onCheckForUpdate={checkForUpdate}
           updateStatus={updateStatus}
           configureError={configureError}
+          pageRequest={settingsPageRequest}
         />
         )}
       </div>
+
+      <CommandPalette
+        isOpen={isPaletteOpen}
+        onClose={() => setIsPaletteOpen(false)}
+        commands={commands}
+      />
 
       <AboutModal
         isOpen={showAbout}
         onClose={() => setShowAbout(false)}
       />
-      <UpdateModal
-        status={updateStatus}
-        onDownload={startDownload}
-        onSkip={skipVersion}
-        onDismiss={dismissUpdate}
+      {!completedUpdate && (
+        <UpdateModal
+          status={updateStatus}
+          onDownload={startDownload}
+          onSkip={skipVersion}
+          onDismiss={dismissUpdate}
+        />
+      )}
+      <WhatsNewModal
+        update={completedUpdate}
+        onDismiss={dismissCompletedUpdate}
       />
     </div>
   );

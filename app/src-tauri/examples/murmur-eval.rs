@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use ui_lib::evaluation::{self, EvaluationTier, RunOptions};
 
 fn usage() -> &'static str {
-    "Usage: murmur-eval <deterministic|hardware> [--fixtures DIR] [--output FILE] [--workspace-root DIR] [--machine-label LABEL]"
+    "Usage: cargo run --example murmur-eval -- <deterministic|hardware> [--fixtures DIR] [--output FILE] [--workspace-root DIR] [--machine-label LABEL]"
 }
 
 fn main() {

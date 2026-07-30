@@ -7,6 +7,7 @@ import {
   confirmLearnedCorrection,
   discardLearnedCorrectionProposal,
   proposeLearnedCorrection,
+  proposeSpecificLearnedCorrection,
 } from './correctAndTeach';
 
 describe('Correct and Teach command boundary', () => {
@@ -17,12 +18,19 @@ describe('Correct and Teach command boundary', () => {
     await proposeLearnedCorrection('George Neo', 'George Nijo', {
       appBundleId: 'com.example.Editor',
     });
+    await proposeSpecificLearnedCorrection('George Neo', 'Neo', 'Nijo', {
+      appBundleId: 'com.example.Editor',
+    });
     await confirmLearnedCorrection(12, { kind: 'app', bundleId: 'com.example.Editor' });
     await discardLearnedCorrectionProposal(13);
 
     expect(invoke.mock.calls).toEqual([
       ['propose_learned_correction', { request: {
         originalText: 'George Neo', correctedText: 'George Nijo',
+        teachingContext: { appBundleId: 'com.example.Editor' },
+      } }],
+      ['propose_specific_learned_correction', { request: {
+        originalText: 'George Neo', source: 'Neo', replacement: 'Nijo',
         teachingContext: { appBundleId: 'com.example.Editor' },
       } }],
       ['confirm_learned_correction', { proposalId: 12, scope: { kind: 'app', bundleId: 'com.example.Editor' } }],

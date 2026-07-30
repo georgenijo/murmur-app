@@ -1,13 +1,17 @@
 pub mod benchmark;
 pub mod correct_and_teach;
+pub mod export;
 pub mod keyboard;
 pub mod knowledge;
 pub mod logging;
 pub mod models;
 pub(crate) mod native_window;
 pub mod overlay;
+pub mod performance;
 pub mod permissions;
 pub mod recording;
+pub mod theme;
+pub mod transform_diagnostics;
 pub mod transform_model;
 pub mod transform_popover;
 pub mod tray;

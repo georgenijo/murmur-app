@@ -5,8 +5,15 @@ function write(level: string, tag: string, message: string, data?: Record<string
   const line = data
     ? `[${tag}] ${message} ${JSON.stringify(data)}`
     : `[${tag}] ${message}`;
+  const candidatePassId = data?.transform_pass_id;
+  const transformPassId =
+    typeof candidatePassId === 'number'
+      && Number.isSafeInteger(candidatePassId)
+      && candidatePassId > 0
+      ? candidatePassId
+      : null;
   // Fire-and-forget — don't await, don't block the caller
-  invoke('log_frontend', { level, message: line }).catch(() => {});
+  invoke('log_frontend', { level, message: line, transformPassId }).catch(() => {});
 }
 
 export const flog = {

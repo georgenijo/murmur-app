@@ -13,7 +13,7 @@
 //! enums are recorded.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -96,6 +96,73 @@ pub struct TransformOutput {
     pub output: String,
     pub finish_reason: FinishReason,
     pub output_tokens: u32,
+}
+
+/// Content-free timing metadata returned only by the correlated transform
+/// entry point. `None` means that phase was never entered, not a synthetic
+/// numeric zero.
+pub struct CorrelatedTransformOutcome {
+    pub result: Result<TransformOutput, TransformError>,
+    pub spawn_load_ms: Option<u64>,
+    pub generation_ms: Option<u64>,
+    pub cache_hit: Option<bool>,
+    pub diagnostics: SidecarDiagnostics,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SidecarDiagnostics {
+    pub host_model_verification_ms: Option<u64>,
+    pub helper_spawn_ms: Option<u64>,
+    pub helper_model_verification_ms: Option<u64>,
+    pub backend_initialization_ms: Option<u64>,
+    pub model_load_ms: Option<u64>,
+    pub ready_handshake_ms: Option<u64>,
+    pub request_receipt_ms: Option<u64>,
+    pub first_token_ms: Option<u64>,
+    pub process_exit_code: Option<i32>,
+    pub process_exit_signal: Option<i32>,
+    pub failure_phase: Option<SidecarDiagnosticPhase>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SidecarDiagnosticPhase {
+    HostModelVerification,
+    HelperSpawn,
+    HelperModelVerification,
+    BackendInitialization,
+    ModelLoad,
+    ReadyHandshake,
+    RequestReceipt,
+    FirstToken,
+    Generation,
+}
+
+impl SidecarDiagnosticPhase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::HostModelVerification => "host_model_verification",
+            Self::HelperSpawn => "helper_spawn",
+            Self::HelperModelVerification => "helper_model_verification",
+            Self::BackendInitialization => "backend_initialization",
+            Self::ModelLoad => "model_load",
+            Self::ReadyHandshake => "ready_handshake",
+            Self::RequestReceipt => "request_receipt",
+            Self::FirstToken => "first_token",
+            Self::Generation => "generation",
+        }
+    }
+}
+
+impl CorrelatedTransformOutcome {
+    fn before_runtime(error: TransformError) -> Self {
+        Self {
+            result: Err(error),
+            spawn_load_ms: None,
+            generation_ms: None,
+            cache_hit: None,
+            diagnostics: SidecarDiagnostics::default(),
+        }
+    }
 }
 
 /// Stable supervisor error enum. Mirrors the protocol `ErrorCode` and adds
@@ -279,6 +346,7 @@ fn open_and_verify_model(
     path: &Path,
     expected_size: u64,
     expected_sha: &str,
+    cancel: &CancelToken,
 ) -> Result<std::fs::File, TransformError> {
     use sha2::{Digest, Sha256};
     use std::io::{Read, Seek, SeekFrom};
@@ -288,13 +356,18 @@ fn open_and_verify_model(
     // transient/environmental → ModelUnreadable (fail closed, keep the model).
     // Only a wrong size / hash / non-regular file is a content mismatch →
     // ModelMismatch (the caller removes it so it can be re-downloaded).
+    if cancel.is_cancelled() {
+        return Err(TransformError::Cancelled);
+    }
     let mut file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW)
         .open(path)
         .map_err(|_| TransformError::ModelUnreadable)?;
 
-    let metadata = file.metadata().map_err(|_| TransformError::ModelUnreadable)?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| TransformError::ModelUnreadable)?;
     if !metadata.is_file() || metadata.len() != expected_size {
         return Err(TransformError::ModelMismatch);
     }
@@ -302,6 +375,9 @@ fn open_and_verify_model(
     let mut hasher = Sha256::new();
     let mut buffer = vec![0_u8; 1024 * 1024];
     loop {
+        if cancel.is_cancelled() {
+            return Err(TransformError::Cancelled);
+        }
         let n = file
             .read(&mut buffer)
             .map_err(|_| TransformError::ModelUnreadable)?;
@@ -309,6 +385,9 @@ fn open_and_verify_model(
             break;
         }
         hasher.update(&buffer[..n]);
+    }
+    if cancel.is_cancelled() {
+        return Err(TransformError::Cancelled);
     }
     let actual = format!("{:x}", hasher.finalize());
     if actual != expected_sha {
@@ -325,6 +404,7 @@ fn open_and_verify_model(
     _path: &Path,
     _expected_size: u64,
     _expected_sha: &str,
+    _cancel: &CancelToken,
 ) -> Result<std::fs::File, TransformError> {
     Err(TransformError::Unsupported)
 }
@@ -444,11 +524,6 @@ impl SpawnPlan {
             Self::Test(c) => c.idle_after,
         }
     }
-    fn stderr_inherit(&self) -> bool {
-        // Release suppresses helper stderr (no sensitive crash artifacts);
-        // debug and tests inherit it for diagnosis.
-        cfg!(debug_assertions)
-    }
     // Only referenced by the equally-gated env-injection loop; compiled out of
     // release builds so the scenario-env path is not present at all there.
     #[cfg(any(debug_assertions, feature = "llm-test-support"))]
@@ -549,9 +624,10 @@ fn unique_id(prefix: &str) -> String {
 mod supported {
     use super::*;
     use murmur_local_llm_protocol::{
-        read_frame, write_frame, FrameError, HelperMessage, HostMessage, ModelIdentity,
-        ProtocolLimits, HostMessage::Cancel as HostCancel, MAX_INPUT_BYTES, MAX_INSTRUCTION_BYTES,
-        MAX_OUTPUT_BYTES, MAX_OUTPUT_TOKENS, MAX_DEADLINE_MS, PROTOCOL_NAME, PROTOCOL_VERSION,
+        read_frame, write_frame, FrameError, HelperMessage, HostMessage,
+        HostMessage::Cancel as HostCancel, ModelIdentity, ProtocolLimits, MAX_DEADLINE_MS,
+        MAX_INPUT_BYTES, MAX_INSTRUCTION_BYTES, MAX_OUTPUT_BYTES, MAX_OUTPUT_TOKENS, PROTOCOL_NAME,
+        PROTOCOL_VERSION,
     };
     use std::sync::mpsc::{Receiver, RecvTimeoutError};
     use std::sync::Mutex;
@@ -574,6 +650,33 @@ mod supported {
         pid: u32,
         /// Keeps the verified model fd alive for the process lifetime.
         _model_file: std::fs::File,
+    }
+
+    struct SpawnPidGuard<'a> {
+        resident_pid: &'a AtomicU32,
+        keep: bool,
+    }
+
+    impl<'a> SpawnPidGuard<'a> {
+        fn new(resident_pid: &'a AtomicU32, pid: u32) -> Self {
+            resident_pid.store(pid, Ordering::Release);
+            Self {
+                resident_pid,
+                keep: false,
+            }
+        }
+
+        fn keep(mut self) {
+            self.keep = true;
+        }
+    }
+
+    impl Drop for SpawnPidGuard<'_> {
+        fn drop(&mut self) {
+            if !self.keep {
+                self.resident_pid.store(0, Ordering::Release);
+            }
+        }
     }
 
     struct Inner {
@@ -609,6 +712,11 @@ mod supported {
         plan: SpawnPlan,
         host_guard: OnceLock<Arc<dyn HostGuard>>,
         busy: AtomicBool,
+        /// PID of the resident helper, including while its startup handshake
+        /// is loading the model. Kept atomic because `transform_blocking`
+        /// holds `inner` across the request while the resource sampler must
+        /// remain non-blocking.
+        resident_pid: AtomicU32,
         /// The in-flight request's cancel token, registered for the duration of
         /// one `transform` call and cleared by its `BusyGuard`. Per-request (not
         /// supervisor-wide): [`Self::cancel_inflight_request`] cancels ONLY the
@@ -619,6 +727,26 @@ mod supported {
     }
 
     impl LlmSidecar {
+        fn record_process_exit(
+            proc: &mut std::process::Child,
+            diagnostics: &mut SidecarDiagnostics,
+        ) {
+            // EOF can beat waitpid visibility by a few scheduler ticks. Poll
+            // briefly without ever turning diagnostics into an unbounded wait.
+            for _ in 0..20 {
+                if let Ok(Some(status)) = proc.try_wait() {
+                    diagnostics.process_exit_code = status.code();
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::process::ExitStatusExt;
+                        diagnostics.process_exit_signal = status.signal();
+                    }
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+
         pub fn new() -> Self {
             Self::with_plan(SpawnPlan::Production)
         }
@@ -636,6 +764,7 @@ mod supported {
                 plan,
                 host_guard: OnceLock::new(),
                 busy: AtomicBool::new(false),
+                resident_pid: AtomicU32::new(0),
                 inflight_cancel: Mutex::new(None),
                 inner: Mutex::new(Inner {
                     child: None,
@@ -721,7 +850,23 @@ mod supported {
         /// Test-support: whether a helper process is currently resident. Not
         /// part of any stable external API.
         pub fn has_live_child(&self) -> bool {
-            self.lock().child.is_some()
+            self.resident_pid().is_some()
+        }
+
+        /// Non-blocking resource-attribution seam. PID 0 is never a child PID.
+        pub fn resident_pid(&self) -> Option<u32> {
+            match self.resident_pid.load(Ordering::Acquire) {
+                0 => None,
+                pid => Some(pid),
+            }
+        }
+
+        fn take_child(&self, inner: &mut Inner) -> Option<Child> {
+            let child = inner.child.take();
+            if child.is_some() {
+                self.resident_pid.store(0, Ordering::Release);
+            }
+            child
         }
 
         /// Async transform facade. Serializes to one in-flight request via a
@@ -733,6 +878,39 @@ mod supported {
             deadline: Duration,
             cancel: CancelToken,
         ) -> Result<TransformOutput, TransformError> {
+            self.transform_inner(instruction, input, deadline, cancel, None)
+                .await
+                .result
+        }
+
+        /// Correlated transform entry point for the selected-text flow. The
+        /// existing uncorrelated method remains for isolated protocol tests.
+        pub async fn transform_for_pass(
+            self: &Arc<Self>,
+            transform_pass_id: u64,
+            instruction: &str,
+            input: &str,
+            deadline: Duration,
+            cancel: CancelToken,
+        ) -> CorrelatedTransformOutcome {
+            self.transform_inner(
+                instruction,
+                input,
+                deadline,
+                cancel,
+                Some(transform_pass_id),
+            )
+            .await
+        }
+
+        async fn transform_inner(
+            self: &Arc<Self>,
+            instruction: &str,
+            input: &str,
+            deadline: Duration,
+            cancel: CancelToken,
+            transform_pass_id: Option<u64>,
+        ) -> CorrelatedTransformOutcome {
             // App-side limit enforcement (defence in depth over the helper).
             if instruction.len() > MAX_INSTRUCTION_BYTES
                 || input.len() > MAX_INPUT_BYTES
@@ -741,7 +919,7 @@ mod supported {
                 || deadline.is_zero()
                 || deadline > Duration::from_millis(MAX_DEADLINE_MS)
             {
-                return Err(TransformError::InvalidRequest);
+                return CorrelatedTransformOutcome::before_runtime(TransformError::InvalidRequest);
             }
 
             if self
@@ -749,7 +927,7 @@ mod supported {
                 .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
                 .is_err()
             {
-                return Err(TransformError::Busy);
+                return CorrelatedTransformOutcome::before_runtime(TransformError::Busy);
             }
             // Register this request's cancel token so cancel_inflight_request()
             // reaches exactly THIS request. No stale-flag reset is needed (the
@@ -780,27 +958,40 @@ mod supported {
             })
             .await;
 
-            let result = match join {
-                Ok(r) => r,
-                Err(_) => Err(TransformError::Internal),
+            let outcome = match join {
+                Ok(outcome) => outcome,
+                Err(_) => CorrelatedTransformOutcome::before_runtime(TransformError::Internal),
             };
 
             // Telemetry: enums, durations, buckets, token counts only.
             let elapsed_ms = started.elapsed().as_millis() as u64;
-            let (outcome, output_tokens) = match &result {
+            let (result_code, output_tokens) = match &outcome.result {
                 Ok(out) => ("ok", out.output_tokens),
                 Err(err) => (err.as_str(), 0),
             };
-            tracing::info!(
-                target: "pipeline",
-                outcome,
-                duration_ms = elapsed_ms,
-                instruction_bucket,
-                input_bucket,
-                output_tokens,
-                "llm_transform"
-            );
-            result
+            if let Some(transform_pass_id) = transform_pass_id {
+                tracing::info!(
+                    target: "pipeline",
+                    transform_pass_id,
+                    outcome = result_code,
+                    duration_ms = elapsed_ms,
+                    instruction_bucket,
+                    input_bucket,
+                    output_tokens,
+                    "llm_transform"
+                );
+            } else {
+                tracing::info!(
+                    target: "pipeline",
+                    outcome = result_code,
+                    duration_ms = elapsed_ms,
+                    instruction_bucket,
+                    input_bucket,
+                    output_tokens,
+                    "llm_transform"
+                );
+            }
+            outcome
         }
 
         fn transform_blocking(
@@ -809,24 +1000,50 @@ mod supported {
             input: &str,
             deadline: Duration,
             cancel: &CancelToken,
-        ) -> Result<TransformOutput, TransformError> {
+        ) -> CorrelatedTransformOutcome {
             let mut inner = self.lock();
+            let cache_hit = inner.child.is_some();
+            let load_started = Instant::now();
+            let mut diagnostics = SidecarDiagnostics::default();
 
             if inner.breaker.is_disabled(Instant::now()) {
-                return Err(TransformError::Disabled);
+                return CorrelatedTransformOutcome {
+                    result: Err(TransformError::Disabled),
+                    spawn_load_ms: Some(load_started.elapsed().as_millis() as u64),
+                    generation_ms: None,
+                    cache_hit: Some(cache_hit),
+                    diagnostics,
+                };
             }
             if let Some(_reason) = self.guard().heavy_runtime_active() {
-                return Err(TransformError::HeavyRuntimeActive);
+                return CorrelatedTransformOutcome {
+                    result: Err(TransformError::HeavyRuntimeActive),
+                    spawn_load_ms: Some(load_started.elapsed().as_millis() as u64),
+                    generation_ms: None,
+                    cache_hit: Some(cache_hit),
+                    diagnostics,
+                };
             }
 
             // Verify the model exists before touching the helper.
-            let model_path = self.plan.model_path()?;
+            let model_path = match self.plan.model_path() {
+                Ok(path) => path,
+                Err(error) => {
+                    return CorrelatedTransformOutcome {
+                        result: Err(error),
+                        spawn_load_ms: Some(load_started.elapsed().as_millis() as u64),
+                        generation_ms: None,
+                        cache_hit: Some(cache_hit),
+                        diagnostics,
+                    };
+                }
+            };
 
             // Lazy spawn. Release the ASR model first so only one heavy runtime
             // is ever resident (mutual exclusion, ADR "Lifecycle and resources").
             if inner.child.is_none() {
                 self.guard().release_asr();
-                match self.spawn_and_handshake(&model_path) {
+                match self.spawn_and_handshake(&model_path, cancel, &mut diagnostics) {
                     Ok(child) => inner.child = Some(child),
                     Err(TransformError::ModelMismatch) => {
                         // A corrupt / wrong-content model at the ready path. Remove
@@ -834,16 +1051,33 @@ mod supported {
                         // the user can re-download. Not a helper fault → no breaker
                         // trip; the file is gone so this cannot loop.
                         self.plan.cleanup_bad_model();
-                        return Err(TransformError::ModelMismatch);
+                        return CorrelatedTransformOutcome {
+                            result: Err(TransformError::ModelMismatch),
+                            spawn_load_ms: Some(load_started.elapsed().as_millis() as u64),
+                            generation_ms: None,
+                            cache_hit: Some(cache_hit),
+                            diagnostics,
+                        };
                     }
                     Err(err) => {
-                        inner.breaker.record_failure(Instant::now());
-                        return Err(err);
+                        if err != TransformError::Cancelled {
+                            inner.breaker.record_failure(Instant::now());
+                        }
+                        return CorrelatedTransformOutcome {
+                            result: Err(err),
+                            spawn_load_ms: Some(load_started.elapsed().as_millis() as u64),
+                            generation_ms: None,
+                            cache_hit: Some(cache_hit),
+                            diagnostics,
+                        };
                     }
                 }
             }
+            let spawn_load_ms = load_started.elapsed().as_millis() as u64;
 
             let request_id = unique_id("req");
+            let generation_started = Instant::now();
+            diagnostics.failure_phase = Some(SidecarDiagnosticPhase::RequestReceipt);
             let outcome = {
                 let child = inner.child.as_mut().expect("child present");
                 run_request(
@@ -854,12 +1088,14 @@ mod supported {
                     deadline,
                     &self.plan,
                     cancel,
+                    &mut diagnostics,
                 )
             };
 
-            match outcome {
+            let result = match outcome {
                 RequestOutcome::Ok(out) => {
                     inner.last_activity = Instant::now();
+                    diagnostics.failure_phase = None;
                     Ok(out)
                 }
                 RequestOutcome::HelperError(err) => {
@@ -880,7 +1116,7 @@ mod supported {
                     Err(TransformError::Timeout)
                 }
                 RequestOutcome::TimedOutKilled => {
-                    kill_child(inner.child.take());
+                    kill_child(self.take_child(&mut inner));
                     Err(TransformError::Timeout)
                 }
                 RequestOutcome::CancelledKeepChild => {
@@ -889,36 +1125,57 @@ mod supported {
                     Err(TransformError::Cancelled)
                 }
                 RequestOutcome::CancelledKilled => {
-                    kill_child(inner.child.take());
+                    kill_child(self.take_child(&mut inner));
                     Err(TransformError::Cancelled)
                 }
                 RequestOutcome::Crashed => {
-                    kill_child(inner.child.take());
+                    kill_child(self.take_child(&mut inner));
                     inner.breaker.record_failure(Instant::now());
                     Err(TransformError::Crashed)
                 }
                 RequestOutcome::Protocol => {
-                    kill_child(inner.child.take());
+                    kill_child(self.take_child(&mut inner));
                     inner.breaker.record_failure(Instant::now());
                     Err(TransformError::Protocol)
                 }
                 RequestOutcome::OutputInvalid => {
-                    kill_child(inner.child.take());
+                    kill_child(self.take_child(&mut inner));
                     inner.breaker.record_failure(Instant::now());
                     Err(TransformError::OutputInvalid)
                 }
+            };
+            CorrelatedTransformOutcome {
+                result,
+                spawn_load_ms: Some(spawn_load_ms),
+                generation_ms: Some(generation_started.elapsed().as_millis() as u64),
+                cache_hit: Some(cache_hit),
+                diagnostics,
             }
         }
 
-        fn spawn_and_handshake(&self, model_path: &Path) -> Result<Child, TransformError> {
+        fn spawn_and_handshake(
+            &self,
+            model_path: &Path,
+            cancel: &CancelToken,
+            diagnostics: &mut SidecarDiagnostics,
+        ) -> Result<Child, TransformError> {
+            use murmur_local_llm_protocol::MODEL_FD;
             use std::os::unix::io::AsRawFd;
             use std::os::unix::process::CommandExt;
-            use murmur_local_llm_protocol::MODEL_FD;
 
             let (size, sha) = self.plan.pins();
-            let model_file = open_and_verify_model(model_path, size, sha)?;
+            diagnostics.failure_phase = Some(SidecarDiagnosticPhase::HostModelVerification);
+            let verify_started = Instant::now();
+            let model_file = open_and_verify_model(model_path, size, sha, cancel)?;
+            diagnostics.host_model_verification_ms =
+                Some(verify_started.elapsed().as_millis() as u64);
+            if cancel.is_cancelled() {
+                return Err(TransformError::Cancelled);
+            }
+            diagnostics.failure_phase = Some(SidecarDiagnosticPhase::HelperSpawn);
             let helper_path = self.plan.helper_path()?;
             let raw_fd = model_file.as_raw_fd();
+            let spawn_started = Instant::now();
 
             // TODO(#312 PR-A3/C2 packaging integration): before spawn, validate
             // `helper_path` with `SecStaticCodeCheckValidity` against the fixed
@@ -932,11 +1189,10 @@ mod supported {
                 .current_dir("/")
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
-                .stderr(if self.plan.stderr_inherit() {
-                    std::process::Stdio::inherit()
-                } else {
-                    std::process::Stdio::null()
-                });
+                // Never ingest or inherit helper stderr: failure details can
+                // contain runtime paths or device strings. The enum-only phase
+                // protocol is the sole diagnostics channel.
+                .stderr(std::process::Stdio::null());
             command.env_clear();
             // Scenario env is injected only in test-support builds; production
             // spawns with a strictly empty environment.
@@ -972,9 +1228,25 @@ mod supported {
             }
 
             let mut proc = command.spawn().map_err(|_| TransformError::SpawnFailed)?;
+            diagnostics.helper_spawn_ms = Some(spawn_started.elapsed().as_millis() as u64);
+            diagnostics.failure_phase = Some(SidecarDiagnosticPhase::ReadyHandshake);
+            let handshake_started = Instant::now();
             let pid = proc.id();
-            let mut stdin = proc.stdin.take().ok_or(TransformError::SpawnFailed)?;
-            let stdout = proc.stdout.take().ok_or(TransformError::SpawnFailed)?;
+            let pid_guard = SpawnPidGuard::new(&self.resident_pid, pid);
+            let mut stdin = match proc.stdin.take() {
+                Some(stdin) => stdin,
+                None => {
+                    kill_and_reap(&mut proc);
+                    return Err(TransformError::SpawnFailed);
+                }
+            };
+            let stdout = match proc.stdout.take() {
+                Some(stdout) => stdout,
+                None => {
+                    kill_and_reap(&mut proc);
+                    return Err(TransformError::SpawnFailed);
+                }
+            };
 
             // Reader thread: classifies frames, protocol violations, and EOF.
             let (tx, rx) = std::sync::mpsc::channel::<HelperEvent>();
@@ -1018,13 +1290,99 @@ mod supported {
 
             // Await Ready within the handshake / model-load deadline.
             let deadline_at = Instant::now() + self.plan.handshake_timeout();
+            let expected_phases = [
+                (
+                    murmur_local_llm_protocol::DiagnosticPhase::HelperModelVerification,
+                    murmur_local_llm_protocol::PhaseState::Started,
+                ),
+                (
+                    murmur_local_llm_protocol::DiagnosticPhase::HelperModelVerification,
+                    murmur_local_llm_protocol::PhaseState::Completed,
+                ),
+                (
+                    murmur_local_llm_protocol::DiagnosticPhase::BackendInitialization,
+                    murmur_local_llm_protocol::PhaseState::Started,
+                ),
+                (
+                    murmur_local_llm_protocol::DiagnosticPhase::BackendInitialization,
+                    murmur_local_llm_protocol::PhaseState::Completed,
+                ),
+                (
+                    murmur_local_llm_protocol::DiagnosticPhase::ModelLoad,
+                    murmur_local_llm_protocol::PhaseState::Started,
+                ),
+                (
+                    murmur_local_llm_protocol::DiagnosticPhase::ModelLoad,
+                    murmur_local_llm_protocol::PhaseState::Completed,
+                ),
+            ];
+            let mut expected_phase_index = 0_usize;
             loop {
+                if cancel.is_cancelled() {
+                    kill_and_reap(&mut proc);
+                    return Err(TransformError::Cancelled);
+                }
                 let now = Instant::now();
                 if now >= deadline_at {
                     kill_and_reap(&mut proc);
-                    return Err(TransformError::HandshakeFailed);
+                    return Err(TransformError::Timeout);
                 }
-                match rx.recv_timeout(deadline_at - now) {
+                let slice = (deadline_at - now).min(Duration::from_millis(25));
+                match rx.recv_timeout(slice) {
+                    Ok(HelperEvent::Frame(HelperMessage::DiagnosticPhase {
+                        protocol,
+                        version,
+                        session_nonce: got_nonce,
+                        request_id,
+                        phase,
+                        state,
+                        duration_ms,
+                    })) => {
+                        use murmur_local_llm_protocol::{DiagnosticPhase, PhaseState};
+                        if protocol != PROTOCOL_NAME
+                            || version != PROTOCOL_VERSION
+                            || got_nonce != session_nonce
+                            || !murmur_local_llm_protocol::validate_diagnostic_phase(
+                                request_id.as_deref(),
+                                phase,
+                                state,
+                                duration_ms,
+                            )
+                            || expected_phases.get(expected_phase_index) != Some(&(phase, state))
+                        {
+                            kill_and_reap(&mut proc);
+                            return Err(TransformError::HandshakeFailed);
+                        }
+                        expected_phase_index += 1;
+                        let mapped = match phase {
+                            DiagnosticPhase::HelperModelVerification => {
+                                SidecarDiagnosticPhase::HelperModelVerification
+                            }
+                            DiagnosticPhase::BackendInitialization => {
+                                SidecarDiagnosticPhase::BackendInitialization
+                            }
+                            DiagnosticPhase::ModelLoad => SidecarDiagnosticPhase::ModelLoad,
+                            DiagnosticPhase::RequestReceipt => {
+                                SidecarDiagnosticPhase::RequestReceipt
+                            }
+                            DiagnosticPhase::FirstToken => SidecarDiagnosticPhase::FirstToken,
+                        };
+                        diagnostics.failure_phase = Some(mapped);
+                        if state == PhaseState::Completed {
+                            match phase {
+                                DiagnosticPhase::HelperModelVerification => {
+                                    diagnostics.helper_model_verification_ms = duration_ms
+                                }
+                                DiagnosticPhase::BackendInitialization => {
+                                    diagnostics.backend_initialization_ms = duration_ms
+                                }
+                                DiagnosticPhase::ModelLoad => {
+                                    diagnostics.model_load_ms = duration_ms
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
                     Ok(HelperEvent::Frame(HelperMessage::Ready {
                         protocol,
                         version,
@@ -1037,20 +1395,31 @@ mod supported {
                             || got_nonce != session_nonce
                             || model.sha256 != sha
                             || model.size_bytes != size
+                            || expected_phase_index != expected_phases.len()
                         {
                             kill_and_reap(&mut proc);
                             return Err(TransformError::HandshakeFailed);
                         }
-                        return Ok(Child {
+                        let child = Child {
                             proc,
                             stdin,
                             events: rx,
                             session_nonce,
                             pid,
                             _model_file: model_file,
-                        });
+                        };
+                        pid_guard.keep();
+                        diagnostics.ready_handshake_ms =
+                            Some(handshake_started.elapsed().as_millis() as u64);
+                        diagnostics.failure_phase = None;
+                        return Ok(child);
                     }
-                    Ok(_) | Err(RecvTimeoutError::Disconnected) => {
+                    Ok(HelperEvent::Exited) | Err(RecvTimeoutError::Disconnected) => {
+                        Self::record_process_exit(&mut proc, diagnostics);
+                        kill_and_reap(&mut proc);
+                        return Err(TransformError::HandshakeFailed);
+                    }
+                    Ok(_) => {
                         kill_and_reap(&mut proc);
                         return Err(TransformError::HandshakeFailed);
                     }
@@ -1103,9 +1472,9 @@ mod supported {
                 }
 
                 if kill {
-                    (inner.child.take(), true)
+                    (self.take_child(&mut inner), true)
                 } else if inner.last_activity.elapsed() >= self.plan.idle_after() {
-                    (inner.child.take(), false)
+                    (self.take_child(&mut inner), false)
                 } else {
                     return;
                 }
@@ -1126,7 +1495,7 @@ mod supported {
             let child = match self.inner.try_lock() {
                 Ok(mut inner) => {
                     inner.breaker.reset();
-                    inner.child.take()
+                    self.take_child(&mut inner)
                 }
                 Err(_) => return,
             };
@@ -1140,7 +1509,7 @@ mod supported {
         /// transform is in flight — the guard never blocks behind a ≤31s request.
         pub fn shutdown(&self) {
             let child = match self.inner.try_lock() {
-                Ok(mut inner) => inner.child.take(),
+                Ok(mut inner) => self.take_child(&mut inner),
                 Err(_) => return,
             };
             shutdown_child(child, self.plan.cancel_grace());
@@ -1174,7 +1543,13 @@ mod supported {
     /// mismatch is a protocol violation that fails closed.
     fn helper_frame_valid(message: &HelperMessage, nonce: &str) -> bool {
         let (protocol, version, session_nonce) = match message {
-            HelperMessage::Ready {
+            HelperMessage::DiagnosticPhase {
+                protocol,
+                version,
+                session_nonce,
+                ..
+            }
+            | HelperMessage::Ready {
                 protocol,
                 version,
                 session_nonce,
@@ -1216,6 +1591,7 @@ mod supported {
         deadline: Duration,
         plan: &SpawnPlan,
         cancel: &CancelToken,
+        diagnostics: &mut SidecarDiagnostics,
     ) -> RequestOutcome {
         let transform = HostMessage::Transform {
             protocol: PROTOCOL_NAME.to_string(),
@@ -1235,6 +1611,8 @@ mod supported {
         // DeadlineExceeded before we escalate to a cooperative cancel.
         let wait = deadline + plan.request_slack();
         let deadline_at = Instant::now() + wait;
+        let mut receipt_seen = false;
+        let mut first_token_seen = false;
         loop {
             // User cancel (e.g. Esc / short-tap) wins over the deadline wait.
             if cancel.is_cancelled() {
@@ -1263,6 +1641,45 @@ mod supported {
                         return RequestOutcome::Protocol;
                     }
                     match frame {
+                        HelperMessage::DiagnosticPhase {
+                            request_id: got,
+                            phase,
+                            state,
+                            duration_ms,
+                            ..
+                        } => {
+                            use murmur_local_llm_protocol::DiagnosticPhase;
+                            if got.as_deref() != Some(request_id)
+                                || !murmur_local_llm_protocol::validate_diagnostic_phase(
+                                    got.as_deref(),
+                                    phase,
+                                    state,
+                                    duration_ms,
+                                )
+                            {
+                                return RequestOutcome::Protocol;
+                            }
+                            match phase {
+                                DiagnosticPhase::RequestReceipt
+                                    if !receipt_seen && !first_token_seen =>
+                                {
+                                    receipt_seen = true;
+                                    diagnostics.request_receipt_ms = duration_ms;
+                                    diagnostics.failure_phase =
+                                        Some(SidecarDiagnosticPhase::FirstToken);
+                                }
+                                DiagnosticPhase::FirstToken
+                                    if receipt_seen && !first_token_seen =>
+                                {
+                                    first_token_seen = true;
+                                    diagnostics.first_token_ms = duration_ms;
+                                    diagnostics.failure_phase =
+                                        Some(SidecarDiagnosticPhase::Generation);
+                                }
+                                _ => return RequestOutcome::Protocol,
+                            }
+                            continue;
+                        }
                         HelperMessage::Result {
                             request_id: got,
                             output,
@@ -1271,6 +1688,9 @@ mod supported {
                             ..
                         } => {
                             if got != request_id {
+                                return RequestOutcome::Protocol;
+                            }
+                            if !receipt_seen {
                                 return RequestOutcome::Protocol;
                             }
                             if output.len() > MAX_OUTPUT_BYTES
@@ -1311,7 +1731,8 @@ mod supported {
                 }
                 Ok(HelperEvent::ProtocolViolation) => return RequestOutcome::Protocol,
                 Ok(HelperEvent::Exited) | Err(RecvTimeoutError::Disconnected) => {
-                    return RequestOutcome::Crashed
+                    LlmSidecar::record_process_exit(&mut child.proc, diagnostics);
+                    return RequestOutcome::Crashed;
                 }
                 Err(RecvTimeoutError::Timeout) => continue,
             }
@@ -1358,9 +1779,36 @@ mod supported {
                     if !helper_frame_valid(&frame, &child.session_nonce) {
                         return kill;
                     }
-                    // A matching Cancelled, or any other well-formed frame,
-                    // proves the helper is responsive: cancellation confirmed.
-                    return keep;
+                    match frame {
+                        // Only an explicit acknowledgement for this exact
+                        // request confirms cooperative cancellation. Receipt /
+                        // first-token frames may already be queued when Cancel
+                        // is sent and must never be mistaken for an ack.
+                        HelperMessage::Cancelled {
+                            request_id: got, ..
+                        } if got == request_id => return keep,
+                        HelperMessage::DiagnosticPhase {
+                            request_id,
+                            phase,
+                            state,
+                            duration_ms,
+                            ..
+                        } => {
+                            if !murmur_local_llm_protocol::validate_diagnostic_phase(
+                                request_id.as_deref(),
+                                phase,
+                                state,
+                                duration_ms,
+                            ) {
+                                return kill;
+                            }
+                            continue;
+                        }
+                        // A stale/mismatched Cancelled or any other valid frame
+                        // is not confirmation. Keep waiting until the grace
+                        // deadline, then kill and reap the helper.
+                        _ => continue,
+                    }
                 }
                 Ok(HelperEvent::Exited)
                 | Ok(HelperEvent::ProtocolViolation)
@@ -1434,6 +1882,7 @@ pub use supported::LlmSidecar;
 pub struct LlmSidecar {
     host_guard: OnceLock<Arc<dyn HostGuard>>,
     busy: AtomicBool,
+    resident_pid: AtomicU32,
     _plan: SpawnPlan,
 }
 
@@ -1452,6 +1901,7 @@ impl LlmSidecar {
         Self {
             host_guard: OnceLock::new(),
             busy: AtomicBool::new(false),
+            resident_pid: AtomicU32::new(0),
             _plan: plan,
         }
     }
@@ -1475,6 +1925,10 @@ impl LlmSidecar {
         false
     }
 
+    pub fn resident_pid(&self) -> Option<u32> {
+        None
+    }
+
     pub async fn transform(
         self: &Arc<Self>,
         _instruction: &str,
@@ -1483,6 +1937,17 @@ impl LlmSidecar {
         _cancel: CancelToken,
     ) -> Result<TransformOutput, TransformError> {
         Err(TransformError::Unsupported)
+    }
+
+    pub async fn transform_for_pass(
+        self: &Arc<Self>,
+        _transform_pass_id: u64,
+        _instruction: &str,
+        _input: &str,
+        _deadline: Duration,
+        _cancel: CancelToken,
+    ) -> CorrelatedTransformOutcome {
+        CorrelatedTransformOutcome::before_runtime(TransformError::Unsupported)
     }
 
     pub fn maintenance_tick(&self) {}
@@ -1532,7 +1997,10 @@ mod tests {
 
         a.cancel();
         assert!(a.is_cancelled(), "cancelling A must flip A");
-        assert!(!b.is_cancelled(), "cancelling A must NOT flip B (per-request)");
+        assert!(
+            !b.is_cancelled(),
+            "cancelling A must NOT flip B (per-request)"
+        );
 
         // A clone observes the same cancellation; identity holds across clones.
         let a2 = a.clone();
@@ -1600,7 +2068,7 @@ mod tests {
 
         let (size, sha) = model_file_digest(&path).unwrap();
         // Exact pins verify and leave the handle rewound to offset 0.
-        let mut handle = open_and_verify_model(&path, size, &sha).unwrap();
+        let mut handle = open_and_verify_model(&path, size, &sha, &CancelToken::new()).unwrap();
         use std::io::Read;
         let mut first = [0_u8; 4];
         handle.read_exact(&mut first).unwrap();
@@ -1609,12 +2077,18 @@ mod tests {
         // Wrong hash and wrong size both fail closed.
         let wrong_sha = "0".repeat(64);
         assert_eq!(
-            open_and_verify_model(&path, size, &wrong_sha).unwrap_err(),
+            open_and_verify_model(&path, size, &wrong_sha, &CancelToken::new()).unwrap_err(),
             TransformError::ModelMismatch
         );
         assert_eq!(
-            open_and_verify_model(&path, size + 1, &sha).unwrap_err(),
+            open_and_verify_model(&path, size + 1, &sha, &CancelToken::new()).unwrap_err(),
             TransformError::ModelMismatch
+        );
+        let cancelled = CancelToken::new();
+        cancelled.cancel();
+        assert_eq!(
+            open_and_verify_model(&path, size, &sha, &cancelled).unwrap_err(),
+            TransformError::Cancelled
         );
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -1,6 +1,14 @@
 import { useState, useCallback } from 'react';
 import type { TeachingContext } from '../correctAndTeach';
-import { HistoryEntry, HistorySource, loadHistory, saveHistory, addHistoryEntry, updateHistoryEntry, clearHistory as clearPersistedHistory } from '../history';
+import {
+  HistoryEntry,
+  HistorySource,
+  loadHistory,
+  saveHistory,
+  addHistoryEntry,
+  updateHistoryEntry,
+  clearHistory as clearPersistedHistory,
+} from '../history';
 
 export function useHistoryManagement() {
   const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>(() => loadHistory());

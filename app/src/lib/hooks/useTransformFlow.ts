@@ -21,6 +21,27 @@ interface UseTransformFlowProps {
   microphone?: string;
 }
 
+interface TransformKeyPayload {
+  transformPassId: number;
+}
+
+interface EscapeCancelPayload {
+  transformPassId: number | null;
+}
+
+function isTransformKeyPayload(value: unknown): value is TransformKeyPayload {
+  if (!value || typeof value !== 'object') return false;
+  const passId = (value as Record<string, unknown>).transformPassId;
+  return typeof passId === 'number' && Number.isSafeInteger(passId) && passId > 0;
+}
+
+function isEscapeCancelPayload(value: unknown): value is EscapeCancelPayload {
+  if (!value || typeof value !== 'object') return false;
+  const passId = (value as Record<string, unknown>).transformPassId;
+  return passId === null
+    || (typeof passId === 'number' && Number.isSafeInteger(passId) && passId > 0);
+}
+
 /**
  * Main-window driver for the AX-selection transform flow (issue #312 PR-C2).
  *
@@ -53,6 +74,7 @@ export function useTransformFlow({
     let cancelled = false;
     let unlistenPressed: (() => void) | null = null;
     let unlistenReleased: (() => void) | null = null;
+    let unlistenEscape: (() => void) | null = null;
 
     const deviceNameArg = () => {
       const mic = microphoneRef.current;
@@ -67,12 +89,23 @@ export function useTransformFlow({
         return;
       }
       if (step.command) {
-        const args =
-          step.command === 'start_transform_capture'
-            ? { deviceName: deviceNameArg() }
-            : undefined;
-        invoke(step.command, args).catch((e) => {
-          flog.warn('transform-flow', 'command failed', { command: step.command, error: String(e) });
+        if (step.transformPassId === null) {
+          flog.warn('transform-flow', 'command missing pass id', { command: step.command });
+          return;
+        }
+        const args = step.command === 'start_transform_capture'
+          ? {
+              deviceName: deviceNameArg(),
+              transformPassId: step.transformPassId,
+            }
+          : { transformPassId: step.transformPassId };
+        invoke(step.command, args).catch(() => {
+          // Rust emits the correlated stable error code. Do not duplicate a
+          // raw native error string into frontend logs.
+          flog.warn('transform-flow', 'command failed', {
+            command: step.command,
+            transform_pass_id: step.transformPassId,
+          });
         });
       }
     };
@@ -83,19 +116,68 @@ export function useTransformFlow({
       // If we were mid-hold, cancel the backend so Listening + live mic is not
       // left running with no release coming (C2 finding 5).
       if (stateRef.current.holding) {
-        invoke('cancel_transform').catch(() => {});
+        invoke('cancel_transform', {
+          transformPassId: stateRef.current.transformPassId,
+        }).catch(() => {});
       }
       stateRef.current = INITIAL_TRANSFORM_FLOW_STATE;
 
-      unlistenPressed = await listen('transform-key-pressed', () => {
-        dispatch({ type: 'pressed', now: Date.now() });
+      unlistenPressed = await listen<unknown>('transform-key-pressed', (event) => {
+        if (!isTransformKeyPayload(event.payload)) {
+          flog.warn('transform-flow', 'invalid transform-key-pressed payload');
+          return;
+        }
+        dispatch({
+          type: 'pressed',
+          now: Date.now(),
+          transformPassId: event.payload.transformPassId,
+        });
       });
       if (cancelled) { unlistenPressed(); return; }
 
-      unlistenReleased = await listen('transform-key-released', () => {
-        dispatch({ type: 'released', now: Date.now() });
+      unlistenReleased = await listen<unknown>('transform-key-released', (event) => {
+        if (!isTransformKeyPayload(event.payload)) {
+          flog.warn('transform-flow', 'invalid transform-key-released payload');
+          return;
+        }
+        dispatch({
+          type: 'released',
+          now: Date.now(),
+          transformPassId: event.payload.transformPassId,
+        });
       });
       if (cancelled) { unlistenPressed(); unlistenReleased(); return; }
+
+      unlistenEscape = await listen<unknown>('escape-cancel', (event) => {
+        if (cancelled) return;
+        if (!isEscapeCancelPayload(event.payload)) {
+          flog.warn('transform-flow', 'invalid escape-cancel payload');
+          return;
+        }
+        if (
+          event.payload.transformPassId === null
+          || stateRef.current.transformPassId !== event.payload.transformPassId
+        ) {
+          return;
+        }
+        // Rust resets the transform detector and intentionally emits no
+        // transform-key-released event after Escape. Mirror that reset in the
+        // frontend reducer only for the exact correlated hold. A delayed
+        // Escape from pass N must never reset the reducer after pass N+1 has
+        // already started. Backend cancellation remains solely owned by
+        // useEscapeCancel.
+        stateRef.current = reduceTransformFlow(stateRef.current, { type: 'reset' }).state;
+        flog.info('transform-flow', 'local hold reset', {
+          reason: 'escape_cancel',
+          transform_pass_id: event.payload.transformPassId,
+        });
+      });
+      if (cancelled) {
+        unlistenPressed();
+        unlistenReleased();
+        unlistenEscape();
+        return;
+      }
 
       try {
         await invoke('start_transform_listener', { hotkey: transformHoldKey });
@@ -113,11 +195,14 @@ export function useTransformFlow({
       cancelled = true;
       unlistenPressed?.();
       unlistenReleased?.();
+      unlistenEscape?.();
       invoke('stop_transform_listener').catch(() => {});
       // Mid-hold cleanup: backend is Listening with a live mic and no release
       // will arrive after the listener stops — cancel so we do not wedge.
       if (stateRef.current.holding) {
-        invoke('cancel_transform').catch(() => {});
+        invoke('cancel_transform', {
+          transformPassId: stateRef.current.transformPassId,
+        }).catch(() => {});
         stateRef.current = INITIAL_TRANSFORM_FLOW_STATE;
       }
     };

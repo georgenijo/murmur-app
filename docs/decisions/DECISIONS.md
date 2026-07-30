@@ -18,6 +18,80 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 ---
 
+## 2026-07-28: Appearance is a revisioned local semantic-token document (#377)
+
+**Decision:** Murmur themes the main and log-viewer webviews from a separate
+`murmur-appearance` document. Concrete `data-appearance` selectors, a strictly
+validated resolved-token cache, and a parser-blocking same-origin bootstrap
+land as one contract. Main is the only writer, user-change emitter, and owner
+of application-level native `setTheme`; both themed windows handle System-mode
+OS changes locally without emitting. Overlay and transform-review remain
+unsynchronized transparent, always-dark glass. Theme-file exchange uses
+main-window-gated 64 KiB UTF-8 Rust transport with atomic sibling-temp writes
+and never uses the clipboard. Untouched Sonic remains byte-for-byte compatible
+with the shipped palette; all mutable/custom paths enforce the expanded
+all-surface and tinted-status contrast matrix.
+Diagnostics preserve at-a-glance stream identity by combining the existing
+contrast-checked semantic surfaces, foregrounds, and opaque markers rather than
+adding stream-specific palette slots; warning levels use the warning token.
+The recording Stop action stays visually dominant through an opaque surface,
+strong error border, error label, and safe error-tint hover. It does not place
+`on-primary` on error because the deliberately small schema has no `on-error`
+pair and does not guarantee that combination.
+
+**Rationale:** Separating appearance from dictation settings prevents unrelated
+cross-window settings traffic and preserves immutable recording semantics.
+Concrete selector state makes forced appearance agree across Tailwind,
+semantic tokens, first paint, and native chrome. A narrow bounded transport
+keeps schema/color authority in the tested frontend while preventing partial
+exports and clipboard regressions. Grandfathering only untouched Sonic resolves
+the direct conflict between exact reset parity and the newer status-matrix
+contract without giving user-controlled colors an accessibility escape hatch.
+
+**Status:** active
+
+**References:** issue #377;
+[`docs/features/appearance.md`](../features/appearance.md);
+[`docs/draft/theme-engine-converged-plan.md`](../draft/theme-engine-converged-plan.md).
+
+---
+
+## 2026-07-27: Workflow features stay local, opt-in, and fail-safe
+
+**Decision:** Three main-window workflow features ship together — the history workspace (search/filter/export), Stop on Silence, and the ⌘K command palette — under three shared constraints. (1) **Export is a document sink, not a file-write primitive:** `save_text_export` refuses anything outside `.json`/`.md`/`.txt`, non-absolute paths, dotfiles, directories, missing parents, and payloads over 8 MB, and publishes atomically; `teachingContext` is excluded from every export format. (2) **Stop on Silence applies to any recording not started by holding the trigger key and must hear speech before it can arm**, with a threshold that only ever rises above an absolute floor — on a quiet microphone it does nothing rather than cutting the speaker off, and any out-of-allow-list persisted duration coerces to Off. (Originally shipped Double-Tap-only; widened to the origin rule after device testing, 2026-07-28 — while the key is physically held, the release owns the stop.) (3) **The palette owns no behavior:** each row carries a `run` callback from `App.tsx`, so there is exactly one definition of each action.
+
+**Rationale:** All three touch surfaces where a wrong default is expensive: writing files the user did not ask for, ending a recording early, and duplicating action semantics. Pinning was built for this batch and then cut before merge after device testing (2026-07-28): copy, export, and the knowledge store already answer "keep this transcript" better than a special history state, and pinning's cost was a second trim budget, a pin ceiling with its own error, and a split clear. The underlying worry — the rolling trim silently dropping something you cared about — is answered by raising the history cap to 200 instead.
+
+**Status:** active
+
+**References:** `docs/features/history-workspace.md`; `docs/features/silence-auto-stop.md`; `docs/features/command-palette.md`; branch `feat/workflow-boosters`.
+
+---
+
+## 2026-07-22: Diagnostics accelerator metrics stay honest (#354)
+
+**Decision:** Diagnostics will not display GPU or ANE utilization percentages. The production follow-up may ship exact backend identity, request timing, real-time factor or token throughput, correctly scoped RSS, the existing explicitly host-wide CPU percentage, and `GPU utilization unavailable` / `Accelerator utilization unavailable`. Public Metal timestamps, counters, and allocation accounting remain developer-only until Murmur's pinned runtime exposes an integration seam and a production rehearsal proves it.
+
+**Rationale:** Public Metal instrumentation measures command buffers, encoders, and resources the caller can access; Murmur's pinned whisper.cpp and llama.cpp runtimes own those objects internally, while Core ML exposes allowed compute-unit selection rather than production execution attribution. The standalone public-API probe proves behavior only for work it owns and cannot justify fabricated percentages or claims about the pinned runtimes.
+
+**Status:** active
+
+**References:** issue #354; parent #350; ADR [`2026-07-22-accelerator-diagnostics-metrics.md`](2026-07-22-accelerator-diagnostics-metrics.md); disposable probe `spikes/354-metal-metrics`.
+
+---
+
+## 2026-07-21: Pre-merge release tuning uses a secretless unsigned rehearsal (#319)
+
+**Decision:** Release-performance experiments are measured by a main-defined, manual-only workflow that builds an immutable source SHA in secretless read-only jobs. Cargo and CUDA caches are source-SHA-isolated. macOS app and Linux deb/AppImage builds remain unsigned; JSON evidence records build timing, cache state, workflow/source identity, and size proxies. Signing, notarization, updater signing, tags, and promotion remain exclusive to the trusted production release path.
+
+**Rationale:** Running feature-branch source inside `Release Build` would expose Apple/updater credentials and trusted cache namespaces. LTO and codegen-unit changes affect compile/link/bundle work, while notarization is external queue noise, so an unsigned proxy is both safer and more causally useful.
+
+**Status:** active
+
+**References:** issue #319; unblocks #305; [ADR](2026-07-21-secure-release-rehearsal.md).
+
+---
+
 ## 2026-07-20: Selected-text transform Phase D wrap (#312)
 
 **Decision:** Ship settings + presets + docs for local selected-text transform without expanding scope into AX webview special-cases. Built-in presets (Shorten / Bullets / Professional / Fix grammar / Casual) and user-defined `KnowledgeKind::Transform` names expand in `finish_transform_instruction` before the sidecar runs. Settings owns hold-key wiring, model download/remove/reset, and saved-transform CRUD. Cursor-chat and similar webviews remain best-effort (documented limitation, not a blocker). Native smoke and issue acceptance checkboxes stay a separate pass on a built `.app`.

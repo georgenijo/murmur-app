@@ -10,10 +10,14 @@ import {
 import { flog } from '../log';
 import {
   type UpdateStatus,
+  type CompletedUpdate,
   isBelowMinVersion,
   getSkippedVersion,
   setSkippedVersion,
   clearSkippedVersion,
+  setPendingUpdate,
+  clearPendingUpdate,
+  getPendingUpdateForVersion,
   isDueForCheck,
   setLastCheckTimestamp,
   fetchMinVersion,
@@ -22,17 +26,46 @@ import {
 
 export interface UseAutoUpdaterReturn {
   updateStatus: UpdateStatus;
+  completedUpdate: CompletedUpdate | null;
   checkForUpdate: () => Promise<void>;
   startDownload: () => Promise<void>;
   skipVersion: () => void;
   dismissUpdate: () => void;
+  dismissCompletedUpdate: () => void;
 }
 
 export function useAutoUpdater(): UseAutoUpdaterReturn {
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ phase: 'idle' });
+  const [completedUpdate, setCompletedUpdate] = useState<CompletedUpdate | null>(null);
   const updateRef = useRef<Update | null>(null);
   const isCheckingRef = useRef(false);
   const isForcedRef = useRef(false);
+
+  // The updater process replaces the app before relaunching, so the release
+  // payload is recovered from localStorage and shown only after the installed
+  // version confirms that the update actually completed.
+  useEffect(() => {
+    let cancelled = false;
+    getVersion()
+      .then((currentVersion) => {
+        if (cancelled) return;
+        const completed = getPendingUpdateForVersion(currentVersion);
+        if (completed) {
+          flog.info('updater', 'showing post-update release notes', {
+            version: completed.version,
+          });
+          setCompletedUpdate(completed);
+        }
+      })
+      .catch((err) => {
+        flog.warn('updater', 'could not resolve installed version for release notes', {
+          error: String(err),
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const performCheck = useCallback(async (opts: { isBackground: boolean }) => {
     if (isCheckingRef.current) return;
@@ -147,6 +180,7 @@ export function useAutoUpdater(): UseAutoUpdaterReturn {
 
     setUpdateStatus({ phase: 'downloading', version, progress: 0 });
     flog.info('updater', 'starting download', { version });
+    setPendingUpdate({ version, notes: update.body ?? '' });
 
     try {
       let totalContentLength = 0;
@@ -197,5 +231,18 @@ export function useAutoUpdater(): UseAutoUpdaterReturn {
     setUpdateStatus({ phase: 'idle' });
   }, []);
 
-  return { updateStatus, checkForUpdate, startDownload, skipVersion, dismissUpdate };
+  const dismissCompletedUpdate = useCallback(() => {
+    clearPendingUpdate();
+    setCompletedUpdate(null);
+  }, []);
+
+  return {
+    updateStatus,
+    completedUpdate,
+    checkForUpdate,
+    startDownload,
+    skipVersion,
+    dismissUpdate,
+    dismissCompletedUpdate,
+  };
 }

@@ -140,7 +140,7 @@ export function KnowledgeEditorModal({ entry, profiles, onClose, onSave }: Props
     }
   };
 
-  const inputClass = 'w-full rounded-lg border border-outline-variant/40 bg-surface-container-lowest px-3 py-2 text-sm text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary';
+  const inputClass = 'w-full rounded-lg border border-on-surface-variant bg-surface-container-lowest px-3 py-2 text-sm text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary';
 
   return (
     <div
@@ -222,7 +222,7 @@ export function KnowledgeEditorModal({ entry, profiles, onClose, onSave }: Props
               {(() => {
                 const warning = presetShadowWarning(payload.name);
                 return warning ? (
-                  <p className="text-xs text-amber-600 dark:text-amber-400">{warning}</p>
+                  <p className="text-xs text-primary">{warning}</p>
                 ) : null;
               })()}
               <label className="block text-xs font-medium text-on-surface">
@@ -231,7 +231,7 @@ export function KnowledgeEditorModal({ entry, profiles, onClose, onSave }: Props
                   <span
                     className={
                       byteLength(payload.instruction) > MAX_TRANSFORM_INSTRUCTION_BYTES
-                        ? 'font-normal text-red-600 dark:text-red-400'
+                        ? 'font-normal text-error '
                         : 'font-normal text-on-surface-variant'
                     }
                   >
@@ -274,16 +274,16 @@ export function KnowledgeEditorModal({ entry, profiles, onClose, onSave }: Props
           </label>
 
           {entry?.voiceCommand && (
-            <p className="rounded-lg border border-primary/25 bg-primary/5 px-3 py-2 text-xs text-on-surface-variant">
+            <p className="rounded-lg border border-primary/25 bg-primary/5 px-3 py-2 text-xs text-on-surface">
               This record is also a {entry.voiceCommand.commandType === 'snippet' ? 'snippet' : 'text replacement'} Voice Command. Use the Voice Commands section to change its command type, test it, or review clipboard access.
             </p>
           )}
 
-          {error && <p role="alert" className="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300">{error}</p>}
+          {error && <p role="alert" className="rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">{error}</p>}
 
           <div className="flex justify-end gap-2 border-t border-outline-variant/25 pt-4">
             <button type="button" onClick={onClose} className="rounded-lg border border-outline-variant/40 px-3 py-2 text-xs font-medium text-on-surface-variant hover:bg-surface-container">Cancel</button>
-            <button type="button" onClick={() => void submit()} disabled={saving} className="rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-on-primary hover:opacity-90 disabled:opacity-50">{saving ? 'Saving…' : 'Save knowledge'}</button>
+            <button type="button" onClick={() => void submit()} disabled={saving} className="rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-on-primary hover:bg-primary-dim disabled:opacity-50">{saving ? 'Saving…' : 'Save knowledge'}</button>
           </div>
         </div>
       </div>

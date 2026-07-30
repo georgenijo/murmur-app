@@ -1,8 +1,9 @@
 //! Integration tests for the local-LLM sidecar supervisor (#312).
 //!
-//! These drive the real supervisor against the protocol-v1 mock helper
-//! (`CARGO_BIN_EXE_mock_llm_helper`). No real GGUF model or llama.cpp is
-//! involved: the "model" is a small temp file whose pins the test derives.
+//! These drive the real supervisor against the versioned mock helper
+//! (`target/<profile>/examples/mock_llm_helper`). No real GGUF model or
+//! llama.cpp is involved: the "model" is a small temp file whose pins the test
+//! derives.
 
 #![cfg(all(target_os = "macos", target_arch = "aarch64"))]
 
@@ -15,7 +16,12 @@ use ui_lib::llm_sidecar::{
 };
 
 fn helper_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_mock_llm_helper"))
+    std::env::current_exe()
+        .expect("integration test executable path")
+        .parent()
+        .and_then(|deps| deps.parent())
+        .expect("Cargo target profile directory")
+        .join("examples/mock_llm_helper")
 }
 
 /// A small fixture "model" file plus its exact pins.
@@ -78,11 +84,89 @@ async fn run_transform(
 async fn successful_transform_round_trip() {
     let fixture = fixture_model();
     let sidecar = sidecar("happy", &fixture);
-    let out = run_transform(&sidecar, Duration::from_secs(5)).await.unwrap();
+    let out = run_transform(&sidecar, Duration::from_secs(5))
+        .await
+        .unwrap();
     assert_eq!(out.output, "mock-output");
     assert_eq!(out.output_tokens, 3);
     // The helper is healthy and kept resident for reuse.
     assert!(sidecar.has_live_child());
+}
+
+#[tokio::test]
+async fn correlated_transform_reports_cold_then_warm_phase_timings() {
+    let fixture = fixture_model();
+    let sidecar = sidecar("happy", &fixture);
+    let cold = sidecar
+        .transform_for_pass(
+            77,
+            "Rewrite this politely.",
+            "gimme the report",
+            Duration::from_secs(5),
+            CancelToken::new(),
+        )
+        .await;
+    assert!(cold.result.is_ok());
+    assert_eq!(cold.cache_hit, Some(false));
+    assert!(cold.spawn_load_ms.is_some());
+    assert!(cold.generation_ms.is_some());
+    assert!(cold.diagnostics.host_model_verification_ms.is_some());
+    assert!(cold.diagnostics.helper_spawn_ms.is_some());
+    assert_eq!(cold.diagnostics.helper_model_verification_ms, Some(1));
+    assert_eq!(cold.diagnostics.backend_initialization_ms, Some(1));
+    assert_eq!(cold.diagnostics.model_load_ms, Some(1));
+    assert!(cold.diagnostics.ready_handshake_ms.is_some());
+    assert_eq!(cold.diagnostics.request_receipt_ms, Some(0));
+    assert_eq!(cold.diagnostics.first_token_ms, Some(1));
+    assert!(cold.diagnostics.failure_phase.is_none());
+    assert!(sidecar.resident_pid().is_some());
+
+    let warm = sidecar
+        .transform_for_pass(
+            78,
+            "Rewrite this politely.",
+            "gimme the report",
+            Duration::from_secs(5),
+            CancelToken::new(),
+        )
+        .await;
+    assert!(warm.result.is_ok());
+    assert_eq!(warm.cache_hit, Some(true));
+    assert!(warm.spawn_load_ms.is_some());
+    assert!(warm.generation_ms.is_some());
+}
+
+#[tokio::test]
+async fn every_helper_startup_phase_failure_is_identified() {
+    use ui_lib::llm_sidecar::SidecarDiagnosticPhase;
+
+    for (scenario, expected_phase) in [
+        (
+            "fail_helpermodelverification",
+            SidecarDiagnosticPhase::HelperModelVerification,
+        ),
+        (
+            "fail_backendinitialization",
+            SidecarDiagnosticPhase::BackendInitialization,
+        ),
+        ("fail_modelload", SidecarDiagnosticPhase::ModelLoad),
+    ] {
+        let fixture = fixture_model();
+        let sidecar = sidecar(scenario, &fixture);
+        let outcome = sidecar
+            .transform_for_pass(
+                91,
+                "Rewrite this politely.",
+                "gimme the report",
+                Duration::from_secs(5),
+                CancelToken::new(),
+            )
+            .await;
+        assert_eq!(outcome.result.unwrap_err(), TransformError::HandshakeFailed);
+        assert_eq!(outcome.diagnostics.failure_phase, Some(expected_phase));
+        assert_eq!(outcome.diagnostics.process_exit_code, Some(70));
+        assert!(!sidecar.has_live_child());
+    }
 }
 
 #[tokio::test]
@@ -133,6 +217,29 @@ async fn crash_reports_crashed_and_trips_circuit_breaker() {
         .await
         .unwrap_err();
     assert_eq!(err, TransformError::Crashed);
+}
+
+#[tokio::test]
+async fn process_exit_is_reported_with_generation_phase_and_status() {
+    use ui_lib::llm_sidecar::SidecarDiagnosticPhase;
+
+    let fixture = fixture_model();
+    let sidecar = sidecar("crash_on_transform", &fixture);
+    let outcome = sidecar
+        .transform_for_pass(
+            92,
+            "Rewrite this politely.",
+            "gimme the report",
+            Duration::from_secs(5),
+            CancelToken::new(),
+        )
+        .await;
+    assert_eq!(outcome.result.unwrap_err(), TransformError::Crashed);
+    assert_eq!(
+        outcome.diagnostics.failure_phase,
+        Some(SidecarDiagnosticPhase::FirstToken)
+    );
+    assert_eq!(outcome.diagnostics.process_exit_code, Some(101));
 }
 
 #[tokio::test]
@@ -190,6 +297,29 @@ async fn wrong_handshake_nonce_fails_closed() {
 }
 
 #[tokio::test]
+async fn startup_diagnostic_frames_require_exact_nonce_and_version() {
+    for scenario in [
+        "wrong_nonce_on_startup_phase",
+        "wrong_version_on_startup_phase",
+    ] {
+        let fixture = fixture_model();
+        let sidecar = sidecar(scenario, &fixture);
+        let err = run_transform(&sidecar, Duration::from_secs(5))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err,
+            TransformError::HandshakeFailed,
+            "startup diagnostic envelope was accepted for {scenario}"
+        );
+        assert!(
+            !sidecar.has_live_child(),
+            "invalid startup diagnostic left helper alive for {scenario}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn one_transform_in_flight_rejects_the_second() {
     let fixture = fixture_model();
     // A deliberate delay so the two requests overlap.
@@ -230,7 +360,15 @@ async fn cooperative_cancel_mid_request_helper_receives_cancel_and_busy_clears()
     // the blocking loop, and clear busy promptly — aborting only the outer
     // tokio future is not enough (BusyGuard lives in spawn_blocking).
     let fixture = fixture_model();
-    let sidecar = sidecar("slow_honor_cancel", &fixture);
+    let receipt_marker = fixture._dir.path().join("transform-received");
+    let sidecar = Arc::new(LlmSidecar::for_test(config_with(
+        "slow_honor_cancel",
+        &fixture,
+        vec![(
+            "MOCK_TRANSFORM_RECEIPT_FILE".to_string(),
+            receipt_marker.to_string_lossy().into_owned(),
+        )],
+    )));
 
     let s = Arc::clone(&sidecar);
     let handle = tokio::spawn(async move {
@@ -243,16 +381,20 @@ async fn cooperative_cancel_mid_request_helper_receives_cancel_and_busy_clears()
         .await
     });
 
-    // Wait until the in-flight slot is claimed.
-    let mut claimed = false;
+    // `busy` is claimed before model verification, helper spawn, and the Ready
+    // handshake. Wait for the mock's receipt marker so this test cannot race
+    // startup cancellation (which correctly reaps a partially started helper).
+    let mut received = false;
     for _ in 0..100 {
-        if sidecar.is_transform_busy() {
-            claimed = true;
+        if receipt_marker.exists() {
+            received = true;
             break;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    assert!(claimed, "transform never became busy");
+    assert!(received, "helper never received the Transform request");
+    assert!(sidecar.is_transform_busy());
+    assert!(sidecar.has_live_child());
 
     let started = std::time::Instant::now();
     // Cancel the CURRENT in-flight request via the supervisor entry point;
@@ -275,6 +417,128 @@ async fn cooperative_cancel_mid_request_helper_receives_cancel_and_busy_clears()
 }
 
 #[tokio::test]
+async fn cancellation_diagnostic_without_matching_ack_kills_and_reaps() {
+    let fixture = fixture_model();
+    let sidecar = sidecar("slow_diagnostic_no_cancel_ack", &fixture);
+    let request_sidecar = Arc::clone(&sidecar);
+    let handle =
+        tokio::spawn(async move { run_transform(&request_sidecar, Duration::from_secs(30)).await });
+
+    for _ in 0..200 {
+        if sidecar.is_transform_busy() && sidecar.has_live_child() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        sidecar.is_transform_busy() && sidecar.has_live_child(),
+        "transform/helper never became ready for cancellation"
+    );
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    sidecar.cancel_inflight_request();
+
+    let err = handle.await.unwrap().unwrap_err();
+    assert_eq!(err, TransformError::Cancelled);
+    assert!(!sidecar.is_transform_busy());
+    assert!(
+        !sidecar.has_live_child(),
+        "a diagnostic frame was incorrectly accepted as cancel confirmation"
+    );
+}
+
+#[tokio::test]
+async fn diagnostics_before_cancel_ack_do_not_leak_into_immediate_reuse() {
+    let fixture = fixture_model();
+    let sidecar = sidecar("diagnostic_before_cancel_ack_then_happy", &fixture);
+    let request_sidecar = Arc::clone(&sidecar);
+    let handle =
+        tokio::spawn(async move { run_transform(&request_sidecar, Duration::from_secs(30)).await });
+
+    for _ in 0..200 {
+        if sidecar.is_transform_busy() && sidecar.has_live_child() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        sidecar.is_transform_busy() && sidecar.has_live_child(),
+        "transform/helper never became ready for cancellation"
+    );
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    sidecar.cancel_inflight_request();
+
+    let err = handle.await.unwrap().unwrap_err();
+    assert_eq!(err, TransformError::Cancelled);
+    assert!(!sidecar.is_transform_busy());
+    assert!(
+        sidecar.has_live_child(),
+        "matching cancellation acknowledgement should preserve the helper"
+    );
+
+    let output = run_transform(&sidecar, Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(output.output, "mock-output");
+    assert!(!sidecar.is_transform_busy());
+}
+
+#[tokio::test]
+async fn cooperative_cancel_during_ready_handshake_reaps_and_allows_next_request() {
+    let fixture = fixture_model();
+    let sidecar = Arc::new(LlmSidecar::for_test(config_with(
+        "happy",
+        &fixture,
+        vec![("MOCK_READY_DELAY_MS".to_string(), "600".to_string())],
+    )));
+
+    let first_sidecar = Arc::clone(&sidecar);
+    let first = tokio::spawn(async move {
+        first_sidecar
+            .transform(
+                "Rewrite this politely.",
+                "gimme the report",
+                Duration::from_secs(5),
+                CancelToken::new(),
+            )
+            .await
+    });
+
+    let mut spawned = false;
+    for _ in 0..100 {
+        if sidecar.resident_pid().is_some() {
+            spawned = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(spawned, "helper never reached the Ready handshake");
+
+    let cancel_started = std::time::Instant::now();
+    sidecar.cancel_inflight_request();
+    let err = tokio::time::timeout(Duration::from_secs(1), first)
+        .await
+        .expect("handshake cancellation did not settle promptly")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(err, TransformError::Cancelled);
+    assert!(
+        cancel_started.elapsed() < Duration::from_secs(1),
+        "busy did not clear promptly after handshake cancel: {:?}",
+        cancel_started.elapsed()
+    );
+    assert!(!sidecar.is_transform_busy());
+    assert!(
+        !sidecar.has_live_child(),
+        "partially started helper was not reaped"
+    );
+
+    let output = run_transform(&sidecar, Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(output.output, "mock-output");
+}
+
+#[tokio::test]
 async fn dropping_the_transform_future_clears_busy_and_does_not_wedge() {
     let fixture = fixture_model();
     // Happy path with a delayed Result so the request is still in flight when
@@ -289,7 +553,10 @@ async fn dropping_the_transform_future_clears_busy_and_does_not_wedge() {
         // Drop the transform future well before the delayed Result arrives.
         let fut = run_transform(&sidecar, Duration::from_secs(5));
         let dropped = tokio::time::timeout(Duration::from_millis(50), fut).await;
-        assert!(dropped.is_err(), "future should be cancelled by the timeout");
+        assert!(
+            dropped.is_err(),
+            "future should be cancelled by the timeout"
+        );
     }
 
     // The blocking task keeps running and must clear `busy` when it finishes.
@@ -304,7 +571,9 @@ async fn dropping_the_transform_future_clears_busy_and_does_not_wedge() {
     assert!(cleared, "busy flag wedged after the future was dropped");
 
     // And the supervisor is not bricked: a fresh transform proceeds.
-    let out = run_transform(&sidecar, Duration::from_secs(5)).await.unwrap();
+    let out = run_transform(&sidecar, Duration::from_secs(5))
+        .await
+        .unwrap();
     assert_eq!(out.output, "mock-output");
 }
 

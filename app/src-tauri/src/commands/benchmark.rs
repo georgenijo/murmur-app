@@ -42,8 +42,30 @@ pub async fn run_benchmark(
     request: BenchmarkRequest,
 ) -> Result<BenchmarkReport, String> {
     let coordinator = state.benchmark.clone();
+    // Auto-dismiss a parked transform review, refuse on an active transform
+    // (issue #338 — this path previously ignored the transform status
+    // entirely and would run a benchmark right over a parked review). The
+    // in-lock guard below stays as a race guard.
+    {
+        let fx = crate::transform_flow::TauriFlowEffects {
+            app: &app_handle,
+            state: &state,
+        };
+        crate::transform_flow::clear_parked_review_for_pipeline_work(
+            &state.app_state,
+            &fx,
+            "run_benchmark",
+            "Wait for the transform to finish before benchmarking",
+        )?;
+    }
     {
         let dictation = state.app_state.dictation.lock_or_recover();
+        // An ACTIVE transform (Capturing/Listening/Thinking/Applying) holds
+        // the shared Whisper backend / mic / AX surface — refuse, matching
+        // every other work-starting entry point (issue #338).
+        if state.app_state.transform_status().blocks_recording() {
+            return Err("Wait for the transform to finish before benchmarking".to_string());
+        }
         if dictation.status != DictationStatus::Idle {
             return Err("Stop recording before running a benchmark".to_string());
         }

@@ -33,6 +33,15 @@ export const proposeLearnedCorrection = (
   request: { originalText, correctedText, teachingContext },
 });
 
+export const proposeSpecificLearnedCorrection = (
+  originalText: string,
+  source: string,
+  replacement: string,
+  teachingContext?: TeachingContext,
+) => invoke<CorrectionProposalOutcome>('propose_specific_learned_correction', {
+  request: { originalText, source, replacement, teachingContext },
+});
+
 export const confirmLearnedCorrection = (proposalId: number, scope: KnowledgeScope) =>
   invoke<KnowledgeEntry>('confirm_learned_correction', { proposalId, scope });
 

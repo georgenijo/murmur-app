@@ -149,16 +149,28 @@ pub struct TransformSession {
     /// Monotonic id stamped at `start_session` time. See the module doc
     /// comment's "Session identity" section.
     pub generation: u64,
+    /// Physical transform-key pass that owns this session. Safe correlation
+    /// metadata only; never derived from session content.
+    pub transform_pass_id: u64,
 }
 
 impl TransformSession {
     pub fn new(snapshot: crate::selection::TransformSnapshot, generation: u64) -> Self {
+        Self::new_for_pass(snapshot, generation, 0)
+    }
+
+    pub fn new_for_pass(
+        snapshot: crate::selection::TransformSnapshot,
+        generation: u64,
+        transform_pass_id: u64,
+    ) -> Self {
         Self {
             snapshot,
             instruction: None,
             proposed: None,
             applied: false,
             generation,
+            transform_pass_id,
         }
     }
 }
@@ -170,7 +182,12 @@ impl TransformSession {
 /// session (if any) was active. There is only ever one active session.
 pub fn start_session(app_state: &AppState, snapshot: crate::selection::TransformSnapshot) {
     let generation = app_state.next_transform_session_generation();
-    *app_state.transform_session.lock_or_recover() = Some(TransformSession::new(snapshot, generation));
+    let transform_pass_id = app_state.active_transform_pass_id().unwrap_or(0);
+    *app_state.transform_session.lock_or_recover() = Some(TransformSession::new_for_pass(
+        snapshot,
+        generation,
+        transform_pass_id,
+    ));
 }
 
 /// Fill in (or replace) the proposed replacement text for the active session.
@@ -214,7 +231,11 @@ pub fn session_snapshot(app_state: &AppState) -> Option<TransformSession> {
 /// being `Idle`/`ReviewPending` so a mid-flight pass can't be clobbered).
 /// Returns whether a session was actually present to clear.
 pub fn clear_session(app_state: &AppState) -> bool {
-    app_state.transform_session.lock_or_recover().take().is_some()
+    app_state
+        .transform_session
+        .lock_or_recover()
+        .take()
+        .is_some()
 }
 
 /// Mark the active session as applied (or not) — but only if `generation`
@@ -428,15 +449,21 @@ pub fn decide_apply_outcome(
             (Ok(via), ClipboardOutcome::RestoreOriginal)
         }
         AxWriteAttempt::Failed => match pre_paste_check {
-            PrePasteCheck::AlreadyWritten => {
-                (Ok(AppliedVia::AxUnverified), ClipboardOutcome::RestoreOriginal)
+            PrePasteCheck::AlreadyWritten => (
+                Ok(AppliedVia::AxUnverified),
+                ClipboardOutcome::RestoreOriginal,
+            ),
+            PrePasteCheck::TargetGone => {
+                (Err(ApplyError::TargetGone), ClipboardOutcome::LeaveProposed)
             }
-            PrePasteCheck::TargetGone => (Err(ApplyError::TargetGone), ClipboardOutcome::LeaveProposed),
             PrePasteCheck::Proceed => {
                 if paste_attempted && paste_succeeded {
                     (Ok(AppliedVia::Paste), ClipboardOutcome::RestoreOriginal)
                 } else {
-                    (Err(ApplyError::PasteFailed), ClipboardOutcome::LeaveProposed)
+                    (
+                        Err(ApplyError::PasteFailed),
+                        ClipboardOutcome::LeaveProposed,
+                    )
                 }
             }
         },
@@ -446,7 +473,10 @@ pub fn decide_apply_outcome(
             // write was skipped anyway — not a reachable state from
             // `apply_text_to_target`, but treated conservatively as a
             // failure rather than silently reporting success.
-            (Err(ApplyError::PasteFailed), ClipboardOutcome::LeaveProposed)
+            (
+                Err(ApplyError::PasteFailed),
+                ClipboardOutcome::LeaveProposed,
+            )
         }
     }
 }
@@ -488,13 +518,18 @@ const ACTIVATION_SETTLE_MS: u64 = 50;
 /// later `set_applied` call).
 fn validate_apply(
     session: &Option<TransformSession>,
-) -> Result<(String, crate::selection::TransformSnapshot, u64), ApplyError> {
+) -> Result<(String, crate::selection::TransformSnapshot, u64, u64), ApplyError> {
     let session = session.as_ref().ok_or(ApplyError::NoSession)?;
     if session.applied {
         return Err(ApplyError::AlreadyApplied);
     }
     let text = session.proposed.clone().ok_or(ApplyError::NoProposedText)?;
-    Ok((text, session.snapshot.clone(), session.generation))
+    Ok((
+        text,
+        session.snapshot.clone(),
+        session.generation,
+        session.transform_pass_id,
+    ))
 }
 
 /// Pure pre-flight validation for `undo_transform`: does a session exist and
@@ -506,7 +541,7 @@ fn validate_apply(
 /// the session's generation.
 fn validate_undo(
     session: &Option<TransformSession>,
-) -> Result<(crate::selection::TransformSnapshot, String, u64), ApplyError> {
+) -> Result<(crate::selection::TransformSnapshot, String, u64, u64), ApplyError> {
     let session = session.as_ref().ok_or(ApplyError::NoSession)?;
     if !session.applied {
         return Err(ApplyError::NotApplied);
@@ -515,7 +550,12 @@ fn validate_undo(
     // `apply_transform`, which requires `proposed` to be `Some` — but guard
     // defensively rather than trust that invariant across future changes.
     let proposed = session.proposed.clone().ok_or(ApplyError::NoProposedText)?;
-    Ok((session.snapshot.clone(), proposed, session.generation))
+    Ok((
+        session.snapshot.clone(),
+        proposed,
+        session.generation,
+        session.transform_pass_id,
+    ))
 }
 
 /// Shared engine behind `apply_transform` and `undo_applied_transform`: both
@@ -537,12 +577,18 @@ async fn run_apply(
     expected_current: String,
     replacement: String,
     apply_epoch: u64,
+    transform_pass_id: u64,
 ) -> Result<AppliedVia, ApplyError> {
     let (tx, rx) = tokio::sync::oneshot::channel::<native::NativeApplyOutcome>();
     app_handle
         .run_on_main_thread(move || {
-            let outcome =
-                native::apply_text_to_target(pid, range_start, range_len, &expected_current, &replacement);
+            let outcome = native::apply_text_to_target(
+                pid,
+                range_start,
+                range_len,
+                &expected_current,
+                &replacement,
+            );
             let _ = tx.send(outcome);
         })
         .map_err(|_| ApplyError::Unsupported)?;
@@ -556,12 +602,15 @@ async fn run_apply(
         // still current.
         let app = app_handle.clone();
         tokio::task::spawn_blocking(move || {
-            std::thread::sleep(std::time::Duration::from_millis(PASTE_CLIPBOARD_RESTORE_DELAY_MS));
+            std::thread::sleep(std::time::Duration::from_millis(
+                PASTE_CLIPBOARD_RESTORE_DELAY_MS,
+            ));
             use tauri::Manager;
             if let Some(state) = app.try_state::<crate::State>() {
                 if state.app_state.transform_apply_epoch() != apply_epoch {
                     tracing::info!(
                         target: "transform",
+                        transform_pass_id,
                         "pending clipboard restore skipped — a newer apply/undo/cancel superseded it"
                     );
                     return;
@@ -584,7 +633,7 @@ pub async fn apply_transform(
     app_state: &AppState,
 ) -> Result<AppliedVia, ApplyError> {
     let session = session_snapshot(app_state);
-    let (text, snapshot, generation) = validate_apply(&session)?;
+    let (text, snapshot, generation, transform_pass_id) = validate_apply(&session)?;
 
     #[cfg(target_os = "macos")]
     {
@@ -595,7 +644,17 @@ pub async fn apply_transform(
         let range_len = range_len_for(&snapshot.text);
         let expected_current = snapshot.text.clone();
         let apply_epoch = app_state.next_transform_apply_epoch();
-        let result = run_apply(app_handle, snapshot.pid, range_start, range_len, expected_current, text, apply_epoch).await;
+        let result = run_apply(
+            app_handle,
+            snapshot.pid,
+            range_start,
+            range_len,
+            expected_current,
+            text,
+            apply_epoch,
+            transform_pass_id,
+        )
+        .await;
         if result.is_ok() {
             set_applied(app_state, true, generation);
         }
@@ -604,7 +663,7 @@ pub async fn apply_transform(
 
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (app_handle, text, snapshot, generation);
+        let _ = (app_handle, text, snapshot, generation, transform_pass_id);
         Err(ApplyError::Unsupported)
     }
 }
@@ -623,7 +682,7 @@ pub async fn undo_applied_transform(
     app_state: &AppState,
 ) -> Result<(), ApplyError> {
     let session = session_snapshot(app_state);
-    let (snapshot, proposed, generation) = validate_undo(&session)?;
+    let (snapshot, proposed, generation, transform_pass_id) = validate_undo(&session)?;
 
     #[cfg(target_os = "macos")]
     {
@@ -636,7 +695,17 @@ pub async fn undo_applied_transform(
         let range_len = range_len_for(&proposed);
         let original = snapshot.text.clone();
         let apply_epoch = app_state.next_transform_apply_epoch();
-        let result = run_apply(app_handle, snapshot.pid, range_start, range_len, proposed, original, apply_epoch).await;
+        let result = run_apply(
+            app_handle,
+            snapshot.pid,
+            range_start,
+            range_len,
+            proposed,
+            original,
+            apply_epoch,
+            transform_pass_id,
+        )
+        .await;
         result.map(|_| {
             set_applied(app_state, false, generation);
         })
@@ -644,7 +713,13 @@ pub async fn undo_applied_transform(
 
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (app_handle, snapshot, proposed, generation);
+        let _ = (
+            app_handle,
+            snapshot,
+            proposed,
+            generation,
+            transform_pass_id,
+        );
         Err(ApplyError::Unsupported)
     }
 }
@@ -775,7 +850,8 @@ mod native {
     //! this PR.
 
     use super::{
-        AppliedVia, ApplyError, AxWriteAttempt, ClipboardOutcome, PrePasteCheck, ACTIVATION_SETTLE_MS,
+        AppliedVia, ApplyError, AxWriteAttempt, ClipboardOutcome, PrePasteCheck,
+        ACTIVATION_SETTLE_MS,
     };
     use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication, NSWorkspace};
     use std::ffi::{c_char, c_void, CStr, CString};
@@ -1093,7 +1169,9 @@ mod native {
             None
         };
 
-        let (pre_paste_check, paste_attempted, paste_succeeded) = if ax_write == AxWriteAttempt::Failed {
+        let (pre_paste_check, paste_attempted, paste_succeeded) = if ax_write
+            == AxWriteAttempt::Failed
+        {
             let already_written = focused
                 .as_ref()
                 .and_then(|(_app, el)| read_selected_text_of(el.0))
@@ -1185,10 +1263,12 @@ mod tests {
     #[test]
     fn start_session_installs_a_fresh_unapplied_session() {
         let state = AppState::default();
+        state.activate_transform_pass(73);
         start_session(&state, snapshot());
         let session = session_snapshot(&state).expect("session should be present");
         assert!(session.proposed.is_none());
         assert!(!session.applied);
+        assert_eq!(session.transform_pass_id, 73);
     }
 
     #[test]
@@ -1320,11 +1400,12 @@ mod tests {
     fn apply_accepts_a_fresh_session_with_proposed_text() {
         let mut session = TransformSession::new(snapshot(), 7);
         session.proposed = Some("proposed".to_string());
-        let (text, resolved_snapshot, generation) =
+        let (text, resolved_snapshot, generation, transform_pass_id) =
             validate_apply(&Some(session)).expect("should validate");
         assert_eq!(text, "proposed");
         assert_eq!(resolved_snapshot.text, "original text");
         assert_eq!(generation, 7);
+        assert_eq!(transform_pass_id, 0);
     }
 
     #[test]
@@ -1347,11 +1428,12 @@ mod tests {
         let mut session = TransformSession::new(snapshot(), 9);
         session.proposed = Some("proposed".to_string());
         session.applied = true;
-        let (resolved_snapshot, proposed, generation) =
+        let (resolved_snapshot, proposed, generation, transform_pass_id) =
             validate_undo(&Some(session)).expect("should validate");
         assert_eq!(resolved_snapshot.text, "original text");
         assert_eq!(proposed, "proposed");
         assert_eq!(generation, 9);
+        assert_eq!(transform_pass_id, 0);
     }
 
     #[test]

@@ -2,7 +2,11 @@
 
 ## Overview
 
-All application logging goes through Rust's `tracing` crate, captured by a custom `TauriEmitterLayer` that routes every event to three destinations: an in-memory ring buffer, a persistent JSONL file, and real-time emission to all frontend windows. The log viewer is a dedicated Tauri window (not a modal) that displays these structured events with filtering, search, and transcription performance metrics.
+All application logging goes through Rust's `tracing` crate, captured by a custom
+`TauriEmitterLayer` that routes every event to three destinations: an in-memory
+ring buffer, a persistent JSONL file, and real-time emission to all frontend
+windows. The dedicated Diagnostics window keeps these structured Events beside a
+typed live Performance view and bounded per-run history.
 
 ## Telemetry Architecture (`telemetry.rs`)
 
@@ -18,7 +22,7 @@ A custom `tracing_subscriber::Layer` that intercepts every tracing event in the 
 ```typescript
 type AppEvent = {
   timestamp: string;
-  stream: StreamName;   // "pipeline" | "audio" | "keyboard" | "system"
+  stream: StreamName;   // "pipeline" | "audio" | "keyboard" | "transform" | "system"
   level: LevelName;     // "trace" | "debug" | "info" | "warn" | "error"
   summary: string;      // the tracing message
   data: Record<string, unknown>; // structured fields
@@ -43,7 +47,7 @@ When the JSONL file exceeds 5MB, it is rotated — renamed to `.jsonl.1` — and
 
 ### Privacy Stripping
 
-In release builds, all string-valued fields from `pipeline` target events are stripped from the `data` object. Only numeric fields survive. The `summary` (message) field is not stripped. This prevents transcription text from being persisted in structured log data.
+In release builds, all string-valued fields from `pipeline` target events are stripped from the `data` object. Only numeric fields survive. For the `transform` stream in both debug and release builds, each string must match an explicit key-specific enum/bucket vocabulary; unknown keys or values are dropped. Numeric and boolean diagnostic fields are retained. The `summary` (message) field is not stripped and transform summaries are constant. This prevents transcription or transform content from being persisted in structured log data.
 
 ### Pretty-Printed Log File
 
@@ -58,6 +62,7 @@ Tracing targets map to stream names used for filtering:
 | `pipeline` | pipeline | Transcription timing, VAD results, model loading |
 | `audio` | audio | Device selection, sample rates, audio levels |
 | `keyboard` | keyboard | Hotkey detection, rejection reasons/timing, mode changes, listener lifecycle |
+| `transform` | transform | Correlated transform key, state, capture, audio, effects, and terminal outcomes |
 | `system` | system | Startup, permissions, updates, resource usage |
 
 ### Frontend Logging
@@ -80,7 +85,12 @@ The log viewer is a separate Tauri window (`label: "log-viewer"`, 800x600, min 6
 
 The primary view for browsing structured events.
 
-**Stream filter chips** — Colored toggle buttons for each stream (`pipeline`, `audio`, `keyboard`, `system`). Click to show/hide events from that stream. Default: `pipeline`, `audio`, `system` active.
+**Stream filter chips** — Colored toggle buttons for each stream (`pipeline`, `audio`, `keyboard`, `transform`, `system`). Click to show/hide events from that stream. Default: `pipeline`, `audio`, `transform`, `system` active.
+
+**Correlation filter** — Select `run_id`, `recording_id`, `file_run_id`, or
+`transform_pass_id` and enter an exact value. Run detail opens Events with the
+canonical correlation already selected. The filter matches structured fields
+only; it never parses summary text.
 
 **Level filter** — Toggle buttons for `info`, `warn`, `error`. All active by default.
 
@@ -94,32 +104,98 @@ Rows with structured data are expandable — click to reveal a `<pre>` block wit
 
 **Auto-scroll** — The list automatically scrolls to the bottom as new events arrive. If the user scrolls up (more than 40px from the bottom), auto-scroll disengages. Scrolling back near the bottom re-engages it.
 
-**Copy All** — Copies all filtered events as text lines: `{timestamp} [{stream}] {LEVEL} {summary}`.
+**Copy filtered Events** — Copies all filtered events as text lines including
+compact JSON structured data, so correlation IDs, outcomes, timings, and error
+codes remain in pasted diagnostic evidence.
 
-**Clear** — Clears all events (calls `clear_event_history` on the backend and clears the local buffer).
+**Clear Events** — Clears the event ring buffer only. It does not clear
+Performance runs or resource samples.
 
-### Metrics Tab
+### Performance Tab
 
-Visualizes transcription performance data extracted from pipeline events where `summary === 'transcription complete'`.
+Performance replaces the former event-derived Metrics view. It hydrates from the
+typed persistent resource window, subscribes to typed live samples, and never
+reconstructs timings from human-readable events.
 
-**Four timing series:**
+**Live health** names the current local pipeline state, configured model,
+backend, and accelerator identity. Accelerator identity is not utilization.
+`Accelerator utilization` is explicitly unavailable because Murmur has no
+production whole-device GPU or ANE percentage.
 
-| Series | Color | Description |
-|--------|-------|-------------|
-| Total | stone-600 | End-to-end pipeline time |
-| Inference | amber-500 | Backend transcription time |
-| VAD | stone-400 | Voice activity detection time |
-| Paste | slate-500 | Text injection time |
+**Scoped resources** keep each measurement in its typed scope:
 
-**Stat cards** — One per visible series showing the latest value, average, and a trend indicator (up arrow red, down arrow green, dash for flat). Trend threshold: 10% deviation from the average.
+- Host CPU is whole-host utilization normalized to 0–100%.
+- Murmur CPU is main-process utilization; 100% equals one logical core.
+- Main-process RSS is physical resident memory.
+- Rust heap and FFI/native heap are allocator-zone measurements, not additive
+  RSS components or GPU memory.
+- Sidecar CPU and RSS refer only to the local LLM helper process.
 
-**Line charts** — Two SVG polyline charts:
-- Upper chart (150px): Total + Inference timing
-- Lower chart (120px): VAD + Paste timing
+CPU and memory charts use one keyboard-operable timeline cursor. Missing or
+failed measurements create chart gaps. A measured zero remains zero;
+`notApplicable` and `unavailable` remain distinct text states.
 
-Y-axis auto-scales with "nice" round numbers and three tick marks. X-axis shows transcription index (1-based). Each data point has a dot marker.
+### Runs Tab
 
-The metrics view shows the last 20 transcriptions. The series legend is toggleable — click a series label to show/hide it (at least one must remain visible).
+Runs reads at most the newest 200 `PerformanceRunV1` records. Dictation, file
+transcription, and selected-text transform are first-class kinds. Kind and
+outcome filters cover success, no-speech, cancelled, timed-out, failed, and
+interrupted terminal outcomes.
+
+Each row shows timestamp, runtime identity, outcome, privacy-safe input shape,
+total start-to-terminal latency, real-time factor or token throughput where
+meaningful, and measured resource peaks. Selecting the row uses
+`get_performance_run` and opens its detail view.
+
+**Phase waterfall** displays the canonical stage order and duration contribution.
+The V1 schema does not record absolute stage offsets, so the UI does not invent
+them. Measured zero is a zero-width marker; unavailable and not-applicable rows
+use explicit text. Transform apply/undo records are shown separately as
+correlated follow-ups.
+
+**Resource summary** reports start, average, peak, and end for every typed host,
+main-process, and sidecar range with its scope named.
+
+**Clear Performance Data** requires confirmation and clears only the performance
+database. Events, logs, transcription history, settings, knowledge, and
+benchmark/evaluation reports are untouched. Loading, never-recorded, cleared,
+filtered-empty, error, stale/partial, unsupported, and unavailable states are
+presented separately.
+
+### Transforms Tab
+
+Transforms lists the newest content-free `TransformAttemptV1` records. Each
+attempt carries the same `transform_pass_id` used by Events and
+`PerformanceRunV1`, plus ordered selection, instruction, sidecar, review,
+apply/undo, cancellation, and process-lifecycle phase evidence. The companion
+performance run remains schema V1 and supplies the correlated resource peaks.
+
+**Capture next transform** is an explicit one-shot privacy boundary. After a
+warning and confirmation, an in-memory arm lasts for one attempt or ten minutes.
+Exact selection, recognized instruction, and output are stored locally with
+restrictive permissions, capped at three captures and seven days. Opening a
+capture is the only command that returns its text to the Diagnostics webview.
+The tab offers Review and Delete, but no copy/export integration. Ordinary
+Events, Performance records, reports, and log export stay content-free.
+
+### Reports Tab
+
+Reports imports local Performance Lab benchmark or `murmur-eval` JSON through
+an explicit file picker and compares two normalized reports. The picker rejects
+files larger than 8 MiB before reading; parser/schema/collection failures use
+fixed content-free messages. Imported paths, filenames, raw JSON, transcript
+fields, and evaluation stage text are neither retained nor logged.
+
+Saved Performance Lab history appears as local choices. Imported reports remain
+in memory for the Diagnostics session only, with at most 20 session imports.
+Clear imports removes only those in-memory choices and does not alter source
+files, local benchmark history, Events, or Performance data.
+
+Compatibility blockers are shown before deltas and recommendation eligibility.
+Blockers suppress metrics entirely; machine and app-version warnings permit
+deltas but disable recommendations. Missing metrics remain unavailable,
+measured zero remains zero, and percentage delta from a zero baseline is
+explicitly unavailable.
 
 ### Event Store (`useEventStore`)
 
@@ -141,6 +217,16 @@ The frontend event buffer is managed by the `useEventStore` hook:
 | `log_frontend` | Routes a frontend message through Rust tracing (INFO/WARN/ERROR) |
 | `get_event_history` | Returns all events from the in-memory ring buffer (up to 500) |
 | `clear_event_history` | Clears the in-memory event ring buffer |
+| `list_performance_runs` | Returns at most 200 newest typed performance runs |
+| `get_performance_run` | Returns one typed run by opaque `run_id` |
+| `get_performance_resource_window` | Returns the bounded typed resource window |
+| `clear_performance_diagnostics` | Clears only local Performance runs and samples |
+| `list_transform_attempts` | Lists bounded, content-free transform attempts |
+| `arm_next_transform_diagnostic_capture` | Arms one local exact-content capture for up to 10 minutes |
+| `get_transform_diagnostic_capture_status` | Reads the in-memory one-shot arm state |
+| `list_transform_diagnostic_captures` | Lists content-free capture summaries |
+| `get_transform_diagnostic_capture` | Returns one exact local capture for explicit review |
+| `delete_transform_diagnostic_capture` | Deletes one exact local capture |
 
 ## Log Files
 

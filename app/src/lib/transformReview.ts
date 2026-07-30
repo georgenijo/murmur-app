@@ -8,7 +8,14 @@
 // wired in PR-C2. This file locks the contract shape now so both the mock
 // driver and the eventual real driver produce/consume the same thing.
 
-export type ReviewState = 'listening' | 'thinking' | 'ready' | 'failed' | 'applied';
+export type ReviewState =
+  | 'connecting'
+  | 'recovering'
+  | 'listening'
+  | 'thinking'
+  | 'ready'
+  | 'failed'
+  | 'applied';
 
 // Kept in sync with the Rust code producers in `transform_flow.rs`
 // (`selection_error_code` / `transform_error_code` / `apply_error_code`). Any
@@ -21,8 +28,20 @@ export type ReviewErrorCode =
   | 'timeout'
   | 'output_invalid'
   | 'crashed'
+  | 'model_verification_timeout'
+  | 'model_load_timeout'
+  | 'handshake_timeout'
+  | 'generation_timeout'
+  | 'helper_spawn_failed'
+  | 'handshake_protocol_failed'
+  | 'process_exit'
+  | 'model_verification_failed'
+  | 'model_load_failed'
   | 'disabled'
   | 'busy'
+  | 'audio_stalled'
+  | 'audio_recovery_stalled'
+  | 'audio_not_ready'
   | 'no_instruction'
   | 'no_selection'
   | 'too_large'
@@ -35,12 +54,17 @@ export type ReviewErrorCode =
   | 'not_applied';
 
 const REVIEW_STATES: readonly ReviewState[] = [
-  'listening', 'thinking', 'ready', 'failed', 'applied',
+  'connecting', 'recovering', 'listening', 'thinking', 'ready', 'failed', 'applied',
 ];
 
 const REVIEW_ERROR_CODES: readonly ReviewErrorCode[] = [
   'model_not_downloaded', 'model_unreadable', 'timeout', 'output_invalid', 'crashed',
-  'disabled', 'busy', 'no_instruction', 'no_selection', 'too_large', 'ax_unavailable',
+  'model_verification_timeout', 'model_load_timeout', 'handshake_timeout',
+  'generation_timeout', 'helper_spawn_failed', 'handshake_protocol_failed',
+  'process_exit', 'model_verification_failed',
+  'model_load_failed',
+  'disabled', 'busy', 'audio_stalled', 'audio_recovery_stalled', 'audio_not_ready',
+  'no_instruction', 'no_selection', 'too_large', 'ax_unavailable',
   'accessibility_denied', 'target_gone', 'selection_changed',
   'clipboard_unavailable', 'paste_failed', 'not_applied',
 ];
@@ -60,8 +84,20 @@ export const REVIEW_ERROR_COPY: Record<ReviewErrorCode, string> = {
   timeout: 'Timed out',
   output_invalid: 'Model gave no usable output',
   crashed: 'Sidecar crashed — original text untouched',
+  model_verification_timeout: 'Model verification timed out',
+  model_load_timeout: 'Local model loading timed out',
+  handshake_timeout: 'Local helper did not become ready in time',
+  generation_timeout: 'Generation timed out',
+  helper_spawn_failed: 'Local helper could not start',
+  handshake_protocol_failed: 'Local helper identity or protocol check failed',
+  process_exit: 'Local helper exited — original text untouched',
+  model_verification_failed: 'Local model verification failed',
+  model_load_failed: 'Local model or Metal backend failed to load',
   disabled: 'Transform temporarily disabled — try again shortly',
   busy: 'Busy — try again in a moment',
+  audio_stalled: 'Still connecting to the microphone…',
+  audio_recovery_stalled: 'Still waiting for macOS audio to recover…',
+  audio_not_ready: "The microphone wasn't ready — try again",
   no_instruction: "Didn't catch an instruction — hold the key and speak",
   no_selection: 'Select some text first',
   too_large: 'Selection is too large to transform',
@@ -82,6 +118,7 @@ export const REVIEW_ERROR_COPY: Record<ReviewErrorCode, string> = {
  */
 export interface TransformStateChangedEvent {
   state: ReviewState;
+  transformPassId: number | null;
   errorCode?: ReviewErrorCode;
 }
 
@@ -97,7 +134,15 @@ export interface TransformStateChangedEvent {
 export function isTransformStateChangedEvent(v: unknown): v is TransformStateChangedEvent {
   if (typeof v !== 'object' || v === null) return false;
   const o = v as Record<string, unknown>;
-  return isReviewState(o.state);
+  return isReviewState(o.state)
+    && (
+      o.transformPassId === null
+      || (
+        typeof o.transformPassId === 'number'
+        && Number.isSafeInteger(o.transformPassId)
+        && o.transformPassId > 0
+      )
+    );
 }
 
 /**

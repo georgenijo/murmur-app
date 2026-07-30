@@ -13,11 +13,20 @@ pub fn clear_logs() -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn log_frontend(level: String, message: String) {
-    match level.to_uppercase().as_str() {
-        "WARN" => tracing::warn!(target: "system", source = "frontend", "{}", message),
-        "ERROR" => tracing::error!(target: "system", source = "frontend", "{}", message),
-        _ => tracing::info!(target: "system", source = "frontend", "{}", message),
+pub fn log_frontend(level: String, message: String, transform_pass_id: Option<u64>) {
+    match (level.to_uppercase().as_str(), transform_pass_id) {
+        ("WARN", Some(transform_pass_id)) => {
+            tracing::warn!(target: "system", source = "frontend", transform_pass_id, "{}", message)
+        }
+        ("ERROR", Some(transform_pass_id)) => {
+            tracing::error!(target: "system", source = "frontend", transform_pass_id, "{}", message)
+        }
+        (_, Some(transform_pass_id)) => {
+            tracing::info!(target: "system", source = "frontend", transform_pass_id, "{}", message)
+        }
+        ("WARN", None) => tracing::warn!(target: "system", source = "frontend", "{}", message),
+        ("ERROR", None) => tracing::error!(target: "system", source = "frontend", "{}", message),
+        (_, None) => tracing::info!(target: "system", source = "frontend", "{}", message),
     }
 }
 

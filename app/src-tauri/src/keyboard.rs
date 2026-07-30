@@ -734,6 +734,10 @@ static HOLD_DOWN_DETECTOR: Mutex<Option<HoldDownDetector>> = Mutex::new(None);
 // listener per process. Starting/stopping the transform listener never
 // touches `DOUBLE_TAP_DETECTOR` / `HOLD_DOWN_DETECTOR` or `ACTIVE_MODE`.
 static TRANSFORM_DETECTOR: Mutex<Option<HoldDownDetector>> = Mutex::new(None);
+/// Physical hold identity, independent of whether the backend accepts the pass.
+/// A refused press still gets a complete start/stop trace under its own ID and
+/// can never overwrite the active flow's correlation ID.
+static TRANSFORM_HOLD_CONTEXT: Mutex<Option<(u64, Instant)>> = Mutex::new(None);
 /// Gates transform-detector processing independent of `LISTENER_ACTIVE`
 /// (which only reflects the dictation listener). Lets the transform hotkey
 /// work even if, hypothetically, it were started before the dictation
@@ -854,7 +858,8 @@ fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                 // The dictation listener (LISTENER_ACTIVE) and the transform
                 // hotkey (TRANSFORM_ACTIVE) are independent; either one being
                 // active is enough to keep processing events on this thread.
-                if !LISTENER_ACTIVE.load(Ordering::SeqCst) && !TRANSFORM_ACTIVE.load(Ordering::SeqCst)
+                if !LISTENER_ACTIVE.load(Ordering::SeqCst)
+                    && !TRANSFORM_ACTIVE.load(Ordering::SeqCst)
                 {
                     return;
                 }
@@ -903,12 +908,29 @@ fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                             d.last_stopped_at = Some(Instant::now());
                         }
                     }
+                    let held_transform_pass_id =
+                        take_transform_hold_context().map(|(pass_id, elapsed_ms)| {
+                            crate::transform_trace::key_stop(pass_id, elapsed_ms, "escape");
+                            pass_id
+                        });
+                    let state = handle.state::<crate::State>();
+                    let transform_pass_id =
+                        transform_escape_target_pass_id(&state.app_state, held_transform_pass_id);
+                    if let Some(transform_pass_id) = transform_pass_id {
+                        mark_transform_pass_cancelled_on_escape(
+                            &state.app_state,
+                            transform_pass_id,
+                        );
+                    }
                     // Invalidate pending hold-promotion timers
                     HOLD_PROMOTED.store(false, Ordering::SeqCst);
                     HOLD_PRESS_COUNTER.fetch_add(1, Ordering::SeqCst);
 
                     tracing::info!(target: "keyboard", "Escape pressed — emitting escape-cancel");
-                    let _ = handle.emit("escape-cancel", ());
+                    let _ = handle.emit(
+                        "escape-cancel",
+                        serde_json::json!({ "transformPassId": transform_pass_id }),
+                    );
                     return;
                 }
 
@@ -950,7 +972,27 @@ fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                             // Listening/Thinking/Applying), a stray or racing
                             // hotkey press must not blow away the session that
                             // pass owns out from under it.
-                            let app_state = &handle.state::<crate::State>().app_state;
+                            let state = handle.state::<crate::State>();
+                            let app_state = &state.app_state;
+                            let pass_id = app_state.next_transform_pass_id();
+                            *TRANSFORM_HOLD_CONTEXT.lock_or_recover() =
+                                Some((pass_id, Instant::now()));
+                            crate::transform_trace::key_start(pass_id);
+                            // Pass boundary (issue #337 defect B): drop the
+                            // sticky main-window visibility snapshot so the
+                            // new pass re-records it at its first popover
+                            // show. The supersede paths below never route
+                            // through hide_popover_internal (which is where
+                            // the snapshot is normally cleared), so without
+                            // this a pass could inherit the previous pass's
+                            // snapshot and force-hide a main window the user
+                            // deliberately opened between passes. Gated the
+                            // same way as the session clear: only at a real
+                            // pass boundary (Idle / ReviewPending), never
+                            // under a mid-flight pass.
+                            let clear_visibility_snapshot = || {
+                                *state.transform_main_was_visible.lock_or_recover() = None;
+                            };
                             // N2 (B2 review): every session clear must be paired
                             // with the matching status transition so the status
                             // is never left stranded at ReviewPending with no
@@ -961,22 +1003,81 @@ fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                             // Applying) is left untouched.
                             match app_state.transform_status() {
                                 crate::state::TransformStatus::Idle => {
+                                    if let Some(previous_pass_id) =
+                                        app_state.active_transform_pass_id()
+                                    {
+                                        crate::transform_trace::resolution(
+                                            previous_pass_id,
+                                            "cancelled",
+                                            "superseded",
+                                            None,
+                                        );
+                                        state.transform_diagnostics.phase(
+                                            previous_pass_id,
+                                            "supersession",
+                                            "completed",
+                                            None,
+                                            None,
+                                        );
+                                        state
+                                            .transform_diagnostics
+                                            .finish(previous_pass_id, "superseded");
+                                        app_state.clear_transform_pass(previous_pass_id);
+                                    }
                                     crate::transform_apply::clear_session(app_state);
+                                    clear_visibility_snapshot();
+                                    app_state.activate_transform_pass(pass_id);
                                 }
                                 crate::state::TransformStatus::ReviewPending => {
+                                    let previous_pass_id = app_state.active_transform_pass_id();
                                     if app_state.try_transition_transform_status(
                                         crate::state::TransformStatus::ReviewPending,
                                         crate::state::TransformStatus::Idle,
                                     ) {
+                                        if let Some(previous_pass_id) = previous_pass_id {
+                                            crate::transform_trace::resolution(
+                                                previous_pass_id,
+                                                "cancelled",
+                                                "superseded",
+                                                None,
+                                            );
+                                            state.transform_diagnostics.phase(
+                                                previous_pass_id,
+                                                "supersession",
+                                                "completed",
+                                                None,
+                                                None,
+                                            );
+                                            state
+                                                .transform_diagnostics
+                                                .finish(previous_pass_id, "superseded");
+                                            app_state.clear_transform_pass(previous_pass_id);
+                                        }
                                         crate::transform_apply::clear_session(app_state);
+                                        clear_visibility_snapshot();
+                                        app_state.activate_transform_pass(pass_id);
                                     }
                                 }
                                 _ => {}
                             }
-                            let _ = handle.emit("transform-key-pressed", ());
+                            let _ = handle.emit(
+                                "transform-key-pressed",
+                                serde_json::json!({ "transformPassId": pass_id }),
+                            );
                         }
                         HoldDownEvent::Stop => {
-                            let _ = handle.emit("transform-key-released", ());
+                            if let Some((pass_id, elapsed_ms)) = take_transform_hold_context() {
+                                let reason = match event.event_type {
+                                    EventType::KeyRelease(_) => "released",
+                                    EventType::KeyPress(_) => "combo_cancelled",
+                                    _ => "detector_stop",
+                                };
+                                crate::transform_trace::key_stop(pass_id, elapsed_ms, reason);
+                                let _ = handle.emit(
+                                    "transform-key-released",
+                                    serde_json::json!({ "transformPassId": pass_id }),
+                                );
+                            }
                         }
                         HoldDownEvent::None => {}
                     }
@@ -1211,6 +1312,76 @@ fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
     }
 }
 
+/// Publish cancellation for the exact physical transform pass whose hold
+/// context Escape consumed.
+///
+/// This marker is deliberately written before the frontend's asynchronous
+/// `escape-cancel` listener runs. A new pass can already be queued in
+/// `start_transform_capture` behind an older pass's slow AX capture while the
+/// public transform status is still Idle. The queued command checks this
+/// marker before claiming Capturing, so it cannot start after the Escape that
+/// ended its physical hold. Active phases are not torn down here; their
+/// existing frontend-owned `cancel_transform` path remains the sole teardown
+/// owner.
+fn mark_transform_pass_cancelled_on_escape(
+    app_state: &crate::state::AppState,
+    transform_pass_id: u64,
+) -> bool {
+    if app_state.active_transform_pass_id() != Some(transform_pass_id) {
+        return false;
+    }
+    app_state.mark_transform_pass_cancelled(transform_pass_id);
+    true
+}
+
+fn choose_transform_escape_target(
+    held_transform_pass_id: Option<u64>,
+    active_before: Option<u64>,
+    status: crate::state::TransformStatus,
+    active_after: Option<u64>,
+) -> Option<u64> {
+    // The active ID and status are stored independently. Reading the active ID
+    // on both sides of the status snapshot makes a pass handoff observable:
+    // if ownership changed, fail closed instead of correlating Escape to the
+    // newer pass with the older pass's phase.
+    if active_before != active_after {
+        return None;
+    }
+    let active_pass_id = active_after?;
+    match status {
+        // Idle is cancellable only for the exact physical hold whose start is
+        // queued behind another transition. An unrelated Idle owner is not an
+        // Escape target.
+        crate::state::TransformStatus::Idle if held_transform_pass_id == Some(active_pass_id) => {
+            Some(active_pass_id)
+        }
+        crate::state::TransformStatus::Capturing
+        | crate::state::TransformStatus::Connecting
+        | crate::state::TransformStatus::Listening
+        | crate::state::TransformStatus::Thinking
+        // ReviewPending is included in the global handoff because the status
+        // transition happens before the popover becomes focusable. Once the
+        // popover is focused, its local Escape handler may race this route;
+        // both carry the same exact pass and backend cancellation is
+        // idempotent.
+        | crate::state::TransformStatus::ReviewPending => Some(active_pass_id),
+        // Applying has no Escape action. A mismatched/refused hold cannot
+        // change that ownership rule.
+        crate::state::TransformStatus::Idle
+        | crate::state::TransformStatus::Applying => None,
+    }
+}
+
+fn transform_escape_target_pass_id(
+    app_state: &crate::state::AppState,
+    held_transform_pass_id: Option<u64>,
+) -> Option<u64> {
+    let active_before = app_state.active_transform_pass_id();
+    let status = app_state.transform_status();
+    let active_after = app_state.active_transform_pass_id();
+    choose_transform_escape_target(held_transform_pass_id, active_before, status, active_after)
+}
+
 /// Stop processing keyboard events (the thread stays alive but idle).
 pub fn stop_listener() {
     LISTENER_ACTIVE.store(false, Ordering::SeqCst);
@@ -1334,6 +1505,9 @@ pub fn stop_transform_listener() {
         let _ = d.set_target(None);
         d.reset();
     }
+    if let Some((pass_id, elapsed_ms)) = take_transform_hold_context() {
+        crate::transform_trace::key_stop(pass_id, elapsed_ms, "listener_stopped");
+    }
 }
 
 /// Update the transform target key without stopping the detector. Returns
@@ -1351,6 +1525,15 @@ pub fn set_transform_key(hotkey: &str) -> bool {
             was_held
         }
     }
+}
+
+/// Consume the current physical transform hold and return its privacy-safe
+/// correlation/timing metadata.
+pub fn take_transform_hold_context() -> Option<(u64, u64)> {
+    TRANSFORM_HOLD_CONTEXT
+        .lock_or_recover()
+        .take()
+        .map(|(pass_id, started)| (pass_id, started.elapsed().as_millis() as u64))
 }
 
 /// Whether the transform hotkey is currently enabled (a listener was started
@@ -2234,6 +2417,9 @@ mod tests {
         TRANSFORM_ACTIVE.store(false, Ordering::SeqCst);
         let mut det = TRANSFORM_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
         *det = None;
+        *TRANSFORM_HOLD_CONTEXT
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = None;
     }
 
     #[test]
@@ -2267,6 +2453,120 @@ mod tests {
         }
 
         reset_transform_state();
+    }
+
+    #[test]
+    fn transform_hold_context_is_consumed_once() {
+        reset_transform_state();
+        *TRANSFORM_HOLD_CONTEXT
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some((41, Instant::now()));
+        let (pass_id, _elapsed_ms) = take_transform_hold_context().unwrap();
+        assert_eq!(pass_id, 41);
+        assert_eq!(take_transform_hold_context(), None);
+    }
+
+    #[test]
+    fn escape_marks_only_the_exact_active_transform_pass() {
+        let app_state = crate::state::AppState::default();
+        app_state.activate_transform_pass(41);
+
+        assert!(!mark_transform_pass_cancelled_on_escape(&app_state, 40));
+        assert!(!app_state.is_transform_pass_cancelled(40));
+
+        assert!(mark_transform_pass_cancelled_on_escape(&app_state, 41));
+        assert!(app_state.is_transform_pass_cancelled(41));
+        // The synchronous keyboard branch only publishes the marker. The
+        // existing async owner still performs active-phase teardown.
+        assert_eq!(
+            app_state.transform_status(),
+            crate::state::TransformStatus::Idle
+        );
+        assert_eq!(app_state.active_transform_pass_id(), Some(41));
+    }
+
+    #[test]
+    fn escape_marker_does_not_tear_down_active_transform_phases() {
+        for (pass_id, status) in [
+            (51, crate::state::TransformStatus::Capturing),
+            (52, crate::state::TransformStatus::Connecting),
+            (53, crate::state::TransformStatus::Listening),
+            (54, crate::state::TransformStatus::Thinking),
+        ] {
+            let app_state = crate::state::AppState::default();
+            app_state.activate_transform_pass(pass_id);
+            app_state.set_transform_status(status);
+
+            assert!(mark_transform_pass_cancelled_on_escape(&app_state, pass_id));
+            assert!(app_state.is_transform_pass_cancelled(pass_id));
+            assert_eq!(app_state.transform_status(), status);
+            assert_eq!(app_state.active_transform_pass_id(), Some(pass_id));
+        }
+    }
+
+    #[test]
+    fn escape_target_uses_exact_queued_active_or_review_handoff_pass() {
+        use crate::state::TransformStatus;
+
+        assert_eq!(
+            choose_transform_escape_target(Some(41), Some(41), TransformStatus::Idle, Some(41)),
+            Some(41),
+            "the exact queued physical hold is cancellable before it claims Capturing"
+        );
+        for status in [
+            TransformStatus::Capturing,
+            TransformStatus::Connecting,
+            TransformStatus::Listening,
+            TransformStatus::Thinking,
+            // Deterministic seam for ReviewPending-before-set_focusable(true).
+            TransformStatus::ReviewPending,
+        ] {
+            assert_eq!(
+                choose_transform_escape_target(None, Some(42), status, Some(42)),
+                Some(42)
+            );
+            assert_eq!(
+                choose_transform_escape_target(Some(99), Some(42), status, Some(42)),
+                Some(42),
+                "a refused hold falls back to the actual active transform"
+            );
+        }
+        for status in [TransformStatus::Idle, TransformStatus::Applying] {
+            assert_eq!(
+                choose_transform_escape_target(None, Some(43), status, Some(43)),
+                None
+            );
+            assert_eq!(
+                choose_transform_escape_target(Some(43), Some(43), status, Some(43)),
+                if status == TransformStatus::Idle {
+                    Some(43)
+                } else {
+                    None
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn escape_target_fails_closed_when_active_ownership_changes_during_snapshot() {
+        assert_eq!(
+            choose_transform_escape_target(
+                Some(51),
+                Some(51),
+                crate::state::TransformStatus::Thinking,
+                Some(52),
+            ),
+            None
+        );
+        assert_eq!(
+            choose_transform_escape_target(
+                None,
+                Some(51),
+                crate::state::TransformStatus::Thinking,
+                None,
+            ),
+            None
+        );
     }
 
     #[test]

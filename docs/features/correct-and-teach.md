@@ -14,11 +14,19 @@ The review has separate actions:
 
 History edits cannot change text that was already copied, pasted, or saved, and they do not recalculate usage statistics.
 
+## Teaching a specific term
+
+The automatic bounded proposal remains the default. From either a proposal or a fail-closed automatic review, **Teach specific term** lets the user select text from the heard example or enter one exact heard term or short phrase, enter its exact written replacement, and review the result without leaving history.
+
+When automatic extraction found one safe minimal span, those exact source and replacement values prefill the specific-term form. The user can still edit both values. Murmur requires the heard text to match at least one whole-term, case-insensitive occurrence in the current example and shows the affected occurrence count, generated before/after example, and selected scope before confirmation. The same eight-token and 256-character rule bounds, Voice Command exclusions, scope capabilities, pending-proposal checks, and same-scope knowledge conflicts apply to both review paths.
+
+Selecting or editing text has no persistence side effect. **Remember correction** remains the only persistence action; Back, Cancel, Escape, backdrop dismissal, and **Save correction only** discard any pending review capability.
+
 ## Bounded rule extraction
 
-Proposal generation is deterministic and local. Inputs are capped at 8,192 Unicode characters and 512 lexical tokens. A candidate must contain exactly one replacement hunk, with non-empty source and replacement spans of at most eight tokens and 256 characters each.
+Proposal generation is deterministic and local. Inputs are capped at 8,192 Unicode characters and 512 lexical tokens. Murmur aligns unchanged context case-insensitively, matching how learned rules are applied, but accepts the alignment only when one optimal token alignment can be proven. Repeated or reordered tokens with multiple optimal alignments fail closed instead of choosing an arbitrary replacement span. A candidate must contain exactly one replacement hunk, with non-empty source and replacement spans of at most eight tokens and 256 characters each.
 
-Casing, names, code identifiers, and short phrase replacements are supported. Insert-only, delete-only, punctuation-only, whitespace-only, oversized, reordered, and multiple-disjoint edits fail closed. An unsafe edit may still be saved to history, but Murmur does not guess a reusable rule.
+Casing, names, code identifiers, and short phrase replacements are supported. A single-token case-only correction remains eligible, while multiple case-only changes fail closed. The reviewed rule always preserves the exact source and replacement spelling from the user's transcripts; normalization is used only to prove unchanged alignment. Insert-only, delete-only, punctuation-only, whitespace-only, oversized, reordered, ambiguous, and multiple-disjoint edits fail closed. An unsafe edit may still be saved to history, but Murmur does not guess a reusable rule.
 
 Built-in and configured Voice Command phrases are rejected as learned corrections. Voice Commands remain earlier and unchanged in the pipeline.
 
@@ -50,6 +58,7 @@ Proposal examples remain in the local UI/history data already stored on this Mac
 ## Source and tests
 
 - Proposal bounds and consent state: `app/src-tauri/src/correct_and_teach.rs`
+- Exact whole-term review preview: `app/src-tauri/src/correction.rs`
 - Persistence commands: `app/src-tauri/src/commands/correct_and_teach.rs`
 - Matcher precedence: `app/src-tauri/src/correction.rs` and `app/src-tauri/src/vocabulary_alias.rs`
 - History review UI: `app/src/components/history/CorrectAndTeachDialog.tsx`

@@ -11,7 +11,30 @@ Transcription processing is local. Network access occurs for model setup and may
 ## Audio Capture (`audio.rs`)
 
 - Uses `cpal` to record from the default input device on a background thread
-- Channel-based synchronization: recording thread signals readiness via `mpsc::channel` before `start_recording()` returns, preventing race conditions
+- An app-lifetime supervisor is the single microphone owner. It owns each
+  live capture worker and join handle. If a cancelled or deadline-expired Core
+  Audio call does not return, the supervisor closes that generation's callback
+  gate, releases logical ownership, and transfers its join handle to one
+  app-lifetime reaper thread. The quarantined worker can no longer emit samples,
+  levels, or readiness for a newer generation, and a new start is accepted
+  without waiting for macOS to return.
+- Dictation start returns after ownership is accepted, without waiting for
+  Core Audio. The worker reports device enumeration, config lookup, stream
+  build, play, readiness, stop, and exit events back to the supervisor.
+- `Starting` emits a still-connecting signal after 5 seconds and hard-cancels
+  after 30 seconds. A late readiness signal is stopped without enabling sample
+  or level callbacks. Recovery briefly reports the cancellation reason and then
+  returns to `Idle`; there is no automatic retry.
+- The callback's active gate stays false until readiness is accepted for the
+  current `recording_id`; stale/cancelled attempts therefore emit no levels or
+  samples.
+- macOS does not expose a safe way to cancel a synchronous `cpal`/Core Audio
+  stream build. A call that remains blocked therefore retains its worker thread
+  until the OS returns or the app exits. Repeated OS hangs can temporarily
+  retain one worker per failed attempt; the reaper polls and joins each one as
+  soon as it exits.
+- Recording duration begins at accepted readiness, not at the user's initial
+  activation.
 - Multi-channel to mono conversion (averages channels)
 - Resamples to 16kHz (expected sample rate for the backend)
 - Samples stored as `Vec<f32>` in memory — no temp files
@@ -80,7 +103,7 @@ transcript event, live-preview setting, or model-specific preview behavior.
 
 `run_transcription_pipeline()` remains the single authoritative completion entry point. `start_native_recording` resolves one immutable `DictationContextSnapshot` from the frontmost bundle identifier and current configuration; every live stage receives that snapshot instead of re-reading mutable settings:
 
-1. Capture app identity, matched profile, effective settings, vocabulary version, repository-backed commands, and deny-by-default context permissions at recording start
+1. Capture app identity, matched profile, effective settings, vocabulary version, repository-backed commands, and deny-by-default context permissions at recording start. Built-in/scanned developer terms are included only when the matching profile explicitly selects Code / technical or Local IDE project context.
 2. Confirm the snapshot's model preparation completed (or load synchronously as a fallback)
 3. Run one full-buffer VAD and backend transcription pass with the same snapshot
 4. Run the backend-neutral transcript transformation pipeline from the snapshot's stage settings and resources
@@ -119,13 +142,15 @@ The `download_model` command streams Murmur-managed Whisper and sherpa downloads
 ## Status Flow
 
 ```
-Idle → Recording (on start) → Processing (on stop) → Idle (after transcription)
+Idle → Starting → Recording → Processing → Idle
+           └────→ Recovering → Idle
 ```
 
 Status is managed in `DictationState` behind a `Mutex` with poison recovery (`MutexExt` trait).
-Recorder start, stop, and cancel also share an async transition mutex. The lock
-is held until cpal confirms startup or audio teardown completes, preventing a
-fast hotkey release from stopping a recorder that is still starting.
+Recorder start, stop, and cancel also share a short-lived async transition
+mutex for synchronous ownership commits. No Core Audio operation or supervisor
+channel wait occurs while the recording-state mutex is held; a fast hotkey
+release can therefore cancel a recorder that is still starting.
 
 Model state is separate from recording status. `get_model_runtime_catalog` and
 `get_model_runtime_status` expose catalog metadata plus install/lifecycle state.
