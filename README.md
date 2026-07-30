@@ -2,13 +2,14 @@
 
 # Local Dictation
 
-Privacy-first voice-to-text for macOS. Hold a key, speak, release — your words land in any app. No cloud, no subscriptions, no data leaves your machine.
+Privacy-first voice-to-text for macOS. Hold a key, speak, release — your words land in any app. No cloud, no subscriptions — audio and your words never leave your machine.
 
 Built with [Tauri 2](https://tauri.app/) (Rust + React), with local transcription through Core ML on the Apple Neural Engine, whisper.cpp on Metal, or sherpa-onnx on CPU.
 
 ## Features
 
-- **100% local** — all transcription runs on-device. Audio and benchmark results never leave the machine
+- **100% local transcription** — all transcription runs on-device. Audio, transcribed text, and benchmark results never leave the machine
+- **Anonymous diagnostics** — privacy-stripped event logs (timing, errors, pipeline stats — never audio or transcription text) upload to the maintainer for debugging, identified only by a random install ID. Launch with `MURMUR_LOG_SHIPPER=off` to disable
 - **Apple Neural Engine default on Apple silicon** — multilingual Parakeet v3 through Core ML for very low-latency transcription; Intel Macs use the CPU fallback
 - **Multiple local engines** — compare Core ML/ANE, whisper.cpp/Metal, and sherpa-onnx/CPU configurations
 - **Performance Lab** — benchmark installed models on identical speech, including median/p95 latency, real-time speed, memory, and word error rate

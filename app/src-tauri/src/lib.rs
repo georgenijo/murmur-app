@@ -20,6 +20,7 @@ mod injector;
 mod keyboard;
 mod knowledge_store;
 pub mod llm_sidecar;
+mod log_shipper;
 mod model_runtime;
 mod platform;
 mod resource_monitor;
@@ -308,6 +309,7 @@ pub fn run() {
         })
         .setup(|app| {
             telemetry::init(app.handle().clone());
+            log_shipper::start();
 
             let knowledge_root = app.path().app_data_dir()?.join("knowledge");
             let knowledge_status = app.state::<State>().knowledge.initialize(knowledge_root);
