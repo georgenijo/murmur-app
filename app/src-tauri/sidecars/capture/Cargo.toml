@@ -5,7 +5,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
-cpal = "0.15"
+cpal = "=0.18.1"
 murmur-capture-helper-protocol = { path = "../../crates/capture-helper-protocol" }
 
 [target.'cfg(target_os = "macos")'.dependencies]

@@ -29,6 +29,8 @@ The Phase-0 prototype is a direct, non-daemonized
 `murmur-capture-helper` child inside the application bundle:
 
 - Tauri packages it beside the main executable and local-LLM helper.
+- Its capture dependency is pinned to the same exact CPAL 0.18.1 baseline as
+  the stabilized in-process audio path.
 - Release finalization signs it as
   `com.localdictation.capture-helper`, with hardened runtime, the same Team ID
   as the app, App Sandbox, and only microphone device capabilities.
