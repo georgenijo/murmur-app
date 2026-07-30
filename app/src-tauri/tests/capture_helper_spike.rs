@@ -1,7 +1,7 @@
 #![cfg(all(target_os = "macos", target_arch = "aarch64"))]
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 use std::time::Duration;
 use ui_lib::capture_helper_probe::{
     CaptureProbeError, CaptureProbeSupervisor, TestCaptureProbeConfig,
@@ -18,6 +18,7 @@ fn supervisor(scenario: &str) -> CaptureProbeSupervisor {
         handshake_timeout: Duration::from_millis(400),
         observe_for: Duration::from_millis(450),
         cancel_grace: Duration::from_millis(100),
+        spawned_signal: None,
     })
 }
 
@@ -71,13 +72,27 @@ fn cooperative_stop_exits_and_same_supervisor_can_start_fresh_helper() {
 
 #[test]
 fn rapid_second_start_is_rejected_without_overlapping_helper() {
-    let supervisor = Arc::new(supervisor("pre_handshake_block"));
+    let (spawned_tx, spawned_rx) = mpsc::channel();
+    let supervisor = Arc::new(CaptureProbeSupervisor::for_test(TestCaptureProbeConfig {
+        helper_path: helper_path(),
+        scenario_environment: vec![(
+            "MOCK_CAPTURE_SCENARIO".to_string(),
+            "pre_handshake_block".to_string(),
+        )],
+        handshake_timeout: Duration::from_millis(400),
+        observe_for: Duration::from_millis(450),
+        cancel_grace: Duration::from_millis(100),
+        spawned_signal: Some(spawned_tx),
+    }));
     let running = Arc::clone(&supervisor);
     let first = std::thread::spawn(move || running.run().unwrap());
-    std::thread::sleep(Duration::from_millis(50));
+    let spawned_pid = spawned_rx
+        .recv_timeout(Duration::from_millis(400))
+        .expect("first helper must be owned before the overlap attempt");
 
     assert_eq!(supervisor.run().unwrap_err(), CaptureProbeError::Busy);
     let evidence = first.join().unwrap();
+    assert_eq!(evidence.helper_pid, spawned_pid);
     assert_eq!(evidence.termination, "hard_kill");
     assert!(evidence.process_group_empty);
 }

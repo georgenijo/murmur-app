@@ -28,6 +28,7 @@ pub struct TestCaptureProbeConfig {
     pub handshake_timeout: Duration,
     pub observe_for: Duration,
     pub cancel_grace: Duration,
+    pub spawned_signal: Option<mpsc::Sender<u32>>,
 }
 
 enum SpawnPlan {
@@ -179,6 +180,12 @@ impl CaptureProbeSupervisor {
                 .map_err(|_| CaptureProbeError::SpawnFailed)?;
         let pid = child.pid();
         *ownership = Some(child);
+        #[cfg(any(debug_assertions, feature = "llm-test-support"))]
+        if let SpawnPlan::Test(config) = &self.plan {
+            if let Some(signal) = &config.spawned_signal {
+                let _ = signal.send(pid);
+            }
+        }
         let nonce = unique_nonce();
         let hello = HostMessage::Hello {
             protocol: PROTOCOL_NAME.to_string(),
