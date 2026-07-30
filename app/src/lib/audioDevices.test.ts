@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { migrateLegacyMicrophoneId, selectedDeviceExists } from './audioDevices';
+import {
+  audioDeviceSelectOptions,
+  migrateLegacyMicrophoneId,
+  selectedDeviceExists,
+} from './audioDevices';
 
 const devices = [
   { id: 'BuiltInMicrophoneDevice', name: 'MacBook Microphone' },
@@ -21,5 +25,14 @@ describe('audio device persistence', () => {
     expect(migrateLegacyMicrophoneId('Studio Mic', duplicates)).toBe('Studio Mic');
     expect(selectedDeviceExists('Studio Mic', duplicates)).toBe(false);
     expect(selectedDeviceExists('Missing Mic', duplicates)).toBe(false);
+  });
+
+  it('adds stable IDs only to colliding picker labels', () => {
+    const duplicates = [...devices, { id: 'USB-B', name: 'Studio Mic' }];
+    expect(audioDeviceSelectOptions(duplicates)).toEqual([
+      { value: 'BuiltInMicrophoneDevice', label: 'MacBook Microphone' },
+      { value: 'USB-A', label: 'Studio Mic (USB-A)' },
+      { value: 'USB-B', label: 'Studio Mic (USB-B)' },
+    ]);
   });
 });

@@ -5,6 +5,27 @@ export interface AudioDeviceDescriptor {
   name: string;
 }
 
+export interface AudioDeviceSelectOption {
+  value: string;
+  label: string;
+}
+
+/** Preserve concise unique labels; append the stable ID only for collisions. */
+export function audioDeviceSelectOptions(
+  devices: AudioDeviceDescriptor[],
+): AudioDeviceSelectOption[] {
+  const nameCounts = new Map<string, number>();
+  for (const device of devices) {
+    nameCounts.set(device.name, (nameCounts.get(device.name) ?? 0) + 1);
+  }
+  return devices.map((device) => ({
+    value: device.id,
+    label: nameCounts.get(device.name) === 1
+      ? device.name
+      : `${device.name} (${device.id})`,
+  }));
+}
+
 /**
  * Migrate the pre-CPAL-0.18 display-name setting only when it identifies one
  * device unambiguously. Duplicate names fail closed and remain unresolved.

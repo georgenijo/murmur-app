@@ -178,6 +178,27 @@ fn descriptor_for(device: &cpal::Device) -> Result<AudioDeviceDescriptor, AudioF
     Ok(AudioDeviceDescriptor { id, name })
 }
 
+fn collect_identifiable_devices<T, U>(
+    devices: impl IntoIterator<Item = T>,
+    mut identify: impl FnMut(T) -> Result<U, AudioFailure>,
+) -> Vec<U> {
+    devices
+        .into_iter()
+        .filter_map(|device| match identify(device) {
+            Ok(identified) => Some(identified),
+            Err(failure) => {
+                tracing::warn!(
+                    target: "audio",
+                    error_kind = failure.kind.as_str(),
+                    phase = failure.phase.as_str(),
+                    "skipping unidentifiable input device"
+                );
+                None
+            }
+        })
+        .collect()
+}
+
 fn select_explicit_device_index<T>(
     requested_id: &str,
     devices: &[(T, AudioDeviceDescriptor)],
@@ -383,9 +404,9 @@ pub fn list_input_devices() -> Result<Vec<AudioDeviceDescriptor>, String> {
     let devices = host.input_devices().map_err(|error| {
         AudioFailure::from_cpal(AudioInitPhase::DeviceEnumeration, error).to_string()
     })?;
-    devices
-        .map(|device| descriptor_for(&device).map_err(|failure| failure.to_string()))
-        .collect()
+    Ok(collect_identifiable_devices(devices, |device| {
+        descriptor_for(&device)
+    }))
 }
 
 /// Start transform instruction audio asynchronously under the shared
@@ -485,9 +506,9 @@ fn run_audio_capture(
                 let devices = host.input_devices().map_err(|error| {
                     AudioFailure::from_cpal(AudioInitPhase::DeviceEnumeration, error)
                 })?;
-                let candidates = devices
-                    .map(|device| descriptor_for(&device).map(|descriptor| (device, descriptor)))
-                    .collect::<Result<Vec<_>, _>>()?;
+                let candidates = collect_identifiable_devices(devices, |device| {
+                    descriptor_for(&device).map(|descriptor| (device, descriptor))
+                });
                 let index = select_explicit_device_index(requested_id, &candidates)?;
                 Ok(candidates
                     .into_iter()
@@ -726,6 +747,36 @@ mod tests {
                 .unwrap_err()
                 .kind,
             AudioFailureKind::DeviceUnavailable
+        );
+    }
+
+    #[test]
+    fn unreadable_device_descriptor_does_not_hide_identifiable_devices() {
+        let descriptors = collect_identifiable_devices([1_u8, 2, 3], |device| {
+            if device == 2 {
+                return Err(AudioFailure::new(
+                    AudioFailureKind::DeviceChanged,
+                    AudioInitPhase::DeviceEnumeration,
+                ));
+            }
+            Ok(AudioDeviceDescriptor {
+                id: format!("raw-uid-{device}"),
+                name: format!("Microphone {device}"),
+            })
+        });
+
+        assert_eq!(
+            descriptors,
+            vec![
+                AudioDeviceDescriptor {
+                    id: "raw-uid-1".to_string(),
+                    name: "Microphone 1".to_string(),
+                },
+                AudioDeviceDescriptor {
+                    id: "raw-uid-3".to_string(),
+                    name: "Microphone 3".to_string(),
+                },
+            ]
         );
     }
 

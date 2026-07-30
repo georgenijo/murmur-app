@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
 import {
+  audioDeviceSelectOptions,
   selectedDeviceExists,
   type AudioDeviceDescriptor,
 } from '../../lib/audioDevices';
@@ -476,7 +477,7 @@ export function SettingsPanel({
           <SettingsSection pageId="recording" activePage={activeCat} title="Recording" subtitle="Microphone, voice detection, and shortcuts">
             <div>
               <label className="mb-2 block text-sm font-medium text-on-surface">Microphone</label>
-              <Select value={settings.microphone} onChange={(microphone) => onUpdateSettings({ microphone })} disabled={isRecording} items={[{ value: 'system_default', label: 'System Default' }, ...audioDevices.map((device) => ({ value: device.id, label: device.name }))]} />
+              <Select value={settings.microphone} onChange={(microphone) => onUpdateSettings({ microphone })} disabled={isRecording} items={[{ value: 'system_default', label: 'System Default' }, ...audioDeviceSelectOptions(audioDevices)]} />
               {missingDevice && <p className="mt-2 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-on-surface">Selected device not found — choose an available microphone or System Default.</p>}
             </div>
             <div>
