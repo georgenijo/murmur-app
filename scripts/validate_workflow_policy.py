@@ -131,6 +131,13 @@ def validate_ci(ci: str) -> int:
     assert "scripts/release_artifacts.py" in ci
     assert "tests/test_release_artifacts.py" in ci
     assert "tests/test_workflow_policy.py" in ci
+    helper_stubs = named_step_block(
+        ci, "Stub bundled helpers externalBin for compile checks", 6
+    )
+    for helper in ("murmur-capture-helper", "murmur-llm-sidecar"):
+        target = f"app/src-tauri/binaries/{helper}-aarch64-apple-darwin"
+        assert helper_stubs.count(f": > {target}") == 1
+        assert helper_stubs.count(f"chmod +x {target}") == 1
 
     cases = (
         ("push", "chore: bump version to 0.17.0", False),

@@ -5,6 +5,7 @@ from scripts.validate_workflow_policy import (
     release_tag_for_versions,
     should_auto_promote,
     tag_action,
+    validate_ci,
     validate_linux_cache_policy,
     validate_promotion_policy,
     validate_release_build,
@@ -17,6 +18,18 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class WorkflowPolicyMutationTests(unittest.TestCase):
+    def test_macos_compile_check_stubs_both_exact_helpers(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        mutated = workflow.replace(
+            "          : > app/src-tauri/binaries/"
+            "murmur-capture-helper-aarch64-apple-darwin\n",
+            "",
+            1,
+        )
+        self.assertNotEqual(workflow, mutated)
+        with self.assertRaises(AssertionError):
+            validate_ci(mutated)
+
     def test_automatic_promotion_requires_workflow_run_trigger(self) -> None:
         workflow = (ROOT / ".github/workflows/release.yml").read_text()
         mutated = workflow.replace(
