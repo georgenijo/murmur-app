@@ -307,7 +307,7 @@ pub fn check_microphone_permission_status() -> String {
 }
 
 #[tauri::command]
-pub fn list_audio_devices() -> Result<Vec<String>, String> {
+pub fn list_audio_devices() -> Result<Vec<audio::AudioDeviceDescriptor>, String> {
     audio::list_input_devices()
 }
 

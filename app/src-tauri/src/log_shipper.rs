@@ -229,10 +229,19 @@ async fn ship(
 fn audio_state() -> String {
     use cpal::traits::{DeviceTrait, HostTrait};
     let host = cpal::default_host();
-    let default_input = host.default_input_device().and_then(|d| d.name().ok());
+    let default_input = host
+        .default_input_device()
+        .and_then(|d| d.description().ok().map(|description| description.name().to_string()));
     let mut inputs: Vec<String> = host
         .input_devices()
-        .map(|it| it.filter_map(|d| d.name().ok()).collect())
+        .map(|it| {
+            it.filter_map(|d| {
+                d.description()
+                    .ok()
+                    .map(|description| description.name().to_string())
+            })
+            .collect()
+        })
         .unwrap_or_default();
     inputs.sort();
     serde_json::json!({

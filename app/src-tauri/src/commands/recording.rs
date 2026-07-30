@@ -715,8 +715,12 @@ async fn run_transcription_pipeline(
     // Pre-VAD signal level logging for mic diagnosis
     let rms = audio::compute_rms(samples);
     let peak = audio::compute_peak(samples);
-    let device = audio::last_device_name().unwrap_or_else(|| "unknown".to_string());
-    tracing::info!(target: "pipeline", "audio rms={:.4} peak={:.4} (device={})", rms, peak, device);
+    tracing::info!(
+        target: "pipeline",
+        rms,
+        peak,
+        "captured audio signal summary"
+    );
 
     // Checkpoint 1: cancelled before VAD?
     if app_state.is_cancelled(recording_id) {
@@ -2246,7 +2250,7 @@ pub(crate) fn handle_audio_lifecycle(
                 );
             }
         }
-        AudioLifecycleEvent::InitializationFailed { error } => {
+        AudioLifecycleEvent::InitializationFailed { error, kind } => {
             if !is_current() {
                 return;
             }
@@ -2266,6 +2270,7 @@ pub(crate) fn handle_audio_lifecycle(
                 serde_json::json!({
                     "recordingId": recording_id,
                     "error": error,
+                    "errorKind": kind.as_str(),
                 }),
             );
         }
@@ -2466,7 +2471,7 @@ pub async fn start_native_recording(
     };
     tracing::info!(
         target: "pipeline",
-        device = device_name.as_deref().unwrap_or("system_default"),
+        device_selection = if device_name.is_some() { "explicit" } else { "system_default" },
         recording_id = rid,
         origin,
         "start_native_recording"
@@ -2774,10 +2779,10 @@ pub async fn stop_native_recording(
 
 /// Cancel an in-progress recording or transcription.
 ///
-/// - **Starting**: requests cancellation, briefly reports Recovering, detaches
-///   the owned audio thread for asynchronous cleanup, and returns to Idle.
-/// - **Recording**: follows the same Recovering-to-Idle transition and detached
-///   cleanup; captured samples are discarded.
+/// - **Starting**: requests cancellation and reports Recovering while retaining
+///   exclusive ownership until the audio thread exits, then returns to Idle.
+/// - **Recording**: follows the same strict Recovering-to-Idle ownership
+///   transition; captured samples are discarded.
 /// - **Processing**: marks the current recording_id as cancelled so the
 ///   pipeline discards its result at the next checkpoint; immediately
 ///   emits idle status so the UI resets without waiting for whisper.
