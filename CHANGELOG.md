@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.23.7] - 2026-07-30
+
+### Fixed
+
+- Device names with typographic apostrophes no longer arrive mangled in diagnostic uploads (#398).
+
 ## [0.23.6] - 2026-07-30
 
 ### Fixed
