@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import plistlib
 import tempfile
+import tomllib
 import unittest
 
 from scripts.capture_helper_evidence import (
@@ -362,6 +363,23 @@ class ReleaseArtifactTests(unittest.TestCase):
                     "com.apple.security.device.microphone": True,
                 },
             )
+
+    def test_capture_helper_bundle_version_matches_package_revision(self) -> None:
+        capture_helper = (
+            Path(__file__).parents[1] / "app/src-tauri/sidecars/capture"
+        )
+        manifest = tomllib.loads((capture_helper / "Cargo.toml").read_text())
+        with (capture_helper / "Info.plist").open("rb") as handle:
+            info = plistlib.load(handle)
+
+        self.assertEqual(
+            info["CFBundleShortVersionString"],
+            manifest["package"]["version"],
+        )
+        bundle_version = info["CFBundleVersion"]
+        self.assertRegex(bundle_version, r"^[1-9][0-9]*$")
+        # The first signed capture-helper build used bundle version 1.
+        self.assertGreater(int(bundle_version), 1)
 
     def test_capture_probe_requires_complete_confirmed_allowlisted_evidence(self) -> None:
         self.assertEqual(
