@@ -149,6 +149,33 @@ pub struct AppProfile {
     pub ide_project_roots: Vec<String>,
 }
 
+/// Resolve the effective technical-context signal for an app profile. A
+/// technical writing style or local IDE context is an explicit user signal;
+/// bundle IDs and app labels are never guessed.
+///
+/// Duplicate profiles retain the resolver's legacy field semantics: IDE
+/// context is owned by the first matching profile, while an absent or
+/// `Inherit` writing style falls through to the next matching profile.
+pub(crate) fn app_profiles_enable_code_vocabulary(
+    app_profiles: &[AppProfile],
+    bundle_id: &str,
+) -> bool {
+    let mut matching = app_profiles
+        .iter()
+        .filter(|profile| profile.bundle_id == bundle_id);
+    let ide_context_enabled = matching
+        .clone()
+        .next()
+        .is_some_and(|profile| profile.ide_context_enabled);
+    let writing_style = matching.find_map(|profile| {
+        profile
+            .writing_style
+            .filter(|style| *style != WritingStyle::Inherit)
+    });
+
+    ide_context_enabled || writing_style == Some(WritingStyle::CodeTechnical)
+}
+
 /// A user-defined voice command: when `phrase` is spoken (matched
 /// case-insensitively on word boundaries), it is replaced by `replacement`.
 /// Applied after the built-in command set, so users can extend — not override —
@@ -249,6 +276,15 @@ pub struct DictationState {
     /// Tier 2 phonetic / edit-distance "sounds-like" matching. Gated under
     /// `correction_enabled`.
     pub correction_fuzzy: bool,
+}
+
+impl DictationState {
+    pub(crate) fn code_vocabulary_enabled_for(&self, bundle_id: Option<&str>) -> bool {
+        self.code_vocab_enabled
+            && bundle_id.is_some_and(|bundle_id| {
+                app_profiles_enable_code_vocabulary(&self.app_profiles, bundle_id)
+            })
+    }
 }
 
 impl Default for DictationState {

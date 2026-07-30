@@ -700,7 +700,7 @@ export function SettingsPanel({
               <p className="mt-1 mb-3 text-xs text-on-surface-variant">Teach Murmur preferred spellings and exact spoken variants.</p>
               <VocabularyAliasesEditor entries={settings.vocabularyEntries} voiceCommands={settings.voiceCommands} onChange={(vocabularyEntries) => onUpdateSettings({ vocabularyEntries, customVocabulary: vocabularyPrompt(vocabularyEntries) })} />
             </div>
-            <SettingToggle title="Developer Terms" description="Bias recognition toward built-in development terms and, optionally, identifiers from one project folder." checked={settings.codeVocabEnabled} onChange={() => onUpdateSettings({ codeVocabEnabled: !settings.codeVocabEnabled })} />
+            <SettingToggle title="Developer Terms" description="Make built-in development terms and an optional project scan available only to apps configured as Code / technical or with Local IDE project context." checked={settings.codeVocabEnabled} onChange={() => onUpdateSettings({ codeVocabEnabled: !settings.codeVocabEnabled })} />
             {settings.codeVocabEnabled && (
               <div className="ml-3 space-y-2 border-l border-outline-variant/30 pl-3">
                 <p className="break-all rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface">{settings.codeVocabFolder || 'No folder — built-in developer terms only'}</p>
@@ -709,7 +709,7 @@ export function SettingsPanel({
                   {settings.codeVocabFolder && <button type="button" onClick={clearCodeFolder} className="text-xs font-medium text-on-surface-variant underline hover:text-primary">Clear</button>}
                 </div>
                 <VocabScanStrip status={vocabScan.status} walker={vocabScan.walker} stats={vocabScan.stats} folder={settings.codeVocabFolder} onScan={() => void runVocabScan(settings.codeVocabFolder)} onCancel={vocabScan.cancel} />
-                <p className="text-xs text-on-surface-variant">The selected folder is scanned locally; dependency and build folders are skipped.</p>
+                <p className="text-xs text-on-surface-variant">The selected folder is scanned locally; dependency and build folders are skipped. Unconfigured apps keep ordinary prose vocabulary.</p>
               </div>
             )}
             <SettingToggle title="Apply Preferred Spellings" label="Smart correction" description="Apply names, terms, and developer vocabulary after recognition on every model." checked={settings.correctionEnabled} onChange={() => onUpdateSettings({ correctionEnabled: !settings.correctionEnabled })} />
