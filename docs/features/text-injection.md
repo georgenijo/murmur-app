@@ -17,7 +17,7 @@ When `auto_paste` is enabled in settings:
 1. Copy text to clipboard
 2. Check `AXIsProcessTrusted()` — if accessibility not granted, stop here (text is still in clipboard)
 3. Wait for the configurable delay (default 50ms) for window focus to settle
-4. Resolve the frontmost process with `NSWorkspace` and query its focused element role with the macOS Accessibility API. If the native query fails with a non-timeout error, fall back to the previous System Events `osascript` query. Native AX timeout (`-25204`) returns `Unknown` immediately and skips the fallback (allow-paste).
+4. Resolve the frontmost process with `NSWorkspace` and query its focused element role with the macOS Accessibility API. Native AX timeout (`-25204`) returns `Unknown` immediately and skips the fallback (allow-paste). A native no-value response (`-25212`) also skips the fallback for non-Finder apps because web-backed editors can accept Cmd+V without exposing a focused AX element; Finder retains the compatibility query so its desktop/file-view guard remains effective. Other native failures fall back to the previous System Events `osascript` query.
 5. Skip auto-paste only when the focused role is on the confirmed non-editable denylist; unknown roles still allow paste
 6. Post Command-modified `V` key-down and key-up events through the CoreGraphics HID event tap. If event construction fails, fall back to the previous System Events `osascript` paste
 7. If the paste attempt reports a failure, wait 100ms and retry once
@@ -29,7 +29,7 @@ The clipboard write (`arboard::set_text()` → `NSPasteboard`) is synchronous, s
 
 ### Configurable Delay
 
-The paste delay is configurable via a range slider in the settings panel (10–500ms, step 10ms). The slider appears when auto-paste is enabled. The value is sent to the Rust backend via `configure_dictation` and clamped to the 10–500 range.
+The paste delay is configurable via a range slider in the settings panel (10–500ms, step 10ms). The slider appears when auto-paste is enabled. The value is sent to the Rust backend via `configure_dictation` and clamped to the 10–500 range. This configured delay is one component of the broader **Clipboard / paste** performance stage, which also measures the clipboard write, focus safety query, Cmd+V event, and small dispatch overhead.
 
 ### Retry Behavior
 
