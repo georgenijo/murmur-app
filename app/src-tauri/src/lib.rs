@@ -92,7 +92,7 @@ use state::AppState;
 use std::sync::{Mutex, MutexGuard};
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 #[cfg(target_os = "macos")]
 use tauri::RunEvent;
 
@@ -331,6 +331,7 @@ pub fn run() {
             commands::benchmark::save_benchmark_report,
             commands::benchmark::open_benchmark_output_folder,
             commands::tray::update_tray_icon,
+            commands::tray::set_tray_update_available,
             commands::overlay::show_overlay,
             commands::overlay::hide_overlay,
             commands::overlay::set_overlay_expanded,
@@ -464,6 +465,7 @@ pub fn run() {
             // to re-detect notch info and reposition the overlay.
             commands::overlay::register_screen_change_observer(app.handle().clone());
             audio_lifecycle::register_sleep_wake_observer();
+            commands::tray::register_update_wake_observer(app.handle().clone());
 
             // Overwrite the transform-review window's initial size from Rust's
             // COMPACT_W/COMPACT_H so tauri.conf.json's matching literal is only
@@ -473,17 +475,22 @@ pub fn run() {
             // Restore tray icon (removed by PR #63 overlay work).
             let idle_icon_data = commands::tray::make_tray_icon_data();
             let show_item = MenuItemBuilder::with_id("show", "Show Murmur").build(app)?;
+            let update_item =
+                MenuItemBuilder::with_id("check_updates", "Check for Updates…").build(app)?;
             let disabled_item = tauri::menu::CheckMenuItemBuilder::with_id("toggle_disabled", "Disable Murmur")
                 .checked(false)
                 .build(app)?;
             let quit_item = MenuItemBuilder::with_id("quit", "Quit Murmur").build(app)?;
             let tray_menu = MenuBuilder::new(app)
                 .item(&show_item)
+                .item(&update_item)
+                .separator()
                 .item(&disabled_item)
                 .separator()
                 .item(&quit_item)
                 .build()?;
             commands::keyboard::register_tray_disabled_item(disabled_item.clone());
+            commands::tray::register_tray_update_item(update_item);
             let handle = app.handle().clone();
             TrayIconBuilder::with_id("main-tray")
                 .icon(tauri::image::Image::new(&idle_icon_data, 66, 66))
@@ -504,6 +511,13 @@ pub fn run() {
                             if let Err(e) = commands::keyboard::set_app_disabled(app_handle.clone(), new_disabled) {
                                 tracing::warn!(target: "keyboard", "tray disable toggle failed: {}", e);
                             }
+                        }
+                        "check_updates" => {
+                            if let Some(win) = app_handle.get_webview_window("main") {
+                                let _ = win.show();
+                                let _ = win.set_focus();
+                            }
+                            let _ = app_handle.emit("check-for-updates-requested", ());
                         }
                         "quit" => {
                             app_handle.exit(0);

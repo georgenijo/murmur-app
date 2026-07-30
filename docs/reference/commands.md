@@ -208,6 +208,7 @@ frontend.
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
 | `update_tray_icon` | `_icon_state: String` | `Result<(), String>` | No-op; the tray icon is always the static white waveform. Retained for API compatibility. |
+| `set_tray_update_available` | `version: Option<String>` | `Result<(), String>` | Changes the native menu item between `Check for Updates…` and a bounded, validated `Update Murmur to vX.Y.Z…` label. |
 
 ## Telemetry (`telemetry.rs`)
 

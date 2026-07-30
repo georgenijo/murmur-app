@@ -81,6 +81,13 @@ All transform events carry a `transformPassId` where a pass exists, so a delayed
 |-------|---------|--------|---------------|-----------|
 | `app-event` | `AppEvent` | `telemetry.rs` (`TauriEmitterLayer`) | For **every** `tracing` event in the Rust backend. | Log viewer (`useEventStore`). Release `pipeline` strings are stripped; `transform` strings are restricted by key **and** value to an explicit stable vocabulary in all builds. |
 
+## Updater
+
+| Event | Payload | Source | When it fires | Listeners |
+|-------|---------|--------|---------------|-----------|
+| `check-for-updates-requested` | `()` | Native tray menu | The user selects `Check for Updates…` or the versioned update action. The main window is shown and focused first. | Main `App` → manual `checkForUpdate`. |
+| `updater-background-check-requested` | `()` | `commands/tray.rs` | `NSWorkspaceDidWakeNotification` fires after macOS wakes. | `useAutoUpdater`; a local six-hour gate decides whether any network request is due. |
+
 ## Frontend-emitted (window to window)
 
 | Event | Payload | Source | When it fires | Listeners |
@@ -89,7 +96,9 @@ All transform events carry a `transformPassId` where a pass exists, so a delayed
 | `settings-changed` | `()` | `useSettings`, `useOverlaySettingsMirror` | A window mutates persisted settings, so the other windows re-read localStorage. | Main window, overlay. |
 | `open-settings` | `()` | `useOverlaySettingsMirror` | The overlay's quick-settings card asks the main window to open Settings. | Main window (`useOpenSettingsListener`). |
 
-**Dead listener:** `useShowAboutListener` listens for `show-about`, but the tray menu no longer has an About item (it is Show Murmur / Disable Murmur / Quit), so nothing emits it.
+**Dead listener:** `useShowAboutListener` listens for `show-about`, but the tray
+menu has no About item (it is Show Murmur / Check for Updates / Disable Murmur /
+Quit), so nothing emits it.
 
 ---
 

@@ -1,3 +1,61 @@
+use std::sync::OnceLock;
+use tauri::menu::MenuItem;
+
+static UPDATE_MENU_ITEM: OnceLock<MenuItem<tauri::Wry>> = OnceLock::new();
+
+pub(crate) fn register_tray_update_item(item: MenuItem<tauri::Wry>) {
+    let _ = UPDATE_MENU_ITEM.set(item);
+}
+
+fn update_menu_label(version: Option<&str>) -> Result<String, String> {
+    let Some(version) = version else {
+        return Ok("Check for Updates…".to_string());
+    };
+    let version = version.trim().trim_start_matches('v');
+    if version.is_empty()
+        || version.len() > 64
+        || !version
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'))
+    {
+        return Err("Invalid update version for menu-bar item".to_string());
+    }
+    Ok(format!("Update Murmur to v{version}…"))
+}
+
+#[tauri::command]
+pub fn set_tray_update_available(version: Option<String>) -> Result<(), String> {
+    let label = update_menu_label(version.as_deref())?;
+    if let Some(item) = UPDATE_MENU_ITEM.get() {
+        item.set_text(label).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn register_update_wake_observer(app_handle: tauri::AppHandle) {
+    use objc2_app_kit::{NSWorkspace, NSWorkspaceDidWakeNotification};
+    use objc2_foundation::{NSNotification, NSOperationQueue};
+    use tauri::Emitter;
+
+    let center = NSWorkspace::sharedWorkspace().notificationCenter();
+    let block = block2::RcBlock::new(move |_notification: std::ptr::NonNull<NSNotification>| {
+        let _ = app_handle.emit("updater-background-check-requested", ());
+    });
+    unsafe {
+        let observer = center.addObserverForName_object_queue_usingBlock(
+            Some(NSWorkspaceDidWakeNotification),
+            None,
+            Some(&NSOperationQueue::mainQueue()),
+            &block,
+        );
+        std::mem::forget(observer);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn register_update_wake_observer(_app_handle: tauri::AppHandle) {}
+
 /// Generate 66×66 RGBA pixel data for an audio-bar tray icon (static white).
 /// 66px = 3× resolution for a 22pt menu-bar icon (crisp on Retina).
 /// Draws 5 vertical capsule bars at varying heights (waveform / equalizer style).
@@ -84,5 +142,21 @@ mod tests {
             let idx = (row * SIZE + col) * 4;
             assert_eq!(data[idx + 3], 0, "corner ({row},{col}) alpha should be 0 (transparent)");
         }
+    }
+
+    #[test]
+    fn update_menu_label_tracks_available_version() {
+        assert_eq!(
+            update_menu_label(Some("v0.23.0")).unwrap(),
+            "Update Murmur to v0.23.0…"
+        );
+        assert_eq!(update_menu_label(None).unwrap(), "Check for Updates…");
+    }
+
+    #[test]
+    fn update_menu_label_rejects_unbounded_or_unsafe_versions() {
+        assert!(update_menu_label(Some("")).is_err());
+        assert!(update_menu_label(Some("0.23.0\nQuit Murmur")).is_err());
+        assert!(update_menu_label(Some(&"1".repeat(65))).is_err());
     }
 }

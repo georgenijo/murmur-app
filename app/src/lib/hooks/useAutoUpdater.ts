@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { listen } from '@tauri-apps/api/event';
 import { check, type Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { getVersion } from '@tauri-apps/api/app';
@@ -21,13 +22,15 @@ import {
   isDueForCheck,
   setLastCheckTimestamp,
   fetchMinVersion,
-  CHECK_INTERVAL_MS,
+  CHECK_TIMER_TICK_MS,
 } from '../updater';
 
 export interface UseAutoUpdaterReturn {
   updateStatus: UpdateStatus;
   completedUpdate: CompletedUpdate | null;
+  isUpdateDialogOpen: boolean;
   checkForUpdate: () => Promise<void>;
+  showAvailableUpdate: () => void;
   startDownload: () => Promise<void>;
   skipVersion: () => void;
   dismissUpdate: () => void;
@@ -37,9 +40,11 @@ export interface UseAutoUpdaterReturn {
 export function useAutoUpdater(): UseAutoUpdaterReturn {
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ phase: 'idle' });
   const [completedUpdate, setCompletedUpdate] = useState<CompletedUpdate | null>(null);
+  const [isUpdateDialogOpen, setIsUpdateDialogOpen] = useState(false);
   const updateRef = useRef<Update | null>(null);
   const isCheckingRef = useRef(false);
   const isForcedRef = useRef(false);
+  const manualPresentationRequestedRef = useRef(false);
 
   // The updater process replaces the app before relaunching, so the release
   // payload is recovered from localStorage and shown only after the installed
@@ -68,13 +73,17 @@ export function useAutoUpdater(): UseAutoUpdaterReturn {
   }, []);
 
   const performCheck = useCallback(async (opts: { isBackground: boolean }) => {
-    if (isCheckingRef.current) return;
-    isCheckingRef.current = true;
-
     if (!opts.isBackground) {
       clearSkippedVersion();
+      manualPresentationRequestedRef.current = true;
       setUpdateStatus({ phase: 'checking' });
     }
+    if (isCheckingRef.current) return;
+    isCheckingRef.current = true;
+    isForcedRef.current = false;
+
+    const shouldPresentManualResult = () =>
+      !opts.isBackground || manualPresentationRequestedRef.current;
 
     try {
       const update = await check();
@@ -82,12 +91,12 @@ export function useAutoUpdater(): UseAutoUpdaterReturn {
 
       if (!update?.available || !update.version) {
         flog.info('updater', 'no update available');
-        if (!opts.isBackground) {
+        if (shouldPresentManualResult()) {
+          setIsUpdateDialogOpen(false);
           setUpdateStatus({ phase: 'up-to-date' });
           // Reset back to idle after a brief display
           setTimeout(() => setUpdateStatus(s => s.phase === 'up-to-date' ? { phase: 'idle' } : s), 3000);
         }
-        isCheckingRef.current = false;
         return;
       }
 
@@ -101,13 +110,13 @@ export function useAutoUpdater(): UseAutoUpdaterReturn {
       // If not forced and user previously skipped this version, suppress
       if (!isForced && getSkippedVersion() === update.version) {
         flog.info('updater', 'user skipped this version', { version: update.version });
-        if (!opts.isBackground) {
+        if (shouldPresentManualResult()) {
           setUpdateStatus({ phase: 'idle' });
         }
-        isCheckingRef.current = false;
         return;
       }
 
+      const wasAlreadyAvailable = updateRef.current?.version === update.version;
       updateRef.current = update;
       isForcedRef.current = isForced;
       setUpdateStatus({
@@ -116,9 +125,10 @@ export function useAutoUpdater(): UseAutoUpdaterReturn {
         notes: update.body ?? '',
         isForced,
       });
+      setIsUpdateDialogOpen(isForced || shouldPresentManualResult());
 
       // Background check: fire macOS notification
-      if (opts.isBackground) {
+      if (opts.isBackground && !wasAlreadyAvailable) {
         try {
           let permGranted = await isPermissionGranted();
           if (!permGranted) {
@@ -137,16 +147,21 @@ export function useAutoUpdater(): UseAutoUpdaterReturn {
       }
     } catch (err) {
       flog.error('updater', 'check failed', { error: String(err) });
-      if (!opts.isBackground) {
+      if (shouldPresentManualResult()) {
+        setIsUpdateDialogOpen(false);
         setUpdateStatus({ phase: 'error', message: String(err), isForced: isForcedRef.current });
       }
       // Background errors are silent
     } finally {
       isCheckingRef.current = false;
+      manualPresentationRequestedRef.current = false;
     }
   }, []);
 
-  // On mount: always check on launch, then set up 24h periodic interval.
+  // On mount: always check on launch. A short, inert timer only asks whether
+  // the six-hour network interval is due; native wake events and foreground
+  // activation use the same gate so hidden/sleeping webviews do not strand the
+  // update indicator.
   // Skip entirely in dev — a dev build auto-updating to a prod release would
   // download+relaunch into /Applications, making `tauri dev` impossible.
   useEffect(() => {
@@ -157,18 +172,50 @@ export function useAutoUpdater(): UseAutoUpdaterReturn {
 
     performCheck({ isBackground: true });
 
-    const interval = setInterval(() => {
+    const checkIfDue = () => {
       if (isDueForCheck()) {
         performCheck({ isBackground: true });
       }
-    }, CHECK_INTERVAL_MS);
+    };
+    const interval = setInterval(checkIfDue, CHECK_TIMER_TICK_MS);
+    const onFocus = () => checkIfDue();
+    const onVisibilityChange = () => {
+      if (!document.hidden) checkIfDue();
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibilityChange);
 
-    return () => clearInterval(interval);
+    let disposed = false;
+    let unlistenWake: (() => void) | undefined;
+    listen<unknown>('updater-background-check-requested', checkIfDue)
+      .then((unlisten) => {
+        if (disposed) unlisten();
+        else unlistenWake = unlisten;
+      })
+      .catch((err) => {
+        flog.warn('updater', 'could not listen for native wake checks', {
+          error: String(err),
+        });
+      });
+
+    return () => {
+      disposed = true;
+      clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      unlistenWake?.();
+    };
   }, [performCheck]);
 
   const checkForUpdate = useCallback(async () => {
     await performCheck({ isBackground: false });
   }, [performCheck]);
+
+  const showAvailableUpdate = useCallback(() => {
+    if (updateStatus.phase === 'available') {
+      setIsUpdateDialogOpen(true);
+    }
+  }, [updateStatus.phase]);
 
   const startDownload = useCallback(async () => {
     const update = updateRef.current;
@@ -224,11 +271,12 @@ export function useAutoUpdater(): UseAutoUpdaterReturn {
       flog.info('updater', 'version skipped', { version: updateStatus.version });
     }
     updateRef.current = null;
+    setIsUpdateDialogOpen(false);
     setUpdateStatus({ phase: 'idle' });
   }, [updateStatus]);
 
   const dismissUpdate = useCallback(() => {
-    setUpdateStatus({ phase: 'idle' });
+    setIsUpdateDialogOpen(false);
   }, []);
 
   const dismissCompletedUpdate = useCallback(() => {
@@ -239,7 +287,9 @@ export function useAutoUpdater(): UseAutoUpdaterReturn {
   return {
     updateStatus,
     completedUpdate,
+    isUpdateDialogOpen,
     checkForUpdate,
+    showAvailableUpdate,
     startDownload,
     skipVersion,
     dismissUpdate,
