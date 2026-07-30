@@ -1,0 +1,14 @@
+[Unit]
+Description=Murmur log ingest receiver
+After=network.target
+
+[Service]
+User=george
+ExecStart=/usr/bin/python3 /home/george/murmur-logs-receiver.py
+Restart=always
+RestartSec=5
+MemoryMax=128M
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
