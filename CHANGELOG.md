@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.23.9] - 2026-07-30
+
+### Fixed
+
+- Fresh installs no longer report their device state snapshot under a throwaway identity (#400).
+
 ## [0.23.8] - 2026-07-30
 
 ### Added
