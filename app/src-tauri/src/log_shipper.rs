@@ -129,7 +129,13 @@ struct DeviceInfo {
 fn sanitize_header(value: &str) -> String {
     let cleaned: String = value
         .chars()
-        .map(|c| if c.is_ascii_graphic() || c == ' ' { c } else { '?' })
+        .map(|c| match c {
+            '\u{2018}' | '\u{2019}' => '\'',
+            '\u{201C}' | '\u{201D}' => '"',
+            '\u{2013}' | '\u{2014}' => '-',
+            c if c.is_ascii_graphic() || c == ' ' => c,
+            _ => '?',
+        })
         .collect();
     cleaned.trim().chars().take(80).collect()
 }
@@ -350,6 +356,7 @@ mod tests {
     #[test]
     fn sanitize_strips_control_and_truncates() {
         assert_eq!(sanitize_header("Bob\u{7f}s\nMac"), "Bob?s?Mac");
+        assert_eq!(sanitize_header("George\u{2019}s MacBook \u{2014} M4"), "George's MacBook - M4");
         assert_eq!(sanitize_header(&"x".repeat(200)).len(), 80);
         assert_eq!(sanitize_header("  padded  "), "padded");
     }
