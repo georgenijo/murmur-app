@@ -19,6 +19,8 @@ const TICK_SECS: u64 = 60;
 const STARTUP_DELAY_SECS: u64 = 15;
 /// Max bytes shipped per POST; a batch is always cut at a line boundary.
 const MAX_BATCH_BYTES: usize = 1024 * 1024;
+/// Defensive bound for the aggregate input-device count shipped in `/state`.
+const MAX_AUDIO_INPUT_COUNT: usize = 256;
 
 #[derive(Serialize, Deserialize)]
 struct ShipperState {
@@ -84,9 +86,15 @@ fn next_batch(log: &Path, rotated: &Path, offset: u64) -> Option<Batch> {
         if tail.is_empty() {
             // Rotated file gone or shorter than the offset (e.g. double
             // rotation); nothing recoverable — restart at the new file.
-            return Some(Batch { data: Vec::new(), next_offset: 0 });
+            return Some(Batch {
+                data: Vec::new(),
+                next_offset: 0,
+            });
         }
-        return Some(Batch { data: tail, next_offset: 0 });
+        return Some(Batch {
+            data: tail,
+            next_offset: 0,
+        });
     }
 
     let chunk = read_range(log, offset, MAX_BATCH_BYTES as u64)?;
@@ -224,32 +232,36 @@ async fn ship(
     matches!(result, Ok(resp) if resp.status().is_success())
 }
 
-/// Current audio-input picture, serialized stably so a change is detectable
-/// by string comparison. Runs blocking Core Audio enumeration.
-fn audio_state() -> String {
-    use cpal::traits::{DeviceTrait, HostTrait};
-    let host = cpal::default_host();
-    let default_input = host
-        .default_input_device()
-        .and_then(|d| d.description().ok().map(|description| description.name().to_string()));
-    let mut inputs: Vec<String> = host
-        .input_devices()
-        .map(|it| {
-            it.filter_map(|d| {
-                d.description()
-                    .ok()
-                    .map(|description| description.name().to_string())
-            })
-            .collect()
-        })
-        .unwrap_or_default();
-    inputs.sort();
+/// Serialize only a bounded aggregate of the audio-input picture. The generic
+/// item type is deliberately ignored: neither display labels nor backend UIDs
+/// can enter the serialized state body.
+fn aggregate_audio_state<T>(
+    default_input_available: bool,
+    inputs: impl IntoIterator<Item = T>,
+    enumeration_ok: bool,
+) -> String {
+    let observed = inputs.into_iter().take(MAX_AUDIO_INPUT_COUNT + 1).count();
     serde_json::json!({
-        "default_input": default_input,
-        "input_devices": inputs,
+        "default_input_available": default_input_available,
+        "input_device_count": observed.min(MAX_AUDIO_INPUT_COUNT),
+        "input_device_count_capped": observed > MAX_AUDIO_INPUT_COUNT,
+        "input_enumeration_ok": enumeration_ok,
         "app_version": env!("CARGO_PKG_VERSION"),
     })
     .to_string()
+}
+
+/// Current audio-input aggregate, serialized stably so a change is detectable
+/// by string comparison. Runs blocking Core Audio enumeration without reading
+/// any presentation labels or backend identifiers.
+fn audio_state() -> String {
+    use cpal::traits::HostTrait;
+    let host = cpal::default_host();
+    let default_input_available = host.default_input_device().is_some();
+    match host.input_devices() {
+        Ok(inputs) => aggregate_audio_state(default_input_available, inputs, true),
+        Err(_) => aggregate_audio_state(default_input_available, std::iter::empty::<()>(), false),
+    }
 }
 
 async fn ship_state(
@@ -312,8 +324,7 @@ pub fn start() {
         tracing::info!(target: "system", "log shipper disabled: CI environment");
         return;
     }
-    let endpoint =
-        std::env::var("MURMUR_LOG_ENDPOINT").unwrap_or_else(|_| ENDPOINT.to_string());
+    let endpoint = std::env::var("MURMUR_LOG_ENDPOINT").unwrap_or_else(|_| ENDPOINT.to_string());
 
     tauri::async_runtime::spawn(async move {
         let client = match reqwest::Client::builder()
@@ -333,15 +344,15 @@ pub fn start() {
             // The install id is re-read after tick(): the first tick persists
             // it, so a fresh install reports state under its real identity
             // instead of a throwaway UUID.
-            let state_install_id =
-                state_path().filter(|p| p.exists()).map(|p| load_state(&p).install_id);
+            let state_install_id = state_path()
+                .filter(|p| p.exists())
+                .map(|p| load_state(&p).install_id);
             if let Some(install_id) = &state_install_id {
                 let snap = tokio::task::spawn_blocking(audio_state)
                     .await
                     .unwrap_or_default();
                 if !snap.is_empty() && last_snapshot.as_deref() != Some(snap.as_str()) {
-                    if ship_state(&client, &state_endpoint, install_id, &device, snap.clone())
-                        .await
+                    if ship_state(&client, &state_endpoint, install_id, &device, snap.clone()).await
                     {
                         last_snapshot = Some(snap);
                     }
@@ -355,6 +366,9 @@ pub fn start() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use std::net::TcpListener;
+    use std::sync::mpsc;
 
     fn tmp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("murmur_shipper_test_{name}"));
@@ -424,7 +438,10 @@ mod tests {
     #[test]
     fn sanitize_strips_control_and_truncates() {
         assert_eq!(sanitize_header("Bob\u{7f}s\nMac"), "Bob?s?Mac");
-        assert_eq!(sanitize_header("George\u{2019}s MacBook \u{2014} M4"), "George's MacBook - M4");
+        assert_eq!(
+            sanitize_header("George\u{2019}s MacBook \u{2014} M4"),
+            "George's MacBook - M4"
+        );
         assert_eq!(sanitize_header(&"x".repeat(200)).len(), 80);
         assert_eq!(sanitize_header("  padded  "), "padded");
     }
@@ -442,5 +459,90 @@ mod tests {
         // A second fresh load (different path) gets a different UUID.
         let other = load_state(&dir.join("nope.json"));
         assert_ne!(other.install_id, fresh.install_id);
+    }
+
+    #[tokio::test]
+    async fn state_http_body_never_contains_audio_labels_or_uids() {
+        const SENTINEL_LABEL: &str = "PRIVATE STUDIO MICROPHONE LABEL";
+        const SENTINEL_UID: &str = "CoreAudio-UID-private-123";
+        let snapshot = aggregate_audio_state(
+            true,
+            [
+                (SENTINEL_LABEL, SENTINEL_UID),
+                ("Second label", "Second UID"),
+            ],
+            true,
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/state", listener.local_addr().unwrap());
+        let (request_sender, request_receiver) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            let expected_len = loop {
+                let read = stream.read(&mut buffer).unwrap();
+                request.extend_from_slice(&buffer[..read]);
+                let Some(header_end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n")
+                else {
+                    continue;
+                };
+                let headers = String::from_utf8_lossy(&request[..header_end]);
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.split_once(':').and_then(|(name, value)| {
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                    })
+                    .unwrap();
+                break header_end + 4 + content_length;
+            };
+            while request.len() < expected_len {
+                let read = stream.read(&mut buffer).unwrap();
+                request.extend_from_slice(&buffer[..read]);
+            }
+            request_sender.send(request).unwrap();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .unwrap();
+        });
+
+        let client = reqwest::Client::new();
+        let device = DeviceInfo {
+            name: "test-host".to_string(),
+            os: "test-os".to_string(),
+            hw: "test-hw".to_string(),
+            specs: "test-specs".to_string(),
+        };
+        assert!(
+            ship_state(&client, &endpoint, "test-install", &device, snapshot).await,
+            "sentinel server should acknowledge the state POST"
+        );
+        let request = request_receiver
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        server.join().unwrap();
+        let request = String::from_utf8(request).unwrap();
+        let body = request.split_once("\r\n\r\n").unwrap().1;
+
+        assert!(!body.contains(SENTINEL_LABEL));
+        assert!(!body.contains(SENTINEL_UID));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(body).unwrap(),
+            serde_json::json!({
+                "default_input_available": true,
+                "input_device_count": 2,
+                "input_device_count_capped": false,
+                "input_enumeration_ok": true,
+                "app_version": env!("CARGO_PKG_VERSION"),
+            })
+        );
     }
 }

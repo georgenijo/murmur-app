@@ -15,6 +15,9 @@ install the app (or receive an auto-update) and logs flow.
   (`scutil --get ComputerName`), **macOS version**, and **hardware model** so
   the fleet dashboard can label streams ("George's MacBook Pro · macOS 26.0").
   Username and any content-bearing identifiers are never sent.
+- The separate `/state` snapshot reports only whether a default audio input is
+  available, a bounded input count, and whether enumeration succeeded. It
+  never reads or sends microphone display labels or backend UIDs.
 - Kill switch: launch with `MURMUR_LOG_SHIPPER=off` in the environment.
 
 ## Architecture

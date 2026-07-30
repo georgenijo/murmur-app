@@ -25,5 +25,5 @@ export function selectedDeviceExists(
   devices: AudioDeviceDescriptor[],
 ): boolean {
   return current === 'system_default'
-    || devices.some((device) => device.id === current || device.name === current);
+    || devices.some((device) => device.id === current);
 }

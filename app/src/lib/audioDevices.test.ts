@@ -19,6 +19,7 @@ describe('audio device persistence', () => {
   it('fails closed when a legacy display name is ambiguous', () => {
     const duplicates = [...devices, { id: 'USB-B', name: 'Studio Mic' }];
     expect(migrateLegacyMicrophoneId('Studio Mic', duplicates)).toBe('Studio Mic');
+    expect(selectedDeviceExists('Studio Mic', duplicates)).toBe(false);
     expect(selectedDeviceExists('Missing Mic', duplicates)).toBe(false);
   });
 });

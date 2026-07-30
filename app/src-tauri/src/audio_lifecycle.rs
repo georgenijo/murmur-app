@@ -1,6 +1,6 @@
 use crate::audio::{
     self, AudioCommand, AudioFailure, AudioFailureKind, AudioInitPhase, AudioWorkerEvent,
-    AudioWorkerSpec,
+    AudioWorkerEventSender, AudioWorkerSpec,
 };
 use crate::state::WHISPER_SAMPLE_RATE;
 use std::fmt;
@@ -204,7 +204,7 @@ trait WorkerFactory: Send + Sync + 'static {
     fn spawn(
         &self,
         spec: AudioWorkerSpec,
-        event_sender: Sender<AudioWorkerEvent>,
+        event_sender: AudioWorkerEventSender,
     ) -> Result<JoinHandle<()>, String>;
 }
 
@@ -214,7 +214,7 @@ impl WorkerFactory for ProductionWorkerFactory {
     fn spawn(
         &self,
         spec: AudioWorkerSpec,
-        event_sender: Sender<AudioWorkerEvent>,
+        event_sender: AudioWorkerEventSender,
     ) -> Result<JoinHandle<()>, String> {
         #[cfg(debug_assertions)]
         if should_inject_hung_stream_build() {
@@ -327,6 +327,11 @@ enum SupervisorMessage {
     },
     Worker(AudioWorkerEvent),
     #[cfg(test)]
+    CheckDeadlines {
+        elapsed: Duration,
+        response: Sender<()>,
+    },
+    #[cfg(test)]
     Shutdown(Sender<()>),
 }
 
@@ -376,23 +381,13 @@ fn spawn_supervisor(
     config: SupervisorConfig,
 ) -> AudioSupervisor {
     let (sender, receiver) = mpsc::channel::<SupervisorMessage>();
-    let (worker_event_sender, worker_event_receiver) = mpsc::channel::<AudioWorkerEvent>();
     let public = Arc::new(PublicState::default());
-
-    let forward_sender = sender.clone();
-    std::thread::Builder::new()
-        .name("murmur-audio-events".to_string())
-        .spawn(move || {
-            while let Ok(event) = worker_event_receiver.recv() {
-                if forward_sender
-                    .send(SupervisorMessage::Worker(event))
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        })
-        .expect("audio event forwarder thread must spawn");
+    let worker_message_sender = sender.clone();
+    let worker_event_sender = AudioWorkerEventSender::new(move |event| {
+        worker_message_sender
+            .send(SupervisorMessage::Worker(event))
+            .map_err(|_| ())
+    });
 
     let public_for_thread = Arc::clone(&public);
     std::thread::Builder::new()
@@ -414,7 +409,7 @@ fn spawn_supervisor(
 
 fn run_supervisor(
     receiver: Receiver<SupervisorMessage>,
-    worker_event_sender: Sender<AudioWorkerEvent>,
+    worker_event_sender: AudioWorkerEventSender,
     factory: Arc<dyn WorkerFactory>,
     sink: Arc<dyn LifecycleSink>,
     public: Arc<PublicState>,
@@ -430,6 +425,16 @@ fn run_supervisor(
                     let _ = response.send(());
                     return;
                 }
+                #[cfg(test)]
+                if let SupervisorMessage::CheckDeadlines { elapsed, response } = message {
+                    let now = attempt
+                        .as_ref()
+                        .map(|current| current.accepted_at + elapsed)
+                        .unwrap_or_else(Instant::now);
+                    handle_deadlines_at(&mut attempt, sink.as_ref(), &public, config, now);
+                    let _ = response.send(());
+                    continue;
+                }
                 handle_message(
                     message,
                     &mut attempt,
@@ -440,7 +445,7 @@ fn run_supervisor(
                 );
             }
             Err(RecvTimeoutError::Timeout) => {
-                handle_deadlines(&mut attempt, sink.as_ref(), &public, config);
+                handle_deadlines_at(&mut attempt, sink.as_ref(), &public, config, Instant::now());
             }
             Err(RecvTimeoutError::Disconnected) => return,
         }
@@ -471,7 +476,7 @@ fn deadline_wait(attempt: Option<&Attempt>, config: SupervisorConfig) -> Duratio
 fn handle_message(
     message: SupervisorMessage,
     attempt: &mut Option<Attempt>,
-    worker_event_sender: &Sender<AudioWorkerEvent>,
+    worker_event_sender: &AudioWorkerEventSender,
     factory: &dyn WorkerFactory,
     sink: &dyn LifecycleSink,
     public: &PublicState,
@@ -542,6 +547,8 @@ fn handle_message(
             handle_worker_event(event, attempt, sink, public);
         }
         #[cfg(test)]
+        SupervisorMessage::CheckDeadlines { .. } => unreachable!(),
+        #[cfg(test)]
         SupervisorMessage::Shutdown(_) => unreachable!(),
     }
 }
@@ -549,7 +556,7 @@ fn handle_message(
 fn handle_start(
     request: StartRequest,
     attempt: &mut Option<Attempt>,
-    worker_event_sender: &Sender<AudioWorkerEvent>,
+    worker_event_sender: &AudioWorkerEventSender,
     factory: &dyn WorkerFactory,
     public: &PublicState,
 ) {
@@ -929,16 +936,17 @@ fn report_failure_once(attempt: &mut Attempt, sink: &dyn LifecycleSink, failure:
     );
 }
 
-fn handle_deadlines(
+fn handle_deadlines_at(
     attempt: &mut Option<Attempt>,
     sink: &dyn LifecycleSink,
     public: &PublicState,
     config: SupervisorConfig,
+    now: Instant,
 ) {
     let Some(current) = attempt.as_ref() else {
         return;
     };
-    let elapsed = current.accepted_at.elapsed();
+    let elapsed = now.saturating_duration_since(current.accepted_at);
     let should_emit_still_connecting = current.phase == AttemptPhase::Starting
         && !current.still_connecting_emitted
         && elapsed >= config.still_connecting_after;
@@ -984,9 +992,9 @@ fn handle_deadlines(
     match current.phase {
         AttemptPhase::Stopping | AttemptPhase::Recovering
             if !current.stopping_guidance_emitted
-                && current
-                    .stopping_started_at
-                    .is_some_and(|started| started.elapsed() >= config.recovery_guidance_after) =>
+                && current.stopping_started_at.is_some_and(|started| {
+                    now.saturating_duration_since(started) >= config.recovery_guidance_after
+                }) =>
         {
             current.stopping_guidance_emitted = true;
             tracing::warn!(
@@ -1233,20 +1241,24 @@ mod tests {
         spawn_count: Arc<AtomicUsize>,
         active_flags: Arc<Mutex<Vec<Arc<AtomicBool>>>>,
         phase: AudioInitPhase,
+        phase_entered: Option<Sender<()>>,
     }
 
     struct BlockingTeardownFactory {
         gate: Gate,
     }
 
-    struct NoCallbackFactory;
+    struct NoCallbackFactory {
+        first_buffer_wait_entered: Sender<()>,
+    }
 
     impl WorkerFactory for NoCallbackFactory {
         fn spawn(
             &self,
             spec: AudioWorkerSpec,
-            event_sender: Sender<AudioWorkerEvent>,
+            event_sender: AudioWorkerEventSender,
         ) -> Result<JoinHandle<()>, String> {
+            let first_buffer_wait_entered = self.first_buffer_wait_entered.clone();
             Ok(std::thread::spawn(move || {
                 let owner = spec.owner;
                 for phase in [
@@ -1266,6 +1278,7 @@ mod tests {
                     owner,
                     phase: AudioInitPhase::FirstBufferWait,
                 });
+                let _ = first_buffer_wait_entered.send(());
                 let _ = spec.command_receiver.recv();
                 let _ = event_sender.send(AudioWorkerEvent::StreamStopped { owner });
                 let _ = event_sender.send(AudioWorkerEvent::ThreadExited { owner });
@@ -1275,11 +1288,47 @@ mod tests {
 
     struct RuntimeFailureFactory;
 
+    struct OrderedReadyFactory {
+        first_buffer_enqueued: Sender<()>,
+        release_spawn: Gate,
+        samples: Vec<f32>,
+    }
+
+    impl WorkerFactory for OrderedReadyFactory {
+        fn spawn(
+            &self,
+            spec: AudioWorkerSpec,
+            event_sender: AudioWorkerEventSender,
+        ) -> Result<JoinHandle<()>, String> {
+            let first_buffer_enqueued = self.first_buffer_enqueued.clone();
+            let samples = self.samples.clone();
+            let handle = std::thread::spawn(move || {
+                let owner = spec.owner;
+                spec.shared.lock().unwrap().extend_from_slice(&samples);
+                event_sender
+                    .send(AudioWorkerEvent::FirstBuffer {
+                        owner,
+                        sample_rate: WHISPER_SAMPLE_RATE,
+                    })
+                    .unwrap();
+                first_buffer_enqueued.send(()).unwrap();
+                let _ = spec.command_receiver.recv();
+                let _ = event_sender.send(AudioWorkerEvent::StreamStopped { owner });
+                let _ = event_sender.send(AudioWorkerEvent::ThreadExited { owner });
+            });
+            // Keep the supervisor inside Start while the worker appends PCM and
+            // enqueues readiness. Tests can then enqueue stop/deadline messages
+            // behind readiness before allowing Start to return.
+            self.release_spawn.wait();
+            Ok(handle)
+        }
+    }
+
     impl WorkerFactory for RuntimeFailureFactory {
         fn spawn(
             &self,
             spec: AudioWorkerSpec,
-            event_sender: Sender<AudioWorkerEvent>,
+            event_sender: AudioWorkerEventSender,
         ) -> Result<JoinHandle<()>, String> {
             Ok(std::thread::spawn(move || {
                 let owner = spec.owner;
@@ -1310,7 +1359,7 @@ mod tests {
         fn spawn(
             &self,
             spec: AudioWorkerSpec,
-            event_sender: Sender<AudioWorkerEvent>,
+            event_sender: AudioWorkerEventSender,
         ) -> Result<JoinHandle<()>, String> {
             self.specs
                 .lock()
@@ -1329,7 +1378,7 @@ mod tests {
         fn spawn(
             &self,
             spec: AudioWorkerSpec,
-            event_sender: Sender<AudioWorkerEvent>,
+            event_sender: AudioWorkerEventSender,
         ) -> Result<JoinHandle<()>, String> {
             let gate = self.gate.clone();
             Ok(std::thread::spawn(move || {
@@ -1351,7 +1400,7 @@ mod tests {
         fn spawn(
             &self,
             spec: AudioWorkerSpec,
-            event_sender: Sender<AudioWorkerEvent>,
+            event_sender: AudioWorkerEventSender,
         ) -> Result<JoinHandle<()>, String> {
             self.spawn_count.fetch_add(1, Ordering::SeqCst);
             self.active_flags
@@ -1360,9 +1409,13 @@ mod tests {
                 .push(Arc::clone(&spec.active));
             let gate = self.gate.clone();
             let phase = self.phase;
+            let phase_entered = self.phase_entered.clone();
             Ok(std::thread::spawn(move || {
                 let owner = spec.owner;
                 let _ = event_sender.send(AudioWorkerEvent::PhaseEntered { owner, phase });
+                if let Some(phase_entered) = phase_entered {
+                    let _ = phase_entered.send(());
+                }
                 gate.wait();
                 let _ = event_sender.send(AudioWorkerEvent::PhaseExited {
                     owner,
@@ -1421,6 +1474,7 @@ mod tests {
                 spawn_count: Arc::clone(&spawn_count),
                 active_flags: Arc::clone(&active_flags),
                 phase,
+                phase_entered: None,
             }),
             sink.clone(),
             config,
@@ -1490,6 +1544,18 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         let _ = supervisor.sender.send(SupervisorMessage::Shutdown(sender));
         let _ = receiver.recv_timeout(Duration::from_secs(1));
+    }
+
+    fn check_deadlines(supervisor: &AudioSupervisor, elapsed: Duration) {
+        let (sender, receiver) = mpsc::channel();
+        supervisor
+            .sender
+            .send(SupervisorMessage::CheckDeadlines {
+                elapsed,
+                response: sender,
+            })
+            .unwrap();
+        receiver.recv_timeout(Duration::from_secs(1)).unwrap();
     }
 
     fn wait_until(message: &str, predicate: impl Fn() -> bool) {
@@ -1603,22 +1669,31 @@ mod tests {
 
     #[test]
     fn hard_deadline_reports_failure_once_and_blocks_retry_until_exit() {
-        let config = SupervisorConfig {
-            still_connecting_after: Duration::from_millis(5),
-            hard_deadline: Duration::from_millis(12),
-            recovery_guidance_after: Duration::from_millis(10),
-        };
-        let (supervisor, gate, spawn_count, sink, _) =
-            harness(AudioInitPhase::ConfigLookup, config);
+        let gate = Gate::closed();
+        let spawn_count = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::new(RecordingSink::default());
+        let active_flags = Arc::new(Mutex::new(Vec::new()));
+        let (phase_sender, phase_receiver) = mpsc::channel();
+        let supervisor = spawn_supervisor(
+            Arc::new(BlockingFactory {
+                gate: gate.clone(),
+                spawn_count: Arc::clone(&spawn_count),
+                active_flags,
+                phase: AudioInitPhase::ConfigLookup,
+                phase_entered: Some(phase_sender),
+            }),
+            sink.clone(),
+            SupervisorConfig::default(),
+        );
         let owner = AudioOwner::Dictation(4);
         assert_eq!(start(&supervisor, owner).recv().unwrap(), Ok(()));
-        wait_until("hard deadline did not report failure", || {
-            sink.events
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|(_, event)| matches!(event, AudioLifecycleEvent::InitializationFailed { .. }))
-        });
+        phase_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("worker never entered config lookup");
+        check_deadlines(
+            &supervisor,
+            HARD_INITIALIZATION_DEADLINE + Duration::from_secs(1),
+        );
         assert!(supervisor.public.is_active());
         {
             let events = sink.events.lock().unwrap();
@@ -1791,6 +1866,106 @@ mod tests {
     }
 
     #[test]
+    fn first_buffer_enqueued_before_stop_returns_retained_pcm_exactly_once() {
+        let release_spawn = Gate::closed();
+        let (first_buffer_sender, first_buffer_receiver) = mpsc::channel();
+        let expected = vec![0.25, -0.5, 0.75];
+        let supervisor = spawn_supervisor(
+            Arc::new(OrderedReadyFactory {
+                first_buffer_enqueued: first_buffer_sender,
+                release_spawn: release_spawn.clone(),
+                samples: expected.clone(),
+            }),
+            Arc::new(RecordingSink::default()),
+            SupervisorConfig::default(),
+        );
+        let owner = AudioOwner::Dictation(70);
+        let start_response = start(&supervisor, owner);
+        first_buffer_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("worker did not append and enqueue its first buffer");
+
+        let (stop_sender, stop_receiver) = mpsc::channel();
+        supervisor
+            .sender
+            .send(SupervisorMessage::Stop {
+                owner: Some(owner),
+                response: stop_sender,
+            })
+            .unwrap();
+        release_spawn.open();
+
+        assert_eq!(start_response.recv().unwrap(), Ok(()));
+        assert_eq!(stop_receiver.recv().unwrap(), Ok(expected));
+        wait_until("stopped worker did not finish", || {
+            !supervisor.public.is_active()
+        });
+
+        let (second_stop_sender, second_stop_receiver) = mpsc::channel();
+        supervisor
+            .sender
+            .send(SupervisorMessage::Stop {
+                owner: Some(owner),
+                response: second_stop_sender,
+            })
+            .unwrap();
+        assert_eq!(second_stop_receiver.recv().unwrap(), Ok(Vec::new()));
+        shutdown(&supervisor);
+    }
+
+    #[test]
+    fn first_buffer_enqueued_before_deadline_wins_the_deadline_race() {
+        let release_spawn = Gate::closed();
+        let (first_buffer_sender, first_buffer_receiver) = mpsc::channel();
+        let sink = Arc::new(RecordingSink::default());
+        let supervisor = spawn_supervisor(
+            Arc::new(OrderedReadyFactory {
+                first_buffer_enqueued: first_buffer_sender,
+                release_spawn: release_spawn.clone(),
+                samples: vec![0.5],
+            }),
+            sink.clone(),
+            SupervisorConfig::default(),
+        );
+        let owner = AudioOwner::Dictation(71);
+        let start_response = start(&supervisor, owner);
+        first_buffer_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("worker did not append and enqueue its first buffer");
+
+        let (deadline_sender, deadline_receiver) = mpsc::channel();
+        supervisor
+            .sender
+            .send(SupervisorMessage::CheckDeadlines {
+                elapsed: HARD_INITIALIZATION_DEADLINE + Duration::from_secs(1),
+                response: deadline_sender,
+            })
+            .unwrap();
+        release_spawn.open();
+
+        assert_eq!(start_response.recv().unwrap(), Ok(()));
+        deadline_receiver.recv().unwrap();
+        assert!(supervisor.public.is_recording_for(owner));
+        assert!(!sink.events.lock().unwrap().iter().any(|(_, event)| {
+            matches!(event, AudioLifecycleEvent::InitializationFailed { .. })
+        }));
+
+        let (stop_sender, stop_receiver) = mpsc::channel();
+        supervisor
+            .sender
+            .send(SupervisorMessage::Stop {
+                owner: Some(owner),
+                response: stop_sender,
+            })
+            .unwrap();
+        assert_eq!(stop_receiver.recv().unwrap(), Ok(vec![0.5]));
+        wait_until("deadline-race worker did not finish", || {
+            !supervisor.public.is_active()
+        });
+        shutdown(&supervisor);
+    }
+
+    #[test]
     fn environment_change_cancels_starting_with_its_reason() {
         for (index, reason) in [
             AudioCancelReason::DeviceChanged,
@@ -1836,28 +2011,32 @@ mod tests {
     #[test]
     fn play_success_without_callback_fails_as_first_buffer_timeout() {
         let sink = Arc::new(RecordingSink::default());
+        let (phase_sender, phase_receiver) = mpsc::channel();
         let supervisor = spawn_supervisor(
-            Arc::new(NoCallbackFactory),
+            Arc::new(NoCallbackFactory {
+                first_buffer_wait_entered: phase_sender,
+            }),
             sink.clone(),
-            SupervisorConfig {
-                still_connecting_after: Duration::from_millis(2),
-                hard_deadline: Duration::from_millis(8),
-                recovery_guidance_after: Duration::from_millis(20),
-            },
+            SupervisorConfig::default(),
         );
         let owner = AudioOwner::Dictation(80);
         assert_eq!(start(&supervisor, owner).recv().unwrap(), Ok(()));
-        wait_until("first-buffer timeout was not reported", || {
-            sink.events.lock().unwrap().iter().any(|(_, event)| {
-                matches!(
-                    event,
-                    AudioLifecycleEvent::InitializationFailed {
-                        kind: AudioFailureKind::FirstBufferTimeout,
-                        ..
-                    }
-                )
-            })
-        });
+        phase_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("worker never entered the explicit first-buffer wait phase");
+        check_deadlines(
+            &supervisor,
+            HARD_INITIALIZATION_DEADLINE + Duration::from_secs(1),
+        );
+        assert!(sink.events.lock().unwrap().iter().any(|(_, event)| {
+            matches!(
+                event,
+                AudioLifecycleEvent::InitializationFailed {
+                    kind: AudioFailureKind::FirstBufferTimeout,
+                    ..
+                }
+            )
+        }));
         assert!(
             !sink
                 .events

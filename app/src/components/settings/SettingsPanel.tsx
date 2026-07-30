@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
 import {
-  migrateLegacyMicrophoneId,
   selectedDeviceExists,
   type AudioDeviceDescriptor,
 } from '../../lib/audioDevices';
@@ -311,13 +310,6 @@ export function SettingsPanel({
     if (!isOpen) return;
     invoke<AudioDeviceDescriptor[]>('list_audio_devices').then(setAudioDevices).catch(() => setAudioDevices([]));
   }, [isOpen]);
-  useEffect(() => {
-    if (!isOpen || audioDevices.length === 0) return;
-    const migrated = migrateLegacyMicrophoneId(settings.microphone, audioDevices);
-    if (migrated !== settings.microphone) {
-      onUpdateSettings({ microphone: migrated });
-    }
-  }, [audioDevices, isOpen, onUpdateSettings, settings.microphone]);
 
   // ---- Transform model block (#312 D1) ------------------------------------
   const [transformModel, setTransformModel] = useState<TransformModelStatus | null>(null);

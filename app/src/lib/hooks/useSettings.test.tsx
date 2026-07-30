@@ -1,13 +1,13 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { VocabularyEntry } from '../settings';
+import { DEFAULT_SETTINGS, type VocabularyEntry } from '../settings';
 
 const mocks = vi.hoisted(() => ({
   configure: vi.fn(),
   emit: vi.fn(async () => {}),
   listen: vi.fn(async () => () => {}),
-  invoke: vi.fn(async () => {}),
+  invoke: vi.fn(async (_command?: string): Promise<unknown> => undefined),
   isEnabled: vi.fn(async () => false),
   enable: vi.fn(async () => {}),
   disable: vi.fn(async () => {}),
@@ -34,21 +34,28 @@ describe('useSettings configure rollback privacy', () => {
   let root: Root;
   let current: SettingsState;
 
-  beforeEach(async () => {
+  beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
     mocks.configure.mockResolvedValue(undefined);
+    mocks.invoke.mockResolvedValue(undefined);
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
+  });
 
+  async function mountHarness() {
     function Harness() {
       current = useSettings();
       return null;
     }
 
-    await act(async () => root.render(<Harness />));
-  });
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  }
 
   afterEach(async () => {
     await act(async () => root.unmount());
@@ -57,6 +64,7 @@ describe('useSettings configure rollback privacy', () => {
   });
 
   it('restores UI state and never logs alias-bearing backend validation text', async () => {
+    await mountHarness();
     const secret = 'private spoken customer alias';
     const entry: VocabularyEntry = {
       id: 'private-entry',
@@ -85,5 +93,49 @@ describe('useSettings configure rollback privacy', () => {
     expect(current.configureError).not.toContain(secret);
     expect(JSON.stringify(consoleError.mock.calls)).not.toContain(secret);
     expect(localStorage.getItem('dictation-settings')).not.toContain(secret);
+  });
+
+  it('migrates a unique legacy microphone name during app settings initialization', async () => {
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      microphone: 'Studio Mic',
+    }));
+    mocks.invoke.mockImplementation(async (command?: string) => (
+      command === 'list_audio_devices'
+        ? [
+            { id: 'raw-coreaudio-built-in', name: 'Built-in Mic' },
+            { id: 'raw-coreaudio-studio', name: 'Studio Mic' },
+          ]
+        : undefined
+    ));
+
+    await mountHarness();
+
+    expect(current.settings.microphone).toBe('raw-coreaudio-studio');
+    expect(
+      JSON.parse(localStorage.getItem('dictation-settings') ?? '{}').microphone,
+    ).toBe('raw-coreaudio-studio');
+  });
+
+  it('leaves an ambiguous legacy microphone unresolved for explicit reselection', async () => {
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      microphone: 'Studio Mic',
+    }));
+    mocks.invoke.mockImplementation(async (command?: string) => (
+      command === 'list_audio_devices'
+        ? [
+            { id: 'raw-coreaudio-studio-a', name: 'Studio Mic' },
+            { id: 'raw-coreaudio-studio-b', name: 'Studio Mic' },
+          ]
+        : undefined
+    ));
+
+    await mountHarness();
+
+    expect(current.settings.microphone).toBe('Studio Mic');
+    expect(
+      JSON.parse(localStorage.getItem('dictation-settings') ?? '{}').microphone,
+    ).toBe('Studio Mic');
   });
 });

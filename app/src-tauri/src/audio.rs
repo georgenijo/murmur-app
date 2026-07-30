@@ -3,7 +3,7 @@ use cpal::{FromSample, Sample, SampleFormat, SizedSample};
 use serde::Serialize;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -223,7 +223,7 @@ fn build_mono_input_stream<T>(
     app_handle: Option<tauri::AppHandle>,
     publish_levels: Arc<AtomicBool>,
     first_buffer_seen: Arc<AtomicBool>,
-    event_sender: Sender<AudioWorkerEvent>,
+    event_sender: AudioWorkerEventSender,
     owner: crate::audio_lifecycle::AudioOwner,
     sample_rate: u32,
 ) -> Result<cpal::Stream, AudioFailure>
@@ -346,6 +346,28 @@ pub(crate) enum AudioWorkerEvent {
     },
 }
 
+/// Cloneable worker-side handle that enqueues lifecycle events directly on the
+/// supervisor's command queue. Keeping worker events and stop/cancel/deadline
+/// messages on one queue gives the supervisor a single linearization order.
+#[derive(Clone)]
+pub(crate) struct AudioWorkerEventSender {
+    send: Arc<dyn Fn(AudioWorkerEvent) -> Result<(), ()> + Send + Sync>,
+}
+
+impl AudioWorkerEventSender {
+    pub(crate) fn new(
+        send: impl Fn(AudioWorkerEvent) -> Result<(), ()> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            send: Arc::new(send),
+        }
+    }
+
+    pub(crate) fn send(&self, event: AudioWorkerEvent) -> Result<(), ()> {
+        (self.send)(event)
+    }
+}
+
 pub(crate) struct AudioWorkerSpec {
     pub owner: crate::audio_lifecycle::AudioOwner,
     pub command_receiver: Receiver<AudioCommand>,
@@ -379,7 +401,7 @@ pub fn start_transform_capture_audio(
 
 pub(crate) fn spawn_capture_worker(
     spec: AudioWorkerSpec,
-    event_sender: Sender<AudioWorkerEvent>,
+    event_sender: AudioWorkerEventSender,
 ) -> Result<JoinHandle<()>, String> {
     thread::Builder::new()
         .name(format!("murmur-audio-{}", spec.owner.telemetry_id()))
@@ -426,7 +448,7 @@ pub(crate) fn spawn_capture_worker(
 fn timed_phase<T>(
     owner: crate::audio_lifecycle::AudioOwner,
     phase: AudioInitPhase,
-    event_sender: &Sender<AudioWorkerEvent>,
+    event_sender: &AudioWorkerEventSender,
     operation: impl FnOnce() -> Result<T, AudioFailure>,
 ) -> Result<T, AudioFailure> {
     let started = std::time::Instant::now();
@@ -442,7 +464,7 @@ fn timed_phase<T>(
 
 fn run_audio_capture(
     spec: AudioWorkerSpec,
-    event_sender: &Sender<AudioWorkerEvent>,
+    event_sender: &AudioWorkerEventSender,
 ) -> Result<(), AudioFailure> {
     let AudioWorkerSpec {
         owner,
