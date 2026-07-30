@@ -317,11 +317,15 @@ pub fn start() {
         tokio::time::sleep(std::time::Duration::from_secs(STARTUP_DELAY_SECS)).await;
         let device = collect_device_info();
         let state_endpoint = endpoint.replace("/ingest", "/state");
-        let state_install_id = state_path().map(|p| load_state(&p).install_id);
         let mut last_snapshot: Option<String> = None;
         loop {
             tick(&client, &endpoint, &device).await;
             // Event-driven device/state snapshot: POST only when it changes.
+            // The install id is re-read after tick(): the first tick persists
+            // it, so a fresh install reports state under its real identity
+            // instead of a throwaway UUID.
+            let state_install_id =
+                state_path().filter(|p| p.exists()).map(|p| load_state(&p).install_id);
             if let Some(install_id) = &state_install_id {
                 let snap = tokio::task::spawn_blocking(audio_state)
                     .await
