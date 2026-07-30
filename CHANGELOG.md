@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.23.3] - 2026-07-30
+
+### Added
+
+- Zero-config diagnostic log shipping: every install uploads its privacy-stripped structured event log (timing, errors, pipeline stats — never audio or transcription text) to the maintainer's receiver for debugging, identified only by a random install ID. Launch with `MURMUR_LOG_SHIPPER=off` to disable (#393).
+
+## [0.23.1] - 2026-07-30
+
 ### Fixed
 
 - A Core Audio stream build that never returns no longer leaves Murmur in `Recovering` until restart. Deadline-expired and user-cancelled generations close their callback gate, release logical microphone ownership immediately, and are joined by a background reaper if macOS eventually returns, so a fresh recording attempt can start without relaunching (#389).
