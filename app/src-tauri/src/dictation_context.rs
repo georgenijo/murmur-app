@@ -224,7 +224,7 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
         inputs.bundle_id,
         &global.app_profiles,
     );
-    let code_vocab = global.code_vocab_enabled;
+    let code_vocab = global.code_vocabulary_enabled_for(inputs.bundle_id);
     let source = match (custom_vocab, code_vocab) {
         (false, false) => VocabularySource::None,
         (true, false) => VocabularySource::Custom,
@@ -524,6 +524,68 @@ mod tests {
             assert!(!snapshot.transformations.cleanup_enabled);
             assert!(snapshot.matched_profile.is_none());
         }
+    }
+
+    #[test]
+    fn developer_vocabulary_requires_explicit_technical_app_context() {
+        let mut global = DictationState {
+            code_vocab_enabled: true,
+            ..DictationState::default()
+        };
+        let ordinary = profile("com.example.Chat", None, None);
+        let mut technical = profile("com.example.Editor", None, None);
+        technical.writing_style = Some(WritingStyle::CodeTechnical);
+        let mut indexed = profile("com.example.IDE", None, None);
+        indexed.ide_context_enabled = true;
+        indexed.ide_project_roots = vec!["/project".to_string()];
+        global.app_profiles = vec![ordinary, technical, indexed];
+
+        assert_eq!(
+            resolve_test(&global, None, SessionOverrides::default())
+                .vocabulary
+                .source,
+            VocabularySource::None
+        );
+        assert_eq!(
+            resolve_test(
+                &global,
+                Some("com.example.Chat"),
+                SessionOverrides::default(),
+            )
+            .vocabulary
+            .source,
+            VocabularySource::None
+        );
+        assert_eq!(
+            resolve_test(
+                &global,
+                Some("com.example.Unconfigured"),
+                SessionOverrides::default(),
+            )
+            .vocabulary
+            .source,
+            VocabularySource::None
+        );
+        assert_eq!(
+            resolve_test(
+                &global,
+                Some("com.example.Editor"),
+                SessionOverrides::default(),
+            )
+            .vocabulary
+            .source,
+            VocabularySource::CodeAware
+        );
+        assert_eq!(
+            resolve_test(
+                &global,
+                Some("com.example.IDE"),
+                SessionOverrides::default(),
+            )
+            .vocabulary
+            .source,
+            VocabularySource::CodeAware
+        );
     }
 
     #[test]

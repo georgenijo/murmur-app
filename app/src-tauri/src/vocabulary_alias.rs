@@ -41,14 +41,61 @@ impl CorrectionMatcherSet {
         fuzzy: bool,
         include_builtins: bool,
     ) -> Self {
+        Self::build_with_knowledge_policy(
+            base_terms,
+            entries,
+            app_profiles,
+            knowledge,
+            fuzzy,
+            include_builtins,
+            false,
+        )
+    }
+
+    /// Build developer-derived terms only into matchers for profiles carrying
+    /// an explicit technical-context signal. Global/app/project preferred
+    /// spellings and learned replacements keep their existing scopes.
+    pub(crate) fn build_with_contextual_code_terms(
+        base_terms: &[String],
+        entries: &[VocabularyEntry],
+        app_profiles: &[AppProfile],
+        knowledge: &[KnowledgeEntry],
+        fuzzy: bool,
+        include_builtins: bool,
+    ) -> Self {
+        Self::build_with_knowledge_policy(
+            base_terms,
+            entries,
+            app_profiles,
+            knowledge,
+            fuzzy,
+            include_builtins,
+            true,
+        )
+    }
+
+    fn build_with_knowledge_policy(
+        base_terms: &[String],
+        entries: &[VocabularyEntry],
+        app_profiles: &[AppProfile],
+        knowledge: &[KnowledgeEntry],
+        fuzzy: bool,
+        include_builtins: bool,
+        contextual_code_terms: bool,
+    ) -> Self {
         let global_entries = applicable_entries(entries, None, app_profiles);
         let global_learned = applicable_learned_pairs(knowledge, None, None);
+        let global_base_terms = if contextual_code_terms {
+            &[][..]
+        } else {
+            base_terms
+        };
         let global = Arc::new(build_matcher(
-            base_terms,
+            global_base_terms,
             &global_entries,
             &global_learned,
             fuzzy,
-            include_builtins,
+            include_builtins && !contextual_code_terms,
         ));
 
         let mut bundle_ids = app_profiles
@@ -77,12 +124,14 @@ impl CorrectionMatcherSet {
                 let applicable = applicable_entries(entries, Some(&bundle_id), app_profiles);
                 let project_root = unambiguous_project_root(&bundle_id, app_profiles);
                 let learned = applicable_learned_pairs(knowledge, Some(&bundle_id), project_root);
+                let code_terms_enabled = !contextual_code_terms
+                    || crate::state::app_profiles_enable_code_vocabulary(app_profiles, &bundle_id);
                 let matcher = Arc::new(build_matcher(
-                    base_terms,
+                    if code_terms_enabled { base_terms } else { &[] },
                     &applicable,
                     &learned,
                     fuzzy,
-                    include_builtins,
+                    include_builtins && code_terms_enabled,
                 ));
                 (bundle_id, matcher)
             })
@@ -697,6 +746,113 @@ mod tests {
         assert_eq!(
             set.select(Some("com.example.Editor")).apply("mer mer"),
             "Murmur"
+        );
+    }
+
+    #[test]
+    fn contextual_code_terms_do_not_leak_into_ordinary_apps() {
+        let ordinary = AppProfile {
+            bundle_id: "com.example.Chat".to_string(),
+            label: "Chat".to_string(),
+            auto_paste_override: None,
+            cleanup_override: None,
+            cli_formatting_override: None,
+            smart_formatting_override: None,
+            writing_style: None,
+            ide_context_enabled: false,
+            ide_project_roots: Vec::new(),
+        };
+        let mut technical = ordinary.clone();
+        technical.bundle_id = "com.example.Editor".to_string();
+        technical.label = "Editor".to_string();
+        technical.writing_style = Some(crate::state::WritingStyle::CodeTechnical);
+        let mut indexed = ordinary.clone();
+        indexed.bundle_id = "com.example.IDE".to_string();
+        indexed.label = "IDE".to_string();
+        indexed.ide_context_enabled = true;
+        indexed.ide_project_roots = vec!["/project".to_string()];
+
+        let preferred = entry("Tauri", &["Tori"]);
+        let terms = vec!["all__".to_string(), "toBe".to_string()];
+        let set = CorrectionMatcherSet::build_with_contextual_code_terms(
+            &terms,
+            &[preferred],
+            &[ordinary, technical, indexed],
+            &[],
+            false,
+            false,
+        );
+        let prose = "Tori will deploy this on all the machines before going to be offline";
+        let ordinary_expected =
+            "Tauri will deploy this on all the machines before going to be offline";
+        let technical_expected =
+            "Tauri will deploy this on all__ the machines before going toBe offline";
+
+        assert_eq!(set.select(None).apply(prose), ordinary_expected);
+        assert_eq!(
+            set.select(Some("com.example.Chat")).apply(prose),
+            ordinary_expected
+        );
+        assert_eq!(
+            set.select(Some("com.example.Unconfigured")).apply(prose),
+            ordinary_expected
+        );
+        assert_eq!(
+            set.select(Some("com.example.Editor")).apply(prose),
+            technical_expected
+        );
+        assert_eq!(
+            set.select(Some("com.example.IDE")).apply(prose),
+            technical_expected
+        );
+    }
+
+    #[test]
+    fn contextual_code_terms_follow_duplicate_profile_resolution() {
+        let mut first = AppProfile {
+            bundle_id: "com.example.Editor".to_string(),
+            label: "first".to_string(),
+            auto_paste_override: None,
+            cleanup_override: None,
+            cli_formatting_override: None,
+            smart_formatting_override: None,
+            writing_style: None,
+            ide_context_enabled: false,
+            ide_project_roots: Vec::new(),
+        };
+        let mut second = first.clone();
+        second.label = "second".to_string();
+        second.writing_style = Some(crate::state::WritingStyle::CodeTechnical);
+
+        let terms = vec!["toBe".to_string()];
+        let set = CorrectionMatcherSet::build_with_contextual_code_terms(
+            &terms,
+            &[],
+            &[first.clone(), second],
+            &[],
+            false,
+            false,
+        );
+        assert_eq!(
+            set.select(Some("com.example.Editor"))
+                .apply("going to be ready"),
+            "going toBe ready"
+        );
+
+        first.ide_context_enabled = true;
+        first.writing_style = Some(crate::state::WritingStyle::Conversational);
+        let set = CorrectionMatcherSet::build_with_contextual_code_terms(
+            &terms,
+            &[],
+            &[first],
+            &[],
+            false,
+            false,
+        );
+        assert_eq!(
+            set.select(Some("com.example.Editor"))
+                .apply("going to be ready"),
+            "going toBe ready"
         );
     }
 

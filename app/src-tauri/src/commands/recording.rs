@@ -71,12 +71,12 @@ fn whisper_prefix(prompt: &str) -> String {
 /// folder is scanned (and cached) and its identifiers are placed *first* — they're
 /// more specific than the generic built-ins, so they survive Whisper's prompt
 /// truncation. Folder scanning still happens at most once per folder/enable change.
-fn resolve_code_vocab_prompt(app_state: &AppState) -> String {
+fn resolve_code_vocab_prompt(app_state: &AppState, bundle_id: Option<&str>) -> String {
     // Fast path under the lock: feature off => nothing to do.
     let (enabled, folder, cached) = {
         let dictation = app_state.dictation.lock_or_recover();
         (
-            dictation.code_vocab_enabled,
+            dictation.code_vocabulary_enabled_for(bundle_id),
             dictation.code_vocab_folder.clone(),
             dictation.code_vocab_prompt.clone(),
         )
@@ -125,8 +125,12 @@ fn resolve_code_vocab_prompt(app_state: &AppState) -> String {
 
 /// Build the code-vocabulary prompt represented by an already-locked settings
 /// generation. `None` means the folder cache is not ready for this generation.
-fn cached_code_vocab_prompt(dictation: &crate::state::DictationState) -> Option<String> {
-    if !dictation.code_vocab_enabled {
+fn cached_code_vocab_prompt(
+    dictation: &crate::state::DictationState,
+    bundle_id: Option<&str>,
+) -> Option<String> {
+    let enabled_for_context = dictation.code_vocabulary_enabled_for(bundle_id);
+    if !enabled_for_context {
         return Some(String::new());
     }
     let builtin = crate::vocab::builtin_terms_prompt();
@@ -163,9 +167,9 @@ fn resolve_live_context(
         }
     };
     loop {
-        let code_vocab = resolve_code_vocab_prompt(app_state);
+        let code_vocab = resolve_code_vocab_prompt(app_state, bundle_id);
         let dictation = app_state.dictation.lock_or_recover();
-        let Some(current_code_vocab) = cached_code_vocab_prompt(&dictation) else {
+        let Some(current_code_vocab) = cached_code_vocab_prompt(&dictation, bundle_id) else {
             continue;
         };
         if current_code_vocab != code_vocab {
@@ -284,7 +288,7 @@ pub(crate) fn rebuild_correction_matcher(
         }
     }
     let knowledge = app_state.knowledge_replacements.lock_or_recover().clone();
-    let matcher = crate::vocabulary_alias::CorrectionMatcherSet::build_with_knowledge(
+    let matcher = crate::vocabulary_alias::CorrectionMatcherSet::build_with_contextual_code_terms(
         &terms,
         &dictation.vocabulary_entries,
         &dictation.app_profiles,
@@ -3090,7 +3094,9 @@ pub async fn transcribe_file(
     performance_guard.enter(PerformanceStageV1::InferenceDecode);
     let t_transcribe = std::time::Instant::now();
     let sanitized = custom_vocabulary.replace('\0', "");
-    let code_vocab = resolve_code_vocab_prompt(&state.app_state);
+    // Imported files have no frontmost-app context, so developer vocabulary is
+    // not applied. Explicit preferred terms remain in `custom_vocabulary`.
+    let code_vocab = resolve_code_vocab_prompt(&state.app_state, None);
     let prompt = combine_prompts(&sanitized, &code_vocab);
     let mut decode_ms = 0;
     let (text, load_report) = state.app_state.model_runtime.with_ready_backend(
@@ -3509,6 +3515,48 @@ mod tests {
             combine_prompts("", "code dupe Dupe").as_deref(),
             Some("code dupe")
         );
+    }
+
+    #[test]
+    fn cached_code_vocab_prompt_is_empty_outside_explicit_technical_context() {
+        let mut dictation = crate::state::DictationState {
+            code_vocab_enabled: true,
+            code_vocab_folder: "/project".to_string(),
+            code_vocab_prompt: Some("all__ toBe".to_string()),
+            ..crate::state::DictationState::default()
+        };
+        let ordinary = crate::state::AppProfile {
+            bundle_id: "com.example.Chat".to_string(),
+            label: "Chat".to_string(),
+            auto_paste_override: None,
+            cleanup_override: None,
+            cli_formatting_override: None,
+            smart_formatting_override: None,
+            writing_style: None,
+            ide_context_enabled: false,
+            ide_project_roots: Vec::new(),
+        };
+        let mut technical = ordinary.clone();
+        technical.bundle_id = "com.example.Editor".to_string();
+        technical.writing_style = Some(crate::state::WritingStyle::CodeTechnical);
+        dictation.app_profiles = vec![ordinary, technical];
+
+        assert_eq!(
+            cached_code_vocab_prompt(&dictation, None).as_deref(),
+            Some("")
+        );
+        assert_eq!(
+            cached_code_vocab_prompt(&dictation, Some("com.example.Chat")).as_deref(),
+            Some("")
+        );
+        assert_eq!(
+            cached_code_vocab_prompt(&dictation, Some("com.example.Unknown")).as_deref(),
+            Some("")
+        );
+        let technical_prompt =
+            cached_code_vocab_prompt(&dictation, Some("com.example.Editor")).unwrap();
+        assert!(technical_prompt.starts_with("all__ toBe"));
+        assert!(technical_prompt.contains("useEffect"));
     }
 
     #[test]
