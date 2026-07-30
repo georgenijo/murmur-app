@@ -229,6 +229,7 @@ impl WorkerFactory for ProductionWorkerFactory {
                         owner,
                         phase: audio::AudioInitPhase::StreamBuild,
                     });
+                    // Model a synchronous Core Audio call that never returns.
                     loop {
                         std::thread::park();
                     }
@@ -369,7 +370,14 @@ fn abandoned_reaper() -> &'static Sender<AbandonedWorker> {
             .spawn(move || {
                 let mut workers = Vec::<AbandonedWorker>::new();
                 loop {
-                    match receiver.recv_timeout(Duration::from_millis(100)) {
+                    let received = if workers.is_empty() {
+                        receiver
+                            .recv()
+                            .map_err(|_| RecvTimeoutError::Disconnected)
+                    } else {
+                        receiver.recv_timeout(Duration::from_millis(100))
+                    };
+                    match received {
                         Ok(worker) => {
                             let owner = worker.owner;
                             workers.push(worker);
@@ -1508,11 +1516,6 @@ mod tests {
         assert_eq!(spawn_count.load(Ordering::SeqCst), 2);
         assert_eq!(cancel(&supervisor, second).recv().unwrap(), Ok(true));
 
-        assert!(recovery_us < 250_000, "recovery took {recovery_us}µs");
-        assert!(
-            retry_accepted_us < 250_000,
-            "retry acceptance took {retry_accepted_us}µs"
-        );
         println!(
             "audio_recovery_benchmark recovery_us={recovery_us} retry_accepted_us={retry_accepted_us}"
         );

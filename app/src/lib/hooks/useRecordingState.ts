@@ -89,9 +89,9 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
     return () => { cancelled = true; unlisten?.(); };
   }, []);
 
-  // Audio initialization failures are terminal for the attempt, but the
-  // backend may remain Recovering while the owned Core Audio thread unwinds.
-  // Keep the error visible across the later idle transition.
+  // Audio initialization failures are terminal for the attempt. Cancellation
+  // briefly reports Recovering before Idle while detached Core Audio cleanup
+  // continues asynchronously, so keep the error visible across that transition.
   useEffect(() => {
     let cancelled = false;
     const unlistens: (() => void)[] = [];
@@ -105,8 +105,8 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
     });
     listen('recording-recovery-stalled', () => {
       setError(
-        'Murmur is still waiting for macOS audio to release the microphone. '
-        + 'Restarting Murmur clears this attempt, but macOS audio may still need time to recover.',
+        'Murmur is still waiting for macOS audio to finish stopping the microphone. '
+        + 'Restarting Murmur clears this stop, but macOS audio may still need time to recover.',
       );
     }).then((fn) => {
       if (cancelled) fn(); else unlistens.push(fn);
