@@ -49,9 +49,18 @@ Loads and persists `Settings` to localStorage, pushes the backend-relevant subse
 One-time init sequence on mount: `init_dictation`, then `configure_dictation` with the loaded settings.
 
 ### `useAutoUpdater`
-OTA updates: background check on launch and every 24h, semver comparison, min-version enforcement (forced updates drop Skip/Later), skip/dismiss persistence, download progress, install, and auto-relaunch. Fires a native macOS notification when a background check finds an update.
+OTA updates: due-gated background checks on launch, every six hours, foreground
+activation, and native macOS wake; semver comparison; min-version enforcement
+(forced updates drop Skip/Later); download progress, install, and auto-relaunch.
+Optional background discoveries stay passive as a persistent homepage pill and
+versioned menu-bar action; required or manual discoveries open the dialog. A
+native notification fires only on the first background discovery of a version
+during the process lifetime.
 
-Returns `{updateStatus, checkForUpdate, startDownload, skipVersion, dismissUpdate}`. Reads `min_version` from the `latest-v2.json` channel; persists `skipped-update-version` and `updater-last-check` to localStorage.
+Returns `{updateStatus, isUpdateDialogOpen, checkForUpdate, showAvailableUpdate,
+startDownload, skipVersion, dismissUpdate}`. Reads `min_version` from the
+`latest-v2.json` channel; persists `skipped-update-version` and
+`updater-last-check` to localStorage.
 
 ### `useOpenSettingsListener`
 Listens for `open-settings` from the overlay's gear button and opens the Settings panel — showing the main window isn't enough, since panel visibility is local React state.

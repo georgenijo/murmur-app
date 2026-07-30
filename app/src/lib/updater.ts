@@ -2,7 +2,8 @@ const SKIPPED_VERSION_KEY = 'skipped-update-version';
 const LAST_CHECK_KEY = 'updater-last-check';
 const PENDING_UPDATE_KEY = 'pending-update-release-notes';
 const MAX_RELEASE_NOTES_LENGTH = 50_000;
-export const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
+export const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
+export const CHECK_TIMER_TICK_MS = 15 * 60 * 1000; // 15 minutes
 
 const LATEST_JSON_URL =
   'https://github.com/georgenijo/murmur-app/releases/latest/download/latest-v2.json';

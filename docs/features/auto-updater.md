@@ -2,12 +2,22 @@
 
 ## Overview
 
-The app checks for updates on launch and every 24 hours. Updates are downloaded from GitHub Releases, verified with ed25519 signatures, and installed with an automatic relaunch. A `min_version` field in the release manifest enables forced updates that cannot be skipped or dismissed.
+The app checks for updates on launch, every six hours while resident, and when
+the native app resumes or the main window becomes active after a due interval.
+Updates are downloaded from GitHub Releases, verified with ed25519 signatures,
+and installed with an automatic relaunch. A `min_version` field in the release
+manifest enables forced updates that cannot be skipped or dismissed.
 
 ## Update Check Schedule
 
 - **On launch:** A background check runs immediately on mount via the `useAutoUpdater` hook.
-- **Periodic:** Every 24 hours (`CHECK_INTERVAL_MS = 86400000`), gated by `isDueForCheck()` which reads the last check timestamp from localStorage (`updater-last-check`).
+- **Periodic:** Every six hours (`CHECK_INTERVAL_MS = 21600000`), gated by
+  `isDueForCheck()` which reads the last check timestamp from localStorage
+  (`updater-last-check`). A low-cost 15-minute timer only evaluates that local
+  due check; it does not make a network request every tick.
+- **Lifecycle:** Native resume, webview visibility, and main-window focus request
+  the same due-gated background check. Several lifecycle signals therefore
+  still collapse into at most one network request per six-hour interval.
 
 ## Update Source
 
@@ -36,10 +46,14 @@ The manifest contains version information, download URLs, signatures, and an opt
 
 When a new version is available and the current version is above `min_version`:
 
-1. **Available** — Modal shows version number and release notes. Three buttons:
+1. **Available** — Background discovery is passive: the main Record/File row
+   shows an update pill and the menu-bar action changes to the available
+   version. Manual checks open the modal immediately; clicking either passive
+   indicator opens it later. The modal shows version number and release notes
+   with three buttons:
    - "Update Now" — begins download
    - "Skip This Version" — stores the version in localStorage (`skipped-update-version`), suppresses future background checks for that version
-   - "Later" — dismisses the modal without skipping
+   - "Later" — dismisses the modal without skipping; the update pill remains
 2. **Downloading** — Progress bar with percentage. Progress reported via Tauri's `downloadAndInstall` callback.
 3. **Ready** — "Installing and relaunching..." text displayed.
 4. **Relaunch** — App restarts automatically via `@tauri-apps/plugin-process`.
@@ -132,6 +146,12 @@ an already-installed release as an available update.
 
 - The "Check for Updates" button in the About section of settings triggers a manual check. It is disabled during `checking` or `downloading` phases.
 - Status text shows: "Checking...", "You're up to date", "vX.Y.Z available", or "Update check failed".
+- The macOS menu-bar menu exposes the same manual check. It brings the main
+  window forward, reports checking/up-to-date/error status beside the Record
+  tabs, and opens the existing update dialog when a release is available.
+- Optional background updates do not interrupt the user with a modal. A
+  persistent `Update available · vX.Y.Z` pill and versioned menu item remain
+  until the release is installed or explicitly skipped.
 - Skipped version is stored in localStorage under `skipped-update-version`.
 - Pending post-update notes are stored under `pending-update-release-notes` and
   removed when dismissed or when the running version does not match.

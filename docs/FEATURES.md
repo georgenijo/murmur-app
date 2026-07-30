@@ -180,7 +180,7 @@ Every transform-key hold is recorded as a content-free `TransformAttemptV1` with
 - macOS 14+ on Apple Silicon (Core ML/ANE); Whisper and CPU Parakeet also build for Linux.
 - Developer ID signed and notarized; hardened runtime; sidecar ships with split entitlements; release finalization fails closed on any unexpected bundle executable.
 - Release builds use `opt-level = "s"`, LTO off, 16 parallel codegen units, and panic abort; stripping remains disabled so Tauri can patch the updater bundle-type marker.
-- **Auto-updater** — [features/auto-updater.md](features/auto-updater.md). Background check on launch and every 24h against `latest-v2.json`, ed25519-signed, min-version enforcement (no skip/dismiss when required), skip/dismiss otherwise, progress and auto-relaunch.
+- **Auto-updater** — [features/auto-updater.md](features/auto-updater.md). Due-gated checks on launch, every six hours, foreground activation, and macOS wake against `latest-v2.json`; passive homepage/menu-bar availability indicators; ed25519 signatures; required-version enforcement; progress and auto-relaunch.
 - **Privacy boundaries**: release `pipeline` events drop all strings; `transform` events are restricted to an explicit stable vocabulary in *all* builds; knowledge content and selected paths are excluded from logs; instructions never enter history or stats; audio and transcripts are written to disk only when the user turns file output on.
 - All local data is inspectable and deletable from within the app.
 
@@ -190,7 +190,7 @@ Every transform-key hold is recorded as a content-free `TransformAttemptV1` with
 
 | Area | Location |
 |------|----------|
-| Rust backend | `app/src-tauri/src/` — 108 Tauri commands |
+| Rust backend | `app/src-tauri/src/` — 110 Tauri commands |
 | Frontend | `app/src/` — React 18 + TypeScript + Tailwind 4 |
 | LLM sidecar | `app/src-tauri/sidecars/local-llm/`, protocol in `crates/local-llm-protocol` |
 | Diagnostics MCP tool | `tools/murmur-diag/` |

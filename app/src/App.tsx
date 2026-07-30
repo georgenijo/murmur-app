@@ -1,5 +1,6 @@
 import { useState, useEffect, lazy, Suspense, useCallback, useMemo, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { flog } from './lib/log';
 import { SettingsPanel, SETTINGS_CATEGORIES } from './components/settings';
 import { CommandPalette } from './components/CommandPalette';
@@ -28,6 +29,7 @@ import { useSilenceAutoStop } from './lib/hooks/useSilenceAutoStop';
 import { useAutoUpdater } from './lib/hooks/useAutoUpdater';
 import { UpdateModal } from './components/UpdateModal';
 import { WhatsNewModal } from './components/WhatsNewModal';
+import { UpdateIndicator } from './components/UpdateIndicator';
 import type { CompletedUpdate, UpdateStatus } from './lib/updater';
 import { StatsBar } from './components/StatsBar';
 const ResourceMonitor = lazy(() => import('./components/ResourceMonitor').then(m => ({ default: m.ResourceMonitor })));
@@ -180,12 +182,14 @@ function App() {
   ] : [];
   const [devUpdateStatus, setDevUpdateStatus] = useState<UpdateStatus | null>(null);
   const [devCompletedUpdate, setDevCompletedUpdate] = useState<CompletedUpdate | null>(null);
+  const [devUpdateDialogOpen, setDevUpdateDialogOpen] = useState(false);
 
   const checkForUpdate = useCallback(async () => {
     if (import.meta.env.DEV) {
       devUpdateIndex.current = (devUpdateIndex.current + 1) % (devMockStates.length + 1);
       if (devUpdateIndex.current === 0) {
         setDevUpdateStatus(null);
+        setDevUpdateDialogOpen(false);
         setDevCompletedUpdate({
           version: '0.22.0',
           notes: '## New Features\n\n- Faster local transcription\n- Selected-text transforms\n\n## Bug Fixes\n\n- More reliable microphone startup\n- Smoother overlay behavior',
@@ -193,6 +197,7 @@ function App() {
       } else {
         setDevCompletedUpdate(null);
         setDevUpdateStatus(devMockStates[devUpdateIndex.current - 1]);
+        setDevUpdateDialogOpen(true);
       }
       return;
     }
@@ -200,12 +205,26 @@ function App() {
   }, [updater.checkForUpdate]);
 
   const updateStatus = devUpdateStatus ?? updater.updateStatus;
+  const isUpdateDialogOpen = devUpdateStatus
+    ? devUpdateDialogOpen
+    : updater.isUpdateDialogOpen;
+  const showAvailableUpdate = useCallback(() => {
+    if (devUpdateStatus?.phase === 'available') {
+      setDevUpdateDialogOpen(true);
+      return;
+    }
+    updater.showAvailableUpdate();
+  }, [devUpdateStatus, updater.showAvailableUpdate]);
   const dismissUpdate = useCallback(() => {
-    if (devUpdateStatus) { setDevUpdateStatus(null); return; }
+    if (devUpdateStatus) { setDevUpdateDialogOpen(false); return; }
     updater.dismissUpdate();
   }, [devUpdateStatus, updater.dismissUpdate]);
   const skipVersion = useCallback(() => {
-    if (devUpdateStatus) { setDevUpdateStatus(null); return; }
+    if (devUpdateStatus) {
+      setDevUpdateDialogOpen(false);
+      setDevUpdateStatus(null);
+      return;
+    }
     updater.skipVersion();
   }, [devUpdateStatus, updater.skipVersion]);
   const startDownload = updater.startDownload;
@@ -217,6 +236,39 @@ function App() {
     }
     updater.dismissCompletedUpdate();
   }, [devCompletedUpdate, updater.dismissCompletedUpdate]);
+
+  // The native menu-bar item brings the main window forward and asks the same
+  // updater used by Settings and the command palette to perform a manual check.
+  useEffect(() => {
+    let disposed = false;
+    let unlistenCheck: (() => void) | undefined;
+    listen<unknown>('check-for-updates-requested', () => {
+      void checkForUpdate();
+    })
+      .then((unlisten) => {
+        if (disposed) unlisten();
+        else unlistenCheck = unlisten;
+      })
+      .catch((err) => {
+        flog.warn('updater', 'could not listen for menu-bar update checks', {
+          error: String(err),
+        });
+      });
+    return () => {
+      disposed = true;
+      unlistenCheck?.();
+    };
+  }, [checkForUpdate]);
+
+  // Keep the native menu label in sync with the passive in-app indicator.
+  useEffect(() => {
+    const version = updateStatus.phase === 'available' ? updateStatus.version : null;
+    invoke('set_tray_update_available', { version }).catch((err: unknown) => {
+      flog.warn('updater', 'could not update menu-bar update item', {
+        error: String(err),
+      });
+    });
+  }, [updateStatus]);
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [mainTab, setMainTab] = useState<'record' | 'file'>('record');
@@ -410,20 +462,27 @@ function App() {
 
       <div className="flex-1 flex overflow-hidden">
         <main className={`flex-1 flex-col overflow-hidden p-4 gap-4 ${isSettingsOpen ? 'hidden' : 'flex'}`}>
-          <div className="shrink-0 flex gap-1 p-1 self-start bg-surface-container rounded-xl">
-            {(['record', 'file'] as const).map((tab) => (
-              <button
-                key={tab}
-                onClick={() => setMainTab(tab)}
-                className={`px-3 py-1 text-sm font-medium rounded-md transition-colors ${
-                  mainTab === tab
-                    ? 'bg-surface-container-lowest text-on-surface shadow-sm'
-                    : 'text-on-surface-variant hover:text-on-surface'
-                }`}
-              >
-                {tab === 'record' ? 'Record' : 'Transcribe File'}
-              </button>
-            ))}
+          <div className="flex shrink-0 items-center gap-3">
+            <div className="flex gap-1 rounded-xl bg-surface-container p-1">
+              {(['record', 'file'] as const).map((tab) => (
+                <button
+                  key={tab}
+                  onClick={() => setMainTab(tab)}
+                  className={`px-3 py-1 text-sm font-medium rounded-md transition-colors ${
+                    mainTab === tab
+                      ? 'bg-surface-container-lowest text-on-surface shadow-sm'
+                      : 'text-on-surface-variant hover:text-on-surface'
+                  }`}
+                >
+                  {tab === 'record' ? 'Record' : 'Transcribe File'}
+                </button>
+              ))}
+            </div>
+            <UpdateIndicator
+              status={updateStatus}
+              onOpen={showAvailableUpdate}
+              onRetryCheck={() => void checkForUpdate()}
+            />
           </div>
 
           {mainTab === 'record' ? (
@@ -487,7 +546,7 @@ function App() {
       />
       {!completedUpdate && (
         <UpdateModal
-          status={updateStatus}
+          status={isUpdateDialogOpen ? updateStatus : { phase: 'idle' }}
           onDownload={startDownload}
           onSkip={skipVersion}
           onDismiss={dismissUpdate}

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- Update availability now stays visible without a backend or disruptive optional-update modal: Murmur performs due-gated checks on macOS wake and foreground activation, adds a native menu-bar check/update action, and keeps a versioned pill beside Record and Transcribe File until the release is installed or skipped.
+
 ## [0.23.9] - 2026-07-30
 
 ### Fixed
