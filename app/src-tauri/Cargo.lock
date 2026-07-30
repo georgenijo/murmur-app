@@ -2783,6 +2783,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "murmur-capture-helper"
+version = "0.1.0"
+dependencies = [
+ "cpal",
+ "libc",
+ "murmur-capture-helper-protocol",
+]
+
+[[package]]
+name = "murmur-capture-helper-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "murmur-llm-sidecar"
 version = "0.1.0"
 dependencies = [
@@ -6017,6 +6035,7 @@ dependencies = [
  "block2",
  "bzip2 0.5.2",
  "chrono",
+ "core-foundation",
  "core-graphics",
  "cpal",
  "dirs 5.0.1",
@@ -6025,6 +6044,7 @@ dependencies = [
  "hound",
  "libc",
  "memory-stats",
+ "murmur-capture-helper-protocol",
  "murmur-local-llm-protocol",
  "objc2",
  "objc2-app-kit",
@@ -6032,6 +6052,7 @@ dependencies = [
  "rdev",
  "reqwest 0.12.28",
  "rusqlite",
+ "security-framework",
  "serde",
  "serde_json",
  "sha2",

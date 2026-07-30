@@ -1,14 +1,16 @@
 #[cfg(target_os = "macos")]
 mod alloc;
 mod audio;
-mod audio_lifecycle;
 mod audio_decode;
+mod audio_lifecycle;
 // `pub` so the headless benchmark runner (tests/headless_benchmark.rs) can
 // call `benchmark::run` directly with a mock AppHandle; not part of any
 // stable external API.
 pub mod benchmark;
+pub mod capture_helper_probe;
 mod cleanup;
 mod cli_command;
+mod code_signing;
 mod commands;
 mod correct_and_teach;
 mod correction;
@@ -22,6 +24,7 @@ mod keyboard;
 mod knowledge_store;
 pub mod llm_sidecar;
 mod log_shipper;
+pub mod managed_child;
 mod model_runtime;
 mod performance_metrics;
 mod platform;
@@ -92,9 +95,9 @@ use state::AppState;
 use std::sync::{Mutex, MutexGuard};
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{Emitter, Manager};
 #[cfg(target_os = "macos")]
 use tauri::RunEvent;
+use tauri::{Emitter, Manager};
 
 /// Helper trait to recover from poisoned mutexes
 pub(crate) trait MutexExt<T> {

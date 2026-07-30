@@ -80,6 +80,7 @@ pub const TRANSFORM_MODEL_URL: &str = "https://huggingface.co/Qwen/Qwen2.5-1.5B-
 
 /// Executable base name of the signed helper, as an `externalBin` and in dev.
 pub const HELPER_BIN_NAME: &str = "murmur-llm-sidecar";
+pub const HELPER_IDENTIFIER: &str = "com.localdictation.local-llm-sidecar";
 
 /// RSS ceiling below which the helper runs unremarked (2 GiB).
 const RSS_WARN_BYTES: u64 = 2 * 1024 * 1024 * 1024;
@@ -532,6 +533,10 @@ impl SpawnPlan {
             Self::Production => &[],
             Self::Test(c) => &c.scenario_env,
         }
+    }
+
+    fn requires_signature_validation(&self) -> bool {
+        matches!(self, Self::Production) && !cfg!(debug_assertions)
     }
     fn pins(&self) -> (u64, &str) {
         match self {
@@ -1177,13 +1182,10 @@ mod supported {
             let raw_fd = model_file.as_raw_fd();
             let spawn_started = Instant::now();
 
-            // TODO(#312 PR-A3/C2 packaging integration): before spawn, validate
-            // `helper_path` with `SecStaticCodeCheckValidity` against the fixed
-            // designated requirement (identifier
-            // `com.localdictation.local-llm-sidecar`, matching Team ID, hardened
-            // runtime). Path pinning alone does not defend the ADR threat-model
-            // "Helper replacement" row — this is a hard gate for the signed,
-            // notarized build and must land before shipping the runtime.
+            if self.plan.requires_signature_validation() {
+                crate::code_signing::validate_bundled_helper(&helper_path, HELPER_IDENTIFIER)
+                    .map_err(|_| TransformError::SpawnFailed)?;
+            }
             let mut command = std::process::Command::new(&helper_path);
             command
                 .current_dir("/")
