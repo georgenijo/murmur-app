@@ -117,13 +117,75 @@ fn read_range(path: &Path, offset: u64, max: u64) -> Option<Vec<u8>> {
     Some(buf)
 }
 
-async fn ship(client: &reqwest::Client, endpoint: &str, install_id: &str, data: Vec<u8>) -> bool {
+/// Device identity shipped alongside every batch so the dashboard can name
+/// the stream ("George's MacBook Pro · macOS 26.0"). Collected once.
+struct DeviceInfo {
+    name: String,
+    os: String,
+    hw: String,
+}
+
+fn sanitize_header(value: &str) -> String {
+    let cleaned: String = value
+        .chars()
+        .map(|c| if c.is_ascii_graphic() || c == ' ' { c } else { '?' })
+        .collect();
+    cleaned.trim().chars().take(80).collect()
+}
+
+fn command_stdout(cmd: &str, args: &[&str]) -> Option<String> {
+    let out = std::process::Command::new(cmd).args(args).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!s.is_empty()).then_some(s)
+}
+
+fn collect_device_info() -> DeviceInfo {
+    #[cfg(target_os = "macos")]
+    let name = command_stdout("scutil", &["--get", "ComputerName"]);
+    #[cfg(not(target_os = "macos"))]
+    let name: Option<String> = None;
+    let name = name
+        .or_else(|| command_stdout("hostname", &[]))
+        .unwrap_or_else(|| "unknown".into());
+
+    #[cfg(target_os = "macos")]
+    let os = command_stdout("sw_vers", &["--productVersion"])
+        .map(|v| format!("macOS {}", v))
+        .unwrap_or_else(|| "macOS ?".into());
+    #[cfg(not(target_os = "macos"))]
+    let os = std::env::consts::OS.to_string();
+
+    #[cfg(target_os = "macos")]
+    let hw = command_stdout("sysctl", &["-n", "hw.model"]).unwrap_or_default();
+    #[cfg(not(target_os = "macos"))]
+    let hw = String::new();
+
+    DeviceInfo {
+        name: sanitize_header(&name),
+        os: sanitize_header(&os),
+        hw: sanitize_header(&hw),
+    }
+}
+
+async fn ship(
+    client: &reqwest::Client,
+    endpoint: &str,
+    install_id: &str,
+    device: &DeviceInfo,
+    data: Vec<u8>,
+) -> bool {
     let result = client
         .post(endpoint)
         .header("Authorization", format!("Bearer {}", TOKEN))
         .header("X-Install-Id", install_id)
         .header("X-App-Version", env!("CARGO_PKG_VERSION"))
         .header("X-Dev", if cfg!(debug_assertions) { "1" } else { "0" })
+        .header("X-Device-Name", &device.name)
+        .header("X-Os-Version", &device.os)
+        .header("X-Hw-Model", &device.hw)
         .header("Content-Type", "application/x-ndjson")
         .body(data)
         .send()
@@ -131,7 +193,7 @@ async fn ship(client: &reqwest::Client, endpoint: &str, install_id: &str, data: 
     matches!(result, Ok(resp) if resp.status().is_success())
 }
 
-async fn tick(client: &reqwest::Client, endpoint: &str) {
+async fn tick(client: &reqwest::Client, endpoint: &str, device: &DeviceInfo) {
     let (Some(state_file), Some(log)) = (state_path(), jsonl_path()) else {
         return;
     };
@@ -145,7 +207,7 @@ async fn tick(client: &reqwest::Client, endpoint: &str) {
             break;
         };
         if !batch.data.is_empty()
-            && !ship(client, endpoint, &state.install_id, batch.data).await
+            && !ship(client, endpoint, &state.install_id, device, batch.data).await
         {
             break; // endpoint unreachable — offset stays put, retry next tick
         }
@@ -171,8 +233,9 @@ pub fn start() {
             Err(_) => return,
         };
         tokio::time::sleep(std::time::Duration::from_secs(STARTUP_DELAY_SECS)).await;
+        let device = collect_device_info();
         loop {
-            tick(&client, &endpoint).await;
+            tick(&client, &endpoint, &device).await;
             tokio::time::sleep(std::time::Duration::from_secs(TICK_SECS)).await;
         }
     });
@@ -236,6 +299,22 @@ mod tests {
         let batch = next_batch(&log, &dir.join("events.jsonl.1"), 999).unwrap();
         assert!(batch.data.is_empty());
         assert_eq!(batch.next_offset, 0);
+    }
+
+    #[test]
+    fn device_info_is_sanitized_and_present() {
+        let d = collect_device_info();
+        assert!(!d.name.is_empty());
+        assert!(d.name.len() <= 80);
+        assert!(d.name.chars().all(|c| c.is_ascii_graphic() || c == ' '));
+        assert!(d.os.starts_with("macOS") || !d.os.is_empty());
+    }
+
+    #[test]
+    fn sanitize_strips_control_and_truncates() {
+        assert_eq!(sanitize_header("Bob\u{7f}s\nMac"), "Bob?s?Mac");
+        assert_eq!(sanitize_header(&"x".repeat(200)).len(), 80);
+        assert_eq!(sanitize_header("  padded  "), "padded");
     }
 
     #[test]

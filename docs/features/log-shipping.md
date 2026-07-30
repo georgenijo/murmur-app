@@ -11,8 +11,10 @@ install the app (or receive an auto-update) and logs flow.
   privacy-stripped events shown in the in-app log viewer. Transcription text
   never enters that stream (`telemetry.rs` strips it at the source).
 - Installs are identified by a **random UUID** generated on first run and
-  stored in `shipper_state.json`. Hostname, username, and machine identifiers
-  are never sent.
+  stored in `shipper_state.json`. Each batch also carries the **device name**
+  (`scutil --get ComputerName`), **macOS version**, and **hardware model** so
+  the fleet dashboard can label streams ("George's MacBook Pro · macOS 26.0").
+  Username and any content-bearing identifiers are never sent.
 - Kill switch: launch with `MURMUR_LOG_SHIPPER=off` in the environment.
 
 ## Architecture
@@ -52,6 +54,13 @@ events.jsonl  ──(log_shipper.rs, every 60s)──▶  POST https://georgenij
 - Exposed at `https://georgenijo.com/murmur/ingest` via a `location` block in
   `/etc/nginx/sites-enabled/georgenijo.com`. Health: `/murmur/healthz`.
 - The ingest token is in fleet secrets: `fleet secret get murmur-log-ingest-token`.
+
+## Fleet dashboard
+
+`https://murmur.georgenijo.com` (Cloudflare Access, george.nijo8@gmail.com
+only) — one row per install stream with device name, OS, version, event count,
+and freshness; click a row for the per-device page (recent warnings/errors on
+top, last 200 events below). Served by the same receiver process.
 
 ## Reading the logs
 
