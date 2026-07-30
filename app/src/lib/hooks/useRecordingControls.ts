@@ -37,8 +37,8 @@ export function useRecordingControls({
 
   useEffect(() => { lockedRef.current = lockedMode; }, [lockedMode]);
 
-  // A cancelled startup enters Recovering before Idle, so release locked mode
-  // at that boundary instead of making the overlay look armed during cleanup.
+  // Cancellation briefly reports Recovering before immediately returning to
+  // Idle, so release locked mode at the first cancellation boundary.
   useEffect(() => {
     if (status === 'idle' || status === 'recovering') setLockedMode(false);
   }, [status]);

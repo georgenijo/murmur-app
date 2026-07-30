@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- A Core Audio stream build that never returns no longer leaves Murmur in `Recovering` until restart. Deadline-expired and user-cancelled generations close their callback gate, release logical microphone ownership immediately, and are joined by a background reaper if macOS eventually returns, so a fresh recording attempt can start without relaunching (#389).
+
 ## [0.23.0] - 2026-07-29
 
 ### Added

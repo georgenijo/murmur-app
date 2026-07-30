@@ -2774,10 +2774,10 @@ pub async fn stop_native_recording(
 
 /// Cancel an in-progress recording or transcription.
 ///
-/// - **Starting**: requests cancellation and remains Recovering until the owned
-///   audio thread exits.
-/// - **Recording**: requests cancellation and remains Recovering until the
-///   owned audio thread exits; captured samples are discarded.
+/// - **Starting**: requests cancellation, briefly reports Recovering, detaches
+///   the owned audio thread for asynchronous cleanup, and returns to Idle.
+/// - **Recording**: follows the same Recovering-to-Idle transition and detached
+///   cleanup; captured samples are discarded.
 /// - **Processing**: marks the current recording_id as cancelled so the
 ///   pipeline discards its result at the next checkpoint; immediately
 ///   emits idle status so the UI resets without waiting for whisper.

@@ -135,7 +135,7 @@ glass surfaces.
 | `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 108 registered commands, setup, tray, run loop |
 | `alloc.rs` | Custom macOS malloc zone ("RustHeapZone") so Rust heap is accounted separately from whisper.cpp's FFI heap |
 | `audio.rs` | cpal capture worker, phase telemetry, mono mix, 16kHz resample, `audio-level` emission |
-| `audio_lifecycle.rs` | App-lifetime single-owner supervisor; async start, generation cancellation, deadlines, recovery, and worker joining |
+| `audio_lifecycle.rs` | App-lifetime single-owner supervisor; async start, generation cancellation, deadlines, callback quarantine, and background reaping of blocked workers |
 | `audio_decode.rs` | Decoding imported audio files for `transcribe_file` |
 | `benchmark.rs` | Performance Lab: fixture corpus, scoring (raw/normalized/delivered WER), reports |
 | `cleanup.rs` | Filler removal and capitalization |

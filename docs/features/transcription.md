@@ -12,18 +12,27 @@ Transcription processing is local. Network access occurs for model setup and may
 
 - Uses `cpal` to record from the default input device on a background thread
 - An app-lifetime supervisor is the single microphone owner. It owns each
-  capture worker and join handle from spawn through exit; a cancelled or
-  deadline-expired Core Audio call remains tracked in `Recovering` and blocks
-  new starts until the worker actually exits.
+  live capture worker and join handle. If a cancelled or deadline-expired Core
+  Audio call does not return, the supervisor closes that generation's callback
+  gate, releases logical ownership, and transfers its join handle to one
+  app-lifetime reaper thread. The quarantined worker can no longer emit samples,
+  levels, or readiness for a newer generation, and a new start is accepted
+  without waiting for macOS to return.
 - Dictation start returns after ownership is accepted, without waiting for
   Core Audio. The worker reports device enumeration, config lookup, stream
   build, play, readiness, stop, and exit events back to the supervisor.
 - `Starting` emits a still-connecting signal after 5 seconds and hard-cancels
   after 30 seconds. A late readiness signal is stopped without enabling sample
-  or level callbacks. There is no automatic retry.
+  or level callbacks. Recovery briefly reports the cancellation reason and then
+  returns to `Idle`; there is no automatic retry.
 - The callback's active gate stays false until readiness is accepted for the
   current `recording_id`; stale/cancelled attempts therefore emit no levels or
   samples.
+- macOS does not expose a safe way to cancel a synchronous `cpal`/Core Audio
+  stream build. A call that remains blocked therefore retains its worker thread
+  until the OS returns or the app exits. Repeated OS hangs can temporarily
+  retain one worker per failed attempt; the reaper polls and joins each one as
+  soon as it exits.
 - Recording duration begins at accepted readiness, not at the user's initial
   activation.
 - Multi-channel to mono conversion (averages channels)
@@ -134,7 +143,7 @@ The `download_model` command streams Murmur-managed Whisper and sherpa downloads
 
 ```
 Idle → Starting → Recording → Processing → Idle
-           └────→ Recovering ────────────→ Idle
+           └────→ Recovering → Idle
 ```
 
 Status is managed in `DictationState` behind a `Mutex` with poison recovery (`MutexExt` trait).
