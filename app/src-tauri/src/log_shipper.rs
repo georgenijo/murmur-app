@@ -123,6 +123,7 @@ struct DeviceInfo {
     name: String,
     os: String,
     hw: String,
+    specs: String,
 }
 
 fn sanitize_header(value: &str) -> String {
@@ -163,10 +164,33 @@ fn collect_device_info() -> DeviceInfo {
     #[cfg(not(target_os = "macos"))]
     let hw = String::new();
 
+    // "Apple M2 · 16 GB · 8 cores" — chip, RAM, core count.
+    #[cfg(target_os = "macos")]
+    let specs = {
+        let chip = command_stdout("sysctl", &["-n", "machdep.cpu.brand_string"])
+            .unwrap_or_else(|| std::env::consts::ARCH.to_string());
+        let ram = command_stdout("sysctl", &["-n", "hw.memsize"])
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(|b| format!("{} GB", b >> 30))
+            .unwrap_or_default();
+        let cores = command_stdout("sysctl", &["-n", "hw.ncpu"])
+            .map(|n| format!("{} cores", n))
+            .unwrap_or_default();
+        [chip, ram, cores]
+            .iter()
+            .filter(|s| !s.is_empty())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" / ")
+    };
+    #[cfg(not(target_os = "macos"))]
+    let specs = std::env::consts::ARCH.to_string();
+
     DeviceInfo {
         name: sanitize_header(&name),
         os: sanitize_header(&os),
         hw: sanitize_header(&hw),
+        specs: sanitize_header(&specs),
     }
 }
 
@@ -186,6 +210,7 @@ async fn ship(
         .header("X-Device-Name", &device.name)
         .header("X-Os-Version", &device.os)
         .header("X-Hw-Model", &device.hw)
+        .header("X-Hw-Specs", &device.specs)
         .header("Content-Type", "application/x-ndjson")
         .body(data)
         .send()
@@ -219,6 +244,12 @@ async fn tick(client: &reqwest::Client, endpoint: &str, device: &DeviceInfo) {
 pub fn start() {
     if std::env::var("MURMUR_LOG_SHIPPER").is_ok_and(|v| v == "off") {
         tracing::info!(target: "system", "log shipper disabled via MURMUR_LOG_SHIPPER=off");
+        return;
+    }
+    // CI smoke tests launch the real bundle; their logs are noise on the
+    // fleet dashboard (GitHub Actions and most CI systems set CI=true).
+    if std::env::var("CI").is_ok_and(|v| !v.is_empty()) {
+        tracing::info!(target: "system", "log shipper disabled: CI environment");
         return;
     }
     let endpoint =
