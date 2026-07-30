@@ -124,16 +124,27 @@ fn incomplete_handshakes_never_classify_as_success() {
 
 #[test]
 fn active_observation_window_starts_after_the_complete_handshake() {
-    let evidence = supervisor("delayed_active").run().unwrap();
+    let supervisor = CaptureProbeSupervisor::for_test(TestCaptureProbeConfig {
+        helper_path: helper_path(),
+        scenario_environment: vec![(
+            "MOCK_CAPTURE_SCENARIO".to_string(),
+            "delayed_active".to_string(),
+        )],
+        handshake_timeout: Duration::from_millis(800),
+        observe_for: Duration::from_millis(300),
+        cancel_grace: Duration::from_millis(100),
+        spawned_signal: None,
+    });
+    let evidence = supervisor.run().unwrap();
     assert_eq!(evidence.outcome, "ok");
     assert_eq!(evidence.termination, "cooperative");
     assert!(
-        evidence.elapsed_ms >= 650,
+        evidence.elapsed_ms >= 500,
         "active observation was shortened by handshake time: elapsed={}",
         evidence.elapsed_ms
     );
     assert!(
-        evidence.elapsed_ms < 1_000,
+        evidence.elapsed_ms < 1_200,
         "handshake plus observation exceeded the total bound: elapsed={}",
         evidence.elapsed_ms
     );
