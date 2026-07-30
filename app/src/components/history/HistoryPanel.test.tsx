@@ -34,6 +34,10 @@ describe('HistoryPanel', () => {
   const buttons = () => Array.from(container.querySelectorAll('button'));
   const byText = (text: string) => buttons().find((b) => b.textContent === text);
   const cardText = () => Array.from(container.querySelectorAll('article')).map((a) => a.textContent ?? '');
+  const searchShell = () => container.querySelector('[data-testid="history-search-shell"]') as HTMLDivElement;
+  const searchInput = () => container.querySelector('input[type="search"]') as HTMLInputElement;
+  const searchTrigger = () => container.querySelector('[aria-label="Open transcript search"]') as HTMLButtonElement;
+  const searchClose = () => container.querySelector('[aria-label="Close transcript search"]') as HTMLButtonElement;
 
   async function render(props: Partial<Parameters<typeof HistoryPanel>[0]> = {}) {
     await act(async () => {
@@ -49,11 +53,29 @@ describe('HistoryPanel', () => {
   }
 
   async function type(value: string) {
-    const input = container.querySelector('input[type="search"]') as HTMLInputElement;
+    const input = searchInput();
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
     await act(async () => {
       setter.call(input, value);
       input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  }
+
+  async function hoverSearch() {
+    await act(async () => {
+      searchShell().dispatchEvent(new MouseEvent('mouseover', {
+        bubbles: true,
+        relatedTarget: document.body,
+      }));
+    });
+  }
+
+  async function leaveSearch() {
+    await act(async () => {
+      searchShell().dispatchEvent(new MouseEvent('mouseout', {
+        bubbles: true,
+        relatedTarget: document.body,
+      }));
     });
   }
 
@@ -165,7 +187,88 @@ describe('HistoryPanel', () => {
   it('focuses the search box when the focus token changes', async () => {
     await render();
     await render({ focusSearchToken: 1 });
-    expect(document.activeElement).toBe(container.querySelector('input[type="search"]'));
+    expect(document.activeElement).toBe(searchInput());
+    expect(searchShell().dataset.expanded).toBe('true');
+  });
+
+  it('previews on hover and collapses when the pointer leaves', async () => {
+    await render();
+    expect(searchShell().dataset.expanded).toBe('false');
+    expect(searchInput().tabIndex).toBe(-1);
+
+    await hoverSearch();
+    expect(searchShell().dataset.expanded).toBe('true');
+    expect(searchInput().tabIndex).toBe(0);
+
+    await leaveSearch();
+    expect(searchShell().dataset.expanded).toBe('false');
+    expect(searchInput().tabIndex).toBe(-1);
+  });
+
+  it('pins on click and does not collapse when hover ends during input', async () => {
+    await render();
+    await hoverSearch();
+    await act(async () => searchTrigger().click());
+    expect(document.activeElement).toBe(searchInput());
+
+    await leaveSearch();
+    expect(searchShell().dataset.expanded).toBe('true');
+
+    await act(async () => byText('Export ▾')!.focus());
+    expect(searchShell().dataset.expanded).toBe('false');
+  });
+
+  it('keeps a non-empty query visible after focus and hover leave', async () => {
+    await render();
+    await act(async () => searchTrigger().click());
+    await type('tauri');
+    await leaveSearch();
+    await act(async () => byText('Export ▾')!.focus());
+
+    expect(searchShell().dataset.expanded).toBe('true');
+    expect(searchInput().value).toBe('tauri');
+    expect(cardText()).toHaveLength(1);
+  });
+
+  it('Escape clears, collapses, and suppresses hover until a genuine re-entry', async () => {
+    await render();
+    await hoverSearch();
+    await act(async () => searchTrigger().click());
+    await type('tauri');
+
+    await act(async () => {
+      searchInput().dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+      }));
+    });
+    expect(searchInput().value).toBe('');
+    expect(searchShell().dataset.expanded).toBe('false');
+    expect(cardText()).toHaveLength(3);
+
+    // The pointer is still notionally over the control, so Escape must win.
+    await hoverSearch();
+    expect(searchShell().dataset.expanded).toBe('false');
+
+    await leaveSearch();
+    await hoverSearch();
+    expect(searchShell().dataset.expanded).toBe('true');
+  });
+
+  it('the close control clears and collapses the active search', async () => {
+    await render();
+    await act(async () => searchTrigger().click());
+    await type('tauri');
+    await act(async () => searchClose().click());
+
+    expect(searchInput().value).toBe('');
+    expect(searchShell().dataset.expanded).toBe('false');
+    expect(cardText()).toHaveLength(3);
+
+    // This click was keyboard-style with no pointer over the shell, so a new
+    // hover must work immediately rather than requiring a leave/re-entry.
+    await hoverSearch();
+    expect(searchShell().dataset.expanded).toBe('true');
   });
 
   it('uses a disclosure group and restores Export focus on Escape', async () => {

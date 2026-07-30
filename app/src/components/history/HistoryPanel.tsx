@@ -47,6 +47,9 @@ export function HistoryPanel({
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [teachingEntry, setTeachingEntry] = useState<HistoryEntry | null>(null);
   const [query, setQuery] = useState('');
+  const [searchHovered, setSearchHovered] = useState(false);
+  const [searchPinned, setSearchPinned] = useState(false);
+  const [searchHoverSuppressed, setSearchHoverSuppressed] = useState(false);
   const [filter, setFilter] = useState<HistoryFilter>('all');
   const [exportOpen, setExportOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -54,6 +57,7 @@ export function HistoryPanel({
   const copyGroupId = useId();
   const saveGroupId = useId();
   const exportPanelId = useId();
+  const searchInputId = useId();
   const searchRef = useRef<HTMLInputElement>(null);
   const exportRef = useRef<HTMLDivElement>(null);
   const exportButtonRef = useRef<HTMLButtonElement>(null);
@@ -69,6 +73,8 @@ export function HistoryPanel({
 
   useEffect(() => {
     if (focusSearchToken === undefined) return;
+    setSearchHoverSuppressed(false);
+    setSearchPinned(true);
     searchRef.current?.focus();
     searchRef.current?.select();
   }, [focusSearchToken]);
@@ -108,6 +114,9 @@ export function HistoryPanel({
     () => sortForDisplay(filterHistory(entries, { query, filter })),
     [entries, query, filter],
   );
+  const searchExpanded = searchPinned
+    || query.length > 0
+    || (searchHovered && !searchHoverSuppressed);
   // Correct-and-Teach only ever targets the newest entry in the whole history,
   // not the first row on screen — sorting and filtering reorder the list.
   const newestId = entries[entries.length - 1]?.id;
@@ -159,6 +168,21 @@ export function HistoryPanel({
     onClear();
   };
 
+  const openSearch = () => {
+    setSearchHoverSuppressed(false);
+    setSearchPinned(true);
+    searchRef.current?.focus();
+  };
+
+  const closeSearch = () => {
+    setQuery('');
+    setSearchPinned(false);
+    // Escape/close must win if the pointer is still sitting on the control,
+    // but a keyboard close elsewhere must not suppress the next fresh hover.
+    setSearchHoverSuppressed(searchHovered);
+    searchRef.current?.blur();
+  };
+
   if (entries.length === 0) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center text-on-surface-variant">
@@ -174,22 +198,92 @@ export function HistoryPanel({
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
       <div className="mb-2 shrink-0 space-y-2">
-        <div className="flex items-center gap-2">
-          <div className="relative min-w-0 flex-1">
-            <svg className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-on-surface-variant" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M17 11a6 6 0 11-12 0 6 6 0 0112 0z" />
-            </svg>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <div
+            data-testid="history-search-shell"
+            data-expanded={searchExpanded}
+            className={`relative h-8 shrink-0 overflow-hidden rounded-lg border bg-surface-container-lowest shadow-sm motion-safe:transition-[width,border-color,background-color,box-shadow] motion-safe:duration-300 motion-safe:ease-[cubic-bezier(0.2,0.86,0.24,1.1)] motion-reduce:transition-none ${
+              searchExpanded
+                ? 'w-[min(24rem,55vw)] border-primary/70 bg-surface-container shadow-[0_0_0_3px_color-mix(in_srgb,var(--color-primary)_10%,transparent)]'
+                : 'w-8 border-outline-variant/30'
+            }`}
+            onMouseEnter={() => setSearchHovered(true)}
+            onMouseLeave={() => {
+              setSearchHovered(false);
+              setSearchHoverSuppressed(false);
+            }}
+            onBlur={(event) => {
+              if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+              setSearchPinned(false);
+            }}
+          >
+            <button
+              type="button"
+              onClick={openSearch}
+              aria-label="Open transcript search"
+              aria-expanded={searchExpanded}
+              aria-controls={searchInputId}
+              className="absolute inset-y-0 left-0 z-10 grid w-8 place-items-center rounded-lg text-on-surface-variant transition-colors hover:text-primary focus:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary"
+            >
+              <svg className={`h-3.5 w-3.5 motion-safe:transition-[color,transform] motion-safe:duration-300 motion-reduce:transition-none ${searchExpanded ? 'scale-95 text-primary' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M17 11a6 6 0 11-12 0 6 6 0 0112 0z" />
+              </svg>
+            </button>
             <input
+              id={searchInputId}
               ref={searchRef}
               type="search"
               value={query}
+              onFocus={() => setSearchPinned(true)}
               onChange={(event) => setQuery(event.target.value)}
-              onKeyDown={(event) => { if (event.key === 'Escape' && query) { event.stopPropagation(); setQuery(''); } }}
+              onKeyDown={(event) => {
+                if (event.key !== 'Escape') return;
+                event.preventDefault();
+                event.stopPropagation();
+                closeSearch();
+              }}
               placeholder="Search transcripts"
               aria-label="Search transcripts"
-              className="w-full rounded-lg border border-on-surface-variant bg-surface-container-lowest py-1.5 pl-8 pr-2 text-sm text-on-surface shadow-sm placeholder:text-on-surface-variant focus:outline-none focus-visible:ring-2 focus-visible:ring-primary [&::-webkit-search-cancel-button]:appearance-none"
+              aria-hidden={!searchExpanded}
+              tabIndex={searchExpanded ? 0 : -1}
+              className={`absolute inset-0 h-full w-full border-0 bg-transparent py-1.5 pl-8 pr-8 text-sm text-on-surface outline-none placeholder:text-on-surface-variant [&::-webkit-search-cancel-button]:appearance-none motion-safe:transition-[opacity,transform] motion-safe:duration-200 motion-reduce:transition-none ${
+                searchExpanded
+                  ? 'translate-x-0 opacity-100'
+                  : '-translate-x-1.5 opacity-0 pointer-events-none'
+              }`}
             />
+            <button
+              type="button"
+              onClick={closeSearch}
+              aria-label="Close transcript search"
+              aria-hidden={!searchExpanded}
+              tabIndex={searchExpanded ? 0 : -1}
+              className={`absolute right-1 top-1 z-10 grid h-6 w-6 place-items-center rounded-md bg-on-surface/5 text-sm leading-none text-on-surface-variant transition-[opacity,color,background-color] hover:bg-on-surface/10 hover:text-on-surface focus:outline-none focus-visible:ring-1 focus-visible:ring-primary ${
+                searchExpanded ? 'opacity-100' : 'pointer-events-none opacity-0'
+              }`}
+            >
+              ×
+            </button>
           </div>
+
+          {HISTORY_FILTER_OPTIONS.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              aria-pressed={filter === option.value}
+              onClick={() => setFilter(option.value)}
+              className={`rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary ${filter === option.value ? 'bg-primary text-on-primary' : 'bg-surface-container-lowest text-on-surface-variant hover:bg-surface-container'}`}
+            >
+              {option.label}
+            </button>
+          ))}
+
+          <span className="ml-auto text-[11px] text-on-surface-variant">
+            {visible.length === entries.length
+              ? `${entries.length} ${entries.length === 1 ? 'entry' : 'entries'}`
+              : `${visible.length} of ${entries.length}`}
+          </span>
+
           <div ref={exportRef} className="relative shrink-0">
             <button
               ref={exportButtonRef}
@@ -248,25 +342,6 @@ export function HistoryPanel({
               </div>
             )}
           </div>
-        </div>
-
-        <div className="flex items-center gap-1.5">
-          {HISTORY_FILTER_OPTIONS.map((option) => (
-            <button
-              key={option.value}
-              type="button"
-              aria-pressed={filter === option.value}
-              onClick={() => setFilter(option.value)}
-              className={`rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary ${filter === option.value ? 'bg-primary text-on-primary' : 'bg-surface-container-lowest text-on-surface-variant hover:bg-surface-container'}`}
-            >
-              {option.label}
-            </button>
-          ))}
-          <span className="ml-auto text-[11px] text-on-surface-variant">
-            {visible.length === entries.length
-              ? `${entries.length} ${entries.length === 1 ? 'entry' : 'entries'}`
-              : `${visible.length} of ${entries.length}`}
-          </span>
         </div>
 
         {notice && (
