@@ -131,6 +131,13 @@ def validate_ci(ci: str) -> int:
     assert "scripts/release_artifacts.py" in ci
     assert "tests/test_release_artifacts.py" in ci
     assert "tests/test_workflow_policy.py" in ci
+    helper_stubs = named_step_block(
+        ci, "Stub bundled helpers externalBin for compile checks", 6
+    )
+    for helper in ("murmur-capture-helper", "murmur-llm-sidecar"):
+        target = f"app/src-tauri/binaries/{helper}-aarch64-apple-darwin"
+        assert helper_stubs.count(f": > {target}") == 1
+        assert helper_stubs.count(f"chmod +x {target}") == 1
 
     cases = (
         ("push", "chore: bump version to 0.17.0", False),
@@ -159,6 +166,21 @@ def validate_release_build(workflow: str) -> int:
     assert "needs: [typecheck]" not in workflow
     assert "macos-release-${{ needs.context.outputs.source-sha }}" in workflow
     assert "linux-release-${{ needs.context.outputs.source-sha }}" in workflow
+    assert "capture-helper-tcc-evidence-${{ needs.context.outputs.source-sha }}" in workflow
+    assert (
+        "--capture-helper-entitlements app/src-tauri/capture-helper.entitlements.plist"
+        in workflow
+    )
+    assert '--capture-helper-sha256 "$CAPTURE_HELPER_SHA"' in workflow
+    capture_evidence = named_step_block(
+        workflow, "Record capture-helper signing and non-interactive probe evidence", 6
+    )
+    assert "scripts/capture_helper_evidence.py collect-signature" in capture_evidence
+    assert "scripts/capture_helper_evidence.py validate-probe" in capture_evidence
+    assert '--signed-bundle-artifact "macos-release-$SOURCE_SHA"' in capture_evidence
+    assert "signature.json" in capture_evidence
+    assert "codesign.txt" not in capture_evidence
+    assert "designated-requirement.txt" not in capture_evidence
     assert "shared-key: macos-release-v1" in workflow
     assert "shared-key: linux-cuda-release-v1" in workflow
     assert "Print :CFBundleExecutable" in workflow
@@ -389,6 +411,7 @@ def validate_promotion_policy(workflow: str) -> int:
     assert 'split("@")[0]) == ".github/workflows/release-build.yml"' in workflow
     assert "expired == false" in workflow
     assert "scripts/release_artifacts.py validate" in workflow
+    assert "--require-macos-capture-helper" in workflow
     assert 'at("app/src-tauri/tauri.conf.json")' in workflow
     assert 'at("app/src-tauri/Cargo.toml")' in workflow
     assert 'at("app/src-tauri/Cargo.lock")' in workflow

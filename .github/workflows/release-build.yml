@@ -207,7 +207,8 @@ jobs:
             --app "$APP" \
             --identity "$APPLE_SIGNING_IDENTITY" \
             --main-entitlements app/src-tauri/entitlements.plist \
-            --helper-entitlements app/src-tauri/local-llm-sidecar.entitlements.plist \
+            --llm-helper-entitlements app/src-tauri/local-llm-sidecar.entitlements.plist \
+            --capture-helper-entitlements app/src-tauri/capture-helper.entitlements.plist \
             --expected-team-id "$APPLE_TEAM_ID"
 
           # Notarize + staple the finalized app, then rebuild the DMG and the
@@ -250,6 +251,46 @@ jobs:
           kill "$PID" 2>/dev/null || true
           wait "$PID" 2>/dev/null || true
 
+      - name: Record capture-helper signing and non-interactive probe evidence
+        env:
+          SOURCE_SHA: ${{ needs.context.outputs.source-sha }}
+        run: |
+          set -euo pipefail
+          APP=$(find app/src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)
+          EXECUTABLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")
+          BINARY="$APP/Contents/MacOS/$EXECUTABLE"
+          CAPTURE_HELPER="$APP/Contents/MacOS/murmur-capture-helper"
+          EVIDENCE=capture-helper-tcc-evidence
+          mkdir -p "$EVIDENCE"
+
+          # Collect only allowlisted signature facts. Raw codesign verbose output
+          # contains the runner-local Executable path and must never be uploaded.
+          python3 scripts/capture_helper_evidence.py collect-signature \
+            --helper "$CAPTURE_HELPER" \
+            --signature-output "$EVIDENCE/signature.json" \
+            --entitlements-output "$EVIDENCE/entitlements.plist"
+
+          set +e
+          "$BINARY" --capture-helper-probe > "$EVIDENCE/noninteractive-probe.json"
+          PROBE_EXIT=$?
+          set -e
+          python3 scripts/capture_helper_evidence.py validate-probe \
+            --probe "$EVIDENCE/noninteractive-probe.json" \
+            --probe-exit "$PROBE_EXIT" \
+            --source-sha "$SOURCE_SHA" \
+            --signed-bundle-artifact "macos-release-$SOURCE_SHA" \
+            --manifest-output "$EVIDENCE/manifest.json"
+
+      - name: Upload capture-helper TCC rehearsal evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: capture-helper-tcc-evidence-${{ needs.context.outputs.source-sha }}
+          path: capture-helper-tcc-evidence
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+          overwrite: true
+
       - name: Stage immutable macOS artifacts
         env:
           SOURCE_SHA: ${{ needs.context.outputs.source-sha }}
@@ -268,8 +309,9 @@ jobs:
           # architecture, designated requirement, Team ID, and entitlement digest.
           APP=$(find app/src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)
           HELPER="$APP/Contents/MacOS/murmur-llm-sidecar"
-          if [ ! -f "$HELPER" ]; then
-            echo "ERROR: finalized bundle is missing the local-LLM helper"
+          CAPTURE_HELPER="$APP/Contents/MacOS/murmur-capture-helper"
+          if [ ! -f "$HELPER" ] || [ ! -f "$CAPTURE_HELPER" ]; then
+            echo "ERROR: finalized bundle is missing a required helper"
             exit 1
           fi
           HELPER_SHA=$(shasum -a 256 "$HELPER" | awk '{print $1}')
@@ -281,6 +323,15 @@ jobs:
           fi
           codesign -d --entitlements :- --xml "$HELPER" > "$RUNNER_TEMP/helper-entitlements.xml" 2>/dev/null
           HELPER_ENT_SHA=$(shasum -a 256 "$RUNNER_TEMP/helper-entitlements.xml" | awk '{print $1}')
+          CAPTURE_HELPER_SHA=$(shasum -a 256 "$CAPTURE_HELPER" | awk '{print $1}')
+          CAPTURE_HELPER_ARCH=$(lipo -archs "$CAPTURE_HELPER" | tr -d ' \n')
+          CAPTURE_HELPER_DR=$(codesign -d -r- "$CAPTURE_HELPER" 2>&1 | sed -n 's/^#* *designated => //p')
+          if [ -z "$CAPTURE_HELPER_DR" ]; then
+            echo "ERROR: could not read the capture helper designated requirement"
+            exit 1
+          fi
+          codesign -d --entitlements :- --xml "$CAPTURE_HELPER" > "$RUNNER_TEMP/capture-helper-entitlements.xml" 2>/dev/null
+          CAPTURE_HELPER_ENT_SHA=$(shasum -a 256 "$RUNNER_TEMP/capture-helper-entitlements.xml" | awk '{print $1}')
 
           python3 scripts/release_artifacts.py record \
             --platform macos \
@@ -292,7 +343,12 @@ jobs:
             --helper-arch "$HELPER_ARCH" \
             --helper-designated-requirement "$HELPER_DR" \
             --helper-team-id "$APPLE_TEAM_ID" \
-            --helper-entitlement-sha256 "$HELPER_ENT_SHA"
+            --helper-entitlement-sha256 "$HELPER_ENT_SHA" \
+            --capture-helper-sha256 "$CAPTURE_HELPER_SHA" \
+            --capture-helper-arch "$CAPTURE_HELPER_ARCH" \
+            --capture-helper-designated-requirement "$CAPTURE_HELPER_DR" \
+            --capture-helper-team-id "$APPLE_TEAM_ID" \
+            --capture-helper-entitlement-sha256 "$CAPTURE_HELPER_ENT_SHA"
 
       - name: Upload immutable macOS artifacts
         uses: actions/upload-artifact@v4

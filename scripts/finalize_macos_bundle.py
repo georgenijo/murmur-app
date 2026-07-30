@@ -9,8 +9,10 @@ import plistlib
 import subprocess
 
 
-HELPER_NAME = "murmur-llm-sidecar"
-HELPER_IDENTIFIER = "com.localdictation.local-llm-sidecar"
+HELPERS = {
+    "murmur-capture-helper": "com.localdictation.capture-helper",
+    "murmur-llm-sidecar": "com.localdictation.local-llm-sidecar",
+}
 
 
 def run(command: list[str], *, capture: bool = False) -> str:
@@ -114,11 +116,11 @@ def signature_details(path: Path) -> str:
 
 
 def require_exact_macos_executables(
-    app: Path, main_binary: Path, helper: Path
+    app: Path, main_binary: Path, helpers: list[Path]
 ) -> None:
-    """Fail closed unless the app ships exactly its two production executables."""
+    """Fail closed unless the app ships exactly its production executables."""
     executable_dir = app / "Contents" / "MacOS"
-    expected = {main_binary.name, helper.name}
+    expected = {main_binary.name, *(helper.name for helper in helpers)}
     actual = {path.name for path in executable_dir.iterdir()}
     if actual != expected:
         raise SystemExit(
@@ -132,45 +134,86 @@ def main() -> int:
     parser.add_argument("--app", type=Path, required=True)
     parser.add_argument("--identity", required=True)
     parser.add_argument("--main-entitlements", type=Path, required=True)
-    parser.add_argument("--helper-entitlements", type=Path, required=True)
+    parser.add_argument(
+        "--llm-helper-entitlements",
+        "--helper-entitlements",
+        dest="llm_helper_entitlements",
+        type=Path,
+        required=True,
+    )
+    parser.add_argument("--capture-helper-entitlements", type=Path, required=True)
     parser.add_argument("--expected-team-id")
     args = parser.parse_args()
 
     app = args.app.resolve()
     info_plist = app / "Contents" / "Info.plist"
-    helper = app / "Contents" / "MacOS" / HELPER_NAME
-    if not info_plist.is_file() or not helper.is_file():
-        raise SystemExit("app bundle is missing Info.plist or the local-LLM helper")
+    helpers = {
+        name: app / "Contents" / "MacOS" / name for name in HELPERS
+    }
+    if not info_plist.is_file() or not all(path.is_file() for path in helpers.values()):
+        raise SystemExit("app bundle is missing Info.plist or a required helper")
     with info_plist.open("rb") as handle:
         main_name = plistlib.load(handle).get("CFBundleExecutable")
     main_binary = app / "Contents" / "MacOS" / str(main_name)
-    if not main_binary.is_file() or main_binary == helper:
+    if not main_binary.is_file() or main_binary in helpers.values():
         raise SystemExit("app bundle has an invalid main executable")
-    require_exact_macos_executables(app, main_binary, helper)
+    require_exact_macos_executables(app, main_binary, list(helpers.values()))
 
-    sign_nested_code(app, args.identity, exclude={helper, main_binary})
-    sign(helper, args.identity, args.helper_entitlements, HELPER_IDENTIFIER)
+    sign_nested_code(app, args.identity, exclude={main_binary, *helpers.values()})
+    sign(
+        helpers["murmur-capture-helper"],
+        args.identity,
+        args.capture_helper_entitlements,
+        HELPERS["murmur-capture-helper"],
+    )
+    sign(
+        helpers["murmur-llm-sidecar"],
+        args.identity,
+        args.llm_helper_entitlements,
+        HELPERS["murmur-llm-sidecar"],
+    )
     sign(main_binary, args.identity, args.main_entitlements)
     sign(app, args.identity, args.main_entitlements)
 
     run(["codesign", "--verify", "--deep", "--strict", "--verbose=2", str(app)])
-    require_exact(entitlements(helper), args.helper_entitlements, "helper")
+    require_exact(
+        entitlements(helpers["murmur-capture-helper"]),
+        args.capture_helper_entitlements,
+        "capture helper",
+    )
+    require_exact(
+        entitlements(helpers["murmur-llm-sidecar"]),
+        args.llm_helper_entitlements,
+        "local-LLM helper",
+    )
     require_exact(entitlements(main_binary), args.main_entitlements, "main executable")
 
-    helper_details = signature_details(helper)
+    helper_details = {
+        name: signature_details(path) for name, path in helpers.items()
+    }
     main_details = signature_details(main_binary)
-    if "runtime" not in helper_details.lower() or "runtime" not in main_details.lower():
-        raise SystemExit("helper and main executable must both use hardened runtime")
-    if f"Identifier={HELPER_IDENTIFIER}" not in helper_details:
-        raise SystemExit("helper code signature has the wrong fixed identifier")
+    if (
+        any("runtime" not in details.lower() for details in helper_details.values())
+        or "runtime" not in main_details.lower()
+    ):
+        raise SystemExit("helpers and main executable must use hardened runtime")
+    for name, identifier in HELPERS.items():
+        if f"Identifier={identifier}" not in helper_details[name]:
+            raise SystemExit(f"{name} code signature has the wrong fixed identifier")
     if args.expected_team_id:
         marker = f"TeamIdentifier={args.expected_team_id}"
-        if marker not in helper_details or marker not in main_details:
-            raise SystemExit("helper and main executable do not share the expected Team ID")
+        if (
+            any(marker not in details for details in helper_details.values())
+            or marker not in main_details
+        ):
+            raise SystemExit("helpers and main executable do not share the expected Team ID")
 
-    helper_archs = run(["lipo", "-archs", str(helper)], capture=True).strip().split()
-    if helper_archs != ["arm64"]:
-        raise SystemExit(f"helper architecture must be exactly arm64, found {helper_archs}")
+    for name, helper in helpers.items():
+        helper_archs = run(["lipo", "-archs", str(helper)], capture=True).strip().split()
+        if helper_archs != ["arm64"]:
+            raise SystemExit(
+                f"{name} architecture must be exactly arm64, found {helper_archs}"
+            )
     print(f"finalized and verified {app}")
     return 0
 

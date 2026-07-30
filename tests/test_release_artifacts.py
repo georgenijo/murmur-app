@@ -2,10 +2,19 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import plistlib
 import tempfile
 import unittest
 
-from scripts.finalize_macos_bundle import require_exact_macos_executables
+from scripts.capture_helper_evidence import (
+    ALLOWED_PROBE_OUTCOMES,
+    CAPTURE_ENTITLEMENTS,
+    EvidenceError,
+    PROBE_OUTCOME_CONTRACTS,
+    structured_signature_evidence,
+    validate_probe_evidence,
+)
+from scripts.finalize_macos_bundle import HELPERS, require_exact_macos_executables
 from scripts.release_artifacts import (
     ArtifactError,
     create_provenance,
@@ -126,6 +135,26 @@ class ReleaseArtifactTests(unittest.TestCase):
         "team_id": "ABCDE12345",
         "entitlement_sha256": "b" * 64,
     }
+    CAPTURE_HELPER = {
+        **HELPER,
+        "designated_requirement": (
+            'identifier "com.localdictation.capture-helper" and anchor apple generic '
+            'and certificate leaf[subject.OU] = "ABCDE12345"'
+        ),
+    }
+    CAPTURE_PROBE = {
+        "schema_version": 1,
+        "outcome": "ok",
+        "last_phase": "stopping",
+        "helper_pid": 123,
+        "first_callback_ms": 8,
+        "elapsed_ms": 5000,
+        "termination": "cooperative",
+        "exit_code": 0,
+        "exit_signal": None,
+        "process_group_empty": True,
+        "audio_content_retained": False,
+    }
 
     def _rerecord_macos_with_helper(self, helper: dict) -> None:
         macos = self.artifacts / "macos"
@@ -150,6 +179,38 @@ class ReleaseArtifactTests(unittest.TestCase):
     def test_require_macos_helper_fails_without_block(self) -> None:
         with self.assertRaisesRegex(ArtifactError, "missing the required local-LLM helper"):
             validate_release(self.artifacts, SHA, RUN_ID, require_macos_helper=True)
+
+    def test_capture_helper_provenance_is_required_and_validated(self) -> None:
+        macos = self.artifacts / "macos"
+        (macos / "provenance.json").unlink()
+        create_provenance(
+            "macos",
+            "darwin-aarch64",
+            macos,
+            SHA,
+            RUN_ID,
+            helper=self.HELPER,
+            capture_helper=self.CAPTURE_HELPER,
+        )
+        result = validate_release(
+            self.artifacts,
+            SHA,
+            RUN_ID,
+            require_macos_helper=True,
+            require_macos_capture_helper=True,
+        )
+        self.assertEqual(
+            result["platforms"]["macos"]["capture_helper"], self.CAPTURE_HELPER
+        )
+
+    def test_require_capture_helper_fails_without_block(self) -> None:
+        with self.assertRaisesRegex(ArtifactError, "required capture helper"):
+            validate_release(
+                self.artifacts,
+                SHA,
+                RUN_ID,
+                require_macos_capture_helper=True,
+            )
 
     def test_helper_wrong_architecture_fails_closed(self) -> None:
         with self.assertRaisesRegex(ArtifactError, "architecture must be arm64"):
@@ -250,10 +311,12 @@ class ReleaseArtifactTests(unittest.TestCase):
         executable_dir.mkdir(parents=True)
         main = executable_dir / "ui"
         helper = executable_dir / "murmur-llm-sidecar"
+        capture_helper = executable_dir / "murmur-capture-helper"
         main.write_bytes(b"main")
         helper.write_bytes(b"helper")
+        capture_helper.write_bytes(b"capture helper")
 
-        require_exact_macos_executables(app, main, helper)
+        require_exact_macos_executables(app, main, [capture_helper, helper])
 
         for unexpected in ("mock_llm_helper", "murmur-eval"):
             with self.subTest(unexpected=unexpected):
@@ -262,7 +325,9 @@ class ReleaseArtifactTests(unittest.TestCase):
                 with self.assertRaisesRegex(
                     SystemExit, "app bundle executables differ"
                 ):
-                    require_exact_macos_executables(app, main, helper)
+                    require_exact_macos_executables(
+                        app, main, [capture_helper, helper]
+                    )
                 extra.unlink()
 
     def test_macos_bundle_rejects_missing_production_executable(self) -> None:
@@ -271,10 +336,246 @@ class ReleaseArtifactTests(unittest.TestCase):
         executable_dir.mkdir(parents=True)
         main = executable_dir / "ui"
         helper = executable_dir / "murmur-llm-sidecar"
+        capture_helper = executable_dir / "murmur-capture-helper"
         main.write_bytes(b"main")
+        helper.write_bytes(b"helper")
 
         with self.assertRaisesRegex(SystemExit, "app bundle executables differ"):
-            require_exact_macos_executables(app, main, helper)
+            require_exact_macos_executables(app, main, [capture_helper, helper])
+
+    def test_capture_helper_identity_and_entitlements_are_exact(self) -> None:
+        self.assertEqual(
+            HELPERS["murmur-capture-helper"],
+            "com.localdictation.capture-helper",
+        )
+        entitlement_path = (
+            Path(__file__).parents[1]
+            / "app/src-tauri/capture-helper.entitlements.plist"
+        )
+        with entitlement_path.open("rb") as handle:
+            self.assertEqual(
+                plistlib.load(handle),
+                {
+                    "com.apple.security.app-sandbox": True,
+                    "com.apple.security.device.audio-input": True,
+                    "com.apple.security.device.microphone": True,
+                },
+            )
+
+    def test_capture_probe_requires_complete_confirmed_allowlisted_evidence(self) -> None:
+        self.assertEqual(
+            validate_probe_evidence(self.CAPTURE_PROBE, 0), self.CAPTURE_PROBE
+        )
+        self.assertEqual(set(PROBE_OUTCOME_CONTRACTS), set(ALLOWED_PROBE_OUTCOMES))
+        for outcome, contracts in PROBE_OUTCOME_CONTRACTS.items():
+            for phase, callback_seen, termination, exit_code, exit_signal in contracts:
+                with self.subTest(
+                    allowed_outcome=outcome,
+                    phase=phase,
+                    callback_seen=callback_seen,
+                ):
+                    payload = {
+                        **self.CAPTURE_PROBE,
+                        "outcome": outcome,
+                        "last_phase": phase,
+                        "first_callback_ms": 8 if callback_seen else None,
+                        "termination": termination,
+                        "exit_code": exit_code,
+                        "exit_signal": exit_signal,
+                    }
+                    self.assertEqual(
+                        validate_probe_evidence(
+                            payload, 0 if outcome == "ok" else 2
+                        ),
+                        payload,
+                    )
+        for outcome in (
+            "signature_invalid",
+            "spawn_failed",
+            "protocol",
+            "busy",
+            "handshake_timeout",
+            "invalid_message",
+            "internal",
+        ):
+            with self.subTest(outcome=outcome):
+                with self.assertRaisesRegex(EvidenceError, "not allowed"):
+                    validate_probe_evidence(
+                        {**self.CAPTURE_PROBE, "outcome": outcome}, 2
+                    )
+        self.assertNotIn("protocol", ALLOWED_PROBE_OUTCOMES)
+
+        invalid_cases = (
+            ({key: value for key, value in self.CAPTURE_PROBE.items() if key != "exit_signal"}, 0),
+            ({**self.CAPTURE_PROBE, "schema_version": True}, 0),
+            ({**self.CAPTURE_PROBE, "outcome": True}, 0),
+            ({**self.CAPTURE_PROBE, "last_phase": True}, 0),
+            ({**self.CAPTURE_PROBE, "termination": True}, 0),
+            ({**self.CAPTURE_PROBE, "process_group_empty": False}, 0),
+            (
+                {
+                    **self.CAPTURE_PROBE,
+                    "termination": "hard_kill",
+                    "exit_code": None,
+                    "exit_signal": None,
+                },
+                0,
+            ),
+            ({**self.CAPTURE_PROBE, "audio_content_retained": True}, 0),
+            (self.CAPTURE_PROBE, 2),
+            (self.CAPTURE_PROBE, False),
+        )
+        for payload, probe_exit in invalid_cases:
+            with self.subTest(payload=payload, probe_exit=probe_exit):
+                with self.assertRaises(EvidenceError):
+                    validate_probe_evidence(payload, probe_exit)
+
+    def test_capture_probe_rejects_cross_field_contract_mutations(self) -> None:
+        for outcome, contracts in PROBE_OUTCOME_CONTRACTS.items():
+            for phase, callback_seen, termination, exit_code, exit_signal in contracts:
+                baseline = {
+                    **self.CAPTURE_PROBE,
+                    "outcome": outcome,
+                    "last_phase": phase,
+                    "first_callback_ms": 8 if callback_seen else None,
+                    "termination": termination,
+                    "exit_code": exit_code,
+                    "exit_signal": exit_signal,
+                }
+                mutations = (
+                    {**baseline, "last_phase": None},
+                    {
+                        **baseline,
+                        "first_callback_ms": None if callback_seen else 8,
+                    },
+                    {
+                        **baseline,
+                        "termination": "exited"
+                        if termination == "cooperative"
+                        else "cooperative",
+                    },
+                    {
+                        **baseline,
+                        "termination": "hard_kill",
+                        "exit_code": None,
+                        "exit_signal": 9,
+                    },
+                    {**baseline, "exit_code": 77},
+                )
+                for mutation in mutations:
+                    with self.subTest(outcome=outcome, mutation=mutation):
+                        with self.assertRaises(EvidenceError):
+                            validate_probe_evidence(
+                                mutation, 0 if outcome == "ok" else 2
+                            )
+
+    def test_capture_probe_rejects_reported_adversarial_combinations(self) -> None:
+        contradictions = (
+            (
+                {
+                    **self.CAPTURE_PROBE,
+                    "last_phase": None,
+                    "first_callback_ms": None,
+                    "termination": "hard_kill",
+                    "exit_code": None,
+                    "exit_signal": 9,
+                },
+                0,
+            ),
+            (
+                {
+                    **self.CAPTURE_PROBE,
+                    "outcome": "no_first_callback",
+                    "first_callback_ms": 8,
+                },
+                2,
+            ),
+            (
+                {
+                    **self.CAPTURE_PROBE,
+                    "outcome": "permission_denied",
+                    "last_phase": "active",
+                    "termination": "exited",
+                },
+                2,
+            ),
+            (
+                {
+                    **self.CAPTURE_PROBE,
+                    "outcome": "callback_stalled",
+                    "last_phase": None,
+                    "first_callback_ms": None,
+                    "termination": "exited",
+                    "exit_code": 77,
+                },
+                2,
+            ),
+        )
+        for payload, probe_exit in contradictions:
+            with self.subTest(payload=payload):
+                with self.assertRaisesRegex(EvidenceError, "contract"):
+                    validate_probe_evidence(payload, probe_exit)
+
+    def test_signature_evidence_allowlists_fields_and_drops_runner_paths(self) -> None:
+        team_id = "ABCDE12345"
+        runner_path = "/Users/runner/work/private/repo/murmur-capture-helper"
+        details = (
+            f"Executable={runner_path}\n"
+            "Identifier=com.localdictation.capture-helper\n"
+            f"TeamIdentifier={team_id}\n"
+            "flags=0x10000(runtime)\n"
+        )
+        requirement = (
+            f"Executable={runner_path}\n"
+            'designated => identifier "com.localdictation.capture-helper" '
+            "and anchor apple generic "
+            "and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ "
+            "and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ "
+            f'and certificate leaf[subject.OU] = "{team_id}"'
+        )
+        evidence = structured_signature_evidence(
+            details, requirement, CAPTURE_ENTITLEMENTS, "arm64"
+        )
+        serialized = json.dumps(evidence)
+        self.assertNotIn(runner_path, serialized)
+        self.assertNotIn("anchor apple generic", serialized)
+        self.assertEqual(
+            set(evidence),
+            {
+                "schema_version",
+                "identifier",
+                "team_id",
+                "architecture",
+                "hardened_runtime",
+                "designated_requirement_profile",
+                "designated_requirement_sha256",
+                "entitlement_sha256",
+                "entitlement_keys",
+            },
+        )
+
+    def test_signature_evidence_rejects_extra_path_bearing_requirement_clause(
+        self,
+    ) -> None:
+        team_id = "ABCDE12345"
+        runner_path = "/Users/runner/work/private/repo"
+        details = (
+            "Identifier=com.localdictation.capture-helper\n"
+            f"TeamIdentifier={team_id}\n"
+            "flags=0x10000(runtime)\n"
+        )
+        requirement = (
+            'designated => identifier "com.localdictation.capture-helper" '
+            "and anchor apple generic "
+            "and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ "
+            "and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ "
+            f'and certificate leaf[subject.OU] = "{team_id}" '
+            f'and info["trace"] = "{runner_path}"'
+        )
+        with self.assertRaisesRegex(EvidenceError, "exact canonical"):
+            structured_signature_evidence(
+                details, requirement, CAPTURE_ENTITLEMENTS, "arm64"
+            )
 
 
 if __name__ == "__main__":

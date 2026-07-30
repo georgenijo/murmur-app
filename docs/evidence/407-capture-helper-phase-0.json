@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "issue": 407,
+  "audio_content_retained": false,
+  "kill_matrix": [
+    {"case": "pre_handshake_block", "expected": "confirmed_exit_under_1s", "actual": "passed_local_deterministic_2026-07-30"},
+    {"case": "enumeration_block", "expected": "confirmed_exit_under_1s", "actual": "passed_local_deterministic_2026-07-30"},
+    {"case": "stream_open_block", "expected": "confirmed_exit_under_1s", "actual": "passed_local_deterministic_2026-07-30"},
+    {"case": "after_first_callback_block", "expected": "confirmed_exit_under_1s", "actual": "passed_local_deterministic_2026-07-30"},
+    {"case": "ignore_cancel", "expected": "hard_kill_confirmed", "actual": "passed_local_deterministic_2026-07-30"},
+    {"case": "graceful_stop_block", "expected": "hard_kill_confirmed", "actual": "passed_local_deterministic_2026-07-30"},
+    {"case": "inherited_descendant_block", "expected": "owned_process_group_empty_without_claiming_setsid_escape", "actual": "passed_local_deterministic_2026-07-30"},
+    {"case": "rapid_second_start", "expected": "busy_without_overlap", "actual": "passed_local_deterministic_2026-07-30"},
+    {"case": "fresh_start_after_exit", "expected": "new_pid_starts_without_app_restart", "actual": "passed_local_deterministic_2026-07-30"},
+    {"case": "hang_then_fresh_start_same_supervisor", "expected": "confirmed_kill_then_happy_new_pid", "actual": "passed_local_deterministic_2026-07-30"},
+    {"case": "invalid_control_frames", "expected": "wrong_nonce_version_malformed_truncated_oversized_duplicate_out_of_order_fail_closed", "actual": "passed_local_deterministic_2026-07-30"}
+  ],
+  "tcc_matrix": [
+    {"case": "fresh_install_before_grant", "expected": "single_murmur_prompt", "actual": "pending_developer_id_notarized_bundle"},
+    {"case": "grant_through_existing_murmur_flow", "expected": "helper_callbacks_begin_without_second_prompt", "actual": "pending_developer_id_notarized_bundle"},
+    {"case": "permission_denial", "expected": "stable_permission_failure_no_pcm", "actual": "pending_developer_id_notarized_bundle"},
+    {"case": "relaunch_after_grant", "expected": "no_second_prompt", "actual": "pending_developer_id_notarized_bundle"},
+    {"case": "application_update_helper_changed", "expected": "grant_survives_update", "actual": "pending_two_notarized_versions"},
+    {"case": "application_move_or_reinstall", "expected": "behavior_recorded_without_identity_split", "actual": "pending_developer_id_notarized_bundle"},
+    {"case": "tccutil_reset_test_environment", "expected": "one_new_murmur_prompt", "actual": "pending_authorized_test_environment"},
+    {"case": "runtime_permission_revocation", "expected": "stream_error_or_callback_stall_detected", "actual": "pending_interactive_system_settings_change"},
+    {"case": "system_settings_identity", "expected": "single_understandable_murmur_entry", "actual": "pending_interactive_system_settings_inspection"},
+    {"case": "helper_crash_and_relaunch", "expected": "no_second_prompt_or_identity_change", "actual": "pending_developer_id_notarized_bundle"}
+  ],
+  "packaging": {
+    "expected": "two_exact_helpers_with_split_entitlements_and_fixed_identifiers",
+    "actual": "passed_local_adhoc_split_entitlement_probe_2026-07-30_trusted_release_pending"
+  }
+}

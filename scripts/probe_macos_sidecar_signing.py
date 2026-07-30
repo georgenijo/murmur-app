@@ -17,7 +17,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--helper", type=Path, required=True)
+    parser.add_argument(
+        "--llm-helper", "--helper", dest="llm_helper", type=Path, required=True
+    )
+    parser.add_argument("--capture-helper", type=Path, required=True)
     parser.add_argument("--output-app", type=Path)
     args = parser.parse_args()
 
@@ -57,7 +60,8 @@ def main() -> int:
         ],
         check=True,
     )
-    shutil.copy2(args.helper, macos / "murmur-llm-sidecar")
+    shutil.copy2(args.llm_helper, macos / "murmur-llm-sidecar")
+    shutil.copy2(args.capture_helper, macos / "murmur-capture-helper")
 
     subprocess.run(
         [
@@ -71,16 +75,23 @@ def main() -> int:
             str(ROOT / "app" / "src-tauri" / "entitlements.plist"),
             "--helper-entitlements",
             str(ROOT / "app" / "src-tauri" / "local-llm-sidecar.entitlements.plist"),
+            "--capture-helper-entitlements",
+            str(ROOT / "app" / "src-tauri" / "capture-helper.entitlements.plist"),
         ],
         check=True,
     )
     result = {
         "schema_version": 1,
         "app": str(app),
-        "helper": str(macos / "murmur-llm-sidecar"),
+        "helpers": {
+            "capture": str(macos / "murmur-capture-helper"),
+            "local_llm": str(macos / "murmur-llm-sidecar"),
+        },
         "identity": "adhoc",
         "main_sandboxed": False,
-        "helper_sandboxed": True,
+        "capture_helper_sandboxed": True,
+        "capture_helper_audio_input": True,
+        "llm_helper_sandboxed": True,
         "result": "passed",
     }
     print(json.dumps(result, sort_keys=True))

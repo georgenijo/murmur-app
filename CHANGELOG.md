@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- A probe-only signed capture helper now has strict runtime code-identity
+  checks, content-free callback health, deterministic cancel/kill/reap tests,
+  and exact release provenance. Production recording remains unchanged pending
+  the signed/notarized TCC matrix (#407).
 - Update availability now stays visible without a backend or disruptive optional-update modal: Murmur performs due-gated checks on macOS wake and foreground activation, adds a native menu-bar check/update action, and keeps a versioned pill beside Record and Transcribe File until the release is installed or skipped.
 - Dictated prose can now include bounded inline slash-command references such as `slash command chat` → `/chat` without reformatting the surrounding sentence.
 

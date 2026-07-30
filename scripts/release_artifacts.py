@@ -15,7 +15,8 @@ SCHEMA_VERSION = 1
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 TEAM_ID_RE = re.compile(r"^[A-Z0-9]{10}$")
-HELPER_IDENTIFIER = "com.localdictation.local-llm-sidecar"
+LLM_HELPER_IDENTIFIER = "com.localdictation.local-llm-sidecar"
+CAPTURE_HELPER_IDENTIFIER = "com.localdictation.capture-helper"
 HELPER_FIELDS = (
     "sha256",
     "architecture",
@@ -87,8 +88,10 @@ def _signature_text(path: Path) -> str:
     return value
 
 
-def _require_helper(helper: dict[str, Any]) -> dict[str, Any]:
-    """Validate the shape of the local-LLM helper provenance block.
+def _require_helper(
+    helper: dict[str, Any], identifier: str, label: str
+) -> dict[str, Any]:
+    """Validate the shape of one signed helper provenance block.
 
     The signed-local-LLM ADR requires provenance to additionally record the
     helper hash, architecture, designated requirement, Team ID, and entitlement
@@ -96,22 +99,26 @@ def _require_helper(helper: dict[str, Any]) -> dict[str, Any]:
     those values against the finalized bundle.
     """
     if not isinstance(helper, dict):
-        raise ArtifactError("helper provenance must be an object")
+        raise ArtifactError(f"{label} provenance must be an object")
     missing = [field for field in HELPER_FIELDS if not str(helper.get(field, "")).strip()]
     if missing:
-        raise ArtifactError(f"helper provenance is missing fields: {missing}")
+        raise ArtifactError(f"{label} provenance is missing fields: {missing}")
     if not SHA256_RE.fullmatch(str(helper["sha256"])):
-        raise ArtifactError("helper sha256 must be a 64-character hex digest")
+        raise ArtifactError(f"{label} sha256 must be a 64-character hex digest")
     if not SHA256_RE.fullmatch(str(helper["entitlement_sha256"])):
-        raise ArtifactError("helper entitlement_sha256 must be a 64-character hex digest")
+        raise ArtifactError(
+            f"{label} entitlement_sha256 must be a 64-character hex digest"
+        )
     if str(helper["architecture"]) != "arm64":
         raise ArtifactError(
-            f"helper architecture must be arm64, got {helper['architecture']!r}"
+            f"{label} architecture must be arm64, got {helper['architecture']!r}"
         )
 
     team_id = str(helper["team_id"])
     if not TEAM_ID_RE.fullmatch(team_id):
-        raise ArtifactError(f"helper team_id must be a 10-character Apple Team ID, got {team_id!r}")
+        raise ArtifactError(
+            f"{label} team_id must be a 10-character Apple Team ID, got {team_id!r}"
+        )
 
     # The designated requirement must pin the fixed helper identifier to a real
     # Apple-anchored Developer ID certificate for this exact Team ID. This rejects
@@ -120,7 +127,7 @@ def _require_helper(helper: dict[str, Any]) -> dict[str, Any]:
     clause_start = r"(?:^|\band\s+)"
     clause_end = r"(?=\s*(?:and\b|$))"
     identifier_clause = re.compile(
-        rf'{clause_start}identifier\s+"{re.escape(HELPER_IDENTIFIER)}"{clause_end}'
+        rf'{clause_start}identifier\s+"{re.escape(identifier)}"{clause_end}'
     )
     anchor_clause = re.compile(
         rf"{clause_start}anchor\s+apple\s+generic{clause_end}"
@@ -141,7 +148,7 @@ def _require_helper(helper: dict[str, Any]) -> dict[str, Any]:
         or team_clause.search(dr) is None
     ):
         raise ArtifactError(
-            "helper designated_requirement must pin the fixed identifier, an Apple "
+            f"{label} designated_requirement must pin the fixed identifier, an Apple "
             f"anchor, and subject.OU = {team_id!r}; got {dr!r}"
         )
     return {field: str(helper[field]) for field in HELPER_FIELDS}
@@ -154,6 +161,7 @@ def create_provenance(
     commit_sha: str,
     run_id: str | int,
     helper: dict[str, Any] | None = None,
+    capture_helper: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if platform not in PLATFORM_SUFFIXES:
         raise ArtifactError(f"unsupported platform: {platform}")
@@ -197,7 +205,17 @@ def create_provenance(
     if helper is not None:
         if platform != "macos":
             raise ArtifactError("helper provenance is only recorded for macos")
-        payload["helper"] = _require_helper(helper)
+        payload["helper"] = _require_helper(
+            helper, LLM_HELPER_IDENTIFIER, "local-LLM helper"
+        )
+    if capture_helper is not None:
+        if platform != "macos":
+            raise ArtifactError(
+                "capture helper provenance is only recorded for macos"
+            )
+        payload["capture_helper"] = _require_helper(
+            capture_helper, CAPTURE_HELPER_IDENTIFIER, "capture helper"
+        )
     (root / "provenance.json").write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
@@ -210,6 +228,7 @@ def validate_platform(
     expected_sha: str,
     expected_run_id: str | int,
     require_helper: bool = False,
+    require_capture_helper: bool = False,
 ) -> dict[str, Any]:
     expected_sha = _require_sha(expected_sha, "expected commit SHA")
     expected_run_id = _require_run_id(expected_run_id)
@@ -267,10 +286,26 @@ def validate_platform(
     if helper is not None:
         if platform != "macos":
             raise ArtifactError(f"{platform} provenance must not carry a helper block")
-        payload["helper"] = _require_helper(helper)
+        payload["helper"] = _require_helper(
+            helper, LLM_HELPER_IDENTIFIER, "local-LLM helper"
+        )
     elif require_helper:
         raise ArtifactError(
             f"{platform} provenance is missing the required local-LLM helper block"
+        )
+
+    capture_helper = payload.get("capture_helper")
+    if capture_helper is not None:
+        if platform != "macos":
+            raise ArtifactError(
+                f"{platform} provenance must not carry a capture_helper block"
+            )
+        payload["capture_helper"] = _require_helper(
+            capture_helper, CAPTURE_HELPER_IDENTIFIER, "capture helper"
+        )
+    elif require_capture_helper:
+        raise ArtifactError(
+            f"{platform} provenance is missing the required capture helper block"
         )
 
     payload["signature"] = _signature_text(signature)
@@ -283,6 +318,7 @@ def validate_release(
     expected_run_id: str | int,
     output: Path | None = None,
     require_macos_helper: bool = False,
+    require_macos_capture_helper: bool = False,
 ) -> dict[str, Any]:
     platforms = {
         platform: validate_platform(
@@ -291,6 +327,9 @@ def validate_release(
             expected_sha,
             expected_run_id,
             require_helper=(require_macos_helper and platform == "macos"),
+            require_capture_helper=(
+                require_macos_capture_helper and platform == "macos"
+            ),
         )
         for platform in ("macos", "linux")
     }
@@ -399,6 +438,11 @@ def _parser() -> argparse.ArgumentParser:
     record.add_argument("--helper-designated-requirement")
     record.add_argument("--helper-team-id")
     record.add_argument("--helper-entitlement-sha256")
+    record.add_argument("--capture-helper-sha256")
+    record.add_argument("--capture-helper-arch")
+    record.add_argument("--capture-helper-designated-requirement")
+    record.add_argument("--capture-helper-team-id")
+    record.add_argument("--capture-helper-entitlement-sha256")
 
     validate = subparsers.add_parser("validate")
     validate.add_argument("--artifacts", type=Path, required=True)
@@ -409,6 +453,11 @@ def _parser() -> argparse.ArgumentParser:
         "--require-macos-helper",
         action="store_true",
         help="fail unless the macOS provenance records the local-LLM helper block",
+    )
+    validate.add_argument(
+        "--require-macos-capture-helper",
+        action="store_true",
+        help="fail unless macOS provenance records the capture helper block",
     )
 
     manifests = subparsers.add_parser("manifests")
@@ -439,11 +488,31 @@ def _helper_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
     return supplied
 
 
+def _capture_helper_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
+    provided = {
+        "sha256": args.capture_helper_sha256,
+        "architecture": args.capture_helper_arch,
+        "designated_requirement": args.capture_helper_designated_requirement,
+        "team_id": args.capture_helper_team_id,
+        "entitlement_sha256": args.capture_helper_entitlement_sha256,
+    }
+    supplied = {key: value for key, value in provided.items() if value}
+    if not supplied:
+        return None
+    if len(supplied) != len(provided):
+        missing = sorted(set(provided) - set(supplied))
+        raise ArtifactError(
+            f"incomplete capture helper provenance arguments: missing {missing}"
+        )
+    return supplied
+
+
 def main() -> None:
     args = _parser().parse_args()
     try:
         if args.command == "record":
             helper = _helper_from_args(args)
+            capture_helper = _capture_helper_from_args(args)
             payload = create_provenance(
                 args.platform,
                 args.platform_key,
@@ -451,6 +520,7 @@ def main() -> None:
                 args.commit_sha,
                 args.run_id,
                 helper=helper,
+                capture_helper=capture_helper,
             )
             print(
                 f"recorded {args.platform} provenance for {payload['commit_sha']} "
@@ -463,6 +533,7 @@ def main() -> None:
                 args.expected_run_id,
                 args.output,
                 require_macos_helper=args.require_macos_helper,
+                require_macos_capture_helper=args.require_macos_capture_helper,
             )
             print(
                 f"validated immutable release artifacts for {payload['commit_sha']} "

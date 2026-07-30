@@ -13,7 +13,7 @@
 git clone https://github.com/georgenijo/murmur-app.git
 cd murmur-app
 
-# 1. Build the local-LLM sidecar FIRST (macOS only — no-op elsewhere)
+# 1. Build the bundled helpers FIRST (macOS only — no-op elsewhere)
 python3 scripts/build_local_llm_sidecar.py
 
 # 2. Install Node dependencies
@@ -24,10 +24,10 @@ npm run tauri dev
 ```
 
 > **Step 1 is not optional on macOS.** `tauri.macos.conf.json` declares the
-> `murmur-llm-sidecar` externalBin, so `tauri dev`, `tauri build`, **and even
+> local-LLM and capture-helper externalBin entries, so `tauri dev`, `tauri build`, **and even
 > `cargo check` / `cargo test`** fail on a fresh clone until the binary exists at
-> `app/src-tauri/binaries/murmur-llm-sidecar-aarch64-apple-darwin`. The binary is
-> gitignored; release CI builds it before bundling. If you only need the Rust
+> the two target-triple-suffixed binaries under `app/src-tauri/binaries/`. The
+> binaries are gitignored; release CI builds them before bundling. If you only need the Rust
 > crate to compile, a stub file at that path is enough.
 
 A transcription model is downloaded through the app's first-launch setup
