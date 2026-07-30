@@ -172,6 +172,15 @@ def validate_release_build(workflow: str) -> int:
         in workflow
     )
     assert '--capture-helper-sha256 "$CAPTURE_HELPER_SHA"' in workflow
+    capture_evidence = named_step_block(
+        workflow, "Record capture-helper signing and non-interactive probe evidence", 6
+    )
+    assert "scripts/capture_helper_evidence.py collect-signature" in capture_evidence
+    assert "scripts/capture_helper_evidence.py validate-probe" in capture_evidence
+    assert '--signed-bundle-artifact "macos-release-$SOURCE_SHA"' in capture_evidence
+    assert "signature.json" in capture_evidence
+    assert "codesign.txt" not in capture_evidence
+    assert "designated-requirement.txt" not in capture_evidence
     assert "shared-key: macos-release-v1" in workflow
     assert "shared-key: linux-cuda-release-v1" in workflow
     assert "Print :CFBundleExecutable" in workflow

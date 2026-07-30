@@ -6,6 +6,13 @@ import plistlib
 import tempfile
 import unittest
 
+from scripts.capture_helper_evidence import (
+    ALLOWED_PROBE_OUTCOMES,
+    CAPTURE_ENTITLEMENTS,
+    EvidenceError,
+    structured_signature_evidence,
+    validate_probe_evidence,
+)
 from scripts.finalize_macos_bundle import HELPERS, require_exact_macos_executables
 from scripts.release_artifacts import (
     ArtifactError,
@@ -133,6 +140,19 @@ class ReleaseArtifactTests(unittest.TestCase):
             'identifier "com.localdictation.capture-helper" and anchor apple generic '
             'and certificate leaf[subject.OU] = "ABCDE12345"'
         ),
+    }
+    CAPTURE_PROBE = {
+        "schema_version": 1,
+        "outcome": "ok",
+        "last_phase": "stopping",
+        "helper_pid": 123,
+        "first_callback_ms": 8,
+        "elapsed_ms": 5000,
+        "termination": "cooperative",
+        "exit_code": 0,
+        "exit_signal": None,
+        "process_group_empty": True,
+        "audio_content_retained": False,
     }
 
     def _rerecord_macos_with_helper(self, helper: dict) -> None:
@@ -340,6 +360,86 @@ class ReleaseArtifactTests(unittest.TestCase):
                     "com.apple.security.device.microphone": True,
                 },
             )
+
+    def test_capture_probe_requires_complete_confirmed_allowlisted_evidence(self) -> None:
+        self.assertEqual(
+            validate_probe_evidence(self.CAPTURE_PROBE, 0), self.CAPTURE_PROBE
+        )
+        for outcome in ALLOWED_PROBE_OUTCOMES:
+            with self.subTest(allowed_outcome=outcome):
+                validate_probe_evidence(
+                    {**self.CAPTURE_PROBE, "outcome": outcome},
+                    0 if outcome == "ok" else 2,
+                )
+        for outcome in (
+            "signature_invalid",
+            "spawn_failed",
+            "protocol",
+            "busy",
+            "handshake_timeout",
+            "invalid_message",
+            "internal",
+        ):
+            with self.subTest(outcome=outcome):
+                with self.assertRaisesRegex(EvidenceError, "not allowed"):
+                    validate_probe_evidence(
+                        {**self.CAPTURE_PROBE, "outcome": outcome}, 2
+                    )
+        self.assertNotIn("protocol", ALLOWED_PROBE_OUTCOMES)
+
+        invalid_cases = (
+            ({key: value for key, value in self.CAPTURE_PROBE.items() if key != "exit_signal"}, 0),
+            ({**self.CAPTURE_PROBE, "process_group_empty": False}, 0),
+            (
+                {
+                    **self.CAPTURE_PROBE,
+                    "termination": "hard_kill",
+                    "exit_code": None,
+                    "exit_signal": None,
+                },
+                0,
+            ),
+            ({**self.CAPTURE_PROBE, "audio_content_retained": True}, 0),
+            (self.CAPTURE_PROBE, 2),
+        )
+        for payload, probe_exit in invalid_cases:
+            with self.subTest(payload=payload, probe_exit=probe_exit):
+                with self.assertRaises(EvidenceError):
+                    validate_probe_evidence(payload, probe_exit)
+
+    def test_signature_evidence_allowlists_fields_and_drops_runner_paths(self) -> None:
+        team_id = "ABCDE12345"
+        runner_path = "/Users/runner/work/private/repo/murmur-capture-helper"
+        details = (
+            f"Executable={runner_path}\n"
+            "Identifier=com.localdictation.capture-helper\n"
+            f"TeamIdentifier={team_id}\n"
+            "flags=0x10000(runtime)\n"
+        )
+        requirement = (
+            f"Executable={runner_path}\n"
+            'designated => identifier "com.localdictation.capture-helper" '
+            "and anchor apple generic "
+            f'and certificate leaf[subject.OU] = "{team_id}"'
+        )
+        evidence = structured_signature_evidence(
+            details, requirement, CAPTURE_ENTITLEMENTS, "arm64"
+        )
+        serialized = json.dumps(evidence)
+        self.assertNotIn(runner_path, serialized)
+        self.assertEqual(
+            set(evidence),
+            {
+                "schema_version",
+                "identifier",
+                "team_id",
+                "architecture",
+                "hardened_runtime",
+                "designated_requirement",
+                "entitlement_sha256",
+                "entitlement_keys",
+            },
+        )
 
 
 if __name__ == "__main__":

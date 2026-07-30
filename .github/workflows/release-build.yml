@@ -263,43 +263,23 @@ jobs:
           EVIDENCE=capture-helper-tcc-evidence
           mkdir -p "$EVIDENCE"
 
-          codesign -d --verbose=4 "$CAPTURE_HELPER" > "$EVIDENCE/codesign.txt" 2>&1
-          codesign -d -r- "$CAPTURE_HELPER" > "$EVIDENCE/designated-requirement.txt" 2>&1
-          codesign -d --entitlements :- --xml "$CAPTURE_HELPER" \
-            > "$EVIDENCE/entitlements.plist" 2>/dev/null
+          # Collect only allowlisted signature facts. Raw codesign verbose output
+          # contains the runner-local Executable path and must never be uploaded.
+          python3 scripts/capture_helper_evidence.py collect-signature \
+            --helper "$CAPTURE_HELPER" \
+            --signature-output "$EVIDENCE/signature.json" \
+            --entitlements-output "$EVIDENCE/entitlements.plist"
 
           set +e
           "$BINARY" --capture-helper-probe > "$EVIDENCE/noninteractive-probe.json"
           PROBE_EXIT=$?
           set -e
-          if [ "$PROBE_EXIT" -ne 0 ] && [ "$PROBE_EXIT" -ne 2 ]; then
-            echo "ERROR: capture-helper probe failed outside its stable result contract"
-            exit 1
-          fi
-          python3 - "$EVIDENCE/noninteractive-probe.json" "$SOURCE_SHA" "$PROBE_EXIT" <<'PY'
-          import json
-          import pathlib
-          import sys
-
-          path = pathlib.Path(sys.argv[1])
-          payload = json.loads(path.read_text())
-          if payload.get("schema_version") != 1:
-              raise SystemExit("capture-helper evidence schema mismatch")
-          if payload.get("audio_content_retained") is not False:
-              raise SystemExit("capture-helper evidence must prove no retained audio")
-          if not str(payload.get("outcome", "")).strip():
-              raise SystemExit("capture-helper evidence outcome is missing")
-          manifest = {
-              "schema_version": 1,
-              "source_sha": sys.argv[2],
-              "signed_bundle_artifact": f"macos-release-{sys.argv[2]}",
-              "interactive_tcc_matrix": "required_on_downloaded_notarized_bundle",
-              "noninteractive_probe_exit": int(sys.argv[3]),
-          }
-          path.with_name("manifest.json").write_text(
-              json.dumps(manifest, indent=2, sort_keys=True) + "\n"
-          )
-          PY
+          python3 scripts/capture_helper_evidence.py validate-probe \
+            --probe "$EVIDENCE/noninteractive-probe.json" \
+            --probe-exit "$PROBE_EXIT" \
+            --source-sha "$SOURCE_SHA" \
+            --signed-bundle-artifact "macos-release-$SOURCE_SHA" \
+            --manifest-output "$EVIDENCE/manifest.json"
 
       - name: Upload capture-helper TCC rehearsal evidence
         uses: actions/upload-artifact@v4

@@ -131,6 +131,28 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             validate_release_build(mutated)
 
+    def test_capture_evidence_must_use_structured_collector_and_strict_validator(self) -> None:
+        workflow = (ROOT / ".github/workflows/release-build.yml").read_text()
+        for marker in (
+            "scripts/capture_helper_evidence.py collect-signature",
+            "scripts/capture_helper_evidence.py validate-probe",
+        ):
+            with self.subTest(marker=marker):
+                mutated = workflow.replace(marker, "echo skipped", 1)
+                self.assertNotEqual(workflow, mutated)
+                with self.assertRaises(AssertionError):
+                    validate_release_build(mutated)
+
+        leaked = workflow.replace(
+            "          # Collect only allowlisted signature facts.",
+            '          codesign -d --verbose=4 "$CAPTURE_HELPER" '
+            '> "$EVIDENCE/codesign.txt" 2>&1\n'
+            "          # Collect only allowlisted signature facts.",
+            1,
+        )
+        with self.assertRaises(AssertionError):
+            validate_release_build(leaked)
+
     def test_release_rehearsal_requires_main_workflow_definition(self) -> None:
         workflow = (ROOT / ".github/workflows/release-rehearsal.yml").read_text()
         mutated = workflow.replace(
