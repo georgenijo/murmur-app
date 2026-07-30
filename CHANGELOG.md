@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.23.8] - 2026-07-30
+
+### Added
+
+- Diagnostics now include an event-driven device state snapshot (selected microphone and connected audio inputs), sent only when it changes (#399).
+
 ## [0.23.7] - 2026-07-30
 
 ### Fixed
