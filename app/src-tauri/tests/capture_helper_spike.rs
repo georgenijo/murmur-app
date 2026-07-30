@@ -12,9 +12,18 @@ fn helper_path() -> PathBuf {
 }
 
 fn supervisor(scenario: &str) -> CaptureProbeSupervisor {
+    supervisor_with_environment(vec![(
+        "MOCK_CAPTURE_SCENARIO".to_string(),
+        scenario.to_string(),
+    )])
+}
+
+fn supervisor_with_environment(
+    scenario_environment: Vec<(String, String)>,
+) -> CaptureProbeSupervisor {
     CaptureProbeSupervisor::for_test(TestCaptureProbeConfig {
         helper_path: helper_path(),
-        scenario_environment: vec![("MOCK_CAPTURE_SCENARIO".to_string(), scenario.to_string())],
+        scenario_environment,
         handshake_timeout: Duration::from_millis(400),
         observe_for: Duration::from_millis(450),
         cancel_grace: Duration::from_millis(100),
@@ -71,6 +80,58 @@ fn cooperative_stop_exits_and_same_supervisor_can_start_fresh_helper() {
 }
 
 #[test]
+fn malformed_or_out_of_order_control_frames_fail_closed() {
+    for scenario in [
+        "wrong_nonce",
+        "wrong_version",
+        "malformed",
+        "truncated",
+        "oversized",
+        "ready_out_of_order",
+        "duplicate_phase",
+        "phase_regression",
+    ] {
+        let evidence = supervisor(scenario).run().unwrap();
+        assert_eq!(evidence.outcome, "protocol", "scenario={scenario}");
+        assert_eq!(evidence.termination, "hard_kill", "scenario={scenario}");
+        assert_eq!(evidence.exit_signal, Some(libc::SIGKILL));
+        assert!(evidence.process_group_empty, "scenario={scenario}");
+        assert!(!evidence.audio_content_retained);
+    }
+}
+
+#[test]
+fn same_supervisor_recovers_from_confirmed_hang_to_happy_fresh_launch() {
+    let marker = std::env::temp_dir().join(format!(
+        "murmur-capture-hang-then-happy-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&marker);
+    let supervisor = supervisor_with_environment(vec![
+        (
+            "MOCK_CAPTURE_SCENARIO".to_string(),
+            "hang_then_happy".to_string(),
+        ),
+        (
+            "MOCK_CAPTURE_MARKER".to_string(),
+            marker.to_string_lossy().into_owned(),
+        ),
+    ]);
+
+    let hung = supervisor.run().unwrap();
+    assert_eq!(hung.outcome, "handshake_timeout");
+    assert_eq!(hung.termination, "hard_kill");
+    assert!(hung.process_group_empty);
+
+    let fresh = supervisor.run().unwrap();
+    let _ = std::fs::remove_file(marker);
+    assert_eq!(fresh.outcome, "ok");
+    assert_eq!(fresh.termination, "cooperative");
+    assert!(fresh.process_group_empty);
+    assert_ne!(hung.helper_pid, fresh.helper_pid);
+}
+
+#[test]
 fn rapid_second_start_is_rejected_without_overlapping_helper() {
     let (spawned_tx, spawned_rx) = mpsc::channel();
     let supervisor = Arc::new(CaptureProbeSupervisor::for_test(TestCaptureProbeConfig {
@@ -95,4 +156,22 @@ fn rapid_second_start_is_rejected_without_overlapping_helper() {
     assert_eq!(evidence.helper_pid, spawned_pid);
     assert_eq!(evidence.termination, "hard_kill");
     assert!(evidence.process_group_empty);
+}
+
+#[test]
+fn production_capture_helper_has_no_process_spawn_or_daemonization_surface() {
+    let source = include_str!("../sidecars/capture/src/main.rs");
+    for forbidden in [
+        "std::process::Command",
+        "libc::fork(",
+        "libc::posix_spawn",
+        "libc::setsid(",
+        "libc::setpgid(",
+        "libc::daemon(",
+    ] {
+        assert!(
+            !source.contains(forbidden),
+            "capture helper must not contain process escape surface {forbidden:?}"
+        );
+    }
 }

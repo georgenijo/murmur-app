@@ -41,6 +41,12 @@ The Phase-0 prototype is a direct, non-daemonized
 - Cancellation is cooperative for 250 ms, then `SIGKILL` targets the process
   group derived from the exact owned PID. The parent does not permit another
   spawn until the direct PID has exited and the owned process group is empty.
+- Process-group cleanup covers descendants that inherit the helper's group; it
+  does not claim control over a process that deliberately escapes with
+  `setsid`/`setpgid`. The runtime signature gate makes the helper a trusted
+  binary, its exact sandbox entitlements expose no process exception, and a
+  static regression test forbids process-spawn or daemonization APIs in its
+  source.
 - The real-time callback performs one atomic counter update only. It
   never allocates, blocks, locks, logs, writes, retains PCM, or sends samples
   over IPC.
@@ -49,6 +55,10 @@ The prototype is reachable only through the explicit
 `--capture-helper-probe` executable argument. Production dictation,
 transcription, device selection, and transform capture remain on the existing
 in-process path. Issue #409 owns production routing.
+
+The default probe observes for five seconds. Interactive revocation testing can
+use `--capture-helper-probe --observe-seconds <1..300>`; parsing is exact and
+the upper bound is enforced before the helper starts.
 
 The child-management and runtime signature-validation primitives are generic.
 The local-LLM sidecar now uses the same signature gate; a later focused
@@ -59,9 +69,11 @@ model-fd contract is represented explicitly.
 
 Deterministic tests cover blocking before handshake, during enumeration,
 during stream open, after first callback, while ignoring cancel, during
-graceful stop, and with a spawned descendant. Every case must settle through
-confirmed direct-PID exit and an empty process group within one second, followed
-by a successful fresh spawn.
+graceful stop, and with an inherited-process-group descendant. They also reject
+wrong nonce/version, malformed, truncated, oversized, duplicated, regressed,
+and out-of-order control frames. Every case must settle through confirmed
+direct-PID exit and an empty process group within one second, followed by a
+successful fresh spawn.
 
 The trusted `Release Build` remains non-publishing when manually dispatched. It
 now uploads:

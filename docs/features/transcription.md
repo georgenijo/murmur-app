@@ -13,6 +13,9 @@ Transcription processing is local. Network access occurs for model setup and may
 > **Phase-0 boundary (#407):** the bundle contains a probe-only signed capture
 > helper used to validate TCC attribution and hard-kill recovery. Production
 > dictation and transform capture still use the in-process lifecycle below.
+> Runtime-revocation rehearsals may extend the content-free observation window
+> with `--observe-seconds 1..300`; this does not route production audio through
+> the helper.
 > No routing changes belong to this spike; see
 > [the decision record](../decisions/2026-07-30-capture-helper-phase-0.md).
 

@@ -9,9 +9,11 @@
     {"case": "after_first_callback_block", "expected": "confirmed_exit_under_1s", "actual": "passed_local_deterministic_2026-07-30"},
     {"case": "ignore_cancel", "expected": "hard_kill_confirmed", "actual": "passed_local_deterministic_2026-07-30"},
     {"case": "graceful_stop_block", "expected": "hard_kill_confirmed", "actual": "passed_local_deterministic_2026-07-30"},
-    {"case": "descendant_block", "expected": "owned_process_group_empty", "actual": "passed_local_deterministic_2026-07-30"},
+    {"case": "inherited_descendant_block", "expected": "owned_process_group_empty_without_claiming_setsid_escape", "actual": "passed_local_deterministic_2026-07-30"},
     {"case": "rapid_second_start", "expected": "busy_without_overlap", "actual": "passed_local_deterministic_2026-07-30"},
-    {"case": "fresh_start_after_exit", "expected": "new_pid_starts_without_app_restart", "actual": "passed_local_deterministic_2026-07-30"}
+    {"case": "fresh_start_after_exit", "expected": "new_pid_starts_without_app_restart", "actual": "passed_local_deterministic_2026-07-30"},
+    {"case": "hang_then_fresh_start_same_supervisor", "expected": "confirmed_kill_then_happy_new_pid", "actual": "passed_local_deterministic_2026-07-30"},
+    {"case": "invalid_control_frames", "expected": "wrong_nonce_version_malformed_truncated_oversized_duplicate_out_of_order_fail_closed", "actual": "passed_local_deterministic_2026-07-30"}
   ],
   "tcc_matrix": [
     {"case": "fresh_install_before_grant", "expected": "single_murmur_prompt", "actual": "pending_developer_id_notarized_bundle"},

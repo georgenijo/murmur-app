@@ -19,6 +19,7 @@ pub const CAPTURE_HELPER_NAME: &str = "murmur-capture-helper";
 pub const CAPTURE_HELPER_IDENTIFIER: &str = "com.localdictation.capture-helper";
 const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_OBSERVE: Duration = Duration::from_secs(5);
+const MAX_OBSERVE_SECONDS: u64 = 300;
 const CANCEL_GRACE: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone)]
@@ -32,7 +33,9 @@ pub struct TestCaptureProbeConfig {
 }
 
 enum SpawnPlan {
-    Production,
+    Production {
+        observe_for: Duration,
+    },
     #[cfg(any(debug_assertions, feature = "llm-test-support"))]
     Test(TestCaptureProbeConfig),
 }
@@ -40,7 +43,7 @@ enum SpawnPlan {
 impl SpawnPlan {
     fn helper_path(&self) -> Result<PathBuf, CaptureProbeError> {
         match self {
-            Self::Production => {
+            Self::Production { .. } => {
                 bundled_sibling(CAPTURE_HELPER_NAME).map_err(|_| CaptureProbeError::SpawnFailed)
             }
             #[cfg(any(debug_assertions, feature = "llm-test-support"))]
@@ -50,7 +53,7 @@ impl SpawnPlan {
 
     fn scenario_environment(&self) -> &[(String, String)] {
         match self {
-            Self::Production => &[],
+            Self::Production { .. } => &[],
             #[cfg(any(debug_assertions, feature = "llm-test-support"))]
             Self::Test(config) => &config.scenario_environment,
         }
@@ -58,7 +61,7 @@ impl SpawnPlan {
 
     fn handshake_timeout(&self) -> Duration {
         match self {
-            Self::Production => DEFAULT_HANDSHAKE_TIMEOUT,
+            Self::Production { .. } => DEFAULT_HANDSHAKE_TIMEOUT,
             #[cfg(any(debug_assertions, feature = "llm-test-support"))]
             Self::Test(config) => config.handshake_timeout,
         }
@@ -66,7 +69,7 @@ impl SpawnPlan {
 
     fn observe_for(&self) -> Duration {
         match self {
-            Self::Production => DEFAULT_OBSERVE,
+            Self::Production { observe_for } => *observe_for,
             #[cfg(any(debug_assertions, feature = "llm-test-support"))]
             Self::Test(config) => config.observe_for,
         }
@@ -74,7 +77,7 @@ impl SpawnPlan {
 
     fn cancel_grace(&self) -> Duration {
         match self {
-            Self::Production => CANCEL_GRACE,
+            Self::Production { .. } => CANCEL_GRACE,
             #[cfg(any(debug_assertions, feature = "llm-test-support"))]
             Self::Test(config) => config.cancel_grace,
         }
@@ -119,6 +122,138 @@ enum HelperEvent {
     Protocol,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HelperProtocolState {
+    AwaitEnumeration,
+    AwaitStreamOpen,
+    AwaitReady,
+    AwaitAwaitingFirstCallback,
+    AwaitFirstCallback,
+    AwaitActive,
+    Active,
+    Failed,
+    Stopping,
+    Stopped,
+}
+
+enum AcceptedFrame {
+    Phase(CapturePhase),
+    Ready,
+    FirstCallback(u64),
+    Health,
+    Failure(FailureCode),
+    Stopped,
+}
+
+struct HelperProtocol {
+    state: HelperProtocolState,
+    cancel_sent: bool,
+}
+
+impl HelperProtocol {
+    fn new() -> Self {
+        Self {
+            state: HelperProtocolState::AwaitEnumeration,
+            cancel_sent: false,
+        }
+    }
+
+    fn ready(&self) -> bool {
+        matches!(
+            self.state,
+            HelperProtocolState::AwaitAwaitingFirstCallback
+                | HelperProtocolState::AwaitFirstCallback
+                | HelperProtocolState::AwaitActive
+                | HelperProtocolState::Active
+                | HelperProtocolState::Stopping
+                | HelperProtocolState::Stopped
+        )
+    }
+
+    fn begin_cancel(&mut self) {
+        self.cancel_sent = true;
+    }
+
+    fn accept(&mut self, frame: HelperMessage, expected_nonce: &str) -> Result<AcceptedFrame, ()> {
+        if !valid_helper_message(&frame, expected_nonce) {
+            return Err(());
+        }
+        match frame {
+            HelperMessage::Phase { phase, .. } => {
+                let next = match (self.state, phase) {
+                    (HelperProtocolState::AwaitEnumeration, CapturePhase::Enumeration) => {
+                        HelperProtocolState::AwaitStreamOpen
+                    }
+                    (HelperProtocolState::AwaitStreamOpen, CapturePhase::StreamOpen) => {
+                        HelperProtocolState::AwaitReady
+                    }
+                    (
+                        HelperProtocolState::AwaitAwaitingFirstCallback,
+                        CapturePhase::AwaitingFirstCallback,
+                    ) => HelperProtocolState::AwaitFirstCallback,
+                    (HelperProtocolState::AwaitActive, CapturePhase::Active) => {
+                        HelperProtocolState::Active
+                    }
+                    (state, CapturePhase::Stopping)
+                        if self.cancel_sent
+                            && !matches!(
+                                state,
+                                HelperProtocolState::Failed
+                                    | HelperProtocolState::Stopping
+                                    | HelperProtocolState::Stopped
+                            ) =>
+                    {
+                        HelperProtocolState::Stopping
+                    }
+                    _ => return Err(()),
+                };
+                self.state = next;
+                Ok(AcceptedFrame::Phase(phase))
+            }
+            HelperMessage::Ready { .. } if self.state == HelperProtocolState::AwaitReady => {
+                self.state = HelperProtocolState::AwaitAwaitingFirstCallback;
+                Ok(AcceptedFrame::Ready)
+            }
+            HelperMessage::FirstCallback {
+                callback_latency_ms,
+                ..
+            } if self.state == HelperProtocolState::AwaitFirstCallback => {
+                self.state = HelperProtocolState::AwaitActive;
+                Ok(AcceptedFrame::FirstCallback(callback_latency_ms))
+            }
+            HelperMessage::CallbackHealth {
+                callback_count_bucket,
+                ..
+            } if self.state == HelperProtocolState::Active
+                && matches!(
+                    callback_count_bucket.as_str(),
+                    "0" | "le10" | "le100" | "le1k" | "gt1k"
+                ) =>
+            {
+                Ok(AcceptedFrame::Health)
+            }
+            HelperMessage::Failure { code, .. }
+                if !matches!(
+                    self.state,
+                    HelperProtocolState::Failed
+                        | HelperProtocolState::Stopping
+                        | HelperProtocolState::Stopped
+                ) =>
+            {
+                self.state = HelperProtocolState::Failed;
+                Ok(AcceptedFrame::Failure(code))
+            }
+            HelperMessage::Stopped { .. }
+                if self.cancel_sent && self.state == HelperProtocolState::Stopping =>
+            {
+                self.state = HelperProtocolState::Stopped;
+                Ok(AcceptedFrame::Stopped)
+            }
+            _ => Err(()),
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct CaptureProbeEvidence {
     pub schema_version: u8,
@@ -141,8 +276,12 @@ pub struct CaptureProbeSupervisor {
 
 impl CaptureProbeSupervisor {
     pub fn new() -> Self {
+        Self::with_observe_for(DEFAULT_OBSERVE)
+    }
+
+    fn with_observe_for(observe_for: Duration) -> Self {
         Self {
-            plan: SpawnPlan::Production,
+            plan: SpawnPlan::Production { observe_for },
             ownership: Mutex::new(None),
         }
     }
@@ -171,7 +310,7 @@ impl CaptureProbeSupervisor {
         }
         let started = Instant::now();
         let helper_path = self.plan.helper_path()?;
-        if matches!(self.plan, SpawnPlan::Production) && !cfg!(debug_assertions) {
+        if matches!(self.plan, SpawnPlan::Production { .. }) && !cfg!(debug_assertions) {
             crate::code_signing::validate_bundled_helper(&helper_path, CAPTURE_HELPER_IDENTIFIER)
                 .map_err(|_| CaptureProbeError::SignatureInvalid)?;
         }
@@ -193,10 +332,14 @@ impl CaptureProbeSupervisor {
             session_nonce: nonce.clone(),
         };
         if write_frame(&mut stdin, &hello).is_err() {
-            if let Some(child) = ownership.as_mut() {
-                let _ = child.hard_kill_confirmed(Instant::now() + Duration::from_millis(250));
+            let terminated = ownership.as_mut().and_then(|child| {
+                child.hard_kill_confirmed(Instant::now() + Duration::from_millis(250))
+            });
+            if terminated.is_some() {
+                ownership.take();
+                return Err(CaptureProbeError::Protocol);
             }
-            return Err(CaptureProbeError::Protocol);
+            return Err(CaptureProbeError::Busy);
         }
 
         let (events_tx, events_rx) = mpsc::channel();
@@ -225,16 +368,16 @@ impl CaptureProbeSupervisor {
         let observe_deadline = Instant::now() + self.plan.observe_for();
         let mut last_phase = None;
         let mut first_callback_ms = None;
-        let mut ready = false;
+        let mut protocol = HelperProtocol::new();
         let mut result = Ok(());
         while Instant::now() < observe_deadline {
-            let phase_deadline = if ready {
+            let phase_deadline = if protocol.ready() {
                 observe_deadline
             } else {
                 handshake_deadline.min(observe_deadline)
             };
             if Instant::now() >= phase_deadline {
-                if !ready {
+                if !protocol.ready() {
                     result = Err(CaptureProbeError::HandshakeTimeout);
                 }
                 break;
@@ -242,29 +385,21 @@ impl CaptureProbeSupervisor {
             match events_rx
                 .recv_timeout((phase_deadline - Instant::now()).min(Duration::from_millis(50)))
             {
-                Ok(HelperEvent::Frame(frame)) => {
-                    if !valid_helper_message(&frame, &nonce) {
+                Ok(HelperEvent::Frame(frame)) => match protocol.accept(frame, &nonce) {
+                    Ok(AcceptedFrame::Phase(phase)) => last_phase = Some(phase),
+                    Ok(AcceptedFrame::Ready | AcceptedFrame::Health) => {}
+                    Ok(AcceptedFrame::FirstCallback(callback_latency_ms)) => {
+                        first_callback_ms = Some(callback_latency_ms)
+                    }
+                    Ok(AcceptedFrame::Failure(code)) => {
+                        result = Err(CaptureProbeError::HelperFailed(code));
+                        break;
+                    }
+                    Ok(AcceptedFrame::Stopped) | Err(()) => {
                         result = Err(CaptureProbeError::Protocol);
                         break;
                     }
-                    match frame {
-                        HelperMessage::Phase { phase, .. } => last_phase = Some(phase),
-                        HelperMessage::Ready { .. } => ready = true,
-                        HelperMessage::FirstCallback {
-                            callback_latency_ms,
-                            ..
-                        } => first_callback_ms = Some(callback_latency_ms),
-                        HelperMessage::CallbackHealth { .. } => {}
-                        HelperMessage::Failure { code, .. } => {
-                            result = Err(CaptureProbeError::HelperFailed(code));
-                            break;
-                        }
-                        HelperMessage::Stopped { .. } => {
-                            result = Err(CaptureProbeError::Protocol);
-                            break;
-                        }
-                    }
-                }
+                },
                 Ok(HelperEvent::Exited) | Err(RecvTimeoutError::Disconnected) => {
                     result = Err(CaptureProbeError::Protocol);
                     break;
@@ -283,24 +418,38 @@ impl CaptureProbeSupervisor {
             session_nonce: nonce.clone(),
         };
         let _ = write_frame(&mut stdin, &cancel);
+        protocol.begin_cancel();
         let settle_deadline = Instant::now() + self.plan.cancel_grace();
         let mut stopped = false;
         while Instant::now() < settle_deadline {
             match events_rx
                 .recv_timeout((settle_deadline - Instant::now()).min(Duration::from_millis(25)))
             {
-                Ok(HelperEvent::Frame(frame)) if valid_helper_message(&frame, &nonce) => {
-                    match frame {
-                        HelperMessage::Phase { phase, .. } => last_phase = Some(phase),
-                        HelperMessage::Stopped { .. } => {
-                            stopped = true;
-                            break;
-                        }
-                        _ => {}
+                Ok(HelperEvent::Frame(frame)) => match protocol.accept(frame, &nonce) {
+                    Ok(AcceptedFrame::Phase(phase)) => last_phase = Some(phase),
+                    Ok(AcceptedFrame::Stopped) => {
+                        stopped = true;
+                        break;
                     }
-                }
+                    Ok(
+                        AcceptedFrame::Ready
+                        | AcceptedFrame::FirstCallback(_)
+                        | AcceptedFrame::Health,
+                    ) => {}
+                    Ok(AcceptedFrame::Failure(code)) => {
+                        result = Err(CaptureProbeError::HelperFailed(code));
+                        break;
+                    }
+                    Err(()) => {
+                        result = Err(CaptureProbeError::Protocol);
+                        break;
+                    }
+                },
                 Ok(HelperEvent::Exited) | Err(RecvTimeoutError::Disconnected) => break,
-                Ok(_) => {}
+                Ok(HelperEvent::Protocol) => {
+                    result = Err(CaptureProbeError::Protocol);
+                    break;
+                }
                 Err(RecvTimeoutError::Timeout) => continue,
             }
         }
@@ -339,8 +488,8 @@ impl CaptureProbeSupervisor {
         ownership.take();
 
         let outcome = match result {
-            Ok(()) if ready && first_callback_ms.is_some() => "ok",
-            Ok(()) if ready => "no_first_callback",
+            Ok(()) if protocol.ready() && first_callback_ms.is_some() => "ok",
+            Ok(()) if protocol.ready() => "no_first_callback",
             Ok(()) => CaptureProbeError::HandshakeTimeout.as_str(),
             Err(error) => error.as_str(),
         };
@@ -399,13 +548,51 @@ fn unique_nonce() -> String {
     format!("capture-{}-{nanos}", std::process::id())
 }
 
-pub fn run_cli_if_requested() -> Option<i32> {
-    let mut arguments = std::env::args();
-    let _program = arguments.next();
-    if arguments.next().as_deref() != Some("--capture-helper-probe") || arguments.next().is_some() {
-        return None;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CliRequest {
+    NotRequested,
+    Probe(Duration),
+    Invalid,
+}
+
+fn parse_cli_request(arguments: impl IntoIterator<Item = String>) -> CliRequest {
+    let arguments = arguments.into_iter().collect::<Vec<_>>();
+    match arguments.as_slice() {
+        [] => CliRequest::NotRequested,
+        [probe] if probe == "--capture-helper-probe" => CliRequest::Probe(DEFAULT_OBSERVE),
+        [probe, flag, seconds]
+            if probe == "--capture-helper-probe" && flag == "--observe-seconds" =>
+        {
+            match seconds.parse::<u64>() {
+                Ok(seconds @ 1..=MAX_OBSERVE_SECONDS) => {
+                    CliRequest::Probe(Duration::from_secs(seconds))
+                }
+                _ => CliRequest::Invalid,
+            }
+        }
+        [first, ..] if first == "--capture-helper-probe" => CliRequest::Invalid,
+        _ => CliRequest::NotRequested,
     }
-    let supervisor = CaptureProbeSupervisor::new();
+}
+
+pub fn run_cli_if_requested() -> Option<i32> {
+    let request = parse_cli_request(std::env::args().skip(1));
+    let observe_for = match request {
+        CliRequest::NotRequested => return None,
+        CliRequest::Probe(observe_for) => observe_for,
+        CliRequest::Invalid => {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "schema_version": 1,
+                    "outcome": "invalid_arguments",
+                    "audio_content_retained": false
+                })
+            );
+            return Some(64);
+        }
+    };
+    let supervisor = CaptureProbeSupervisor::with_observe_for(observe_for);
     match supervisor.run() {
         Ok(evidence) => match serde_json::to_string(&evidence) {
             Ok(json) => {
@@ -439,6 +626,46 @@ mod tests {
         assert_eq!(
             CaptureProbeError::HelperFailed(FailureCode::CallbackStalled).as_str(),
             "callback_stalled"
+        );
+    }
+
+    #[test]
+    fn cli_observation_duration_is_explicit_strict_and_bounded() {
+        assert_eq!(
+            parse_cli_request(["--capture-helper-probe".to_string()]),
+            CliRequest::Probe(DEFAULT_OBSERVE)
+        );
+        assert_eq!(
+            parse_cli_request([
+                "--capture-helper-probe".to_string(),
+                "--observe-seconds".to_string(),
+                "120".to_string(),
+            ]),
+            CliRequest::Probe(Duration::from_secs(120))
+        );
+        for arguments in [
+            vec![
+                "--capture-helper-probe".to_string(),
+                "--observe-seconds".to_string(),
+                "0".to_string(),
+            ],
+            vec![
+                "--capture-helper-probe".to_string(),
+                "--observe-seconds".to_string(),
+                "301".to_string(),
+            ],
+            vec![
+                "--capture-helper-probe".to_string(),
+                "--observe-seconds".to_string(),
+                "1.5".to_string(),
+            ],
+            vec!["--capture-helper-probe".to_string(), "extra".to_string()],
+        ] {
+            assert_eq!(parse_cli_request(arguments), CliRequest::Invalid);
+        }
+        assert_eq!(
+            parse_cli_request(["--other".to_string()]),
+            CliRequest::NotRequested
         );
     }
 }

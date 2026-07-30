@@ -136,7 +136,10 @@ binary. It is not used by production recording. The explicit
 callback health, cooperative cancel, bounded process-group kill, and confirmed
 exit. The callback records atomics only and never retains or transports PCM.
 Release builds validate the helper's fixed identifier, shared Team ID, hardened
-runtime, and exact microphone sandbox entitlements before spawn. See the
+runtime, and exact microphone sandbox entitlements before spawn. Process-group
+cleanup covers inherited descendants only; the trusted sandboxed helper has no
+process-spawn or daemonization surface, and the host makes no claim about a
+deliberately escaped process group. See the
 [Phase-0 ADR](decisions/2026-07-30-capture-helper-phase-0.md).
 
 ### Module map

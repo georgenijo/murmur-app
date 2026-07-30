@@ -39,6 +39,12 @@ def write_frame(frame: dict) -> None:
     sys.stdout.buffer.flush()
 
 
+def write_raw(body: bytes, declared_length: int | None = None) -> None:
+    length = len(body) if declared_length is None else declared_length
+    sys.stdout.buffer.write(struct.pack(">I", length) + body)
+    sys.stdout.buffer.flush()
+
+
 def base(frame_type: str, nonce: str, **fields: object) -> dict:
     return {
         "type": frame_type,
@@ -51,6 +57,14 @@ def base(frame_type: str, nonce: str, **fields: object) -> dict:
 
 def main() -> None:
     scenario = os.environ.get("MOCK_CAPTURE_SCENARIO", "happy")
+    if scenario == "hang_then_happy":
+        marker = os.environ["MOCK_CAPTURE_MARKER"]
+        if os.path.exists(marker):
+            scenario = "happy"
+        else:
+            with open(marker, "x", encoding="utf-8"):
+                pass
+            scenario = "pre_handshake_block"
     if scenario == "pre_handshake_block":
         block_forever()
 
@@ -58,7 +72,31 @@ def main() -> None:
     if hello.get("type") != "hello":
         raise SystemExit(70)
     nonce = str(hello["sessionNonce"])
+    if scenario == "wrong_nonce":
+        write_frame(base("phase", nonce + "-wrong", phase="enumeration"))
+        block_forever()
+    if scenario == "wrong_version":
+        frame = base("phase", nonce, phase="enumeration")
+        frame["version"] = VERSION + 1
+        write_frame(frame)
+        block_forever()
+    if scenario == "malformed":
+        write_raw(b"{not-json")
+        block_forever()
+    if scenario == "truncated":
+        write_raw(b"{", declared_length=100)
+        os.close(sys.stdout.fileno())
+        block_forever()
+    if scenario == "oversized":
+        write_raw(b"", declared_length=4097)
+        block_forever()
+    if scenario == "ready_out_of_order":
+        write_frame(base("ready", nonce))
+        block_forever()
     write_frame(base("phase", nonce, phase="enumeration"))
+    if scenario == "duplicate_phase":
+        write_frame(base("phase", nonce, phase="enumeration"))
+        block_forever()
     if scenario == "enumeration_block":
         block_forever()
     write_frame(base("phase", nonce, phase="streamOpen"))
@@ -69,6 +107,9 @@ def main() -> None:
     if scenario != "starts_without_callbacks":
         write_frame(base("firstCallback", nonce, callbackLatencyMs=1))
         write_frame(base("phase", nonce, phase="active"))
+    if scenario == "phase_regression":
+        write_frame(base("phase", nonce, phase="enumeration"))
+        block_forever()
     if scenario in {"after_first_audio_block", "starts_without_callbacks"}:
         block_forever()
     if scenario == "descendant_block":

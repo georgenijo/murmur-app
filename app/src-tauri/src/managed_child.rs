@@ -4,7 +4,10 @@
 //! leader of a new process group in the parent's session without daemonizing.
 //! Forced termination targets
 //! the group derived from the exact owned PID, then waits for that PID and proves
-//! no member of the owned process group remains.
+//! no member of the owned process group remains. This covers descendants that
+//! inherit the group; it does not claim control over a process that deliberately
+//! escapes with `setsid`/`setpgid`. The separately signed sandboxed capture helper
+//! is therefore forbidden from exposing any process-spawn surface.
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -20,6 +23,9 @@ pub struct ConfirmedTermination {
 pub struct ManagedChild {
     child: Child,
     pid: u32,
+    termination_armed: bool,
+    #[cfg(test)]
+    drop_fallback_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl ManagedChild {
@@ -71,7 +77,17 @@ impl ManagedChild {
         let stdout = child.stdout.take().ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::BrokenPipe, "missing helper stdout")
         })?;
-        Ok((Self { child, pid }, stdin, stdout))
+        Ok((
+            Self {
+                child,
+                pid,
+                termination_armed: true,
+                #[cfg(test)]
+                drop_fallback_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            },
+            stdin,
+            stdout,
+        ))
     }
 
     pub fn pid(&self) -> u32 {
@@ -87,9 +103,11 @@ impl ManagedChild {
             match self.child.try_wait() {
                 Ok(Some(status)) => {
                     let termination = self.confirmed(status);
-                    return self
-                        .confirm_process_group_empty(deadline)
-                        .then_some(termination);
+                    if self.confirm_process_group_empty(deadline) {
+                        self.termination_armed = false;
+                        return Some(termination);
+                    }
+                    return None;
                 }
                 Ok(None) if Instant::now() < deadline => {
                     std::thread::sleep(Duration::from_millis(5));
@@ -104,7 +122,7 @@ impl ManagedChild {
         unsafe {
             // The direct child is the process-group leader created by setpgid().
             // A negative PID therefore targets only the group owned by this
-            // exact child and also removes any fault-injected descendants.
+            // exact child and any fault-injected descendants that inherit it.
             libc::kill(-(self.pid as i32), libc::SIGKILL);
         }
         #[cfg(not(unix))]
@@ -147,19 +165,20 @@ impl ManagedChild {
             true
         }
     }
+
+    #[cfg(test)]
+    fn drop_fallback_observer(&self) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+        std::sync::Arc::clone(&self.drop_fallback_count)
+    }
 }
 
 impl Drop for ManagedChild {
     fn drop(&mut self) {
-        #[cfg(unix)]
-        unsafe {
-            // Always target the owned group: the direct child may already have
-            // exited while a descendant remains alive in the same group.
-            libc::kill(-(self.pid as i32), libc::SIGKILL);
-        }
-        #[cfg(not(unix))]
-        if self.child.try_wait().ok().flatten().is_none() {
-            let _ = self.child.kill();
+        if self.termination_armed {
+            #[cfg(test)]
+            self.drop_fallback_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let _ = self.hard_kill_confirmed(Instant::now() + Duration::from_millis(250));
         }
     }
 }
@@ -172,4 +191,40 @@ pub fn bundled_sibling(name: &str) -> Result<PathBuf, ()> {
     (metadata.is_file() && !metadata.file_type().is_symlink())
         .then_some(candidate)
         .ok_or(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn confirmed_normal_exit_disarms_drop_without_resignalling() {
+        let (mut child, stdin, stdout) =
+            ManagedChild::spawn(Path::new("/usr/bin/true"), &[]).unwrap();
+        drop((stdin, stdout));
+        let observer = child.drop_fallback_observer();
+        let termination = child
+            .wait_for_exit(Instant::now() + Duration::from_secs(1))
+            .expect("normal exit and empty process group must be confirmed");
+        assert_eq!(termination.exit_code, Some(0));
+        assert!(!child.termination_armed);
+        drop(child);
+        assert_eq!(observer.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn confirmed_hard_kill_disarms_drop_without_resignalling() {
+        let (mut child, stdin, stdout) =
+            ManagedChild::spawn(Path::new("/usr/bin/yes"), &[]).unwrap();
+        drop((stdin, stdout));
+        let observer = child.drop_fallback_observer();
+        let termination = child
+            .hard_kill_confirmed(Instant::now() + Duration::from_secs(1))
+            .expect("hard kill and empty process group must be confirmed");
+        assert_eq!(termination.exit_signal, Some(libc::SIGKILL));
+        assert!(!child.termination_armed);
+        drop(child);
+        assert_eq!(observer.load(Ordering::SeqCst), 0);
+    }
 }
