@@ -11,6 +11,7 @@ import plistlib
 import re
 import subprocess
 from typing import Any
+from xml.parsers.expat import ExpatError
 
 
 CAPTURE_HELPER_IDENTIFIER = "com.localdictation.capture-helper"
@@ -248,6 +249,40 @@ def _run(command: list[str]) -> subprocess.CompletedProcess[bytes]:
     return subprocess.run(command, check=True, capture_output=True)
 
 
+def extract_entitlements_plist(payload: bytes) -> dict[str, object]:
+    """Extract exactly one complete XML plist from mixed codesign output."""
+
+    xml_starts = [match.start() for match in re.finditer(br"<\?xml\b", payload)]
+    plist_starts = [
+        match.start() for match in re.finditer(br"<plist(?:\s|>)", payload)
+    ]
+    plist_ends = [
+        match.end() for match in re.finditer(br"</plist\s*>", payload)
+    ]
+    if not xml_starts and not plist_starts and not plist_ends:
+        raise EvidenceError("codesign returned no capture-helper entitlements")
+    if len(xml_starts) != 1 or len(plist_starts) != 1 or len(plist_ends) != 1:
+        raise EvidenceError(
+            "codesign returned ambiguous or incomplete capture-helper entitlements"
+        )
+    xml_start = xml_starts[0]
+    plist_start = plist_starts[0]
+    plist_end = plist_ends[0]
+    if not xml_start < plist_start < plist_end:
+        raise EvidenceError("codesign returned malformed capture-helper entitlements")
+
+    document = payload[xml_start:plist_end]
+    try:
+        entitlements = plistlib.loads(document)
+    except (ExpatError, plistlib.InvalidFileException, TypeError, ValueError) as error:
+        raise EvidenceError(
+            "codesign returned malformed capture-helper entitlements"
+        ) from error
+    if not isinstance(entitlements, dict):
+        raise EvidenceError("capture-helper entitlements plist must contain a dictionary")
+    return entitlements
+
+
 def collect_signature(
     helper: Path, signature_output: Path, entitlements_output: Path
 ) -> None:
@@ -263,10 +298,7 @@ def collect_signature(
         ["codesign", "-d", "--entitlements", ":-", "--xml", str(helper)]
     )
     entitlement_payload = entitlement_result.stdout + entitlement_result.stderr
-    xml_start = entitlement_payload.find(b"<?xml")
-    if xml_start < 0:
-        raise EvidenceError("codesign returned no capture-helper entitlements")
-    entitlements = plistlib.loads(entitlement_payload[xml_start:])
+    entitlements = extract_entitlements_plist(entitlement_payload)
     architecture = _run(["lipo", "-archs", str(helper)]).stdout.decode().strip()
     evidence = structured_signature_evidence(
         details, requirement, entitlements, architecture

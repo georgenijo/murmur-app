@@ -11,6 +11,7 @@ from scripts.capture_helper_evidence import (
     CAPTURE_ENTITLEMENTS,
     EvidenceError,
     PROBE_OUTCOME_CONTRACTS,
+    extract_entitlements_plist,
     structured_signature_evidence,
     validate_probe_evidence,
 )
@@ -576,6 +577,54 @@ class ReleaseArtifactTests(unittest.TestCase):
             structured_signature_evidence(
                 details, requirement, CAPTURE_ENTITLEMENTS, "arm64"
             )
+
+    def test_entitlements_extraction_bounds_realistic_codesign_noise(self) -> None:
+        runner_path = b"/Users/runner/work/private/repo/murmur-capture-helper"
+        xml = plistlib.dumps(CAPTURE_ENTITLEMENTS, sort_keys=True)
+        payload = (
+            b"Executable="
+            + runner_path
+            + b"\nwarning: codesign diagnostic preamble\n"
+            + xml
+            + b"\nExecutable="
+            + runner_path
+            + b"\nwarning: codesign trailing diagnostic\n"
+        )
+        entitlements = extract_entitlements_plist(payload)
+        self.assertEqual(entitlements, CAPTURE_ENTITLEMENTS)
+        canonical_output = plistlib.dumps(entitlements, sort_keys=True)
+        self.assertNotIn(runner_path, canonical_output)
+        self.assertNotIn(b"codesign", canonical_output)
+
+    def test_entitlements_extraction_rejects_missing_or_incomplete_xml(self) -> None:
+        xml = plistlib.dumps(CAPTURE_ENTITLEMENTS, sort_keys=True)
+        cases = (
+            b"Executable=/Users/runner/work/private/repo/helper\n",
+            xml[: xml.index(b"</plist>")],
+            xml[xml.index(b"<plist") :],
+        )
+        for payload in cases:
+            with self.subTest(payload=payload):
+                with self.assertRaises(EvidenceError):
+                    extract_entitlements_plist(payload)
+
+    def test_entitlements_extraction_rejects_malformed_xml(self) -> None:
+        xml = plistlib.dumps(CAPTURE_ENTITLEMENTS, sort_keys=True)
+        malformed = xml.replace(b"<true/>", b"<true>", 1)
+        with self.assertRaisesRegex(EvidenceError, "malformed"):
+            extract_entitlements_plist(malformed)
+
+    def test_entitlements_extraction_rejects_ambiguous_xml(self) -> None:
+        xml = plistlib.dumps(CAPTURE_ENTITLEMENTS, sort_keys=True)
+        cases = (
+            xml + b"\n" + xml,
+            xml + b"\n<?xml trailing diagnostic",
+            xml + b"\n</plist>",
+        )
+        for payload in cases:
+            with self.subTest(payload=payload):
+                with self.assertRaisesRegex(EvidenceError, "ambiguous"):
+                    extract_entitlements_plist(payload)
 
 
 if __name__ == "__main__":
