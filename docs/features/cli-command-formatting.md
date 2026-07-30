@@ -14,6 +14,17 @@ The CLI stage is conservative and bounded to command-shaped lines at the utteran
 
 Physical line endings are immutable boundaries. Each line is considered independently, so a command line can be canonicalized without rewriting adjacent prose, and existing LF/CRLF endings remain unchanged.
 
+### Inline slash-command references
+
+Prose can include an explicit `slash command` reference without activating CLI formatting for the whole line:
+
+```text
+Try slash command chat, then slash command vault dash in.
+→ Try /chat, then /vault-in.
+```
+
+The explicit `command` cue is required so ordinary uses such as “a slash separates path components” and “slash command syntax” remain unchanged. `dash` or `hyphen` joins command-name components. `slash command named …` and `slash command called …` provide an unambiguous form when the command name is also an ordinary formatting word. A multiword command name can also resolve through the recording's bounded local lexicon, such as a scanned `vault-in` term resolving spoken `vault in`. Inline references preserve all surrounding whitespace, punctuation, Unicode, and prose formatting.
+
 ## Transformation order
 
 CLI canonicalization is the final deterministic transformation:
@@ -59,5 +70,6 @@ Code-vocabulary scans also read only the package name, script keys, and dependen
 - Activated spans are formatted, copied, and optionally pasted as text only.
 - Canonical commands are idempotent.
 - Non-activated whitespace, punctuation, and Unicode remain byte-for-byte unchanged.
+- Inline slash references require the explicit `slash command` cue and rewrite only that bounded span.
 - Existing LF/CRLF command boundaries remain byte-for-byte unchanged.
 - Imported-file transcription remains raw and does not run CLI formatting.

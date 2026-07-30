@@ -61,6 +61,51 @@ const PROSE_MARKERS: &[&str] = &[
     "should", "then", "uses", "was", "will",
 ];
 
+const INLINE_REFERENCE_STOPWORDS: &[&str] = &[
+    "a",
+    "about",
+    "an",
+    "and",
+    "are",
+    "as",
+    "behavior",
+    "can",
+    "character",
+    "commands",
+    "does",
+    "example",
+    "examples",
+    "for",
+    "format",
+    "formatting",
+    "has",
+    "in",
+    "is",
+    "means",
+    "name",
+    "names",
+    "of",
+    "on",
+    "or",
+    "reference",
+    "references",
+    "should",
+    "support",
+    "symbol",
+    "syntax",
+    "the",
+    "to",
+    "uses",
+    "was",
+    "will",
+    "with",
+    "without",
+    "word",
+    "words",
+];
+
+const MAX_INLINE_COMMAND_WORDS: usize = 8;
+
 impl CliLexicon {
     pub(crate) fn from_context(
         prompt: Option<&str>,
@@ -237,12 +282,13 @@ fn canonicalize_lines(input: &str, mode: CliFormattingMode, lexicon: &CliLexicon
 }
 
 fn canonicalize_line(input: &str, mode: CliFormattingMode, lexicon: &CliLexicon) -> String {
-    let mut words = input
+    let inline_formatted = canonicalize_inline_slash_commands(input, lexicon);
+    let mut words = inline_formatted
         .split_whitespace()
         .map(str::to_string)
         .collect::<Vec<_>>();
     let Some(trigger_words) = cli_activation(&words, mode, lexicon) else {
-        return input.to_string();
+        return inline_formatted;
     };
     if trigger_words > 0 {
         words.drain(0..trigger_words);
@@ -251,6 +297,224 @@ fn canonicalize_line(input: &str, mode: CliFormattingMode, lexicon: &CliLexicon)
     strip_sentence_punctuation(&mut words);
     let formatted = format_words(&words, lexicon);
     apply_command_idioms(formatted)
+}
+
+#[derive(Debug)]
+struct InlineToken {
+    start: usize,
+    end: usize,
+    core_start: usize,
+    core_end: usize,
+    clean: String,
+}
+
+fn canonicalize_inline_slash_commands(input: &str, lexicon: &CliLexicon) -> String {
+    let tokens = inline_tokens(input);
+    let words = tokens
+        .iter()
+        .map(|token| token.clean.clone())
+        .collect::<Vec<_>>();
+    let mut replacements = Vec::new();
+    let mut index = 0;
+
+    while index < tokens.len() {
+        let trigger_len = inline_slash_trigger_len(input, &tokens, index);
+        if trigger_len == 0 {
+            index += 1;
+            continue;
+        }
+        let name_start = index + trigger_len;
+        let Some((name, consumed)) =
+            resolve_inline_command_name(input, &tokens, &words, name_start, lexicon)
+        else {
+            index += trigger_len;
+            continue;
+        };
+        let name_prefix = &input[tokens[name_start].start..tokens[name_start].core_start];
+        replacements.push((
+            tokens[index].core_start,
+            tokens[name_start + consumed - 1].core_end,
+            format!("{name_prefix}/{name}"),
+        ));
+        index = name_start + consumed;
+    }
+
+    if replacements.is_empty() {
+        return input.to_string();
+    }
+    let mut output = String::with_capacity(input.len());
+    let mut cursor = 0;
+    for (start, end, replacement) in replacements {
+        output.push_str(&input[cursor..start]);
+        output.push_str(&replacement);
+        cursor = end;
+    }
+    output.push_str(&input[cursor..]);
+    output
+}
+
+fn inline_tokens(input: &str) -> Vec<InlineToken> {
+    let mut tokens = Vec::new();
+    let mut start = None;
+    for (index, ch) in input.char_indices() {
+        if ch.is_whitespace() {
+            if let Some(start) = start.take() {
+                if let Some(token) = inline_token(input, start, index) {
+                    tokens.push(token);
+                }
+            }
+        } else if start.is_none() {
+            start = Some(index);
+        }
+    }
+    if let Some(start) = start {
+        if let Some(token) = inline_token(input, start, input.len()) {
+            tokens.push(token);
+        }
+    }
+    tokens
+}
+
+fn inline_token(input: &str, start: usize, end: usize) -> Option<InlineToken> {
+    let raw = &input[start..end];
+    let is_core = |ch: char| ch.is_alphanumeric() || matches!(ch, '-' | '_');
+    let core_start_offset = raw
+        .char_indices()
+        .find_map(|(index, ch)| is_core(ch).then_some(index))?;
+    let core_end_offset = raw
+        .char_indices()
+        .rev()
+        .find_map(|(index, ch)| is_core(ch).then_some(index + ch.len_utf8()))?;
+    let core_start = start + core_start_offset;
+    let core_end = start + core_end_offset;
+    Some(InlineToken {
+        start,
+        end,
+        core_start,
+        core_end,
+        clean: input[core_start..core_end].to_string(),
+    })
+}
+
+fn inline_slash_trigger_len(input: &str, tokens: &[InlineToken], index: usize) -> usize {
+    let trigger_len = if inline_starts_with(tokens, index, &["slash", "command", "named"])
+        || inline_starts_with(tokens, index, &["slash", "command", "called"])
+    {
+        3
+    } else if inline_starts_with(tokens, index, &["forward", "slash", "command", "named"])
+        || inline_starts_with(tokens, index, &["forward", "slash", "command", "called"])
+    {
+        4
+    } else if inline_starts_with(tokens, index, &["slash", "command"]) {
+        2
+    } else if inline_starts_with(tokens, index, &["forward", "slash", "command"]) {
+        3
+    } else {
+        return 0;
+    };
+    let trigger_end = index + trigger_len;
+    if tokens[index..trigger_end]
+        .iter()
+        .enumerate()
+        .all(|(offset, token)| {
+            token.core_end == token.end
+                && (offset == 0 || token.core_start == token.start)
+                && !input[token.core_start..token.core_end].is_empty()
+        })
+    {
+        trigger_len
+    } else {
+        0
+    }
+}
+
+fn resolve_inline_command_name(
+    input: &str,
+    tokens: &[InlineToken],
+    words: &[String],
+    start: usize,
+    lexicon: &CliLexicon,
+) -> Option<(String, usize)> {
+    let first = tokens.get(start)?;
+    let first_clean = clean_detection_word(&first.clean);
+    let explicitly_named = tokens.get(start.saturating_sub(1)).is_some_and(|token| {
+        matches!(
+            clean_detection_word(&token.clean).as_str(),
+            "named" | "called"
+        )
+    });
+    if !explicitly_named && INLINE_REFERENCE_STOPWORDS.contains(&first_clean.as_str()) {
+        return None;
+    }
+
+    if let Some((written, consumed)) = lexicon.resolve(words, start) {
+        if consumed <= MAX_INLINE_COMMAND_WORDS
+            && is_slash_command_name(written)
+            && inline_name_tokens_are_contiguous(input, tokens, start, consumed)
+        {
+            return Some((written.to_string(), consumed));
+        }
+    }
+
+    if !is_slash_command_component(&first.clean) {
+        return None;
+    }
+    let mut name = first.clean.clone();
+    let mut consumed = 1;
+    while consumed + 1 < MAX_INLINE_COMMAND_WORDS
+        && start + consumed + 1 < tokens.len()
+        && matches!(
+            clean_detection_word(&tokens[start + consumed].clean).as_str(),
+            "dash" | "hyphen"
+        )
+        && is_slash_command_component(&tokens[start + consumed + 1].clean)
+        && inline_name_tokens_are_contiguous(input, tokens, start + consumed, 2)
+    {
+        name.push('-');
+        name.push_str(&tokens[start + consumed + 1].clean);
+        consumed += 2;
+    }
+    is_slash_command_name(&name).then_some((name, consumed))
+}
+
+fn inline_name_tokens_are_contiguous(
+    input: &str,
+    tokens: &[InlineToken],
+    start: usize,
+    consumed: usize,
+) -> bool {
+    let Some(slice) = tokens.get(start..start.saturating_add(consumed)) else {
+        return false;
+    };
+    slice.iter().enumerate().all(|(offset, token)| {
+        (offset == 0 || token.core_start == token.start)
+            && (offset + 1 == consumed || token.core_end == token.end)
+            && !input[token.core_start..token.core_end].is_empty()
+    })
+}
+
+fn is_slash_command_component(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|ch| ch.is_alphanumeric() || matches!(ch, '-' | '_'))
+}
+
+fn is_slash_command_name(value: &str) -> bool {
+    value.chars().next().is_some_and(char::is_alphanumeric)
+        && value
+            .chars()
+            .all(|ch| ch.is_alphanumeric() || matches!(ch, '-' | '_' | ':' | '.'))
+}
+
+fn inline_starts_with(tokens: &[InlineToken], index: usize, expected: &[&str]) -> bool {
+    let Some(slice) = tokens.get(index..index.saturating_add(expected.len())) else {
+        return false;
+    };
+    slice
+        .iter()
+        .zip(expected)
+        .all(|(actual, expected)| actual.clean.eq_ignore_ascii_case(expected))
 }
 
 /// Return the number of explicit trigger words to strip when activated.
@@ -763,6 +1027,12 @@ mod tests {
             "cargo cults are a historical topic",
             "Please send it at noon — pipe is a noun.",
             "  npm is a package manager, not this sentence.  ",
+            "A slash separates path components.",
+            "A slash command is a command whose name starts with a slash.",
+            "We discussed slash command syntax.",
+            "Use a slash command in this app.",
+            "Slash command support is useful.",
+            "The slash command name is configurable.",
         ];
         for prose in fixtures {
             assert_eq!(
@@ -771,6 +1041,61 @@ mod tests {
                 "fixture: {prose:?}"
             );
         }
+    }
+
+    #[test]
+    fn inline_slash_command_references_preserve_surrounding_prose() {
+        assert_eq!(
+            auto(
+                "I'm missing skills like slash command chat, slash command vault dash in, and slash command vault hyphen out."
+            ),
+            "I'm missing skills like /chat, /vault-in, and /vault-out."
+        );
+        assert_eq!(
+            auto("Try “forward slash command review” before slash command ship!"),
+            "Try “/review” before /ship!"
+        );
+        assert_eq!(
+            auto("Use slash command named format or slash command called support."),
+            "Use /format or /support."
+        );
+    }
+
+    #[test]
+    fn inline_slash_commands_use_bounded_context_aliases() {
+        let lexicon = CliLexicon::from_context(Some("vault-in"), &[]);
+        assert_eq!(
+            canonicalize_cli(
+                "Try slash command vault in, then continue.",
+                CliFormattingMode::Auto,
+                &lexicon,
+            ),
+            "Try /vault-in, then continue."
+        );
+    }
+
+    #[test]
+    fn inline_slash_command_output_is_idempotent_and_explicit_when_disabled() {
+        let lexicon = CliLexicon::builtins();
+        let formatted = canonicalize_cli(
+            "Use slash command vault dash in.",
+            CliFormattingMode::Disabled,
+            &lexicon,
+        );
+        assert_eq!(formatted, "Use /vault-in.");
+        assert_eq!(
+            canonicalize_cli(&formatted, CliFormattingMode::Disabled, &lexicon),
+            formatted
+        );
+        assert_eq!(
+            canonicalize_cli(
+                "Use slash command chat in this profile.",
+                CliFormattingMode::Enabled,
+                &lexicon,
+            ),
+            "Use /chat in this profile"
+        );
+        assert_eq!(auto("Try slash command “chat” now."), "Try “/chat” now.");
     }
 
     #[test]

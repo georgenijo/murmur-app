@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ### Added
 
 - Update availability now stays visible without a backend or disruptive optional-update modal: Murmur performs due-gated checks on macOS wake and foreground activation, adds a native menu-bar check/update action, and keeps a versioned pill beside Record and Transcribe File until the release is installed or skipped.
+- Dictated prose can now include bounded inline slash-command references such as `slash command chat` → `/chat` without reformatting the surrounding sentence.
 
 ## [0.23.9] - 2026-07-30
 
