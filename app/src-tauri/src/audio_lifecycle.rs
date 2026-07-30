@@ -1238,6 +1238,7 @@ mod tests {
 
     struct BlockingFactory {
         gate: Gate,
+        retry_gate: Option<Gate>,
         spawn_count: Arc<AtomicUsize>,
         active_flags: Arc<Mutex<Vec<Arc<AtomicBool>>>>,
         phase: AudioInitPhase,
@@ -1402,12 +1403,16 @@ mod tests {
             spec: AudioWorkerSpec,
             event_sender: AudioWorkerEventSender,
         ) -> Result<JoinHandle<()>, String> {
-            self.spawn_count.fetch_add(1, Ordering::SeqCst);
+            let spawn_index = self.spawn_count.fetch_add(1, Ordering::SeqCst);
             self.active_flags
                 .lock()
                 .unwrap()
                 .push(Arc::clone(&spec.active));
-            let gate = self.gate.clone();
+            let gate = if spawn_index == 0 {
+                self.gate.clone()
+            } else {
+                self.retry_gate.clone().unwrap_or_else(|| self.gate.clone())
+            };
             let phase = self.phase;
             let phase_entered = self.phase_entered.clone();
             Ok(std::thread::spawn(move || {
@@ -1471,6 +1476,7 @@ mod tests {
         let supervisor = spawn_supervisor(
             Arc::new(BlockingFactory {
                 gate: gate.clone(),
+                retry_gate: None,
                 spawn_count: Arc::clone(&spawn_count),
                 active_flags: Arc::clone(&active_flags),
                 phase,
@@ -1670,6 +1676,7 @@ mod tests {
     #[test]
     fn hard_deadline_reports_failure_once_and_blocks_retry_until_exit() {
         let gate = Gate::closed();
+        let retry_gate = Gate::closed();
         let spawn_count = Arc::new(AtomicUsize::new(0));
         let sink = Arc::new(RecordingSink::default());
         let active_flags = Arc::new(Mutex::new(Vec::new()));
@@ -1677,6 +1684,7 @@ mod tests {
         let supervisor = spawn_supervisor(
             Arc::new(BlockingFactory {
                 gate: gate.clone(),
+                retry_gate: Some(retry_gate.clone()),
                 spawn_count: Arc::clone(&spawn_count),
                 active_flags,
                 phase: AudioInitPhase::ConfigLookup,
@@ -1736,12 +1744,16 @@ mod tests {
             Ok(())
         );
         assert_eq!(spawn_count.load(Ordering::SeqCst), 2);
+        phase_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("retry worker never entered config lookup");
         assert_eq!(
             cancel(&supervisor, AudioOwner::Dictation(5))
                 .recv_timeout(Duration::from_millis(100))
                 .unwrap(),
             Ok(true)
         );
+        retry_gate.open();
         wait_until("retry worker did not exit", || {
             !supervisor.public.is_active()
         });
