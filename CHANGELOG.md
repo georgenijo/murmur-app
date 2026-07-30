@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.23.5] - 2026-07-30
+
+### Added
+
+- Diagnostic batches now include machine specs (chip, RAM, core count), and the log shipper stays disabled in CI so release smoke tests no longer appear as phantom installs (#396).
+
 ## [0.23.4] - 2026-07-30
 
 ### Added
