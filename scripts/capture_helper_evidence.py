@@ -139,12 +139,15 @@ def _designated_requirement_profile(
 def validate_probe_evidence(payload: object, probe_exit: int) -> dict[str, Any]:
     if not isinstance(payload, dict) or set(payload) != PROBE_FIELDS:
         raise EvidenceError("capture-helper probe must use the complete exact schema")
-    if payload["schema_version"] != 1:
+    if type(payload["schema_version"]) is not int or payload["schema_version"] != 1:
         raise EvidenceError("capture-helper evidence schema mismatch")
     outcome = payload["outcome"]
-    if outcome not in ALLOWED_PROBE_OUTCOMES:
+    if not isinstance(outcome, str) or outcome not in ALLOWED_PROBE_OUTCOMES:
         raise EvidenceError(f"capture-helper outcome is not allowed: {outcome!r}")
-    if payload["last_phase"] not in ALLOWED_PHASES:
+    last_phase = payload["last_phase"]
+    if not (last_phase is None or isinstance(last_phase, str)):
+        raise EvidenceError("capture-helper phase must be a string or null")
+    if last_phase not in ALLOWED_PHASES:
         raise EvidenceError("capture-helper phase is invalid")
     helper_pid = _nonnegative_int(payload["helper_pid"], "helper_pid")
     if helper_pid == 0:
@@ -153,7 +156,8 @@ def validate_probe_evidence(payload: object, probe_exit: int) -> dict[str, Any]:
     if first_callback is not None:
         _nonnegative_int(first_callback, "first_callback_ms")
     _nonnegative_int(payload["elapsed_ms"], "elapsed_ms")
-    if payload["termination"] not in ALLOWED_TERMINATIONS:
+    termination = payload["termination"]
+    if not isinstance(termination, str) or termination not in ALLOWED_TERMINATIONS:
         raise EvidenceError("capture-helper termination is not confirmed")
     exit_code = payload["exit_code"]
     exit_signal = payload["exit_signal"]
@@ -163,20 +167,18 @@ def validate_probe_evidence(payload: object, probe_exit: int) -> dict[str, Any]:
         _nonnegative_int(exit_signal, "exit_signal")
     if (exit_code is None) == (exit_signal is None):
         raise EvidenceError("confirmed termination needs exactly one exit code or signal")
-    if payload["termination"] == "cooperative" and (exit_code != 0 or exit_signal is not None):
+    if termination == "cooperative" and (exit_code != 0 or exit_signal is not None):
         raise EvidenceError("cooperative termination must be a clean exit")
-    if payload["termination"] == "hard_kill" and (
-        exit_code is not None or exit_signal != 9
-    ):
+    if termination == "hard_kill" and (exit_code is not None or exit_signal != 9):
         raise EvidenceError("hard-kill termination must be confirmed SIGKILL")
     if payload["process_group_empty"] is not True:
         raise EvidenceError("capture-helper process group must be confirmed empty")
     if payload["audio_content_retained"] is not False:
         raise EvidenceError("capture-helper evidence must prove no retained audio")
     observed_contract: ProbeContract = (
-        payload["last_phase"],
+        last_phase,
         first_callback is not None,
-        payload["termination"],
+        termination,
         exit_code,
         exit_signal,
     )
@@ -184,6 +186,8 @@ def validate_probe_evidence(payload: object, probe_exit: int) -> dict[str, Any]:
         raise EvidenceError(
             "capture-helper outcome contradicts phase, callback, or exit contract"
         )
+    if type(probe_exit) is not int:
+        raise EvidenceError("probe exit must be an integer")
     expected_exit = 0 if outcome == "ok" else 2
     if probe_exit != expected_exit:
         raise EvidenceError(

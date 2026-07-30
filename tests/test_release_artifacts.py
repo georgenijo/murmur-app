@@ -407,6 +407,10 @@ class ReleaseArtifactTests(unittest.TestCase):
 
         invalid_cases = (
             ({key: value for key, value in self.CAPTURE_PROBE.items() if key != "exit_signal"}, 0),
+            ({**self.CAPTURE_PROBE, "schema_version": True}, 0),
+            ({**self.CAPTURE_PROBE, "outcome": True}, 0),
+            ({**self.CAPTURE_PROBE, "last_phase": True}, 0),
+            ({**self.CAPTURE_PROBE, "termination": True}, 0),
             ({**self.CAPTURE_PROBE, "process_group_empty": False}, 0),
             (
                 {
@@ -419,6 +423,7 @@ class ReleaseArtifactTests(unittest.TestCase):
             ),
             ({**self.CAPTURE_PROBE, "audio_content_retained": True}, 0),
             (self.CAPTURE_PROBE, 2),
+            (self.CAPTURE_PROBE, False),
         )
         for payload, probe_exit in invalid_cases:
             with self.subTest(payload=payload, probe_exit=probe_exit):
