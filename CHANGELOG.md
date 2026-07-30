@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.23.4] - 2026-07-30
+
+### Added
+
+- Diagnostic log batches now include the Mac's device name, macOS version, and hardware model so the maintainer's fleet dashboard can label each install stream (#395).
+
 ## [0.23.3] - 2026-07-30
 
 ### Added
