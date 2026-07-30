@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-07-29
+
+### Added
+
+- History search now starts as a compact toolbar control, animates open on hover, remains pinned while focused or filtering, and supports predictable Escape/close behavior with accessible keyboard and reduced-motion states (#391).
+
+### Fixed
+
+- Developer vocabulary from project scans and built-in technical terms now activates only for apps explicitly configured with the Code / technical writing style or Local IDE context, preventing identifiers such as `toBe` and `all__` from leaking into ordinary prose (#390).
+- Long What's New release notes now scroll independently while keeping the modal title and primary action visible (#385).
+
 ## [0.22.1] - 2026-07-29
 
 ### Added
