@@ -936,6 +936,30 @@ mod tests {
     }
 
     #[test]
+    fn cli_stage_formats_explicit_inline_slash_references_without_rewriting_prose() {
+        let stages = TranscriptStageConfig {
+            cleanup_enabled: false,
+            cleanup_remove_filler: false,
+            cleanup_capitalize: false,
+            voice_commands_enabled: false,
+            smart_correction_enabled: false,
+            smart_formatting_enabled: true,
+            ide_context_enabled: false,
+            cli_command_enabled: true,
+        };
+        let raw = "I'm missing skills like slash command chat and slash command vault dash out.";
+        let output = transform_transcript(
+            raw.to_string(),
+            &live_context(stages),
+            TranscriptTransformResources::empty(),
+        )
+        .unwrap();
+        assert_eq!(output.text, "I'm missing skills like /chat and /vault-out.");
+        assert!(!output.stages[3].changed);
+        assert!(output.stages[5].changed);
+    }
+
+    #[test]
     fn vocabulary_alias_eval() {
         let cases: Vec<VocabularyAliasEvalCase> =
             serde_json::from_str(include_str!("../../../bench/vocabulary-aliases.json")).unwrap();
