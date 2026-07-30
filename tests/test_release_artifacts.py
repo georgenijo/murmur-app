@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import plistlib
 import tempfile
 import unittest
 
-from scripts.finalize_macos_bundle import require_exact_macos_executables
+from scripts.finalize_macos_bundle import HELPERS, require_exact_macos_executables
 from scripts.release_artifacts import (
     ArtifactError,
     create_provenance,
@@ -126,6 +127,13 @@ class ReleaseArtifactTests(unittest.TestCase):
         "team_id": "ABCDE12345",
         "entitlement_sha256": "b" * 64,
     }
+    CAPTURE_HELPER = {
+        **HELPER,
+        "designated_requirement": (
+            'identifier "com.localdictation.capture-helper" and anchor apple generic '
+            'and certificate leaf[subject.OU] = "ABCDE12345"'
+        ),
+    }
 
     def _rerecord_macos_with_helper(self, helper: dict) -> None:
         macos = self.artifacts / "macos"
@@ -150,6 +158,38 @@ class ReleaseArtifactTests(unittest.TestCase):
     def test_require_macos_helper_fails_without_block(self) -> None:
         with self.assertRaisesRegex(ArtifactError, "missing the required local-LLM helper"):
             validate_release(self.artifacts, SHA, RUN_ID, require_macos_helper=True)
+
+    def test_capture_helper_provenance_is_required_and_validated(self) -> None:
+        macos = self.artifacts / "macos"
+        (macos / "provenance.json").unlink()
+        create_provenance(
+            "macos",
+            "darwin-aarch64",
+            macos,
+            SHA,
+            RUN_ID,
+            helper=self.HELPER,
+            capture_helper=self.CAPTURE_HELPER,
+        )
+        result = validate_release(
+            self.artifacts,
+            SHA,
+            RUN_ID,
+            require_macos_helper=True,
+            require_macos_capture_helper=True,
+        )
+        self.assertEqual(
+            result["platforms"]["macos"]["capture_helper"], self.CAPTURE_HELPER
+        )
+
+    def test_require_capture_helper_fails_without_block(self) -> None:
+        with self.assertRaisesRegex(ArtifactError, "required capture helper"):
+            validate_release(
+                self.artifacts,
+                SHA,
+                RUN_ID,
+                require_macos_capture_helper=True,
+            )
 
     def test_helper_wrong_architecture_fails_closed(self) -> None:
         with self.assertRaisesRegex(ArtifactError, "architecture must be arm64"):
@@ -250,10 +290,12 @@ class ReleaseArtifactTests(unittest.TestCase):
         executable_dir.mkdir(parents=True)
         main = executable_dir / "ui"
         helper = executable_dir / "murmur-llm-sidecar"
+        capture_helper = executable_dir / "murmur-capture-helper"
         main.write_bytes(b"main")
         helper.write_bytes(b"helper")
+        capture_helper.write_bytes(b"capture helper")
 
-        require_exact_macos_executables(app, main, helper)
+        require_exact_macos_executables(app, main, [capture_helper, helper])
 
         for unexpected in ("mock_llm_helper", "murmur-eval"):
             with self.subTest(unexpected=unexpected):
@@ -262,7 +304,9 @@ class ReleaseArtifactTests(unittest.TestCase):
                 with self.assertRaisesRegex(
                     SystemExit, "app bundle executables differ"
                 ):
-                    require_exact_macos_executables(app, main, helper)
+                    require_exact_macos_executables(
+                        app, main, [capture_helper, helper]
+                    )
                 extra.unlink()
 
     def test_macos_bundle_rejects_missing_production_executable(self) -> None:
@@ -271,10 +315,31 @@ class ReleaseArtifactTests(unittest.TestCase):
         executable_dir.mkdir(parents=True)
         main = executable_dir / "ui"
         helper = executable_dir / "murmur-llm-sidecar"
+        capture_helper = executable_dir / "murmur-capture-helper"
         main.write_bytes(b"main")
+        helper.write_bytes(b"helper")
 
         with self.assertRaisesRegex(SystemExit, "app bundle executables differ"):
-            require_exact_macos_executables(app, main, helper)
+            require_exact_macos_executables(app, main, [capture_helper, helper])
+
+    def test_capture_helper_identity_and_entitlements_are_exact(self) -> None:
+        self.assertEqual(
+            HELPERS["murmur-capture-helper"],
+            "com.localdictation.capture-helper",
+        )
+        entitlement_path = (
+            Path(__file__).parents[1]
+            / "app/src-tauri/capture-helper.entitlements.plist"
+        )
+        with entitlement_path.open("rb") as handle:
+            self.assertEqual(
+                plistlib.load(handle),
+                {
+                    "com.apple.security.app-sandbox": True,
+                    "com.apple.security.device.audio-input": True,
+                    "com.apple.security.device.microphone": True,
+                },
+            )
 
 
 if __name__ == "__main__":

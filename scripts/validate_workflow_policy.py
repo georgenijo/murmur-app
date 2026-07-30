@@ -159,6 +159,12 @@ def validate_release_build(workflow: str) -> int:
     assert "needs: [typecheck]" not in workflow
     assert "macos-release-${{ needs.context.outputs.source-sha }}" in workflow
     assert "linux-release-${{ needs.context.outputs.source-sha }}" in workflow
+    assert "capture-helper-tcc-evidence-${{ needs.context.outputs.source-sha }}" in workflow
+    assert (
+        "--capture-helper-entitlements app/src-tauri/capture-helper.entitlements.plist"
+        in workflow
+    )
+    assert '--capture-helper-sha256 "$CAPTURE_HELPER_SHA"' in workflow
     assert "shared-key: macos-release-v1" in workflow
     assert "shared-key: linux-cuda-release-v1" in workflow
     assert "Print :CFBundleExecutable" in workflow
@@ -389,6 +395,7 @@ def validate_promotion_policy(workflow: str) -> int:
     assert 'split("@")[0]) == ".github/workflows/release-build.yml"' in workflow
     assert "expired == false" in workflow
     assert "scripts/release_artifacts.py validate" in workflow
+    assert "--require-macos-capture-helper" in workflow
     assert 'at("app/src-tauri/tauri.conf.json")' in workflow
     assert 'at("app/src-tauri/Cargo.toml")' in workflow
     assert 'at("app/src-tauri/Cargo.lock")' in workflow
