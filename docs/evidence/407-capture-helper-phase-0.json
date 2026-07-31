@@ -29,7 +29,7 @@
   ],
   "packaging": {
     "expected": "two_exact_helpers_with_split_entitlements_and_fixed_identifiers",
-    "actual": "passed_two_developer_id_notarized_gatekeeper_accepted_releases_2026-07-30"
+    "actual": "passed_run_30590132800: app_identifier=com.localdictation; capture_identifier=com.localdictation.capture-helper capture_sha256=2d5b08972a52fafa852fdc12ee51a7abe554d465a8aa1ad110ba9e5c1a550544 capture_entitlement_sha256=43f1f2fe6ef82f876cd216e0ad897f1a56bf5f6564369766b190701cdc10e4d3; llm_identifier=com.localdictation.local-llm-sidecar llm_sha256=132701ccf3989392d88f99b950bb43756edd8a716ea0cfae0d9cf55c2125136e llm_entitlement_sha256=f8b4cfc5e7c5076be716c5a3e37f8f6b03db3f5c47220215175e9ea3cd9ef6f0; matching_team_id=P2U3P8B923; split_entitlements=capture_sandbox_plus_audio_input_and_microphone,llm_sandbox_only,app_audio_input_and_microphone; app_and_dmg_notarization=accepted; app_staple=validated; gatekeeper=accepted; dmg_sha256=e8e1edb886329fb501ece3e480faafb1252d1676a223fde510bd908370e6f9e1; 2026-07-30"
   },
   "trusted_release_evidence": {
     "machine": "shawn_macbook_release_gate",
