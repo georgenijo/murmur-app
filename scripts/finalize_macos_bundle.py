@@ -6,13 +6,18 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import plistlib
+import shutil
 import subprocess
 
 
 HELPERS = {
+    "murmur-capture-agent": "com.localdictation.capture-agent",
     "murmur-capture-helper": "com.localdictation.capture-helper",
+    "murmur-capture-worker": "com.localdictation.capture-worker",
     "murmur-llm-sidecar": "com.localdictation.local-llm-sidecar",
 }
+CAPTURE_AGENT_PLIST = "com.localdictation.capture-agent.plist"
+CAPTURE_AGENT_MACH_SERVICE = "com.localdictation.capture-agent.xpc"
 
 
 def run(command: list[str], *, capture: bool = False) -> str:
@@ -129,6 +134,77 @@ def require_exact_macos_executables(
         )
 
 
+def install_capture_agent_plist(app: Path, source: Path) -> Path:
+    with source.open("rb") as handle:
+        payload = plistlib.load(handle)
+    expected = {
+        "Label": "com.localdictation.capture-agent",
+        "BundleProgram": "Contents/MacOS/murmur-capture-agent",
+        "MachServices": {CAPTURE_AGENT_MACH_SERVICE: True},
+        "ProcessType": "Interactive",
+        "ThrottleInterval": 10,
+    }
+    if payload != expected:
+        raise SystemExit(
+            f"capture-agent launchd plist differs: expected={expected!r} actual={payload!r}"
+        )
+    destination = app / "Contents" / "Library" / "LaunchAgents" / CAPTURE_AGENT_PLIST
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+    return destination
+
+
+def decode_otool_info_plist(output: str) -> dict[str, object]:
+    payload = bytearray()
+    for line in output.splitlines():
+        fields = line.split()
+        if len(fields) < 2:
+            continue
+        try:
+            int(fields[0], 16)
+        except ValueError:
+            continue
+        for word in fields[1:]:
+            if len(word) != 8:
+                raise SystemExit("embedded Info.plist has malformed words")
+            try:
+                payload.extend(bytes.fromhex(word)[::-1])
+            except ValueError as exc:
+                raise SystemExit(
+                    "embedded Info.plist is not hexadecimal"
+                ) from exc
+    try:
+        value = plistlib.loads(bytes(payload).rstrip(b"\0"))
+    except Exception as exc:
+        raise SystemExit("embedded Info.plist is invalid") from exc
+    if not isinstance(value, dict):
+        raise SystemExit("embedded Info.plist is not a dictionary")
+    return value
+
+
+def require_embedded_info(
+    executable: Path,
+    template: Path,
+    app_version: str,
+    label: str,
+) -> None:
+    with template.open("rb") as handle:
+        expected = plistlib.load(handle)
+    for key in ("CFBundleShortVersionString", "CFBundleVersion"):
+        expected[key] = app_version
+    actual = decode_otool_info_plist(
+        run(
+            ["otool", "-X", "-s", "__TEXT", "__info_plist", str(executable)],
+            capture=True,
+        )
+    )
+    if actual != expected:
+        raise SystemExit(
+            f"{label} embedded Info.plist differs: "
+            f"expected={expected!r} actual={actual!r}"
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--app", type=Path, required=True)
@@ -142,6 +218,12 @@ def main() -> int:
         required=True,
     )
     parser.add_argument("--capture-helper-entitlements", type=Path, required=True)
+    parser.add_argument("--capture-worker-entitlements", type=Path, required=True)
+    parser.add_argument("--capture-agent-entitlements", type=Path, required=True)
+    parser.add_argument("--capture-agent-info-plist", type=Path, required=True)
+    parser.add_argument("--capture-helper-info-plist", type=Path, required=True)
+    parser.add_argument("--capture-worker-info-plist", type=Path, required=True)
+    parser.add_argument("--capture-agent-launchd-plist", type=Path, required=True)
     parser.add_argument("--expected-team-id")
     args = parser.parse_args()
 
@@ -153,18 +235,53 @@ def main() -> int:
     if not info_plist.is_file() or not all(path.is_file() for path in helpers.values()):
         raise SystemExit("app bundle is missing Info.plist or a required helper")
     with info_plist.open("rb") as handle:
-        main_name = plistlib.load(handle).get("CFBundleExecutable")
+        app_info = plistlib.load(handle)
+    main_name = app_info.get("CFBundleExecutable")
+    app_version = str(app_info.get("CFBundleVersion", ""))
+    if not app_version:
+        raise SystemExit("app bundle version is missing")
     main_binary = app / "Contents" / "MacOS" / str(main_name)
     if not main_binary.is_file() or main_binary in helpers.values():
         raise SystemExit("app bundle has an invalid main executable")
     require_exact_macos_executables(app, main_binary, list(helpers.values()))
+    require_embedded_info(
+        helpers["murmur-capture-agent"],
+        args.capture_agent_info_plist,
+        app_version,
+        "capture agent",
+    )
+    require_embedded_info(
+        helpers["murmur-capture-helper"],
+        args.capture_helper_info_plist,
+        app_version,
+        "capture helper",
+    )
+    require_embedded_info(
+        helpers["murmur-capture-worker"],
+        args.capture_worker_info_plist,
+        app_version,
+        "capture worker",
+    )
+    launchd_plist = install_capture_agent_plist(app, args.capture_agent_launchd_plist)
 
     sign_nested_code(app, args.identity, exclude={main_binary, *helpers.values()})
+    sign(
+        helpers["murmur-capture-agent"],
+        args.identity,
+        args.capture_agent_entitlements,
+        HELPERS["murmur-capture-agent"],
+    )
     sign(
         helpers["murmur-capture-helper"],
         args.identity,
         args.capture_helper_entitlements,
         HELPERS["murmur-capture-helper"],
+    )
+    sign(
+        helpers["murmur-capture-worker"],
+        args.identity,
+        args.capture_worker_entitlements,
+        HELPERS["murmur-capture-worker"],
     )
     sign(
         helpers["murmur-llm-sidecar"],
@@ -177,9 +294,19 @@ def main() -> int:
 
     run(["codesign", "--verify", "--deep", "--strict", "--verbose=2", str(app)])
     require_exact(
+        entitlements(helpers["murmur-capture-agent"]),
+        args.capture_agent_entitlements,
+        "capture agent",
+    )
+    require_exact(
         entitlements(helpers["murmur-capture-helper"]),
         args.capture_helper_entitlements,
         "capture helper",
+    )
+    require_exact(
+        entitlements(helpers["murmur-capture-worker"]),
+        args.capture_worker_entitlements,
+        "capture worker",
     )
     require_exact(
         entitlements(helpers["murmur-llm-sidecar"]),
@@ -187,6 +314,9 @@ def main() -> int:
         "local-LLM helper",
     )
     require_exact(entitlements(main_binary), args.main_entitlements, "main executable")
+    with launchd_plist.open("rb") as handle:
+        if plistlib.load(handle)["MachServices"] != {CAPTURE_AGENT_MACH_SERVICE: True}:
+            raise SystemExit("signed bundle capture-agent Mach service differs")
 
     helper_details = {
         name: signature_details(path) for name, path in helpers.items()

@@ -7,6 +7,7 @@ mod audio_lifecycle;
 // call `benchmark::run` directly with a mock AppHandle; not part of any
 // stable external API.
 pub mod benchmark;
+pub mod capture_agent_probe;
 pub mod capture_helper_probe;
 mod cleanup;
 mod cli_command;

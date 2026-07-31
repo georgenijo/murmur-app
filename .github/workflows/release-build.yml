@@ -208,7 +208,13 @@ jobs:
             --identity "$APPLE_SIGNING_IDENTITY" \
             --main-entitlements app/src-tauri/entitlements.plist \
             --llm-helper-entitlements app/src-tauri/local-llm-sidecar.entitlements.plist \
+            --capture-agent-entitlements app/src-tauri/capture-agent.entitlements.plist \
+            --capture-agent-info-plist app/src-tauri/capture-agent-info.plist \
+            --capture-helper-info-plist app/src-tauri/sidecars/capture/Info.plist \
+            --capture-worker-info-plist app/src-tauri/sidecars/capture/WorkerInfo.plist \
+            --capture-agent-launchd-plist app/src-tauri/macos/com.localdictation.capture-agent.plist \
             --capture-helper-entitlements app/src-tauri/capture-helper.entitlements.plist \
+            --capture-worker-entitlements app/src-tauri/capture-worker.entitlements.plist \
             --expected-team-id "$APPLE_TEAM_ID"
 
           # Notarize + staple the finalized app, then rebuild the DMG and the
@@ -259,7 +265,9 @@ jobs:
           APP=$(find app/src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)
           EXECUTABLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")
           BINARY="$APP/Contents/MacOS/$EXECUTABLE"
+          CAPTURE_AGENT="$APP/Contents/MacOS/murmur-capture-agent"
           CAPTURE_HELPER="$APP/Contents/MacOS/murmur-capture-helper"
+          CAPTURE_WORKER="$APP/Contents/MacOS/murmur-capture-worker"
           EVIDENCE=capture-helper-tcc-evidence
           mkdir -p "$EVIDENCE"
 
@@ -269,6 +277,16 @@ jobs:
             --helper "$CAPTURE_HELPER" \
             --signature-output "$EVIDENCE/signature.json" \
             --entitlements-output "$EVIDENCE/entitlements.plist"
+          python3 scripts/capture_helper_evidence.py collect-signature \
+            --kind capture-agent \
+            --helper "$CAPTURE_AGENT" \
+            --signature-output "$EVIDENCE/agent-signature.json" \
+            --entitlements-output "$EVIDENCE/agent-entitlements.plist"
+          python3 scripts/capture_helper_evidence.py collect-signature \
+            --kind capture-worker \
+            --helper "$CAPTURE_WORKER" \
+            --signature-output "$EVIDENCE/worker-signature.json" \
+            --entitlements-output "$EVIDENCE/worker-entitlements.plist"
 
           set +e
           "$BINARY" --capture-helper-probe > "$EVIDENCE/noninteractive-probe.json"
@@ -309,8 +327,11 @@ jobs:
           # architecture, designated requirement, Team ID, and entitlement digest.
           APP=$(find app/src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)
           HELPER="$APP/Contents/MacOS/murmur-llm-sidecar"
+          CAPTURE_AGENT="$APP/Contents/MacOS/murmur-capture-agent"
           CAPTURE_HELPER="$APP/Contents/MacOS/murmur-capture-helper"
-          if [ ! -f "$HELPER" ] || [ ! -f "$CAPTURE_HELPER" ]; then
+          CAPTURE_WORKER="$APP/Contents/MacOS/murmur-capture-worker"
+          if [ ! -f "$HELPER" ] || [ ! -f "$CAPTURE_AGENT" ] || \
+             [ ! -f "$CAPTURE_HELPER" ] || [ ! -f "$CAPTURE_WORKER" ]; then
             echo "ERROR: finalized bundle is missing a required helper"
             exit 1
           fi
@@ -332,6 +353,24 @@ jobs:
           fi
           codesign -d --entitlements :- --xml "$CAPTURE_HELPER" > "$RUNNER_TEMP/capture-helper-entitlements.xml" 2>/dev/null
           CAPTURE_HELPER_ENT_SHA=$(shasum -a 256 "$RUNNER_TEMP/capture-helper-entitlements.xml" | awk '{print $1}')
+          CAPTURE_AGENT_SHA=$(shasum -a 256 "$CAPTURE_AGENT" | awk '{print $1}')
+          CAPTURE_AGENT_ARCH=$(lipo -archs "$CAPTURE_AGENT" | tr -d ' \n')
+          CAPTURE_AGENT_DR=$(codesign -d -r- "$CAPTURE_AGENT" 2>&1 | sed -n 's/^#* *designated => //p')
+          if [ -z "$CAPTURE_AGENT_DR" ]; then
+            echo "ERROR: could not read the capture agent designated requirement"
+            exit 1
+          fi
+          codesign -d --entitlements :- --xml "$CAPTURE_AGENT" > "$RUNNER_TEMP/capture-agent-entitlements.xml" 2>/dev/null
+          CAPTURE_AGENT_ENT_SHA=$(shasum -a 256 "$RUNNER_TEMP/capture-agent-entitlements.xml" | awk '{print $1}')
+          CAPTURE_WORKER_SHA=$(shasum -a 256 "$CAPTURE_WORKER" | awk '{print $1}')
+          CAPTURE_WORKER_ARCH=$(lipo -archs "$CAPTURE_WORKER" | tr -d ' \n')
+          CAPTURE_WORKER_DR=$(codesign -d -r- "$CAPTURE_WORKER" 2>&1 | sed -n 's/^#* *designated => //p')
+          if [ -z "$CAPTURE_WORKER_DR" ]; then
+            echo "ERROR: could not read the capture worker designated requirement"
+            exit 1
+          fi
+          codesign -d --entitlements :- --xml "$CAPTURE_WORKER" > "$RUNNER_TEMP/capture-worker-entitlements.xml" 2>/dev/null
+          CAPTURE_WORKER_ENT_SHA=$(shasum -a 256 "$RUNNER_TEMP/capture-worker-entitlements.xml" | awk '{print $1}')
 
           python3 scripts/release_artifacts.py record \
             --platform macos \
@@ -344,6 +383,16 @@ jobs:
             --helper-designated-requirement "$HELPER_DR" \
             --helper-team-id "$APPLE_TEAM_ID" \
             --helper-entitlement-sha256 "$HELPER_ENT_SHA" \
+            --capture-agent-sha256 "$CAPTURE_AGENT_SHA" \
+            --capture-agent-arch "$CAPTURE_AGENT_ARCH" \
+            --capture-agent-designated-requirement "$CAPTURE_AGENT_DR" \
+            --capture-agent-team-id "$APPLE_TEAM_ID" \
+            --capture-agent-entitlement-sha256 "$CAPTURE_AGENT_ENT_SHA" \
+            --capture-worker-sha256 "$CAPTURE_WORKER_SHA" \
+            --capture-worker-arch "$CAPTURE_WORKER_ARCH" \
+            --capture-worker-designated-requirement "$CAPTURE_WORKER_DR" \
+            --capture-worker-team-id "$APPLE_TEAM_ID" \
+            --capture-worker-entitlement-sha256 "$CAPTURE_WORKER_ENT_SHA" \
             --capture-helper-sha256 "$CAPTURE_HELPER_SHA" \
             --capture-helper-arch "$CAPTURE_HELPER_ARCH" \
             --capture-helper-designated-requirement "$CAPTURE_HELPER_DR" \

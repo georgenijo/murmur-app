@@ -46,13 +46,18 @@ jobs:
               - '.github/**'
               - 'scripts/validate_workflow_policy.py'
               - 'scripts/release_artifacts.py'
+              - 'scripts/capture_agent_matrix.py'
               - 'tests/test_release_artifacts.py'
               - 'tests/test_workflow_policy.py'
+              - 'tests/test_capture_agent_matrix.py'
 
       - name: Validate workflow policy
         run: |
           python3 scripts/validate_workflow_policy.py
-          python3 -m unittest tests/test_release_artifacts.py tests/test_workflow_policy.py
+          python3 -m unittest \
+            tests/test_release_artifacts.py \
+            tests/test_workflow_policy.py \
+            tests/test_capture_agent_matrix.py
 
   typecheck:
     needs: changes
@@ -91,18 +96,29 @@ jobs:
         with:
           workspaces: app/src-tauri
 
-      - name: Stub bundled helpers externalBin for compile checks
-        # tauri.macos.conf.json declares both production helpers as externalBin,
-        # and Tauri's build script requires each file to exist even for cargo
-        # check/test. This job never bundles or ships anything - the release
-        # pipeline builds and signs the real helpers - so exact empty stubs
-        # satisfy the resource check without compiling either helper here.
+      - name: Build capture isolation helpers and stub local-LLM externalBin
+        # PR CI compiles the Swift agent with warnings as errors and builds the
+        # Rust worker protocol. Only the heavyweight local-LLM sidecar is stubbed.
         run: |
-          mkdir -p app/src-tauri/binaries
-          : > app/src-tauri/binaries/murmur-capture-helper-aarch64-apple-darwin
-          : > app/src-tauri/binaries/murmur-llm-sidecar-aarch64-apple-darwin
-          chmod +x app/src-tauri/binaries/murmur-capture-helper-aarch64-apple-darwin
-          chmod +x app/src-tauri/binaries/murmur-llm-sidecar-aarch64-apple-darwin
+          cd app/src-tauri
+          mkdir -p binaries
+          xcrun swiftc -warnings-as-errors -parse-as-library \
+            -target arm64-apple-macos14.0 \
+            sidecars/capture-agent/main.swift \
+            -framework Foundation -framework Security \
+            -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist \
+            -Xlinker capture-agent-info.plist \
+            -o binaries/murmur-capture-agent-aarch64-apple-darwin
+          cargo build -p murmur-capture-helper
+          cp target/debug/murmur-capture-helper \
+            binaries/murmur-capture-helper-aarch64-apple-darwin
+          MURMUR_CAPTURE_ROLE=worker \
+            CARGO_TARGET_DIR=target/capture-worker-build \
+            cargo build -p murmur-capture-helper
+          cp target/capture-worker-build/debug/murmur-capture-helper \
+            binaries/murmur-capture-worker-aarch64-apple-darwin
+          : > binaries/murmur-llm-sidecar-aarch64-apple-darwin
+          chmod +x binaries/murmur-llm-sidecar-aarch64-apple-darwin
 
       - name: Compile check
         env:

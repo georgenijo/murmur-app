@@ -6,6 +6,32 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 ---
 
+## 2026-07-31: Capture recovery spike uses a per-user agent plus a killable worker (#407)
+
+**Decision:** Probe an `SMAppService` per-user LaunchAgent as the volatile
+recovery owner while retaining the existing sandboxed capture helper as the
+separately killable HAL worker. The client XPC connection is a lease; loss of
+that lease starts bounded worker teardown. The Phase-0 agent retains only
+content-free synthetic canary state in RAM for 30 seconds and production
+dictation remains unchanged.
+
+**Rationale:** macOS terminated/restarted the LaunchServices-owned app during
+active microphone revocation, so a direct child and app-owned PCM cannot survive
+the platform transition. An embedded XPC service shares the app lifetime; a
+per-user agent can survive it without making the persistent process itself the
+unkillable CoreAudio owner.
+
+**Status:** provisional — requires a downloaded signed/notarized registration,
+single-TCC-identity, restart/revocation, exact-once recovery, update, and
+unregistration matrix before #407 can close
+
+**References:** issue #407; ADR
+[`2026-07-31-capture-agent-recovery-spike.md`](2026-07-31-capture-agent-recovery-spike.md);
+direct-child ADR
+[`2026-07-30-capture-helper-phase-0.md`](2026-07-30-capture-helper-phase-0.md)
+
+---
+
 ## 2026-07-30: Capture helper uses a direct managed child; production waits for notarized TCC proof (#407)
 
 **Decision:** Package the Phase-0 `murmur-capture-helper` as an exact signed external binary with a fixed code identity, microphone-only sandbox capabilities, runtime Security.framework validation, nonce-framed private IPC, and direct process-group ownership. Cooperative cancel is bounded at 250 ms before group `SIGKILL`; a new helper is forbidden until direct-PID exit and an empty owned process group are confirmed. The callback retains no PCM and touches atomics only. The helper is probe-only; #409 owns production routing.

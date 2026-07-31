@@ -16,6 +16,8 @@ SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 TEAM_ID_RE = re.compile(r"^[A-Z0-9]{10}$")
 LLM_HELPER_IDENTIFIER = "com.localdictation.local-llm-sidecar"
+CAPTURE_AGENT_IDENTIFIER = "com.localdictation.capture-agent"
+CAPTURE_WORKER_IDENTIFIER = "com.localdictation.capture-worker"
 CAPTURE_HELPER_IDENTIFIER = "com.localdictation.capture-helper"
 HELPER_FIELDS = (
     "sha256",
@@ -161,6 +163,8 @@ def create_provenance(
     commit_sha: str,
     run_id: str | int,
     helper: dict[str, Any] | None = None,
+    capture_agent: dict[str, Any] | None = None,
+    capture_worker: dict[str, Any] | None = None,
     capture_helper: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if platform not in PLATFORM_SUFFIXES:
@@ -216,6 +220,22 @@ def create_provenance(
         payload["capture_helper"] = _require_helper(
             capture_helper, CAPTURE_HELPER_IDENTIFIER, "capture helper"
         )
+    if capture_agent is not None:
+        if platform != "macos":
+            raise ArtifactError(
+                "capture agent provenance is only recorded for macos"
+            )
+        payload["capture_agent"] = _require_helper(
+            capture_agent, CAPTURE_AGENT_IDENTIFIER, "capture agent"
+        )
+    if capture_worker is not None:
+        if platform != "macos":
+            raise ArtifactError(
+                "capture worker provenance is only recorded for macos"
+            )
+        payload["capture_worker"] = _require_helper(
+            capture_worker, CAPTURE_WORKER_IDENTIFIER, "capture worker"
+        )
     (root / "provenance.json").write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
@@ -228,6 +248,8 @@ def validate_platform(
     expected_sha: str,
     expected_run_id: str | int,
     require_helper: bool = False,
+    require_capture_agent: bool = False,
+    require_capture_worker: bool = False,
     require_capture_helper: bool = False,
 ) -> dict[str, Any]:
     expected_sha = _require_sha(expected_sha, "expected commit SHA")
@@ -308,6 +330,33 @@ def validate_platform(
             f"{platform} provenance is missing the required capture helper block"
         )
 
+    capture_agent = payload.get("capture_agent")
+    if capture_agent is not None:
+        if platform != "macos":
+            raise ArtifactError(
+                f"{platform} provenance must not carry a capture_agent block"
+            )
+        payload["capture_agent"] = _require_helper(
+            capture_agent, CAPTURE_AGENT_IDENTIFIER, "capture agent"
+        )
+    elif require_capture_agent:
+        raise ArtifactError(
+            f"{platform} provenance is missing the required capture agent block"
+        )
+    capture_worker = payload.get("capture_worker")
+    if capture_worker is not None:
+        if platform != "macos":
+            raise ArtifactError(
+                f"{platform} provenance must not carry a capture_worker block"
+            )
+        payload["capture_worker"] = _require_helper(
+            capture_worker, CAPTURE_WORKER_IDENTIFIER, "capture worker"
+        )
+    elif require_capture_worker:
+        raise ArtifactError(
+            f"{platform} provenance is missing the required capture worker block"
+        )
+
     payload["signature"] = _signature_text(signature)
     return payload
 
@@ -318,6 +367,8 @@ def validate_release(
     expected_run_id: str | int,
     output: Path | None = None,
     require_macos_helper: bool = False,
+    require_macos_capture_agent: bool = False,
+    require_macos_capture_worker: bool = False,
     require_macos_capture_helper: bool = False,
 ) -> dict[str, Any]:
     platforms = {
@@ -327,6 +378,12 @@ def validate_release(
             expected_sha,
             expected_run_id,
             require_helper=(require_macos_helper and platform == "macos"),
+            require_capture_agent=(
+                require_macos_capture_agent and platform == "macos"
+            ),
+            require_capture_worker=(
+                require_macos_capture_worker and platform == "macos"
+            ),
             require_capture_helper=(
                 require_macos_capture_helper and platform == "macos"
             ),
@@ -443,6 +500,16 @@ def _parser() -> argparse.ArgumentParser:
     record.add_argument("--capture-helper-designated-requirement")
     record.add_argument("--capture-helper-team-id")
     record.add_argument("--capture-helper-entitlement-sha256")
+    record.add_argument("--capture-agent-sha256")
+    record.add_argument("--capture-agent-arch")
+    record.add_argument("--capture-agent-designated-requirement")
+    record.add_argument("--capture-agent-team-id")
+    record.add_argument("--capture-agent-entitlement-sha256")
+    record.add_argument("--capture-worker-sha256")
+    record.add_argument("--capture-worker-arch")
+    record.add_argument("--capture-worker-designated-requirement")
+    record.add_argument("--capture-worker-team-id")
+    record.add_argument("--capture-worker-entitlement-sha256")
 
     validate = subparsers.add_parser("validate")
     validate.add_argument("--artifacts", type=Path, required=True)
@@ -453,6 +520,16 @@ def _parser() -> argparse.ArgumentParser:
         "--require-macos-helper",
         action="store_true",
         help="fail unless the macOS provenance records the local-LLM helper block",
+    )
+    validate.add_argument(
+        "--require-macos-capture-agent",
+        action="store_true",
+        help="fail unless macOS provenance records the capture agent block",
+    )
+    validate.add_argument(
+        "--require-macos-capture-worker",
+        action="store_true",
+        help="fail unless macOS provenance records the capture worker block",
     )
     validate.add_argument(
         "--require-macos-capture-helper",
@@ -507,11 +584,51 @@ def _capture_helper_from_args(args: argparse.Namespace) -> dict[str, Any] | None
     return supplied
 
 
+def _capture_agent_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
+    provided = {
+        "sha256": args.capture_agent_sha256,
+        "architecture": args.capture_agent_arch,
+        "designated_requirement": args.capture_agent_designated_requirement,
+        "team_id": args.capture_agent_team_id,
+        "entitlement_sha256": args.capture_agent_entitlement_sha256,
+    }
+    supplied = {key: value for key, value in provided.items() if value}
+    if not supplied:
+        return None
+    if len(supplied) != len(provided):
+        missing = sorted(set(provided) - set(supplied))
+        raise ArtifactError(
+            f"incomplete capture agent provenance arguments: missing {missing}"
+        )
+    return supplied
+
+
+def _capture_worker_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
+    provided = {
+        "sha256": args.capture_worker_sha256,
+        "architecture": args.capture_worker_arch,
+        "designated_requirement": args.capture_worker_designated_requirement,
+        "team_id": args.capture_worker_team_id,
+        "entitlement_sha256": args.capture_worker_entitlement_sha256,
+    }
+    supplied = {key: value for key, value in provided.items() if value}
+    if not supplied:
+        return None
+    if len(supplied) != len(provided):
+        missing = sorted(set(provided) - set(supplied))
+        raise ArtifactError(
+            f"incomplete capture worker provenance arguments: missing {missing}"
+        )
+    return supplied
+
+
 def main() -> None:
     args = _parser().parse_args()
     try:
         if args.command == "record":
             helper = _helper_from_args(args)
+            capture_agent = _capture_agent_from_args(args)
+            capture_worker = _capture_worker_from_args(args)
             capture_helper = _capture_helper_from_args(args)
             payload = create_provenance(
                 args.platform,
@@ -520,6 +637,8 @@ def main() -> None:
                 args.commit_sha,
                 args.run_id,
                 helper=helper,
+                capture_agent=capture_agent,
+                capture_worker=capture_worker,
                 capture_helper=capture_helper,
             )
             print(
@@ -533,6 +652,8 @@ def main() -> None:
                 args.expected_run_id,
                 args.output,
                 require_macos_helper=args.require_macos_helper,
+                require_macos_capture_agent=args.require_macos_capture_agent,
+                require_macos_capture_worker=args.require_macos_capture_worker,
                 require_macos_capture_helper=args.require_macos_capture_helper,
             )
             print(

@@ -5,13 +5,13 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
     <key>CFBundleExecutable</key>
-    <string>murmur-capture-helper</string>
+    <string>murmur-capture-worker</string>
     <key>CFBundleIdentifier</key>
-    <string>com.localdictation.capture-helper</string>
+    <string>com.localdictation.capture-worker</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>Murmur Capture Helper</string>
+    <string>Murmur Capture Worker</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>

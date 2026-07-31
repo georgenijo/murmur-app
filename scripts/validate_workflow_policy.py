@@ -129,15 +129,23 @@ def validate_ci(ci: str) -> int:
     assert scalar(job_block(ci, "ci-pass"), "if") == CI_PASS_GUARD
     assert "scripts/validate_workflow_policy.py" in ci
     assert "scripts/release_artifacts.py" in ci
+    assert "scripts/capture_agent_matrix.py" in ci
     assert "tests/test_release_artifacts.py" in ci
     assert "tests/test_workflow_policy.py" in ci
-    helper_stubs = named_step_block(
-        ci, "Stub bundled helpers externalBin for compile checks", 6
+    assert "tests/test_capture_agent_matrix.py" in ci
+    capture_build = named_step_block(
+        ci, "Build capture isolation helpers and stub local-LLM externalBin", 6
     )
-    for helper in ("murmur-capture-helper", "murmur-llm-sidecar"):
-        target = f"app/src-tauri/binaries/{helper}-aarch64-apple-darwin"
-        assert helper_stubs.count(f": > {target}") == 1
-        assert helper_stubs.count(f"chmod +x {target}") == 1
+    assert "swiftc -warnings-as-errors" in capture_build
+    assert "sidecars/capture-agent/main.swift" in capture_build
+    assert "cargo build -p murmur-capture-helper" in capture_build
+    assert "MURMUR_CAPTURE_ROLE=worker" in capture_build
+    assert "CARGO_TARGET_DIR=target/capture-worker-build" in capture_build
+    assert "target/capture-worker-build/debug/murmur-capture-helper" in capture_build
+    assert "binaries/murmur-capture-worker-aarch64-apple-darwin" in capture_build
+    llm_target = "binaries/murmur-llm-sidecar-aarch64-apple-darwin"
+    assert capture_build.count(f": > {llm_target}") == 1
+    assert capture_build.count(f"chmod +x {llm_target}") == 1
 
     cases = (
         ("push", "chore: bump version to 0.17.0", False),
@@ -171,11 +179,37 @@ def validate_release_build(workflow: str) -> int:
         "--capture-helper-entitlements app/src-tauri/capture-helper.entitlements.plist"
         in workflow
     )
+    assert (
+        "--capture-agent-entitlements app/src-tauri/capture-agent.entitlements.plist"
+        in workflow
+    )
+    assert "--capture-agent-info-plist app/src-tauri/capture-agent-info.plist" in workflow
+    assert (
+        "--capture-helper-info-plist app/src-tauri/sidecars/capture/Info.plist"
+        in workflow
+    )
+    assert (
+        "--capture-worker-info-plist app/src-tauri/sidecars/capture/WorkerInfo.plist"
+        in workflow
+    )
+    assert (
+        "--capture-worker-entitlements app/src-tauri/capture-worker.entitlements.plist"
+        in workflow
+    )
+    assert (
+        "--capture-agent-launchd-plist "
+        "app/src-tauri/macos/com.localdictation.capture-agent.plist"
+        in workflow
+    )
     assert '--capture-helper-sha256 "$CAPTURE_HELPER_SHA"' in workflow
+    assert '--capture-agent-sha256 "$CAPTURE_AGENT_SHA"' in workflow
+    assert '--capture-worker-sha256 "$CAPTURE_WORKER_SHA"' in workflow
     capture_evidence = named_step_block(
         workflow, "Record capture-helper signing and non-interactive probe evidence", 6
     )
     assert "scripts/capture_helper_evidence.py collect-signature" in capture_evidence
+    assert "--kind capture-agent" in capture_evidence
+    assert "--kind capture-worker" in capture_evidence
     assert "scripts/capture_helper_evidence.py validate-probe" in capture_evidence
     assert '--signed-bundle-artifact "macos-release-$SOURCE_SHA"' in capture_evidence
     assert "signature.json" in capture_evidence
@@ -412,6 +446,8 @@ def validate_promotion_policy(workflow: str) -> int:
     assert "expired == false" in workflow
     assert "scripts/release_artifacts.py validate" in workflow
     assert "--require-macos-capture-helper" in workflow
+    assert "--require-macos-capture-agent" in workflow
+    assert "--require-macos-capture-worker" in workflow
     assert 'at("app/src-tauri/tauri.conf.json")' in workflow
     assert 'at("app/src-tauri/Cargo.toml")' in workflow
     assert 'at("app/src-tauri/Cargo.lock")' in workflow
