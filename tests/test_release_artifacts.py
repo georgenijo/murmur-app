@@ -9,6 +9,10 @@ import unittest
 
 from scripts.capture_helper_evidence import (
     ALLOWED_PROBE_OUTCOMES,
+    CAPTURE_AGENT_ENTITLEMENTS,
+    CAPTURE_AGENT_IDENTIFIER,
+    CAPTURE_WORKER_ENTITLEMENTS,
+    CAPTURE_WORKER_IDENTIFIER,
     CAPTURE_ENTITLEMENTS,
     EvidenceError,
     PROBE_OUTCOME_CONTRACTS,
@@ -144,6 +148,20 @@ class ReleaseArtifactTests(unittest.TestCase):
             'and certificate leaf[subject.OU] = "ABCDE12345"'
         ),
     }
+    CAPTURE_AGENT = {
+        **HELPER,
+        "designated_requirement": (
+            'identifier "com.localdictation.capture-agent" and anchor apple generic '
+            'and certificate leaf[subject.OU] = "ABCDE12345"'
+        ),
+    }
+    CAPTURE_WORKER = {
+        **HELPER,
+        "designated_requirement": (
+            'identifier "com.localdictation.capture-worker" and anchor apple generic '
+            'and certificate leaf[subject.OU] = "ABCDE12345"'
+        ),
+    }
     CAPTURE_PROBE = {
         "schema_version": 1,
         "outcome": "ok",
@@ -212,6 +230,66 @@ class ReleaseArtifactTests(unittest.TestCase):
                 SHA,
                 RUN_ID,
                 require_macos_capture_helper=True,
+            )
+
+    def test_capture_agent_provenance_is_required_and_validated(self) -> None:
+        macos = self.artifacts / "macos"
+        (macos / "provenance.json").unlink()
+        create_provenance(
+            "macos",
+            "darwin-aarch64",
+            macos,
+            SHA,
+            RUN_ID,
+            capture_agent=self.CAPTURE_AGENT,
+        )
+        result = validate_release(
+            self.artifacts,
+            SHA,
+            RUN_ID,
+            require_macos_capture_agent=True,
+        )
+        self.assertEqual(
+            result["platforms"]["macos"]["capture_agent"], self.CAPTURE_AGENT
+        )
+
+    def test_require_capture_agent_fails_without_block(self) -> None:
+        with self.assertRaisesRegex(ArtifactError, "required capture agent"):
+            validate_release(
+                self.artifacts,
+                SHA,
+                RUN_ID,
+                require_macos_capture_agent=True,
+            )
+
+    def test_capture_worker_provenance_is_required_and_validated(self) -> None:
+        macos = self.artifacts / "macos"
+        (macos / "provenance.json").unlink()
+        create_provenance(
+            "macos",
+            "darwin-aarch64",
+            macos,
+            SHA,
+            RUN_ID,
+            capture_worker=self.CAPTURE_WORKER,
+        )
+        result = validate_release(
+            self.artifacts,
+            SHA,
+            RUN_ID,
+            require_macos_capture_worker=True,
+        )
+        self.assertEqual(
+            result["platforms"]["macos"]["capture_worker"], self.CAPTURE_WORKER
+        )
+
+    def test_require_capture_worker_fails_without_block(self) -> None:
+        with self.assertRaisesRegex(ArtifactError, "required capture worker"):
+            validate_release(
+                self.artifacts,
+                SHA,
+                RUN_ID,
+                require_macos_capture_worker=True,
             )
 
     def test_helper_wrong_architecture_fails_closed(self) -> None:
@@ -313,12 +391,18 @@ class ReleaseArtifactTests(unittest.TestCase):
         executable_dir.mkdir(parents=True)
         main = executable_dir / "ui"
         helper = executable_dir / "murmur-llm-sidecar"
+        capture_agent = executable_dir / "murmur-capture-agent"
         capture_helper = executable_dir / "murmur-capture-helper"
+        capture_worker = executable_dir / "murmur-capture-worker"
         main.write_bytes(b"main")
         helper.write_bytes(b"helper")
+        capture_agent.write_bytes(b"capture agent")
         capture_helper.write_bytes(b"capture helper")
+        capture_worker.write_bytes(b"capture worker")
 
-        require_exact_macos_executables(app, main, [capture_helper, helper])
+        require_exact_macos_executables(
+            app, main, [capture_agent, capture_helper, capture_worker, helper]
+        )
 
         for unexpected in ("mock_llm_helper", "murmur-eval"):
             with self.subTest(unexpected=unexpected):
@@ -328,7 +412,7 @@ class ReleaseArtifactTests(unittest.TestCase):
                     SystemExit, "app bundle executables differ"
                 ):
                     require_exact_macos_executables(
-                        app, main, [capture_helper, helper]
+                        app, main, [capture_agent, capture_helper, capture_worker, helper]
                     )
                 extra.unlink()
 
@@ -338,12 +422,100 @@ class ReleaseArtifactTests(unittest.TestCase):
         executable_dir.mkdir(parents=True)
         main = executable_dir / "ui"
         helper = executable_dir / "murmur-llm-sidecar"
+        capture_agent = executable_dir / "murmur-capture-agent"
         capture_helper = executable_dir / "murmur-capture-helper"
+        capture_worker = executable_dir / "murmur-capture-worker"
         main.write_bytes(b"main")
         helper.write_bytes(b"helper")
+        capture_agent.write_bytes(b"capture agent")
+        capture_worker.write_bytes(b"capture worker")
 
         with self.assertRaisesRegex(SystemExit, "app bundle executables differ"):
-            require_exact_macos_executables(app, main, [capture_helper, helper])
+            require_exact_macos_executables(
+                app, main, [capture_agent, capture_helper, capture_worker, helper]
+            )
+
+    def test_capture_agent_identity_entitlements_and_launchd_plist_are_exact(
+        self,
+    ) -> None:
+        self.assertEqual(
+            HELPERS["murmur-capture-agent"],
+            "com.localdictation.capture-agent",
+        )
+        self.assertEqual(
+            HELPERS["murmur-capture-worker"],
+            CAPTURE_WORKER_IDENTIFIER,
+        )
+        self.assertEqual(CAPTURE_WORKER_IDENTIFIER, "com.localdictation.capture-worker")
+        root = Path(__file__).parents[1]
+        with (root / "app/src-tauri/capture-agent.entitlements.plist").open(
+            "rb"
+        ) as handle:
+            self.assertEqual(
+                plistlib.load(handle),
+                {
+                    "com.apple.security.app-sandbox": True,
+                    "com.apple.security.device.audio-input": True,
+                    "com.apple.security.device.microphone": True,
+                    "com.apple.security.temporary-exception.mach-lookup.global-name": [
+                        "com.localdictation.capture-agent.xpc"
+                    ],
+                    "com.apple.security.temporary-exception.mach-register.global-name": [
+                        "com.localdictation.capture-agent.xpc"
+                    ],
+                },
+            )
+
+        agent_source = (
+            root / "app/src-tauri/sidecars/capture-agent/main.swift"
+        ).read_text(encoding="utf-8")
+        for forbidden_capture_api in (
+            "AVFoundation",
+            "AVAudioEngine",
+            "AudioUnit",
+            "AudioQueue",
+            "CoreAudio",
+            "CPAL",
+        ):
+            self.assertNotIn(forbidden_capture_api, agent_source)
+        self.assertIn('"murmur-capture-worker"', agent_source)
+        with (root / "app/src-tauri/capture-worker.entitlements.plist").open(
+            "rb"
+        ) as handle:
+            self.assertEqual(plistlib.load(handle), CAPTURE_WORKER_ENTITLEMENTS)
+        with (
+            root
+            / "app/src-tauri/macos/com.localdictation.capture-agent.plist"
+        ).open("rb") as handle:
+            self.assertEqual(
+                plistlib.load(handle),
+                {
+                    "Label": "com.localdictation.capture-agent",
+                    "BundleProgram": "Contents/MacOS/murmur-capture-agent",
+                    "MachServices": {
+                        "com.localdictation.capture-agent.xpc": True
+                    },
+                    "ProcessType": "Interactive",
+                    "ThrottleInterval": 10,
+                },
+            )
+        with (root / "app/src-tauri/capture-agent-info.plist").open(
+            "rb"
+        ) as handle:
+            self.assertEqual(
+                plistlib.load(handle),
+                {
+                    "CFBundleExecutable": "murmur-capture-agent",
+                    "CFBundleIdentifier": "com.localdictation.capture-agent",
+                    "CFBundleName": "Murmur Capture Agent",
+                    "CFBundlePackageType": "APPL",
+                    "CFBundleShortVersionString": "__MURMUR_VERSION__",
+                    "CFBundleVersion": "__MURMUR_VERSION__",
+                },
+            )
+        build_script = (root / "scripts/build_local_llm_sidecar.py").read_text()
+        self.assertIn('"capture-agent-info.plist"', build_script)
+        self.assertIn('"__info_plist"', build_script)
 
     def test_capture_helper_identity_and_entitlements_are_exact(self) -> None:
         self.assertEqual(
@@ -364,22 +536,32 @@ class ReleaseArtifactTests(unittest.TestCase):
                 },
             )
 
-    def test_capture_helper_bundle_version_matches_package_revision(self) -> None:
+    def test_capture_executable_info_templates_are_role_specific_and_versioned(self) -> None:
         capture_helper = (
             Path(__file__).parents[1] / "app/src-tauri/sidecars/capture"
         )
-        manifest = tomllib.loads((capture_helper / "Cargo.toml").read_text())
         with (capture_helper / "Info.plist").open("rb") as handle:
-            info = plistlib.load(handle)
+            helper_info = plistlib.load(handle)
+        with (capture_helper / "WorkerInfo.plist").open("rb") as handle:
+            worker_info = plistlib.load(handle)
 
+        for info in (helper_info, worker_info):
+            self.assertEqual(info["CFBundleShortVersionString"], "__MURMUR_VERSION__")
+            self.assertEqual(info["CFBundleVersion"], "__MURMUR_VERSION__")
+            self.assertIn("NSMicrophoneUsageDescription", info)
         self.assertEqual(
-            info["CFBundleShortVersionString"],
-            manifest["package"]["version"],
+            helper_info["CFBundleIdentifier"],
+            "com.localdictation.capture-helper",
         )
-        bundle_version = info["CFBundleVersion"]
-        self.assertRegex(bundle_version, r"^[1-9][0-9]*$")
-        # The first signed capture-helper build used bundle version 1.
-        self.assertGreater(int(bundle_version), 1)
+        self.assertEqual(
+            worker_info["CFBundleIdentifier"],
+            "com.localdictation.capture-worker",
+        )
+        self.assertEqual(helper_info["CFBundleExecutable"], "murmur-capture-helper")
+        self.assertEqual(worker_info["CFBundleExecutable"], "murmur-capture-worker")
+        build_script = (capture_helper / "build.rs").read_text()
+        self.assertIn("MURMUR_CAPTURE_ROLE", build_script)
+        self.assertIn("MURMUR_APP_VERSION", build_script)
 
     def test_capture_probe_requires_complete_confirmed_allowlisted_evidence(self) -> None:
         self.assertEqual(
@@ -571,6 +753,36 @@ class ReleaseArtifactTests(unittest.TestCase):
                 "entitlement_sha256",
                 "entitlement_keys",
             },
+        )
+
+    def test_capture_agent_signature_evidence_uses_exact_identity_and_policy(
+        self,
+    ) -> None:
+        team_id = "ABCDE12345"
+        details = (
+            f"Identifier={CAPTURE_AGENT_IDENTIFIER}\n"
+            f"TeamIdentifier={team_id}\n"
+            "flags=0x10000(runtime)\n"
+        )
+        requirement = (
+            f'designated => identifier "{CAPTURE_AGENT_IDENTIFIER}" '
+            "and anchor apple generic "
+            "and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ "
+            "and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ "
+            f'and certificate leaf[subject.OU] = "{team_id}"'
+        )
+        evidence = structured_signature_evidence(
+            details,
+            requirement,
+            CAPTURE_AGENT_ENTITLEMENTS,
+            "arm64",
+            expected_identifier=CAPTURE_AGENT_IDENTIFIER,
+            expected_entitlements=CAPTURE_AGENT_ENTITLEMENTS,
+            label="capture-agent",
+        )
+        self.assertEqual(evidence["identifier"], CAPTURE_AGENT_IDENTIFIER)
+        self.assertEqual(
+            evidence["entitlement_keys"], sorted(CAPTURE_AGENT_ENTITLEMENTS)
         )
 
     def test_signature_evidence_rejects_extra_path_bearing_requirement_clause(

@@ -128,10 +128,17 @@ jobs:
             --identity "$APPLE_SIGNING_IDENTITY" \
             --main-entitlements app/src-tauri/entitlements.plist \
             --helper-entitlements app/src-tauri/local-llm-sidecar.entitlements.plist \
+            --capture-agent-entitlements app/src-tauri/capture-agent.entitlements.plist \
+            --capture-agent-info-plist app/src-tauri/capture-agent-info.plist \
+            --capture-helper-info-plist app/src-tauri/sidecars/capture/Info.plist \
+            --capture-worker-info-plist app/src-tauri/sidecars/capture/WorkerInfo.plist \
+            --capture-agent-launchd-plist app/src-tauri/macos/com.localdictation.capture-agent.plist \
+            --capture-helper-entitlements app/src-tauri/capture-helper.entitlements.plist \
+            --capture-worker-entitlements app/src-tauri/capture-worker.entitlements.plist \
             --expected-team-id "$APPLE_TEAM_ID" \
             | tee "$RUNNER_TEMP/rehearsal-evidence/finalize.log"
 
-      - name: Strict verification of both binaries
+      - name: Strict verification of app and all helpers
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
@@ -140,6 +147,9 @@ jobs:
           EXEC=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")
           MAIN="$APP/Contents/MacOS/$EXEC"
           HELPER="$APP/Contents/MacOS/murmur-llm-sidecar"
+          CAPTURE_AGENT="$APP/Contents/MacOS/murmur-capture-agent"
+          CAPTURE_HELPER="$APP/Contents/MacOS/murmur-capture-helper"
+          CAPTURE_WORKER="$APP/Contents/MacOS/murmur-capture-worker"
           {
             echo "## codesign --verify --deep --strict"
             codesign --verify --deep --strict --verbose=2 "$APP" 2>&1
@@ -148,18 +158,28 @@ jobs:
             codesign -dvv "$HELPER" 2>&1
             echo "## helper entitlements"
             codesign -d --entitlements :- --xml "$HELPER" 2>/dev/null
+            echo "## capture agent signature"
+            codesign -dvv "$CAPTURE_AGENT" 2>&1
+            echo "## capture helper signature"
+            codesign -dvv "$CAPTURE_HELPER" 2>&1
+            echo "## capture worker signature"
+            codesign -dvv "$CAPTURE_WORKER" 2>&1
             echo "## main entitlements"
             codesign -d --entitlements :- --xml "$MAIN" 2>/dev/null
           } | tee "$LOG"
 
-          # arm64-only helper.
-          test "$(lipo -archs "$HELPER" | tr -d ' \n')" = "arm64"
-          # Hardened runtime on both binaries.
-          codesign -dvv "$HELPER" 2>&1 | grep -qi 'flags=.*runtime'
+          # Every helper is arm64-only and uses hardened runtime.
+          for BINARY in "$HELPER" "$CAPTURE_AGENT" "$CAPTURE_HELPER" "$CAPTURE_WORKER"; do
+            test "$(lipo -archs "$BINARY" | tr -d ' \n')" = "arm64"
+            codesign -dvv "$BINARY" 2>&1 | grep -qi 'flags=.*runtime'
+            codesign -dvv "$BINARY" 2>&1 | grep -q "TeamIdentifier=$APPLE_TEAM_ID"
+          done
           codesign -dvv "$MAIN" 2>&1 | grep -qi 'flags=.*runtime'
           # Fixed helper identifier and shared Team ID.
           codesign -dvv "$HELPER" 2>&1 | grep -q 'Identifier=com.localdictation.local-llm-sidecar'
-          codesign -dvv "$HELPER" 2>&1 | grep -q "TeamIdentifier=$APPLE_TEAM_ID"
+          codesign -dvv "$CAPTURE_AGENT" 2>&1 | grep -q 'Identifier=com.localdictation.capture-agent'
+          codesign -dvv "$CAPTURE_HELPER" 2>&1 | grep -q 'Identifier=com.localdictation.capture-helper'
+          codesign -dvv "$CAPTURE_WORKER" 2>&1 | grep -q 'Identifier=com.localdictation.capture-worker'
           codesign -dvv "$MAIN" 2>&1 | grep -q "TeamIdentifier=$APPLE_TEAM_ID"
           # Helper is sandboxed; main is not.
           codesign -d --entitlements :- --xml "$HELPER" 2>/dev/null | grep -q 'com.apple.security.app-sandbox'

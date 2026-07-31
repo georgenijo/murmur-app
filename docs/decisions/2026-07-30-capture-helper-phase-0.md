@@ -193,8 +193,11 @@ Hard-kill recovery and the signed helper prototype remain reusable evidence, but
 the exact production packaging decision is not complete. #408 and dependent
 issues must not begin until #407 proves an alternate shape that can preserve
 already-delivered PCM across the observed forced restart without weakening
-revocation or privacy guarantees. A dedicated bundled app/XPC service is the
-leading investigation; a volatile recovery handoff is acceptable only if its
-lifetime, access control, cleanup, and swap/crash behavior are explicitly
-bounded and tested. Silently shipping the current external-binary shape or
-moving the problem into #411 is not allowed.
+revocation or privacy guarantees. The follow-up provisional shape is a
+per-user LaunchAgent recovery owner plus the existing separately killable
+capture worker; see
+[`2026-07-31-capture-agent-recovery-spike.md`](2026-07-31-capture-agent-recovery-spike.md).
+A volatile recovery handoff is acceptable only if its lifetime, access control,
+cleanup, and swap/crash behavior are explicitly bounded and tested. Silently
+shipping the current external-binary shape or moving the problem into #411 is
+not allowed.

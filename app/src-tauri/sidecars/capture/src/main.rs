@@ -4,7 +4,8 @@ mod supported {
     use cpal::{SampleFormat, Stream, StreamConfig};
     use murmur_capture_helper_protocol::{
         read_frame, valid_host_message, write_frame, CapturePhase, FailureCode, HelperMessage,
-        HostMessage, PROTOCOL_NAME, PROTOCOL_VERSION,
+        HostMessage, PROTOCOL_NAME, PROTOCOL_VERSION, SYNTHETIC_FIXTURE, SYNTHETIC_FIXTURE_CHUNKS,
+        SYNTHETIC_FIXTURE_DIGEST,
     };
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::{mpsc, Arc};
@@ -98,8 +99,109 @@ mod supported {
         }
     }
 
-    pub fn run() -> Result<(), ()> {
+    fn establish_process_group() -> Result<(), ()> {
+        let pid = unsafe { libc::getpid() };
+        if unsafe { libc::setpgid(0, 0) } != 0 && unsafe { libc::getpgrp() } != pid {
+            return Err(());
+        }
+        if unsafe { libc::getpgrp() } != pid {
+            return Err(());
+        }
+        Ok(())
+    }
+
+    fn wait_for_cancel(
+        host_rx: &mpsc::Receiver<HostMessage>,
+        stdout: &mut impl std::io::Write,
+        nonce: &str,
+    ) -> Result<(), ()> {
+        match host_rx.recv() {
+            Ok(HostMessage::Cancel {
+                protocol,
+                version,
+                session_nonce,
+            }) if protocol == PROTOCOL_NAME
+                && version == PROTOCOL_VERSION
+                && session_nonce == nonce =>
+            {
+                write_frame(stdout, &message(nonce, CapturePhase::Stopping)).map_err(|_| ())?;
+                write_frame(
+                    stdout,
+                    &HelperMessage::Stopped {
+                        protocol: PROTOCOL_NAME.to_string(),
+                        version: PROTOCOL_VERSION,
+                        session_nonce: nonce.to_string(),
+                    },
+                )
+                .map_err(|_| ())
+            }
+            _ => {
+                write_frame(stdout, &failure(nonce, FailureCode::InvalidMessage))
+                    .map_err(|_| ())?;
+                Err(())
+            }
+        }
+    }
+
+    fn run_synthetic(
+        host_rx: &mpsc::Receiver<HostMessage>,
+        stdout: &mut impl std::io::Write,
+        nonce: &str,
+        ignore_cancel: bool,
+    ) -> Result<(), ()> {
+        for phase in [CapturePhase::Enumeration, CapturePhase::StreamOpen] {
+            write_frame(stdout, &message(nonce, phase)).map_err(|_| ())?;
+        }
+        write_frame(
+            stdout,
+            &HelperMessage::Ready {
+                protocol: PROTOCOL_NAME.to_string(),
+                version: PROTOCOL_VERSION,
+                session_nonce: nonce.to_string(),
+            },
+        )
+        .map_err(|_| ())?;
+        write_frame(stdout, &message(nonce, CapturePhase::AwaitingFirstCallback))
+            .map_err(|_| ())?;
+        write_frame(
+            stdout,
+            &HelperMessage::FirstCallback {
+                protocol: PROTOCOL_NAME.to_string(),
+                version: PROTOCOL_VERSION,
+                session_nonce: nonce.to_string(),
+                callback_latency_ms: 0,
+            },
+        )
+        .map_err(|_| ())?;
+        write_frame(stdout, &message(nonce, CapturePhase::Active)).map_err(|_| ())?;
+        for sequence in 0..SYNTHETIC_FIXTURE_CHUNKS {
+            write_frame(
+                stdout,
+                &HelperMessage::SyntheticChunk {
+                    protocol: PROTOCOL_NAME.to_string(),
+                    version: PROTOCOL_VERSION,
+                    session_nonce: nonce.to_string(),
+                    fixture: SYNTHETIC_FIXTURE.to_string(),
+                    fixture_digest: SYNTHETIC_FIXTURE_DIGEST.to_string(),
+                    sequence,
+                },
+            )
+            .map_err(|_| ())?;
+        }
+        if ignore_cancel {
+            loop {
+                std::thread::park_timeout(Duration::from_secs(60));
+            }
+        }
+        wait_for_cancel(host_rx, stdout, nonce)
+    }
+
+    pub fn run(synthetic: bool, ignore_cancel: bool) -> Result<(), ()> {
         disable_core_dumps();
+        // The worker establishes its own group before reading the host hello or
+        // touching CoreAudio. A parent-side setpgid after Process.run() races
+        // with exec and is permitted to fail with EACCES on macOS.
+        establish_process_group()?;
         let mut stdin = std::io::stdin().lock();
         let mut stdout = std::io::stdout().lock();
         let hello = read_frame::<HostMessage>(&mut stdin).map_err(|_| ())?;
@@ -120,7 +222,15 @@ mod supported {
                     return;
                 }
             }
+            // The agent owns this worker through the stdin pipe. If the agent is
+            // killed while CoreAudio is blocked, the reader thread is still able
+            // to terminate the whole worker immediately on EOF.
+            unsafe { libc::_exit(0) }
         });
+
+        if synthetic {
+            return run_synthetic(&host_rx, &mut stdout, &nonce, ignore_cancel);
+        }
 
         write_frame(&mut stdout, &message(&nonce, CapturePhase::Enumeration)).map_err(|_| ())?;
         let host = cpal::default_host();
@@ -270,8 +380,28 @@ mod supported {
 
 fn main() {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    if supported::run().is_ok() {
-        return;
+    {
+        let arguments = std::env::args().skip(1).collect::<Vec<_>>();
+        let (synthetic, ignore_cancel) = match arguments.as_slice() {
+            [] => (false, false),
+            [flag, fixture]
+                if flag == "--synthetic-fixture"
+                    && fixture == murmur_capture_helper_protocol::SYNTHETIC_FIXTURE =>
+            {
+                (true, false)
+            }
+            [flag, fixture, fault]
+                if flag == "--synthetic-fixture"
+                    && fixture == murmur_capture_helper_protocol::SYNTHETIC_FIXTURE
+                    && fault == "--ignore-cancel" =>
+            {
+                (true, true)
+            }
+            _ => std::process::exit(64),
+        };
+        if supported::run(synthetic, ignore_cancel).is_ok() {
+            return;
+        }
     }
     std::process::exit(70);
 }

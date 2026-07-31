@@ -342,6 +342,8 @@ jobs:
             --expected-sha '${{ needs.resolve.outputs.source-sha }}' \
             --expected-run-id '${{ needs.resolve.outputs.artifact-run-id }}' \
             --require-macos-helper \
+            --require-macos-capture-agent \
+            --require-macos-capture-worker \
             --require-macos-capture-helper \
             --output validated-release.json
 

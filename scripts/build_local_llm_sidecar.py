@@ -2,16 +2,19 @@
 """Build Murmur's macOS-arm64 bundled helpers for Tauri externalBin.
 
 The historical filename remains the developer prerequisite, but it now builds
-both exact production helpers: the local-LLM sidecar and the Phase-0 capture
-helper. A Tauri bundle must never silently omit either signed executable.
+all exact production helpers: the local-LLM sidecar, Phase-0 capture helper,
+and provisional capture recovery agent. A Tauri bundle must never silently
+omit a signed executable.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 import platform
+import plistlib
 import shutil
 import stat
 import subprocess
@@ -22,14 +25,22 @@ ROOT = Path(__file__).resolve().parents[1]
 TAURI_ROOT = ROOT / "app" / "src-tauri"
 SIDECAR_NAME = "murmur-llm-sidecar"
 CAPTURE_HELPER_NAME = "murmur-capture-helper"
+CAPTURE_AGENT_NAME = "murmur-capture-agent"
+CAPTURE_WORKER_NAME = "murmur-capture-worker"
 TARGET = "aarch64-apple-darwin"
 
 
 def run(command: list[str], *, cwd: Path = ROOT) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, cwd=cwd, text=True, check=True, capture_output=True)
 
-def publish_binary(name: str, profile: str) -> Path:
-    built = TAURI_ROOT / "target" / profile / name
+
+def publish_binary(
+    name: str,
+    profile: str,
+    source_name: str | None = None,
+    built_path: Path | None = None,
+) -> Path:
+    built = built_path or TAURI_ROOT / "target" / profile / (source_name or name)
     if not built.is_file():
         raise SystemExit(f"helper build did not produce {built}")
 
@@ -50,6 +61,50 @@ def publish_binary(name: str, profile: str) -> Path:
     return destination
 
 
+def build_capture_agent(profile: str, env: dict[str, str]) -> None:
+    """Build the probe-only SMAppService launch agent with the system Swift toolchain."""
+    output = TAURI_ROOT / "target" / profile / CAPTURE_AGENT_NAME
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with (TAURI_ROOT / "capture-agent-info.plist").open("rb") as handle:
+        embedded_info_payload = plistlib.load(handle)
+    with (TAURI_ROOT / "tauri.conf.json").open(encoding="utf-8") as handle:
+        app_version = str(json.load(handle)["version"])
+    for key in ("CFBundleShortVersionString", "CFBundleVersion"):
+        embedded_info_payload[key] = app_version
+    embedded_info = output.parent / "capture-agent-info.plist"
+    with embedded_info.open("wb") as handle:
+        plistlib.dump(embedded_info_payload, handle, sort_keys=True)
+    optimization = "-O" if profile == "release" else "-Onone"
+    subprocess.run(
+        [
+            "xcrun",
+            "swiftc",
+            optimization,
+            "-parse-as-library",
+            "-target",
+            "arm64-apple-macos14.0",
+            str(TAURI_ROOT / "sidecars" / "capture-agent" / "main.swift"),
+            "-framework",
+            "Foundation",
+            "-framework",
+            "Security",
+            "-Xlinker",
+            "-sectcreate",
+            "-Xlinker",
+            "__TEXT",
+            "-Xlinker",
+            "__info_plist",
+            "-Xlinker",
+            str(embedded_info),
+            "-o",
+            str(output),
+        ],
+        cwd=TAURI_ROOT,
+        env=env,
+        check=True,
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--release", action="store_true")
@@ -67,11 +122,14 @@ def main() -> int:
         profile = "release"
 
     env = os.environ.copy()
+    with (TAURI_ROOT / "tauri.conf.json").open(encoding="utf-8") as handle:
+        app_version = str(json.load(handle)["version"])
     env.update(
         {
             "LLAMA_BUILD_SHARED_LIBS": "OFF",
             "MACOSX_DEPLOYMENT_TARGET": "14.0",
             "CMAKE_OSX_DEPLOYMENT_TARGET": "14.0",
+            "MURMUR_APP_VERSION": app_version,
         }
     )
     subprocess.run(command, cwd=TAURI_ROOT, env=env, check=True)
@@ -80,15 +138,35 @@ def main() -> int:
     if args.release:
         capture_command.append("--release")
     subprocess.run(capture_command, cwd=TAURI_ROOT, env=env, check=True)
+    worker_target = TAURI_ROOT / "target" / "capture-worker-build"
+    worker_env = env.copy()
+    worker_env.update(
+        {
+            "MURMUR_CAPTURE_ROLE": "worker",
+            "CARGO_TARGET_DIR": str(worker_target),
+        }
+    )
+    subprocess.run(capture_command, cwd=TAURI_ROOT, env=worker_env, check=True)
+    build_capture_agent(profile, env)
 
     llm_destination = publish_binary(SIDECAR_NAME, profile)
     capture_destination = publish_binary(CAPTURE_HELPER_NAME, profile)
+    capture_agent_destination = publish_binary(CAPTURE_AGENT_NAME, profile)
+    capture_worker_destination = publish_binary(
+        CAPTURE_WORKER_NAME,
+        profile,
+        built_path=worker_target / profile / CAPTURE_HELPER_NAME,
+    )
     if args.print_output:
         print(llm_destination)
         print(capture_destination)
+        print(capture_agent_destination)
+        print(capture_worker_destination)
     else:
         print(f"built {llm_destination.relative_to(ROOT)}")
         print(f"built {capture_destination.relative_to(ROOT)}")
+        print(f"built {capture_agent_destination.relative_to(ROOT)}")
+        print(f"built {capture_worker_destination.relative_to(ROOT)}")
     return 0
 
 

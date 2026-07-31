@@ -2,6 +2,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
+    if let Some(exit_code) = ui_lib::capture_agent_probe::run_cli_if_requested() {
+        std::process::exit(exit_code);
+    }
     if let Some(exit_code) = ui_lib::capture_helper_probe::run_cli_if_requested() {
         std::process::exit(exit_code);
     }

@@ -5,6 +5,10 @@ pub const PROTOCOL_NAME: &str = "murmur.capture_probe";
 pub const PROTOCOL_VERSION: u16 = 1;
 pub const MAX_FRAME_BYTES: usize = 4 * 1024;
 pub const MAX_NONCE_BYTES: usize = 128;
+pub const SYNTHETIC_FIXTURE: &str = "seq-v1";
+pub const SYNTHETIC_FIXTURE_CHUNKS: u64 = 64;
+pub const SYNTHETIC_FIXTURE_DIGEST: &str =
+    "9fda676f94adbf56e31e91462c702dcda9fcf989eece435876a28778782abfd3";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -82,6 +86,14 @@ pub enum HelperMessage {
         session_nonce: String,
         callback_count_bucket: String,
     },
+    SyntheticChunk {
+        protocol: String,
+        version: u16,
+        session_nonce: String,
+        fixture: String,
+        fixture_digest: String,
+        sequence: u64,
+    },
     Failure {
         protocol: String,
         version: u16,
@@ -110,6 +122,7 @@ impl HelperMessage {
             | Self::Ready { session_nonce, .. }
             | Self::FirstCallback { session_nonce, .. }
             | Self::CallbackHealth { session_nonce, .. }
+            | Self::SyntheticChunk { session_nonce, .. }
             | Self::Failure { session_nonce, .. }
             | Self::Stopped { session_nonce, .. } => session_nonce,
         }
@@ -148,6 +161,9 @@ pub fn valid_helper_message(message: &HelperMessage, expected_nonce: &str) -> bo
             protocol, version, ..
         }
         | HelperMessage::CallbackHealth {
+            protocol, version, ..
+        }
+        | HelperMessage::SyntheticChunk {
             protocol, version, ..
         }
         | HelperMessage::Failure {
@@ -229,5 +245,15 @@ mod tests {
             read_frame::<HostMessage>(&mut bytes.as_slice()),
             Err(FrameError::TooLarge(_))
         ));
+    }
+
+    #[test]
+    fn synthetic_fixture_contract_is_fixed_and_content_free() {
+        assert_eq!(SYNTHETIC_FIXTURE, "seq-v1");
+        assert_eq!(SYNTHETIC_FIXTURE_CHUNKS, 64);
+        assert_eq!(SYNTHETIC_FIXTURE_DIGEST.len(), 64);
+        assert!(SYNTHETIC_FIXTURE_DIGEST
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit()));
     }
 }

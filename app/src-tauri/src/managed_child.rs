@@ -29,12 +29,32 @@ pub struct ManagedChild {
 }
 
 impl ManagedChild {
+    fn from_spawned_child(child: Child) -> Self {
+        let pid = child.id();
+        Self {
+            child,
+            pid,
+            termination_armed: true,
+            #[cfg(test)]
+            drop_fallback_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        }
+    }
+
     pub fn spawn(
         executable: &Path,
         test_environment: &[(String, String)],
     ) -> std::io::Result<(Self, ChildStdin, ChildStdout)> {
+        Self::spawn_with_arguments(executable, &[], test_environment)
+    }
+
+    pub fn spawn_with_arguments(
+        executable: &Path,
+        arguments: &[&str],
+        test_environment: &[(String, String)],
+    ) -> std::io::Result<(Self, ChildStdin, ChildStdout)> {
         let mut command = Command::new(executable);
         command
+            .args(arguments)
             .current_dir("/")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -70,24 +90,13 @@ impl ManagedChild {
         }
 
         let mut child = command.spawn()?;
-        let pid = child.id();
         let stdin = child.stdin.take().ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::BrokenPipe, "missing helper stdin")
         })?;
         let stdout = child.stdout.take().ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::BrokenPipe, "missing helper stdout")
         })?;
-        Ok((
-            Self {
-                child,
-                pid,
-                termination_armed: true,
-                #[cfg(test)]
-                drop_fallback_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            },
-            stdin,
-            stdout,
-        ))
+        Ok((Self::from_spawned_child(child), stdin, stdout))
     }
 
     pub fn pid(&self) -> u32 {

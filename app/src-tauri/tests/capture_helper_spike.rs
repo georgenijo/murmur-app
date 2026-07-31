@@ -302,14 +302,13 @@ fn revocation_outcome_survives_a_queued_protocol_failure_during_teardown() {
 }
 
 #[test]
-fn production_capture_helper_has_no_process_spawn_or_daemonization_surface() {
+fn production_capture_helper_has_only_its_required_self_process_group_surface() {
     let source = include_str!("../sidecars/capture/src/main.rs");
     for forbidden in [
         "std::process::Command",
         "libc::fork(",
         "libc::posix_spawn",
         "libc::setsid(",
-        "libc::setpgid(",
         "libc::daemon(",
     ] {
         assert!(
@@ -317,4 +316,13 @@ fn production_capture_helper_has_no_process_spawn_or_daemonization_surface() {
             "capture helper must not contain process escape surface {forbidden:?}"
         );
     }
+    assert_eq!(
+        source.matches("libc::setpgid(").count(),
+        1,
+        "capture helper may establish only its own worker process group"
+    );
+    assert!(
+        source.contains("libc::setpgid(0, 0)"),
+        "capture helper must establish only its own worker process group"
+    );
 }

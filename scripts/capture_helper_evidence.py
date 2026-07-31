@@ -15,10 +15,27 @@ from xml.parsers.expat import ExpatError
 
 
 CAPTURE_HELPER_IDENTIFIER = "com.localdictation.capture-helper"
+CAPTURE_AGENT_IDENTIFIER = "com.localdictation.capture-agent"
+CAPTURE_WORKER_IDENTIFIER = "com.localdictation.capture-worker"
 CAPTURE_ENTITLEMENTS = {
     "com.apple.security.app-sandbox": True,
     "com.apple.security.device.audio-input": True,
     "com.apple.security.device.microphone": True,
+}
+CAPTURE_AGENT_ENTITLEMENTS = {
+    "com.apple.security.app-sandbox": True,
+    "com.apple.security.device.audio-input": True,
+    "com.apple.security.device.microphone": True,
+    "com.apple.security.temporary-exception.mach-lookup.global-name": [
+        "com.localdictation.capture-agent.xpc"
+    ],
+    "com.apple.security.temporary-exception.mach-register.global-name": [
+        "com.localdictation.capture-agent.xpc"
+    ],
+}
+CAPTURE_WORKER_ENTITLEMENTS = {
+    "com.apple.security.app-sandbox": True,
+    "com.apple.security.inherit": True,
 }
 PROBE_FIELDS = {
     "schema_version",
@@ -106,7 +123,7 @@ def _nonnegative_int(value: object, label: str) -> int:
 
 
 def _designated_requirement_profile(
-    requirement: str, identifier: str, team_id: str
+    requirement: str, identifier: str, team_id: str, label: str
 ) -> tuple[str, str]:
     """Validate a complete known-safe requirement and return normalized facts."""
 
@@ -133,7 +150,7 @@ def _designated_requirement_profile(
         if pattern.fullmatch(normalized):
             return profile, normalized
     raise EvidenceError(
-        "capture-helper designated requirement is not an exact canonical profile"
+        f"{label} designated requirement is not an exact canonical profile"
     )
 
 
@@ -202,22 +219,26 @@ def structured_signature_evidence(
     designated_requirement_output: str,
     entitlements: dict[str, object],
     architecture: str,
+    *,
+    expected_identifier: str = CAPTURE_HELPER_IDENTIFIER,
+    expected_entitlements: dict[str, object] = CAPTURE_ENTITLEMENTS,
+    label: str = "capture-helper",
 ) -> dict[str, Any]:
     identifier_match = re.search(r"^Identifier=(.+)$", details, re.MULTILINE)
     team_match = re.search(r"^TeamIdentifier=(.+)$", details, re.MULTILINE)
     identifier = identifier_match.group(1).strip() if identifier_match else ""
     team_id = team_match.group(1).strip() if team_match else ""
-    if identifier != CAPTURE_HELPER_IDENTIFIER:
-        raise EvidenceError("capture-helper signature identifier mismatch")
+    if identifier != expected_identifier:
+        raise EvidenceError(f"{label} signature identifier mismatch")
     if not TEAM_ID_RE.fullmatch(team_id):
-        raise EvidenceError("capture-helper Team ID is invalid")
+        raise EvidenceError(f"{label} Team ID is invalid")
     hardened_runtime = "(runtime)" in details or "Runtime Version=" in details
     if not hardened_runtime:
-        raise EvidenceError("capture-helper hardened runtime is missing")
+        raise EvidenceError(f"{label} hardened runtime is missing")
     if architecture.strip() != "arm64":
-        raise EvidenceError("capture-helper architecture must be exactly arm64")
-    if entitlements != CAPTURE_ENTITLEMENTS:
-        raise EvidenceError("capture-helper entitlements differ from the exact policy")
+        raise EvidenceError(f"{label} architecture must be exactly arm64")
+    if entitlements != expected_entitlements:
+        raise EvidenceError(f"{label} entitlements differ from the exact policy")
 
     requirement_match = re.search(
         r"^#*\s*designated\s*=>\s*(.+)$",
@@ -226,7 +247,7 @@ def structured_signature_evidence(
     )
     requirement = requirement_match.group(1).strip() if requirement_match else ""
     requirement_profile, normalized_requirement = _designated_requirement_profile(
-        requirement, CAPTURE_HELPER_IDENTIFIER, team_id
+        requirement, expected_identifier, team_id, label
     )
 
     entitlement_bytes = plistlib.dumps(entitlements, sort_keys=True)
@@ -284,8 +305,17 @@ def extract_entitlements_plist(payload: bytes) -> dict[str, object]:
 
 
 def collect_signature(
-    helper: Path, signature_output: Path, entitlements_output: Path
+    helper: Path,
+    signature_output: Path,
+    entitlements_output: Path,
+    kind: str = "capture-helper",
 ) -> None:
+    policies = {
+        "capture-helper": (CAPTURE_HELPER_IDENTIFIER, CAPTURE_ENTITLEMENTS),
+        "capture-agent": (CAPTURE_AGENT_IDENTIFIER, CAPTURE_AGENT_ENTITLEMENTS),
+        "capture-worker": (CAPTURE_WORKER_IDENTIFIER, CAPTURE_WORKER_ENTITLEMENTS),
+    }
+    identifier, expected_entitlements = policies[kind]
     details_result = _run(["codesign", "-d", "--verbose=4", str(helper)])
     details = (details_result.stdout + details_result.stderr).decode(
         "utf-8", errors="strict"
@@ -301,7 +331,13 @@ def collect_signature(
     entitlements = extract_entitlements_plist(entitlement_payload)
     architecture = _run(["lipo", "-archs", str(helper)]).stdout.decode().strip()
     evidence = structured_signature_evidence(
-        details, requirement, entitlements, architecture
+        details,
+        requirement,
+        entitlements,
+        architecture,
+        expected_identifier=identifier,
+        expected_entitlements=expected_entitlements,
+        label=kind,
     )
     signature_output.write_text(
         json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -344,6 +380,11 @@ def main() -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
     collect = subparsers.add_parser("collect-signature")
     collect.add_argument("--helper", type=Path, required=True)
+    collect.add_argument(
+        "--kind",
+        choices=("capture-helper", "capture-agent", "capture-worker"),
+        default="capture-helper",
+    )
     collect.add_argument("--signature-output", type=Path, required=True)
     collect.add_argument("--entitlements-output", type=Path, required=True)
     validate = subparsers.add_parser("validate-probe")
@@ -356,7 +397,10 @@ def main() -> int:
 
     if args.command == "collect-signature":
         collect_signature(
-            args.helper, args.signature_output, args.entitlements_output
+            args.helper,
+            args.signature_output,
+            args.entitlements_output,
+            args.kind,
         )
     else:
         validate_probe_file(

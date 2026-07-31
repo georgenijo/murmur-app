@@ -18,11 +18,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class WorkflowPolicyMutationTests(unittest.TestCase):
-    def test_macos_compile_check_stubs_both_exact_helpers(self) -> None:
+    def test_macos_compile_check_builds_capture_worker(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         mutated = workflow.replace(
-            "          : > app/src-tauri/binaries/"
-            "murmur-capture-helper-aarch64-apple-darwin\n",
+            "          MURMUR_CAPTURE_ROLE=worker \\\n",
             "",
             1,
         )
@@ -138,10 +137,17 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
             "scripts/capture_helper_evidence.py validate-probe",
         ):
             with self.subTest(marker=marker):
-                mutated = workflow.replace(marker, "echo skipped", 1)
+                mutated = workflow.replace(marker, "echo skipped")
                 self.assertNotEqual(workflow, mutated)
                 with self.assertRaises(AssertionError):
                     validate_release_build(mutated)
+
+        without_agent = workflow.replace("--kind capture-agent", "--kind capture-helper", 1)
+        with self.assertRaises(AssertionError):
+            validate_release_build(without_agent)
+        without_worker = workflow.replace("--kind capture-worker", "--kind capture-helper", 1)
+        with self.assertRaises(AssertionError):
+            validate_release_build(without_worker)
 
         leaked = workflow.replace(
             "          # Collect only allowlisted signature facts.",
