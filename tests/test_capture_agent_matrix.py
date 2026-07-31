@@ -7,9 +7,9 @@ from scripts.capture_agent_matrix import MatrixError, validate_matrix
 class CaptureAgentMatrixTests(unittest.TestCase):
     def setUp(self) -> None:
         sha = "a" * 40
-        service = lambda status: {
+        service = lambda status, outcome="service_status": {
             "schema_version": 1,
-            "outcome": "service_status",
+            "outcome": outcome,
             "service_status": status,
             "audio_content_retained": False,
         }
@@ -117,7 +117,10 @@ class CaptureAgentMatrixTests(unittest.TestCase):
                 "residual_worker_processes": 0,
             },
             "records": {
-                "service_initial": envelope(service("not_registered")),
+                "service_initial": envelope(
+                    service("not_found", "service_error"),
+                    2,
+                ),
                 "service_register": envelope(service("enabled")),
                 "synthetic_cooperative": envelope(probe("cooperative", True)),
                 "synthetic_hard_kill": envelope(probe("hard_kill", True)),
@@ -176,6 +179,47 @@ class CaptureAgentMatrixTests(unittest.TestCase):
 
     def test_complete_matrix_is_valid(self) -> None:
         self.assertEqual(validate_matrix(self.matrix), self.matrix)
+
+    def test_not_registered_initial_service_status_is_also_valid(self) -> None:
+        mutated = deepcopy(self.matrix)
+        mutated["records"]["service_initial"] = {
+            "exit_code": 0,
+            "payload": {
+                "schema_version": 1,
+                "outcome": "service_status",
+                "service_status": "not_registered",
+                "audio_content_retained": False,
+            },
+        }
+        self.assertEqual(validate_matrix(mutated), mutated)
+
+    def test_initial_service_status_requires_exact_outcome_and_exit_pair(self) -> None:
+        for key, value in (
+            (("exit_code",), 0),
+            (("payload", "outcome"), "service_status"),
+            (("payload", "service_status"), "enabled"),
+        ):
+            mutated = deepcopy(self.matrix)
+            target = mutated["records"]["service_initial"]
+            for part in key[:-1]:
+                target = target[part]
+            target[key[-1]] = value
+            with self.subTest(key=key, value=value):
+                with self.assertRaises(MatrixError):
+                    validate_matrix(mutated)
+
+        mutated = deepcopy(self.matrix)
+        mutated["records"]["service_initial"] = {
+            "exit_code": False,
+            "payload": {
+                "schema_version": 1,
+                "outcome": "service_status",
+                "service_status": "not_registered",
+                "audio_content_retained": False,
+            },
+        }
+        with self.assertRaises(MatrixError):
+            validate_matrix(mutated)
 
     def test_cross_record_identity_change_is_rejected(self) -> None:
         mutated = deepcopy(self.matrix)
