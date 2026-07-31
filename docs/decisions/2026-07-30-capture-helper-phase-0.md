@@ -1,7 +1,7 @@
-# Capture-helper Phase 0: managed child proven; TCC rollout still gated
+# Capture-helper Phase 0: managed child proven; external-binary shape blocked
 
-- Status: Provisional
-- Date: 2026-07-30
+- Status: Provisional — alternate packaging/recovery decision required
+- Date: 2026-07-31
 - Issue: #407
 - Parent: #405
 
@@ -75,15 +75,34 @@ reached callbacks while the Murmur identity was denied, showing that the
 platform stream result alone cannot enforce the app's TCC policy in every
 launch context.
 
-The parent therefore snapshots permission before helper spawn and requires a
-provable grant; denied, not-determined, and unknown states create no process.
-Once the helper becomes active, it polls the same AVFoundation authorization
-status used by Murmur's permission UI. Any loss of the proven grant is
-classified as the stable `permission_denied` outcome and runs the existing
-bounded cooperative-cancel/hard-kill teardown. A queued helper failure or
-protocol frame during teardown cannot overwrite that primary outcome. This is
-deliberately stricter than the UI banner: capture fails closed when
-authorization cannot be proven.
+The parent snapshots permission before helper spawn and requires a provable
+grant; denied, not-determined, and unknown states create no process. Once the
+helper becomes active, it polls the same AVFoundation authorization status used
+by Murmur's permission UI. Any observed loss of the proven grant is classified
+as the stable `permission_denied` outcome and runs the existing bounded
+cooperative-cancel/hard-kill teardown. A queued helper failure or protocol
+frame during teardown cannot overwrite that primary outcome.
+
+That active poll is defense in depth, not the macOS revocation contract. The
+merged, signed/notarized LaunchServices run showed that macOS 26.0.1 terminates
+and restarts the real Murmur process when the user disables Murmur while capture
+is active. The direct capture helper subsequently exited and no helper survived.
+The probe could not serialize a terminal result because the parent was
+terminated first. The exact mechanism of the helper exit was not established;
+the helper may simply have observed its parent pipe closing.
+
+This makes the current external-binary shape unsuitable for production capture.
+Audio already delivered into the app's memory cannot survive the forced app
+restart, and a content-free "capture was active" marker cannot satisfy #411's
+requirement to preserve and transcribe that PCM. Issue #407 therefore owns the
+alternate packaging/recovery investigation. Candidates must retain the existing
+privacy boundary while providing a bounded, revocation-safe handoff across the
+forced restart. The protocol work in #408 remains gated until that decision is
+proven; #411 is not a prerequisite for #407.
+
+TCC conclusions are valid only when the bundle is launched through
+LaunchServices. Direct executable and `launchctl submit` contexts produced
+different TCC/capture outcomes and are retained only as diagnostics.
 
 The child-management and runtime signature-validation primitives are generic.
 The local-LLM sidecar now uses the same signature gate; a later focused
@@ -115,13 +134,14 @@ responsible-process attribution. The matrix in
 records expected and actual states without audio, transcripts, device names, or
 paths.
 
-Two non-publishing trusted-main releases have now exercised the installed
+Three non-publishing trusted-main releases have now exercised the installed
 update boundary on Shawn's arm64 macOS 26.0.1 release-gate machine:
 
 - workflow run `30588206915`, source `e8cf2607`, helper 0.1.0/build 1;
 - workflow run `30590132800`, source `a8603c27`, helper 0.1.1/build 2.
+- workflow run `30635340250`, merged source `ab6f7513`, app 0.23.9.
 
-Both artifacts were Developer ID signed, notarized, stapled, accepted by
+All three artifacts were Developer ID signed, notarized, stapled, accepted by
 Gatekeeper after quarantine, and matched their uploaded helper hashes. With an
 existing Murmur grant, the first helper started without a second prompt. The
 same grant then survived a moved bundle, an exact helper `SIGKILL` followed by
@@ -137,23 +157,44 @@ helper. A second clean reset and **Allow** produced first-buffer readiness in
 Settings snapshots taken during the grant and revocation checks each showed
 one Murmur identity.
 
-Active revocation exposed the macOS callback-continuation behavior described
-above: the original signed build remained active for the full 120,216 ms
-observation despite TCC changing to denied. The parent-side detector has passed
-its deterministic callback-continuation regression and the complete Rust and
-frontend suites on the release-gate MacBook. The final matrix row remains
-pending one signed/notarized run of that detector; the baseline failure is
-retained in the evidence rather than overwritten.
+The merged artifact passed Gatekeeper, staple, signature, an authoritative
+LaunchServices denied preflight, and LaunchServices control runs. The denied
+preflight returned the stable `permission_denied` result in 70 ms, retained no
+audio, and spawned no helper during a five-second 25 ms polling window. Its
+five-second granted control retained the first callback at 112 ms and settled
+cooperatively; a separate 120,225 ms control retained the first callback at 107
+ms and also left an empty process group.
 
-Until every signed/notarized matrix row passes, this ADR remains Provisional and
-production capture must not move into the helper. Ad-hoc or unsigned behavior
-cannot satisfy that gate.
+The authoritative LaunchServices revocation run began with the exact signed
+parent and helper alive after four seconds. Disabling the visible Murmur entry
+removed the TCC grant, terminated and restarted the parent, and left no helper.
+The helper subsequently exited; this evidence does not distinguish a direct
+system termination from an exit caused by the parent pipe closing. Because the
+parent terminated before stdout could flush, there was no probe outcome. A new
+normal Murmur app was observed in its microphone-denied onboarding screen.
+Murmur's native reset/request flow then restored a user grant and the normal app
+screen without starting a helper.
+
+This differs from two deliberately non-authoritative diagnostics: a direct
+shell launch failed closed before spawn, while a `launchctl submit`
+launchd-submitted context continued after the Murmur toggle changed. The
+different outcomes are consistent with different responsible-process chains,
+but the diagnostic runs did not prove that attribution mechanism. They do prove
+that only the LaunchServices app context is acceptable TCC evidence.
+
+Until alternate packaging or a privacy-preserving recovery handoff survives the
+forced app restart, the runtime-revocation row is blocked and production capture
+must not move into the helper. Ad-hoc, unsigned, direct-shell, or
+launchd-submitted behavior cannot satisfy that gate.
 
 ## Consequences
 
-Hard-kill recovery and exact packaging have an implementation path that later
-audio issues can reuse. TCC durability remains an explicit external release
-gate rather than an inferred property. If the notarized matrix shows a second
-permission identity, repeated prompts, or update instability, the fallback is a
-dedicated bundled app/XPC packaging investigation; silently shipping the
-external-binary shape is not allowed.
+Hard-kill recovery and the signed helper prototype remain reusable evidence, but
+the exact production packaging decision is not complete. #408 and dependent
+issues must not begin until #407 proves an alternate shape that can preserve
+already-delivered PCM across the observed forced restart without weakening
+revocation or privacy guarantees. A dedicated bundled app/XPC service is the
+leading investigation; a volatile recovery handoff is acceptable only if its
+lifetime, access control, cleanup, and swap/crash behavior are explicitly
+bounded and tested. Silently shipping the current external-binary shape or
+moving the problem into #411 is not allowed.
