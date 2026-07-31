@@ -66,6 +66,25 @@ Interactive revocation testing can use
 `--capture-helper-probe --observe-seconds <1..300>`; parsing is exact and the
 upper bound is enforced before the helper starts.
 
+macOS 26.0.1 does not necessarily stop an already-open CoreAudio stream when
+the user revokes microphone permission. A 120-second signed-build baseline
+continued receiving callbacks after the System Settings toggle changed from
+granted to denied, then stopped cooperatively at the requested observation
+deadline. A content-free signed CLI probe launched from the test harness also
+reached callbacks while the Murmur identity was denied, showing that the
+platform stream result alone cannot enforce the app's TCC policy in every
+launch context.
+
+The parent therefore snapshots permission before helper spawn and requires a
+provable grant; denied, not-determined, and unknown states create no process.
+Once the helper becomes active, it polls the same AVFoundation authorization
+status used by Murmur's permission UI. Any loss of the proven grant is
+classified as the stable `permission_denied` outcome and runs the existing
+bounded cooperative-cancel/hard-kill teardown. A queued helper failure or
+protocol frame during teardown cannot overwrite that primary outcome. This is
+deliberately stricter than the UI banner: capture fails closed when
+authorization cannot be proven.
+
 The child-management and runtime signature-validation primitives are generic.
 The local-LLM sidecar now uses the same signature gate; a later focused
 refactor may move its bespoke kill loop onto `ManagedChild` after its inherited
@@ -95,6 +114,36 @@ responsible-process attribution. The matrix in
 [`docs/evidence/407-capture-helper-phase-0.json`](../evidence/407-capture-helper-phase-0.json)
 records expected and actual states without audio, transcripts, device names, or
 paths.
+
+Two non-publishing trusted-main releases have now exercised the installed
+update boundary on Shawn's arm64 macOS 26.0.1 release-gate machine:
+
+- workflow run `30588206915`, source `e8cf2607`, helper 0.1.0/build 1;
+- workflow run `30590132800`, source `a8603c27`, helper 0.1.1/build 2.
+
+Both artifacts were Developer ID signed, notarized, stapled, accepted by
+Gatekeeper after quarantine, and matched their uploaded helper hashes. With an
+existing Murmur grant, the first helper started without a second prompt. The
+same grant then survived a moved bundle, an exact helper `SIGKILL` followed by
+a fresh helper process, and a same-path update whose signed helper SHA changed.
+Two fresh System Settings snapshots showed one enabled `Murmur` microphone
+identity. Every probe confirmed an empty owned process group and
+`audio_content_retained=false`.
+
+An authorized reset of the exact installed identity produced one native Murmur
+prompt. Choosing **Don't Allow** produced a stable denial without starting the
+helper. A second clean reset and **Allow** produced first-buffer readiness in
+2,175 ms. A subsequent helper probe produced no second prompt. Fresh System
+Settings snapshots taken during the grant and revocation checks each showed
+one Murmur identity.
+
+Active revocation exposed the macOS callback-continuation behavior described
+above: the original signed build remained active for the full 120,216 ms
+observation despite TCC changing to denied. The parent-side detector has passed
+its deterministic callback-continuation regression and the complete Rust and
+frontend suites on the release-gate MacBook. The final matrix row remains
+pending one signed/notarized run of that detector; the baseline failure is
+retained in the evidence rather than overwritten.
 
 Until every signed/notarized matrix row passes, this ADR remains Provisional and
 production capture must not move into the helper. Ad-hoc or unsigned behavior
