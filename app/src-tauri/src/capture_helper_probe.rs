@@ -26,6 +26,7 @@ const CANCEL_GRACE: Duration = Duration::from_millis(250);
 pub struct TestCaptureProbeConfig {
     pub helper_path: PathBuf,
     pub scenario_environment: Vec<(String, String)>,
+    pub permission_status_sequence: Vec<String>,
     pub handshake_timeout: Duration,
     pub observe_for: Duration,
     pub cancel_grace: Duration,
@@ -80,6 +81,25 @@ impl SpawnPlan {
             Self::Production { .. } => CANCEL_GRACE,
             #[cfg(any(debug_assertions, feature = "llm-test-support"))]
             Self::Test(config) => config.cancel_grace,
+        }
+    }
+
+    fn microphone_permission_status(&self, test_index: &mut usize) -> String {
+        match self {
+            Self::Production { .. } => {
+                crate::commands::permissions::check_microphone_permission_status()
+            }
+            #[cfg(any(debug_assertions, feature = "llm-test-support"))]
+            Self::Test(config) => {
+                let status = config
+                    .permission_status_sequence
+                    .get(*test_index)
+                    .cloned()
+                    .or_else(|| config.permission_status_sequence.last().cloned())
+                    .unwrap_or_else(|| "granted".to_string());
+                *test_index = test_index.saturating_add(1);
+                status
+            }
         }
     }
 }
@@ -301,6 +321,15 @@ impl CaptureProbeSupervisor {
             ownership.take();
         }
         let started = Instant::now();
+        let mut permission_status_index = 0;
+        let initial_permission_status = self
+            .plan
+            .microphone_permission_status(&mut permission_status_index);
+        if initial_permission_status != "granted" {
+            return Err(CaptureProbeError::HelperFailed(
+                FailureCode::PermissionDenied,
+            ));
+        }
         let helper_path = self.plan.helper_path()?;
         if matches!(self.plan, SpawnPlan::Production { .. }) && !cfg!(debug_assertions) {
             crate::code_signing::validate_bundled_helper(&helper_path, CAPTURE_HELPER_IDENTIFIER)
@@ -365,6 +394,17 @@ impl CaptureProbeSupervisor {
         let mut protocol = HelperProtocol::new();
         let mut result = Ok(());
         loop {
+            if active_seen {
+                let permission_status = self
+                    .plan
+                    .microphone_permission_status(&mut permission_status_index);
+                if permission_status != "granted" {
+                    result = Err(CaptureProbeError::HelperFailed(
+                        FailureCode::PermissionDenied,
+                    ));
+                    break;
+                }
+            }
             let phase_deadline = observe_deadline.unwrap_or(handshake_deadline);
             if Instant::now() >= phase_deadline {
                 if observe_deadline.is_none() {
@@ -415,6 +455,12 @@ impl CaptureProbeSupervisor {
             }
         }
 
+        let preserve_revocation = matches!(
+            result,
+            Err(CaptureProbeError::HelperFailed(
+                FailureCode::PermissionDenied
+            ))
+        );
         let cancel = HostMessage::Cancel {
             protocol: PROTOCOL_NAME.to_string(),
             version: PROTOCOL_VERSION,
@@ -440,17 +486,23 @@ impl CaptureProbeSupervisor {
                         | AcceptedFrame::Health,
                     ) => {}
                     Ok(AcceptedFrame::Failure(code)) => {
-                        result = Err(CaptureProbeError::HelperFailed(code));
+                        if !preserve_revocation {
+                            result = Err(CaptureProbeError::HelperFailed(code));
+                        }
                         break;
                     }
                     Err(()) => {
-                        result = Err(CaptureProbeError::Protocol);
+                        if !preserve_revocation {
+                            result = Err(CaptureProbeError::Protocol);
+                        }
                         break;
                     }
                 },
                 Ok(HelperEvent::Exited) | Err(RecvTimeoutError::Disconnected) => break,
                 Ok(HelperEvent::Protocol) => {
-                    result = Err(CaptureProbeError::Protocol);
+                    if !preserve_revocation {
+                        result = Err(CaptureProbeError::Protocol);
+                    }
                     break;
                 }
                 Err(RecvTimeoutError::Timeout) => continue,

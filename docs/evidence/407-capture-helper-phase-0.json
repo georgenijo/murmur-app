@@ -16,19 +16,54 @@
     {"case": "invalid_control_frames", "expected": "wrong_nonce_version_malformed_truncated_oversized_duplicate_out_of_order_fail_closed", "actual": "passed_local_deterministic_2026-07-30"}
   ],
   "tcc_matrix": [
-    {"case": "fresh_install_before_grant", "expected": "single_murmur_prompt", "actual": "pending_developer_id_notarized_bundle"},
-    {"case": "grant_through_existing_murmur_flow", "expected": "helper_callbacks_begin_without_second_prompt", "actual": "pending_developer_id_notarized_bundle"},
-    {"case": "permission_denial", "expected": "stable_permission_failure_no_pcm", "actual": "pending_developer_id_notarized_bundle"},
-    {"case": "relaunch_after_grant", "expected": "no_second_prompt", "actual": "pending_developer_id_notarized_bundle"},
-    {"case": "application_update_helper_changed", "expected": "grant_survives_update", "actual": "pending_two_notarized_versions"},
-    {"case": "application_move_or_reinstall", "expected": "behavior_recorded_without_identity_split", "actual": "pending_developer_id_notarized_bundle"},
-    {"case": "tccutil_reset_test_environment", "expected": "one_new_murmur_prompt", "actual": "pending_authorized_test_environment"},
-    {"case": "runtime_permission_revocation", "expected": "stream_error_or_callback_stall_detected", "actual": "pending_interactive_system_settings_change"},
-    {"case": "system_settings_identity", "expected": "single_understandable_murmur_entry", "actual": "pending_interactive_system_settings_inspection"},
-    {"case": "helper_crash_and_relaunch", "expected": "no_second_prompt_or_identity_change", "actual": "pending_developer_id_notarized_bundle"}
+    {"case": "fresh_install_before_grant", "expected": "single_murmur_prompt", "actual": "passed_one_native_murmur_prompt_after_authorized_reset_2026-07-30"},
+    {"case": "grant_through_existing_murmur_flow", "expected": "helper_callbacks_begin_without_second_prompt", "actual": "passed_first_buffer_ready_2175ms_then_helper_probe_no_second_prompt_2026-07-30"},
+    {"case": "permission_denial", "expected": "stable_permission_failure_no_pcm", "actual": "passed_existing_app_flow_no_helper; signed_cli_platform_baseline_reached_callbacks; parent_preflight_signed_validation_pending"},
+    {"case": "relaunch_after_grant", "expected": "no_second_prompt", "actual": "passed_notarized_helper_probe_no_second_prompt_2026-07-30"},
+    {"case": "application_update_helper_changed", "expected": "grant_survives_update", "actual": "passed_notarized_0_1_0_build_1_to_0_1_1_build_2_distinct_helper_sha_2026-07-30"},
+    {"case": "application_move_or_reinstall", "expected": "behavior_recorded_without_identity_split", "actual": "passed_notarized_moved_bundle_probe_no_second_prompt_2026-07-30"},
+    {"case": "tccutil_reset_test_environment", "expected": "one_new_murmur_prompt", "actual": "passed_exact_bundle_identity_reset_dev_identity_untouched_2026-07-30"},
+    {"case": "runtime_permission_revocation", "expected": "detectable_interruption_despite_platform_callback_behavior", "actual": "baseline_failed_callbacks_continued_120216ms_parent_detector_passed_deterministic_macbook_suite_signed_validation_pending"},
+    {"case": "system_settings_identity", "expected": "single_understandable_murmur_entry", "actual": "passed_single_enabled_murmur_entry_two_fresh_background_snapshots_2026-07-30"},
+    {"case": "helper_crash_and_relaunch", "expected": "no_second_prompt_or_identity_change", "actual": "passed_sigkill_confirmed_group_empty_then_fresh_probe_ok_2026-07-30"}
   ],
   "packaging": {
     "expected": "two_exact_helpers_with_split_entitlements_and_fixed_identifiers",
-    "actual": "passed_local_adhoc_split_entitlement_probe_2026-07-30_trusted_release_pending"
+    "actual": "passed_run_30590132800: app_identifier=com.localdictation; capture_identifier=com.localdictation.capture-helper capture_sha256=2d5b08972a52fafa852fdc12ee51a7abe554d465a8aa1ad110ba9e5c1a550544 capture_entitlement_sha256=43f1f2fe6ef82f876cd216e0ad897f1a56bf5f6564369766b190701cdc10e4d3; llm_identifier=com.localdictation.local-llm-sidecar llm_sha256=132701ccf3989392d88f99b950bb43756edd8a716ea0cfae0d9cf55c2125136e llm_entitlement_sha256=f8b4cfc5e7c5076be716c5a3e37f8f6b03db3f5c47220215175e9ea3cd9ef6f0; matching_team_id=P2U3P8B923; split_entitlements=capture_sandbox_plus_audio_input_and_microphone,llm_sandbox_only,app_audio_input_and_microphone; app_and_dmg_notarization=accepted; app_staple=validated; gatekeeper=accepted; dmg_sha256=e8e1edb886329fb501ece3e480faafb1252d1676a223fde510bd908370e6f9e1; 2026-07-30"
+  },
+  "trusted_release_evidence": {
+    "machine": "shawn_macbook_release_gate",
+    "architecture": "arm64",
+    "macos_version": "26.0.1",
+    "initial": {
+      "source_sha": "e8cf2607f5f69005c349819f641be1a2e046b7cc",
+      "workflow_run_id": 30588206915,
+      "capture_helper_sha256": "0768b2505d51c384d55bfc1ecec97e64e6230af67bf2a10664f407464c53df5c",
+      "helper_short_version": "0.1.0",
+      "helper_bundle_version": "1",
+      "probe_outcome": "ok"
+    },
+    "update": {
+      "source_sha": "a8603c27992870975fe9a2c7a1580012fab9b489",
+      "workflow_run_id": 30590132800,
+      "capture_helper_sha256": "2d5b08972a52fafa852fdc12ee51a7abe554d465a8aa1ad110ba9e5c1a550544",
+      "helper_short_version": "0.1.1",
+      "helper_bundle_version": "2",
+      "probe_outcome": "ok"
+    },
+    "observed_probes": [
+      {"case": "existing_grant", "outcome": "ok", "first_callback_ms": 114, "elapsed_ms": 2339, "termination": "cooperative", "process_group_empty": true},
+      {"case": "fresh_grant_application_flow", "outcome": "ready", "first_callback_ms": 2175, "permission_prompt_count": 1},
+      {"case": "post_grant_helper", "outcome": "ok", "second_prompt": false, "process_group_empty": true},
+      {"case": "denied_signed_cli_platform_baseline", "tcc_status": "denied", "outcome": "ok", "first_callback_ms": 188, "elapsed_ms": 5307, "termination": "cooperative", "process_group_empty": true, "interpretation": "launch_context_did_not_enforce_parent_identity_denial"},
+      {"case": "helper_crash", "outcome": "protocol", "last_phase": "stream_open", "exit_signal": 9, "elapsed_ms": 116, "termination": "exited", "process_group_empty": true},
+      {"case": "fresh_helper_after_crash", "outcome": "ok", "first_callback_ms": 98, "elapsed_ms": 2162, "termination": "cooperative", "process_group_empty": true},
+      {"case": "moved_bundle", "outcome": "ok", "first_callback_ms": 102, "elapsed_ms": 2324, "termination": "cooperative", "process_group_empty": true},
+      {"case": "updated_helper", "outcome": "ok", "first_callback_ms": 167, "elapsed_ms": 2426, "termination": "cooperative", "process_group_empty": true},
+      {"case": "runtime_revocation_platform_baseline", "tcc_transition": "granted_to_denied", "outcome": "ok", "first_callback_ms": 150, "elapsed_ms": 120216, "termination": "cooperative", "process_group_empty": true, "interpretation": "macos_kept_existing_coreaudio_stream_active"},
+      {"case": "runtime_revocation_parent_detector", "outcome": "permission_denied", "validation": "passed_deterministic_macbook_suite_signed_runtime_pending", "process_group_empty": true}
+    ],
+    "gatekeeper": "accepted_notarized_developer_id",
+    "audio_content_retained": false
   }
 }

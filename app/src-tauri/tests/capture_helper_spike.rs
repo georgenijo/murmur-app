@@ -24,6 +24,7 @@ fn supervisor_with_environment(
     CaptureProbeSupervisor::for_test(TestCaptureProbeConfig {
         helper_path: helper_path(),
         scenario_environment,
+        permission_status_sequence: Vec::new(),
         handshake_timeout: Duration::from_millis(400),
         observe_for: Duration::from_millis(450),
         cancel_grace: Duration::from_millis(100),
@@ -130,6 +131,7 @@ fn active_observation_window_starts_after_the_complete_handshake() {
             "MOCK_CAPTURE_SCENARIO".to_string(),
             "delayed_active".to_string(),
         )],
+        permission_status_sequence: Vec::new(),
         handshake_timeout: Duration::from_millis(800),
         observe_for: Duration::from_millis(300),
         cancel_grace: Duration::from_millis(100),
@@ -190,6 +192,7 @@ fn rapid_second_start_is_rejected_without_overlapping_helper() {
             "MOCK_CAPTURE_SCENARIO".to_string(),
             "pre_handshake_block".to_string(),
         )],
+        permission_status_sequence: Vec::new(),
         handshake_timeout: Duration::from_millis(400),
         observe_for: Duration::from_millis(450),
         cancel_grace: Duration::from_millis(100),
@@ -206,6 +209,96 @@ fn rapid_second_start_is_rejected_without_overlapping_helper() {
     assert_eq!(evidence.helper_pid, spawned_pid);
     assert_eq!(evidence.termination, "hard_kill");
     assert!(evidence.process_group_empty);
+}
+
+#[test]
+fn live_permission_revocation_is_detected_even_when_callbacks_continue() {
+    let supervisor = CaptureProbeSupervisor::for_test(TestCaptureProbeConfig {
+        helper_path: helper_path(),
+        scenario_environment: vec![("MOCK_CAPTURE_SCENARIO".to_string(), "happy".to_string())],
+        permission_status_sequence: vec!["granted".to_string(), "denied".to_string()],
+        handshake_timeout: Duration::from_millis(400),
+        observe_for: Duration::from_secs(5),
+        cancel_grace: Duration::from_millis(100),
+        spawned_signal: None,
+    });
+
+    let evidence = supervisor.run().unwrap();
+    assert_eq!(evidence.outcome, "permission_denied");
+    assert_eq!(evidence.termination, "cooperative");
+    assert!(evidence.elapsed_ms < 1_000);
+    assert!(evidence.process_group_empty);
+    assert!(!evidence.audio_content_retained);
+}
+
+#[test]
+fn every_non_granted_permission_status_is_rejected_before_the_helper_spawns() {
+    for status in ["denied", "notDetermined", "unknown"] {
+        let (spawned_tx, spawned_rx) = mpsc::channel();
+        let supervisor = CaptureProbeSupervisor::for_test(TestCaptureProbeConfig {
+            helper_path: helper_path(),
+            scenario_environment: vec![("MOCK_CAPTURE_SCENARIO".to_string(), "happy".to_string())],
+            permission_status_sequence: vec![status.to_string()],
+            handshake_timeout: Duration::from_millis(400),
+            observe_for: Duration::from_secs(5),
+            cancel_grace: Duration::from_millis(100),
+            spawned_signal: Some(spawned_tx),
+        });
+
+        assert_eq!(
+            supervisor.run().unwrap_err(),
+            CaptureProbeError::HelperFailed(
+                murmur_capture_helper_protocol::FailureCode::PermissionDenied
+            ),
+            "status={status}"
+        );
+        assert!(spawned_rx.try_recv().is_err(), "status={status}");
+    }
+}
+
+#[test]
+fn every_loss_of_a_proven_grant_interrupts_active_capture() {
+    for status in ["denied", "notDetermined", "unknown"] {
+        let supervisor = CaptureProbeSupervisor::for_test(TestCaptureProbeConfig {
+            helper_path: helper_path(),
+            scenario_environment: vec![("MOCK_CAPTURE_SCENARIO".to_string(), "happy".to_string())],
+            permission_status_sequence: vec!["granted".to_string(), status.to_string()],
+            handshake_timeout: Duration::from_millis(400),
+            observe_for: Duration::from_secs(5),
+            cancel_grace: Duration::from_millis(100),
+            spawned_signal: None,
+        });
+
+        let evidence = supervisor.run().unwrap();
+        assert_eq!(evidence.outcome, "permission_denied", "status={status}");
+        assert_eq!(evidence.termination, "cooperative", "status={status}");
+        assert!(evidence.elapsed_ms < 1_000, "status={status}");
+        assert!(evidence.process_group_empty, "status={status}");
+        assert!(!evidence.audio_content_retained, "status={status}");
+    }
+}
+
+#[test]
+fn revocation_outcome_survives_a_queued_protocol_failure_during_teardown() {
+    let supervisor = CaptureProbeSupervisor::for_test(TestCaptureProbeConfig {
+        helper_path: helper_path(),
+        scenario_environment: vec![(
+            "MOCK_CAPTURE_SCENARIO".to_string(),
+            "phase_regression".to_string(),
+        )],
+        permission_status_sequence: vec!["granted".to_string(), "unknown".to_string()],
+        handshake_timeout: Duration::from_millis(400),
+        observe_for: Duration::from_secs(5),
+        cancel_grace: Duration::from_millis(100),
+        spawned_signal: None,
+    });
+
+    let evidence = supervisor.run().unwrap();
+    assert_eq!(evidence.outcome, "permission_denied");
+    assert_eq!(evidence.termination, "hard_kill");
+    assert!(evidence.elapsed_ms < 1_000);
+    assert!(evidence.process_group_empty);
+    assert!(!evidence.audio_content_retained);
 }
 
 #[test]
