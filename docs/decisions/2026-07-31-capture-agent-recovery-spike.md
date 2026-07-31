@@ -68,6 +68,19 @@ The release bundle now contains a probe-only `murmur-capture-agent` and an
   Probe and recovery clients still connect to the agent over XPC. All spike
   operations are reachable only through explicit CLI arguments, and production
   dictation remains unchanged.
+- On macOS 26.0.1, a valid bundled service can report
+  `SMAppServiceStatus.notFound` before its first registration even though
+  `registerAndReturnError:` immediately succeeds and transitions it to
+  `enabled`. The explicit `status` command preserves that pre-registration
+  result as a content-free error; only an explicit `register` operation may
+  attempt registration from `notFound`, and its returned error/status remains
+  authoritative. The evidence matrix accepts either this exact macOS 26 pair
+  (`notFound`, exit 2) or the older (`notRegistered`, exit 0) pair.
+- launchd supplies the plist's relative `BundleProgram` as `argv[0]`. The agent
+  therefore resolves its own absolute signed executable URL through
+  Security.framework (`SecCodeCopyPath`) before locating its worker sibling;
+  it never derives a security-sensitive path from `argv[0]` or a working
+  directory.
 - The standalone sandboxed agent and worker Mach-O files each embed their exact
   role-specific Info.plist identity and app version; macOS refuses to
   initialize a sandboxed standalone executable without coherent embedded code

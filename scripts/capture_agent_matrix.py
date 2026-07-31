@@ -91,6 +91,36 @@ def validate_service(payload: object, expected_status: str) -> dict[str, Any]:
     return value
 
 
+def validate_initial_service(envelope: object) -> dict[str, Any]:
+    record = _exact(envelope, {"exit_code", "payload"}, "service_initial")
+    if type(record["exit_code"]) is not int:
+        raise MatrixError("initial service exit_code must be an integer")
+    value = _exact(
+        record["payload"],
+        {
+            "schema_version",
+            "outcome",
+            "service_status",
+            "audio_content_retained",
+        },
+        "initial service evidence",
+    )
+    status = value["service_status"]
+    if status == "not_registered":
+        if record["exit_code"] != 0:
+            raise MatrixError("not_registered initial service status must exit 0")
+        _common(value, "service_status")
+    elif status == "not_found":
+        if record["exit_code"] != 2:
+            raise MatrixError("not_found initial service status must exit 2")
+        _common(value, "service_error")
+    else:
+        raise MatrixError(
+            "initial service status must be 'not_registered' or macOS 26 'not_found'"
+        )
+    return value
+
+
 def validate_status(payload: object, expected_outcome: str) -> dict[str, Any]:
     value = _exact(
         payload,
@@ -436,7 +466,7 @@ def validate_matrix(payload: object) -> dict[str, Any]:
             raise MatrixError(f"{name} exit code mismatch")
         return envelope["payload"]
 
-    validate_service(record("service_initial", 0), "not_registered")
+    validate_initial_service(records["service_initial"])
     validate_service(record("service_register", 0), "enabled")
     validate_probe(
         record("synthetic_cooperative", 0),

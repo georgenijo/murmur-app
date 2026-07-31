@@ -3,7 +3,7 @@ import Security
 import XPC
 import Darwin
 
-private func currentSigningTeamID() -> String? {
+private func currentStaticCode() -> SecStaticCode? {
     var runningCode: SecCode?
     guard SecCodeCopySelf([], &runningCode) == errSecSuccess,
           let runningCode else {
@@ -12,6 +12,25 @@ private func currentSigningTeamID() -> String? {
     var staticCode: SecStaticCode?
     guard SecCodeCopyStaticCode(runningCode, [], &staticCode) == errSecSuccess,
           let staticCode else {
+        return nil
+    }
+    return staticCode
+}
+
+private func currentExecutableURL() -> URL? {
+    guard let staticCode = currentStaticCode() else {
+        return nil
+    }
+    var executableURL: CFURL?
+    guard SecCodeCopyPath(staticCode, [], &executableURL) == errSecSuccess,
+          let executableURL else {
+        return nil
+    }
+    return executableURL as URL
+}
+
+private func currentSigningTeamID() -> String? {
+    guard let staticCode = currentStaticCode() else {
         return nil
     }
     var information: CFDictionary?
@@ -308,9 +327,11 @@ private final class WorkerSession {
     }
 
     func start() throws {
-        let executable = URL(fileURLWithPath: CommandLine.arguments[0])
+        guard let executable = currentExecutableURL()?
             .deletingLastPathComponent()
-            .appendingPathComponent("murmur-capture-worker")
+            .appendingPathComponent("murmur-capture-worker") else {
+            throw NSError(domain: agentIdentifier, code: 2)
+        }
         guard validateCaptureWorker(at: executable) else {
             throw NSError(domain: agentIdentifier, code: 2)
         }
@@ -857,10 +878,23 @@ private final class AgentState {
         } catch {
             worker = nil
             activeLeaseID = nil
+            let failure: String
+            let launchError = error as NSError
+            if launchError.domain == agentIdentifier && launchError.code == 2 {
+                failure = "worker_signature_invalid"
+            } else if launchError.domain == agentIdentifier && launchError.code == 3 {
+                failure = "worker_process_group_failed"
+            } else {
+                failure = "worker_launch_failed"
+            }
             reply(
                 peer: peer,
                 request: request,
-                fields: ["outcome": "worker_spawn_failed", "audio_content_retained": false]
+                fields: [
+                    "outcome": "worker_spawn_failed",
+                    "failure": failure,
+                    "audio_content_retained": false,
+                ]
             )
         }
     }

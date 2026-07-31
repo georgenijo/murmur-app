@@ -122,6 +122,10 @@ fn service_status_name(status: isize) -> &'static str {
     }
 }
 
+fn should_register_service(command: ServiceCommand, status: isize) -> bool {
+    status == 0 || (status == 3 && command == ServiceCommand::Register)
+}
+
 #[cfg(target_os = "macos")]
 fn service_response(outcome: &str, status: isize, exit_code: i32) -> (Value, i32) {
     (
@@ -180,11 +184,18 @@ fn wait_for_processes_to_exit(pids: &[u64], timeout: Duration) -> bool {
 #[cfg(target_os = "macos")]
 fn run_service_command(command: ServiceCommand) -> (Value, i32) {
     use block2::RcBlock;
-    use objc2::msg_send;
     use objc2::runtime::{AnyClass, AnyObject, Bool};
+    use objc2::{msg_send, MainThreadMarker};
+    use objc2_app_kit::NSApplication;
     use objc2_foundation::NSString;
 
     unsafe {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return (content_free_error("service_unavailable"), 2);
+        };
+        let application = NSApplication::sharedApplication(mtm);
+        application.finishLaunching();
+
         let Some(class) = AnyClass::get(c"SMAppService") else {
             return (content_free_error("service_unavailable"), 2);
         };
@@ -195,11 +206,19 @@ fn run_service_command(command: ServiceCommand) -> (Value, i32) {
         }
 
         let mut status: isize = msg_send![service, status];
-        if matches!(status, 3) || !matches!(status, 0..=3) {
+        if !matches!(status, 0..=3) {
             return service_response("service_error", status, 2);
         }
         if command == ServiceCommand::Status {
-            return service_response("service_status", status, 0);
+            return service_response(
+                if status == 3 {
+                    "service_error"
+                } else {
+                    "service_status"
+                },
+                status,
+                if status == 3 { 2 } else { 0 },
+            );
         }
 
         let observed_pids = if matches!(
@@ -256,7 +275,7 @@ fn run_service_command(command: ServiceCommand) -> (Value, i32) {
             );
         }
 
-        if status == 0 {
+        if should_register_service(command, status) {
             let mut error: *mut AnyObject = std::ptr::null_mut();
             let succeeded: Bool = msg_send![service, registerAndReturnError: &mut error];
             if !succeeded.as_bool() {
@@ -922,6 +941,16 @@ mod tests {
             parse_cli_request(["--unrelated".to_string()]),
             CliRequest::NotRequested
         );
+    }
+
+    #[test]
+    fn only_explicit_register_may_recover_from_not_found() {
+        assert!(should_register_service(ServiceCommand::Register, 0));
+        assert!(should_register_service(ServiceCommand::Register, 3));
+        assert!(should_register_service(ServiceCommand::Refresh, 0));
+        assert!(!should_register_service(ServiceCommand::Refresh, 3));
+        assert!(!should_register_service(ServiceCommand::Unregister, 3));
+        assert!(!should_register_service(ServiceCommand::Status, 3));
     }
 
     #[test]

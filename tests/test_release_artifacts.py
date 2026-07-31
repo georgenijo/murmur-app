@@ -479,6 +479,9 @@ class ReleaseArtifactTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden_capture_api, agent_source)
         self.assertIn('"murmur-capture-worker"', agent_source)
+        self.assertIn("SecCodeCopyPath", agent_source)
+        self.assertIn("currentExecutableURL()", agent_source)
+        self.assertNotIn("CommandLine.arguments[0]", agent_source)
         with (root / "app/src-tauri/capture-worker.entitlements.plist").open(
             "rb"
         ) as handle:
