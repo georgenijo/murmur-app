@@ -350,7 +350,7 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
     .map_err(|_| ())?;
     match read_control(&mut stdin, capture_id, nonce)? {
         ProductionHostMessage::Enumerate => {
-            let devices = enumerate()?;
+            let devices = enumerate().map_err(|_| ())?;
             write_production_control(
                 &mut stdout,
                 capture_id,
