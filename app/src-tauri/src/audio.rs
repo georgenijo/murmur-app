@@ -30,6 +30,9 @@ pub fn compute_peak(samples: &[f32]) -> f32 {
 
 const AUDIO_LEVEL_THROTTLE_MS: u64 = 16;
 const HELPER_STOP_DEADLINE: Duration = Duration::from_secs(2);
+const HELPER_CONTROL_DEADLINE: Duration = Duration::from_secs(3);
+const PERMISSION_POLL_INTERVAL: Duration = Duration::from_millis(250);
+const CAPTURE_WORKER_IDENTIFIER: &str = "com.localdictation.capture-worker";
 pub(crate) const STREAM_BUILD_TIMEOUT: Duration = Duration::from_secs(10);
 static NEXT_CAPTURE_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -51,6 +54,7 @@ pub(crate) enum AudioFailureKind {
     FirstBufferTimeout,
     InitializationTimeout,
     WorkerPanicked,
+    SignatureInvalid,
 }
 
 impl AudioFailureKind {
@@ -72,6 +76,7 @@ impl AudioFailureKind {
             Self::FirstBufferTimeout => "first_buffer_timeout",
             Self::InitializationTimeout => "initialization_timeout",
             Self::WorkerPanicked => "worker_panicked",
+            Self::SignatureInvalid => "signature_invalid",
         }
     }
 }
@@ -115,6 +120,9 @@ impl AudioFailure {
             }
             AudioFailureKind::InitializationTimeout => {
                 "Microphone initialization exceeded the deadline."
+            }
+            AudioFailureKind::SignatureInvalid => {
+                "The bundled microphone capture worker failed integrity validation."
             }
             _ => "Microphone capture failed. Try recording again.",
         }
@@ -265,6 +273,16 @@ fn spawn_helper(
             AudioInitPhase::StreamBuild,
         )
     })?;
+    if !cfg!(debug_assertions) {
+        crate::code_signing::validate_bundled_helper(&path, CAPTURE_WORKER_IDENTIFIER).map_err(
+            |_| {
+                AudioFailure::new(
+                    AudioFailureKind::SignatureInvalid,
+                    AudioInitPhase::StreamBuild,
+                )
+            },
+        )?;
+    }
     let capture_id_text = capture_id.to_string();
     ManagedChild::spawn_with_arguments(
         &path,
@@ -279,17 +297,56 @@ fn spawn_helper(
     })
 }
 
-fn hello(
-    input: &mut std::process::ChildStdin,
-    output: &mut impl std::io::Read,
+fn read_control_frame_with_deadline(
+    mut output: BufReader<std::process::ChildStdout>,
     capture_id: u64,
     nonce: SessionNonce,
-) -> Result<(), AudioFailure> {
+) -> Result<
+    (
+        ProductionFrame<ProductionHelperMessage>,
+        BufReader<std::process::ChildStdout>,
+    ),
+    AudioFailure,
+> {
+    let (sender, receiver) = mpsc::sync_channel(1);
+    thread::Builder::new()
+        .name(format!("murmur-capture-control-{capture_id}"))
+        .spawn(move || {
+            let frame = read_production_frame(&mut output, capture_id, nonce);
+            let _ = sender.send((frame, output));
+        })
+        .map_err(|_| {
+            AudioFailure::new(
+                AudioFailureKind::ResourceExhausted,
+                AudioInitPhase::StreamBuild,
+            )
+        })?;
+    let (frame, output) = receiver
+        .recv_timeout(HELPER_CONTROL_DEADLINE)
+        .map_err(|_| {
+            AudioFailure::new(
+                AudioFailureKind::InitializationTimeout,
+                AudioInitPhase::StreamBuild,
+            )
+        })?;
+    frame
+        .map(|frame| (frame, output))
+        .map_err(|_| AudioFailure::new(AudioFailureKind::InvalidInput, AudioInitPhase::StreamBuild))
+}
+
+fn hello(
+    input: &mut std::process::ChildStdin,
+    output: std::process::ChildStdout,
+    capture_id: u64,
+    nonce: SessionNonce,
+) -> Result<BufReader<std::process::ChildStdout>, AudioFailure> {
     write_production_control(input, capture_id, nonce, &ProductionHostMessage::Hello).map_err(
         |_| AudioFailure::new(AudioFailureKind::BackendError, AudioInitPhase::StreamBuild),
     )?;
-    match read_production_frame(output, capture_id, nonce) {
-        Ok(ProductionFrame::Control(ProductionHelperMessage::HelloAck)) => Ok(()),
+    let (frame, output) =
+        read_control_frame_with_deadline(BufReader::new(output), capture_id, nonce)?;
+    match frame {
+        ProductionFrame::Control(ProductionHelperMessage::HelloAck) => Ok(output),
         _ => Err(AudioFailure::new(
             AudioFailureKind::InvalidInput,
             AudioInitPhase::StreamBuild,
@@ -301,27 +358,48 @@ pub fn list_input_devices() -> Result<Vec<AudioDeviceDescriptor>, String> {
     let (capture_id, nonce, nonce_hex) = capture_identity();
     let (mut child, mut input, output) =
         spawn_helper(capture_id, &nonce_hex).map_err(|failure| failure.to_string())?;
-    let mut output = BufReader::new(output);
-    hello(&mut input, &mut output, capture_id, nonce).map_err(|failure| failure.to_string())?;
-    write_production_control(
+    let output = match hello(&mut input, output, capture_id, nonce) {
+        Ok(output) => output,
+        Err(failure) => {
+            let _ = child.hard_kill_confirmed(Instant::now() + HELPER_STOP_DEADLINE);
+            return Err(failure.to_string());
+        }
+    };
+    if write_production_control(
         &mut input,
         capture_id,
         nonce,
         &ProductionHostMessage::Enumerate,
     )
-    .map_err(|_| "Failed to request microphone enumeration.".to_string())?;
-    let devices = match read_production_frame(&mut output, capture_id, nonce) {
-        Ok(ProductionFrame::Control(ProductionHelperMessage::Devices { devices })) => devices
+    .is_err()
+    {
+        let _ = child.hard_kill_confirmed(Instant::now() + HELPER_STOP_DEADLINE);
+        return Err("Failed to request microphone enumeration.".to_string());
+    }
+    let (frame, output) = match read_control_frame_with_deadline(output, capture_id, nonce) {
+        Ok(result) => result,
+        Err(failure) => {
+            let _ = child.hard_kill_confirmed(Instant::now() + HELPER_STOP_DEADLINE);
+            return Err(failure.to_string());
+        }
+    };
+    let devices = match frame {
+        ProductionFrame::Control(ProductionHelperMessage::Devices { devices }) => devices
             .into_iter()
             .map(|device| AudioDeviceDescriptor {
                 id: device.id,
                 name: device.name,
             })
             .collect(),
-        _ => return Err("The capture worker returned an invalid device list.".to_string()),
+        _ => {
+            let _ = child.hard_kill_confirmed(Instant::now() + HELPER_STOP_DEADLINE);
+            return Err("The capture worker returned an invalid device list.".to_string());
+        }
     };
     drop((input, output));
-    let _ = child.wait_for_exit(Instant::now() + HELPER_STOP_DEADLINE);
+    let _ = child
+        .wait_for_exit(Instant::now() + HELPER_STOP_DEADLINE)
+        .or_else(|| child.hard_kill_confirmed(Instant::now() + HELPER_STOP_DEADLINE));
     Ok(devices)
 }
 
@@ -356,8 +434,20 @@ fn run_backend(
     app_handle: &Option<tauri::AppHandle>,
     event_sender: &AudioWorkerEventSender,
 ) -> AttemptResult {
+    // A first-ever/not-reset grant must be allowed to reach the worker's
+    // device open so macOS can show the TCC prompt. Only a genuine denial is
+    // terminal before spawn.
+    if crate::commands::permissions::check_microphone_permission_status() == "denied" {
+        return AttemptResult::Failed {
+            failure: AudioFailure::new(
+                AudioFailureKind::PermissionDenied,
+                AudioInitPhase::StreamBuild,
+            ),
+            retained_audio: false,
+        };
+    }
     let (capture_id, nonce, nonce_hex) = capture_identity();
-    let (mut child, mut input, mut output) = match spawn_helper(capture_id, &nonce_hex) {
+    let (mut child, mut input, output) = match spawn_helper(capture_id, &nonce_hex) {
         Ok(value) => value,
         Err(failure) => {
             return AttemptResult::Failed {
@@ -366,12 +456,16 @@ fn run_backend(
             }
         }
     };
-    if let Err(failure) = hello(&mut input, &mut output, capture_id, nonce) {
-        return AttemptResult::Failed {
-            failure,
-            retained_audio: false,
-        };
-    }
+    let output = match hello(&mut input, output, capture_id, nonce) {
+        Ok(output) => output,
+        Err(failure) => {
+            let _ = child.hard_kill_confirmed(Instant::now() + HELPER_STOP_DEADLINE);
+            return AttemptResult::Failed {
+                failure,
+                retained_audio: false,
+            };
+        }
+    };
     if write_production_control(
         &mut input,
         capture_id,
@@ -383,6 +477,7 @@ fn run_backend(
     )
     .is_err()
     {
+        let _ = child.hard_kill_confirmed(Instant::now() + HELPER_STOP_DEADLINE);
         return AttemptResult::Failed {
             failure: AudioFailure::new(AudioFailureKind::BackendError, AudioInitPhase::StreamBuild),
             retained_audio: false,
@@ -391,7 +486,7 @@ fn run_backend(
 
     let (reader_tx, reader_rx) = mpsc::channel();
     thread::spawn(move || {
-        let mut output = BufReader::new(output);
+        let mut output = output;
         loop {
             match read_production_frame(&mut output, capture_id, nonce) {
                 Ok(frame) => {
@@ -415,6 +510,7 @@ fn run_backend(
     let mut sample_rate = None;
     let mut retained_audio = false;
     let mut last_level_emit = Instant::now() - Duration::from_secs(1);
+    let mut last_permission_check = Instant::now();
     loop {
         match command_receiver.try_recv() {
             Ok(AudioCommand::Stop) | Err(mpsc::TryRecvError::Disconnected) => {
@@ -441,6 +537,41 @@ fn run_backend(
                 };
             }
             Err(mpsc::TryRecvError::Empty) => {}
+        }
+
+        if last_permission_check.elapsed() >= PERMISSION_POLL_INTERVAL {
+            last_permission_check = Instant::now();
+            // During active capture, denied and not-determined both mean the
+            // grant is no longer in force (not-determined is what a TCC reset
+            // can expose). "unknown" is a transient probe failure and must not
+            // destroy retained audio by itself.
+            let permission_status =
+                crate::commands::permissions::check_microphone_permission_status();
+            let permission_lost = permission_status == "denied"
+                || (retained_audio && permission_status == "notDetermined");
+            if permission_lost {
+                let _ = write_production_control(
+                    &mut input,
+                    capture_id,
+                    nonce,
+                    &ProductionHostMessage::Cancel,
+                );
+                drop(input);
+                let _ = child
+                    .wait_for_exit(Instant::now() + HELPER_STOP_DEADLINE)
+                    .or_else(|| child.hard_kill_confirmed(Instant::now() + HELPER_STOP_DEADLINE));
+                return AttemptResult::Failed {
+                    failure: AudioFailure::new(
+                        AudioFailureKind::PermissionDenied,
+                        if retained_audio {
+                            AudioInitPhase::Runtime
+                        } else {
+                            AudioInitPhase::StreamBuild
+                        },
+                    ),
+                    retained_audio,
+                };
+            }
         }
 
         match reader_rx.recv_timeout(Duration::from_millis(20)) {
@@ -570,7 +701,11 @@ fn run_audio_capture(spec: AudioWorkerSpec, event_sender: &AudioWorkerEventSende
             AttemptResult::Failed {
                 failure,
                 retained_audio,
-            } if !retained_audio && attempt_index == 0 => {
+            } if !retained_audio
+                && attempt_index == 0
+                && failure.kind != AudioFailureKind::PermissionDenied
+                && failure.kind != AudioFailureKind::SignatureInvalid =>
+            {
                 tracing::warn!(
                     target: "audio",
                     owner = owner.telemetry_id(),

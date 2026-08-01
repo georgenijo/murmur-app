@@ -2294,6 +2294,16 @@ pub(crate) fn handle_audio_lifecycle<R: tauri::Runtime>(
         } => {
             if !is_current() {
                 let _ = audio_lifecycle::take_interrupted_dictation(recording_id);
+                let _ = state.performance.complete(
+                    &RunCorrelationV1::Dictation { recording_id },
+                    RunOutcomeV1::Failed {
+                        stage: PerformanceStageV1::CaptureFinalization,
+                        error_code: StableRunErrorV1::AudioCaptureFailed,
+                    },
+                    Vec::new(),
+                    Some(ContentFreeInputSummaryV1::audio(duration_ms)),
+                    None,
+                );
                 return;
             }
             let auto_transcribe = delivered_samples >= 8_000;
@@ -2322,6 +2332,16 @@ pub(crate) fn handle_audio_lifecycle<R: tauri::Runtime>(
             } else {
                 let _ = audio_lifecycle::take_interrupted_dictation(recording_id);
                 state.app_state.clear_active_context(recording_id);
+                let _ = state.performance.complete(
+                    &RunCorrelationV1::Dictation { recording_id },
+                    RunOutcomeV1::Failed {
+                        stage: PerformanceStageV1::CaptureFinalization,
+                        error_code: StableRunErrorV1::AudioCaptureFailed,
+                    },
+                    Vec::new(),
+                    Some(ContentFreeInputSummaryV1::audio(duration_ms)),
+                    None,
+                );
                 state.app_state.dictation.lock_or_recover().status = DictationStatus::Idle;
                 keyboard::set_processing(false);
                 let _ = app_handle.emit("recording-status-changed", "idle");
