@@ -1,4 +1,7 @@
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+mod production;
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod supported {
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
     use cpal::{SampleFormat, Stream, StreamConfig};
@@ -382,6 +385,12 @@ fn main() {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
         let arguments = std::env::args().skip(1).collect::<Vec<_>>();
+        if arguments.first().map(String::as_str) == Some("--production-v2") {
+            if production::run(&arguments[1..]).is_ok() {
+                return;
+            }
+            std::process::exit(70);
+        }
         let (synthetic, ignore_cancel) = match arguments.as_slice() {
             [] => (false, false),
             [flag, fixture]

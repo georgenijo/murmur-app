@@ -1,36 +1,37 @@
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{FromSample, Sample, SampleFormat, SizedSample};
+use crate::managed_child::{bundled_sibling, ManagedChild};
+use murmur_capture_helper_protocol::{
+    read_production_frame, write_production_control, CaptureBackend, CapturePhase, FailureCode,
+    ProductionFrame, ProductionHelperMessage, ProductionHostMessage, SessionNonce,
+};
 use serde::Serialize;
 use std::fmt;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Receiver;
+use std::io::{BufReader, Write};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::Emitter;
+use uuid::Uuid;
 
-/// Compute RMS (root mean square) of a sample slice — returns 0.0–1.0 audio level.
 pub fn compute_rms(samples: &[f32]) -> f32 {
     if samples.is_empty() {
         return 0.0;
     }
-    let sum_sq: f32 = samples.iter().map(|s| s * s).sum();
-    (sum_sq / samples.len() as f32).sqrt()
+    (samples.iter().map(|sample| sample * sample).sum::<f32>() / samples.len() as f32).sqrt()
 }
 
-/// Compute peak (max absolute value) of a sample slice — returns 0.0–1.0.
 pub fn compute_peak(samples: &[f32]) -> f32 {
-    samples.iter().map(|s| s.abs()).fold(0.0_f32, f32::max)
+    samples
+        .iter()
+        .map(|sample| sample.abs())
+        .fold(0.0_f32, f32::max)
 }
 
-/// Minimum gap between `audio-level` events (~60 fps).
 const AUDIO_LEVEL_THROTTLE_MS: u64 = 16;
-
-/// CPAL applies this timeout to backend operations that expose a deadline. On
-/// CoreAudio 0.18 that includes sample-rate convergence, but not every
-/// synchronous AudioUnit operation; the lifecycle supervisor therefore retains
-/// strict ownership until the worker actually exits.
+const HELPER_STOP_DEADLINE: Duration = Duration::from_secs(2);
 pub(crate) const STREAM_BUILD_TIMEOUT: Duration = Duration::from_secs(10);
+static NEXT_CAPTURE_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AudioFailureKind {
@@ -73,25 +74,6 @@ impl AudioFailureKind {
             Self::WorkerPanicked => "worker_panicked",
         }
     }
-
-    fn from_cpal(kind: cpal::ErrorKind) -> Self {
-        match kind {
-            cpal::ErrorKind::PermissionDenied => Self::PermissionDenied,
-            cpal::ErrorKind::DeviceNotAvailable => Self::DeviceUnavailable,
-            cpal::ErrorKind::DeviceBusy => Self::DeviceBusy,
-            cpal::ErrorKind::DeviceChanged => Self::DeviceChanged,
-            cpal::ErrorKind::HostUnavailable => Self::HostUnavailable,
-            cpal::ErrorKind::InvalidInput => Self::InvalidInput,
-            cpal::ErrorKind::ResourceExhausted => Self::ResourceExhausted,
-            cpal::ErrorKind::StreamInvalidated => Self::StreamInvalidated,
-            cpal::ErrorKind::UnsupportedConfig => Self::UnsupportedConfig,
-            cpal::ErrorKind::UnsupportedOperation => Self::UnsupportedOperation,
-            cpal::ErrorKind::RealtimeDenied => Self::RealtimeDenied,
-            cpal::ErrorKind::Xrun => Self::Xrun,
-            cpal::ErrorKind::BackendError | cpal::ErrorKind::Other => Self::BackendError,
-            _ => Self::BackendError,
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -103,10 +85,6 @@ pub(crate) struct AudioFailure {
 impl AudioFailure {
     pub(crate) fn new(kind: AudioFailureKind, phase: AudioInitPhase) -> Self {
         Self { kind, phase }
-    }
-
-    fn from_cpal(phase: AudioInitPhase, error: cpal::Error) -> Self {
-        Self::new(AudioFailureKind::from_cpal(error.kind()), phase)
     }
 
     pub(crate) fn user_message(&self) -> &'static str {
@@ -138,12 +116,7 @@ impl AudioFailure {
             AudioFailureKind::InitializationTimeout => {
                 "Microphone initialization exceeded the deadline."
             }
-            AudioFailureKind::HostUnavailable
-            | AudioFailureKind::UnsupportedOperation
-            | AudioFailureKind::RealtimeDenied
-            | AudioFailureKind::Xrun
-            | AudioFailureKind::BackendError
-            | AudioFailureKind::WorkerPanicked => "Microphone capture failed. Try recording again.",
+            _ => "Microphone capture failed. Try recording again.",
         }
     }
 }
@@ -154,161 +127,28 @@ impl fmt::Display for AudioFailure {
     }
 }
 
+fn failure_kind(code: FailureCode) -> AudioFailureKind {
+    match code {
+        FailureCode::PermissionDenied => AudioFailureKind::PermissionDenied,
+        FailureCode::NoInputDevice => AudioFailureKind::DeviceUnavailable,
+        FailureCode::ConfigurationFailed => AudioFailureKind::UnsupportedConfig,
+        FailureCode::CallbackStalled => AudioFailureKind::FirstBufferTimeout,
+        FailureCode::InvalidMessage => AudioFailureKind::InvalidInput,
+        FailureCode::EnumerationFailed => AudioFailureKind::HostUnavailable,
+        FailureCode::StreamError => AudioFailureKind::StreamInvalidated,
+        FailureCode::StreamOpenFailed | FailureCode::StreamStartFailed | FailureCode::Internal => {
+            AudioFailureKind::BackendError
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioDeviceDescriptor {
-    /// Backend-native stable identifier. On CoreAudio this is the raw
-    /// kAudioDevicePropertyDeviceUID with no CPAL host prefix.
     pub id: String,
-    /// Presentation-only display name.
     pub name: String,
 }
 
-fn descriptor_for(device: &cpal::Device) -> Result<AudioDeviceDescriptor, AudioFailure> {
-    let id = device
-        .id()
-        .map_err(|error| AudioFailure::from_cpal(AudioInitPhase::DeviceEnumeration, error))?
-        .id()
-        .to_string();
-    let name = device
-        .description()
-        .map_err(|error| AudioFailure::from_cpal(AudioInitPhase::DeviceEnumeration, error))?
-        .name()
-        .to_string();
-    Ok(AudioDeviceDescriptor { id, name })
-}
-
-fn collect_identifiable_devices<T, U>(
-    devices: impl IntoIterator<Item = T>,
-    mut identify: impl FnMut(T) -> Result<U, AudioFailure>,
-) -> Vec<U> {
-    devices
-        .into_iter()
-        .filter_map(|device| match identify(device) {
-            Ok(identified) => Some(identified),
-            Err(failure) => {
-                tracing::warn!(
-                    target: "audio",
-                    error_kind = failure.kind.as_str(),
-                    phase = failure.phase.as_str(),
-                    "skipping unidentifiable input device"
-                );
-                None
-            }
-        })
-        .collect()
-}
-
-fn select_explicit_device_index<T>(
-    requested_id: &str,
-    devices: &[(T, AudioDeviceDescriptor)],
-) -> Result<usize, AudioFailure> {
-    if let Some(index) = devices
-        .iter()
-        .position(|(_, descriptor)| descriptor.id == requested_id)
-    {
-        return Ok(index);
-    }
-    let mut legacy_matches = devices
-        .iter()
-        .enumerate()
-        .filter(|(_, (_, descriptor))| descriptor.name == requested_id)
-        .map(|(index, _)| index);
-    match (legacy_matches.next(), legacy_matches.next()) {
-        (Some(index), None) => Ok(index),
-        _ => Err(AudioFailure::new(
-            AudioFailureKind::DeviceUnavailable,
-            AudioInitPhase::DeviceEnumeration,
-        )),
-    }
-}
-
-fn mono_from_samples<T>(data: &[T], channels: usize) -> Vec<f32>
-where
-    T: Sample + Copy,
-    f32: FromSample<T>,
-{
-    data.chunks(channels)
-        .map(|chunk| {
-            let sum: f32 = chunk.iter().copied().map(f32::from_sample).sum();
-            sum / channels as f32
-        })
-        .collect()
-}
-
-fn build_mono_input_stream<T>(
-    device: &cpal::Device,
-    config: cpal::StreamConfig,
-    shared: Arc<Mutex<Vec<f32>>>,
-    channels: usize,
-    app_handle: Option<tauri::AppHandle>,
-    publish_levels: Arc<AtomicBool>,
-    first_buffer_seen: Arc<AtomicBool>,
-    event_sender: AudioWorkerEventSender,
-    owner: crate::audio_lifecycle::AudioOwner,
-    sample_rate: u32,
-) -> Result<cpal::Stream, AudioFailure>
-where
-    T: SizedSample + Sample + Send + 'static,
-    f32: FromSample<T>,
-{
-    let first_buffer_sender = event_sender.clone();
-    let runtime_error_sender = event_sender;
-    let last_emit_ms = std::sync::atomic::AtomicU64::new(0);
-    device
-        .build_input_stream(
-            config,
-            move |data: &[T], _: &_| {
-                if data.is_empty() {
-                    return;
-                }
-                let mono = mono_from_samples(data, channels);
-                if mono.is_empty() {
-                    return;
-                }
-
-                // Retention precedes readiness. This buffer and any later
-                // buffers received before supervisor acceptance remain owned
-                // by this generation and are never dropped.
-                shared
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .extend_from_slice(&mono);
-
-                if !first_buffer_seen.swap(true, Ordering::AcqRel) {
-                    let _ = first_buffer_sender
-                        .send(AudioWorkerEvent::FirstBuffer { owner, sample_rate });
-                }
-
-                // Waveform publication is a separate generation gate. A stale
-                // or recovering worker may retain only its private buffer but
-                // can never publish UI state.
-                if !publish_levels.load(Ordering::Acquire) {
-                    return;
-                }
-                if let Some(ref handle) = app_handle {
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_millis() as u64;
-                    let last = last_emit_ms.load(Ordering::Relaxed);
-                    if now.saturating_sub(last) >= AUDIO_LEVEL_THROTTLE_MS {
-                        last_emit_ms.store(now, Ordering::Relaxed);
-                        let _ = handle.emit("audio-level", compute_rms(&mono));
-                    }
-                }
-            },
-            move |error| {
-                let failure = AudioFailure::from_cpal(AudioInitPhase::Runtime, error);
-                let _ =
-                    runtime_error_sender.send(AudioWorkerEvent::RuntimeFailed { owner, failure });
-            },
-            Some(STREAM_BUILD_TIMEOUT),
-        )
-        .map_err(|error| AudioFailure::from_cpal(AudioInitPhase::StreamBuild, error))
-}
-
-/// Commands sent by the lifecycle supervisor to the single capture worker.
 pub(crate) enum AudioCommand {
     Stop,
 }
@@ -367,9 +207,6 @@ pub(crate) enum AudioWorkerEvent {
     },
 }
 
-/// Cloneable worker-side handle that enqueues lifecycle events directly on the
-/// supervisor's command queue. Keeping worker events and stop/cancel/deadline
-/// messages on one queue gives the supervisor a single linearization order.
 #[derive(Clone)]
 pub(crate) struct AudioWorkerEventSender {
     send: Arc<dyn Fn(AudioWorkerEvent) -> Result<(), ()> + Send + Sync>,
@@ -398,26 +235,365 @@ pub(crate) struct AudioWorkerSpec {
     pub device_id: Option<String>,
 }
 
-/// List available inputs as stable IDs plus presentation-only display names.
-pub fn list_input_devices() -> Result<Vec<AudioDeviceDescriptor>, String> {
-    let host = cpal::default_host();
-    let devices = host.input_devices().map_err(|error| {
-        AudioFailure::from_cpal(AudioInitPhase::DeviceEnumeration, error).to_string()
-    })?;
-    Ok(collect_identifiable_devices(devices, |device| {
-        descriptor_for(&device)
-    }))
+fn capture_identity() -> (u64, SessionNonce, String) {
+    let capture_id = NEXT_CAPTURE_ID.fetch_add(1, Ordering::Relaxed);
+    let nonce = *Uuid::new_v4().as_bytes();
+    let encoded = nonce.iter().map(|byte| format!("{byte:02x}")).collect();
+    (capture_id, nonce, encoded)
 }
 
-/// Start transform instruction audio asynchronously under the shared
-/// supervisor. The transform flow enters its public Listening state only
-/// after the matching lifecycle Ready event is accepted.
+fn helper_path() -> Result<std::path::PathBuf, String> {
+    bundled_sibling("murmur-capture-worker")
+        .or_else(|_| bundled_sibling("murmur-capture-worker-aarch64-apple-darwin"))
+        .map_err(|_| "The signed capture worker is missing from the app bundle.".to_string())
+}
+
+fn spawn_helper(
+    capture_id: u64,
+    nonce_hex: &str,
+) -> Result<
+    (
+        ManagedChild,
+        std::process::ChildStdin,
+        std::process::ChildStdout,
+    ),
+    AudioFailure,
+> {
+    let path = helper_path().map_err(|_| {
+        AudioFailure::new(
+            AudioFailureKind::HostUnavailable,
+            AudioInitPhase::StreamBuild,
+        )
+    })?;
+    let capture_id_text = capture_id.to_string();
+    ManagedChild::spawn_with_arguments(
+        &path,
+        &["--production-v2", &capture_id_text, nonce_hex],
+        &[],
+    )
+    .map_err(|_| {
+        AudioFailure::new(
+            AudioFailureKind::HostUnavailable,
+            AudioInitPhase::StreamBuild,
+        )
+    })
+}
+
+fn hello(
+    input: &mut std::process::ChildStdin,
+    output: &mut impl std::io::Read,
+    capture_id: u64,
+    nonce: SessionNonce,
+) -> Result<(), AudioFailure> {
+    write_production_control(input, capture_id, nonce, &ProductionHostMessage::Hello).map_err(
+        |_| AudioFailure::new(AudioFailureKind::BackendError, AudioInitPhase::StreamBuild),
+    )?;
+    match read_production_frame(output, capture_id, nonce) {
+        Ok(ProductionFrame::Control(ProductionHelperMessage::HelloAck)) => Ok(()),
+        _ => Err(AudioFailure::new(
+            AudioFailureKind::InvalidInput,
+            AudioInitPhase::StreamBuild,
+        )),
+    }
+}
+
+pub fn list_input_devices() -> Result<Vec<AudioDeviceDescriptor>, String> {
+    let (capture_id, nonce, nonce_hex) = capture_identity();
+    let (mut child, mut input, output) =
+        spawn_helper(capture_id, &nonce_hex).map_err(|failure| failure.to_string())?;
+    let mut output = BufReader::new(output);
+    hello(&mut input, &mut output, capture_id, nonce).map_err(|failure| failure.to_string())?;
+    write_production_control(
+        &mut input,
+        capture_id,
+        nonce,
+        &ProductionHostMessage::Enumerate,
+    )
+    .map_err(|_| "Failed to request microphone enumeration.".to_string())?;
+    let devices = match read_production_frame(&mut output, capture_id, nonce) {
+        Ok(ProductionFrame::Control(ProductionHelperMessage::Devices { devices })) => devices
+            .into_iter()
+            .map(|device| AudioDeviceDescriptor {
+                id: device.id,
+                name: device.name,
+            })
+            .collect(),
+        _ => return Err("The capture worker returned an invalid device list.".to_string()),
+    };
+    drop((input, output));
+    let _ = child.wait_for_exit(Instant::now() + HELPER_STOP_DEADLINE);
+    Ok(devices)
+}
+
 pub fn start_transform_capture_audio(
     app_handle: Option<tauri::AppHandle>,
     device_id: Option<String>,
     transform_pass_id: u64,
 ) -> Result<(), String> {
     crate::audio_lifecycle::start_transform_recording(app_handle, device_id, transform_pass_id)
+}
+
+enum HelperRead {
+    Frame(ProductionFrame<ProductionHelperMessage>),
+    Invalid,
+}
+
+enum AttemptResult {
+    Stopped,
+    Failed {
+        failure: AudioFailure,
+        retained_audio: bool,
+    },
+}
+
+fn run_backend(
+    owner: crate::audio_lifecycle::AudioOwner,
+    backend: CaptureBackend,
+    device_id: Option<&str>,
+    command_receiver: &Receiver<AudioCommand>,
+    shared: &Arc<Mutex<Vec<f32>>>,
+    active: &Arc<AtomicBool>,
+    app_handle: &Option<tauri::AppHandle>,
+    event_sender: &AudioWorkerEventSender,
+) -> AttemptResult {
+    let (capture_id, nonce, nonce_hex) = capture_identity();
+    let (mut child, mut input, mut output) = match spawn_helper(capture_id, &nonce_hex) {
+        Ok(value) => value,
+        Err(failure) => {
+            return AttemptResult::Failed {
+                failure,
+                retained_audio: false,
+            }
+        }
+    };
+    if let Err(failure) = hello(&mut input, &mut output, capture_id, nonce) {
+        return AttemptResult::Failed {
+            failure,
+            retained_audio: false,
+        };
+    }
+    if write_production_control(
+        &mut input,
+        capture_id,
+        nonce,
+        &ProductionHostMessage::Start {
+            device_id: device_id.map(str::to_string),
+            backend,
+        },
+    )
+    .is_err()
+    {
+        return AttemptResult::Failed {
+            failure: AudioFailure::new(AudioFailureKind::BackendError, AudioInitPhase::StreamBuild),
+            retained_audio: false,
+        };
+    }
+
+    let (reader_tx, reader_rx) = mpsc::channel();
+    thread::spawn(move || {
+        let mut output = BufReader::new(output);
+        loop {
+            match read_production_frame(&mut output, capture_id, nonce) {
+                Ok(frame) => {
+                    if reader_tx.send(HelperRead::Frame(frame)).is_err() {
+                        return;
+                    }
+                }
+                Err(_) => {
+                    let _ = reader_tx.send(HelperRead::Invalid);
+                    return;
+                }
+            }
+        }
+    });
+
+    let _ = event_sender.send(AudioWorkerEvent::PhaseEntered {
+        owner,
+        phase: AudioInitPhase::StreamBuild,
+    });
+    let mut expected_sequence = 0_u64;
+    let mut sample_rate = None;
+    let mut retained_audio = false;
+    let mut last_level_emit = Instant::now() - Duration::from_secs(1);
+    loop {
+        match command_receiver.try_recv() {
+            Ok(AudioCommand::Stop) | Err(mpsc::TryRecvError::Disconnected) => {
+                let _ = write_production_control(
+                    &mut input,
+                    capture_id,
+                    nonce,
+                    &ProductionHostMessage::Stop,
+                );
+                drop(input);
+                let termination = child
+                    .wait_for_exit(Instant::now() + HELPER_STOP_DEADLINE)
+                    .or_else(|| child.hard_kill_confirmed(Instant::now() + HELPER_STOP_DEADLINE));
+                if termination.is_some() {
+                    let _ = event_sender.send(AudioWorkerEvent::StreamStopped { owner });
+                    return AttemptResult::Stopped;
+                }
+                return AttemptResult::Failed {
+                    failure: AudioFailure::new(
+                        AudioFailureKind::BackendError,
+                        AudioInitPhase::Runtime,
+                    ),
+                    retained_audio,
+                };
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+        }
+
+        match reader_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(HelperRead::Frame(ProductionFrame::Pcm(pcm))) => {
+                if pcm.sequence != expected_sequence
+                    || pcm.samples.is_empty()
+                    || sample_rate.is_some_and(|rate| rate != pcm.sample_rate)
+                {
+                    let _ = child.hard_kill_confirmed(Instant::now() + HELPER_STOP_DEADLINE);
+                    return AttemptResult::Failed {
+                        failure: AudioFailure::new(
+                            AudioFailureKind::InvalidInput,
+                            AudioInitPhase::Runtime,
+                        ),
+                        retained_audio,
+                    };
+                }
+                expected_sequence += 1;
+                sample_rate = Some(pcm.sample_rate);
+                shared
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .extend_from_slice(&pcm.samples);
+                if !retained_audio {
+                    retained_audio = true;
+                    let _ = event_sender.send(AudioWorkerEvent::PhaseExited {
+                        owner,
+                        phase: AudioInitPhase::FirstBufferWait,
+                        elapsed_ms: 0,
+                    });
+                    let _ = event_sender.send(AudioWorkerEvent::FirstBuffer {
+                        owner,
+                        sample_rate: pcm.sample_rate,
+                    });
+                }
+                if active.load(Ordering::Acquire)
+                    && last_level_emit.elapsed() >= Duration::from_millis(AUDIO_LEVEL_THROTTLE_MS)
+                {
+                    if let Some(handle) = app_handle {
+                        let _ = handle.emit("audio-level", compute_rms(&pcm.samples));
+                    }
+                    last_level_emit = Instant::now();
+                }
+            }
+            Ok(HelperRead::Frame(ProductionFrame::Control(ProductionHelperMessage::Phase {
+                phase,
+                ..
+            }))) => {
+                let phase = match phase {
+                    CapturePhase::Enumeration => AudioInitPhase::DeviceEnumeration,
+                    CapturePhase::StreamOpen => AudioInitPhase::StreamBuild,
+                    CapturePhase::AwaitingFirstCallback => AudioInitPhase::FirstBufferWait,
+                    CapturePhase::Active => AudioInitPhase::Runtime,
+                    CapturePhase::Stopping => AudioInitPhase::Runtime,
+                };
+                let _ = event_sender.send(AudioWorkerEvent::PhaseEntered { owner, phase });
+            }
+            Ok(HelperRead::Frame(ProductionFrame::Control(ProductionHelperMessage::Failure {
+                code,
+                ..
+            }))) => {
+                return AttemptResult::Failed {
+                    failure: AudioFailure::new(
+                        failure_kind(code),
+                        if retained_audio {
+                            AudioInitPhase::Runtime
+                        } else {
+                            AudioInitPhase::StreamBuild
+                        },
+                    ),
+                    retained_audio,
+                };
+            }
+            Ok(HelperRead::Frame(ProductionFrame::Control(ProductionHelperMessage::Stopped {
+                ..
+            }))) => {
+                drop(input);
+                let _ = child
+                    .wait_for_exit(Instant::now() + HELPER_STOP_DEADLINE)
+                    .or_else(|| child.hard_kill_confirmed(Instant::now() + HELPER_STOP_DEADLINE));
+                let _ = event_sender.send(AudioWorkerEvent::StreamStopped { owner });
+                return AttemptResult::Stopped;
+            }
+            Ok(HelperRead::Frame(_)) => {}
+            Ok(HelperRead::Invalid) | Err(RecvTimeoutError::Disconnected) => {
+                return AttemptResult::Failed {
+                    failure: AudioFailure::new(
+                        AudioFailureKind::InvalidInput,
+                        if retained_audio {
+                            AudioInitPhase::Runtime
+                        } else {
+                            AudioInitPhase::StreamBuild
+                        },
+                    ),
+                    retained_audio,
+                };
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+        }
+    }
+}
+
+fn run_audio_capture(spec: AudioWorkerSpec, event_sender: &AudioWorkerEventSender) {
+    let AudioWorkerSpec {
+        owner,
+        command_receiver,
+        shared,
+        active,
+        app_handle,
+        device_id,
+    } = spec;
+    for (attempt_index, backend) in [CaptureBackend::Cpal, CaptureBackend::Auhal]
+        .into_iter()
+        .enumerate()
+    {
+        match run_backend(
+            owner,
+            backend,
+            device_id.as_deref(),
+            &command_receiver,
+            &shared,
+            &active,
+            &app_handle,
+            event_sender,
+        ) {
+            AttemptResult::Stopped => return,
+            AttemptResult::Failed {
+                failure,
+                retained_audio,
+            } if !retained_audio && attempt_index == 0 => {
+                tracing::warn!(
+                    target: "audio",
+                    owner = owner.telemetry_id(),
+                    from_backend = "cpal",
+                    to_backend = "auhal",
+                    error_kind = failure.kind.as_str(),
+                    "capture backend failed before retained audio; trying bounded fallback"
+                );
+            }
+            AttemptResult::Failed {
+                failure,
+                retained_audio,
+            } => {
+                let event = if retained_audio {
+                    AudioWorkerEvent::RuntimeFailed { owner, failure }
+                } else {
+                    AudioWorkerEvent::InitFailed { owner, failure }
+                };
+                let _ = event_sender.send(event);
+                return;
+            }
+        }
+    }
 }
 
 pub(crate) fn spawn_capture_worker(
@@ -431,195 +607,18 @@ pub(crate) fn spawn_capture_worker(
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 run_audio_capture(spec, &event_sender)
             }));
-            match result {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => {
-                    tracing::error!(
-                        target: "audio",
-                        owner = owner.telemetry_id(),
-                        error_kind = error.kind.as_str(),
-                        phase = error.phase.as_str(),
-                        "audio capture worker failed"
-                    );
-                    let _ = event_sender.send(AudioWorkerEvent::InitFailed {
-                        owner,
-                        failure: error,
-                    });
-                }
-                Err(_) => {
-                    let failure = AudioFailure::new(
+            if result.is_err() {
+                let _ = event_sender.send(AudioWorkerEvent::InitFailed {
+                    owner,
+                    failure: AudioFailure::new(
                         AudioFailureKind::WorkerPanicked,
                         AudioInitPhase::Runtime,
-                    );
-                    tracing::error!(
-                        target: "audio",
-                        owner = owner.telemetry_id(),
-                        error_kind = failure.kind.as_str(),
-                        phase = failure.phase.as_str(),
-                        "audio capture worker panicked"
-                    );
-                    let _ = event_sender.send(AudioWorkerEvent::InitFailed { owner, failure });
-                }
+                    ),
+                });
             }
             let _ = event_sender.send(AudioWorkerEvent::ThreadExited { owner });
         })
-        .map_err(|error| format!("Failed to spawn audio thread: {error}"))
-}
-
-fn timed_phase<T>(
-    owner: crate::audio_lifecycle::AudioOwner,
-    phase: AudioInitPhase,
-    event_sender: &AudioWorkerEventSender,
-    operation: impl FnOnce() -> Result<T, AudioFailure>,
-) -> Result<T, AudioFailure> {
-    let started = std::time::Instant::now();
-    let _ = event_sender.send(AudioWorkerEvent::PhaseEntered { owner, phase });
-    let result = operation();
-    let _ = event_sender.send(AudioWorkerEvent::PhaseExited {
-        owner,
-        phase,
-        elapsed_ms: started.elapsed().as_millis() as u64,
-    });
-    result
-}
-
-fn run_audio_capture(
-    spec: AudioWorkerSpec,
-    event_sender: &AudioWorkerEventSender,
-) -> Result<(), AudioFailure> {
-    let AudioWorkerSpec {
-        owner,
-        command_receiver,
-        shared,
-        active,
-        app_handle,
-        device_id,
-    } = spec;
-    let host = cpal::default_host();
-
-    let device = timed_phase(
-        owner,
-        AudioInitPhase::DeviceEnumeration,
-        event_sender,
-        || {
-            if let Some(ref requested_id) = device_id {
-                let devices = host.input_devices().map_err(|error| {
-                    AudioFailure::from_cpal(AudioInitPhase::DeviceEnumeration, error)
-                })?;
-                let candidates = collect_identifiable_devices(devices, |device| {
-                    descriptor_for(&device).map(|descriptor| (device, descriptor))
-                });
-                let index = select_explicit_device_index(requested_id, &candidates)?;
-                Ok(candidates
-                    .into_iter()
-                    .nth(index)
-                    .expect("selected audio device index must exist")
-                    .0)
-            } else {
-                host.default_input_device().ok_or_else(|| {
-                    AudioFailure::new(
-                        AudioFailureKind::DeviceUnavailable,
-                        AudioInitPhase::DeviceEnumeration,
-                    )
-                })
-            }
-        },
-    )?;
-
-    let config = timed_phase(owner, AudioInitPhase::ConfigLookup, event_sender, || {
-        device
-            .default_input_config()
-            .map_err(|error| AudioFailure::from_cpal(AudioInitPhase::ConfigLookup, error))
-    })?;
-    let device_sample_rate = config.sample_rate();
-    let sample_format = config.sample_format();
-    let channels = config.channels() as usize;
-
-    tracing::info!(
-        target: "audio",
-        owner = owner.telemetry_id(),
-        device_selection = if device_id.is_some() { "explicit" } else { "system_default" },
-        sample_rate = device_sample_rate,
-        channels,
-        format = ?sample_format,
-        "run_audio_capture"
-    );
-
-    let stream_config = config.config();
-    let first_buffer_seen = Arc::new(AtomicBool::new(false));
-    macro_rules! build_for {
-        ($sample:ty) => {
-            build_mono_input_stream::<$sample>(
-                &device,
-                stream_config,
-                Arc::clone(&shared),
-                channels,
-                app_handle.clone(),
-                Arc::clone(&active),
-                Arc::clone(&first_buffer_seen),
-                event_sender.clone(),
-                owner,
-                device_sample_rate,
-            )
-        };
-    }
-    let stream =
-        timed_phase(
-            owner,
-            AudioInitPhase::StreamBuild,
-            event_sender,
-            || match sample_format {
-                SampleFormat::I8 => build_for!(i8),
-                SampleFormat::I16 => build_for!(i16),
-                SampleFormat::I24 => build_for!(cpal::I24),
-                SampleFormat::I32 => build_for!(i32),
-                SampleFormat::I64 => build_for!(i64),
-                SampleFormat::U8 => build_for!(u8),
-                SampleFormat::U16 => build_for!(u16),
-                SampleFormat::U24 => build_for!(cpal::U24),
-                SampleFormat::U32 => build_for!(u32),
-                SampleFormat::U64 => build_for!(u64),
-                SampleFormat::F32 => build_for!(f32),
-                SampleFormat::F64 => build_for!(f64),
-                SampleFormat::DsdU8 | SampleFormat::DsdU16 | SampleFormat::DsdU32 => {
-                    Err(AudioFailure::new(
-                        AudioFailureKind::UnsupportedConfig,
-                        AudioInitPhase::StreamBuild,
-                    ))
-                }
-                _ => Err(AudioFailure::new(
-                    AudioFailureKind::UnsupportedConfig,
-                    AudioInitPhase::StreamBuild,
-                )),
-            },
-        )?;
-
-    if command_receiver.try_recv().is_ok() {
-        return Ok(());
-    }
-
-    timed_phase(owner, AudioInitPhase::StreamPlay, event_sender, || {
-        stream
-            .play()
-            .map_err(|error| AudioFailure::from_cpal(AudioInitPhase::StreamPlay, error))
-    })?;
-
-    let _ = event_sender.send(AudioWorkerEvent::PhaseEntered {
-        owner,
-        phase: AudioInitPhase::FirstBufferWait,
-    });
-
-    loop {
-        match command_receiver.recv_timeout(std::time::Duration::from_millis(100)) {
-            Ok(AudioCommand::Stop) => break,
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-        }
-    }
-
-    let _ = stream.pause();
-    let _ = event_sender.send(AudioWorkerEvent::StreamStopped { owner });
-    Ok(())
+        .map_err(|error| format!("Failed to spawn capture supervisor thread: {error}"))
 }
 
 pub fn stop_recording() -> Result<Vec<f32>, String> {
@@ -634,216 +633,24 @@ pub fn is_recording() -> bool {
     crate::audio_lifecycle::is_audio_active()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn rms_empty_slice_returns_zero() {
-        assert_eq!(compute_rms(&[]), 0.0);
-    }
-
-    #[test]
-    fn rms_silence_is_zero() {
-        assert_eq!(compute_rms(&[0.0f32; 100]), 0.0);
-    }
-
-    #[test]
-    fn rms_full_amplitude_is_one() {
-        let result = compute_rms(&[1.0f32; 100]);
-        assert!((result - 1.0).abs() < 1e-6, "expected 1.0, got {result}");
-    }
-
-    #[test]
-    fn rms_alternating_signs_is_one() {
-        let result = compute_rms(&[1.0f32, -1.0, 1.0, -1.0]);
-        assert!((result - 1.0).abs() < 1e-6, "expected 1.0, got {result}");
-    }
-
-    #[test]
-    fn rms_half_amplitude() {
-        let result = compute_rms(&[0.5f32; 100]);
-        assert!((result - 0.5).abs() < 1e-6, "expected 0.5, got {result}");
-    }
-
-    #[test]
-    fn rms_single_sample() {
-        assert!((compute_rms(&[0.6f32]) - 0.6).abs() < 1e-6);
-    }
-
-    #[test]
-    fn peak_empty_slice_returns_zero() {
-        assert_eq!(compute_peak(&[]), 0.0);
-    }
-
-    #[test]
-    fn peak_silence_is_zero() {
-        assert_eq!(compute_peak(&[0.0f32; 100]), 0.0);
-    }
-
-    #[test]
-    fn peak_positive() {
-        assert!((compute_peak(&[0.1f32, 0.5, 0.3, 0.2]) - 0.5).abs() < 1e-6);
-    }
-
-    #[test]
-    fn peak_negative() {
-        assert!((compute_peak(&[0.1f32, -0.8, 0.3, 0.2]) - 0.8).abs() < 1e-6);
-    }
-
-    #[test]
-    fn mono_conversion_supports_i24_and_i32() {
-        let i24 = [
-            cpal::I24::from_sample(0.5_f32),
-            cpal::I24::from_sample(-0.5_f32),
-            cpal::I24::from_sample(0.25_f32),
-            cpal::I24::from_sample(0.25_f32),
-        ];
-        let i24_mono = mono_from_samples(&i24, 2);
-        assert!(i24_mono[0].abs() < 1e-5);
-        assert!((i24_mono[1] - 0.25).abs() < 1e-5);
-
-        let i32_samples = [
-            i32::from_sample(0.5_f32),
-            i32::from_sample(-0.5_f32),
-            i32::from_sample(0.25_f32),
-            i32::from_sample(0.25_f32),
-        ];
-        let i32_mono = mono_from_samples(&i32_samples, 2);
-        assert!(i32_mono[0].abs() < 1e-5);
-        assert!((i32_mono[1] - 0.25).abs() < 1e-5);
-    }
-
-    #[test]
-    fn explicit_device_selection_prefers_raw_id_and_legacy_names_must_be_unique() {
-        let candidates = vec![
-            (
-                (),
-                AudioDeviceDescriptor {
-                    id: "raw-uid-a".to_string(),
-                    name: "Studio Mic".to_string(),
-                },
-            ),
-            (
-                (),
-                AudioDeviceDescriptor {
-                    id: "raw-uid-b".to_string(),
-                    name: "Studio Mic".to_string(),
-                },
-            ),
-        ];
-        assert_eq!(
-            select_explicit_device_index("raw-uid-b", &candidates).unwrap(),
-            1
-        );
-        assert_eq!(
-            select_explicit_device_index("Studio Mic", &candidates)
-                .unwrap_err()
-                .kind,
-            AudioFailureKind::DeviceUnavailable
-        );
-        assert_eq!(
-            select_explicit_device_index("missing", &candidates)
-                .unwrap_err()
-                .kind,
-            AudioFailureKind::DeviceUnavailable
-        );
-    }
-
-    #[test]
-    fn unreadable_device_descriptor_does_not_hide_identifiable_devices() {
-        let descriptors = collect_identifiable_devices([1_u8, 2, 3], |device| {
-            if device == 2 {
-                return Err(AudioFailure::new(
-                    AudioFailureKind::DeviceChanged,
-                    AudioInitPhase::DeviceEnumeration,
-                ));
-            }
-            Ok(AudioDeviceDescriptor {
-                id: format!("raw-uid-{device}"),
-                name: format!("Microphone {device}"),
-            })
-        });
-
-        assert_eq!(
-            descriptors,
-            vec![
-                AudioDeviceDescriptor {
-                    id: "raw-uid-1".to_string(),
-                    name: "Microphone 1".to_string(),
-                },
-                AudioDeviceDescriptor {
-                    id: "raw-uid-3".to_string(),
-                    name: "Microphone 3".to_string(),
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn cpal_error_mapping_is_typed_and_messages_never_include_backend_content() {
-        for (cpal_kind, expected) in [
-            (
-                cpal::ErrorKind::PermissionDenied,
-                AudioFailureKind::PermissionDenied,
-            ),
-            (
-                cpal::ErrorKind::DeviceNotAvailable,
-                AudioFailureKind::DeviceUnavailable,
-            ),
-            (cpal::ErrorKind::DeviceBusy, AudioFailureKind::DeviceBusy),
-            (
-                cpal::ErrorKind::DeviceChanged,
-                AudioFailureKind::DeviceChanged,
-            ),
-            (
-                cpal::ErrorKind::StreamInvalidated,
-                AudioFailureKind::StreamInvalidated,
-            ),
-            (
-                cpal::ErrorKind::InvalidInput,
-                AudioFailureKind::InvalidInput,
-            ),
-            (
-                cpal::ErrorKind::ResourceExhausted,
-                AudioFailureKind::ResourceExhausted,
-            ),
-        ] {
-            let failure = AudioFailure::from_cpal(
-                AudioInitPhase::StreamBuild,
-                cpal::Error::with_message(cpal_kind, "secret device label and raw backend detail"),
-            );
-            assert_eq!(failure.kind, expected);
-            assert!(!failure.to_string().contains("secret"));
-            assert!(!failure.to_string().contains("backend detail"));
-        }
-    }
-}
-
-/// Linear-interpolation resample from `from_rate` to `to_rate`.
-/// Used by both live capture (`stop_recording`) and file decoding (`audio_decode`).
 pub fn resample(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
     if from_rate == to_rate {
         return samples.to_vec();
     }
-
     let ratio = from_rate as f64 / to_rate as f64;
     let new_len = (samples.len() as f64 / ratio) as usize;
     let mut resampled = Vec::with_capacity(new_len);
-
-    for i in 0..new_len {
-        let src_idx = i as f64 * ratio;
-        let idx = src_idx as usize;
-        let frac = src_idx - idx as f64;
-        let sample = if idx + 1 < samples.len() {
-            samples[idx] * (1.0 - frac as f32) + samples[idx + 1] * frac as f32
-        } else if idx < samples.len() {
-            samples[idx]
+    for index in 0..new_len {
+        let source = index as f64 * ratio;
+        let source_index = source as usize;
+        let fraction = source - source_index as f64;
+        let sample = if source_index + 1 < samples.len() {
+            samples[source_index] * (1.0 - fraction as f32)
+                + samples[source_index + 1] * fraction as f32
         } else {
-            0.0
+            samples.get(source_index).copied().unwrap_or_default()
         };
         resampled.push(sample);
     }
-
     resampled
 }

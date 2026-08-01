@@ -3,6 +3,7 @@ import type { TeachingContext } from '../correctAndTeach';
 import {
   HistoryEntry,
   HistorySource,
+  HistoryInterruption,
   loadHistory,
   saveHistory,
   addHistoryEntry,
@@ -13,9 +14,9 @@ import {
 export function useHistoryManagement() {
   const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>(() => loadHistory());
 
-  const addEntry = useCallback((text: string, duration: number, source: HistorySource = 'recording', sourceName?: string, teachingContext?: TeachingContext) => {
+  const addEntry = useCallback((text: string, duration: number, source: HistorySource = 'recording', sourceName?: string, teachingContext?: TeachingContext, interruption?: HistoryInterruption) => {
     setHistoryEntries(prev => {
-      const newHistory = addHistoryEntry(prev, text, duration, source, sourceName, teachingContext);
+      const newHistory = addHistoryEntry(prev, text, duration, source, sourceName, teachingContext, interruption);
       saveHistory(newHistory);
       return newHistory;
     });

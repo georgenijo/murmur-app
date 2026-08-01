@@ -2223,7 +2223,9 @@ pub(crate) fn handle_audio_lifecycle<R: tauri::Runtime>(
                 }
                 dictation.status = DictationStatus::Recovering;
             }
-            state.app_state.clear_active_context(recording_id);
+            if reason != AudioCancelReason::RuntimeFailure {
+                state.app_state.clear_active_context(recording_id);
+            }
             let _ = app_handle.emit("recording-status-changed", "recovering");
             let _ = app_handle.emit(
                 "audio-recovery-started",
@@ -2283,6 +2285,46 @@ pub(crate) fn handle_audio_lifecycle<R: tauri::Runtime>(
                     "recording-recovery-stalled",
                     serde_json::json!({ "recordingId": recording_id }),
                 );
+            }
+        }
+        AudioLifecycleEvent::Interrupted {
+            reason,
+            delivered_samples,
+            duration_ms,
+        } => {
+            if !is_current() {
+                let _ = audio_lifecycle::take_interrupted_dictation(recording_id);
+                return;
+            }
+            let auto_transcribe = delivered_samples >= 8_000;
+            let _ = app_handle.emit(
+                "recording-interrupted",
+                serde_json::json!({
+                    "recordingId": recording_id,
+                    "reason": reason.as_str(),
+                    "deliveredSamples": delivered_samples,
+                    "durationMs": duration_ms,
+                    "autoTranscribe": auto_transcribe,
+                }),
+            );
+            if auto_transcribe {
+                tauri::async_runtime::spawn(async move {
+                    let state = app_handle.state::<State>();
+                    if let Err(error) = stop_native_recording(app_handle.clone(), state).await {
+                        tracing::error!(
+                            target: "pipeline",
+                            recording_id,
+                            error = error.as_str(),
+                            "interrupted recording transcription failed"
+                        );
+                    }
+                });
+            } else {
+                let _ = audio_lifecycle::take_interrupted_dictation(recording_id);
+                state.app_state.clear_active_context(recording_id);
+                state.app_state.dictation.lock_or_recover().status = DictationStatus::Idle;
+                keyboard::set_processing(false);
+                let _ = app_handle.emit("recording-status-changed", "idle");
             }
         }
         AudioLifecycleEvent::Idle => {
@@ -2535,7 +2577,7 @@ pub async fn stop_native_recording(
 ) -> Result<serde_json::Value, String> {
     let transition = state.app_state.recording_transition.lock().await;
     // Atomic check-and-set + generation capture in a single lock.
-    let (status, rid) = {
+    let (status, rid, interrupted_capture) = {
         let mut dictation = state.app_state.dictation.lock_or_recover();
         let rid = state.app_state.recording_id.load(Ordering::SeqCst);
         match dictation.status {
@@ -2552,16 +2594,21 @@ pub async fn stop_native_recording(
                     "state": "idle"
                 }));
             }
-            DictationStatus::Starting => (DictationStatus::Starting, rid),
+            DictationStatus::Starting => (DictationStatus::Starting, rid, None),
             DictationStatus::Recovering => {
-                return Ok(serde_json::json!({
-                    "type": "audio_recovering",
-                    "state": "recovering"
-                }));
+                if let Some(capture) = audio_lifecycle::take_interrupted_dictation(rid) {
+                    dictation.status = DictationStatus::Processing;
+                    (DictationStatus::Processing, rid, Some(capture))
+                } else {
+                    return Ok(serde_json::json!({
+                        "type": "audio_recovering",
+                        "state": "recovering"
+                    }));
+                }
             }
             DictationStatus::Recording => {
                 dictation.status = DictationStatus::Processing;
-                (DictationStatus::Recording, rid)
+                (DictationStatus::Recording, rid, None)
             }
         }
     };
@@ -2606,13 +2653,24 @@ pub async fn stop_native_recording(
     // Processing is already committed, so concurrent calls cannot claim the
     // microphone. Release the transition guard before the supervisor wait.
     drop(transition);
-    let samples = audio_lifecycle::stop_dictation_recording(rid).map_err(|e| {
-        tracing::error!(target: "audio", "stop_native_recording: stop_recording failed: {}", e);
-        if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
-            let _ = app_handle.emit("recording-status-changed", "idle");
-        }
-        e
-    })?;
+    let interruption = interrupted_capture.as_ref().map(|capture| {
+        serde_json::json!({
+            "reason": capture.reason.clone(),
+            "deliveredSamples": capture.samples.len(),
+            "durationMs": capture.duration_ms,
+        })
+    });
+    let samples = if let Some(capture) = interrupted_capture {
+        capture.samples
+    } else {
+        audio_lifecycle::stop_dictation_recording(rid).map_err(|e| {
+            tracing::error!(target: "audio", "stop_native_recording: stop_recording failed: {}", e);
+            if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
+                let _ = app_handle.emit("recording-status-changed", "idle");
+            }
+            e
+        })?
+    };
     tracing::info!(target: "pipeline", "audio teardown + resample: {:?}", t_total.elapsed());
     performance_guard.record(StageTimingV1::measured(
         PerformanceStageV1::CaptureFinalization,
@@ -2768,7 +2826,8 @@ pub async fn stop_native_recording(
                 "recordingId": rid,
                 "text": text,
                 "duration": recording_secs,
-                "teachingContext": teaching_context
+                "teachingContext": teaching_context,
+                "interrupted": interruption
             }),
         );
     }

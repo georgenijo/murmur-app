@@ -255,12 +255,9 @@ fn aggregate_audio_state<T>(
 /// by string comparison. Runs blocking Core Audio enumeration without reading
 /// any presentation labels or backend identifiers.
 fn audio_state() -> String {
-    use cpal::traits::HostTrait;
-    let host = cpal::default_host();
-    let default_input_available = host.default_input_device().is_some();
-    match host.input_devices() {
-        Ok(inputs) => aggregate_audio_state(default_input_available, inputs, true),
-        Err(_) => aggregate_audio_state(default_input_available, std::iter::empty::<()>(), false),
+    match crate::audio::list_input_devices() {
+        Ok(inputs) => aggregate_audio_state(!inputs.is_empty(), inputs, true),
+        Err(_) => aggregate_audio_state(false, std::iter::empty::<()>(), false),
     }
 }
 
