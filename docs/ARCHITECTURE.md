@@ -392,7 +392,7 @@ Core ML models are managed by FluidAudio under `~/Library/Application Support/Fl
 ```bash
 python3 scripts/build_local_llm_sidecar.py   # once, before anything else on macOS
 cd app && npm install
-cd app && npm run tauri dev                  # hot reload
+cd app && npm run tauri:dev                  # hot reload, isolated dev bundle/data
 cd app && npm run tauri build                # .app and .dmg
 cd app/src-tauri && cargo test -- --test-threads=1
 cd app && npx tsc --noEmit && npm test

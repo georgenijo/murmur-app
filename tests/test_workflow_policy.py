@@ -248,7 +248,7 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
                 "https://example.invalid/plugin.AppImage",
             ),
             "plugin checksum": (
-                "1da16a46fa5e058ae740e7c35ed0d36d86cb869ac9cc8a5fd9a1847d7978d99a",
+                "a45d3e227bc7f397e9cf6bfa4c9507494efa2293357b6e86690a3de2ca992e79",
                 "0" * 64,
             ),
             "plugin path": (

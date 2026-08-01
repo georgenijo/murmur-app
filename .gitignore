@@ -42,6 +42,8 @@ app/tsc
 app/ui@*
 app/src-tauri/binaries/murmur-llm-sidecar-*
 app/src-tauri/binaries/murmur-capture-helper-*
+app/src-tauri/binaries/murmur-capture-agent-*
+app/src-tauri/binaries/murmur-capture-worker-*
 
 # Local-only notes, migrations, scratch work (not tracked)
 local/

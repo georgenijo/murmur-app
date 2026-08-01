@@ -30,7 +30,7 @@ gitignored and rebuilt by release CI. The script is a no-op on non-arm64-macOS.
 
 ```bash
 # Full Tauri app with hot reload
-cd app && npm run tauri dev
+cd app && npm run tauri:dev
 
 # Frontend only (no Rust backend)
 cd app && npm run dev
@@ -107,7 +107,7 @@ The app searches these locations in order:
 | **Microphone** | Audio capture — dictation and transform instructions | Prompted in-app by the setup assistant |
 | **Accessibility** | All hotkeys (rdev), auto-paste, and transform selection capture / write-back | System Settings > Privacy & Security > Accessibility |
 
-Under `npm run tauri dev`, grant both to your *terminal app* — dev builds are
+Under `npm run tauri:dev`, grant both to your *terminal app* — dev builds are
 re-signed on each rebuild, so a grant to the dev binary never sticks.
 
 ## Logs

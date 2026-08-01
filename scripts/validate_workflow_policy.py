@@ -328,7 +328,7 @@ def validate_linux_cache_policy(action: str) -> None:
         "linuxdeploy-x86_64.AppImage"
     ) in linuxdeploy
     assert (
-        'LINUXDEPLOY_SHA256="e87ee0815d109282fdda73e34c2361d64d02b0ffaea3674b18f1fd1f6a687dcf"'
+        'LINUXDEPLOY_SHA256="421ca71d5c69ea97c6309276232990d43df1dcece0edfaa26bbf926ff96ed12e"'
         in linuxdeploy
     )
     assert 'LINUXDEPLOY_PATH="$HOME/.cache/tauri/linuxdeploy-x86_64.AppImage"' in linuxdeploy
@@ -341,7 +341,7 @@ def validate_linux_cache_policy(action: str) -> None:
         "download/continuous/linuxdeploy-plugin-appimage-x86_64.AppImage"
     ) in linuxdeploy
     assert (
-        'PLUGIN_SHA256="1da16a46fa5e058ae740e7c35ed0d36d86cb869ac9cc8a5fd9a1847d7978d99a"'
+        'PLUGIN_SHA256="a45d3e227bc7f397e9cf6bfa4c9507494efa2293357b6e86690a3de2ca992e79"'
         in linuxdeploy
     )
     assert (

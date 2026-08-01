@@ -6,6 +6,26 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 ---
 
+## 2026-08-01: macOS capture prefers direct AUHAL before CPAL (#426)
+
+**Decision:** Process-isolated macOS recording tries direct AUHAL first and
+retains CPAL as the exact-device, pre-buffer fallback. The helper reports
+content-free stream-open and first-callback phases so startup regressions can be
+attributed without retaining or logging audio.
+
+**Rationale:** CPAL 0.18.1's synchronous Core Audio stream builder remained
+blocked for more than 30 seconds on a healthy USB system-default microphone.
+The same device consistently retained its first AUHAL PCM in about 180 ms and
+reached app readiness in about 200 ms. Prewarming a microphone-closed helper
+saved only process-launch time and did not affect the blocking HAL call.
+
+**Status:** active
+
+**References:** issue #426; ADR
+[`2026-08-01-production-capture-helper.md`](2026-08-01-production-capture-helper.md)
+
+---
+
 ## 2026-08-01: Production HAL ownership moves to a killable capture worker (#405)
 
 **Decision:** Production microphone enumeration and capture run only inside the

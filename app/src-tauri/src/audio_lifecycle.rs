@@ -754,13 +754,18 @@ fn handle_worker_event(
                 current.phase,
                 AttemptPhase::Starting | AttemptPhase::Recording
             ) {
-                current.failure = Some(failure);
+                current.failure = Some(failure.clone());
+                // Dictation reports a retained prefix through Interrupted at
+                // worker exit. Transform audio has no partial-transcript path,
+                // so preserve its typed, content-free failure before recovery.
+                let report_failure =
+                    matches!(current.owner, AudioOwner::Transform(_)).then_some(failure);
                 begin_recovery(
                     attempt,
                     AudioCancelReason::RuntimeFailure,
                     sink,
                     public,
-                    None,
+                    report_failure,
                 );
             }
         }
@@ -2152,6 +2157,24 @@ mod tests {
         wait_until("runtime-failed worker did not exit", || {
             !supervisor.public.is_active()
         });
+        assert_eq!(
+            sink.events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(_, event)| {
+                    matches!(
+                        event,
+                        AudioLifecycleEvent::InitializationFailed {
+                            kind: AudioFailureKind::DeviceBusy,
+                            ..
+                        }
+                    )
+                })
+                .count(),
+            1,
+            "transform runtime failure must be reported exactly once"
+        );
         shutdown(&supervisor);
     }
 

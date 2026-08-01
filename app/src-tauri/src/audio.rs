@@ -267,12 +267,15 @@ fn spawn_helper(
     ),
     AudioFailure,
 > {
+    let resolve_started = Instant::now();
     let path = helper_path().map_err(|_| {
         AudioFailure::new(
             AudioFailureKind::HostUnavailable,
             AudioInitPhase::StreamBuild,
         )
     })?;
+    let resolve_ms = resolve_started.elapsed().as_millis() as u64;
+    let signature_started = Instant::now();
     if !cfg!(debug_assertions) {
         crate::code_signing::validate_bundled_helper(&path, CAPTURE_WORKER_IDENTIFIER).map_err(
             |_| {
@@ -283,8 +286,10 @@ fn spawn_helper(
             },
         )?;
     }
+    let signature_ms = signature_started.elapsed().as_millis() as u64;
     let capture_id_text = capture_id.to_string();
-    ManagedChild::spawn_with_arguments(
+    let spawn_started = Instant::now();
+    let child = ManagedChild::spawn_with_arguments(
         &path,
         &["--production-v2", &capture_id_text, nonce_hex],
         &[],
@@ -294,7 +299,16 @@ fn spawn_helper(
             AudioFailureKind::HostUnavailable,
             AudioInitPhase::StreamBuild,
         )
-    })
+    })?;
+    tracing::info!(
+        target: "audio",
+        capture_id,
+        resolve_ms,
+        signature_ms,
+        spawn_ms = spawn_started.elapsed().as_millis() as u64,
+        "capture helper process spawned"
+    );
+    Ok(child)
 }
 
 fn read_control_frame_with_deadline(
@@ -424,6 +438,28 @@ enum AttemptResult {
     },
 }
 
+fn backend_label(backend: CaptureBackend) -> &'static str {
+    match backend {
+        CaptureBackend::Cpal => "cpal",
+        CaptureBackend::Auhal => "auhal",
+    }
+}
+
+fn preferred_backends() -> [CaptureBackend; 2] {
+    // Direct AUHAL avoids CPAL's synchronous Core Audio stream builder, which
+    // can block indefinitely on otherwise healthy USB default inputs. The
+    // helper remains the hard-kill boundary and CPAL remains the exact-device,
+    // pre-buffer fallback if direct AUHAL cannot configure that device.
+    #[cfg(target_os = "macos")]
+    {
+        [CaptureBackend::Auhal, CaptureBackend::Cpal]
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        [CaptureBackend::Cpal, CaptureBackend::Auhal]
+    }
+}
+
 fn run_backend(
     owner: crate::audio_lifecycle::AudioOwner,
     backend: CaptureBackend,
@@ -466,6 +502,7 @@ fn run_backend(
             };
         }
     };
+    let start_sent_at = Instant::now();
     if write_production_control(
         &mut input,
         capture_id,
@@ -483,6 +520,13 @@ fn run_backend(
             retained_audio: false,
         };
     }
+    tracing::info!(
+        target: "audio",
+        capture_id,
+        backend = backend_label(backend),
+        start_write_ms = start_sent_at.elapsed().as_millis() as u64,
+        "capture helper start sent"
+    );
 
     let (reader_tx, reader_rx) = mpsc::channel();
     thread::spawn(move || {
@@ -502,18 +546,16 @@ fn run_backend(
         }
     });
 
-    let _ = event_sender.send(AudioWorkerEvent::PhaseEntered {
-        owner,
-        phase: AudioInitPhase::StreamBuild,
-    });
     let mut expected_sequence = 0_u64;
     let mut sample_rate = None;
     let mut retained_audio = false;
+    let mut first_callback_wait_started = None;
     let mut last_level_emit = Instant::now() - Duration::from_secs(1);
     let mut last_permission_check = Instant::now();
     loop {
         match command_receiver.try_recv() {
             Ok(AudioCommand::Stop) | Err(mpsc::TryRecvError::Disconnected) => {
+                let stop_started = Instant::now();
                 let _ = write_production_control(
                     &mut input,
                     capture_id,
@@ -525,6 +567,12 @@ fn run_backend(
                     .wait_for_exit(Instant::now() + HELPER_STOP_DEADLINE)
                     .or_else(|| child.hard_kill_confirmed(Instant::now() + HELPER_STOP_DEADLINE));
                 if termination.is_some() {
+                    tracing::info!(
+                        target: "audio",
+                        capture_id,
+                        stop_to_exit_ms = stop_started.elapsed().as_millis() as u64,
+                        "capture helper stopped and exited"
+                    );
                     let _ = event_sender.send(AudioWorkerEvent::StreamStopped { owner });
                     return AttemptResult::Stopped;
                 }
@@ -597,10 +645,19 @@ fn run_backend(
                     .extend_from_slice(&pcm.samples);
                 if !retained_audio {
                     retained_audio = true;
+                    tracing::info!(
+                        target: "audio",
+                        capture_id,
+                        start_to_first_pcm_ms = start_sent_at.elapsed().as_millis() as u64,
+                        "capture helper first PCM retained"
+                    );
                     let _ = event_sender.send(AudioWorkerEvent::PhaseExited {
                         owner,
                         phase: AudioInitPhase::FirstBufferWait,
-                        elapsed_ms: 0,
+                        elapsed_ms: first_callback_wait_started
+                            .take()
+                            .map(|started: Instant| started.elapsed().as_millis() as u64)
+                            .unwrap_or_default(),
                     });
                     let _ = event_sender.send(AudioWorkerEvent::FirstBuffer {
                         owner,
@@ -620,6 +677,17 @@ fn run_backend(
                 phase,
                 ..
             }))) => {
+                tracing::info!(
+                    target: "audio",
+                    capture_id,
+                    backend = backend_label(backend),
+                    worker_phase = ?phase,
+                    start_elapsed_ms = start_sent_at.elapsed().as_millis() as u64,
+                    "capture helper phase received"
+                );
+                if phase == CapturePhase::AwaitingFirstCallback {
+                    first_callback_wait_started = Some(Instant::now());
+                }
                 let phase = match phase {
                     CapturePhase::Enumeration => AudioInitPhase::DeviceEnumeration,
                     CapturePhase::StreamOpen => AudioInitPhase::StreamBuild,
@@ -683,10 +751,8 @@ fn run_audio_capture(spec: AudioWorkerSpec, event_sender: &AudioWorkerEventSende
         app_handle,
         device_id,
     } = spec;
-    for (attempt_index, backend) in [CaptureBackend::Cpal, CaptureBackend::Auhal]
-        .into_iter()
-        .enumerate()
-    {
+    let backends = preferred_backends();
+    for (attempt_index, backend) in backends.into_iter().enumerate() {
         match run_backend(
             owner,
             backend,
@@ -709,8 +775,8 @@ fn run_audio_capture(spec: AudioWorkerSpec, event_sender: &AudioWorkerEventSende
                 tracing::warn!(
                     target: "audio",
                     owner = owner.telemetry_id(),
-                    from_backend = "cpal",
-                    to_backend = "auhal",
+                    from_backend = backend_label(backend),
+                    to_backend = backend_label(backends[1]),
                     error_kind = failure.kind.as_str(),
                     "capture backend failed before retained audio; trying bounded fallback"
                 );
@@ -788,4 +854,24 @@ pub fn resample(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
         resampled.push(sample);
     }
     resampled
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn macos_prefers_direct_auhal_with_cpal_fallback() {
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            preferred_backends(),
+            [CaptureBackend::Auhal, CaptureBackend::Cpal]
+        );
+
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(
+            preferred_backends(),
+            [CaptureBackend::Cpal, CaptureBackend::Auhal]
+        );
+    }
 }

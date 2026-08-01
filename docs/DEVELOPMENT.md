@@ -20,7 +20,7 @@ python3 scripts/build_local_llm_sidecar.py
 cd app && npm install
 
 # 3. Run
-npm run tauri dev
+npm run tauri:dev
 ```
 
 > **Step 1 is not optional on macOS.** `tauri.macos.conf.json` declares the
@@ -38,7 +38,7 @@ LLM is a separate, optional download from **Settings → Transform**.
 
 ```bash
 # Dev
-cd app && npm run tauri dev        # full app, hot reload
+cd app && npm run tauri:dev        # full app, isolated bundle/data, hot reload
 cd app && npm run dev              # frontend only (no Rust backend)
 cd app && npm run tauri build      # production .app and .dmg
 
@@ -66,7 +66,7 @@ cd app/src-tauri && MURMUR_COREML_TEST_WAV=/path/to/16khz-mono.wav \
 Murmur needs **Microphone** and **Accessibility**. Which process needs them
 depends on how you are running it:
 
-- **`npm run tauri dev`** — grant them to your *terminal app* (Ghostty, iTerm,
+- **`npm run tauri:dev`** — grant them to your *terminal app* (Ghostty, iTerm,
   Terminal). Dev builds are re-signed on every rebuild, so granting the dev
   binary itself is futile. Restart the dev server after granting.
 - **A built `.app`** — grant them to the app itself.
