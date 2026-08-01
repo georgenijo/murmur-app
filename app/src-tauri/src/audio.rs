@@ -5,7 +5,7 @@ use murmur_capture_helper_protocol::{
 };
 use serde::Serialize;
 use std::fmt;
-use std::io::{BufReader, Write};
+use std::io::BufReader;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
