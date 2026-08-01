@@ -1,5 +1,10 @@
 # Murmur — Feature Map
 
+Production microphone capture is isolated in a signed, killable helper. Strict
+capture-scoped framing, bounded CPAL-to-AUHAL fallback, and interrupted-prefix
+transcription keep the app responsive without discarding already-delivered
+speech. See [Transcription](features/transcription.md).
+
 Current as of **v0.21.3**. This is the breadth-first inventory of what ships; each area links to its detailed feature doc. For system structure see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ---

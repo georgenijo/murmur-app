@@ -3,6 +3,12 @@ import type { TeachingContext } from './correctAndTeach';
 
 export type HistorySource = 'recording' | 'file';
 
+export interface HistoryInterruption {
+  reason: string;
+  deliveredSamples: number;
+  durationMs: number;
+}
+
 export interface HistoryEntry {
   id: string;
   text: string;
@@ -15,6 +21,8 @@ export interface HistoryEntry {
   sourceName?: string;
   /** Local recording-start scope metadata used only for explicit teaching. */
   teachingContext?: TeachingContext;
+  /** Capture ended unexpectedly; the retained prefix was still transcribed. */
+  interruption?: HistoryInterruption;
 }
 
 const STORAGE_KEY = 'dictation-history';
@@ -59,6 +67,7 @@ export function addHistoryEntry(
   source: HistorySource = 'recording',
   sourceName?: string,
   teachingContext?: TeachingContext,
+  interruption?: HistoryInterruption,
 ): HistoryEntry[] {
   const newEntry: HistoryEntry = {
     id: nextEntryId(),
@@ -68,6 +77,7 @@ export function addHistoryEntry(
     source,
     ...(sourceName ? { sourceName } : {}),
     ...(teachingContext ? { teachingContext } : {}),
+    ...(interruption ? { interruption } : {}),
   };
   return trimHistory([...entries, newEntry]);
 }

@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- Production microphone capture now runs behind a signed, killable helper with
+  capture-scoped binary PCM framing, an allocation-free SPSC callback boundary,
+  CPAL and direct AUHAL backends, exact-device pre-buffer failover, deterministic
+  fault modes, and partial-transcript recovery for interrupted recordings
+  (#405, #408, #409, #410, #411, #412).
 - A probe-only signed capture helper now has strict runtime code-identity
   checks, content-free callback health, deterministic cancel/kill/reap tests,
   and exact release provenance. Production recording remains unchanged pending

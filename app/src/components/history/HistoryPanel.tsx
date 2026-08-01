@@ -374,6 +374,14 @@ export function HistoryPanel({
                       Mic
                     </span>
                   )}
+                  {entry.interruption && (
+                    <span
+                      title={`Capture interrupted: ${entry.interruption.reason}`}
+                      className="inline-flex shrink-0 items-center rounded-full bg-error-container px-2 py-0.5 text-[10px] font-semibold text-on-error-container"
+                    >
+                      Interrupted · partial
+                    </span>
+                  )}
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
                   <span className="rounded-full bg-surface-container px-2 py-0.5 text-[10px] font-medium text-on-surface-variant">{wordCount} {wordCount === 1 ? 'word' : 'words'}</span>

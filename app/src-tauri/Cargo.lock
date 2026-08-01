@@ -2786,6 +2786,8 @@ dependencies = [
 name = "murmur-capture-helper"
 version = "0.1.1"
 dependencies = [
+ "core-foundation-sys",
+ "coreaudio-rs",
  "cpal",
  "libc",
  "murmur-capture-helper-protocol",
@@ -6037,7 +6039,6 @@ dependencies = [
  "chrono",
  "core-foundation",
  "core-graphics",
- "cpal",
  "dirs 5.0.1",
  "fluidaudio-rs",
  "futures-util",

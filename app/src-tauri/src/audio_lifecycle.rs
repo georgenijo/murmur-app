@@ -3,6 +3,7 @@ use crate::audio::{
     AudioWorkerEventSender, AudioWorkerSpec,
 };
 use crate::state::WHISPER_SAMPLE_RATE;
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -72,6 +73,11 @@ pub(crate) enum AudioLifecycleEvent {
         kind: AudioFailureKind,
     },
     RecoveryStalled,
+    Interrupted {
+        reason: AudioCancelReason,
+        delivered_samples: u64,
+        duration_ms: u64,
+    },
     Idle,
 }
 
@@ -347,6 +353,7 @@ struct Attempt {
     failure_reported: bool,
     stopping_guidance_emitted: bool,
     failure: Option<AudioFailure>,
+    recovery_reason: Option<AudioCancelReason>,
     init_phase: AudioInitPhase,
     command_sender: Sender<AudioCommand>,
     thread_handle: Option<JoinHandle<()>>,
@@ -617,6 +624,7 @@ fn handle_start(
         failure_reported: false,
         stopping_guidance_emitted: false,
         failure: None,
+        recovery_reason: None,
         init_phase: AudioInitPhase::DeviceEnumeration,
         command_sender,
         thread_handle: Some(thread_handle),
@@ -746,12 +754,13 @@ fn handle_worker_event(
                 current.phase,
                 AttemptPhase::Starting | AttemptPhase::Recording
             ) {
+                current.failure = Some(failure);
                 begin_recovery(
                     attempt,
                     AudioCancelReason::RuntimeFailure,
                     sink,
                     public,
-                    Some(failure),
+                    None,
                 );
             }
         }
@@ -823,11 +832,45 @@ fn finish_attempt(attempt: &mut Option<Attempt>, sink: &dyn LifecycleSink, publi
             );
         }
         AttemptPhase::Recovering => {
-            sink.notify(
-                finished.app_handle.as_ref(),
-                finished.owner,
-                AudioLifecycleEvent::Idle,
-            );
+            if finished.recovery_reason == Some(AudioCancelReason::RuntimeFailure)
+                && matches!(finished.owner, AudioOwner::Dictation(_))
+            {
+                let reason = finished
+                    .failure
+                    .as_ref()
+                    .map(|failure| failure.kind.as_str())
+                    .unwrap_or("runtime_failure")
+                    .to_string();
+                let samples = take_samples(&mut finished);
+                let delivered_samples = samples.len() as u64;
+                let duration_ms = delivered_samples / 16;
+                interrupted_captures()
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .insert(
+                        finished.owner,
+                        InterruptedCapture {
+                            samples,
+                            reason,
+                            duration_ms,
+                        },
+                    );
+                sink.notify(
+                    finished.app_handle.as_ref(),
+                    finished.owner,
+                    AudioLifecycleEvent::Interrupted {
+                        reason: AudioCancelReason::RuntimeFailure,
+                        delivered_samples,
+                        duration_ms,
+                    },
+                );
+            } else {
+                sink.notify(
+                    finished.app_handle.as_ref(),
+                    finished.owner,
+                    AudioLifecycleEvent::Idle,
+                );
+            }
         }
     }
     finished.active.store(false, Ordering::SeqCst);
@@ -889,6 +932,7 @@ fn begin_recovery(
     current.active.store(false, Ordering::SeqCst);
     let _ = current.command_sender.send(AudioCommand::Stop);
     current.phase = AttemptPhase::Recovering;
+    current.recovery_reason = Some(reason);
     current.stopping_started_at = Some(Instant::now());
     public.set_phase(PublicPhase::Recovering);
     tracing::info!(
@@ -911,6 +955,26 @@ fn begin_recovery(
         report_failure_once(current, sink, failure);
     }
     public.still_connecting.store(false, Ordering::SeqCst);
+}
+
+pub(crate) struct InterruptedCapture {
+    pub(crate) samples: Vec<f32>,
+    pub(crate) reason: String,
+    pub(crate) duration_ms: u64,
+}
+
+static INTERRUPTED_CAPTURES: OnceLock<Mutex<HashMap<AudioOwner, InterruptedCapture>>> =
+    OnceLock::new();
+
+fn interrupted_captures() -> &'static Mutex<HashMap<AudioOwner, InterruptedCapture>> {
+    INTERRUPTED_CAPTURES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub(crate) fn take_interrupted_dictation(recording_id: u64) -> Option<InterruptedCapture> {
+    interrupted_captures()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(&AudioOwner::Dictation(recording_id))
 }
 
 fn report_failure_once(attempt: &mut Attempt, sink: &dyn LifecycleSink, failure: AudioFailure) {

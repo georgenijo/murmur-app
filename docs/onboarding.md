@@ -1,5 +1,9 @@
 # Onboarding
 
+Microphone permission is attributed through Murmur's signed capture boundary.
+The bundled capture worker owns the macOS audio objects, while the app owns
+permission guidance, recording state, retained PCM, and transcription.
+
 ## Prerequisites
 
 - [Node.js](https://nodejs.org/) 18+

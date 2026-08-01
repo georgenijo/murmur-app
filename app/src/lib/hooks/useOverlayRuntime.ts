@@ -155,20 +155,26 @@ export function useOverlayRuntime({
     let cancelled = false;
     let unlisten: (() => void) | null = null;
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
-    listen('recording-initialization-failed', () => {
+    const flashFailure = () => {
       if (timeoutId) clearTimeout(timeoutId);
       setShowMicrophoneFailure(true);
       timeoutId = setTimeout(() => {
         if (!cancelled) setShowMicrophoneFailure(false);
         timeoutId = null;
       }, MICROPHONE_FAILURE_FLASH_MS);
-    }).then((fn) => {
+    };
+    const unlistens: (() => void)[] = [];
+    listen('recording-initialization-failed', flashFailure).then((fn) => {
+      if (cancelled) fn(); else unlistens.push(fn);
+    });
+    listen('recording-interrupted', flashFailure).then((fn) => {
       if (cancelled) fn(); else unlisten = fn;
     });
     return () => {
       cancelled = true;
       if (timeoutId) clearTimeout(timeoutId);
       unlisten?.();
+      unlistens.forEach((fn) => fn());
     };
   }, []);
 

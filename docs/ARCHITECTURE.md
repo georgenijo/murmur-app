@@ -1,5 +1,10 @@
 # Architecture
 
+> Production microphone ownership is process-isolated. The Tauri process owns
+> policy and retained PCM; `murmur-capture-worker` exclusively owns CPAL/AUHAL
+> objects and is killable as an exact managed process group. See
+> [the capture-helper ADR](decisions/2026-08-01-production-capture-helper.md).
+
 ## Overview
 
 Murmur is a privacy-first, local-only voice dictation app for macOS. You speak, it transcribes — no cloud, no API keys, no internet. All inference runs on-device: transcription on the Apple Neural Engine (Core ML), the GPU (Metal/whisper.cpp), or CPU (sherpa-onnx), and selected-text rewriting through a signed local-LLM helper process.

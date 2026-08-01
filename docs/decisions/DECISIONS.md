@@ -6,6 +6,27 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 ---
 
+## 2026-08-01: Production HAL ownership moves to a killable capture worker (#405)
+
+**Decision:** Production microphone enumeration and capture run only inside the
+signed managed capture worker over binary protocol v2. The worker exposes CPAL
+and direct AUHAL backends with one exact-device pre-buffer fallback. Callback
+PCM crosses a preallocated SPSC ring; the app validates capture identity,
+sequence, bounds, and sample rate before retaining it. Runtime failure
+transcribes retained prefixes of at least 500 ms and labels them interrupted.
+
+**Rationale:** Process isolation is the only reliable kill boundary for macOS
+HAL operations that can block synchronously. Strict framing and retained-prefix
+handling prevent isolation from trading a wedged app for silent audio loss or
+cross-generation corruption.
+
+**Status:** active
+
+**References:** issues #405, #408, #409, #410, #411, #412; ADR
+[`2026-08-01-production-capture-helper.md`](2026-08-01-production-capture-helper.md)
+
+---
+
 ## 2026-07-31: Capture recovery spike uses a per-user agent plus a killable worker (#407)
 
 **Decision:** Probe an `SMAppService` per-user LaunchAgent as the volatile

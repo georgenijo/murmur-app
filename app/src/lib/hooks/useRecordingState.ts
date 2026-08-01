@@ -6,9 +6,10 @@ import type { DictationStatus } from '../types';
 import { updateStats } from '../stats';
 import { flog } from '../log';
 import type { TeachingContext } from '../correctAndTeach';
+import type { HistoryInterruption } from '../history';
 
 interface UseRecordingStateProps {
-  addEntry: (text: string, duration: number, source?: 'recording' | 'file', sourceName?: string, teachingContext?: TeachingContext) => void;
+  addEntry: (text: string, duration: number, source?: 'recording' | 'file', sourceName?: string, teachingContext?: TeachingContext, interruption?: HistoryInterruption) => void;
   microphone: string;
 }
 
@@ -111,6 +112,13 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
     }).then((fn) => {
       if (cancelled) fn(); else unlistens.push(fn);
     });
+    listen<{ autoTranscribe?: boolean }>('recording-interrupted', (event) => {
+      setError(event.payload?.autoTranscribe
+        ? 'Microphone capture was interrupted. Murmur is transcribing the audio received so far.'
+        : 'Microphone capture was interrupted before enough audio was received.');
+    }).then((fn) => {
+      if (cancelled) fn(); else unlistens.push(fn);
+    });
     return () => {
       cancelled = true;
       unlistens.forEach((fn) => fn());
@@ -169,17 +177,17 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | null = null;
-    listen<{ text: string; duration: number; teachingContext?: TeachingContext }>('transcription-complete', (event) => {
+    listen<{ text: string; duration: number; teachingContext?: TeachingContext; interrupted?: HistoryInterruption }>('transcription-complete', (event) => {
       flog.info('recording', 'transcription-complete event', {
         textLen: event.payload.text?.length, duration: event.payload.duration,
         isStopping: isStoppingRef.current,
       });
       // Single source of truth for history entries — always handle here,
       // never in handleStop, to avoid race-condition duplicates.
-      const { text, duration, teachingContext } = event.payload;
+      const { text, duration, teachingContext, interrupted } = event.payload;
       if (text) {
         setTranscription(text);
-        addEntry(text, duration, 'recording', undefined, teachingContext);
+        addEntry(text, duration, 'recording', undefined, teachingContext, interrupted);
         updateStats(text, duration);
         setStatsVersion(v => v + 1);
       }

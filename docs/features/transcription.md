@@ -1,5 +1,20 @@
 # Transcription Pipeline
 
+## Process-isolated capture
+
+Microphone enumeration and streaming execute only in the signed
+`murmur-capture-worker`. Production protocol v2 binds every control and PCM
+frame to a capture ID and nonce and rejects stale, malformed, oversized,
+out-of-sequence, or sample-rate-changing input. The worker callback writes mono
+samples into a preallocated SPSC ring; the parent retains PCM before declaring
+readiness and calculates waveform levels locally.
+
+CPAL is the primary backend and direct AUHAL is the independent fallback. A
+single fallback is allowed only before any audio is retained and must target the
+same raw device UID. Once audio exists, failure ends capture without switching
+devices. Prefixes of at least 500 ms are transcribed normally, remain
+clipboard-first, and are marked **Interrupted · partial** in history.
+
 ## Overview
 
 ```

@@ -47,6 +47,7 @@ jobs:
               - 'scripts/validate_workflow_policy.py'
               - 'scripts/release_artifacts.py'
               - 'scripts/capture_agent_matrix.py'
+              - 'scripts/validate_capture_boundary.py'
               - 'tests/test_release_artifacts.py'
               - 'tests/test_workflow_policy.py'
               - 'tests/test_capture_agent_matrix.py'
@@ -54,6 +55,7 @@ jobs:
       - name: Validate workflow policy
         run: |
           python3 scripts/validate_workflow_policy.py
+          python3 scripts/validate_capture_boundary.py
           python3 -m unittest \
             tests/test_release_artifacts.py \
             tests/test_workflow_policy.py \

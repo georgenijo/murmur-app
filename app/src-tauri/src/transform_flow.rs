@@ -1277,6 +1277,11 @@ pub(crate) fn handle_audio_lifecycle(
                 .emit_state(ReviewState::Recovering, Some("audio_recovery_stalled"));
             }
         }
+        crate::audio_lifecycle::AudioLifecycleEvent::Interrupted { .. } => {
+            state.app_state.set_transform_status(TransformStatus::Idle);
+            state.app_state.clear_transform_pass(transform_pass_id);
+            let _ = app_handle.emit("transform-capture-failed", ());
+        }
         crate::audio_lifecycle::AudioLifecycleEvent::Idle => {}
     }
 }
