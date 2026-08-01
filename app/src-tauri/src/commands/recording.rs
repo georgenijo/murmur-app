@@ -2171,10 +2171,31 @@ pub fn clear_ide_context(
 /// Receive generation-scoped lifecycle notifications from the app-lifetime
 /// audio supervisor. The supervisor owns Core Audio and thread teardown; this
 /// bridge owns the dictation state/event/performance contract.
-pub(crate) fn handle_audio_lifecycle<R: tauri::Runtime>(
+pub(crate) fn handle_audio_lifecycle(
+    app_handle: tauri::AppHandle,
+    recording_id: u64,
+    event: AudioLifecycleEvent,
+) {
+    handle_audio_lifecycle_with(app_handle, recording_id, event, |app_handle, recording_id| {
+        tauri::async_runtime::spawn(async move {
+            let state = app_handle.state::<State>();
+            if let Err(error) = stop_native_recording(app_handle.clone(), state).await {
+                tracing::error!(
+                    target: "pipeline",
+                    recording_id,
+                    error = error.as_str(),
+                    "interrupted recording transcription failed"
+                );
+            }
+        });
+    });
+}
+
+fn handle_audio_lifecycle_with<R: tauri::Runtime>(
     app_handle: tauri::AppHandle<R>,
     recording_id: u64,
     event: AudioLifecycleEvent,
+    transcribe_interruption: impl FnOnce(tauri::AppHandle<R>, u64),
 ) {
     let state = app_handle.state::<State>();
     let is_current = || state.app_state.recording_id.load(Ordering::SeqCst) == recording_id;
@@ -2318,17 +2339,7 @@ pub(crate) fn handle_audio_lifecycle<R: tauri::Runtime>(
                 }),
             );
             if auto_transcribe {
-                tauri::async_runtime::spawn(async move {
-                    let state = app_handle.state::<State>();
-                    if let Err(error) = stop_native_recording(app_handle.clone(), state).await {
-                        tracing::error!(
-                            target: "pipeline",
-                            recording_id,
-                            error = error.as_str(),
-                            "interrupted recording transcription failed"
-                        );
-                    }
-                });
+                transcribe_interruption(app_handle.clone(), recording_id);
             } else {
                 let _ = audio_lifecycle::take_interrupted_dictation(recording_id);
                 state.app_state.clear_active_context(recording_id);
@@ -3356,12 +3367,13 @@ mod tests {
             });
         }
 
-        handle_audio_lifecycle(
+        handle_audio_lifecycle_with(
             app_handle.clone(),
             recording_id,
             AudioLifecycleEvent::Recovering {
                 reason: AudioCancelReason::RuntimeFailure,
             },
+            |_, _| {},
         );
         assert!(
             performance
@@ -3372,13 +3384,14 @@ mod tests {
             "runtime recovery must not prematurely persist a cancelled terminal"
         );
 
-        handle_audio_lifecycle(
+        handle_audio_lifecycle_with(
             app_handle,
             recording_id,
             AudioLifecycleEvent::InitializationFailed {
                 error: "typed runtime failure".to_string(),
                 kind: audio::AudioFailureKind::StreamInvalidated,
             },
+            |_, _| {},
         );
 
         assert_eq!(

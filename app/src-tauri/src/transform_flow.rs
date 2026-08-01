@@ -59,7 +59,7 @@ use crate::selection::{SelectionError, TransformSnapshot};
 use crate::state::{AppState, DictationStatus, TransformStatus};
 use crate::transform_apply::{self, ApplyError};
 use crate::MutexExt;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 /// Minimum hold before a transform-key release is treated as a real
 /// instruction rather than an accidental tap. Enforced frontend-side (the
