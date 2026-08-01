@@ -549,6 +549,7 @@ fn run_backend(
     let mut expected_sequence = 0_u64;
     let mut sample_rate = None;
     let mut retained_audio = false;
+    let mut first_callback_wait_started = None;
     let mut last_level_emit = Instant::now() - Duration::from_secs(1);
     let mut last_permission_check = Instant::now();
     loop {
@@ -653,7 +654,10 @@ fn run_backend(
                     let _ = event_sender.send(AudioWorkerEvent::PhaseExited {
                         owner,
                         phase: AudioInitPhase::FirstBufferWait,
-                        elapsed_ms: 0,
+                        elapsed_ms: first_callback_wait_started
+                            .take()
+                            .map(|started: Instant| started.elapsed().as_millis() as u64)
+                            .unwrap_or_default(),
                     });
                     let _ = event_sender.send(AudioWorkerEvent::FirstBuffer {
                         owner,
@@ -681,6 +685,9 @@ fn run_backend(
                     start_elapsed_ms = start_sent_at.elapsed().as_millis() as u64,
                     "capture helper phase received"
                 );
+                if phase == CapturePhase::AwaitingFirstCallback {
+                    first_callback_wait_started = Some(Instant::now());
+                }
                 let phase = match phase {
                     CapturePhase::Enumeration => AudioInitPhase::DeviceEnumeration,
                     CapturePhase::StreamOpen => AudioInitPhase::StreamBuild,

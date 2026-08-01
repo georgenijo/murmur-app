@@ -2157,6 +2157,24 @@ mod tests {
         wait_until("runtime-failed worker did not exit", || {
             !supervisor.public.is_active()
         });
+        assert_eq!(
+            sink.events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(_, event)| {
+                    matches!(
+                        event,
+                        AudioLifecycleEvent::InitializationFailed {
+                            kind: AudioFailureKind::DeviceBusy,
+                            ..
+                        }
+                    )
+                })
+                .count(),
+            1,
+            "transform runtime failure must be reported exactly once"
+        );
         shutdown(&supervisor);
     }
 
