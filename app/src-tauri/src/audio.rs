@@ -8,7 +8,7 @@ use std::fmt;
 use std::io::BufReader;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use tauri::Emitter;
@@ -267,12 +267,15 @@ fn spawn_helper(
     ),
     AudioFailure,
 > {
+    let resolve_started = Instant::now();
     let path = helper_path().map_err(|_| {
         AudioFailure::new(
             AudioFailureKind::HostUnavailable,
             AudioInitPhase::StreamBuild,
         )
     })?;
+    let resolve_ms = resolve_started.elapsed().as_millis() as u64;
+    let signature_started = Instant::now();
     if !cfg!(debug_assertions) {
         crate::code_signing::validate_bundled_helper(&path, CAPTURE_WORKER_IDENTIFIER).map_err(
             |_| {
@@ -283,8 +286,10 @@ fn spawn_helper(
             },
         )?;
     }
+    let signature_ms = signature_started.elapsed().as_millis() as u64;
     let capture_id_text = capture_id.to_string();
-    ManagedChild::spawn_with_arguments(
+    let spawn_started = Instant::now();
+    let child = ManagedChild::spawn_with_arguments(
         &path,
         &["--production-v2", &capture_id_text, nonce_hex],
         &[],
@@ -294,7 +299,16 @@ fn spawn_helper(
             AudioFailureKind::HostUnavailable,
             AudioInitPhase::StreamBuild,
         )
-    })
+    })?;
+    tracing::info!(
+        target: "audio",
+        capture_id,
+        resolve_ms,
+        signature_ms,
+        spawn_ms = spawn_started.elapsed().as_millis() as u64,
+        "capture helper process spawned"
+    );
+    Ok(child)
 }
 
 fn read_control_frame_with_deadline(
@@ -354,17 +368,290 @@ fn hello(
     }
 }
 
-pub fn list_input_devices() -> Result<Vec<AudioDeviceDescriptor>, String> {
+struct PreparedHelper {
+    child: ManagedChild,
+    input: std::process::ChildStdin,
+    output: BufReader<std::process::ChildStdout>,
+    capture_id: u64,
+    nonce: SessionNonce,
+    prepared_at: Instant,
+}
+
+fn prepare_helper() -> Result<PreparedHelper, AudioFailure> {
+    let total_started = Instant::now();
     let (capture_id, nonce, nonce_hex) = capture_identity();
-    let (mut child, mut input, output) =
-        spawn_helper(capture_id, &nonce_hex).map_err(|failure| failure.to_string())?;
+    let (mut child, mut input, output) = spawn_helper(capture_id, &nonce_hex)?;
+    let hello_started = Instant::now();
     let output = match hello(&mut input, output, capture_id, nonce) {
         Ok(output) => output,
         Err(failure) => {
             let _ = child.hard_kill_confirmed(Instant::now() + HELPER_STOP_DEADLINE);
-            return Err(failure.to_string());
+            return Err(failure);
         }
     };
+    tracing::info!(
+        target: "audio",
+        capture_id,
+        hello_ms = hello_started.elapsed().as_millis() as u64,
+        total_ms = total_started.elapsed().as_millis() as u64,
+        "capture helper prepared with microphone closed"
+    );
+    Ok(PreparedHelper {
+        child,
+        input,
+        output,
+        capture_id,
+        nonce,
+        prepared_at: Instant::now(),
+    })
+}
+
+enum CaptureWorkerPoolState {
+    Idle,
+    Preparing,
+    Standby(PreparedHelper),
+    Active,
+    Shutdown,
+}
+
+struct CaptureWorkerPool {
+    state: Mutex<CaptureWorkerPoolState>,
+    changed: Condvar,
+}
+
+impl CaptureWorkerPool {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(CaptureWorkerPoolState::Idle),
+            changed: Condvar::new(),
+        }
+    }
+
+    fn prewarm(&'static self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !matches!(*state, CaptureWorkerPoolState::Idle) {
+            return;
+        }
+        *state = CaptureWorkerPoolState::Preparing;
+        drop(state);
+        if thread::Builder::new()
+            .name("murmur-capture-prewarm".to_string())
+            .spawn(move || {
+                let result = prepare_helper();
+                let mut state = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                match (&*state, result) {
+                    (CaptureWorkerPoolState::Preparing, Ok(helper)) => {
+                        tracing::info!(
+                            target: "audio",
+                            capture_id = helper.capture_id,
+                            "capture helper standby ready"
+                        );
+                        *state = CaptureWorkerPoolState::Standby(helper);
+                    }
+                    (CaptureWorkerPoolState::Preparing, Err(failure)) => {
+                        tracing::warn!(
+                            target: "audio",
+                            error_kind = failure.kind.as_str(),
+                            "capture helper standby preparation failed; next recording will retry"
+                        );
+                        *state = CaptureWorkerPoolState::Idle;
+                    }
+                    (_, Ok(helper)) => drop(helper),
+                    (_, Err(_)) => {}
+                }
+                self.changed.notify_all();
+            })
+            .is_err()
+        {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if matches!(*state, CaptureWorkerPoolState::Preparing) {
+                *state = CaptureWorkerPoolState::Idle;
+            }
+            self.changed.notify_all();
+        }
+    }
+
+    fn acquire(&'static self) -> Result<CaptureWorkerLease, AudioFailure> {
+        let wait_started = Instant::now();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        loop {
+            match &*state {
+                CaptureWorkerPoolState::Idle => {
+                    *state = CaptureWorkerPoolState::Active;
+                    drop(state);
+                    tracing::info!(
+                        target: "audio",
+                        wait_ms = wait_started.elapsed().as_millis() as u64,
+                        source = "cold",
+                        "capture helper lease acquired"
+                    );
+                    return Ok(CaptureWorkerLease {
+                        pool: self,
+                        prepared: None,
+                    });
+                }
+                CaptureWorkerPoolState::Preparing => {
+                    let (next_state, timeout) = self
+                        .changed
+                        .wait_timeout(state, HELPER_CONTROL_DEADLINE)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    state = next_state;
+                    if timeout.timed_out()
+                        && matches!(*state, CaptureWorkerPoolState::Preparing)
+                    {
+                        return Err(AudioFailure::new(
+                            AudioFailureKind::InitializationTimeout,
+                            AudioInitPhase::StreamBuild,
+                        ));
+                    }
+                }
+                CaptureWorkerPoolState::Standby(_) => {
+                    let CaptureWorkerPoolState::Standby(mut helper) =
+                        std::mem::replace(&mut *state, CaptureWorkerPoolState::Active)
+                    else {
+                        unreachable!();
+                    };
+                    drop(state);
+                    let alive = matches!(helper.child.try_wait(), Ok(None));
+                    if alive {
+                        tracing::info!(
+                            target: "audio",
+                            capture_id = helper.capture_id,
+                            wait_ms = wait_started.elapsed().as_millis() as u64,
+                            standby_age_ms = helper.prepared_at.elapsed().as_millis() as u64,
+                            source = "standby",
+                            "capture helper lease acquired"
+                        );
+                        return Ok(CaptureWorkerLease {
+                            pool: self,
+                            prepared: Some(helper),
+                        });
+                    }
+                    tracing::warn!(
+                        target: "audio",
+                        capture_id = helper.capture_id,
+                        "capture helper standby exited before acquisition; using cold replacement"
+                    );
+                    drop(helper);
+                    return Ok(CaptureWorkerLease {
+                        pool: self,
+                        prepared: None,
+                    });
+                }
+                CaptureWorkerPoolState::Active => {
+                    return Err(AudioFailure::new(
+                        AudioFailureKind::DeviceBusy,
+                        AudioInitPhase::StreamBuild,
+                    ));
+                }
+                CaptureWorkerPoolState::Shutdown => {
+                    return Err(AudioFailure::new(
+                        AudioFailureKind::HostUnavailable,
+                        AudioInitPhase::StreamBuild,
+                    ));
+                }
+            }
+        }
+    }
+
+    fn release(&'static self) {
+        let should_prewarm = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if matches!(*state, CaptureWorkerPoolState::Active) {
+                *state = CaptureWorkerPoolState::Idle;
+                self.changed.notify_all();
+                true
+            } else {
+                false
+            }
+        };
+        if should_prewarm {
+            self.prewarm();
+        }
+    }
+
+    fn shutdown(&'static self) {
+        let previous = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            std::mem::replace(&mut *state, CaptureWorkerPoolState::Shutdown)
+        };
+        self.changed.notify_all();
+        if let CaptureWorkerPoolState::Standby(helper) = previous {
+            tracing::info!(
+                target: "audio",
+                capture_id = helper.capture_id,
+                "stopping capture helper standby during app shutdown"
+            );
+            drop(helper);
+        }
+    }
+}
+
+struct CaptureWorkerLease {
+    pool: &'static CaptureWorkerPool,
+    prepared: Option<PreparedHelper>,
+}
+
+impl CaptureWorkerLease {
+    fn take_or_prepare(&mut self) -> Result<PreparedHelper, AudioFailure> {
+        self.prepared.take().map_or_else(prepare_helper, Ok)
+    }
+}
+
+impl Drop for CaptureWorkerLease {
+    fn drop(&mut self) {
+        // Never schedule the replacement while an unused standby is still
+        // alive (for example when TCC was already denied before Start).
+        drop(self.prepared.take());
+        self.pool.release();
+    }
+}
+
+fn capture_worker_pool() -> &'static CaptureWorkerPool {
+    static POOL: OnceLock<CaptureWorkerPool> = OnceLock::new();
+    POOL.get_or_init(CaptureWorkerPool::new)
+}
+
+pub(crate) fn prepare_capture_worker() {
+    capture_worker_pool().prewarm();
+}
+
+pub(crate) fn shutdown_capture_worker() {
+    capture_worker_pool().shutdown();
+}
+
+pub fn list_input_devices() -> Result<Vec<AudioDeviceDescriptor>, String> {
+    let mut lease = capture_worker_pool()
+        .acquire()
+        .map_err(|failure| failure.to_string())?;
+    let PreparedHelper {
+        mut child,
+        mut input,
+        output,
+        capture_id,
+        nonce,
+        ..
+    } = lease
+        .take_or_prepare()
+        .map_err(|failure| failure.to_string())?;
     if write_production_control(
         &mut input,
         capture_id,
@@ -425,6 +712,7 @@ enum AttemptResult {
 }
 
 fn run_backend(
+    lease: &mut CaptureWorkerLease,
     owner: crate::audio_lifecycle::AudioOwner,
     backend: CaptureBackend,
     device_id: Option<&str>,
@@ -446,8 +734,14 @@ fn run_backend(
             retained_audio: false,
         };
     }
-    let (capture_id, nonce, nonce_hex) = capture_identity();
-    let (mut child, mut input, output) = match spawn_helper(capture_id, &nonce_hex) {
+    let PreparedHelper {
+        mut child,
+        mut input,
+        output,
+        capture_id,
+        nonce,
+        ..
+    } = match lease.take_or_prepare() {
         Ok(value) => value,
         Err(failure) => {
             return AttemptResult::Failed {
@@ -456,16 +750,7 @@ fn run_backend(
             }
         }
     };
-    let output = match hello(&mut input, output, capture_id, nonce) {
-        Ok(output) => output,
-        Err(failure) => {
-            let _ = child.hard_kill_confirmed(Instant::now() + HELPER_STOP_DEADLINE);
-            return AttemptResult::Failed {
-                failure,
-                retained_audio: false,
-            };
-        }
-    };
+    let start_sent_at = Instant::now();
     if write_production_control(
         &mut input,
         capture_id,
@@ -483,6 +768,16 @@ fn run_backend(
             retained_audio: false,
         };
     }
+    tracing::info!(
+        target: "audio",
+        capture_id,
+        backend = match backend {
+            CaptureBackend::Cpal => "cpal",
+            CaptureBackend::Auhal => "auhal",
+        },
+        start_write_ms = start_sent_at.elapsed().as_millis() as u64,
+        "capture helper start sent"
+    );
 
     let (reader_tx, reader_rx) = mpsc::channel();
     thread::spawn(move || {
@@ -502,10 +797,6 @@ fn run_backend(
         }
     });
 
-    let _ = event_sender.send(AudioWorkerEvent::PhaseEntered {
-        owner,
-        phase: AudioInitPhase::StreamBuild,
-    });
     let mut expected_sequence = 0_u64;
     let mut sample_rate = None;
     let mut retained_audio = false;
@@ -514,6 +805,7 @@ fn run_backend(
     loop {
         match command_receiver.try_recv() {
             Ok(AudioCommand::Stop) | Err(mpsc::TryRecvError::Disconnected) => {
+                let stop_started = Instant::now();
                 let _ = write_production_control(
                     &mut input,
                     capture_id,
@@ -525,6 +817,12 @@ fn run_backend(
                     .wait_for_exit(Instant::now() + HELPER_STOP_DEADLINE)
                     .or_else(|| child.hard_kill_confirmed(Instant::now() + HELPER_STOP_DEADLINE));
                 if termination.is_some() {
+                    tracing::info!(
+                        target: "audio",
+                        capture_id,
+                        stop_to_exit_ms = stop_started.elapsed().as_millis() as u64,
+                        "capture helper stopped and exited"
+                    );
                     let _ = event_sender.send(AudioWorkerEvent::StreamStopped { owner });
                     return AttemptResult::Stopped;
                 }
@@ -597,6 +895,12 @@ fn run_backend(
                     .extend_from_slice(&pcm.samples);
                 if !retained_audio {
                     retained_audio = true;
+                    tracing::info!(
+                        target: "audio",
+                        capture_id,
+                        start_to_first_pcm_ms = start_sent_at.elapsed().as_millis() as u64,
+                        "capture helper first PCM retained"
+                    );
                     let _ = event_sender.send(AudioWorkerEvent::PhaseExited {
                         owner,
                         phase: AudioInitPhase::FirstBufferWait,
@@ -620,6 +924,17 @@ fn run_backend(
                 phase,
                 ..
             }))) => {
+                tracing::info!(
+                    target: "audio",
+                    capture_id,
+                    backend = match backend {
+                        CaptureBackend::Cpal => "cpal",
+                        CaptureBackend::Auhal => "auhal",
+                    },
+                    worker_phase = ?phase,
+                    start_elapsed_ms = start_sent_at.elapsed().as_millis() as u64,
+                    "capture helper phase received"
+                );
                 let phase = match phase {
                     CapturePhase::Enumeration => AudioInitPhase::DeviceEnumeration,
                     CapturePhase::StreamOpen => AudioInitPhase::StreamBuild,
@@ -683,11 +998,19 @@ fn run_audio_capture(spec: AudioWorkerSpec, event_sender: &AudioWorkerEventSende
         app_handle,
         device_id,
     } = spec;
+    let mut lease = match capture_worker_pool().acquire() {
+        Ok(lease) => lease,
+        Err(failure) => {
+            let _ = event_sender.send(AudioWorkerEvent::InitFailed { owner, failure });
+            return;
+        }
+    };
     for (attempt_index, backend) in [CaptureBackend::Cpal, CaptureBackend::Auhal]
         .into_iter()
         .enumerate()
     {
         match run_backend(
+            &mut lease,
             owner,
             backend,
             device_id.as_deref(),

@@ -101,7 +101,7 @@ python3 scripts/build_local_llm_sidecar.py   # required first on macOS
 
 cd app
 npm install
-npm run tauri dev        # Dev with hot reload
+npm run tauri:dev        # Dev with hot reload and isolated dev bundle/data
 npm run tauri build      # Production .app and .dmg
 ```
 

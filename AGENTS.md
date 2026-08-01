@@ -6,7 +6,7 @@ Privacy-first macOS voice-to-text app. Tauri 2 (Rust + React). Local transcripti
 
 ```bash
 python3 scripts/build_local_llm_sidecar.py  # Build the bundled macOS helpers FIRST (see note)
-cd app && npm run tauri dev        # Dev with hot reload
+cd app && npm run tauri:dev        # Dev with hot reload and isolated dev bundle/data
 cd app && npm run tauri build      # Production .app and .dmg
 cd app/src-tauri && cargo test -- --test-threads=1  # Rust unit tests
 cd app && npx tsc --noEmit         # TypeScript check
@@ -188,7 +188,7 @@ Read these before working on a feature:
 
 ## MCP Tools
 
-- **Playwright** (`@playwright/mcp`): Browser automation for UI work. When making frontend/UI changes, use `browser_navigate` to `http://localhost:1420` and `browser_take_screenshot` to visually verify your changes. Requires `npm run tauri dev` to be running. Screenshots return inline as images — evaluate them and iterate until the UI looks right.
+- **Playwright** (`@playwright/mcp`): Browser automation for UI work. When making frontend/UI changes, use `browser_navigate` to `http://localhost:1420` and `browser_take_screenshot` to visually verify your changes. Requires `npm run tauri:dev` to be running. Screenshots return inline as images — evaluate them and iterate until the UI looks right.
 
 ## Dependencies
 
