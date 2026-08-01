@@ -168,6 +168,8 @@ fn cpal_device(requested: Option<&str>) -> Result<cpal::Device, FailureCode> {
         let devices = host
             .input_devices()
             .map_err(|_| FailureCode::EnumerationFailed)?;
+        let mut exact_match = None;
+        let mut legacy_matches = Vec::new();
         for device in devices {
             let id_matches = device
                 .id()
@@ -179,11 +181,18 @@ fn cpal_device(requested: Option<&str>) -> Result<cpal::Device, FailureCode> {
                 .ok()
                 .map(|description| description.name().to_string() == requested)
                 .unwrap_or(false);
-            if id_matches || name_matches {
-                return Ok(device);
+            if id_matches {
+                exact_match = Some(device);
+            } else if name_matches {
+                legacy_matches.push(device);
             }
         }
-        Err(FailureCode::NoInputDevice)
+        exact_match
+            .or_else(|| {
+                (legacy_matches.len() == 1)
+                    .then(|| legacy_matches.into_iter().next().expect("length checked"))
+            })
+            .ok_or(FailureCode::NoInputDevice)
     } else {
         host.default_input_device()
             .ok_or(FailureCode::NoInputDevice)
