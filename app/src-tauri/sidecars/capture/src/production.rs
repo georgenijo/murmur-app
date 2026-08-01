@@ -397,6 +397,16 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
                     return Ok(());
                 }
             };
+            write_production_control(
+                &mut stdout,
+                capture_id,
+                nonce,
+                &ProductionHelperMessage::Phase {
+                    phase: CapturePhase::AwaitingFirstCallback,
+                    backend,
+                },
+            )
+            .map_err(|_| ())?;
             let (control_tx, control_rx) = mpsc::channel();
             std::thread::spawn(move || {
                 let mut input = std::io::stdin().lock();
@@ -460,6 +470,18 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
                 }
                 let count = ring.drain(&mut scratch);
                 if count > 0 {
+                    if retained == 0 {
+                        write_production_control(
+                            &mut stdout,
+                            capture_id,
+                            nonce,
+                            &ProductionHelperMessage::Phase {
+                                phase: CapturePhase::Active,
+                                backend,
+                            },
+                        )
+                        .map_err(|_| ())?;
+                    }
                     if fault == Some("sequence-gap") && sequence == 2 {
                         sequence += 1;
                     }

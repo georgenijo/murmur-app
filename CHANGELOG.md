@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- macOS microphone startup now tries the direct AUHAL capture path before CPAL,
+  avoiding an unbounded CPAL stream-open stall observed with healthy USB default
+  inputs. Content-free phase timings distinguish helper launch, stream open,
+  first callback, first retained PCM, and stop-to-exit latency (#426).
+
 ### Added
 
 - Production microphone capture now runs behind a signed, killable helper with

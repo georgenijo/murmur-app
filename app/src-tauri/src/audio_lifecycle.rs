@@ -754,13 +754,18 @@ fn handle_worker_event(
                 current.phase,
                 AttemptPhase::Starting | AttemptPhase::Recording
             ) {
-                current.failure = Some(failure);
+                current.failure = Some(failure.clone());
+                // Dictation reports a retained prefix through Interrupted at
+                // worker exit. Transform audio has no partial-transcript path,
+                // so preserve its typed, content-free failure before recovery.
+                let report_failure =
+                    matches!(current.owner, AudioOwner::Transform(_)).then_some(failure);
                 begin_recovery(
                     attempt,
                     AudioCancelReason::RuntimeFailure,
                     sink,
                     public,
-                    None,
+                    report_failure,
                 );
             }
         }

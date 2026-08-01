@@ -179,6 +179,7 @@ describe('useRecordingState transition ordering', () => {
       'recording',
       undefined,
       { appBundleId: 'com.example.Editor', appLabel: 'Editor' },
+      undefined,
     );
     expect(mocks.updateStats).toHaveBeenCalledTimes(1);
     expect(mocks.updateStats).toHaveBeenCalledWith('one final transcript', 12);

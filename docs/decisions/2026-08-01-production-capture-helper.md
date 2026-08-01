@@ -2,7 +2,7 @@
 
 Date: 2026-08-01  
 Status: active  
-Issues: #405, #408, #409, #410, #411, #412
+Issues: #405, #408, #409, #410, #411, #412, #426
 
 ## Decision
 
@@ -12,11 +12,18 @@ production protocol v2. Every frame carries a monotonic capture ID and a random
 128-bit nonce. Control payloads are bounded JSON; audio is bounded binary mono
 `f32` PCM with a strict sequence and sample rate.
 
-The worker offers two independent macOS capture implementations: CPAL/CoreAudio
-and direct AUHAL. A failed backend may fall back once, and only before the first
-PCM buffer is retained. It must reuse the exact raw device UID. After retained
-audio, any gap, malformed frame, overflow, backend error, stall, or process exit
-terminates capture and preserves the delivered prefix.
+The worker offers two independent macOS capture implementations: direct AUHAL
+and CPAL/CoreAudio. macOS tries direct AUHAL first because CPAL's synchronous
+stream builder can remain blocked on a healthy USB default input; CPAL remains
+the exact-device fallback. A failed backend may fall back once, and only before
+the first PCM buffer is retained. It must reuse the exact raw device UID. After
+retained audio, any gap, malformed frame, overflow, backend error, stall, or
+process exit terminates capture and preserves the delivered prefix.
+
+The worker reports content-free phases after stream open and immediately before
+the first retained callback. Together with host-side helper launch, first-PCM,
+and stop-to-exit timings, this separates process overhead from HAL/device latency
+without logging microphone content.
 
 The real-time callback only converts to mono and writes into a preallocated
 eight-second SPSC ring. A non-real-time writer drains the ring into protocol

@@ -469,7 +469,6 @@ pub fn run() {
             // to re-detect notch info and reposition the overlay.
             commands::overlay::register_screen_change_observer(app.handle().clone());
             audio_lifecycle::register_sleep_wake_observer();
-            audio::prepare_capture_worker();
             commands::tray::register_update_wake_observer(app.handle().clone());
 
             // Overwrite the transform-review window's initial size from Rust's
@@ -573,7 +572,6 @@ pub fn run() {
         // outlives the app (no-op when no child is running).
         #[cfg(target_os = "macos")]
         if let RunEvent::Exit = &_event {
-            audio::shutdown_capture_worker();
             if let Some(state) = _app_handle.try_state::<State>() {
                 state.transform_runtime.shutdown();
             }
