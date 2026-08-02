@@ -115,9 +115,60 @@ Then update its notes:
    ```
    Write the notes yourself from the commit list in Step 3 — use clear, user-facing language (not raw commit messages). Omit any section that has no entries. Skip `chore:`, `docs:`, `test:` commits.
 
-## 7. Hand Off
+## 7. Validate Post-Release Production Latency
+
+For any release that changes capture, transcription, delivery, model runtime,
+or performance-sensitive dependencies, the release is published but its
+performance validation remains pending until natural production use exists.
+
+1. Ask the user to make at least three normal prompts in the updated production
+   app. Do not generate synthetic prompts, drive another Mac's UI, or run a
+   second app build for this check.
+2. With the user's authorization to read that machine, confirm the installed
+   app version and isolate the exact session beginning at
+   `app setup — Murmur v{new_version}` in:
+   - `~/Library/Application Support/local-dictation/logs/events.jsonl`
+   - `~/Library/Application Support/com.localdictation/diagnostics/performance.sqlite3`
+3. From content-free events, collect per recording:
+   - helper resolve/signature/spawn time;
+   - stream-open and first-callback phases;
+   - start-to-first-retained-PCM and total audio-readiness time;
+   - stop-to-worker-exit;
+   - fallback, capture failure, zero-sample, stale-worker, or overlapping-owner
+     evidence.
+4. From `completed_runs.payload_json`, collect the matching app-version's
+   successful dictation stages:
+   - capture finalization, VAD, model queue/load, inference/decode;
+   - transcript transform, clipboard/paste, and total post-stop processing;
+   - warm/cold state, audio/output-size bucket, and bounded resource summaries.
+5. Compare only compatible same-machine production cohorts. Match run kind,
+   model/backend/accelerator, warm state, microphone transport/selection class
+   where available, and input/output-size bucket. Do not compare dev with
+   production, simultaneous app runs, different machines, or incompatible
+   configurations as if they were a regression result.
+6. Report sample count and every raw value when fewer than 20 compatible runs
+   exist. A median is allowed for a small sample, but label it preliminary.
+   Never report or compare p95/p99 with fewer than 20 runs per cohort.
+7. Flag a preliminary median regression only when it is both greater than
+   20 ms absolute and 15% relative. With at least 20 compatible runs, flag a
+   p95 regression when it is both greater than 30 ms absolute and 20% relative.
+   Any new capture failure, fallback, zero-sample success, stale worker, or
+   overlapping helper is a regression regardless of sample count.
+8. Record the comparison in the release handoff and link it to
+   [#430](https://github.com/georgenijo/murmur-app/issues/430) until the in-app
+   production-version comparison is authoritative.
+
+The Diagnostics Reports tab is not a substitute for this check: it compares
+Performance Lab or evaluation reports, not retained production dictation runs.
+Follow `docs/features/performance-diagnostics.md` for the local run contract and
+privacy boundaries. Never inspect or report transcript, clipboard, or audio
+content while doing this comparison.
+
+## 8. Hand Off
 
 Tell the user:
 - Exact commit, build run, promotion run, tag, and release URLs
 - The signed build passed and GitHub automatically promoted its exact artifacts
 - The release is published at: `https://github.com/georgenijo/murmur-app/releases`
+- The production-latency comparison result, or clearly state that it is pending
+  natural prompts on an explicitly authorized updated machine
