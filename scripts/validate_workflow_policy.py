@@ -196,6 +196,17 @@ def validate_release_build(workflow: str) -> int:
         "--capture-worker-entitlements app/src-tauri/capture-worker.entitlements.plist"
         in workflow
     )
+    worker_smoke = named_step_block(
+        workflow, "Smoke test signed capture worker protocol", 6
+    )
+    assert "scripts/smoke_test_capture_worker.py" in worker_smoke
+    assert '--worker "$CAPTURE_WORKER"' in worker_smoke
+    assert workflow.index("Finalize, notarize, and repackage") < workflow.index(
+        "Smoke test signed capture worker protocol"
+    )
+    assert workflow.index("Smoke test signed capture worker protocol") < workflow.index(
+        "Smoke test signed application"
+    )
     assert (
         "--capture-agent-launchd-plist "
         "app/src-tauri/macos/com.localdictation.capture-agent.plist"

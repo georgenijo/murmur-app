@@ -38,6 +38,10 @@ Each successful build uploads these 30-day artifacts:
 
 Release binaries retain the Tauri bundle-type marker (Cargo release stripping
 is disabled) so the updater can distinguish the deb and AppImage packages.
+After final signing and notarization, the release job launches the exact packaged
+capture worker, completes its production-v2 hello handshake, sends a bounded
+AUHAL start request, and requires the worker's stream-open phase. This catches
+sandbox or entitlement failures that static plist and signature checks cannot.
 
 Each artifact contains `provenance.json` with the exact commit SHA, workflow
 run ID, platform/updater names, sizes, and SHA-256 hashes. Promotion accepts one
