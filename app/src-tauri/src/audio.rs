@@ -51,6 +51,7 @@ pub(crate) enum AudioFailureKind {
     RealtimeDenied,
     Xrun,
     BackendError,
+    ProtocolError,
     FirstBufferTimeout,
     InitializationTimeout,
     WorkerPanicked,
@@ -73,6 +74,7 @@ impl AudioFailureKind {
             Self::RealtimeDenied => "realtime_denied",
             Self::Xrun => "xrun",
             Self::BackendError => "backend_error",
+            Self::ProtocolError => "protocol_error",
             Self::FirstBufferTimeout => "first_buffer_timeout",
             Self::InitializationTimeout => "initialization_timeout",
             Self::WorkerPanicked => "worker_panicked",
@@ -124,8 +126,20 @@ impl AudioFailure {
             AudioFailureKind::SignatureInvalid => {
                 "The bundled microphone capture worker failed integrity validation."
             }
+            AudioFailureKind::ProtocolError => {
+                "The bundled microphone capture worker failed to start. Restart Murmur and try again."
+            }
             _ => "Microphone capture failed. Try recording again.",
         }
+    }
+
+    fn permits_backend_fallback(&self) -> bool {
+        !matches!(
+            self.kind,
+            AudioFailureKind::PermissionDenied
+                | AudioFailureKind::ProtocolError
+                | AudioFailureKind::SignatureInvalid
+        )
     }
 }
 
@@ -141,7 +155,7 @@ fn failure_kind(code: FailureCode) -> AudioFailureKind {
         FailureCode::NoInputDevice => AudioFailureKind::DeviceUnavailable,
         FailureCode::ConfigurationFailed => AudioFailureKind::UnsupportedConfig,
         FailureCode::CallbackStalled => AudioFailureKind::FirstBufferTimeout,
-        FailureCode::InvalidMessage => AudioFailureKind::InvalidInput,
+        FailureCode::InvalidMessage => AudioFailureKind::ProtocolError,
         FailureCode::EnumerationFailed => AudioFailureKind::HostUnavailable,
         FailureCode::StreamError => AudioFailureKind::StreamInvalidated,
         FailureCode::StreamOpenFailed | FailureCode::StreamStartFailed | FailureCode::Internal => {
@@ -343,9 +357,9 @@ fn read_control_frame_with_deadline(
                 AudioInitPhase::StreamBuild,
             )
         })?;
-    frame
-        .map(|frame| (frame, output))
-        .map_err(|_| AudioFailure::new(AudioFailureKind::InvalidInput, AudioInitPhase::StreamBuild))
+    frame.map(|frame| (frame, output)).map_err(|_| {
+        AudioFailure::new(AudioFailureKind::ProtocolError, AudioInitPhase::StreamBuild)
+    })
 }
 
 fn hello(
@@ -355,14 +369,14 @@ fn hello(
     nonce: SessionNonce,
 ) -> Result<BufReader<std::process::ChildStdout>, AudioFailure> {
     write_production_control(input, capture_id, nonce, &ProductionHostMessage::Hello).map_err(
-        |_| AudioFailure::new(AudioFailureKind::BackendError, AudioInitPhase::StreamBuild),
+        |_| AudioFailure::new(AudioFailureKind::ProtocolError, AudioInitPhase::StreamBuild),
     )?;
     let (frame, output) =
         read_control_frame_with_deadline(BufReader::new(output), capture_id, nonce)?;
     match frame {
         ProductionFrame::Control(ProductionHelperMessage::HelloAck) => Ok(output),
         _ => Err(AudioFailure::new(
-            AudioFailureKind::InvalidInput,
+            AudioFailureKind::ProtocolError,
             AudioInitPhase::StreamBuild,
         )),
     }
@@ -516,7 +530,10 @@ fn run_backend(
     {
         let _ = child.hard_kill_confirmed(Instant::now() + HELPER_STOP_DEADLINE);
         return AttemptResult::Failed {
-            failure: AudioFailure::new(AudioFailureKind::BackendError, AudioInitPhase::StreamBuild),
+            failure: AudioFailure::new(
+                AudioFailureKind::ProtocolError,
+                AudioInitPhase::StreamBuild,
+            ),
             retained_audio: false,
         };
     }
@@ -631,7 +648,7 @@ fn run_backend(
                     let _ = child.hard_kill_confirmed(Instant::now() + HELPER_STOP_DEADLINE);
                     return AttemptResult::Failed {
                         failure: AudioFailure::new(
-                            AudioFailureKind::InvalidInput,
+                            AudioFailureKind::ProtocolError,
                             AudioInitPhase::Runtime,
                         ),
                         retained_audio,
@@ -727,7 +744,7 @@ fn run_backend(
             Ok(HelperRead::Invalid) | Err(RecvTimeoutError::Disconnected) => {
                 return AttemptResult::Failed {
                     failure: AudioFailure::new(
-                        AudioFailureKind::InvalidInput,
+                        AudioFailureKind::ProtocolError,
                         if retained_audio {
                             AudioInitPhase::Runtime
                         } else {
@@ -767,11 +784,7 @@ fn run_audio_capture(spec: AudioWorkerSpec, event_sender: &AudioWorkerEventSende
             AttemptResult::Failed {
                 failure,
                 retained_audio,
-            } if !retained_audio
-                && attempt_index == 0
-                && failure.kind != AudioFailureKind::PermissionDenied
-                && failure.kind != AudioFailureKind::SignatureInvalid =>
-            {
+            } if !retained_audio && attempt_index == 0 && failure.permits_backend_fallback() => {
                 tracing::warn!(
                     target: "audio",
                     owner = owner.telemetry_id(),
@@ -873,5 +886,30 @@ mod tests {
             preferred_backends(),
             [CaptureBackend::Cpal, CaptureBackend::Auhal]
         );
+    }
+
+    #[test]
+    fn worker_protocol_failures_are_actionable_and_terminal() {
+        let failure =
+            AudioFailure::new(AudioFailureKind::ProtocolError, AudioInitPhase::StreamBuild);
+
+        assert_eq!(failure.kind.as_str(), "protocol_error");
+        assert_eq!(
+            failure.user_message(),
+            "The bundled microphone capture worker failed to start. Restart Murmur and try again."
+        );
+        assert!(!failure.permits_backend_fallback());
+    }
+
+    #[test]
+    fn device_configuration_failures_still_permit_bounded_backend_fallback() {
+        for kind in [
+            AudioFailureKind::DeviceUnavailable,
+            AudioFailureKind::InvalidInput,
+            AudioFailureKind::UnsupportedConfig,
+            AudioFailureKind::BackendError,
+        ] {
+            assert!(AudioFailure::new(kind, AudioInitPhase::StreamBuild).permits_backend_fallback());
+        }
     }
 }

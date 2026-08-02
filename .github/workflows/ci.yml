@@ -47,10 +47,12 @@ jobs:
               - 'scripts/validate_workflow_policy.py'
               - 'scripts/release_artifacts.py'
               - 'scripts/capture_agent_matrix.py'
+              - 'scripts/smoke_test_capture_worker.py'
               - 'scripts/validate_capture_boundary.py'
               - 'tests/test_release_artifacts.py'
               - 'tests/test_workflow_policy.py'
               - 'tests/test_capture_agent_matrix.py'
+              - 'tests/test_capture_worker_smoke.py'
 
       - name: Validate workflow policy
         run: |
@@ -59,7 +61,8 @@ jobs:
           python3 -m unittest \
             tests/test_release_artifacts.py \
             tests/test_workflow_policy.py \
-            tests/test_capture_agent_matrix.py
+            tests/test_capture_agent_matrix.py \
+            tests/test_capture_worker_smoke.py
 
   typecheck:
     needs: changes

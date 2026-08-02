@@ -232,6 +232,12 @@ jobs:
           xcrun stapler validate "$APP"
           spctl --assess --type execute -vvv "$APP"
 
+      - name: Smoke test signed capture worker protocol
+        run: |
+          APP=$(find app/src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)
+          CAPTURE_WORKER="$APP/Contents/MacOS/murmur-capture-worker"
+          python3 scripts/smoke_test_capture_worker.py --worker "$CAPTURE_WORKER"
+
       - name: Smoke test signed application
         run: |
           APP=$(find app/src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)

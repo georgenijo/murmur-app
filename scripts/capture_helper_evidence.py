@@ -35,7 +35,8 @@ CAPTURE_AGENT_ENTITLEMENTS = {
 }
 CAPTURE_WORKER_ENTITLEMENTS = {
     "com.apple.security.app-sandbox": True,
-    "com.apple.security.inherit": True,
+    "com.apple.security.device.audio-input": True,
+    "com.apple.security.device.microphone": True,
 }
 PROBE_FIELDS = {
     "schema_version",

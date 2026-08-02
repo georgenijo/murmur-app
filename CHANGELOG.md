@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- The signed production capture worker now uses standalone microphone sandbox
+  entitlements instead of invalid inheritance, preventing macOS from terminating
+  it before protocol startup. Release builds execute the final packaged worker's
+  hello/start handshake, and protocol startup failures no longer appear as
+  unsupported microphone configurations or retry another backend (#428).
 - macOS microphone startup now tries the direct AUHAL capture path before CPAL,
   avoiding an unbounded CPAL stream-open stall observed with healthy USB default
   inputs. Content-free phase timings distinguish helper launch, stream open,
