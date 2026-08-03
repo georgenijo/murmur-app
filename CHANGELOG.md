@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- Settings now uses the full workspace below the status bar: dashboard usage
+  cards hide while Settings is open, and Performance begins directly with its
+  diagnostics tabs instead of repeating a page title (#441).
 - Settings now separates the local model **Benchmark** from an embedded
   **Performance** diagnostics workspace. Events, resource charts, run history,
   transform diagnostics, and report comparison live in the main window;

@@ -478,11 +478,7 @@ export function SettingsPanel({
         {activeCat === 'performance' ? (
           <div className="flex h-full min-h-0 flex-col">
             {configureError && <p role="alert" className="mx-4 mt-4 shrink-0 rounded-lg bg-error/10 px-3 py-2 text-xs text-error">{configureError}</p>}
-            <div className="shrink-0 px-4 pt-4">
-              <h1 className="text-base font-semibold text-on-surface">Performance</h1>
-              <p className="mt-0.5 text-xs text-on-surface-variant">Live diagnostics, recorded runs, transforms, and reports</p>
-            </div>
-            <div className="min-h-0 flex-1 pt-3">
+            <div className="min-h-0 flex-1">
               <DiagnosticsWorkspace />
             </div>
           </div>

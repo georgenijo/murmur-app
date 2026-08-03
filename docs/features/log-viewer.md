@@ -82,8 +82,9 @@ Messages are formatted as `[tag] message` with optional JSON data. Calls are fir
 The workspace is rendered inside the main window under **Settings →
 Performance**. **⌘L**, the command-palette diagnostics action, and General's
 **View Performance** button all navigate to the same page. The diagnostics
-shell owns its inner scroll regions so live Events and charts remain usable
-without opening or managing a second native window.
+tabs begin at the top of the settings content area without a duplicate page
+title. The diagnostics shell owns its inner scroll regions so live Events and
+charts remain usable without opening or managing a second native window.
 
 ### Events Tab
 
