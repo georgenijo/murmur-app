@@ -8,7 +8,7 @@ install the app (or receive an auto-update) and logs flow.
 ## Privacy model
 
 - Only the **structured event stream** leaves the device — the same
-  privacy-stripped events shown in the in-app log viewer. Transcription text
+  privacy-stripped events shown in Settings → Performance. Transcription text
   never enters that stream (`telemetry.rs` strips it at the source).
 - Installs are identified by a **random UUID** generated on first run and
   stored in `shipper_state.json`. Each batch also carries the **device name**

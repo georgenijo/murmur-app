@@ -115,8 +115,8 @@ Both build flavors write to `~/Library/Application Support/local-dictation/logs/
 | `app.log` / `events.jsonl` | release |
 | `app.dev.log` / `events.dev.jsonl` | dev |
 
-Structured JSONL rotates at 5 MB. In-app: **Settings → General → View Logs**, or
-the Log Viewer window. See [features/log-viewer.md](features/log-viewer.md) and
+Structured JSONL rotates at 5 MB. In-app: **Settings → Performance**. See
+[features/log-viewer.md](features/log-viewer.md) and
 [`tools/murmur-diag/README.md`](../tools/murmur-diag/README.md).
 
 ## Common Issues

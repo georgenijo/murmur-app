@@ -52,6 +52,7 @@ import { TransformsManager } from './TransformsManager';
 import { VocabScanStrip } from './VocabScanStrip';
 import { VocabularyAliasesEditor } from './VocabularyAliasesEditor';
 import { VoiceCommandsManager } from './VoiceCommandsManager';
+import { DiagnosticsWorkspace } from '../log-viewer/DiagnosticsWorkspace';
 
 function Toggle({ label, checked, onChange, disabled = false }: {
   label: string;
@@ -148,7 +149,6 @@ interface SettingsPanelProps {
   onUpdateSettings: (updates: Partial<Settings>) => void;
   status: DictationStatus;
   onResetStats: () => void;
-  onViewLogs: () => void;
   onRerunSetup: () => void;
   accessibilityGranted: boolean | null;
   onCheckForUpdate: () => Promise<void>;
@@ -165,6 +165,7 @@ export const SETTINGS_CATEGORIES = [
   { id: 'transform', label: 'Transform' },
   { id: 'text-vocabulary', label: 'Text & Vocabulary' },
   { id: 'delivery', label: 'Delivery' },
+  { id: 'benchmark', label: 'Benchmark' },
   { id: 'performance', label: 'Performance' },
   { id: 'appearance', label: 'Appearance' },
   { id: 'general', label: 'General' },
@@ -204,7 +205,6 @@ export function SettingsPanel({
   onUpdateSettings,
   status,
   onResetStats,
-  onViewLogs,
   onRerunSetup,
   accessibilityGranted,
   onCheckForUpdate,
@@ -470,7 +470,23 @@ export function SettingsPanel({
         </div>
       </nav>
 
-      <div ref={contentRef} data-testid="settings-content" className="flex-1 overflow-y-auto">
+      <div
+        ref={contentRef}
+        data-testid="settings-content"
+        className={`min-w-0 flex-1 ${activeCat === 'performance' ? 'overflow-hidden' : 'overflow-y-auto'}`}
+      >
+        {activeCat === 'performance' ? (
+          <div className="flex h-full min-h-0 flex-col">
+            {configureError && <p role="alert" className="mx-4 mt-4 shrink-0 rounded-lg bg-error/10 px-3 py-2 text-xs text-error">{configureError}</p>}
+            <div className="shrink-0 px-4 pt-4">
+              <h1 className="text-base font-semibold text-on-surface">Performance</h1>
+              <p className="mt-0.5 text-xs text-on-surface-variant">Live diagnostics, recorded runs, transforms, and reports</p>
+            </div>
+            <div className="min-h-0 flex-1 pt-3">
+              <DiagnosticsWorkspace />
+            </div>
+          </div>
+        ) : (
         <div className="max-w-2xl px-6 py-5">
           {configureError && <p role="alert" className="mb-4 rounded-lg bg-error/10 px-3 py-2 text-xs text-error">{configureError}</p>}
 
@@ -758,7 +774,7 @@ export function SettingsPanel({
             </div>
           </SettingsSection>
 
-          <SettingsSection pageId="performance" activePage={activeCat} title="Performance" subtitle="Directional local model comparisons">
+          <SettingsSection pageId="benchmark" activePage={activeCat} title="Benchmark" subtitle="Directional local model comparisons">
             <PerformanceLab status={status} settings={settings} onUpdateSettings={onUpdateSettings} />
           </SettingsSection>
 
@@ -770,7 +786,7 @@ export function SettingsPanel({
             <SettingToggle title="Launch at Login" description="Start Murmur automatically when you log in." checked={settings.launchAtLogin} onChange={() => onUpdateSettings({ launchAtLogin: !settings.launchAtLogin })} />
             <button type="button" onClick={onRerunSetup} className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs font-medium text-on-surface-variant transition-colors hover:bg-surface-container hover:text-primary">Run Setup Assistant</button>
             <p className="-mt-3 text-xs text-on-surface-variant">Re-check permissions and model setup after a permission is revoked or stops working.</p>
-            <button type="button" onClick={onViewLogs} className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs font-medium text-on-surface-variant transition-colors hover:bg-surface-container hover:text-primary">View Logs</button>
+            <button type="button" onClick={() => setActiveCat('performance')} className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs font-medium text-on-surface-variant transition-colors hover:bg-surface-container hover:text-primary">View Performance</button>
             <button type="button" aria-label={confirmReset ? 'Confirm reset statistics' : 'Reset statistics'} onClick={resetStats} className={`w-full rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${confirmReset ? 'border-error/40 bg-error/10 text-error' : 'border-outline-variant/30 bg-surface-container-lowest text-on-surface-variant hover:bg-surface-container hover:text-primary'}`}>{confirmReset ? 'Confirm Reset' : 'Reset Stats'}</button>
             <div>
               <button type="button" onClick={() => void onCheckForUpdate()} disabled={updateStatus.phase === 'checking' || updateStatus.phase === 'downloading'} className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs font-medium text-on-surface-variant transition-colors hover:bg-surface-container hover:text-primary disabled:cursor-not-allowed disabled:opacity-50">{updateStatus.phase === 'checking' ? 'Checking…' : 'Check for Updates'}</button>
@@ -787,6 +803,7 @@ export function SettingsPanel({
             {version && <p className="text-center text-xs text-on-surface-variant">Murmur v{version}</p>}
           </SettingsSection>
         </div>
+        )}
       </div>
     </div>
   );

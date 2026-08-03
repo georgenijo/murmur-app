@@ -8,9 +8,9 @@ clipboard.
 
 ## Window scope
 
-The main window and log viewer are the themed webviews. Each maintains a
-concrete `data-appearance="light"` or `data-appearance="dark"` attribute even
-when the saved preference is `system`.
+The main window is the themed webview and maintains a concrete
+`data-appearance="light"` or `data-appearance="dark"` attribute even when the
+saved preference is `system`.
 
 The overlay and transform-review popover are deliberately outside theme
 synchronization. They remain transparent, always-dark glass surfaces. In
@@ -32,8 +32,8 @@ Every normal write sanitizes the configuration, resolves both palettes, and
 writes configuration plus cache together. The cache is strictly validated and
 is never authoritative after runtime initialization.
 
-Both themed HTML entries load the same parser-blocking classic script before
-their module entry. The script reads only the bounded appearance document,
+The main HTML entry loads a parser-blocking classic script before its module
+entry. The script reads only the bounded appearance document,
 resolves System through `matchMedia`, validates the cache version, exact token
 allowlist, and hex values, then applies the selected table. It performs no color
 conversion. Corrupt, partial, oversized, or unknown-version storage falls back
@@ -46,13 +46,10 @@ bootstrap failure; Murmur does not promise full no-JavaScript theme parity.
 
 ## Synchronization and native chrome
 
-The main webview is the only writer and emits one revisioned
+The main webview is the only writer and runtime owner. It emits one revisioned
 `appearance-changed` event for user edits, reset, import, cache repair, or the
-explicit high-water revision rollover. The log viewer reloads storage, rejects
-stale revisions, and recognizes the single high-water-to-`1` repair rollover.
-System-mode OS changes
-are applied locally by each themed webview's `matchMedia` listener and emit no
-event, preventing listener loops.
+explicit high-water revision rollover. System-mode OS changes are applied
+locally by its `matchMedia` listener and emit no event.
 
 Main also owns application-level native appearance:
 
@@ -60,8 +57,8 @@ Main also owns application-level native appearance:
 - Light: application `setTheme('light')`
 - Dark: application `setTheme('dark')`
 
-Only the main capability grants `core:app:allow-set-app-theme`. This keeps
-decorated main and log-viewer title bars aligned with their themed pixels.
+Only the main capability grants `core:app:allow-set-app-theme`, keeping the
+decorated main title bar aligned with its themed pixels.
 
 ## Color resolution and accessibility
 

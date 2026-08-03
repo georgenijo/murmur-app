@@ -132,7 +132,7 @@ Remove it from the same page. The helper process is shut down first so the file 
 
 ## Diagnostics data
 
-Local run history and CPU/memory samples live in `diagnostics/performance.sqlite3` under the Tauri app-data directory (`~/Library/Application Support/com.localdictation/`, or `com.localdictation.dev` in dev builds). They are content-free and bounded (200 runs, 600 samples), and are cleared from the Log Viewer. Explicitly consented transform content captures live beside them under `diagnostics/transforms/` with restrictive permissions, a 3-capture cap, and a 7-day expiry.
+Local run history and CPU/memory samples live in `diagnostics/performance.sqlite3` under the Tauri app-data directory (`~/Library/Application Support/com.localdictation/`, or `com.localdictation.dev` in dev builds). They are content-free and bounded (200 runs, 600 samples), and are cleared from Settings → Performance. Explicitly consented transform content captures live beside them under `diagnostics/transforms/` with restrictive permissions, a 3-capture cap, and a 7-day expiry.
 
 ## Personal knowledge data
 

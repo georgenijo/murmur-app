@@ -1,5 +1,3 @@
-use tauri::Manager;
-
 #[tauri::command]
 pub fn get_log_contents(lines: usize) -> String {
     crate::telemetry::read_pretty_log_tail(lines)
@@ -28,14 +26,4 @@ pub fn log_frontend(level: String, message: String, transform_pass_id: Option<u6
         ("ERROR", None) => tracing::error!(target: "system", source = "frontend", "{}", message),
         (_, None) => tracing::info!(target: "system", source = "frontend", "{}", message),
     }
-}
-
-#[tauri::command]
-pub fn open_log_viewer(app: tauri::AppHandle) -> Result<(), String> {
-    let window = app
-        .get_webview_window("log-viewer")
-        .ok_or_else(|| "log-viewer window is not configured".to_string())?;
-    window.show().map_err(|e| e.to_string())?;
-    window.set_focus().map_err(|e| e.to_string())?;
-    Ok(())
 }

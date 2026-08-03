@@ -6,6 +6,26 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 ---
 
+## 2026-08-03: Diagnostics move into the main Performance page (#435)
+
+**Decision:** The local model-comparison page is named **Benchmark**.
+Structured Events, live resource charts, run history, transform diagnostics,
+and report comparison are embedded together under **Settings → Performance**.
+The dedicated `log-viewer` webview, capability, entrypoint, and open-window
+command are removed; diagnostics shortcuts navigate the main window.
+
+**Rationale:** Benchmarking and observing production performance are different
+tasks. Keeping diagnostics inside Settings removes a second-window lifecycle,
+makes the data discoverable, and retains the existing local/privacy boundaries.
+The main window already owns transcript history and is therefore an appropriate
+scope for explicitly reviewed transform diagnostic captures.
+
+**Status:** active
+
+**References:** issue #435; [`../features/log-viewer.md`](../features/log-viewer.md)
+
+---
+
 ## 2026-08-01: macOS capture prefers direct AUHAL before CPAL (#426)
 
 **Decision:** Process-isolated macOS recording tries direct AUHAL first and

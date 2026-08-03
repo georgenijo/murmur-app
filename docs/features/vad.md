@@ -63,7 +63,7 @@ In `run_transcription_pipeline()`, the VAD phase runs after pre-VAD diagnostics 
 4. Transcription — uses trimmed samples (Speech) or original samples (Error/missing model)
 5. Text injection
 
-The VAD execution time is logged as `vad_ms` in the structured telemetry output alongside `inference_ms`, `paste_ms`, and `total_ms`. This timing data is visible in the log viewer's Metrics tab. See [log-viewer.md](log-viewer.md) for details.
+The VAD execution time is logged as `vad_ms` in the structured telemetry output alongside `inference_ms`, `paste_ms`, and `total_ms`. This timing data is visible in Settings → Performance. See [log-viewer.md](log-viewer.md) for details.
 
 Every live recording runs VAD once against the final full buffer after recording stops. If VAD is unavailable or fails, Murmur proceeds once with the unfiltered full buffer.
 

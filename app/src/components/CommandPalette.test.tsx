@@ -47,7 +47,7 @@ describe('CommandPalette', () => {
     };
     commands = [
       { id: 'record', title: 'Start recording', section: 'Recording', run: runs.record },
-      { id: 'logs', title: 'Open log viewer', section: 'Diagnostics', keywords: ['events'], run: runs.logs },
+      { id: 'logs', title: 'Open performance diagnostics', section: 'Diagnostics', keywords: ['events', 'log'], run: runs.logs },
       { id: 'delivery', title: 'Settings: Delivery', section: 'Settings', run: runs.delivery },
     ];
     vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { cb(0); return 1; });
@@ -77,14 +77,14 @@ describe('CommandPalette', () => {
     await render();
     await type('log');
     expect(rows()).toHaveLength(1);
-    expect(rows()[0].textContent).toContain('Open log viewer');
+    expect(rows()[0].textContent).toContain('Open performance diagnostics');
   });
 
   it('finds a command by keyword', async () => {
     await render();
     await type('events');
     expect(rows()).toHaveLength(1);
-    expect(rows()[0].textContent).toContain('Open log viewer');
+    expect(rows()[0].textContent).toContain('Open performance diagnostics');
   });
 
   it('shows an empty state when nothing matches', async () => {
@@ -97,7 +97,7 @@ describe('CommandPalette', () => {
   it('moves the selection with the arrow keys and wraps', async () => {
     await render();
     await press('ArrowDown');
-    expect(selectedRow()?.textContent).toContain('Open log viewer');
+    expect(selectedRow()?.textContent).toContain('Open performance diagnostics');
     await press('ArrowUp');
     await press('ArrowUp');
     expect(selectedRow()?.textContent).toContain('Settings: Delivery');

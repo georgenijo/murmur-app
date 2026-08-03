@@ -1,12 +1,12 @@
-# Structured Event System and Log Viewer
+# Structured Event System and Performance Workspace
 
 ## Overview
 
 All application logging goes through Rust's `tracing` crate, captured by a custom
 `TauriEmitterLayer` that routes every event to three destinations: an in-memory
-ring buffer, a persistent JSONL file, and real-time emission to all frontend
-windows. The dedicated Diagnostics window keeps these structured Events beside a
-typed live Performance view and bounded per-run history.
+ring buffer, a persistent JSONL file, and real-time frontend emission. The
+embedded **Settings → Performance** workspace keeps these structured Events
+beside a typed live Performance view and bounded per-run history.
 
 ## Telemetry Architecture (`telemetry.rs`)
 
@@ -39,7 +39,7 @@ type AppEvent = {
 |--------|--------|----------|---------|
 | Ring buffer | `AppEvent` structs | 500 events | Fast in-memory access for `get_event_history` |
 | JSONL file | One JSON object per line | 5MB before rotation | Persistent log, survives restarts |
-| `app-event` emission | `AppEvent` payload | Real-time stream | Live updates in log viewer |
+| `app-event` emission | `AppEvent` payload | Real-time stream | Live updates in the Performance workspace |
 
 ### JSONL Rotation
 
@@ -67,7 +67,7 @@ Tracing targets map to stream names used for filtering:
 
 ### Frontend Logging
 
-The `flog` utility (`lib/log.ts`) routes frontend log messages through the Rust tracing system via the `log_frontend` command. Messages appear in the log viewer alongside Rust-originated events.
+The `flog` utility (`lib/log.ts`) routes frontend log messages through the Rust tracing system via the `log_frontend` command. Messages appear in the Performance workspace alongside Rust-originated events.
 
 ```typescript
 flog.info("overlay", "double-click detected");
@@ -77,9 +77,13 @@ flog.error("updater", "download failed", { error: msg });
 
 Messages are formatted as `[tag] message` with optional JSON data. Calls are fire-and-forget (errors silenced).
 
-## Log Viewer Window
+## Embedded workspace
 
-The log viewer is a separate Tauri window (`label: "log-viewer"`, 800x600, min 600x400) opened via the `open_log_viewer` command. It hides on close rather than being destroyed.
+The workspace is rendered inside the main window under **Settings →
+Performance**. **⌘L**, the command-palette diagnostics action, and General's
+**View Performance** button all navigate to the same page. The diagnostics
+shell owns its inner scroll regions so live Events and charts remain usable
+without opening or managing a second native window.
 
 ### Events Tab
 
@@ -211,7 +215,6 @@ The frontend event buffer is managed by the `useEventStore` hook:
 
 | Command | Description |
 |---------|-------------|
-| `open_log_viewer` | Shows and focuses the log-viewer window |
 | `get_log_contents` | Returns the last N lines from the pretty-printed log file |
 | `clear_logs` | Removes all log files and clears the in-memory event ring buffer |
 | `log_frontend` | Routes a frontend message through Rust tracing (INFO/WARN/ERROR) |

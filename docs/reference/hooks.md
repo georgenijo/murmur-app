@@ -73,7 +73,7 @@ Listens for `show-about`. **Currently inert** — the tray menu no longer has an
 
 ---
 
-## Appearance (main and log viewer)
+## Appearance (main window)
 
 ### `useAppearance`
 
@@ -87,15 +87,7 @@ Settings. Main is the only writer and emits one revisioned
 Its System-mode `matchMedia` listener applies OS changes locally without
 emitting. Setup and cleanup are idempotent under React Strict Mode.
 
-### Log-viewer appearance controller
-
-The log viewer installs the same runtime applier as a read-only consumer. It
-reloads newer `appearance-changed` revisions with a bounded retry, ignores
-stale events, recognizes the explicit high-water-to-`1` repair rollover, and
-owns its own emit-free System-mode media listener. It never writes appearance
-or calls native `setTheme`.
-
-The overlay and transform-review roots intentionally install neither
+The overlay and transform-review roots intentionally install no appearance
 controller.
 
 ---
@@ -138,7 +130,7 @@ Owns the `audio-level` listener and the rAF bar-height animation. Writes bar hei
 
 ---
 
-## Diagnostics (log viewer)
+## Diagnostics (Settings → Performance)
 
 ### `useEventStore`
 The structured event buffer: hydrates from `get_event_history`, streams live `app-event`s, batches rendering via rAF, and provides stream/level filtering and clear.

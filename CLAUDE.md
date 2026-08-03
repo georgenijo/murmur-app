@@ -41,7 +41,7 @@ Read these before working on a feature:
 - **[docs/features/text-injection.md](docs/features/text-injection.md)** — Clipboard, auto-paste, osascript
 - **[docs/features/vad.md](docs/features/vad.md)** — VAD speech filtering
 - **[docs/features/overlay.md](docs/features/overlay.md)** — Dynamic Island overlay
-- **[docs/features/log-viewer.md](docs/features/log-viewer.md)** — Structured event system and log viewer
+- **[docs/features/log-viewer.md](docs/features/log-viewer.md)** — Structured events and the embedded Performance workspace
 - **[docs/features/log-shipping.md](docs/features/log-shipping.md)** — Zero-config diagnostic log upload to central receiver
 - **[docs/features/auto-updater.md](docs/features/auto-updater.md)** — Auto-update system
 - **[docs/features/models.md](docs/features/models.md)** — Model management and download
@@ -179,7 +179,7 @@ Read these before working on a feature:
 | `components/settings/PerformanceLab.tsx` | Benchmark UI, scoring tables, report save/export |
 | `components/settings/KnowledgeManager.tsx` | Knowledge store browse/edit UI |
 | `components/history/CorrectAndTeachDialog.tsx` | Correct-and-Teach review + scope choice |
-| `components/log-viewer/LogViewerApp.tsx` | Log viewer shell: Events, Runs, Transforms, Reports tabs |
+| `components/log-viewer/DiagnosticsWorkspace.tsx` | Embedded Performance workspace: Events, Performance, Runs, Transforms, Reports |
 | `components/overlay/deriveVisual.ts` | Pure: overlay top-bar indicator + flash-priority derivation |
 | `components/overlay/OverlayPill.tsx` | Overlay top bar (presentational) |
 | `components/overlay/OverlayDropdown.tsx` | Overlay quick-settings dropdown (presentational) |
