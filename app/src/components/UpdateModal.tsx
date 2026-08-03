@@ -24,6 +24,7 @@ export function UpdateModal({ status, onDownload, onSkip, onDismiss }: UpdateMod
   const isDownloading = status.phase === 'downloading';
   const isReady = status.phase === 'ready';
   const isError = status.phase === 'error';
+  const requiresReinstall = isError && status.recovery === 'reinstall';
   const isBusy = isDownloading || isReady;
 
   const version =
@@ -63,7 +64,11 @@ export function UpdateModal({ status, onDownload, onSkip, onDismiss }: UpdateMod
           </div>
 
           <h2 className="text-lg font-semibold text-on-surface text-center mb-1">
-            {isForced ? 'Required Update' : 'Update Available'}
+            {requiresReinstall
+              ? 'Reinstall Murmur to Update'
+              : isForced
+                ? 'Required Update'
+                : 'Update Available'}
           </h2>
 
           {version && (
@@ -117,7 +122,7 @@ export function UpdateModal({ status, onDownload, onSkip, onDismiss }: UpdateMod
 
           {/* Action buttons */}
           <div className="flex flex-col gap-2">
-            {(status.phase === 'available' || isError) && (
+            {(status.phase === 'available' || (isError && !requiresReinstall)) && (
               <button
                 onClick={onDownload}
                 className="w-full py-2 px-4 bg-primary hover:bg-primary-dim text-on-primary text-sm font-medium rounded-lg transition-colors"
@@ -143,7 +148,7 @@ export function UpdateModal({ status, onDownload, onSkip, onDismiss }: UpdateMod
               </>
             )}
 
-            {(status.phase === 'available' || isError) && isForced && (
+            {(((status.phase === 'available' || isError) && isForced) || requiresReinstall) && (
               <button
                 onClick={() => exit(0)}
                 className="w-full rounded-lg border border-error/30 bg-surface-container-lowest px-4 py-2 text-sm font-medium text-error transition-colors hover:bg-error/10"

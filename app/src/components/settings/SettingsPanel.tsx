@@ -776,7 +776,13 @@ export function SettingsPanel({
               <button type="button" onClick={() => void onCheckForUpdate()} disabled={updateStatus.phase === 'checking' || updateStatus.phase === 'downloading'} className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs font-medium text-on-surface-variant transition-colors hover:bg-surface-container hover:text-primary disabled:cursor-not-allowed disabled:opacity-50">{updateStatus.phase === 'checking' ? 'Checking…' : 'Check for Updates'}</button>
               {updateStatus.phase === 'up-to-date' && <p className="mt-1.5 text-xs text-success">You’re up to date.</p>}
               {updateStatus.phase === 'available' && <p className="mt-1.5 text-xs text-primary">v{updateStatus.version} available</p>}
-              {updateStatus.phase === 'error' && <p className="mt-1.5 text-xs text-error">Update check failed.</p>}
+              {updateStatus.phase === 'error' && (
+                <p className="mt-1.5 text-xs text-error">
+                  {updateStatus.stage === 'check'
+                    ? 'Update check failed.'
+                    : 'Update installation needs attention.'}
+                </p>
+              )}
             </div>
             {version && <p className="text-center text-xs text-on-surface-variant">Murmur v{version}</p>}
           </SettingsSection>

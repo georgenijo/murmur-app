@@ -64,7 +64,7 @@ describe('UpdateIndicator', () => {
     await act(async () => {
       root.render(
         <UpdateIndicator
-          status={{ phase: 'error', message: 'offline', isForced: false }}
+          status={{ phase: 'error', stage: 'check', message: 'offline', isForced: false }}
           onOpen={vi.fn()}
           onRetryCheck={onRetryCheck}
         />,
@@ -73,6 +73,31 @@ describe('UpdateIndicator', () => {
 
     await act(async () => container.querySelector('button')?.click());
     expect(onRetryCheck).toHaveBeenCalledOnce();
+  });
+
+  it('reopens installation guidance instead of retrying update discovery', async () => {
+    const onOpen = vi.fn();
+    const onRetryCheck = vi.fn();
+    await act(async () => {
+      root.render(
+        <UpdateIndicator
+          status={{
+            phase: 'error',
+            stage: 'install',
+            message: 'Move Murmur to Applications',
+            isForced: false,
+            recovery: 'reinstall',
+          }}
+          onOpen={onOpen}
+          onRetryCheck={onRetryCheck}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain('Update needs attention');
+    await act(async () => container.querySelector('button')?.click());
+    expect(onOpen).toHaveBeenCalledOnce();
+    expect(onRetryCheck).not.toHaveBeenCalled();
   });
 
   it('stays absent while idle', async () => {

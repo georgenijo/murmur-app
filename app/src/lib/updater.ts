@@ -179,5 +179,11 @@ export type UpdateStatus =
   | { phase: 'available'; version: string; notes: string; isForced: boolean }
   | { phase: 'downloading'; version: string; progress: number }
   | { phase: 'ready'; version: string }
-  | { phase: 'error'; message: string; isForced: boolean }
+  | {
+      phase: 'error';
+      stage: 'check' | 'install';
+      message: string;
+      isForced: boolean;
+      recovery?: 'reinstall';
+    }
   | { phase: 'up-to-date' };

@@ -24,6 +24,10 @@ import {
   fetchMinVersion,
   CHECK_TIMER_TICK_MS,
 } from '../updater';
+import { getUpdateInstallEnvironment } from '../updaterEnvironment';
+
+const APP_TRANSLOCATION_MESSAGE =
+  'macOS opened Murmur from a read-only security location. Quit Murmur, then use Finder to move or reinstall it in Applications before reopening it and trying the update again.';
 
 export interface UseAutoUpdaterReturn {
   updateStatus: UpdateStatus;
@@ -149,7 +153,12 @@ export function useAutoUpdater(): UseAutoUpdaterReturn {
       flog.error('updater', 'check failed', { error: String(err) });
       if (shouldPresentManualResult()) {
         setIsUpdateDialogOpen(false);
-        setUpdateStatus({ phase: 'error', message: String(err), isForced: isForcedRef.current });
+        setUpdateStatus({
+          phase: 'error',
+          stage: 'check',
+          message: String(err),
+          isForced: isForcedRef.current,
+        });
       }
       // Background errors are silent
     } finally {
@@ -212,10 +221,13 @@ export function useAutoUpdater(): UseAutoUpdaterReturn {
   }, [performCheck]);
 
   const showAvailableUpdate = useCallback(() => {
-    if (updateStatus.phase === 'available') {
+    if (
+      updateStatus.phase === 'available' ||
+      (updateStatus.phase === 'error' && updateStatus.stage === 'install')
+    ) {
       setIsUpdateDialogOpen(true);
     }
-  }, [updateStatus.phase]);
+  }, [updateStatus]);
 
   const startDownload = useCallback(async () => {
     const update = updateRef.current;
@@ -225,11 +237,24 @@ export function useAutoUpdater(): UseAutoUpdaterReturn {
       updateStatus.phase === 'available' ? updateStatus.version
       : updateRef.current?.version ?? 'unknown';
 
-    setUpdateStatus({ phase: 'downloading', version, progress: 0 });
-    flog.info('updater', 'starting download', { version });
-    setPendingUpdate({ version, notes: update.body ?? '' });
-
     try {
+      const environment = await getUpdateInstallEnvironment();
+      if (environment.appTranslocated) {
+        flog.warn('updater', 'install blocked by macOS App Translocation');
+        setUpdateStatus({
+          phase: 'error',
+          stage: 'install',
+          message: APP_TRANSLOCATION_MESSAGE,
+          isForced: isForcedRef.current,
+          recovery: 'reinstall',
+        });
+        return;
+      }
+
+      setUpdateStatus({ phase: 'downloading', version, progress: 0 });
+      flog.info('updater', 'starting download', { version });
+      setPendingUpdate({ version, notes: update.body ?? '' });
+
       let totalContentLength = 0;
       let totalDownloaded = 0;
 
@@ -261,7 +286,12 @@ export function useAutoUpdater(): UseAutoUpdaterReturn {
       await relaunch();
     } catch (err) {
       flog.error('updater', 'download/install failed', { error: String(err) });
-      setUpdateStatus({ phase: 'error', message: String(err), isForced: isForcedRef.current });
+      setUpdateStatus({
+        phase: 'error',
+        stage: 'install',
+        message: String(err),
+        isForced: isForcedRef.current,
+      });
     }
   }, [updateStatus]);
 
