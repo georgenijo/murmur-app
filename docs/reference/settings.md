@@ -13,7 +13,9 @@ Dictation settings are stored in `localStorage` under the key
 versioned document under `murmur-appearance`; it is never merged into this
 interface or emitted through `dictation-settings`.
 
-The native Settings window has nine pages in this order (`SETTINGS_CATEGORIES` in `SettingsPanel.tsx`):
+The native Settings window has nine pages in this order (`SETTINGS_CATEGORIES`
+in `SettingsPanel.tsx`). While Settings is open, the dashboard usage cards are
+hidden so the workspace receives the available vertical space:
 
 1. **Recording** — microphone, voice detection, recording trigger, and shortcut feedback
 2. **Transcription** — one model selector, language, model lifecycle/download state, and idle release

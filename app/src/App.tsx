@@ -462,7 +462,7 @@ function App() {
 
       <PermissionsBanner />
 
-      <StatsBar statsVersion={combinedStatsVersion} />
+      <StatsBar statsVersion={combinedStatsVersion} hidden={isSettingsOpen} />
 
       <div className="flex-1 flex overflow-hidden">
         <main className={`flex-1 flex-col overflow-hidden p-4 gap-4 ${isSettingsOpen ? 'hidden' : 'flex'}`}>

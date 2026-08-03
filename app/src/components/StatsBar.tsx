@@ -4,16 +4,17 @@ import type { DictationStats } from '../lib/stats';
 
 interface StatsBarProps {
   statsVersion: number;
+  hidden?: boolean;
 }
 
-export function StatsBar({ statsVersion }: StatsBarProps) {
+export function StatsBar({ statsVersion, hidden = false }: StatsBarProps) {
   const [stats, setStats] = useState<DictationStats>(() => loadStats());
   useEffect(() => { setStats(loadStats()); }, [statsVersion]);
   const wpm = getWPM(stats);
   const tokens = getApproxTokens(stats);
 
   return (
-    <div className="grid shrink-0 grid-cols-4 gap-2 bg-background px-4 py-3">
+    <div data-testid="stats-bar" hidden={hidden} className="grid shrink-0 grid-cols-4 gap-2 bg-background px-4 py-3">
       <StatCard label="Total Words" value={stats.totalWords.toLocaleString()} icon="words" />
       <StatCard label="Avg WPM" value={wpm > 0 ? wpm.toLocaleString() : '—'} icon="speed" />
       <StatCard label="Recordings" value={stats.totalRecordings.toLocaleString()} icon="recordings" />

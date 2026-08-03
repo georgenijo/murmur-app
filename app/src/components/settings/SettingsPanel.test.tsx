@@ -85,6 +85,7 @@ describe('SettingsPanel information architecture', () => {
     const nav = container.querySelector('nav[aria-label="Settings pages"]') as HTMLElement;
     expect(Array.from(nav.querySelectorAll('button')).slice(1).map((button) => button.textContent)).toEqual(SETTINGS_CATEGORIES.map((category) => category.label));
     expect(nav.querySelector('[aria-current="page"]')?.textContent).toBe('Recording');
+    expect(container.querySelector('h1')?.textContent).toBe('Recording');
     expect(container.textContent).toContain('Microphone');
   });
 
@@ -103,6 +104,15 @@ describe('SettingsPanel information architecture', () => {
       expect(button.getAttribute('aria-current')).toBe('page');
     }
     expect(scrollTo).toHaveBeenCalledWith({ top: 0 });
+  });
+
+  it('starts Performance at the diagnostics workspace without a redundant page heading', async () => {
+    const button = Array.from(container.querySelectorAll('nav button')).find((item) => item.textContent === 'Performance') as HTMLButtonElement;
+    await act(async () => button.click());
+
+    expect(container.textContent).toContain('Diagnostics workspace');
+    expect(Array.from(container.querySelectorAll('h1')).some((heading) => heading.textContent === 'Performance')).toBe(false);
+    expect(container.textContent).not.toContain('Live diagnostics, recorded runs, transforms, and reports');
   });
 });
 
