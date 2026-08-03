@@ -16,8 +16,8 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample, Stream};
 use murmur_capture_helper_protocol::{
     read_production_frame, write_production_control, write_production_pcm, CaptureBackend,
-    CapturePhase, FailureCode, ProductionDevice, ProductionFrame, ProductionHelperMessage,
-    ProductionHostMessage, SessionNonce,
+    CapturePhase, CaptureSetupStep, FailureCode, ProductionDevice, ProductionFrame,
+    ProductionHelperMessage, ProductionHostMessage, SessionNonce, SetupTransition,
 };
 use std::cell::UnsafeCell;
 use std::io::{Read, Write};
@@ -230,11 +230,19 @@ fn start_cpal(
     requested: Option<&str>,
     ring: Arc<SpscRing>,
     failed: Arc<AtomicBool>,
+    emit: &mut impl FnMut(CaptureSetupStep, SetupTransition) -> Result<(), FailureCode>,
 ) -> Result<(CaptureStream, u32), FailureCode> {
+    emit(CaptureSetupStep::DeviceResolution, SetupTransition::Entered)?;
     let device = cpal_device(requested)?;
+    emit(
+        CaptureSetupStep::DeviceResolution,
+        SetupTransition::Completed,
+    )?;
+    emit(CaptureSetupStep::DefaultConfig, SetupTransition::Entered)?;
     let supported = device
         .default_input_config()
         .map_err(|_| FailureCode::ConfigurationFailed)?;
+    emit(CaptureSetupStep::DefaultConfig, SetupTransition::Completed)?;
     let rate = supported.sample_rate();
     let channels = supported.channels() as usize;
     let config = supported.config();
@@ -249,6 +257,7 @@ fn start_cpal(
             )
         };
     }
+    emit(CaptureSetupStep::StreamBuild, SetupTransition::Entered)?;
     let stream = match supported.sample_format() {
         SampleFormat::I8 => build!(i8),
         SampleFormat::I16 => build!(i16),
@@ -264,14 +273,19 @@ fn start_cpal(
         SampleFormat::F64 => build!(f64),
         _ => return Err(FailureCode::ConfigurationFailed),
     }?;
+    emit(CaptureSetupStep::StreamBuild, SetupTransition::Completed)?;
+    emit(CaptureSetupStep::StreamStart, SetupTransition::Entered)?;
     stream.play().map_err(|_| FailureCode::StreamStartFailed)?;
+    emit(CaptureSetupStep::StreamStart, SetupTransition::Completed)?;
     Ok((CaptureStream::Cpal(stream), rate))
 }
 
 fn start_auhal(
     requested: Option<&str>,
     ring: Arc<SpscRing>,
+    emit: &mut impl FnMut(CaptureSetupStep, SetupTransition) -> Result<(), FailureCode>,
 ) -> Result<(CaptureStream, u32), FailureCode> {
+    emit(CaptureSetupStep::DeviceResolution, SetupTransition::Entered)?;
     let device = match requested {
         Some(uid) => get_audio_device_ids_for_scope(Scope::Input)
             .map_err(|_| FailureCode::EnumerationFailed)?
@@ -280,9 +294,21 @@ fn start_auhal(
             .ok_or(FailureCode::NoInputDevice)?,
         None => get_default_device_id(true).ok_or(FailureCode::NoInputDevice)?,
     };
+    emit(
+        CaptureSetupStep::DeviceResolution,
+        SetupTransition::Completed,
+    )?;
     let sample_rate = 48_000_u32;
+    emit(
+        CaptureSetupStep::AudioUnitCreation,
+        SetupTransition::Entered,
+    )?;
     let mut unit =
         audio_unit_from_device_id(device, true).map_err(|_| FailureCode::StreamOpenFailed)?;
+    emit(
+        CaptureSetupStep::AudioUnitCreation,
+        SetupTransition::Completed,
+    )?;
     let format = StreamFormat {
         sample_rate: sample_rate as f64,
         sample_format: AuSampleFormat::F32,
@@ -292,6 +318,10 @@ fn start_auhal(
         channels: 1,
     };
     let asbd = format.to_asbd();
+    emit(
+        CaptureSetupStep::FormatConfiguration,
+        SetupTransition::Entered,
+    )?;
     unit.set_property(
         coreaudio::sys::kAudioUnitProperty_StreamFormat,
         Scope::Output,
@@ -299,7 +329,15 @@ fn start_auhal(
         Some(&asbd),
     )
     .map_err(|_| FailureCode::ConfigurationFailed)?;
+    emit(
+        CaptureSetupStep::FormatConfiguration,
+        SetupTransition::Completed,
+    )?;
     type Args = render_callback::Args<data::NonInterleaved<f32>>;
+    emit(
+        CaptureSetupStep::CallbackInstallation,
+        SetupTransition::Entered,
+    )?;
     unit.set_input_callback(move |args: Args| {
         for channel in args.data.channels() {
             for sample in channel.iter().take(args.num_frames) {
@@ -310,7 +348,13 @@ fn start_auhal(
         Ok(())
     })
     .map_err(|_| FailureCode::StreamOpenFailed)?;
+    emit(
+        CaptureSetupStep::CallbackInstallation,
+        SetupTransition::Completed,
+    )?;
+    emit(CaptureSetupStep::StreamStart, SetupTransition::Entered)?;
     unit.start().map_err(|_| FailureCode::StreamStartFailed)?;
+    emit(CaptureSetupStep::StreamStart, SetupTransition::Completed)?;
     Ok((CaptureStream::Auhal(unit), sample_rate))
 }
 
@@ -374,12 +418,31 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
             .map_err(|_| ())?;
             let ring = Arc::new(SpscRing::new());
             let failed = Arc::new(AtomicBool::new(false));
-            let started = match backend {
-                CaptureBackend::Cpal => {
-                    start_cpal(device_id.as_deref(), Arc::clone(&ring), Arc::clone(&failed))
-                }
-                CaptureBackend::Auhal => start_auhal(device_id.as_deref(), Arc::clone(&ring)),
+            let mut emit_setup = |step: CaptureSetupStep, transition: SetupTransition| {
+                write_production_control(
+                    &mut stdout,
+                    capture_id,
+                    nonce,
+                    &ProductionHelperMessage::SetupStep {
+                        backend,
+                        step,
+                        transition,
+                    },
+                )
+                .map_err(|_| FailureCode::Internal)
             };
+            let started = match backend {
+                CaptureBackend::Cpal => start_cpal(
+                    device_id.as_deref(),
+                    Arc::clone(&ring),
+                    Arc::clone(&failed),
+                    &mut emit_setup,
+                ),
+                CaptureBackend::Auhal => {
+                    start_auhal(device_id.as_deref(), Arc::clone(&ring), &mut emit_setup)
+                }
+            };
+            drop(emit_setup);
             let (mut stream, sample_rate) = match started {
                 Ok(value) => value,
                 Err(code) => {
@@ -401,9 +464,31 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
                 &mut stdout,
                 capture_id,
                 nonce,
+                &ProductionHelperMessage::SetupStep {
+                    backend,
+                    step: CaptureSetupStep::AwaitingFirstCallback,
+                    transition: SetupTransition::Entered,
+                },
+            )
+            .map_err(|_| ())?;
+            write_production_control(
+                &mut stdout,
+                capture_id,
+                nonce,
                 &ProductionHelperMessage::Phase {
                     phase: CapturePhase::AwaitingFirstCallback,
                     backend,
+                },
+            )
+            .map_err(|_| ())?;
+            write_production_control(
+                &mut stdout,
+                capture_id,
+                nonce,
+                &ProductionHelperMessage::SetupStep {
+                    backend,
+                    step: CaptureSetupStep::AwaitingFirstCallback,
+                    transition: SetupTransition::Completed,
                 },
             )
             .map_err(|_| ())?;

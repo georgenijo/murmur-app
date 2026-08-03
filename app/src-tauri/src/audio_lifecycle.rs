@@ -193,6 +193,7 @@ impl PublicState {
 struct SupervisorConfig {
     still_connecting_after: Duration,
     hard_deadline: Duration,
+    tcc_prompt_watchdog: Duration,
     recovery_guidance_after: Duration,
 }
 
@@ -201,6 +202,7 @@ impl Default for SupervisorConfig {
         Self {
             still_connecting_after: STILL_CONNECTING_AFTER,
             hard_deadline: HARD_INITIALIZATION_DEADLINE,
+            tcc_prompt_watchdog: audio::TCC_PROMPT_WATCHDOG,
             recovery_guidance_after: RECOVERY_GUIDANCE_AFTER,
         }
     }
@@ -347,6 +349,8 @@ struct Attempt {
     origin: String,
     phase: AttemptPhase,
     accepted_at: Instant,
+    tcc_pending_since: Option<Instant>,
+    tcc_paused_total: Duration,
     ready_at: Option<Instant>,
     stopping_started_at: Option<Instant>,
     still_connecting_emitted: bool,
@@ -362,6 +366,18 @@ struct Attempt {
     sample_rate: u32,
     start_response: Option<Sender<Result<(), AudioStartError>>>,
     stop_response: Option<Sender<Result<Vec<f32>, String>>>,
+}
+
+impl Attempt {
+    fn active_initialization_elapsed(&self, now: Instant) -> Duration {
+        let current_pause = self
+            .tcc_pending_since
+            .map(|started| now.saturating_duration_since(started))
+            .unwrap_or_default();
+        now.saturating_duration_since(self.accepted_at)
+            .saturating_sub(self.tcc_paused_total)
+            .saturating_sub(current_pause)
+    }
 }
 
 #[derive(Clone)]
@@ -465,10 +481,15 @@ fn deadline_wait(attempt: Option<&Attempt>, config: SupervisorConfig) -> Duratio
     };
     let now = Instant::now();
     let deadline = match attempt.phase {
-        AttemptPhase::Starting if !attempt.still_connecting_emitted => {
-            attempt.accepted_at + config.still_connecting_after
+        AttemptPhase::Starting if attempt.tcc_pending_since.is_some() => {
+            attempt.tcc_pending_since.unwrap_or(now) + config.tcc_prompt_watchdog
         }
-        AttemptPhase::Starting => attempt.accepted_at + config.hard_deadline,
+        AttemptPhase::Starting if !attempt.still_connecting_emitted => {
+            attempt.accepted_at + attempt.tcc_paused_total + config.still_connecting_after
+        }
+        AttemptPhase::Starting => {
+            attempt.accepted_at + attempt.tcc_paused_total + config.hard_deadline
+        }
         AttemptPhase::Stopping if !attempt.stopping_guidance_emitted => {
             attempt.stopping_started_at.unwrap_or(now) + config.recovery_guidance_after
         }
@@ -618,6 +639,8 @@ fn handle_start(
         origin: request.origin,
         phase: AttemptPhase::Starting,
         accepted_at: Instant::now(),
+        tcc_pending_since: None,
+        tcc_paused_total: Duration::ZERO,
         ready_at: None,
         stopping_started_at: None,
         still_connecting_emitted: false,
@@ -648,6 +671,9 @@ fn handle_worker_event(
     let owner = match &event {
         AudioWorkerEvent::PhaseEntered { owner, .. }
         | AudioWorkerEvent::PhaseExited { owner, .. }
+        | AudioWorkerEvent::PermissionPromptPending { owner }
+        | AudioWorkerEvent::PermissionPromptResolved { owner }
+        | AudioWorkerEvent::TerminationUnconfirmed { owner, .. }
         | AudioWorkerEvent::FirstBuffer { owner, .. }
         | AudioWorkerEvent::InitFailed { owner, .. }
         | AudioWorkerEvent::RuntimeFailed { owner, .. }
@@ -673,6 +699,42 @@ fn handle_worker_event(
     }
 
     match event {
+        AudioWorkerEvent::PermissionPromptPending { .. } => {
+            if current.phase == AttemptPhase::Starting && current.tcc_pending_since.is_none() {
+                current.tcc_pending_since = Some(Instant::now());
+                tracing::info!(
+                    target: "audio",
+                    owner = owner.telemetry_id(),
+                    owner_kind = owner.kind(),
+                    "microphone permission prompt pending; initialization deadlines suspended"
+                );
+            }
+        }
+        AudioWorkerEvent::PermissionPromptResolved { .. } => {
+            if let Some(started) = current.tcc_pending_since.take() {
+                let paused = started.elapsed();
+                current.tcc_paused_total += paused;
+                tracing::info!(
+                    target: "audio",
+                    owner = owner.telemetry_id(),
+                    owner_kind = owner.kind(),
+                    prompt_pending_ms = paused.as_millis() as u64,
+                    "microphone permission prompt resolved; initialization deadlines resumed"
+                );
+            }
+        }
+        AudioWorkerEvent::TerminationUnconfirmed { failure, .. } => {
+            if let Some(response) = current.start_response.take() {
+                let _ = response.send(Err(AudioStartError::InitializationFailed(failure.clone())));
+            }
+            begin_recovery(
+                attempt,
+                AudioCancelReason::RuntimeFailure,
+                sink,
+                public,
+                Some(failure),
+            );
+        }
         AudioWorkerEvent::PhaseEntered { phase, .. } => {
             current.init_phase = phase;
             tracing::info!(
@@ -1015,8 +1077,27 @@ fn handle_deadlines_at(
     let Some(current) = attempt.as_ref() else {
         return;
     };
-    let elapsed = now.saturating_duration_since(current.accepted_at);
+    let elapsed = current.active_initialization_elapsed(now);
+    let permission_prompt_timed_out = current.phase == AttemptPhase::Starting
+        && current.tcc_pending_since.is_some_and(|started| {
+            now.saturating_duration_since(started) >= config.tcc_prompt_watchdog
+        });
+    if permission_prompt_timed_out {
+        let phase = current.init_phase;
+        begin_recovery(
+            attempt,
+            AudioCancelReason::HardDeadline,
+            sink,
+            public,
+            Some(AudioFailure::new(
+                AudioFailureKind::PermissionPromptTimeout,
+                phase,
+            )),
+        );
+        return;
+    }
     let should_emit_still_connecting = current.phase == AttemptPhase::Starting
+        && current.tcc_pending_since.is_none()
         && !current.still_connecting_emitted
         && elapsed >= config.still_connecting_after;
     if should_emit_still_connecting {
@@ -2245,6 +2326,116 @@ mod tests {
     }
 
     #[test]
+    fn pending_tcc_prompt_suspends_active_deadline_and_cancel_stays_responsive() {
+        let (supervisor, gate, _, sink, _) =
+            harness(AudioInitPhase::StreamBuild, SupervisorConfig::default());
+        let owner = AudioOwner::Dictation(96);
+        assert_eq!(start(&supervisor, owner).recv().unwrap(), Ok(()));
+        supervisor
+            .sender
+            .send(SupervisorMessage::Worker(
+                AudioWorkerEvent::PermissionPromptPending { owner },
+            ))
+            .unwrap();
+
+        check_deadlines(
+            &supervisor,
+            HARD_INITIALIZATION_DEADLINE + Duration::from_secs(10),
+        );
+        assert!(supervisor.public.is_active());
+        assert!(!sink.events.lock().unwrap().iter().any(|(_, event)| {
+            matches!(event, AudioLifecycleEvent::InitializationFailed { .. })
+        }));
+
+        assert_eq!(cancel(&supervisor, owner).recv().unwrap(), Ok(true));
+        gate.open();
+        wait_until("TCC-pending cancellation did not release ownership", || {
+            !supervisor.public.is_active()
+        });
+        shutdown(&supervisor);
+    }
+
+    #[test]
+    fn pending_tcc_prompt_has_a_separate_bounded_watchdog() {
+        let config = SupervisorConfig {
+            tcc_prompt_watchdog: Duration::from_secs(3),
+            ..SupervisorConfig::default()
+        };
+        let (supervisor, gate, _, sink, _) = harness(AudioInitPhase::StreamBuild, config);
+        let owner = AudioOwner::Dictation(97);
+        assert_eq!(start(&supervisor, owner).recv().unwrap(), Ok(()));
+        supervisor
+            .sender
+            .send(SupervisorMessage::Worker(
+                AudioWorkerEvent::PermissionPromptPending { owner },
+            ))
+            .unwrap();
+
+        check_deadlines(&supervisor, Duration::from_secs(4));
+        assert!(sink.events.lock().unwrap().iter().any(|(_, event)| {
+            matches!(
+                event,
+                AudioLifecycleEvent::InitializationFailed {
+                    kind: AudioFailureKind::PermissionPromptTimeout,
+                    ..
+                }
+            )
+        }));
+        assert!(supervisor.public.is_active());
+
+        gate.open();
+        wait_until("TCC watchdog recovery did not release ownership", || {
+            !supervisor.public.is_active()
+        });
+        shutdown(&supervisor);
+    }
+
+    #[test]
+    fn unconfirmed_termination_fails_closed_and_retains_exclusive_ownership() {
+        let (supervisor, gate, spawn_count, sink, _) =
+            harness(AudioInitPhase::StreamBuild, SupervisorConfig::default());
+        let owner = AudioOwner::Dictation(98);
+        assert_eq!(start(&supervisor, owner).recv().unwrap(), Ok(()));
+        supervisor
+            .sender
+            .send(SupervisorMessage::Worker(
+                AudioWorkerEvent::TerminationUnconfirmed {
+                    owner,
+                    failure: AudioFailure::new(
+                        AudioFailureKind::TerminationUnconfirmed,
+                        AudioInitPhase::StreamBuild,
+                    ),
+                },
+            ))
+            .unwrap();
+
+        wait_until("unconfirmed termination did not enter recovery", || {
+            sink.events.lock().unwrap().iter().any(|(_, event)| {
+                matches!(
+                    event,
+                    AudioLifecycleEvent::InitializationFailed {
+                        kind: AudioFailureKind::TerminationUnconfirmed,
+                        ..
+                    }
+                )
+            })
+        });
+        assert_eq!(
+            start(&supervisor, AudioOwner::Dictation(99))
+                .recv()
+                .unwrap(),
+            Err(AudioStartError::AudioRecovering)
+        );
+        assert_eq!(spawn_count.load(Ordering::SeqCst), 1);
+
+        gate.open();
+        wait_until("unconfirmed termination recovery did not finish", || {
+            !supervisor.public.is_active()
+        });
+        shutdown(&supervisor);
+    }
+
+    #[test]
     fn stopping_deadline_surfaces_guidance_without_detaching_the_worker() {
         let gate = Gate::closed();
         let sink = Arc::new(RecordingSink::default());
@@ -2254,6 +2445,7 @@ mod tests {
             SupervisorConfig {
                 still_connecting_after: Duration::from_secs(1),
                 hard_deadline: Duration::from_secs(2),
+                tcc_prompt_watchdog: Duration::from_secs(120),
                 recovery_guidance_after: Duration::from_millis(5),
             },
         );

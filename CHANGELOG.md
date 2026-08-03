@@ -15,6 +15,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- Microphone initialization now gives AUHAL and CPAL separate bounded attempts,
+  requires confirmed helper termination before fallback, honors Stop between
+  attempts, suspends active deadlines during a pending macOS permission prompt,
+  and reports privacy-safe setup sub-phases for root-cause attribution. This is
+  a capture-contract repair, not a claim that the underlying Core Audio hang is
+  eliminated (#436).
 - In-app updates now detect macOS Gatekeeper App Translocation before
   downloading, explain how to reinstall Murmur from Finder, and distinguish
   installation failures from update-check failures (#432).

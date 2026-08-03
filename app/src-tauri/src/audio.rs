@@ -32,6 +32,13 @@ const AUDIO_LEVEL_THROTTLE_MS: u64 = 16;
 const HELPER_STOP_DEADLINE: Duration = Duration::from_secs(2);
 const HELPER_CONTROL_DEADLINE: Duration = Duration::from_secs(3);
 const PERMISSION_POLL_INTERVAL: Duration = Duration::from_millis(250);
+pub(crate) const TCC_PROMPT_WATCHDOG: Duration = Duration::from_secs(120);
+const AUHAL_ATTEMPT_BUDGET: Duration = Duration::from_secs(8);
+const CPAL_ATTEMPT_BUDGET: Duration = Duration::from_secs(16);
+const COOPERATIVE_STOP_GRACE: Duration = Duration::from_millis(250);
+const CAPTURE_TERMINATION_BUDGET: Duration = Duration::from_secs(2);
+const CAPTURE_PROTOCOL_RESERVE: Duration = Duration::from_secs(2);
+const CAPTURE_ACTIVE_BUDGET: Duration = Duration::from_secs(30);
 const CAPTURE_WORKER_IDENTIFIER: &str = "com.localdictation.capture-worker";
 pub(crate) const STREAM_BUILD_TIMEOUT: Duration = Duration::from_secs(10);
 static NEXT_CAPTURE_ID: AtomicU64 = AtomicU64::new(1);
@@ -54,6 +61,8 @@ pub(crate) enum AudioFailureKind {
     ProtocolError,
     FirstBufferTimeout,
     InitializationTimeout,
+    PermissionPromptTimeout,
+    TerminationUnconfirmed,
     WorkerPanicked,
     SignatureInvalid,
 }
@@ -77,6 +86,8 @@ impl AudioFailureKind {
             Self::ProtocolError => "protocol_error",
             Self::FirstBufferTimeout => "first_buffer_timeout",
             Self::InitializationTimeout => "initialization_timeout",
+            Self::PermissionPromptTimeout => "permission_prompt_timeout",
+            Self::TerminationUnconfirmed => "termination_unconfirmed",
             Self::WorkerPanicked => "worker_panicked",
             Self::SignatureInvalid => "signature_invalid",
         }
@@ -123,6 +134,12 @@ impl AudioFailure {
             AudioFailureKind::InitializationTimeout => {
                 "Microphone initialization exceeded the deadline."
             }
+            AudioFailureKind::PermissionPromptTimeout => {
+                "Microphone permission was not decided before the prompt deadline."
+            }
+            AudioFailureKind::TerminationUnconfirmed => {
+                "The microphone worker could not be stopped safely. Restart Murmur before trying again."
+            }
             AudioFailureKind::SignatureInvalid => {
                 "The bundled microphone capture worker failed integrity validation."
             }
@@ -137,6 +154,8 @@ impl AudioFailure {
         !matches!(
             self.kind,
             AudioFailureKind::PermissionDenied
+                | AudioFailureKind::PermissionPromptTimeout
+                | AudioFailureKind::TerminationUnconfirmed
                 | AudioFailureKind::ProtocolError
                 | AudioFailureKind::SignatureInvalid
         )
@@ -208,6 +227,16 @@ pub(crate) enum AudioWorkerEvent {
         owner: crate::audio_lifecycle::AudioOwner,
         phase: AudioInitPhase,
         elapsed_ms: u64,
+    },
+    PermissionPromptPending {
+        owner: crate::audio_lifecycle::AudioOwner,
+    },
+    PermissionPromptResolved {
+        owner: crate::audio_lifecycle::AudioOwner,
+    },
+    TerminationUnconfirmed {
+        owner: crate::audio_lifecycle::AudioOwner,
+        failure: AudioFailure,
     },
     FirstBuffer {
         owner: crate::audio_lifecycle::AudioOwner,
@@ -305,7 +334,7 @@ fn spawn_helper(
     let spawn_started = Instant::now();
     let child = ManagedChild::spawn_with_arguments(
         &path,
-        &["--production-v2", &capture_id_text, nonce_hex],
+        &["--production-v3", &capture_id_text, nonce_hex],
         &[],
     )
     .map_err(|_| {
@@ -446,16 +475,159 @@ enum HelperRead {
 
 enum AttemptResult {
     Stopped,
+    TerminalHandled,
     Failed {
         failure: AudioFailure,
         retained_audio: bool,
     },
 }
 
+#[derive(Debug)]
+struct ActiveAttemptClock {
+    started_at: Instant,
+    paused_at: Option<Instant>,
+    paused_total: Duration,
+}
+
+impl ActiveAttemptClock {
+    fn new(now: Instant) -> Self {
+        Self {
+            started_at: now,
+            paused_at: None,
+            paused_total: Duration::ZERO,
+        }
+    }
+
+    fn pause(&mut self, now: Instant) {
+        if self.paused_at.is_none() {
+            self.paused_at = Some(now);
+        }
+    }
+
+    fn resume(&mut self, now: Instant) {
+        if let Some(paused_at) = self.paused_at.take() {
+            self.paused_total += now.saturating_duration_since(paused_at);
+        }
+    }
+
+    fn elapsed(&self, now: Instant) -> Duration {
+        let current_pause = self
+            .paused_at
+            .map(|paused_at| now.saturating_duration_since(paused_at))
+            .unwrap_or_default();
+        now.saturating_duration_since(self.started_at)
+            .saturating_sub(self.paused_total)
+            .saturating_sub(current_pause)
+    }
+}
+
+fn begin_permission_prompt_pause(
+    prompt_started: &mut Option<Instant>,
+    clock: &mut ActiveAttemptClock,
+    owner: crate::audio_lifecycle::AudioOwner,
+    event_sender: &AudioWorkerEventSender,
+    now: Instant,
+) {
+    if prompt_started.is_none() {
+        *prompt_started = Some(now);
+        clock.pause(now);
+        let _ = event_sender.send(AudioWorkerEvent::PermissionPromptPending { owner });
+    }
+}
+
+fn end_permission_prompt_pause(
+    prompt_started: &mut Option<Instant>,
+    clock: &mut ActiveAttemptClock,
+    owner: crate::audio_lifecycle::AudioOwner,
+    event_sender: &AudioWorkerEventSender,
+    now: Instant,
+) {
+    if prompt_started.take().is_some() {
+        clock.resume(now);
+        let _ = event_sender.send(AudioWorkerEvent::PermissionPromptResolved { owner });
+    }
+}
+
 fn backend_label(backend: CaptureBackend) -> &'static str {
     match backend {
         CaptureBackend::Cpal => "cpal",
         CaptureBackend::Auhal => "auhal",
+    }
+}
+
+fn backend_attempt_budget(backend: CaptureBackend) -> Duration {
+    match backend {
+        CaptureBackend::Auhal => AUHAL_ATTEMPT_BUDGET,
+        CaptureBackend::Cpal => CPAL_ATTEMPT_BUDGET,
+    }
+}
+
+fn terminate_helper(
+    mut child: ManagedChild,
+    mut input: Option<std::process::ChildStdin>,
+    capture_id: u64,
+    nonce: SessionNonce,
+    control: Option<ProductionHostMessage>,
+) -> Result<(), ManagedChild> {
+    if let (Some(input), Some(control)) = (input.as_mut(), control) {
+        let _ = write_production_control(input, capture_id, nonce, &control);
+    }
+    drop(input);
+    let deadline = Instant::now() + CAPTURE_TERMINATION_BUDGET;
+    let cooperative_deadline = std::cmp::min(deadline, Instant::now() + COOPERATIVE_STOP_GRACE);
+    if child.wait_for_exit(cooperative_deadline).is_some()
+        || child.hard_kill_confirmed(deadline).is_some()
+    {
+        Ok(())
+    } else {
+        Err(child)
+    }
+}
+
+fn quarantine_unconfirmed_child(
+    mut child: ManagedChild,
+    owner: crate::audio_lifecycle::AudioOwner,
+    event_sender: &AudioWorkerEventSender,
+    phase: AudioInitPhase,
+) {
+    let failure = AudioFailure::new(AudioFailureKind::TerminationUnconfirmed, phase);
+    let _ = event_sender.send(AudioWorkerEvent::TerminationUnconfirmed { owner, failure });
+    tracing::error!(
+        target: "audio",
+        owner = owner.telemetry_id(),
+        helper_pid = child.pid(),
+        error_kind = AudioFailureKind::TerminationUnconfirmed.as_str(),
+        "capture helper termination could not be confirmed; retaining ownership"
+    );
+    while child
+        .hard_kill_confirmed(Instant::now() + HELPER_STOP_DEADLINE)
+        .is_none()
+    {
+        tracing::warn!(
+            target: "audio",
+            owner = owner.telemetry_id(),
+            helper_pid = child.pid(),
+            "capture helper remains under recovery ownership"
+        );
+    }
+}
+
+fn terminate_or_quarantine(
+    child: ManagedChild,
+    input: Option<std::process::ChildStdin>,
+    capture_id: u64,
+    nonce: SessionNonce,
+    control: Option<ProductionHostMessage>,
+    owner: crate::audio_lifecycle::AudioOwner,
+    event_sender: &AudioWorkerEventSender,
+    phase: AudioInitPhase,
+) -> bool {
+    match terminate_helper(child, input, capture_id, nonce, control) {
+        Ok(()) => true,
+        Err(child) => {
+            quarantine_unconfirmed_child(child, owner, event_sender, phase);
+            false
+        }
     }
 }
 
@@ -474,6 +646,13 @@ fn preferred_backends() -> [CaptureBackend; 2] {
     }
 }
 
+fn stop_requested_between_attempts(command_receiver: &Receiver<AudioCommand>) -> bool {
+    matches!(
+        command_receiver.try_recv(),
+        Ok(AudioCommand::Stop) | Err(mpsc::TryRecvError::Disconnected)
+    )
+}
+
 fn run_backend(
     owner: crate::audio_lifecycle::AudioOwner,
     backend: CaptureBackend,
@@ -484,10 +663,11 @@ fn run_backend(
     app_handle: &Option<tauri::AppHandle>,
     event_sender: &AudioWorkerEventSender,
 ) -> AttemptResult {
-    // A first-ever/not-reset grant must be allowed to reach the worker's
-    // device open so macOS can show the TCC prompt. Only a genuine denial is
-    // terminal before spawn.
-    if crate::commands::permissions::check_microphone_permission_status() == "denied" {
+    let started_at = Instant::now();
+    let mut clock = ActiveAttemptClock::new(started_at);
+    let mut permission_prompt_started = None;
+    let permission_status = crate::commands::permissions::check_microphone_permission_status();
+    if permission_status == "denied" {
         return AttemptResult::Failed {
             failure: AudioFailure::new(
                 AudioFailureKind::PermissionDenied,
@@ -496,20 +676,55 @@ fn run_backend(
             retained_audio: false,
         };
     }
+    if permission_status == "notDetermined" {
+        begin_permission_prompt_pause(
+            &mut permission_prompt_started,
+            &mut clock,
+            owner,
+            event_sender,
+            started_at,
+        );
+    }
+
     let (capture_id, nonce, nonce_hex) = capture_identity();
-    let (mut child, mut input, output) = match spawn_helper(capture_id, &nonce_hex) {
+    let (child, mut input, output) = match spawn_helper(capture_id, &nonce_hex) {
         Ok(value) => value,
         Err(failure) => {
+            end_permission_prompt_pause(
+                &mut permission_prompt_started,
+                &mut clock,
+                owner,
+                event_sender,
+                Instant::now(),
+            );
             return AttemptResult::Failed {
                 failure,
                 retained_audio: false,
-            }
+            };
         }
     };
     let output = match hello(&mut input, output, capture_id, nonce) {
         Ok(output) => output,
         Err(failure) => {
-            let _ = child.hard_kill_confirmed(Instant::now() + HELPER_STOP_DEADLINE);
+            end_permission_prompt_pause(
+                &mut permission_prompt_started,
+                &mut clock,
+                owner,
+                event_sender,
+                Instant::now(),
+            );
+            if !terminate_or_quarantine(
+                child,
+                Some(input),
+                capture_id,
+                nonce,
+                None,
+                owner,
+                event_sender,
+                AudioInitPhase::StreamBuild,
+            ) {
+                return AttemptResult::TerminalHandled;
+            }
             return AttemptResult::Failed {
                 failure,
                 retained_audio: false,
@@ -528,7 +743,25 @@ fn run_backend(
     )
     .is_err()
     {
-        let _ = child.hard_kill_confirmed(Instant::now() + HELPER_STOP_DEADLINE);
+        end_permission_prompt_pause(
+            &mut permission_prompt_started,
+            &mut clock,
+            owner,
+            event_sender,
+            Instant::now(),
+        );
+        if !terminate_or_quarantine(
+            child,
+            Some(input),
+            capture_id,
+            nonce,
+            None,
+            owner,
+            event_sender,
+            AudioInitPhase::StreamBuild,
+        ) {
+            return AttemptResult::TerminalHandled;
+        }
         return AttemptResult::Failed {
             failure: AudioFailure::new(
                 AudioFailureKind::ProtocolError,
@@ -568,22 +801,30 @@ fn run_backend(
     let mut retained_audio = false;
     let mut first_callback_wait_started = None;
     let mut last_level_emit = Instant::now() - Duration::from_secs(1);
-    let mut last_permission_check = Instant::now();
+    let mut last_permission_check = Instant::now() - PERMISSION_POLL_INTERVAL;
+    let mut current_phase = AudioInitPhase::StreamBuild;
+    let attempt_budget = backend_attempt_budget(backend);
     loop {
         match command_receiver.try_recv() {
             Ok(AudioCommand::Stop) | Err(mpsc::TryRecvError::Disconnected) => {
                 let stop_started = Instant::now();
-                let _ = write_production_control(
-                    &mut input,
+                end_permission_prompt_pause(
+                    &mut permission_prompt_started,
+                    &mut clock,
+                    owner,
+                    event_sender,
+                    stop_started,
+                );
+                if terminate_or_quarantine(
+                    child,
+                    Some(input),
                     capture_id,
                     nonce,
-                    &ProductionHostMessage::Stop,
-                );
-                drop(input);
-                let termination = child
-                    .wait_for_exit(Instant::now() + HELPER_STOP_DEADLINE)
-                    .or_else(|| child.hard_kill_confirmed(Instant::now() + HELPER_STOP_DEADLINE));
-                if termination.is_some() {
+                    Some(ProductionHostMessage::Stop),
+                    owner,
+                    event_sender,
+                    current_phase,
+                ) {
                     tracing::info!(
                         target: "audio",
                         capture_id,
@@ -593,19 +834,14 @@ fn run_backend(
                     let _ = event_sender.send(AudioWorkerEvent::StreamStopped { owner });
                     return AttemptResult::Stopped;
                 }
-                return AttemptResult::Failed {
-                    failure: AudioFailure::new(
-                        AudioFailureKind::BackendError,
-                        AudioInitPhase::Runtime,
-                    ),
-                    retained_audio,
-                };
+                return AttemptResult::TerminalHandled;
             }
             Err(mpsc::TryRecvError::Empty) => {}
         }
 
         if last_permission_check.elapsed() >= PERMISSION_POLL_INTERVAL {
-            last_permission_check = Instant::now();
+            let now = Instant::now();
+            last_permission_check = now;
             // During active capture, denied and not-determined both mean the
             // grant is no longer in force (not-determined is what a TCC reset
             // can expose). "unknown" is a transient probe failure and must not
@@ -614,29 +850,128 @@ fn run_backend(
                 crate::commands::permissions::check_microphone_permission_status();
             let permission_lost = permission_status == "denied"
                 || (retained_audio && permission_status == "notDetermined");
+            if !retained_audio && permission_status == "notDetermined" {
+                begin_permission_prompt_pause(
+                    &mut permission_prompt_started,
+                    &mut clock,
+                    owner,
+                    event_sender,
+                    now,
+                );
+            } else if permission_status == "granted" {
+                end_permission_prompt_pause(
+                    &mut permission_prompt_started,
+                    &mut clock,
+                    owner,
+                    event_sender,
+                    now,
+                );
+            }
+            let permission_prompt_timed_out = permission_prompt_started.is_some_and(|started| {
+                now.saturating_duration_since(started) >= TCC_PROMPT_WATCHDOG
+            });
             if permission_lost {
-                let _ = write_production_control(
-                    &mut input,
+                end_permission_prompt_pause(
+                    &mut permission_prompt_started,
+                    &mut clock,
+                    owner,
+                    event_sender,
+                    now,
+                );
+                let phase = if retained_audio {
+                    AudioInitPhase::Runtime
+                } else {
+                    current_phase
+                };
+                if !terminate_or_quarantine(
+                    child,
+                    Some(input),
                     capture_id,
                     nonce,
-                    &ProductionHostMessage::Cancel,
-                );
-                drop(input);
-                let _ = child
-                    .wait_for_exit(Instant::now() + HELPER_STOP_DEADLINE)
-                    .or_else(|| child.hard_kill_confirmed(Instant::now() + HELPER_STOP_DEADLINE));
+                    Some(ProductionHostMessage::Cancel),
+                    owner,
+                    event_sender,
+                    phase,
+                ) {
+                    return AttemptResult::TerminalHandled;
+                }
                 return AttemptResult::Failed {
-                    failure: AudioFailure::new(
-                        AudioFailureKind::PermissionDenied,
-                        if retained_audio {
-                            AudioInitPhase::Runtime
-                        } else {
-                            AudioInitPhase::StreamBuild
-                        },
-                    ),
+                    failure: AudioFailure::new(AudioFailureKind::PermissionDenied, phase),
                     retained_audio,
                 };
             }
+            if permission_prompt_timed_out {
+                end_permission_prompt_pause(
+                    &mut permission_prompt_started,
+                    &mut clock,
+                    owner,
+                    event_sender,
+                    now,
+                );
+                if !terminate_or_quarantine(
+                    child,
+                    Some(input),
+                    capture_id,
+                    nonce,
+                    Some(ProductionHostMessage::Cancel),
+                    owner,
+                    event_sender,
+                    current_phase,
+                ) {
+                    return AttemptResult::TerminalHandled;
+                }
+                return AttemptResult::Failed {
+                    failure: AudioFailure::new(
+                        AudioFailureKind::PermissionPromptTimeout,
+                        current_phase,
+                    ),
+                    retained_audio: false,
+                };
+            }
+        }
+
+        let now = Instant::now();
+        if !retained_audio && clock.elapsed(now) >= attempt_budget {
+            end_permission_prompt_pause(
+                &mut permission_prompt_started,
+                &mut clock,
+                owner,
+                event_sender,
+                now,
+            );
+            let failure = AudioFailure::new(
+                if current_phase == AudioInitPhase::FirstBufferWait {
+                    AudioFailureKind::FirstBufferTimeout
+                } else {
+                    AudioFailureKind::InitializationTimeout
+                },
+                current_phase,
+            );
+            tracing::warn!(
+                target: "audio",
+                capture_id,
+                backend = backend_label(backend),
+                active_elapsed_ms = clock.elapsed(now).as_millis() as u64,
+                attempt_budget_ms = attempt_budget.as_millis() as u64,
+                error_kind = failure.kind.as_str(),
+                "capture backend exceeded its active initialization budget"
+            );
+            if !terminate_or_quarantine(
+                child,
+                Some(input),
+                capture_id,
+                nonce,
+                Some(ProductionHostMessage::Stop),
+                owner,
+                event_sender,
+                current_phase,
+            ) {
+                return AttemptResult::TerminalHandled;
+            }
+            return AttemptResult::Failed {
+                failure,
+                retained_audio: false,
+            };
         }
 
         match reader_rx.recv_timeout(Duration::from_millis(20)) {
@@ -645,7 +980,25 @@ fn run_backend(
                     || pcm.samples.is_empty()
                     || sample_rate.is_some_and(|rate| rate != pcm.sample_rate)
                 {
-                    let _ = child.hard_kill_confirmed(Instant::now() + HELPER_STOP_DEADLINE);
+                    end_permission_prompt_pause(
+                        &mut permission_prompt_started,
+                        &mut clock,
+                        owner,
+                        event_sender,
+                        Instant::now(),
+                    );
+                    if !terminate_or_quarantine(
+                        child,
+                        Some(input),
+                        capture_id,
+                        nonce,
+                        Some(ProductionHostMessage::Cancel),
+                        owner,
+                        event_sender,
+                        AudioInitPhase::Runtime,
+                    ) {
+                        return AttemptResult::TerminalHandled;
+                    }
                     return AttemptResult::Failed {
                         failure: AudioFailure::new(
                             AudioFailureKind::ProtocolError,
@@ -662,6 +1015,14 @@ fn run_backend(
                     .extend_from_slice(&pcm.samples);
                 if !retained_audio {
                     retained_audio = true;
+                    current_phase = AudioInitPhase::Runtime;
+                    end_permission_prompt_pause(
+                        &mut permission_prompt_started,
+                        &mut clock,
+                        owner,
+                        event_sender,
+                        Instant::now(),
+                    );
                     tracing::info!(
                         target: "audio",
                         capture_id,
@@ -712,43 +1073,136 @@ fn run_backend(
                     CapturePhase::Active => AudioInitPhase::Runtime,
                     CapturePhase::Stopping => AudioInitPhase::Runtime,
                 };
+                current_phase = phase;
                 let _ = event_sender.send(AudioWorkerEvent::PhaseEntered { owner, phase });
+            }
+            Ok(HelperRead::Frame(ProductionFrame::Control(
+                ProductionHelperMessage::SetupStep {
+                    backend: reported_backend,
+                    step,
+                    transition,
+                },
+            ))) => {
+                if reported_backend != backend {
+                    end_permission_prompt_pause(
+                        &mut permission_prompt_started,
+                        &mut clock,
+                        owner,
+                        event_sender,
+                        Instant::now(),
+                    );
+                    if !terminate_or_quarantine(
+                        child,
+                        Some(input),
+                        capture_id,
+                        nonce,
+                        Some(ProductionHostMessage::Cancel),
+                        owner,
+                        event_sender,
+                        current_phase,
+                    ) {
+                        return AttemptResult::TerminalHandled;
+                    }
+                    return AttemptResult::Failed {
+                        failure: AudioFailure::new(AudioFailureKind::ProtocolError, current_phase),
+                        retained_audio,
+                    };
+                }
+                tracing::info!(
+                    target: "audio",
+                    capture_id,
+                    backend = backend_label(backend),
+                    setup_step = step.as_str(),
+                    setup_transition = transition.as_str(),
+                    "capture helper setup step"
+                );
             }
             Ok(HelperRead::Frame(ProductionFrame::Control(ProductionHelperMessage::Failure {
                 code,
                 ..
             }))) => {
+                let phase = if retained_audio {
+                    AudioInitPhase::Runtime
+                } else {
+                    current_phase
+                };
+                end_permission_prompt_pause(
+                    &mut permission_prompt_started,
+                    &mut clock,
+                    owner,
+                    event_sender,
+                    Instant::now(),
+                );
+                if !terminate_or_quarantine(
+                    child,
+                    Some(input),
+                    capture_id,
+                    nonce,
+                    None,
+                    owner,
+                    event_sender,
+                    phase,
+                ) {
+                    return AttemptResult::TerminalHandled;
+                }
                 return AttemptResult::Failed {
-                    failure: AudioFailure::new(
-                        failure_kind(code),
-                        if retained_audio {
-                            AudioInitPhase::Runtime
-                        } else {
-                            AudioInitPhase::StreamBuild
-                        },
-                    ),
+                    failure: AudioFailure::new(failure_kind(code), phase),
                     retained_audio,
                 };
             }
             Ok(HelperRead::Frame(ProductionFrame::Control(ProductionHelperMessage::Stopped {
                 ..
             }))) => {
-                drop(input);
-                let _ = child
-                    .wait_for_exit(Instant::now() + HELPER_STOP_DEADLINE)
-                    .or_else(|| child.hard_kill_confirmed(Instant::now() + HELPER_STOP_DEADLINE));
+                end_permission_prompt_pause(
+                    &mut permission_prompt_started,
+                    &mut clock,
+                    owner,
+                    event_sender,
+                    Instant::now(),
+                );
+                if !terminate_or_quarantine(
+                    child,
+                    Some(input),
+                    capture_id,
+                    nonce,
+                    None,
+                    owner,
+                    event_sender,
+                    current_phase,
+                ) {
+                    return AttemptResult::TerminalHandled;
+                }
                 let _ = event_sender.send(AudioWorkerEvent::StreamStopped { owner });
                 return AttemptResult::Stopped;
             }
             Ok(HelperRead::Frame(_)) => {}
             Ok(HelperRead::Invalid) | Err(RecvTimeoutError::Disconnected) => {
+                end_permission_prompt_pause(
+                    &mut permission_prompt_started,
+                    &mut clock,
+                    owner,
+                    event_sender,
+                    Instant::now(),
+                );
+                if !terminate_or_quarantine(
+                    child,
+                    Some(input),
+                    capture_id,
+                    nonce,
+                    None,
+                    owner,
+                    event_sender,
+                    current_phase,
+                ) {
+                    return AttemptResult::TerminalHandled;
+                }
                 return AttemptResult::Failed {
                     failure: AudioFailure::new(
                         AudioFailureKind::ProtocolError,
                         if retained_audio {
                             AudioInitPhase::Runtime
                         } else {
-                            AudioInitPhase::StreamBuild
+                            current_phase
                         },
                     ),
                     retained_audio,
@@ -759,32 +1213,28 @@ fn run_backend(
     }
 }
 
-fn run_audio_capture(spec: AudioWorkerSpec, event_sender: &AudioWorkerEventSender) {
-    let AudioWorkerSpec {
-        owner,
-        command_receiver,
-        shared,
-        active,
-        app_handle,
-        device_id,
-    } = spec;
-    let backends = preferred_backends();
+fn run_capture_backend_sequence(
+    owner: crate::audio_lifecycle::AudioOwner,
+    command_receiver: &Receiver<AudioCommand>,
+    event_sender: &AudioWorkerEventSender,
+    backends: [CaptureBackend; 2],
+    mut run_attempt: impl FnMut(CaptureBackend) -> AttemptResult,
+) {
     for (attempt_index, backend) in backends.into_iter().enumerate() {
-        match run_backend(
-            owner,
-            backend,
-            device_id.as_deref(),
-            &command_receiver,
-            &shared,
-            &active,
-            &app_handle,
-            event_sender,
-        ) {
-            AttemptResult::Stopped => return,
+        match run_attempt(backend) {
+            AttemptResult::Stopped | AttemptResult::TerminalHandled => return,
             AttemptResult::Failed {
                 failure,
                 retained_audio,
             } if !retained_audio && attempt_index == 0 && failure.permits_backend_fallback() => {
+                if stop_requested_between_attempts(command_receiver) {
+                    tracing::info!(
+                        target: "audio",
+                        owner = owner.telemetry_id(),
+                        "capture fallback suppressed by stop between backend attempts"
+                    );
+                    return;
+                }
                 tracing::warn!(
                     target: "audio",
                     owner = owner.telemetry_id(),
@@ -798,6 +1248,17 @@ fn run_audio_capture(spec: AudioWorkerSpec, event_sender: &AudioWorkerEventSende
                 failure,
                 retained_audio,
             } => {
+                if !retained_audio && attempt_index == 1 {
+                    tracing::error!(
+                        target: "audio",
+                        owner = owner.telemetry_id(),
+                        primary_backend = backend_label(backends[0]),
+                        fallback_backend = backend_label(backend),
+                        fallback_exhausted = true,
+                        error_kind = failure.kind.as_str(),
+                        "both capture backend attempts failed before first PCM"
+                    );
+                }
                 let event = if retained_audio {
                     AudioWorkerEvent::RuntimeFailed { owner, failure }
                 } else {
@@ -808,6 +1269,42 @@ fn run_audio_capture(spec: AudioWorkerSpec, event_sender: &AudioWorkerEventSende
             }
         }
     }
+}
+
+fn run_audio_capture(spec: AudioWorkerSpec, event_sender: &AudioWorkerEventSender) {
+    let AudioWorkerSpec {
+        owner,
+        command_receiver,
+        shared,
+        active,
+        app_handle,
+        device_id,
+    } = spec;
+    tracing::info!(
+        target: "audio",
+        owner = owner.telemetry_id(),
+        active_budget_ms = CAPTURE_ACTIVE_BUDGET.as_millis() as u64,
+        protocol_reserve_ms = CAPTURE_PROTOCOL_RESERVE.as_millis() as u64,
+        "capture backend budget contract started"
+    );
+    run_capture_backend_sequence(
+        owner,
+        &command_receiver,
+        event_sender,
+        preferred_backends(),
+        |backend| {
+            run_backend(
+                owner,
+                backend,
+                device_id.as_deref(),
+                &command_receiver,
+                &shared,
+                &active,
+                &app_handle,
+                event_sender,
+            )
+        },
+    );
 }
 
 pub(crate) fn spawn_capture_worker(
@@ -911,5 +1408,183 @@ mod tests {
         ] {
             assert!(AudioFailure::new(kind, AudioInitPhase::StreamBuild).permits_backend_fallback());
         }
+    }
+
+    #[test]
+    fn capture_budget_split_leaves_the_decided_protocol_reserve() {
+        assert_eq!(
+            AUHAL_ATTEMPT_BUDGET
+                + CAPTURE_TERMINATION_BUDGET
+                + CPAL_ATTEMPT_BUDGET
+                + CAPTURE_TERMINATION_BUDGET
+                + CAPTURE_PROTOCOL_RESERVE,
+            CAPTURE_ACTIVE_BUDGET
+        );
+    }
+
+    #[test]
+    fn active_attempt_clock_excludes_only_the_pending_prompt_interval() {
+        let started = Instant::now();
+        let mut clock = ActiveAttemptClock::new(started);
+        clock.pause(started + Duration::from_secs(2));
+        assert_eq!(
+            clock.elapsed(started + Duration::from_secs(40)),
+            Duration::from_secs(2)
+        );
+        clock.resume(started + Duration::from_secs(42));
+        assert_eq!(
+            clock.elapsed(started + Duration::from_secs(45)),
+            Duration::from_secs(5)
+        );
+    }
+
+    #[test]
+    fn permission_and_unconfirmed_termination_never_permit_fallback() {
+        for kind in [
+            AudioFailureKind::PermissionDenied,
+            AudioFailureKind::PermissionPromptTimeout,
+            AudioFailureKind::TerminationUnconfirmed,
+        ] {
+            assert!(
+                !AudioFailure::new(kind, AudioInitPhase::StreamBuild).permits_backend_fallback()
+            );
+        }
+    }
+
+    #[test]
+    fn stop_is_consumed_before_a_fallback_attempt_can_spawn() {
+        let (sender, receiver) = mpsc::channel();
+        assert!(!stop_requested_between_attempts(&receiver));
+        sender.send(AudioCommand::Stop).unwrap();
+        assert!(stop_requested_between_attempts(&receiver));
+    }
+
+    #[test]
+    fn confirmed_primary_timeout_advances_once_to_successful_fallback() {
+        let (_command_sender, command_receiver) = mpsc::channel();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured_events = Arc::clone(&events);
+        let event_sender = AudioWorkerEventSender::new(move |event| {
+            captured_events.lock().unwrap().push(event);
+            Ok(())
+        });
+        let mut calls = Vec::new();
+
+        run_capture_backend_sequence(
+            crate::audio_lifecycle::AudioOwner::Dictation(1),
+            &command_receiver,
+            &event_sender,
+            [CaptureBackend::Auhal, CaptureBackend::Cpal],
+            |backend| {
+                calls.push(backend);
+                if backend == CaptureBackend::Auhal {
+                    // Failed is emitted by the production runner only after
+                    // terminate_or_quarantine positively confirms exit.
+                    AttemptResult::Failed {
+                        failure: AudioFailure::new(
+                            AudioFailureKind::InitializationTimeout,
+                            AudioInitPhase::StreamBuild,
+                        ),
+                        retained_audio: false,
+                    }
+                } else {
+                    AttemptResult::Stopped
+                }
+            },
+        );
+
+        assert_eq!(calls, vec![CaptureBackend::Auhal, CaptureBackend::Cpal]);
+        assert!(events.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn unconfirmed_primary_termination_never_reaches_fallback() {
+        let (_command_sender, command_receiver) = mpsc::channel();
+        let event_sender = AudioWorkerEventSender::new(|_| Ok(()));
+        let mut calls = Vec::new();
+        run_capture_backend_sequence(
+            crate::audio_lifecycle::AudioOwner::Dictation(2),
+            &command_receiver,
+            &event_sender,
+            [CaptureBackend::Auhal, CaptureBackend::Cpal],
+            |backend| {
+                calls.push(backend);
+                AttemptResult::TerminalHandled
+            },
+        );
+        assert_eq!(calls, vec![CaptureBackend::Auhal]);
+    }
+
+    #[test]
+    fn two_backend_timeouts_emit_one_terminal_initialization_failure() {
+        let (_command_sender, command_receiver) = mpsc::channel();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured_events = Arc::clone(&events);
+        let event_sender = AudioWorkerEventSender::new(move |event| {
+            captured_events.lock().unwrap().push(event);
+            Ok(())
+        });
+        let mut calls = Vec::new();
+        run_capture_backend_sequence(
+            crate::audio_lifecycle::AudioOwner::Dictation(3),
+            &command_receiver,
+            &event_sender,
+            [CaptureBackend::Auhal, CaptureBackend::Cpal],
+            |backend| {
+                calls.push(backend);
+                AttemptResult::Failed {
+                    failure: AudioFailure::new(
+                        AudioFailureKind::InitializationTimeout,
+                        AudioInitPhase::StreamBuild,
+                    ),
+                    retained_audio: false,
+                }
+            },
+        );
+
+        assert_eq!(calls, vec![CaptureBackend::Auhal, CaptureBackend::Cpal]);
+        assert!(matches!(
+            events.lock().unwrap().as_slice(),
+            [AudioWorkerEvent::InitFailed {
+                failure: AudioFailure {
+                    kind: AudioFailureKind::InitializationTimeout,
+                    ..
+                },
+                ..
+            }]
+        ));
+    }
+
+    #[test]
+    fn retained_pcm_disables_fallback() {
+        let (_command_sender, command_receiver) = mpsc::channel();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured_events = Arc::clone(&events);
+        let event_sender = AudioWorkerEventSender::new(move |event| {
+            captured_events.lock().unwrap().push(event);
+            Ok(())
+        });
+        let mut calls = Vec::new();
+        run_capture_backend_sequence(
+            crate::audio_lifecycle::AudioOwner::Dictation(4),
+            &command_receiver,
+            &event_sender,
+            [CaptureBackend::Auhal, CaptureBackend::Cpal],
+            |backend| {
+                calls.push(backend);
+                AttemptResult::Failed {
+                    failure: AudioFailure::new(
+                        AudioFailureKind::StreamInvalidated,
+                        AudioInitPhase::Runtime,
+                    ),
+                    retained_audio: true,
+                }
+            },
+        );
+        assert_eq!(calls, vec![CaptureBackend::Auhal]);
+        assert!(matches!(
+            events.lock().unwrap().as_slice(),
+            [AudioWorkerEvent::RuntimeFailed { .. }]
+        ));
     }
 }

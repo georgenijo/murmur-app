@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the final signed capture worker's production-v2 startup protocol."""
+"""Exercise the final signed capture worker's production-v3 startup protocol."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from typing import BinaryIO
 
 
 MAGIC = b"MRMR"
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
 HEADER_BYTES = 36
 MAX_CONTROL_BYTES = 16 * 1024
 
@@ -110,7 +110,7 @@ def smoke_test(worker: Path, timeout_seconds: float = 5.0) -> None:
     capture_id = secrets.randbits(63) or 1
     nonce = os.urandom(16)
     process = subprocess.Popen(
-        [str(worker), "--production-v2", str(capture_id), nonce.hex()],
+        [str(worker), "--production-v3", str(capture_id), nonce.hex()],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -158,7 +158,7 @@ def main() -> int:
         smoke_test(arguments.worker, arguments.timeout_seconds)
     except SmokeError as error:
         raise SystemExit(f"ERROR: {error}") from error
-    print("signed capture worker production-v2 startup smoke passed")
+    print("signed capture worker production-v3 startup smoke passed")
     return 0
 
 
