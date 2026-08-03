@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   requestPermission: vi.fn(),
   sendNotification: vi.fn(),
   listen: vi.fn(),
+  getUpdateInstallEnvironment: vi.fn(),
 }));
 
 vi.mock('@tauri-apps/plugin-updater', () => ({ check: mocks.check }));
@@ -21,6 +22,9 @@ vi.mock('@tauri-apps/plugin-notification', () => ({
   sendNotification: mocks.sendNotification,
 }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: mocks.listen }));
+vi.mock('../updaterEnvironment', () => ({
+  getUpdateInstallEnvironment: mocks.getUpdateInstallEnvironment,
+}));
 vi.mock('../log', () => ({
   flog: {
     info: vi.fn(),
@@ -47,6 +51,7 @@ describe('useAutoUpdater presentation state', () => {
     mocks.getVersion.mockResolvedValue('0.22.1');
     mocks.listen.mockResolvedValue(vi.fn());
     mocks.isPermissionGranted.mockResolvedValue(true);
+    mocks.getUpdateInstallEnvironment.mockResolvedValue({ appTranslocated: false });
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({}),
@@ -111,8 +116,52 @@ describe('useAutoUpdater presentation state', () => {
 
     expect(current.updateStatus).toMatchObject({
       phase: 'error',
+      stage: 'check',
       message: 'Error: offline',
     });
     expect(current.isUpdateDialogOpen).toBe(false);
+  });
+
+  it('blocks installation before download when Gatekeeper translocated the app', async () => {
+    const downloadAndInstall = vi.fn();
+    mocks.check.mockResolvedValue({
+      available: true,
+      version: '0.24.2',
+      body: 'Release notes',
+      downloadAndInstall,
+    });
+    mocks.getUpdateInstallEnvironment.mockResolvedValue({ appTranslocated: true });
+
+    await act(async () => current.checkForUpdate());
+    await act(async () => current.startDownload());
+
+    expect(downloadAndInstall).not.toHaveBeenCalled();
+    expect(current.updateStatus).toMatchObject({
+      phase: 'error',
+      stage: 'install',
+      recovery: 'reinstall',
+      isForced: false,
+    });
+    expect(current.updateStatus.phase === 'error' && current.updateStatus.message)
+      .toContain('read-only security location');
+    expect(localStorage.getItem('pending-update-release-notes')).toBeNull();
+    expect(current.isUpdateDialogOpen).toBe(true);
+  });
+
+  it('keeps the normal writable installation path unchanged', async () => {
+    const downloadAndInstall = vi.fn().mockResolvedValue(undefined);
+    mocks.check.mockResolvedValue({
+      available: true,
+      version: '0.24.2',
+      body: 'Release notes',
+      downloadAndInstall,
+    });
+
+    await act(async () => current.checkForUpdate());
+    await act(async () => current.startDownload());
+
+    expect(downloadAndInstall).toHaveBeenCalledOnce();
+    expect(mocks.relaunch).toHaveBeenCalledOnce();
+    expect(current.updateStatus).toEqual({ phase: 'ready', version: '0.24.2' });
   });
 });

@@ -32,14 +32,15 @@ export function UpdateIndicator({ status, onOpen, onRetryCheck }: UpdateIndicato
   }
 
   if (status.phase === 'error') {
+    const installFailed = status.stage === 'install';
     return (
       <button
         type="button"
-        onClick={onRetryCheck}
+        onClick={installFailed ? onOpen : onRetryCheck}
         className="ml-auto inline-flex items-center gap-2 rounded-full bg-error/10 px-3 py-1.5 text-xs font-semibold text-error transition-colors hover:bg-error/15 focus:outline-none focus-visible:ring-2 focus-visible:ring-error"
-        aria-label="Update check failed. Retry"
+        aria-label={installFailed ? 'Update installation needs attention' : 'Update check failed. Retry'}
       >
-        Update check failed · Retry
+        {installFailed ? 'Update needs attention' : 'Update check failed · Retry'}
       </button>
     );
   }

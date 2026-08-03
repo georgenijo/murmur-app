@@ -175,10 +175,16 @@ function App() {
   // DEV ONLY: cycle through updater and post-update modal states for visual testing
   const devUpdateIndex = useRef(-1);
   const devMockStates: UpdateStatus[] = import.meta.env.DEV ? [
+    {
+      phase: 'error',
+      stage: 'install',
+      message: 'macOS opened Murmur from a read-only security location. Quit Murmur, then use Finder to move or reinstall it in Applications before reopening it and trying the update again.',
+      isForced: false,
+      recovery: 'reinstall',
+    },
     { phase: 'available', version: '0.7.0', notes: '## What\'s New\n- OTA auto-updater\n- Bug fixes\n- Performance improvements', isForced: false },
     { phase: 'available', version: '0.7.0', notes: 'Critical security fix.', isForced: true },
     { phase: 'downloading', version: '0.7.0', progress: 65 },
-    { phase: 'error', message: 'Network request failed: could not resolve host', isForced: false },
   ] : [];
   const [devUpdateStatus, setDevUpdateStatus] = useState<UpdateStatus | null>(null);
   const [devCompletedUpdate, setDevCompletedUpdate] = useState<CompletedUpdate | null>(null);
@@ -209,7 +215,10 @@ function App() {
     ? devUpdateDialogOpen
     : updater.isUpdateDialogOpen;
   const showAvailableUpdate = useCallback(() => {
-    if (devUpdateStatus?.phase === 'available') {
+    if (
+      devUpdateStatus?.phase === 'available' ||
+      (devUpdateStatus?.phase === 'error' && devUpdateStatus.stage === 'install')
+    ) {
       setDevUpdateDialogOpen(true);
       return;
     }

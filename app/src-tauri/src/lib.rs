@@ -336,6 +336,7 @@ pub fn run() {
             commands::benchmark::open_benchmark_output_folder,
             commands::tray::update_tray_icon,
             commands::tray::set_tray_update_available,
+            commands::updater::get_update_install_environment,
             commands::overlay::show_overlay,
             commands::overlay::hide_overlay,
             commands::overlay::set_overlay_expanded,

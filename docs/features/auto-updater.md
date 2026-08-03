@@ -83,6 +83,17 @@ When the current version is below the `min_version` field from the release manif
 
 If the download or install fails, the modal shows a red error banner with the error message and a "Retry" button. For forced updates in error state, the "Quit" button remains available.
 
+Before downloading, Murmur asks the Rust host whether the current executable is
+running under macOS Gatekeeper's `AppTranslocation` path. A translocated app is
+mounted read-only, so the updater cannot replace its bundle. Murmur blocks the
+download, explains that the user must quit and use Finder to move or reinstall
+Murmur in `/Applications`, and offers a Quit action instead of a futile Retry.
+Normal writable installations continue through the existing updater path.
+
+Check failures and installation failures remain distinct in `UpdateStatus`, so
+the Settings page and homepage indicator do not describe a completed download
+or failed installation as an update-check failure.
+
 ### Background Notifications
 
 When an update is detected during a background check (not user-initiated), a native macOS notification is sent: "Murmur vX.Y.Z is ready to install." This requires notification permission to be granted.
@@ -133,7 +144,13 @@ type UpdateStatus =
   | { phase: 'available'; version: string; notes: string; isForced: boolean }
   | { phase: 'downloading'; version: string; progress: number }
   | { phase: 'ready'; version: string }
-  | { phase: 'error'; message: string; isForced: boolean };
+  | {
+      phase: 'error';
+      stage: 'check' | 'install';
+      message: string;
+      isForced: boolean;
+      recovery?: 'reinstall';
+    };
 ```
 
 The update modal renders for `available`, `downloading`, `ready`, and `error` phases. The `idle`, `checking`, and `up-to-date` phases return null (no modal).

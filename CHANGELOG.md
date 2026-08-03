@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- In-app updates now detect macOS Gatekeeper App Translocation before
+  downloading, explain how to reinstall Murmur from Finder, and distinguish
+  installation failures from update-check failures (#432).
 - The signed production capture worker now uses standalone microphone sandbox
   entitlements instead of invalid inheritance, preventing macOS from terminating
   it before protocol startup. Release builds execute the final packaged worker's

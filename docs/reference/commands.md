@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The 109 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
+The 110 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -209,6 +209,12 @@ frontend.
 |---------|-----------|---------|-------------|
 | `update_tray_icon` | `_icon_state: String` | `Result<(), String>` | No-op; the tray icon is always the static white waveform. Retained for API compatibility. |
 | `set_tray_update_available` | `version: Option<String>` | `Result<(), String>` | Changes the native menu item between `Check for Updates…` and a bounded, validated `Update Murmur to vX.Y.Z…` label. |
+
+## Updater (`commands/updater.rs`)
+
+| Command | Parameters | Returns | Description |
+|---------|-----------|---------|-------------|
+| `get_update_install_environment` | — | `Result<{ appTranslocated: bool }, String>` | Reports whether Gatekeeper launched the current executable through its read-only `AppTranslocation` mount. Does not expose the executable path and fails closed if the current executable cannot be resolved. |
 
 ## Telemetry (`telemetry.rs`)
 

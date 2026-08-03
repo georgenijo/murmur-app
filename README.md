@@ -28,6 +28,11 @@ Built with [Tauri 2](https://tauri.app/) (Rust + React), with local transcriptio
 2. Open the DMG and drag **Murmur** to your Applications folder
 3. Launch the app — the setup assistant walks you through microphone and Accessibility permissions and downloads a model
 
+Launch Murmur from Applications. Running a downloaded copy from its disk image
+or another quarantined location can make macOS mount it read-only, which prevents
+in-app updates. If Murmur reports this condition, quit it and use Finder to move
+or reinstall it in Applications before reopening it.
+
 Requires macOS 14+ on Apple Silicon.
 
 ### Permissions
