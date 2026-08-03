@@ -195,3 +195,23 @@ Read these before working on a feature:
 - **Rust**: tauri 2, whisper-rs (Metal), FluidAudio (Core ML), sherpa-onnx, cpal, arboard, hound, rusqlite, core-graphics, objc2/objc2-app-kit, rdev (git main branch)
 - **Sidecar**: llama-cpp-2 — in `sidecars/local-llm` only, never in the app crate
 - **Frontend**: React 18, Tailwind CSS 4, @tauri-apps/api, Vite 6, TypeScript, vitest
+
+## Cursor Cloud specific instructions
+
+The Cursor Cloud VM is **Linux (Ubuntu 24.04, x86_64)**, but Murmur is a **macOS-only** desktop app. What that means in practice:
+
+- **Runnable on Linux:** the React frontend (`app/`) and the Rust `cargo test --lib` suite. These are exactly what CI runs on its `ubuntu` jobs.
+- **NOT runnable on Linux:** the full Tauri desktop app and real voice-to-text. Audio capture, keyboard listening, text injection, permissions, transform, and the notch overlay are all `#[cfg(target_os = "macos")]`-gated. `npm run tauri:dev` would launch a webkit window but with no working dictation. Full end-to-end validation requires macOS on Apple Silicon.
+- The macOS sidecar step (`python3 scripts/build_local_llm_sidecar.py`) is a **no-op on Linux and not needed**. `externalBin` is only declared in `tauri.macos.conf.json`, so on Linux `cargo check`/`cargo test` work without stubbing any sidecar binary. Ignore the "build the sidecar FIRST" note in the top of this file when on Linux.
+
+### Frontend (primary Linux dev surface)
+- Standard commands are in `app/package.json` (`npm run dev`, `npm test`, `npm run build`) and the `## Commands` section above (`npx tsc --noEmit`). There is no separate lint script — `tsc --noEmit` is the frontend gate.
+- `npm run dev` serves the UI at `http://localhost:1420`. Running it **without** the Tauri backend (i.e. plain browser on Linux) works and is navigable, but Tauri IPC calls fail — you will see a Vite runtime-error overlay and repeated `TypeError: Cannot read properties of undefined (reading 'invoke')`. This is expected on Linux and does not mean the frontend is broken.
+
+### Rust tests on Linux (non-obvious toolchain requirements)
+The snapshot is already provisioned with everything below; this is documented so a future agent can recognize/repair a broken toolchain rather than re-derive it. Run from `app/src-tauri` with `cargo test --lib -- --test-threads=1` (single-threaded is required — tests are timing-sensitive).
+- **Rust stable ≥ 1.85 is required** (the `rdev` git fork uses `edition2024`). The VM's rustup default was pinned to 1.83; it is now set to `stable` (`rustup default stable`).
+- **CUDA 12.8 toolkit is required** — `Cargo.toml` builds `whisper-rs` with the `cuda` feature on Linux. Installed under `/usr/local/cuda-12.8` (nvcc, cudart-dev, libcublas-dev) with `/usr/local/cuda` symlinked to it. No GPU/driver is present, so a `libcuda.so.1` link/runtime stub (from CUDA's `stubs/libcuda.so`) is placed on the loader path via `/etc/ld.so.conf.d/cuda-murmur.conf`. Tests link and run against the stub; they do not execute GPU kernels.
+- **C++ toolchain gotcha:** the default `cc`/`c++` is clang-18, which auto-selects the newest installed gcc toolchain dir. whisper.cpp's CMake build fails with `cannot find -lstdc++` unless the matching `g++-14` / `libstdc++-14-dev` is installed (it now is).
+- Apt build deps (already installed): `libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libxdo-dev libasound2-dev`.
+- The first `cargo test` after a cold cache compiles whisper.cpp (with CUDA) and sherpa-onnx from source (~3 min); subsequent runs are fast.
