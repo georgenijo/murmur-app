@@ -3,15 +3,16 @@
 ## Process-isolated capture
 
 Microphone enumeration and streaming execute only in the signed
-`murmur-capture-worker`. Production protocol v2 binds every control and PCM
+`murmur-capture-worker`. Production protocol v3 binds every control and PCM
 frame to a capture ID and nonce and rejects stale, malformed, oversized,
 out-of-sequence, or sample-rate-changing input. The worker callback writes mono
 samples into a preallocated SPSC ring; the parent retains PCM before declaring
 readiness and calculates waveform levels locally.
 
-CPAL is the primary backend and direct AUHAL is the independent fallback. A
+Direct AUHAL is the primary backend and CPAL is the independent fallback. A
 single fallback is allowed only before any audio is retained and must target the
-same raw device UID. Once audio exists, failure ends capture without switching
+same raw device UID. The fallback starts only after the primary process group is
+confirmed empty and a final Stop check passes. Once audio exists, failure ends capture without switching
 devices. Prefixes of at least 500 ms are transcribed normally, remain
 clipboard-first, and are marked **Interrupted · partial** in history.
 
@@ -25,16 +26,8 @@ Transcription processing is local. Network access occurs for model setup and may
 
 ## Audio Capture (`audio.rs`)
 
-> **Phase-0 boundary (#407):** the bundle contains a probe-only signed capture
-> helper used to validate TCC attribution and hard-kill recovery. Production
-> dictation and transform capture still use the in-process lifecycle below.
-> Runtime-revocation rehearsals may extend the content-free observation window
-> after its complete Active handshake with `--observe-seconds 1..300`; this
-> does not route production audio through the helper.
-> No routing changes belong to this spike; see
-> [the decision record](../decisions/2026-07-30-capture-helper-phase-0.md).
-
-- Uses CPAL 0.18.1 to record on a background thread. `system_default` resolves
+- Uses direct AUHAL first and CPAL 0.18.1 as a single pre-buffer fallback inside
+  a signed, process-isolated capture worker. `system_default` resolves
   the live OS default; an explicit selection is the backend-native stable ID
   (`kAudioDevicePropertyDeviceUID` on CoreAudio), never a display name.
   Display names are presentation-only. A missing/ambiguous explicit selection
@@ -48,8 +41,11 @@ Transcription processing is local. Network access occurs for model setup and may
   Core Audio. The worker reports device enumeration, config lookup, stream
   build, play, first-buffer wait, stop, runtime failure, and exit events back to
   the supervisor.
-- `Starting` emits a still-connecting signal after 5 seconds and hard-cancels
-  after 30 seconds. `stream.play()` means only that start was requested:
+- `Starting` emits a still-connecting signal after 5 seconds and has a
+  30-second active-time contract: AUHAL 8s, AUHAL termination 2s, CPAL 16s,
+  CPAL termination 2s, and 2s reserve. A genuine pending macOS TCC prompt
+  suspends active deadlines and has a separate 120-second watchdog. Denial and
+  Stop remain immediate. `stream.play()` means only that start was requested:
   `Recording` is reached only after the callback has retained a nonempty mono
   buffer. Play-success with no callback fails as `first_buffer_timeout`, so a
   successful zero-sample recording cannot begin.
@@ -63,6 +59,13 @@ Transcription processing is local. Network access occurs for model setup and may
   If one blocks, Murmur retains exclusive ownership rather than detaching the
   worker or accepting a competing retry. Process isolation is the final fault
   boundary.
+- Protocol v3 emits stable entered/completed setup-step constants around AUHAL
+  device resolution, AudioUnit creation, format configuration, callback
+  installation, stream start, and callback wait, plus comparable CPAL steps.
+  These events contain no device label, UID, raw backend error, or content.
+- A timed-out backend can advance only after its owned helper process group is
+  positively confirmed empty. Unconfirmed termination leaves the lifecycle in
+  exclusive recovery and suppresses fallback and new starts.
 - CPAL errors are reduced immediately to stable content-free kinds
   (`permission_denied`, `device_unavailable`, `device_busy`, `device_changed`,
   `stream_invalidated`, `invalid_input`, `resource_exhausted`, and bounded

@@ -13,7 +13,7 @@ pub const SYNTHETIC_FIXTURE_DIGEST: &str =
 // Production capture uses a separate, binary-framed protocol. Probe v1 above
 // remains stable so shipped attribution/recovery evidence stays readable.
 pub const PRODUCTION_PROTOCOL_NAME: &str = "murmur.capture";
-pub const PRODUCTION_PROTOCOL_VERSION: u16 = 2;
+pub const PRODUCTION_PROTOCOL_VERSION: u16 = 3;
 pub const PRODUCTION_MAGIC: [u8; 4] = *b"MRMR";
 pub const PRODUCTION_HEADER_BYTES: usize = 36;
 pub const MAX_CONTROL_BYTES: usize = 16 * 1024;
@@ -77,6 +77,11 @@ pub enum ProductionHelperMessage {
         phase: CapturePhase,
         backend: CaptureBackend,
     },
+    SetupStep {
+        backend: CaptureBackend,
+        step: CaptureSetupStep,
+        transition: SetupTransition,
+    },
     BackendFallback {
         from: CaptureBackend,
         to: CaptureBackend,
@@ -90,6 +95,50 @@ pub enum ProductionHelperMessage {
     Stopped {
         retained_samples: u64,
     },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum CaptureSetupStep {
+    DeviceResolution,
+    AudioUnitCreation,
+    FormatConfiguration,
+    CallbackInstallation,
+    DefaultConfig,
+    StreamBuild,
+    StreamStart,
+    AwaitingFirstCallback,
+}
+
+impl CaptureSetupStep {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DeviceResolution => "device_resolution",
+            Self::AudioUnitCreation => "audio_unit_creation",
+            Self::FormatConfiguration => "format_configuration",
+            Self::CallbackInstallation => "callback_installation",
+            Self::DefaultConfig => "default_config",
+            Self::StreamBuild => "stream_build",
+            Self::StreamStart => "stream_start",
+            Self::AwaitingFirstCallback => "awaiting_first_callback",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum SetupTransition {
+    Entered,
+    Completed,
+}
+
+impl SetupTransition {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Entered => "entered",
+            Self::Completed => "completed",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -502,5 +551,28 @@ mod tests {
             read_production_frame::<ProductionHelperMessage>(&mut bytes.as_slice(), 43, nonce),
             Err(FrameError::StaleCapture)
         ));
+    }
+
+    #[test]
+    fn production_setup_telemetry_is_typed_and_content_free() {
+        let nonce = [9_u8; 16];
+        let message = ProductionHelperMessage::SetupStep {
+            backend: CaptureBackend::Auhal,
+            step: CaptureSetupStep::AudioUnitCreation,
+            transition: SetupTransition::Entered,
+        };
+        let mut bytes = Vec::new();
+        write_production_control(&mut bytes, 7, nonce, &message).unwrap();
+        assert_eq!(
+            read_production_frame::<ProductionHelperMessage>(&mut bytes.as_slice(), 7, nonce)
+                .unwrap(),
+            ProductionFrame::Control(message.clone())
+        );
+
+        let serialized = serde_json::to_string(&message).unwrap();
+        assert!(!serialized.contains("deviceId"));
+        assert!(!serialized.contains("deviceName"));
+        assert!(!serialized.contains("uid"));
+        assert!(!serialized.contains("error"));
     }
 }

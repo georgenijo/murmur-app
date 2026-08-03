@@ -6,6 +6,28 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 ---
 
+## 2026-08-03: Capture fallback uses fixed active budgets and confirmed teardown (#436)
+
+**Decision:** AUHAL and CPAL receive separate 8-second and 16-second
+initialization budgets inside one 30-second active-time contract. Each backend
+has a 2-second confirmed-termination budget, with 2 seconds reserved for
+protocol scheduling. CPAL can start only after AUHAL's process group is proven
+empty and a final Stop check passes. Pending TCC prompt time is excluded from
+active deadlines but bounded by a separate 120-second watchdog. Protocol v3
+reports privacy-safe setup sub-phases.
+
+**Rationale:** A global Stop at 30 seconds previously converted a hung primary
+attempt into cancellation before the alternate backend was tried. The repaired
+contract makes failover deterministic and leaves enough evidence to locate the
+underlying AUHAL or CPAL hang without claiming to eliminate it.
+
+**Status:** active
+
+**References:** issue #436; ADR
+[`2026-08-01-production-capture-helper.md`](2026-08-01-production-capture-helper.md)
+
+---
+
 ## 2026-08-03: Diagnostics move into the main Performance page (#435)
 
 **Decision:** The local model-comparison page is named **Benchmark**.
@@ -49,7 +71,7 @@ saved only process-launch time and did not affect the blocking HAL call.
 ## 2026-08-01: Production HAL ownership moves to a killable capture worker (#405)
 
 **Decision:** Production microphone enumeration and capture run only inside the
-signed managed capture worker over binary protocol v2. The worker exposes CPAL
+signed managed capture worker over binary protocol v3. The worker exposes CPAL
 and direct AUHAL backends with one exact-device pre-buffer fallback. Callback
 PCM crosses a preallocated SPSC ring; the app validates capture identity,
 sequence, bounds, and sample rate before retaining it. Runtime failure
