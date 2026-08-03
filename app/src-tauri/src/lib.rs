@@ -307,7 +307,6 @@ pub fn run() {
             commands::logging::get_log_contents,
             commands::logging::clear_logs,
             commands::logging::log_frontend,
-            commands::logging::open_log_viewer,
             commands::performance::list_performance_runs,
             commands::performance::get_performance_run,
             commands::performance::get_performance_resource_window,
@@ -355,7 +354,7 @@ pub fn run() {
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // Hide instead of destroy for persistent windows
-                if window.label() == "main" || window.label() == "log-viewer" {
+                if window.label() == "main" {
                     api.prevent_close();
                     let _ = window.hide();
                     tracing::info!(target: "system", "{} window hidden on close request", window.label());

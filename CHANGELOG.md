@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+
+- Settings now separates the local model **Benchmark** from an embedded
+  **Performance** diagnostics workspace. Events, resource charts, run history,
+  transform diagnostics, and report comparison live in the main window;
+  diagnostics shortcuts no longer open a separate Log Viewer window (#435).
+
 ### Fixed
 
 - In-app updates now detect macOS Gatekeeper App Translocation before

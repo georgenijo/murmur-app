@@ -2,7 +2,7 @@
 
 ## Overview
 
-Murmur's main window has seven settings pages, two tabs, a log viewer, an updater, and a setup assistant behind them. The palette makes all of it one keystroke away: press **⌘K**, type three letters, press Enter.
+Murmur's main window has nine settings pages, two tabs, an updater, and a setup assistant behind them. The palette makes all of it one keystroke away: press **⌘K**, type three letters, press Enter.
 
 It is a navigation surface only. Every row carries its own `run` callback supplied by `App.tsx`, so the palette never learns what a command *means* and there is exactly one definition of each action.
 
@@ -13,7 +13,7 @@ It is a navigation surface only. Every row carries its own `run` callback suppli
 | `⌘K` | Toggle the palette |
 | `⌘F` | Focus the transcript search box |
 | `⌘,` | Open Settings |
-| `⌘L` | Open the log viewer |
+| `⌘L` | Open Settings → Performance |
 
 Control is accepted in place of Command for keyboard-only setups. Adding Option or Shift always passes the event through — those combinations belong to the focused control, and Murmur must not shadow text-editing shortcuts.
 
@@ -26,8 +26,8 @@ While focus is inside a text field, **only the Command form is accepted**: macOS
 | Recording | Start / Stop recording · Enable / Disable Murmur |
 | History | Search transcripts · Copy last transcript\* · Export history to a Markdown file\* |
 | Navigation | Go to Record · Go to Transcribe File |
-| Settings | One row per page: Recording, Transcription, Transform, Text & Vocabulary, Delivery, Performance, General |
-| Diagnostics | Open log viewer |
+| Settings | One row per page: Recording, Transcription, Transform, Text & Vocabulary, Delivery, Benchmark, Performance, Appearance, General |
+| Diagnostics | Open performance diagnostics |
 | App | Check for updates · About Murmur · Re-run setup assistant |
 
 \* Offered only when history is non-empty, so no row is a dead end.

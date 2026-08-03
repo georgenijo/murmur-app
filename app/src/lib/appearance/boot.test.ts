@@ -11,7 +11,6 @@ import {
 
 const boot = readFileSync('./public/appearance-boot.js', 'utf8');
 const mainHtml = readFileSync('./index.html', 'utf8');
-const logHtml = readFileSync('./log-viewer.html', 'utf8');
 
 function runBoot(systemDark: boolean): void {
   Object.defineProperty(window, 'matchMedia', {
@@ -41,13 +40,11 @@ describe('appearance bootstrap', () => {
     document.documentElement.removeAttribute('style');
   });
 
-  it('is parser-blocking before both themed module entries', () => {
-    for (const html of [mainHtml, logHtml]) {
-      const bootIndex = html.indexOf('<script src="/appearance-boot.js"></script>');
-      const moduleIndex = html.indexOf('<script type="module"');
-      expect(bootIndex).toBeGreaterThan(-1);
-      expect(moduleIndex).toBeGreaterThan(bootIndex);
-    }
+  it('is parser-blocking before the main themed module entry', () => {
+    const bootIndex = mainHtml.indexOf('<script src="/appearance-boot.js"></script>');
+    const moduleIndex = mainHtml.indexOf('<script type="module"');
+    expect(bootIndex).toBeGreaterThan(-1);
+    expect(moduleIndex).toBeGreaterThan(bootIndex);
   });
 
   it('uses exact matching Sonic fallback for empty and corrupt storage', () => {

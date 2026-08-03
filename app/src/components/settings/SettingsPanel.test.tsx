@@ -23,6 +23,7 @@ vi.mock('./AppOverridesEditor', () => ({ AppOverridesEditor: () => <div>App over
 vi.mock('./AppearanceSettings', () => ({ AppearanceSettings: () => <div>Appearance settings</div> }));
 vi.mock('./KnowledgeManager', () => ({ KnowledgeManager: () => <div>Knowledge manager</div> }));
 vi.mock('./PerformanceLab', () => ({ PerformanceLab: () => <div>Performance lab</div> }));
+vi.mock('../log-viewer/DiagnosticsWorkspace', () => ({ DiagnosticsWorkspace: () => <div>Diagnostics workspace</div> }));
 vi.mock('./VocabularyAliasesEditor', () => ({ VocabularyAliasesEditor: () => <div>Vocabulary editor</div> }));
 vi.mock('./VoiceCommandsManager', () => ({ VoiceCommandsManager: () => <div>Voice commands editor</div> }));
 vi.mock('./TransformsManager', () => ({ TransformsManager: () => <div>Transforms manager</div> }));
@@ -63,7 +64,6 @@ describe('SettingsPanel information architecture', () => {
         onUpdateSettings={vi.fn()}
         status="idle"
         onResetStats={vi.fn()}
-        onViewLogs={vi.fn()}
         onRerunSetup={vi.fn()}
         accessibilityGranted
         onCheckForUpdate={vi.fn(async () => {})}
@@ -80,7 +80,7 @@ describe('SettingsPanel information architecture', () => {
 
   it('renders ordered pages with Recording selected first (includes Transform)', () => {
     expect(SETTINGS_CATEGORIES.map((category) => category.label)).toEqual([
-      'Recording', 'Transcription', 'Transform', 'Text & Vocabulary', 'Delivery', 'Performance', 'Appearance', 'General',
+      'Recording', 'Transcription', 'Transform', 'Text & Vocabulary', 'Delivery', 'Benchmark', 'Performance', 'Appearance', 'General',
     ]);
     const nav = container.querySelector('nav[aria-label="Settings pages"]') as HTMLElement;
     expect(Array.from(nav.querySelectorAll('button')).slice(1).map((button) => button.textContent)).toEqual(SETTINGS_CATEGORIES.map((category) => category.label));
@@ -88,11 +88,12 @@ describe('SettingsPanel information architecture', () => {
     expect(container.textContent).toContain('Microphone');
   });
 
-  it('moves vocabulary, app overrides, Performance, and startup into their intended pages', async () => {
+  it('moves vocabulary, app overrides, Benchmark, Performance, and startup into their intended pages', async () => {
     for (const [page, expected] of [
       ['Text & Vocabulary', 'Names & Terms'],
       ['Delivery', 'Always copied to clipboard'],
-      ['Performance', 'Performance lab'],
+      ['Benchmark', 'Performance lab'],
+      ['Performance', 'Diagnostics workspace'],
       ['Appearance', 'Appearance settings'],
       ['General', 'Launch at Login'],
     ] as const) {
@@ -143,7 +144,6 @@ describe('SettingsPanel transform block (#312 D1 round-2 findings 6-8)', () => {
         onUpdateSettings={vi.fn()}
         status="idle"
         onResetStats={vi.fn()}
-        onViewLogs={vi.fn()}
         onRerunSetup={vi.fn()}
         accessibilityGranted
         onCheckForUpdate={vi.fn(async () => {})}

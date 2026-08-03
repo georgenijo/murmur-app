@@ -44,9 +44,9 @@ vi.mock('../../lib/transformDiagnostics', () => ({
   deleteTransformCapture: vi.fn(),
 }));
 
-import { LogViewerApp } from './LogViewerApp';
+import { DiagnosticsWorkspace } from './DiagnosticsWorkspace';
 
-describe('LogViewerApp shared diagnostics shell', () => {
+describe('DiagnosticsWorkspace shared diagnostics shell', () => {
   let container: HTMLDivElement;
   let root: Root;
 
@@ -54,7 +54,7 @@ describe('LogViewerApp shared diagnostics shell', () => {
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
-    await act(async () => root.render(<LogViewerApp />));
+    await act(async () => root.render(<DiagnosticsWorkspace />));
   });
 
   afterEach(async () => {

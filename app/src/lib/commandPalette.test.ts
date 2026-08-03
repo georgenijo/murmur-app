@@ -17,7 +17,7 @@ const COMMANDS: PaletteCommand[] = [
   command('stop', 'Stop recording', 'Recording'),
   command('settings-delivery', 'Settings: Delivery', 'Settings', ['paste', 'clipboard']),
   command('settings-recording', 'Settings: Recording', 'Settings'),
-  command('logs', 'Open log viewer', 'Diagnostics', ['events', 'debug']),
+  command('logs', 'Open performance diagnostics', 'Diagnostics', ['events', 'debug', 'log']),
   command('search', 'Search transcripts', 'History'),
 ];
 

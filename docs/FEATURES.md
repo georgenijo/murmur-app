@@ -139,16 +139,16 @@ Status indicator, recording controls, the transcript history workspace, usage st
 Search with match highlighting (tokens are ANDed) and Mic/File filters over a rolling 200-entry history. Export exactly what is on screen as Markdown, plain text, or JSON — to the clipboard or, through a validated extension-allow-listed atomic write, to a file. Teaching context is never exported.
 
 ### Command palette — [features/command-palette.md](features/command-palette.md)
-`⌘K` opens a keyboard-first launcher for every settings page and the common main-window actions, with deterministic tiered ranking. `⌘F` focuses transcript search, `⌘,` opens Settings, `⌘L` opens the log viewer.
+`⌘K` opens a keyboard-first launcher for every settings page and the common main-window actions, with deterministic tiered ranking. `⌘F` focuses transcript search, `⌘,` opens Settings, `⌘L` opens Settings → Performance.
 
 ### Overlay — [features/overlay.md](features/overlay.md)
 Notch-anchored Dynamic Island. Idle sits flush with the notch showing a small mic tab; recording expands with a red dot and a 7-bar waveform driven by real audio levels at 60fps via direct DOM writes; processing shows a spinner. Hover for 150ms opens a compact quick-settings card (intent-gated, so a graze doesn't pop it). Single click stops; double-click toggles locked mode. Non-activating — clicks never steal focus. Geometry comes entirely from Rust and re-derives on display changes.
 
 ### Settings — [reference/settings.md](reference/settings.md)
-Eight task-oriented pages: **Recording**, **Transcription**, **Transform**, **Text & Vocabulary**, **Delivery**, **Performance**, **General**, **Appearance**. Knowledge management lives under Text & Vocabulary.
+Nine task-oriented pages: **Recording**, **Transcription**, **Transform**, **Text & Vocabulary**, **Delivery**, **Benchmark**, **Performance**, **Appearance**, **General**. Benchmark owns local model comparisons; Performance owns live diagnostics and run history. Knowledge management lives under Text & Vocabulary.
 
 ### Appearance — [features/appearance.md](features/appearance.md)
-Local System/Light/Dark appearance with accessible custom accent, background, foreground, and contrast controls. Main and log viewer synchronize through a revisioned local document and agree with native title-bar appearance; the transparent overlay and transform review remain unsynchronized always-dark glass. Import/export is bounded, atomic, UTF-8 JSON and never touches the clipboard.
+Local System/Light/Dark appearance with accessible custom accent, background, foreground, and contrast controls. The main window owns the revisioned local document and native title-bar appearance; the transparent overlay and transform review remain unsynchronized always-dark glass. Import/export is bounded, atomic, UTF-8 JSON and never touches the clipboard.
 
 ### Onboarding — [features/onboarding-flow.md](features/onboarding-flow.md)
 First-launch wizard: Welcome → Microphone → Accessibility → Model download → Done. The mic step fires the native macOS prompt in-app; both permission steps poll live so a grant made in System Settings flips the step on return; denied/stale-TCC states get inline reset-and-retry. Already-downloaded models are detected and badged. Existing installs with permissions and a model are grandfathered. Re-runnable from Settings → General.
@@ -160,8 +160,8 @@ Static white waveform icon. Menu: Show Murmur, Disable Murmur (check item), Quit
 
 ## 7. Diagnostics and evaluation
 
-### Log viewer — [features/log-viewer.md](features/log-viewer.md)
-Separate window with Events, Performance/Runs, Transforms, and Reports tabs. Stream chips (`pipeline`, `audio`, `keyboard`, `transform`, `system`) and level filters, expandable JSON rows, auto-scroll that disengages on manual scroll, copy-all and clear.
+### Performance workspace — [features/log-viewer.md](features/log-viewer.md)
+Embedded Settings page with Events, Performance, Runs, Transforms, and Reports tabs. Stream chips (`pipeline`, `audio`, `keyboard`, `transform`, `system`) and level filters, expandable JSON rows, auto-scroll that disengages on manual scroll, copy-all and clear.
 
 ### Performance diagnostics — [features/performance-diagnostics.md](features/performance-diagnostics.md)
 Bounded local run history (200 runs, 600 resource samples) in SQLite: per-stage timings, CPU/memory timelines, transform-stage correlation, warm-vs-cold state, and RSS deltas. Incomplete runs claiming success are rejected. No dictated text is ever recorded.

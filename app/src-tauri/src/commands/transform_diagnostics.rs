@@ -3,13 +3,13 @@ use crate::transform_diagnostics::{
 };
 use crate::State;
 
-const LOG_VIEWER_LABEL: &str = "log-viewer";
+const MAIN_WINDOW_LABEL: &str = "main";
 
-fn require_log_viewer(label: &str) -> Result<(), String> {
-    if label == LOG_VIEWER_LABEL {
+fn require_main_window(label: &str) -> Result<(), String> {
+    if label == MAIN_WINDOW_LABEL {
         Ok(())
     } else {
-        Err("transform diagnostics are only available in the log viewer".to_string())
+        Err("transform diagnostics are only available in the main window".to_string())
     }
 }
 
@@ -18,7 +18,7 @@ pub fn arm_next_transform_diagnostic_capture(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, State>,
 ) -> Result<CaptureArmStatusV1, String> {
-    require_log_viewer(window.label())?;
+    require_main_window(window.label())?;
     state.transform_diagnostics.arm_next()
 }
 
@@ -27,7 +27,7 @@ pub fn get_transform_diagnostic_capture_status(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, State>,
 ) -> Result<CaptureArmStatusV1, String> {
-    require_log_viewer(window.label())?;
+    require_main_window(window.label())?;
     Ok(state.transform_diagnostics.arm_status())
 }
 
@@ -37,7 +37,7 @@ pub fn list_transform_attempts(
     limit: Option<usize>,
     state: tauri::State<'_, State>,
 ) -> Result<TransformAttemptListV1, String> {
-    require_log_viewer(window.label())?;
+    require_main_window(window.label())?;
     Ok(state
         .transform_diagnostics
         .list_attempts(limit.unwrap_or(50)))
@@ -48,7 +48,7 @@ pub fn list_transform_diagnostic_captures(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, State>,
 ) -> Result<Vec<DiagnosticCaptureSummaryV1>, String> {
-    require_log_viewer(window.label())?;
+    require_main_window(window.label())?;
     state.transform_diagnostics.list_captures()
 }
 
@@ -58,7 +58,7 @@ pub fn get_transform_diagnostic_capture(
     capture_id: String,
     state: tauri::State<'_, State>,
 ) -> Result<Option<DiagnosticCaptureV1>, String> {
-    require_log_viewer(window.label())?;
+    require_main_window(window.label())?;
     state.transform_diagnostics.get_capture(capture_id.trim())
 }
 
@@ -68,7 +68,7 @@ pub fn delete_transform_diagnostic_capture(
     capture_id: String,
     state: tauri::State<'_, State>,
 ) -> Result<(), String> {
-    require_log_viewer(window.label())?;
+    require_main_window(window.label())?;
     state
         .transform_diagnostics
         .delete_capture(capture_id.trim())
@@ -79,11 +79,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn transform_diagnostics_are_strictly_scoped_to_log_viewer() {
-        assert!(require_log_viewer(LOG_VIEWER_LABEL).is_ok());
-        for label in ["main", "transform-review", "overlay", "", "log-viewer-copy"] {
+    fn transform_diagnostics_are_strictly_scoped_to_main_window() {
+        assert!(require_main_window(MAIN_WINDOW_LABEL).is_ok());
+        for label in ["log-viewer", "transform-review", "overlay", "", "main-copy"] {
             assert!(
-                require_log_viewer(label).is_err(),
+                require_main_window(label).is_err(),
                 "unexpected diagnostics access for {label:?}"
             );
         }

@@ -130,6 +130,6 @@ interface AppearanceChangedEvent {
 }
 ```
 
-Main is the only emitter. The log viewer is read-only. Each themed window
-handles `matchMedia('(prefers-color-scheme: dark)')` locally while the saved
-mode is System, so OS transitions cannot create an event loop.
+Main is the only emitter and themed runtime. It handles
+`matchMedia('(prefers-color-scheme: dark)')` locally while the saved mode is
+System, so OS transitions do not emit appearance events.

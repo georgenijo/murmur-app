@@ -10,12 +10,11 @@ import {
 } from 'react';
 import { setTheme } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
-import { emit, listen } from '@tauri-apps/api/event';
+import { emit } from '@tauri-apps/api/event';
 import {
   applyResolvedTheme,
   createAppearanceDocument,
   exportAppearanceText,
-  isNewerAppearanceRevision,
   loadAppearanceDocument,
   nextAppearanceRevision,
   previewAppearanceImport,
@@ -61,19 +60,6 @@ function applyDocument(document: AppearanceDocumentV1): {
 
 async function applyNativeTheme(mode: AppearanceMode): Promise<void> {
   await setTheme(mode === 'system' ? null : mode);
-}
-
-function validEventPayload(value: unknown): value is AppearanceChangedEvent {
-  if (typeof value !== 'object' || value === null) return false;
-  const payload = value as Partial<AppearanceChangedEvent>;
-  return Number.isSafeInteger(payload.revision)
-    && (payload.revision ?? -1) >= 0
-    && (
-      payload.reason === 'user'
-      || payload.reason === 'repair'
-      || payload.reason === 'reset'
-      || payload.reason === 'import'
-    );
 }
 
 function useSystemAppearance(
@@ -314,60 +300,4 @@ export function useAppearance(): AppearanceController {
     throw new Error('useAppearance must be used within AppearanceProvider.');
   }
   return controller;
-}
-
-/**
- * Reader runtime for the log-viewer. It never writes storage or emits events.
- */
-export function useAppearanceReader(): void {
-  const [document, setDocument] = useState(() => loadAppearanceDocument().document);
-  const documentRef = useRef(document);
-  documentRef.current = document;
-
-  useEffect(() => {
-    applyDocument(documentRef.current);
-  }, []);
-
-  useSystemAppearance(document, () => {});
-
-  useEffect(() => {
-    let cancelled = false;
-    let unlisten: (() => void) | null = null;
-    const delays = [0, 10, 25, 50, 100, 200];
-
-    const applyLatestIfNewer = (): boolean => {
-      if (cancelled) return false;
-      const loaded = loadAppearanceDocument().document;
-      if (!isNewerAppearanceRevision(documentRef.current.revision, loaded.revision)) return false;
-      documentRef.current = loaded;
-      setDocument(loaded);
-      applyDocument(loaded);
-      return true;
-    };
-
-    void listen<AppearanceChangedEvent>(APPEARANCE_CHANGED_EVENT, (event) => {
-      if (cancelled || !validEventPayload(event.payload)) return;
-      if (!isNewerAppearanceRevision(documentRef.current.revision, event.payload.revision)) return;
-      void (async () => {
-        for (const delay of delays) {
-          if (delay > 0) await new Promise((resolve) => window.setTimeout(resolve, delay));
-          if (cancelled) return;
-          if (applyLatestIfNewer() && documentRef.current.revision >= event.payload.revision) return;
-        }
-      })();
-    }).then((dispose) => {
-      if (cancelled) dispose();
-      else {
-        unlisten = dispose;
-        // Close the snapshot/subscribe race: a main-window write can land
-        // after our initial load but before the async listener is registered.
-        applyLatestIfNewer();
-      }
-    }).catch(() => {});
-
-    return () => {
-      cancelled = true;
-      unlisten?.();
-    };
-  }, []);
 }

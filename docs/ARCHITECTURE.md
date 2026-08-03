@@ -105,29 +105,26 @@ Dictation and transform are mutually exclusive in both directions (status guards
 
 ---
 
-## Four-Window Architecture
+## Three-Window Architecture
 
 Each window is a separate webview with its own Tauri capability set, following least privilege.
 
 | Window | Label | Entry Point | Size | Purpose |
 |--------|-------|-------------|------|---------|
-| Main | `main` | `index.html` | 720×560 | Settings, recording controls, history, stats, onboarding, modals |
+| Main | `main` | `index.html` | 720×560 | Settings, embedded diagnostics, recording controls, history, stats, onboarding, modals |
 | Overlay | `overlay` | `overlay.html` | 260×100 | Dynamic Island notch widget. Always-on-top, transparent, non-activating |
-| Log Viewer | `log-viewer` | `log-viewer.html` | 800×600 | Events, Performance/Runs, Transform diagnostics, Reports |
 | Transform Review | `transform-review` | popover entry | 320×76 (compact) | Transform proposal review. Non-focusable until `ready`/`failed` |
 
-Main and log-viewer hide on close instead of being destroyed. The overlay and transform popover both use the shared non-activating window treatment in `commands/native_window.rs`, and **all** of their raw `NSWindow` mutation is dispatched to the main thread via `run_on_main_thread` — macOS 26 hard-traps on off-main `NSWindow` mutation (#325).
+Main hides on close instead of being destroyed. The overlay and transform popover both use the shared non-activating window treatment in `commands/native_window.rs`, and **all** of their raw `NSWindow` mutation is dispatched to the main thread via `run_on_main_thread` — macOS 26 hard-traps on off-main `NSWindow` mutation (#325).
 
 Rust is the sole author of every overlay and popover pixel: `geometry_for()` and `popover_geometry_for()` are pure functions asserted by checked-in fixtures on both sides (cargo test + vitest). The frontend never hardcodes dimensions.
 
-Main and log-viewer are the only themed webviews. Each resolves System mode
-locally to a concrete `data-appearance` and uses a parser-blocking,
-same-origin bootstrap plus a strictly validated resolved-token cache to avoid a
-wrong-theme first paint. Main is the sole appearance writer, revisioned
-`appearance-changed` emitter, and owner of application-level native `setTheme`;
-log-viewer is a read-only consumer. Local OS appearance changes emit no event.
-Overlay and transform-review remain unsynchronized transparent, always-dark
-glass surfaces.
+Main is the only themed webview. It resolves System mode to a concrete
+`data-appearance` and uses a parser-blocking, same-origin bootstrap plus a
+strictly validated resolved-token cache to avoid a wrong-theme first paint.
+Main owns appearance writes and application-level native `setTheme`. Overlay
+and transform-review remain unsynchronized transparent, always-dark glass
+surfaces.
 
 ---
 
@@ -341,7 +338,7 @@ Two rules keep the multi-window state coherent:
 
 - **`transcription-complete` is the single source of truth** for history and stats. Entries are added only from the Rust event, never in `handleStop()` — otherwise an overlay-initiated recording double-counts.
 - **The overlay reads settings from localStorage directly** (`useOverlaySettingsMirror`), not through React context or IPC. There is no shared context across windows.
-- **Appearance has a separate ownership domain.** Main is the only writer and user-change emitter for `murmur-appearance`; log-viewer reloads newer revisions, while both themed windows handle System-mode media changes locally without emitting.
+- **Appearance has a separate ownership domain.** Main is the only writer and runtime for `murmur-appearance`; transparent utility windows remain outside theme synchronization.
 
 ---
 
@@ -466,5 +463,5 @@ Plus tokio `spawn_blocking` for VAD (its context is `!Send`), downloads, and inj
 | `IdleGuard` RAII | Guarantees status reset on every error path in the pipeline |
 | Clipboard-first delivery | Reliable across all apps; auto-paste is layered on top and never the only path |
 | Per-window least privilege | Overlay and transform popover get minimal capabilities; only the main window gets the full set |
-| Main-only native appearance | Main owns application `setTheme`; log-viewer follows it, and transparent glass windows never join theme synchronization |
+| Main-only native appearance | Main owns application `setTheme`; transparent glass windows never join theme synchronization |
 | Bounded theme transport | Dialogs select paths; main-window-gated Rust commands read/write at most 64 KiB of UTF-8 and publish exports atomically without touching the clipboard |

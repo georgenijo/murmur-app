@@ -21,7 +21,7 @@ import {
 type Tab = 'events' | 'performance' | 'runs' | 'transforms' | 'reports';
 const TABS: Tab[] = ['events', 'performance', 'runs', 'transforms', 'reports'];
 
-export function LogViewerApp() {
+export function DiagnosticsWorkspace() {
   const { events, clear } = useEventStore();
   const [tab, setTab] = useState<Tab>('events');
   const performance = usePerformanceDiagnostics(true);
@@ -91,12 +91,12 @@ export function LogViewerApp() {
   }, []);
 
   return (
-    <div className="h-screen flex flex-col bg-background text-on-surface">
+    <div className="flex h-full min-h-0 flex-col bg-background text-on-surface">
       {/* Header */}
       <div className="shrink-0 bg-surface-container-low px-4 py-3">
-        <div className="flex items-center justify-between mb-3">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           {/* Tabs */}
-          <div role="tablist" aria-label="Diagnostics views" className="flex gap-1 rounded-xl bg-surface-container p-1">
+          <div role="tablist" aria-label="Diagnostics views" className="flex max-w-full gap-1 overflow-x-auto rounded-xl bg-surface-container p-1">
             {TABS.map((t) => (
               <button
                 key={t}
@@ -106,7 +106,7 @@ export function LogViewerApp() {
                 aria-controls={`diagnostics-panel-${t}`}
                 aria-selected={tab === t}
                 onClick={() => setTab(t)}
-                className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-[background-color,box-shadow,color] ${
+                className={`shrink-0 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-[background-color,box-shadow,color] ${
                   tab === t
                     ? 'bg-surface-container-lowest text-on-surface shadow-sm'
                     : 'text-on-surface-variant hover:text-on-surface'
@@ -118,7 +118,7 @@ export function LogViewerApp() {
           </div>
           {/* Actions */}
           {tab === 'events' && (
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <button
                 type="button"
                 onClick={handleCopyAll}
@@ -140,7 +140,7 @@ export function LogViewerApp() {
         {tab === 'events' && (
           <div className="flex flex-wrap items-center justify-between gap-2">
             <StreamChips active={activeStreams} onToggle={toggleStream} />
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <label className="flex items-center gap-1.5 text-xs text-on-surface-variant">
                 Correlation
                 <select

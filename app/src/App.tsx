@@ -301,11 +301,6 @@ function App() {
     setIsSettingsOpen(true);
   }, []);
 
-  const openLogViewer = useCallback(() => {
-    invoke('open_log_viewer').catch((e: unknown) =>
-      flog.warn('main', 'Failed to open log viewer', { error: String(e) }));
-  }, []);
-
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const shortcut = mainWindowShortcut(event, isEditableTarget(event.target));
@@ -314,11 +309,11 @@ function App() {
       if (shortcut === 'palette') setIsPaletteOpen((open) => !open);
       else if (shortcut === 'search') { setIsPaletteOpen(false); focusHistorySearch(); }
       else if (shortcut === 'settings') { setIsPaletteOpen(false); setIsSettingsOpen(true); }
-      else openLogViewer();
+      else openSettingsPage('performance');
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [focusHistorySearch, openLogViewer]);
+  }, [focusHistorySearch, openSettingsPage]);
 
   const commands = useMemo<PaletteCommand[]>(() => {
     const isRecording = status === 'recording' || status === 'starting';
@@ -393,10 +388,10 @@ function App() {
       })),
       {
         id: 'logs',
-        title: 'Open log viewer',
+        title: 'Open performance diagnostics',
         section: 'Diagnostics',
-        keywords: ['events', 'debug', 'runs', 'performance'],
-        run: openLogViewer,
+        keywords: ['events', 'debug', 'log', 'logs', 'runs', 'performance'],
+        run: () => openSettingsPage('performance'),
       },
       {
         id: 'check-updates',
@@ -423,7 +418,7 @@ function App() {
     return items;
   }, [
     status, historyEntries, settings.disabled, updateSettings, handleStart, handleStop,
-    focusHistorySearch, openSettingsPage, openLogViewer, checkForUpdate, setShowAbout,
+    focusHistorySearch, openSettingsPage, checkForUpdate, setShowAbout,
   ]);
 
   const error = initError || recordingError;
@@ -528,7 +523,6 @@ function App() {
           onUpdateSettings={updateSettings}
           status={status}
           onResetStats={handleResetStats}
-          onViewLogs={openLogViewer}
           onRerunSetup={() => {
             setIsSettingsOpen(false);
             resetOnboarding();

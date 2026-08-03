@@ -40,7 +40,6 @@ import {
   APPEARANCE_CHANGED_EVENT,
   AppearanceProvider as Provider,
   useAppearance,
-  useAppearanceReader,
 } from './useAppearance';
 
 interface MediaHarness {
@@ -283,84 +282,4 @@ describe('appearance runtime hooks', () => {
     setItem.mockRestore();
   });
 
-  it('reconciles a write that lands between reader snapshot and listener registration', async () => {
-    localStorage.setItem(
-      APPEARANCE_STORAGE_KEY,
-      JSON.stringify(createAppearanceDocument('light', undefined, 1)),
-    );
-    mocks.beforeListenResolve = () => {
-      mocks.beforeListenResolve = null;
-      localStorage.setItem(
-        APPEARANCE_STORAGE_KEY,
-        JSON.stringify(createAppearanceDocument('dark', undefined, 2)),
-      );
-    };
-    function Reader() {
-      useAppearanceReader();
-      return null;
-    }
-    await act(async () => root.render(<Reader />));
-    expect(document.documentElement.dataset.appearance).toBe('dark');
-  });
-
-  it('reader rejects stale revisions, retries visibility lag, and cleans async listeners', async () => {
-    vi.useFakeTimers();
-    localStorage.setItem(
-      APPEARANCE_STORAGE_KEY,
-      JSON.stringify(createAppearanceDocument('light', undefined, 1)),
-    );
-    function Reader() {
-      useAppearanceReader();
-      return null;
-    }
-    await act(async () => {
-      root.render(<StrictMode><Reader /></StrictMode>);
-    });
-    const active = mocks.listeners.filter((listener) =>
-      listener.event === APPEARANCE_CHANGED_EVENT && listener.active
-    );
-    expect(active).toHaveLength(1);
-
-    active[0].callback({ payload: { revision: 1, reason: 'user' } });
-    expect(document.documentElement.dataset.appearance).toBe('light');
-
-    active[0].callback({ payload: { revision: 3, reason: 'user' } });
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(12);
-      localStorage.setItem(
-        APPEARANCE_STORAGE_KEY,
-        JSON.stringify(createAppearanceDocument('dark', undefined, 3)),
-      );
-      await vi.advanceTimersByTimeAsync(30);
-    });
-    expect(document.documentElement.dataset.appearance).toBe('dark');
-  });
-
-  it('reader accepts an explicit revision rollover instead of treating it as stale', async () => {
-    localStorage.setItem(
-      APPEARANCE_STORAGE_KEY,
-      JSON.stringify(createAppearanceDocument(
-        'light',
-        undefined,
-        MAX_APPEARANCE_REVISION - 2,
-      )),
-    );
-    function Reader() {
-      useAppearanceReader();
-      return null;
-    }
-    await act(async () => root.render(<Reader />));
-    const active = mocks.listeners.find((listener) =>
-      listener.event === APPEARANCE_CHANGED_EVENT && listener.active
-    )!;
-
-    localStorage.setItem(
-      APPEARANCE_STORAGE_KEY,
-      JSON.stringify(createAppearanceDocument('dark', undefined, 1)),
-    );
-    await act(async () => {
-      active.callback({ payload: { revision: 1, reason: 'repair' } });
-    });
-    expect(document.documentElement.dataset.appearance).toBe('dark');
-  });
 });

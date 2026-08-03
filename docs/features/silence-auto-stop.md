@@ -59,7 +59,7 @@ When it fires, the hook logs a content-free line to the `recording` stream:
 silence auto-stop fired { silenceMs, speechMs }
 ```
 
-Visible in the log viewer's Events tab like any other recording event.
+Visible in the Performance workspace's Events tab like any other recording event.
 
 ## Files
 
