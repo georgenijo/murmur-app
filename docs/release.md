@@ -57,6 +57,25 @@ The modern updater manifest is generated from the downloaded `.sig` files.
 After release-asset upload, the workflow downloads the remote `.sig` assets and
 compares them byte-for-byte, uploads the manifests, downloads them again, and
 checks that `latest-v2.json` contains those exact signatures before publishing.
+It also reads the source-controlled `.github/updater-policy.json`: `null` keeps
+the release optional, while a stable minimum version at or below the target
+release is emitted as `min_version` on the modern channel. Invalid or future
+minimum versions fail promotion.
+
+Set that file before the version-bump commit:
+
+```json
+{ "min_version": null }
+```
+
+Use a quoted stable version such as `"0.24.0"` only when every installed
+version below that threshold must update or quit. Policy changes receive the
+same code review and trusted-main provenance as the release itself.
+
+Immediately before publication, the workflow requires the draft release body
+to match the remotely downloaded updater manifest notes. Once published,
+updater assets are immutable; do not edit the release body independently. Ship
+a patch release when corrected notes must appear both on GitHub and in Murmur.
 
 ## Non-publishing rehearsal
 

@@ -31,16 +31,22 @@ Analyse the commits using these rules (in priority order):
 
 Determine the new version by applying the bump to the current version in `tauri.conf.json`.
 
-## 3b. Assess min_version
+## 3b. Set the Updater Policy
 
 Check if any commits since the last tag contain:
 - Security fixes
 - Breaking changes to the update mechanism itself
 - Data format changes that make old versions incompatible
 
-If any of the above apply, ask: **"Is this a critical update? Should min_version be set to this release?"**
-- Default: No (optional update — users can skip or defer)
-- If yes: after the release publishes, download `latest.json` from the GitHub release assets, add `"min_version": "{new_version}"` to the JSON, then re-upload with `gh release upload v{new_version} latest.json --clobber` to replace the asset. Users running versions older than min_version will see a non-dismissable forced update modal.
+Set `.github/updater-policy.json` before preparing the version bump:
+- Default/optional update: `"min_version": null` (users can skip or defer).
+- Critical update: `"min_version": "{new_version}"` (older versions receive a
+  non-dismissable forced-update modal).
+
+If the criticality is unclear, ask: **"Is this a critical update? Should
+min_version be set to this release?"** Never edit or replace the published
+`latest.json` afterward. Trusted promotion validates the source-controlled
+policy and emits the immutable updater manifest.
 
 Include the min_version decision in the release summary.
 
@@ -61,16 +67,18 @@ the version bump, main push, and automatic tag/publish after all gates pass.
 
 Run these steps in order:
 
-1. Run `python3 scripts/release_version.py prepare {new_version}`. This updates
+1. Set and review `.github/updater-policy.json` using the decision from Step 3b.
+2. Run `python3 scripts/release_version.py prepare {new_version}`. This updates
    `tauri.conf.json`, `Cargo.toml`, `Cargo.lock`, `package.json`, and
    `package-lock.json`, cuts the current `[Unreleased]` notes into a dated
    `{new_version}` section, and opens a fresh empty `[Unreleased]` section.
-2. Review the version-file and CHANGELOG diff, then run
+3. Review the version-file, CHANGELOG, and updater-policy diff, then run
    `python3 scripts/release_version.py check {new_version}`.
-3. Commit all six release files with: `chore: bump version to {new_version}`
-4. Push: `git push origin main`
-5. Wait for the `Release Build` workflow on that exact commit to succeed.
-6. Verify its `typecheck`, `release-macos`, and `release-linux` jobs, signed
+4. Commit the synchronized version files, CHANGELOG, and updater policy with:
+   `chore: bump version to {new_version}`.
+5. Push: `git push origin main`
+6. Wait for the `Release Build` workflow on that exact commit to succeed.
+7. Verify its `typecheck`, `release-macos`, and `release-linux` jobs, signed
    artifacts named with the exact 40-character commit SHA, package smoke tests,
    and cache summaries. Do not continue if any job or artifact is missing.
 

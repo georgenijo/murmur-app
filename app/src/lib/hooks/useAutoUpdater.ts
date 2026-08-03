@@ -21,13 +21,21 @@ import {
   getPendingUpdateForVersion,
   isDueForCheck,
   setLastCheckTimestamp,
-  fetchMinVersion,
+  fetchMinVersionPolicy,
   CHECK_TIMER_TICK_MS,
 } from '../updater';
 import { getUpdateInstallEnvironment } from '../updaterEnvironment';
 
 const APP_TRANSLOCATION_MESSAGE =
   'macOS opened Murmur from a read-only security location. Quit Murmur, then use Finder to move or reinstall it in Applications before reopening it and trying the update again.';
+const UPDATE_POLICY_UNAVAILABLE_MESSAGE =
+  'Could not verify the update policy. Check your connection and try again.';
+
+type UpdaterOperation = 'idle' | 'checking' | 'installing';
+
+interface UseAutoUpdaterOptions {
+  automaticChecksEnabled?: boolean;
+}
 
 export interface UseAutoUpdaterReturn {
   updateStatus: UpdateStatus;
@@ -41,12 +49,15 @@ export interface UseAutoUpdaterReturn {
   dismissCompletedUpdate: () => void;
 }
 
-export function useAutoUpdater(): UseAutoUpdaterReturn {
+export function useAutoUpdater(
+  options: UseAutoUpdaterOptions = {},
+): UseAutoUpdaterReturn {
+  const automaticChecksEnabled = options.automaticChecksEnabled ?? !import.meta.env.DEV;
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ phase: 'idle' });
   const [completedUpdate, setCompletedUpdate] = useState<CompletedUpdate | null>(null);
   const [isUpdateDialogOpen, setIsUpdateDialogOpen] = useState(false);
   const updateRef = useRef<Update | null>(null);
-  const isCheckingRef = useRef(false);
+  const operationRef = useRef<UpdaterOperation>('idle');
   const isForcedRef = useRef(false);
   const manualPresentationRequestedRef = useRef(false);
 
@@ -77,13 +88,17 @@ export function useAutoUpdater(): UseAutoUpdaterReturn {
   }, []);
 
   const performCheck = useCallback(async (opts: { isBackground: boolean }) => {
+    if (operationRef.current === 'installing') {
+      flog.info('updater', 'check ignored while install owns updater');
+      return;
+    }
     if (!opts.isBackground) {
       clearSkippedVersion();
       manualPresentationRequestedRef.current = true;
       setUpdateStatus({ phase: 'checking' });
     }
-    if (isCheckingRef.current) return;
-    isCheckingRef.current = true;
+    if (operationRef.current === 'checking') return;
+    operationRef.current = 'checking';
     isForcedRef.current = false;
 
     const shouldPresentManualResult = () =>
@@ -91,9 +106,9 @@ export function useAutoUpdater(): UseAutoUpdaterReturn {
 
     try {
       const update = await check();
-      setLastCheckTimestamp(Date.now());
 
       if (!update?.available || !update.version) {
+        setLastCheckTimestamp(Date.now());
         flog.info('updater', 'no update available', {
           event_code: 'updater.check_current',
         });
@@ -110,8 +125,26 @@ export function useAutoUpdater(): UseAutoUpdaterReturn {
 
       // Check min_version (custom field not exposed by Tauri updater)
       const currentVersion = await getVersion();
-      const minVersion = await fetchMinVersion();
-      const isForced = minVersion !== null && isBelowMinVersion(currentVersion, minVersion);
+      const policy = await fetchMinVersionPolicy();
+      if (policy.status === 'unavailable') {
+        flog.warn('updater', 'could not verify update policy', {
+          error: policy.message,
+        });
+        if (shouldPresentManualResult()) {
+          setIsUpdateDialogOpen(false);
+          setUpdateStatus({
+            phase: 'error',
+            stage: 'check',
+            message: UPDATE_POLICY_UNAVAILABLE_MESSAGE,
+            isForced: false,
+          });
+        }
+        return;
+      }
+      setLastCheckTimestamp(Date.now());
+      const isForced =
+        policy.status === 'present' &&
+        isBelowMinVersion(currentVersion, policy.minVersion);
 
       // If not forced and user previously skipped this version, suppress
       if (!isForced && getSkippedVersion() === update.version) {
@@ -167,7 +200,9 @@ export function useAutoUpdater(): UseAutoUpdaterReturn {
       }
       // Background errors are silent
     } finally {
-      isCheckingRef.current = false;
+      if (operationRef.current === 'checking') {
+        operationRef.current = 'idle';
+      }
       manualPresentationRequestedRef.current = false;
     }
   }, []);
@@ -179,7 +214,7 @@ export function useAutoUpdater(): UseAutoUpdaterReturn {
   // Skip entirely in dev — a dev build auto-updating to a prod release would
   // download+relaunch into /Applications, making `tauri dev` impossible.
   useEffect(() => {
-    if (import.meta.env.DEV) {
+    if (!automaticChecksEnabled) {
       flog.info('updater', 'dev build — skipping automatic update check');
       return;
     }
@@ -219,7 +254,7 @@ export function useAutoUpdater(): UseAutoUpdaterReturn {
       document.removeEventListener('visibilitychange', onVisibilityChange);
       unlistenWake?.();
     };
-  }, [performCheck]);
+  }, [automaticChecksEnabled, performCheck]);
 
   const checkForUpdate = useCallback(async () => {
     await performCheck({ isBackground: false });
@@ -235,12 +270,20 @@ export function useAutoUpdater(): UseAutoUpdaterReturn {
   }, [updateStatus]);
 
   const startDownload = useCallback(async () => {
+    if (operationRef.current !== 'idle') {
+      flog.info('updater', 'install ignored because updater is already busy', {
+        operation: operationRef.current,
+      });
+      return;
+    }
     const update = updateRef.current;
     if (!update) return;
 
     const version =
       updateStatus.phase === 'available' ? updateStatus.version
       : updateRef.current?.version ?? 'unknown';
+    operationRef.current = 'installing';
+    setUpdateStatus({ phase: 'preparing', version });
 
     try {
       const environment = await getUpdateInstallEnvironment();
@@ -255,6 +298,7 @@ export function useAutoUpdater(): UseAutoUpdaterReturn {
           isForced: isForcedRef.current,
           recovery: 'reinstall',
         });
+        operationRef.current = 'idle';
         return;
       }
 
@@ -294,6 +338,7 @@ export function useAutoUpdater(): UseAutoUpdaterReturn {
       clearSkippedVersion();
       await relaunch();
     } catch (err) {
+      operationRef.current = 'idle';
       flog.error('updater', 'download/install failed', {
         event_code: 'updater.install_failed',
         error: String(err),

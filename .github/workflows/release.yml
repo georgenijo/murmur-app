@@ -422,6 +422,19 @@ jobs:
             echo "ERROR: $TAG has no generated release notes"
             exit 1
           fi
+          jq -e '
+            type == "object"
+            and (keys == ["min_version"])
+            and (.min_version == null or (.min_version | type == "string"))
+          ' .github/updater-policy.json >/dev/null || {
+            echo "ERROR: updater policy must contain exactly one null or string min_version"
+            exit 1
+          }
+          MIN_VERSION_ARGS=()
+          if jq -e '.min_version != null' .github/updater-policy.json >/dev/null; then
+            MIN_VERSION=$(jq -r '.min_version' .github/updater-policy.json)
+            MIN_VERSION_ARGS=(--min-version "$MIN_VERSION")
+          fi
           python3 scripts/release_artifacts.py manifests \
             --validated validated-release.json \
             --tag "$TAG" \
@@ -429,6 +442,7 @@ jobs:
             --bridge-url "$BRIDGE_URL" \
             --bridge-signature "$BRIDGE_SIG" \
             --release-notes release-notes.md \
+            "${MIN_VERSION_ARGS[@]}" \
             --output-dir manifests
 
           PUB_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -458,6 +472,27 @@ jobs:
             and ([.platforms[] | .signature] | index($linux)) != null
           ' remote-manifests/latest-v2.json >/dev/null || {
             echo "ERROR: published modern manifest signatures do not match uploaded .sig assets"
+            exit 1
+          }
+
+          EXPECTED_MIN_VERSION=$(jq -r '.min_version // empty' .github/updater-policy.json)
+          ACTUAL_MIN_VERSION=$(jq -r '.min_version // empty' remote-manifests/latest-v2.json)
+          if [ "$ACTUAL_MIN_VERSION" != "$EXPECTED_MIN_VERSION" ]; then
+            echo "ERROR: published updater policy differs from the trusted source policy"
+            exit 1
+          fi
+
+      - name: Verify release metadata matches updater manifest
+        if: needs.resolve.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          RELEASE_NOTES=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json body --jq .body)
+          jq -e --arg notes "$RELEASE_NOTES" '.notes == $notes' \
+            remote-manifests/latest-v2.json >/dev/null || {
+            echo "ERROR: draft release notes differ from the updater manifest"
             exit 1
           }
 

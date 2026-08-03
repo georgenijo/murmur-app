@@ -58,8 +58,12 @@ native notification fires only on the first background discovery of a version
 during the process lifetime.
 
 Returns `{updateStatus, isUpdateDialogOpen, checkForUpdate, showAvailableUpdate,
-startDownload, skipVersion, dismissUpdate}`. Reads `min_version` from the
-`latest-v2.json` channel; persists `skipped-update-version` and
+startDownload, skipVersion, dismissUpdate}`. Uses a single-owner
+check/install operation guard, exposes a non-actionable `preparing` phase while
+verifying the install location, and reads a typed `min_version` policy result
+from the `latest-v2.json` channel. Policy absence permits an optional update;
+an unavailable or malformed policy fails the check without silently
+downgrading enforcement. Persists `skipped-update-version` and
 `updater-last-check` to localStorage.
 
 ### `useOpenSettingsListener`

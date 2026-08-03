@@ -417,6 +417,7 @@ def write_updater_manifests(
     bridge_signature: str,
     release_notes_path: Path,
     output_dir: Path,
+    min_version: str | None = None,
 ) -> tuple[Path, Path]:
     if not re.fullmatch(r"v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", tag):
         raise ArtifactError(f"invalid release tag: {tag}")
@@ -435,6 +436,20 @@ def write_updater_manifests(
     macos = validated["platforms"]["macos"]
     linux = validated["platforms"]["linux"]
     version = tag[1:]
+    if min_version is not None:
+        min_version = min_version.strip()
+        if not re.fullmatch(r"\d+\.\d+\.\d+", min_version):
+            raise ArtifactError(
+                "min_version must be a stable major.minor.patch version"
+            )
+        release_core = re.match(r"^(\d+)\.(\d+)\.(\d+)", version)
+        assert release_core is not None
+        release_parts = tuple(int(part) for part in release_core.groups())
+        min_parts = tuple(int(part) for part in min_version.split("."))
+        if min_parts > release_parts:
+            raise ArtifactError(
+                f"min_version {min_version} is newer than release {version}"
+            )
     base_url = f"https://github.com/{repository}/releases/download/{tag}"
     pub_date = "${PUB_DATE}"
 
@@ -453,6 +468,8 @@ def write_updater_manifests(
         },
         "notes": release_notes,
     }
+    if min_version is not None:
+        modern["min_version"] = min_version
     legacy = {
         "version": version,
         "pub_date": pub_date,
@@ -544,6 +561,7 @@ def _parser() -> argparse.ArgumentParser:
     manifests.add_argument("--bridge-url", required=True)
     manifests.add_argument("--bridge-signature", required=True)
     manifests.add_argument("--release-notes", type=Path, required=True)
+    manifests.add_argument("--min-version")
     manifests.add_argument("--output-dir", type=Path, required=True)
     return parser
 
@@ -669,6 +687,7 @@ def main() -> None:
                 args.bridge_signature,
                 args.release_notes,
                 args.output_dir,
+                args.min_version,
             )
             print(f"wrote updater manifests: {modern}, {legacy}")
     except ArtifactError as exc:

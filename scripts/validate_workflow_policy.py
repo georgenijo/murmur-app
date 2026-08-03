@@ -506,6 +506,11 @@ def validate_promotion_policy(workflow: str) -> int:
     assert 'gh release view "$TAG"' in workflow
     assert "--json body --jq .body > release-notes.md" in workflow
     assert "--release-notes release-notes.md" in workflow
+    assert ".github/updater-policy.json" in workflow
+    assert "updater policy must contain exactly one null or string min_version" in workflow
+    assert '--min-version "$MIN_VERSION"' in workflow
+    assert "published updater policy differs from the trusted source policy" in workflow
+    assert "draft release notes differ from the updater manifest" in workflow
     assert workflow.index("scripts/release_artifacts.py validate") < workflow.index(
         "Create automatic release tag"
     )
@@ -517,11 +522,15 @@ def validate_promotion_policy(workflow: str) -> int:
         "Verify uploaded updater signatures",
         "Generate updater channel manifests from verified signatures",
         "Upload and verify updater manifests",
+        "Verify release metadata matches updater manifest",
         "Publish release",
     )
     for name in publish_steps:
         block = named_step_block(workflow, name, 6)
         assert "if: needs.resolve.outputs.publish == 'true'" in block
+    assert workflow.index("Verify release metadata matches updater manifest") < workflow.index(
+        "Publish release"
+    )
     rehearsal = named_step_block(
         workflow, "Report non-publishing promotion rehearsal", 6
     )
