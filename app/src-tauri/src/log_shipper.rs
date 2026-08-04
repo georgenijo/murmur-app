@@ -234,17 +234,24 @@ async fn ship(
             // The receiver's success body carries the per-install diagnostics
             // flag; older receivers reply 204 with no body, which reads as
             // disarmed. The flag can only arm what the server names.
-            let armed = resp
+            let reply = resp
                 .text()
                 .await
                 .ok()
-                .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
+                .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok());
+            let armed = reply
+                .as_ref()
                 .and_then(|value| value.get("diagnostics").and_then(|flag| flag.as_bool()))
                 .unwrap_or(false);
+            let collect_now = reply
+                .as_ref()
+                .and_then(|value| value.get("collect_now").and_then(|epoch| epoch.as_u64()))
+                .unwrap_or(0);
             crate::hang_diagnostics::configure(
                 install_id,
                 &endpoint.replace("/ingest", "/bundle"),
                 armed,
+                collect_now,
             );
             true
         }

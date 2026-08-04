@@ -34,6 +34,16 @@ install must only be armed with its owner's agreement; disarming is
 server-side and takes effect within one shipper tick. Arming is logged
 loudly in the armed install's own event stream.
 
+An armed install's ingest reply may also carry `collect_now: <epoch>`
+(receiver `collect-now.txt`, lines of `uuid epoch`): an epoch greater than
+any already honored triggers exactly one immediate probe-bundle collection
+(no hang required). The epoch chooses only *when* a collection runs — *what*
+runs is the compiled-in, read-only probe list (process table, power
+assertions, and the standard bundle sections); the client never executes
+server-supplied text. The last honored epoch is process-lifetime state, so
+clear the install's `collect-now.txt` line once its bundle arrives to avoid
+a re-collection on the next app launch.
+
 ## Architecture
 
 ```
