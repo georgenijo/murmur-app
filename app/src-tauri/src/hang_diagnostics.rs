@@ -12,7 +12,7 @@
 //! needed) and takes effect on the next shipper tick.
 
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -20,6 +20,12 @@ use crate::MutexExt;
 
 static ARMED: AtomicBool = AtomicBool::new(false);
 static CONFIG: OnceLock<Mutex<Option<(String, String)>>> = OnceLock::new();
+// Highest on-demand collection epoch already honored this process lifetime.
+// The receiver's reply carries an integer epoch per armed install; a value
+// greater than this triggers exactly one probe-bundle collection. The epoch
+// selects only WHEN a collection runs — WHAT runs is this compiled-in probe
+// list, never server-supplied text.
+static LAST_COLLECT_EPOCH: AtomicU64 = AtomicU64::new(0);
 
 const SECTION_CAP_BYTES: usize = 1_500_000;
 const SAMPLE_SECONDS: &str = "1";
@@ -29,8 +35,14 @@ fn config_cell() -> &'static Mutex<Option<(String, String)>> {
 }
 
 /// Called by the log shipper once per successful ingest: records where a
-/// bundle would go and whether the receiver armed this install.
-pub(crate) fn configure(install_id: &str, bundle_endpoint: &str, armed: bool) {
+/// bundle would go, whether the receiver armed this install, and whether an
+/// on-demand probe collection was requested.
+pub(crate) fn configure(
+    install_id: &str,
+    bundle_endpoint: &str,
+    armed: bool,
+    collect_now_epoch: u64,
+) {
     *config_cell().lock_or_recover() =
         Some((install_id.to_string(), bundle_endpoint.to_string()));
     let was = ARMED.swap(armed, Ordering::Relaxed);
@@ -42,6 +54,30 @@ pub(crate) fn configure(install_id: &str, bundle_endpoint: &str, armed: bool) {
     } else if !armed && was {
         tracing::info!(target: "system", "remote hang diagnostics disarmed");
     }
+    if take_collect_now(armed, collect_now_epoch) {
+        tracing::warn!(
+            target: "system",
+            collect_epoch = collect_now_epoch,
+            "on-demand diagnostic probe collection requested by the log receiver"
+        );
+        std::thread::spawn(move || {
+            let bundle = collect_bundle(
+                0,
+                "none",
+                "on_demand",
+                "<on-demand collection - no hung worker to sample>",
+            );
+            ship_bundle(0, bundle);
+        });
+    }
+}
+
+/// True exactly once per new nonzero epoch while armed.
+fn take_collect_now(armed: bool, epoch: u64) -> bool {
+    if !armed || epoch == 0 {
+        return false;
+    }
+    LAST_COLLECT_EPOCH.fetch_max(epoch, Ordering::Relaxed) < epoch
 }
 
 pub(crate) fn armed() -> bool {
@@ -202,6 +238,18 @@ fn collect_bundle(
         ),
     );
     section(
+        "process list",
+        &run_capped(
+            "/bin/ps",
+            &["axo", "pid,ppid,user,lstart,comm"],
+            Duration::from_secs(10),
+        ),
+    );
+    section(
+        "power assertions",
+        &run_capped("/usr/bin/pmset", &["-g", "assertions"], Duration::from_secs(10)),
+    );
+    section(
         "system HAL plug-ins",
         &run_capped("/bin/ls", &["-la", "/Library/Audio/Plug-Ins/HAL"], Duration::from_secs(5)),
     );
@@ -228,14 +276,25 @@ mod tests {
 
     #[test]
     fn probe_is_inert_unless_the_receiver_arms_this_install() {
-        configure("test-install", "http://127.0.0.1:9/bundle", false);
+        configure("test-install", "http://127.0.0.1:9/bundle", false, 0);
         assert!(!armed());
         assert!(HangProbe::start(1, "auhal", std::process::id()).is_none());
 
-        configure("test-install", "http://127.0.0.1:9/bundle", true);
+        configure("test-install", "http://127.0.0.1:9/bundle", true, 0);
         assert!(armed());
-        configure("test-install", "http://127.0.0.1:9/bundle", false);
+        configure("test-install", "http://127.0.0.1:9/bundle", false, 0);
         assert!(!armed());
+    }
+
+    #[test]
+    fn collect_now_fires_once_per_new_epoch_and_never_unarmed() {
+        assert!(!take_collect_now(false, 7)); // unarmed: never
+        assert!(!take_collect_now(true, 0)); // zero epoch: never
+        assert!(take_collect_now(true, 7)); // new epoch: once
+        assert!(!take_collect_now(true, 7)); // same epoch: consumed
+        assert!(!take_collect_now(true, 3)); // older epoch: never
+        assert!(take_collect_now(true, 9)); // newer epoch: once again
+        assert!(!take_collect_now(true, 9));
     }
 
     #[test]
