@@ -6,6 +6,31 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 ---
 
+## 2026-08-04: Hang diagnostics are server-armed per install, never on by default
+
+**Decision:** The client ships a dormant hang-diagnostics collector (worker
+stack sample at capture timeout + coreaudiod unified log + audio/Bluetooth
+topology + HAL plug-in list, uploaded as one bounded bundle). It activates
+only when the log receiver's ingest reply names this install's UUID as armed
+(`diag-installs.txt` on the receiver), and arming is logged loudly in the
+install's own event stream. Rejected alternatives: a separate diagnostic
+build (delivery friction — the affected user is remote), and shipping
+collection enabled for all installs (breaks the privacy model for users who
+never consented; the collected data names devices and installed software).
+
+**Rationale:** The remaining unknown in the capture-hang investigation is
+*why* `AudioOutputUnitStart` blocks, which only a native stack of the blocked
+call plus coreaudiod's own log can answer. Server-side arming delivers the
+collector through the normal release channel with zero user action, scopes
+collection to exactly the consenting install, and gives an instant no-release
+kill switch.
+
+**Status:** active
+
+**References:** #445, #450; `hang_diagnostics.rs`, receiver `/bundle`
+
+---
+
 ## 2026-08-04: Backend promotion is self-disproving; first-attempt-bound hangs get a fast-fail primary budget
 
 **Decision:** The session backend memo (2026-08-03) treats a timeout of a

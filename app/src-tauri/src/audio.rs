@@ -927,6 +927,8 @@ fn run_backend(
     let mut last_permission_check = Instant::now() - PERMISSION_POLL_INTERVAL;
     let mut current_phase = AudioInitPhase::StreamBuild;
     let mut last_setup_step: Option<(CaptureSetupStep, SetupTransition)> = None;
+    let worker_pid = child.pid();
+    let mut hang_probe: Option<crate::hang_diagnostics::HangProbe> = None;
     let attempt_budget = if ctx.is_primary {
         primary_attempt_budget(backend, device_id, ctx.memo_promoted)
     } else {
@@ -1068,6 +1070,16 @@ fn run_backend(
         }
 
         let now = Instant::now();
+        if hang_probe.is_none()
+            && !retained_audio
+            && crate::hang_diagnostics::armed()
+            && clock.elapsed(now) >= attempt_budget / 2
+        {
+            // Halfway to the budget with no PCM: sample the worker now, while
+            // the blocked native call is still on its stack.
+            hang_probe =
+                crate::hang_diagnostics::HangProbe::start(capture_id, backend_label(backend), worker_pid);
+        }
         if !retained_audio && clock.elapsed(now) >= attempt_budget {
             end_permission_prompt_pause(
                 &mut permission_prompt_started,
@@ -1125,6 +1137,9 @@ fn run_backend(
                 current_phase,
             ) {
                 return AttemptResult::TerminalHandled;
+            }
+            if let Some(probe) = hang_probe.take() {
+                probe.finish_and_ship(failure.kind.as_str());
             }
             return AttemptResult::Failed {
                 failure,

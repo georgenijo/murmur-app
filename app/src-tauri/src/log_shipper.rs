@@ -14,7 +14,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 const ENDPOINT: &str = "https://georgenijo.com/murmur/ingest";
-const TOKEN: &str = "a1b4068693a1f3868bcf03c01ebcf1e9f000080b3e8bfcb0";
+pub(crate) const TOKEN: &str = "a1b4068693a1f3868bcf03c01ebcf1e9f000080b3e8bfcb0";
 const TICK_SECS: u64 = 60;
 const STARTUP_DELAY_SECS: u64 = 15;
 /// Max bytes shipped per POST; a batch is always cut at a line boundary.
@@ -229,7 +229,27 @@ async fn ship(
         .body(data)
         .send()
         .await;
-    matches!(result, Ok(resp) if resp.status().is_success())
+    match result {
+        Ok(resp) if resp.status().is_success() => {
+            // The receiver's success body carries the per-install diagnostics
+            // flag; older receivers reply 204 with no body, which reads as
+            // disarmed. The flag can only arm what the server names.
+            let armed = resp
+                .text()
+                .await
+                .ok()
+                .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
+                .and_then(|value| value.get("diagnostics").and_then(|flag| flag.as_bool()))
+                .unwrap_or(false);
+            crate::hang_diagnostics::configure(
+                install_id,
+                &endpoint.replace("/ingest", "/bundle"),
+                armed,
+            );
+            true
+        }
+        _ => false,
+    }
 }
 
 /// Serialize only a bounded aggregate of the audio-input picture. The generic

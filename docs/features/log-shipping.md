@@ -20,6 +20,20 @@ install the app (or receive an auto-update) and logs flow.
   never reads or sends microphone display labels or backend UIDs.
 - Kill switch: launch with `MURMUR_LOG_SHIPPER=off` in the environment.
 
+## Server-armed hang diagnostics (`hang_diagnostics.rs`)
+
+Dormant on every install by default. The receiver's `/ingest` success reply
+carries `{"diagnostics": bool}` per install UUID (armed by listing the UUID in
+`~/murmur-logs/diag-installs.txt` on the receiver; no restart needed). Only on
+an armed install, a capture attempt that reaches half its budget without first
+PCM gets a native stack `sample` of the hung worker, and after the confirmed
+kill a single bounded text bundle — worker stack, 90s of coreaudiod unified
+log, audio/Bluetooth topology, installed HAL plug-ins — is uploaded to
+`POST /bundle`. This content names devices and installed software, so an
+install must only be armed with its owner's agreement; disarming is
+server-side and takes effect within one shipper tick. Arming is logged
+loudly in the armed install's own event stream.
+
 ## Architecture
 
 ```
