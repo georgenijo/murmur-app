@@ -713,8 +713,10 @@ export function SettingsPanel({
               </div>
             )}
             <div className="border-t border-outline-variant/20 pt-4">
-              <h2 className="text-sm font-medium text-on-surface">Names & Terms</h2>
-              <p className="mt-1 mb-3 text-xs text-on-surface-variant">Teach Murmur preferred spellings and exact spoken variants.</p>
+              <h2 className="text-sm font-medium text-on-surface">Names & special words</h2>
+              <p className="mt-1 mb-3 text-xs text-on-surface-variant">
+                Fix a word once and Murmur will type it your way. For example, if Murmur hears “Tori,” tell it to type “Tauri.”
+              </p>
               <VocabularyAliasesEditor entries={settings.vocabularyEntries} voiceCommands={settings.voiceCommands} onChange={(vocabularyEntries) => onUpdateSettings({ vocabularyEntries, customVocabulary: vocabularyPrompt(vocabularyEntries) })} />
             </div>
             <SettingToggle title="Developer Terms" description="Make built-in development terms and an optional project scan available only to apps configured as Code / technical or with Local IDE project context." checked={settings.codeVocabEnabled} onChange={() => onUpdateSettings({ codeVocabEnabled: !settings.codeVocabEnabled })} />
