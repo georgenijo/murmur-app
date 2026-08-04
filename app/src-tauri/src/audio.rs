@@ -647,41 +647,121 @@ fn preferred_backends() -> [CaptureBackend; 2] {
     }
 }
 
-// Session memo of the backend that most recently delivered first PCM, keyed
-// by the requested device (None = system default input). On machines where
-// the platform-primary backend hangs until its attempt budget on every
-// recording, this puts the known-good backend first so only the first
-// recording of a session pays the timeout. It only reorders the two attempts:
-// both backends stay in the sequence, per-attempt budgets, termination
-// confirmation, and fallback eligibility are unchanged, and the memo is
-// process-local (never persisted, never logged with device identity).
-static LAST_READY_BACKEND: Mutex<Vec<(Option<String>, CaptureBackend)>> = Mutex::new(Vec::new());
+// Session memo, keyed by the requested device (None = system default input).
+// It adapts the attempt sequence to two observed hang pathologies without
+// touching the safety contract (both backends always stay in the sequence,
+// per-attempt budgets only ever shrink, termination confirmation and
+// fallback-eligibility rules are unchanged, nothing is persisted, and device
+// keys never reach telemetry):
+//
+// - Backend-bound hang (one backend hangs, the other works): the backend
+//   that most recently delivered first PCM is ordered first.
+// - First-attempt-bound hang (whichever backend goes first hangs in
+//   AudioOutputUnitStart and the second attempt succeeds in ~160ms —
+//   observed in the field on macOS 26.6/M5): promotion is proven wrong when
+//   the promoted backend itself times out before first PCM, so promotion is
+//   disabled for the key (sticky for the session, otherwise the order
+//   oscillates and doubles the latency on CPAL-first recordings). After
+//   FAST_FAIL_ARM_COUNT consecutive recordings of "primary failed before
+//   first PCM, fallback delivered it within FAST_RESCUE_THRESHOLD", the
+//   primary attempt budget shrinks to FAST_FAIL_PRIMARY_BUDGET so the
+//   reliable rescue starts sooner. A primary success resets the counter and
+//   restores full budgets.
+const PROMOTED_PRIMARY_BUDGET_CAP: Duration = AUHAL_ATTEMPT_BUDGET;
+const FAST_FAIL_PRIMARY_BUDGET: Duration = Duration::from_secs(2);
+const FAST_RESCUE_THRESHOLD: Duration = Duration::from_secs(1);
+const FAST_FAIL_ARM_COUNT: u32 = 2;
 
-fn record_ready_backend(device_id: Option<&str>, backend: CaptureBackend) {
-    let mut memo = LAST_READY_BACKEND
+#[derive(Default)]
+struct BackendMemo {
+    last_ready: Option<CaptureBackend>,
+    promotion_disabled: bool,
+    consecutive_fast_rescues: u32,
+}
+
+static CAPTURE_MEMO: Mutex<Vec<(Option<String>, BackendMemo)>> = Mutex::new(Vec::new());
+
+fn with_memo<R>(device_id: Option<&str>, apply: impl FnOnce(&mut BackendMemo) -> R) -> R {
+    let mut memo = CAPTURE_MEMO
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    match memo.iter_mut().find(|(key, _)| key.as_deref() == device_id) {
-        Some(entry) => entry.1 = backend,
-        None => memo.push((device_id.map(str::to_string), backend)),
+    if let Some(position) = memo.iter().position(|(key, _)| key.as_deref() == device_id) {
+        apply(&mut memo[position].1)
+    } else {
+        memo.push((device_id.map(str::to_string), BackendMemo::default()));
+        apply(&mut memo.last_mut().expect("entry just pushed").1)
     }
 }
 
-fn last_ready_backend(device_id: Option<&str>) -> Option<CaptureBackend> {
-    LAST_READY_BACKEND
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .iter()
-        .find(|(key, _)| key.as_deref() == device_id)
-        .map(|(_, backend)| *backend)
+fn note_first_pcm(
+    device_id: Option<&str>,
+    backend: CaptureBackend,
+    was_primary: bool,
+    start_to_first_pcm: Duration,
+) {
+    with_memo(device_id, |memo| {
+        if was_primary {
+            memo.consecutive_fast_rescues = 0;
+            memo.last_ready = Some(backend);
+        } else {
+            memo.consecutive_fast_rescues = if start_to_first_pcm <= FAST_RESCUE_THRESHOLD {
+                memo.consecutive_fast_rescues.saturating_add(1)
+            } else {
+                0
+            };
+            if !memo.promotion_disabled {
+                memo.last_ready = Some(backend);
+            }
+        }
+    });
+}
+
+fn note_promoted_primary_timeout(device_id: Option<&str>) {
+    with_memo(device_id, |memo| {
+        memo.promotion_disabled = true;
+        memo.last_ready = None;
+    });
 }
 
 fn preferred_backends_for(device_id: Option<&str>) -> [CaptureBackend; 2] {
     let default_order = preferred_backends();
-    match last_ready_backend(device_id) {
+    let last_ready = with_memo(device_id, |memo| {
+        if memo.promotion_disabled {
+            None
+        } else {
+            memo.last_ready
+        }
+    });
+    match last_ready {
         Some(backend) if backend == default_order[1] => [default_order[1], default_order[0]],
         _ => default_order,
     }
+}
+
+fn primary_attempt_budget(
+    backend: CaptureBackend,
+    device_id: Option<&str>,
+    memo_promoted: bool,
+) -> Duration {
+    let mut budget = backend_attempt_budget(backend);
+    if memo_promoted {
+        // A promoted backend must never cost more than the default primary
+        // would have: cap it so a wrong promotion cannot worsen the worst
+        // case beyond the default order's.
+        budget = budget.min(PROMOTED_PRIMARY_BUDGET_CAP);
+    }
+    if with_memo(device_id, |memo| {
+        memo.consecutive_fast_rescues >= FAST_FAIL_ARM_COUNT
+    }) {
+        budget = budget.min(FAST_FAIL_PRIMARY_BUDGET);
+    }
+    budget
+}
+
+#[derive(Clone, Copy)]
+struct AttemptContext {
+    is_primary: bool,
+    memo_promoted: bool,
 }
 
 fn stop_requested_between_attempts(command_receiver: &Receiver<AudioCommand>) -> bool {
@@ -695,6 +775,7 @@ fn run_backend(
     owner: crate::audio_lifecycle::AudioOwner,
     backend: CaptureBackend,
     device_id: Option<&str>,
+    ctx: AttemptContext,
     command_receiver: &Receiver<AudioCommand>,
     shared: &Arc<Mutex<Vec<f32>>>,
     active: &Arc<AtomicBool>,
@@ -842,7 +923,20 @@ fn run_backend(
     let mut last_permission_check = Instant::now() - PERMISSION_POLL_INTERVAL;
     let mut current_phase = AudioInitPhase::StreamBuild;
     let mut last_setup_step: Option<(CaptureSetupStep, SetupTransition)> = None;
-    let attempt_budget = backend_attempt_budget(backend);
+    let attempt_budget = if ctx.is_primary {
+        primary_attempt_budget(backend, device_id, ctx.memo_promoted)
+    } else {
+        backend_attempt_budget(backend)
+    };
+    if attempt_budget != backend_attempt_budget(backend) {
+        tracing::info!(
+            target: "audio",
+            capture_id,
+            backend = backend_label(backend),
+            attempt_budget_ms = attempt_budget.as_millis() as u64,
+            "capture primary attempt budget shortened by session adaptation"
+        );
+    }
     loop {
         match command_receiver.try_recv() {
             Ok(AudioCommand::Stop) | Err(mpsc::TryRecvError::Disconnected) => {
@@ -986,6 +1080,18 @@ fn run_backend(
                 },
                 current_phase,
             );
+            if ctx.is_primary && ctx.memo_promoted {
+                // The promoted backend hung too, so the hang on this device
+                // is first-attempt-bound rather than backend-bound; keeping
+                // the promotion would oscillate the order every recording.
+                note_promoted_primary_timeout(device_id);
+                tracing::info!(
+                    target: "audio",
+                    capture_id,
+                    backend = backend_label(backend),
+                    "capture memo promotion disabled after the promoted backend timed out before first PCM"
+                );
+            }
             // last_setup_step "entered" without "completed" names the exact
             // native call the worker is stuck in (see CaptureSetupStep docs
             // for the step -> Core Audio call mapping).
@@ -1064,7 +1170,7 @@ fn run_backend(
                 if !retained_audio {
                     retained_audio = true;
                     current_phase = AudioInitPhase::Runtime;
-                    record_ready_backend(device_id, backend);
+                    note_first_pcm(device_id, backend, ctx.is_primary, start_sent_at.elapsed());
                     end_permission_prompt_pause(
                         &mut permission_prompt_started,
                         &mut clock,
@@ -1339,7 +1445,8 @@ fn run_audio_capture(spec: AudioWorkerSpec, event_sender: &AudioWorkerEventSende
         "capture backend budget contract started"
     );
     let backends = preferred_backends_for(device_id.as_deref());
-    if backends != preferred_backends() {
+    let memo_promoted = backends != preferred_backends();
+    if memo_promoted {
         tracing::info!(
             target: "audio",
             owner = owner.telemetry_id(),
@@ -1358,6 +1465,10 @@ fn run_audio_capture(spec: AudioWorkerSpec, event_sender: &AudioWorkerEventSende
                 owner,
                 backend,
                 device_id.as_deref(),
+                AttemptContext {
+                    is_primary: backend == backends[0],
+                    memo_promoted,
+                },
                 &command_receiver,
                 &shared,
                 &active,
@@ -1448,12 +1559,15 @@ mod tests {
 
     // Memo tests use distinct device keys so they stay independent of each
     // other and of the process-wide static regardless of test ordering.
+    const FAST: Duration = Duration::from_millis(200);
+    const SLOW: Duration = Duration::from_millis(1500);
+
     #[test]
     fn session_memo_promotes_the_fallback_backend_after_first_pcm() {
         let default_order = preferred_backends();
         assert_eq!(preferred_backends_for(Some("memo-device-a")), default_order);
 
-        record_ready_backend(Some("memo-device-a"), default_order[1]);
+        note_first_pcm(Some("memo-device-a"), default_order[1], false, FAST);
         assert_eq!(
             preferred_backends_for(Some("memo-device-a")),
             [default_order[1], default_order[0]]
@@ -1468,20 +1582,82 @@ mod tests {
     #[test]
     fn session_memo_on_the_primary_backend_keeps_the_default_order() {
         let default_order = preferred_backends();
-        record_ready_backend(Some("memo-device-b"), default_order[0]);
+        note_first_pcm(Some("memo-device-b"), default_order[0], true, FAST);
         assert_eq!(preferred_backends_for(Some("memo-device-b")), default_order);
     }
 
     #[test]
     fn session_memo_tracks_the_most_recent_ready_backend() {
         let default_order = preferred_backends();
-        record_ready_backend(Some("memo-device-c"), default_order[1]);
+        note_first_pcm(Some("memo-device-c"), default_order[1], false, FAST);
         assert_eq!(
             preferred_backends_for(Some("memo-device-c")),
             [default_order[1], default_order[0]]
         );
-        record_ready_backend(Some("memo-device-c"), default_order[0]);
+        note_first_pcm(Some("memo-device-c"), default_order[0], true, FAST);
         assert_eq!(preferred_backends_for(Some("memo-device-c")), default_order);
+    }
+
+    #[test]
+    fn promoted_backend_timeout_disables_promotion_for_the_session() {
+        let key = Some("memo-device-guard");
+        let default_order = preferred_backends();
+        note_first_pcm(key, default_order[1], false, FAST);
+        assert_ne!(preferred_backends_for(key), default_order);
+
+        // The promoted backend hung too: the hang is first-attempt-bound.
+        note_promoted_primary_timeout(key);
+        assert_eq!(preferred_backends_for(key), default_order);
+
+        // Sticky: a later fallback success must not re-promote and restart
+        // the oscillation.
+        note_first_pcm(key, default_order[1], false, FAST);
+        assert_eq!(preferred_backends_for(key), default_order);
+    }
+
+    #[test]
+    fn repeated_fast_rescues_arm_the_short_primary_budget_and_success_resets_it() {
+        let key = Some("memo-device-fastfail");
+        let default_order = preferred_backends();
+        let full = backend_attempt_budget(default_order[0]);
+
+        note_first_pcm(key, default_order[1], false, FAST);
+        assert_eq!(primary_attempt_budget(default_order[0], key, false), full);
+        note_first_pcm(key, default_order[1], false, FAST);
+        assert_eq!(
+            primary_attempt_budget(default_order[0], key, false),
+            FAST_FAIL_PRIMARY_BUDGET
+        );
+
+        // A primary success means the machine healed: full budgets return.
+        note_first_pcm(key, default_order[0], true, FAST);
+        assert_eq!(primary_attempt_budget(default_order[0], key, false), full);
+    }
+
+    #[test]
+    fn slow_rescues_reset_the_fast_fail_counter() {
+        let key = Some("memo-device-slowrescue");
+        let default_order = preferred_backends();
+        let full = backend_attempt_budget(default_order[0]);
+
+        note_first_pcm(key, default_order[1], false, FAST);
+        note_first_pcm(key, default_order[1], false, SLOW);
+        note_first_pcm(key, default_order[1], false, FAST);
+        // fast, slow, fast -> counter is 1, not 2: still the full budget.
+        assert_eq!(primary_attempt_budget(default_order[0], key, false), full);
+    }
+
+    #[test]
+    fn a_promoted_backend_never_gets_more_budget_than_the_default_primary() {
+        assert_eq!(
+            primary_attempt_budget(CaptureBackend::Cpal, Some("memo-device-cap"), true),
+            PROMOTED_PRIMARY_BUDGET_CAP
+        );
+        // Unpromoted, CPAL keeps its own budget.
+        assert_eq!(
+            primary_attempt_budget(CaptureBackend::Cpal, Some("memo-device-cap"), false),
+            CPAL_ATTEMPT_BUDGET
+        );
     }
 
     #[test]

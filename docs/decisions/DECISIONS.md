@@ -6,6 +6,36 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 ---
 
+## 2026-08-04: Backend promotion is self-disproving; first-attempt-bound hangs get a fast-fail primary budget
+
+**Decision:** The session backend memo (2026-08-03) treats a timeout of a
+*promoted* backend as proof that the hang is first-attempt-bound rather than
+backend-bound: promotion is disabled for that device key for the rest of the
+session, a promoted backend's attempt budget is capped at the default
+primary's 8 seconds, and after two consecutive recordings of "primary failed
+before first PCM, fallback delivered it within 1 second" the primary attempt
+budget shrinks to 2 seconds until a primary attempt succeeds again. Budgets
+only ever shrink; sequence membership, termination confirmation, and
+fallback-eligibility rules are unchanged.
+
+**Rationale:** v0.25.1 field telemetry (M5/macOS 26.6) falsified the
+backend-bound model the memo assumed: with CPAL promoted, CPAL hung in
+`stream_start` for its full 16-second budget and AUHAL then delivered first
+PCM in 164ms — the memo oscillated and doubled the user-visible latency on
+alternate recordings. On such machines the second attempt reliably succeeds
+in ~160ms, so the dominant latency cost is the first attempt's budget; the
+fast-fail budget cuts steady-state startup from ~8.5s to ~2.6s while the
+detector (fallback must succeed fast) keeps genuinely slow-but-healthy
+machines, like the July coreaudiod slowdown where both backends were slow, on
+full budgets.
+
+**Status:** active
+
+**References:** supersedes the promotion behavior of the 2026-08-03 memo
+entry below; #445
+
+---
+
 ## 2026-08-03: Session-scoped backend preference after first PCM; per-native-call capture telemetry
 
 **Decision:** The capture supervisor keeps an in-memory, per-device-key memo of

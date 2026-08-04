@@ -16,15 +16,23 @@ confirmed empty and a final Stop check passes. Once audio exists, failure ends c
 devices. Prefixes of at least 500 ms are transcribed normally, remain
 clipboard-first, and are marked **Interrupted · partial** in history.
 
-A process-local session memo remembers, per requested device key, the backend
-that most recently delivered first PCM. If that was the fallback backend, the
-next recording for the same device key tries it first, so a machine whose
-primary backend hangs until its attempt budget pays that timeout once per app
-run instead of on every recording. The memo only reorders the two attempts:
-both backends stay in the sequence with unchanged per-attempt budgets,
-termination confirmation, and fallback-eligibility rules. It is never
-persisted, and telemetry logs only the promoted backend name, never the device
-key.
+A process-local session memo, keyed per requested device, adapts the attempt
+sequence to two observed hang pathologies. For a backend-bound hang (one
+backend hangs, the other works), the backend that most recently delivered
+first PCM is ordered first, so the timeout is paid once per app run instead of
+per recording. For a first-attempt-bound hang (whichever backend goes first
+hangs in `AudioOutputUnitStart` while the second attempt succeeds within
+~160ms), promotion is disproven the moment a promoted backend itself times out
+before first PCM: promotion is then disabled for that key for the session
+(otherwise the order oscillates), a promoted backend's budget is always capped
+at the default primary's 8s so a wrong promotion can never worsen the worst
+case, and after two consecutive recordings of "primary failed before first
+PCM, fallback delivered it within 1s" the primary attempt budget shrinks to
+2s so the reliable rescue starts sooner (a primary success resets this and
+restores full budgets). The memo only reorders and shrinks: both backends
+always stay in the sequence, budgets never grow, and termination confirmation
+and fallback-eligibility rules are unchanged. It is never persisted, and
+telemetry logs only backend names, never the device key.
 
 ## Overview
 
