@@ -24,6 +24,7 @@ mod injector;
 mod keyboard;
 mod knowledge_store;
 pub mod llm_sidecar;
+mod hang_diagnostics;
 mod log_shipper;
 pub mod managed_child;
 mod model_runtime;
