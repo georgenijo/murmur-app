@@ -48,6 +48,19 @@ pub(crate) fn armed() -> bool {
     ARMED.load(Ordering::Relaxed)
 }
 
+/// Truncate at the nearest char boundary at or below `cap`: command output is
+/// lossy-decoded UTF-8, and `String::truncate` panics mid-character.
+fn truncate_at_boundary(text: &mut String, cap: usize) {
+    if text.len() <= cap {
+        return;
+    }
+    let mut cut = cap;
+    while cut > 0 && !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    text.truncate(cut);
+}
+
 /// Run a command, returning combined stdout+stderr truncated to the section
 /// cap. On deadline the child is left to finish on its own (diagnostic path
 /// only; the commands used here all terminate on their own).
@@ -66,7 +79,7 @@ fn run_capped(program: &str, args: &[&str], deadline: Duration) -> String {
                 text.push_str("\n--- stderr ---\n");
                 text.push_str(&stderr);
             }
-            text.truncate(SECTION_CAP_BYTES);
+            truncate_at_boundary(&mut text, SECTION_CAP_BYTES);
             text
         }
         Ok(Err(error)) => format!("<spawn failed: {error}>"),
@@ -223,6 +236,16 @@ mod tests {
         assert!(armed());
         configure("test-install", "http://127.0.0.1:9/bundle", false);
         assert!(!armed());
+    }
+
+    #[test]
+    fn truncation_never_splits_a_multibyte_character() {
+        let mut text = "ab\u{1F980}cd".to_string(); // crab is 4 bytes at index 2
+        truncate_at_boundary(&mut text, 4);
+        assert_eq!(text, "ab");
+        let mut short = "ab".to_string();
+        truncate_at_boundary(&mut short, 10);
+        assert_eq!(short, "ab");
     }
 
     #[test]

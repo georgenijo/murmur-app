@@ -11,9 +11,10 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 **Decision:** The client ships a dormant hang-diagnostics collector (worker
 stack sample at capture timeout + coreaudiod unified log + audio/Bluetooth
 topology + HAL plug-in list, uploaded as one bounded bundle). It activates
-only when the log receiver's ingest reply names this install's UUID as armed
-(`diag-installs.txt` on the receiver), and arming is logged loudly in the
-install's own event stream. Rejected alternatives: a separate diagnostic
+only when the log receiver's ingest reply carries `{"diagnostics": true}` for
+this install — the receiver derives that flag from a per-UUID allow-list
+(`diag-installs.txt`) — and arming is logged loudly in the install's own
+event stream. Rejected alternatives: a separate diagnostic
 build (delivery friction — the affected user is remote), and shipping
 collection enabled for all installs (breaks the privacy model for users who
 never consented; the collected data names devices and installed software).
