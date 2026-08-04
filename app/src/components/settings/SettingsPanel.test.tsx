@@ -91,7 +91,7 @@ describe('SettingsPanel information architecture', () => {
 
   it('moves vocabulary, app overrides, Benchmark, Performance, and startup into their intended pages', async () => {
     for (const [page, expected] of [
-      ['Text & Vocabulary', 'Names & Terms'],
+      ['Text & Vocabulary', 'Names & special words'],
       ['Delivery', 'Always copied to clipboard'],
       ['Benchmark', 'Performance lab'],
       ['Performance', 'Diagnostics workspace'],
