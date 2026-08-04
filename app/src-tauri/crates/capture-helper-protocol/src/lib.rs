@@ -97,11 +97,38 @@ pub enum ProductionHelperMessage {
     },
 }
 
+/// Capture setup steps bracket the native calls the worker makes, so a step
+/// that reports `Entered` without `Completed` identifies the exact operation
+/// that hung. Step names are content-free: no device identity ever rides on
+/// this message. AUHAL steps map to native Core Audio calls as follows:
+///
+/// - `AudioUnitNew`: `AudioComponentFindNext` + `AudioComponentInstanceNew`
+///   + `AudioUnitInitialize` (one bracket; the safe wrapper creates and
+///   initializes in a single call)
+/// - `EnableInputIo` / `DisableOutputIo`:
+///   `AudioUnitSetProperty(kAudioOutputUnitProperty_EnableIO)` on the input /
+///   output element
+/// - `SetCurrentDevice`:
+///   `AudioUnitSetProperty(kAudioOutputUnitProperty_CurrentDevice)`
+/// - `FormatConfiguration`:
+///   `AudioUnitSetProperty(kAudioUnitProperty_StreamFormat)`
+/// - `CallbackInstallation`: buffer-size query plus
+///   `AudioUnitSetProperty(kAudioOutputUnitProperty_SetInputCallback)`
+/// - `StreamStart`: `AudioOutputUnitStart` (AUHAL) or cpal `Stream::play`
+///   (CPAL)
+///
+/// `AudioUnitCreation` is the legacy coarse bracket that covered
+/// `AudioUnitNew` through `SetCurrentDevice`; it is retained for protocol
+/// stability but no longer emitted.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum CaptureSetupStep {
     DeviceResolution,
     AudioUnitCreation,
+    AudioUnitNew,
+    EnableInputIo,
+    DisableOutputIo,
+    SetCurrentDevice,
     FormatConfiguration,
     CallbackInstallation,
     DefaultConfig,
@@ -115,6 +142,10 @@ impl CaptureSetupStep {
         match self {
             Self::DeviceResolution => "device_resolution",
             Self::AudioUnitCreation => "audio_unit_creation",
+            Self::AudioUnitNew => "audio_unit_new",
+            Self::EnableInputIo => "enable_input_io",
+            Self::DisableOutputIo => "disable_output_io",
+            Self::SetCurrentDevice => "set_current_device",
             Self::FormatConfiguration => "format_configuration",
             Self::CallbackInstallation => "callback_installation",
             Self::DefaultConfig => "default_config",

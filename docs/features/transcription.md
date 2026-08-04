@@ -16,6 +16,16 @@ confirmed empty and a final Stop check passes. Once audio exists, failure ends c
 devices. Prefixes of at least 500 ms are transcribed normally, remain
 clipboard-first, and are marked **Interrupted · partial** in history.
 
+A process-local session memo remembers, per requested device key, the backend
+that most recently delivered first PCM. If that was the fallback backend, the
+next recording for the same device key tries it first, so a machine whose
+primary backend hangs until its attempt budget pays that timeout once per app
+run instead of on every recording. The memo only reorders the two attempts:
+both backends stay in the sequence with unchanged per-attempt budgets,
+termination confirmation, and fallback-eligibility rules. It is never
+persisted, and telemetry logs only the promoted backend name, never the device
+key.
+
 ## Overview
 
 ```
@@ -59,10 +69,16 @@ Transcription processing is local. Network access occurs for model setup and may
   If one blocks, Murmur retains exclusive ownership rather than detaching the
   worker or accepting a competing retry. Process isolation is the final fault
   boundary.
-- Protocol v3 emits stable entered/completed setup-step constants around AUHAL
-  device resolution, AudioUnit creation, format configuration, callback
-  installation, stream start, and callback wait, plus comparable CPAL steps.
-  These events contain no device label, UID, raw backend error, or content.
+- Protocol v3 emits stable entered/completed setup-step constants that bracket
+  each native Core Audio call on the AUHAL path — device resolution, unit
+  creation (`audio_unit_new`: component find/instantiate/initialize), input
+  enable, output disable, current-device binding, stream-format configuration,
+  callback installation, and `stream_start` (exactly `AudioOutputUnitStart`) —
+  plus comparable CPAL steps and the callback wait. A step that entered without
+  completing therefore names the exact hung operation; the supervisor logs each
+  step with elapsed time since start and repeats the last step and transition
+  in the attempt-budget-exceeded event. These events contain no device label,
+  UID, raw backend error, or content.
 - A timed-out backend can advance only after its owned helper process group is
   positively confirmed empty. Unconfirmed termination leaves the lifecycle in
   exclusive recovery and suppresses fallback and new starts.
