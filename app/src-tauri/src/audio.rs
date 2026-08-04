@@ -1,4 +1,5 @@
 use crate::managed_child::{bundled_sibling, ManagedChild};
+use crate::MutexExt;
 use murmur_capture_helper_protocol::{
     read_production_frame, write_production_control, CaptureBackend, CapturePhase,
     CaptureSetupStep, FailureCode, ProductionFrame, ProductionHelperMessage,
@@ -681,10 +682,13 @@ struct BackendMemo {
 
 static CAPTURE_MEMO: Mutex<Vec<(Option<String>, BackendMemo)>> = Mutex::new(Vec::new());
 
+// Memo writes are deliberately not gated on capture ownership: they record
+// observations about device behavior (a backend delivered PCM, a promoted
+// backend hung), and an observation made by an attempt that was cancelled a
+// moment later is exactly as true about the hardware. Ownership generations
+// guard recording state and publication, not this ordering heuristic.
 fn with_memo<R>(device_id: Option<&str>, apply: impl FnOnce(&mut BackendMemo) -> R) -> R {
-    let mut memo = CAPTURE_MEMO
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut memo = CAPTURE_MEMO.lock_or_recover();
     if let Some(position) = memo.iter().position(|(key, _)| key.as_deref() == device_id) {
         apply(&mut memo[position].1)
     } else {

@@ -14,9 +14,10 @@ backend-bound: promotion is disabled for that device key for the rest of the
 session, a promoted backend's attempt budget is capped at the default
 primary's 8 seconds, and after two consecutive recordings of "primary failed
 before first PCM, fallback delivered it within 1 second" the primary attempt
-budget shrinks to 2 seconds until a primary attempt succeeds again. Budgets
-only ever shrink; sequence membership, termination confirmation, and
-fallback-eligibility rules are unchanged.
+budget shrinks to 2 seconds until a primary attempt succeeds again (a slow
+rescue also resets the counter). Budgets only ever shrink; sequence
+membership, termination confirmation, and fallback-eligibility rules are
+unchanged.
 
 **Rationale:** v0.25.1 field telemetry (M5/macOS 26.6) falsified the
 backend-bound model the memo assumed: with CPAL promoted, CPAL hung in

@@ -28,8 +28,9 @@ before first PCM: promotion is then disabled for that key for the session
 at the default primary's 8s so a wrong promotion can never worsen the worst
 case, and after two consecutive recordings of "primary failed before first
 PCM, fallback delivered it within 1s" the primary attempt budget shrinks to
-2s so the reliable rescue starts sooner (a primary success resets this and
-restores full budgets). The memo only reorders and shrinks: both backends
+2s so the reliable rescue starts sooner. A primary success or a slow rescue
+resets that counter and restores full budgets — a machine where both backends
+are slow never arms the short budget. The memo only reorders and shrinks: both backends
 always stay in the sequence, budgets never grow, and termination confirmation
 and fallback-eligibility rules are unchanged. It is never persisted, and
 telemetry logs only backend names, never the device key.
