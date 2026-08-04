@@ -1,7 +1,8 @@
 use crate::managed_child::{bundled_sibling, ManagedChild};
 use murmur_capture_helper_protocol::{
-    read_production_frame, write_production_control, CaptureBackend, CapturePhase, FailureCode,
-    ProductionFrame, ProductionHelperMessage, ProductionHostMessage, SessionNonce,
+    read_production_frame, write_production_control, CaptureBackend, CapturePhase,
+    CaptureSetupStep, FailureCode, ProductionFrame, ProductionHelperMessage,
+    ProductionHostMessage, SessionNonce, SetupTransition,
 };
 use serde::Serialize;
 use std::fmt;
@@ -646,6 +647,43 @@ fn preferred_backends() -> [CaptureBackend; 2] {
     }
 }
 
+// Session memo of the backend that most recently delivered first PCM, keyed
+// by the requested device (None = system default input). On machines where
+// the platform-primary backend hangs until its attempt budget on every
+// recording, this puts the known-good backend first so only the first
+// recording of a session pays the timeout. It only reorders the two attempts:
+// both backends stay in the sequence, per-attempt budgets, termination
+// confirmation, and fallback eligibility are unchanged, and the memo is
+// process-local (never persisted, never logged with device identity).
+static LAST_READY_BACKEND: Mutex<Vec<(Option<String>, CaptureBackend)>> = Mutex::new(Vec::new());
+
+fn record_ready_backend(device_id: Option<&str>, backend: CaptureBackend) {
+    let mut memo = LAST_READY_BACKEND
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    match memo.iter_mut().find(|(key, _)| key.as_deref() == device_id) {
+        Some(entry) => entry.1 = backend,
+        None => memo.push((device_id.map(str::to_string), backend)),
+    }
+}
+
+fn last_ready_backend(device_id: Option<&str>) -> Option<CaptureBackend> {
+    LAST_READY_BACKEND
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .iter()
+        .find(|(key, _)| key.as_deref() == device_id)
+        .map(|(_, backend)| *backend)
+}
+
+fn preferred_backends_for(device_id: Option<&str>) -> [CaptureBackend; 2] {
+    let default_order = preferred_backends();
+    match last_ready_backend(device_id) {
+        Some(backend) if backend == default_order[1] => [default_order[1], default_order[0]],
+        _ => default_order,
+    }
+}
+
 fn stop_requested_between_attempts(command_receiver: &Receiver<AudioCommand>) -> bool {
     matches!(
         command_receiver.try_recv(),
@@ -803,6 +841,7 @@ fn run_backend(
     let mut last_level_emit = Instant::now() - Duration::from_secs(1);
     let mut last_permission_check = Instant::now() - PERMISSION_POLL_INTERVAL;
     let mut current_phase = AudioInitPhase::StreamBuild;
+    let mut last_setup_step: Option<(CaptureSetupStep, SetupTransition)> = None;
     let attempt_budget = backend_attempt_budget(backend);
     loop {
         match command_receiver.try_recv() {
@@ -947,6 +986,9 @@ fn run_backend(
                 },
                 current_phase,
             );
+            // last_setup_step "entered" without "completed" names the exact
+            // native call the worker is stuck in (see CaptureSetupStep docs
+            // for the step -> Core Audio call mapping).
             tracing::warn!(
                 target: "audio",
                 capture_id,
@@ -954,6 +996,12 @@ fn run_backend(
                 active_elapsed_ms = clock.elapsed(now).as_millis() as u64,
                 attempt_budget_ms = attempt_budget.as_millis() as u64,
                 error_kind = failure.kind.as_str(),
+                last_setup_step = last_setup_step
+                    .map(|(step, _)| step.as_str())
+                    .unwrap_or("none"),
+                last_setup_transition = last_setup_step
+                    .map(|(_, transition)| transition.as_str())
+                    .unwrap_or("none"),
                 "capture backend exceeded its active initialization budget"
             );
             if !terminate_or_quarantine(
@@ -1016,6 +1064,7 @@ fn run_backend(
                 if !retained_audio {
                     retained_audio = true;
                     current_phase = AudioInitPhase::Runtime;
+                    record_ready_backend(device_id, backend);
                     end_permission_prompt_pause(
                         &mut permission_prompt_started,
                         &mut clock,
@@ -1108,12 +1157,14 @@ fn run_backend(
                         retained_audio,
                     };
                 }
+                last_setup_step = Some((step, transition));
                 tracing::info!(
                     target: "audio",
                     capture_id,
                     backend = backend_label(backend),
                     setup_step = step.as_str(),
                     setup_transition = transition.as_str(),
+                    start_elapsed_ms = start_sent_at.elapsed().as_millis() as u64,
                     "capture helper setup step"
                 );
             }
@@ -1287,11 +1338,21 @@ fn run_audio_capture(spec: AudioWorkerSpec, event_sender: &AudioWorkerEventSende
         protocol_reserve_ms = CAPTURE_PROTOCOL_RESERVE.as_millis() as u64,
         "capture backend budget contract started"
     );
+    let backends = preferred_backends_for(device_id.as_deref());
+    if backends != preferred_backends() {
+        tracing::info!(
+            target: "audio",
+            owner = owner.telemetry_id(),
+            primary_backend = backend_label(backends[0]),
+            backend_order_source = "session_first_pcm_memo",
+            "capture backend order adjusted by prior first PCM in this session"
+        );
+    }
     run_capture_backend_sequence(
         owner,
         &command_receiver,
         event_sender,
-        preferred_backends(),
+        backends,
         |backend| {
             run_backend(
                 owner,
@@ -1383,6 +1444,44 @@ mod tests {
             preferred_backends(),
             [CaptureBackend::Cpal, CaptureBackend::Auhal]
         );
+    }
+
+    // Memo tests use distinct device keys so they stay independent of each
+    // other and of the process-wide static regardless of test ordering.
+    #[test]
+    fn session_memo_promotes_the_fallback_backend_after_first_pcm() {
+        let default_order = preferred_backends();
+        assert_eq!(preferred_backends_for(Some("memo-device-a")), default_order);
+
+        record_ready_backend(Some("memo-device-a"), default_order[1]);
+        assert_eq!(
+            preferred_backends_for(Some("memo-device-a")),
+            [default_order[1], default_order[0]]
+        );
+        // Other device keys are unaffected.
+        assert_eq!(
+            preferred_backends_for(Some("memo-device-a-other")),
+            default_order
+        );
+    }
+
+    #[test]
+    fn session_memo_on_the_primary_backend_keeps_the_default_order() {
+        let default_order = preferred_backends();
+        record_ready_backend(Some("memo-device-b"), default_order[0]);
+        assert_eq!(preferred_backends_for(Some("memo-device-b")), default_order);
+    }
+
+    #[test]
+    fn session_memo_tracks_the_most_recent_ready_backend() {
+        let default_order = preferred_backends();
+        record_ready_backend(Some("memo-device-c"), default_order[1]);
+        assert_eq!(
+            preferred_backends_for(Some("memo-device-c")),
+            [default_order[1], default_order[0]]
+        );
+        record_ready_backend(Some("memo-device-c"), default_order[0]);
+        assert_eq!(preferred_backends_for(Some("memo-device-c")), default_order);
     }
 
     #[test]

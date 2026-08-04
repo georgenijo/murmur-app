@@ -2,14 +2,16 @@ use core_foundation_sys::base::CFTypeRef;
 use core_foundation_sys::string::{kCFStringEncodingUTF8, CFStringGetCString, CFStringRef};
 use coreaudio::audio_unit::audio_format::LinearPcmFlags;
 use coreaudio::audio_unit::macos_helpers::{
-    audio_unit_from_device_id, get_audio_device_ids_for_scope, get_default_device_id,
-    get_device_name,
+    get_audio_device_ids_for_scope, get_default_device_id, get_device_name,
 };
 use coreaudio::audio_unit::render_callback::{self, data};
-use coreaudio::audio_unit::{Element, SampleFormat as AuSampleFormat, Scope, StreamFormat};
+use coreaudio::audio_unit::{
+    AudioUnit, Element, IOType, SampleFormat as AuSampleFormat, Scope, StreamFormat,
+};
 use coreaudio::sys::{
     kAudioDevicePropertyDeviceUID, kAudioObjectPropertyElementMaster,
-    kAudioObjectPropertyScopeGlobal, AudioDeviceID, AudioObjectGetPropertyData,
+    kAudioObjectPropertyScopeGlobal, kAudioOutputUnitProperty_CurrentDevice,
+    kAudioOutputUnitProperty_EnableIO, AudioDeviceID, AudioObjectGetPropertyData,
     AudioObjectPropertyAddress,
 };
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -299,14 +301,43 @@ fn start_auhal(
         SetupTransition::Completed,
     )?;
     let sample_rate = 48_000_u32;
+    // Inlined from coreaudio-rs audio_unit_from_device_id so every native
+    // Core Audio call gets its own Entered/Completed bracket; a hang is then
+    // attributable to one named operation instead of the whole creation span.
+    emit(CaptureSetupStep::AudioUnitNew, SetupTransition::Entered)?;
+    let mut unit = AudioUnit::new(IOType::HalOutput).map_err(|_| FailureCode::StreamOpenFailed)?;
+    emit(CaptureSetupStep::AudioUnitNew, SetupTransition::Completed)?;
+    emit(CaptureSetupStep::EnableInputIo, SetupTransition::Entered)?;
+    unit.set_property(
+        kAudioOutputUnitProperty_EnableIO,
+        Scope::Input,
+        Element::Input,
+        Some(&1_u32),
+    )
+    .map_err(|_| FailureCode::StreamOpenFailed)?;
+    emit(CaptureSetupStep::EnableInputIo, SetupTransition::Completed)?;
+    emit(CaptureSetupStep::DisableOutputIo, SetupTransition::Entered)?;
+    unit.set_property(
+        kAudioOutputUnitProperty_EnableIO,
+        Scope::Output,
+        Element::Output,
+        Some(&0_u32),
+    )
+    .map_err(|_| FailureCode::StreamOpenFailed)?;
     emit(
-        CaptureSetupStep::AudioUnitCreation,
-        SetupTransition::Entered,
+        CaptureSetupStep::DisableOutputIo,
+        SetupTransition::Completed,
     )?;
-    let mut unit =
-        audio_unit_from_device_id(device, true).map_err(|_| FailureCode::StreamOpenFailed)?;
+    emit(CaptureSetupStep::SetCurrentDevice, SetupTransition::Entered)?;
+    unit.set_property(
+        kAudioOutputUnitProperty_CurrentDevice,
+        Scope::Global,
+        Element::Output,
+        Some(&device),
+    )
+    .map_err(|_| FailureCode::StreamOpenFailed)?;
     emit(
-        CaptureSetupStep::AudioUnitCreation,
+        CaptureSetupStep::SetCurrentDevice,
         SetupTransition::Completed,
     )?;
     let format = StreamFormat {

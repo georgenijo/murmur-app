@@ -6,6 +6,34 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 ---
 
+## 2026-08-03: Session-scoped backend preference after first PCM; per-native-call capture telemetry
+
+**Decision:** The capture supervisor keeps an in-memory, per-device-key memo of
+the backend that most recently delivered first PCM and orders that backend
+first on subsequent recordings in the same app run. The memo reorders the two
+attempts only — budgets, confirmed-termination rules, and fallback eligibility
+from #436 are untouched — and it is not persisted across launches. Separately,
+the capture worker now brackets each native Core Audio call with its own
+setup-step marker (unit creation, IO enable/disable, current-device binding,
+format, callback install, `AudioOutputUnitStart`), and the supervisor names the
+last entered step in the budget-exceeded log line.
+
+**Rationale:** Field telemetry from an M5/macOS 26.6 install showed every
+recording paying the full 8-second AUHAL budget in `stream_start`
+(`AudioOutputUnitStart`) before CPAL succeeded in ~160 ms. Re-proving a known
+hang on every recording is pure latency; remembering the last-good backend
+bounds the cost to once per app run and self-corrects if the situation changes.
+Persistence was deliberately rejected to avoid stale preferences outliving a
+transient coreaudiod wedge. Finer step granularity makes the hanging native
+call a measurement instead of an inference.
+
+**Status:** active
+
+**References:** builds on #436; ADR
+[`2026-08-01-production-capture-helper.md`](2026-08-01-production-capture-helper.md)
+
+---
+
 ## 2026-08-03: Capture fallback uses fixed active budgets and confirmed teardown (#436)
 
 **Decision:** AUHAL and CPAL receive separate 8-second and 16-second
