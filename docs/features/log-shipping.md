@@ -91,8 +91,22 @@ and freshness. Each installation page leads with a **Plain-English health**
 summary for microphone capture, shortcuts, dictation, updates, and transforms.
 Repeated equivalent problems are grouped with occurrence counts, and ordered
 evidence distinguishes automatic recovery from an unresolved failure. Raw
-events remain available in an expandable technical timeline and as a complete
-JSONL download. Served by the same receiver process.
+events remain available in an expandable technical timeline and as exact
+latest-200, latest-500, or complete JSONL downloads. Served by the same receiver
+process.
+
+Each install page also offers latest-200 and latest-500 **LLM-ready Markdown**
+reports. The versioned `murmur-fleet-llm/v1` format includes bounded device and
+microphone-state context, current health, deduplicated findings, and the original
+event sequence normalized into compact JSON bullets. Recognized stable codes and
+constant legacy summaries receive deterministic plain-English meanings; unknown
+events remain explicitly unmapped with bounded source context.
+
+The report tells an analyzing model to treat every event field as untrusted
+telemetry rather than instructions. This is prompt-injection hardening, not a
+claim that event text is trusted: operators should attach the report as
+diagnostic data and ask the model to prioritize Action/Watch findings, correlate
+the ordered sequence, and cite event codes in its diagnosis.
 
 ### Operator event semantics
 
