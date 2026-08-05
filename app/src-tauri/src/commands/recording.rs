@@ -732,56 +732,61 @@ async fn run_transcription_pipeline(
         });
     }
 
-    // Every backend uses one authoritative full-buffer VAD + inference pass
-    // after recording stops.
-    let vad_threshold = 1.0 - (transcription.vad_sensitivity as f32 / 100.0);
+    // Sensitivity zero is an explicit lowest-latency mode. Other values retain
+    // the authoritative full-buffer VAD + inference pass after recording stops.
     performance_guard.enter(PerformanceStageV1::Vad);
     let t_vad = std::time::Instant::now();
-    let (samples_for_transcription, vad_trimmed) = match vad::vad_model_path() {
-        Some(vad_path) if vad_path.exists() => {
-            let vad_path_str = vad_path.to_string_lossy().to_string();
-            let samples_owned = samples.to_vec();
-            let vad_result = tokio::task::spawn_blocking(move || {
-                vad::filter_speech(&vad_path_str, &samples_owned, vad_threshold)
-            })
-            .await
-            .unwrap_or_else(|e| Err(format!("VAD task panicked: {}", e)));
+    let (samples_for_transcription, vad_trimmed) = if !vad::is_enabled(transcription.vad_sensitivity) {
+        tracing::info!(target: "pipeline", "VAD disabled for lowest-latency transcription");
+        (samples.to_vec(), false)
+    } else {
+        let vad_threshold = 1.0 - (transcription.vad_sensitivity as f32 / 100.0);
+        match vad::vad_model_path() {
+            Some(vad_path) if vad_path.exists() => {
+                let vad_path_str = vad_path.to_string_lossy().to_string();
+                let samples_owned = samples.to_vec();
+                let vad_result = tokio::task::spawn_blocking(move || {
+                    vad::filter_speech(&vad_path_str, &samples_owned, vad_threshold)
+                })
+                .await
+                .unwrap_or_else(|e| Err(format!("VAD task panicked: {}", e)));
 
-            match vad_result {
-                Ok(vad::VadResult::NoSpeech) => {
-                    tracing::info!(target: "pipeline", "VAD detected no speech ({} samples, {:?}), skipping transcription",
+                match vad_result {
+                    Ok(vad::VadResult::NoSpeech) => {
+                        tracing::info!(target: "pipeline", "VAD detected no speech ({} samples, {:?}), skipping transcription",
                             samples.len(), t_vad.elapsed());
-                    return Ok(PipelineResult {
-                        text: String::new(),
-                        timings: PipelineTimings {
-                            vad_ms: t_vad.elapsed().as_millis() as u64,
-                            ..PipelineTimings::default()
-                        },
-                        terminal: PipelineTerminal::NoSpeech,
-                    });
-                }
-                Ok(vad::VadResult::Speech(trimmed)) => {
-                    tracing::info!(target: "pipeline", "VAD trimmed {} -> {} samples ({:.0}% speech, {:?})",
+                        return Ok(PipelineResult {
+                            text: String::new(),
+                            timings: PipelineTimings {
+                                vad_ms: t_vad.elapsed().as_millis() as u64,
+                                ..PipelineTimings::default()
+                            },
+                            terminal: PipelineTerminal::NoSpeech,
+                        });
+                    }
+                    Ok(vad::VadResult::Speech(trimmed)) => {
+                        tracing::info!(target: "pipeline", "VAD trimmed {} -> {} samples ({:.0}% speech, {:?})",
                             samples.len(), trimmed.len(),
                             trimmed.len() as f64 / samples.len() as f64 * 100.0,
                             t_vad.elapsed());
-                    let vad_trimmed = trimmed.len() != samples.len();
-                    (trimmed, vad_trimmed)
-                }
-                Err(e) => {
-                    tracing::warn!(target: "pipeline", "VAD failed ({}), proceeding without filtering", e);
-                    (samples.to_vec(), false)
+                        let vad_trimmed = trimmed.len() != samples.len();
+                        (trimmed, vad_trimmed)
+                    }
+                    Err(e) => {
+                        tracing::warn!(target: "pipeline", "VAD failed ({}), proceeding without filtering", e);
+                        (samples.to_vec(), false)
+                    }
                 }
             }
-        }
-        _ => {
-            let handle = app_handle.clone();
-            tokio::spawn(async move {
-                if let Err(e) = super::models::ensure_vad_model(&handle).await {
-                    tracing::warn!(target: "pipeline", "VAD model download failed ({}), skipping VAD", e);
-                }
-            });
-            (samples.to_vec(), false)
+            _ => {
+                let handle = app_handle.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = super::models::ensure_vad_model(&handle).await {
+                        tracing::warn!(target: "pipeline", "VAD model download failed ({}), skipping VAD", e);
+                    }
+                });
+                (samples.to_vec(), false)
+            }
         }
     };
     let vad_ms = t_vad.elapsed().as_millis() as u64;
@@ -1487,7 +1492,7 @@ pub async fn configure_dictation(
     }
 
     if let Some(delay) = options.get("autoPasteDelayMs").and_then(|v| v.as_u64()) {
-        dictation.auto_paste_delay_ms = delay.clamp(10, 500);
+        dictation.auto_paste_delay_ms = delay.min(500);
     }
 
     if let Some(sensitivity) = options.get("vadSensitivity").and_then(|v| v.as_u64()) {
@@ -3130,60 +3135,65 @@ pub async fn transcribe_file(
     // Phase: VAD — skip silence, best-effort with fallback to full audio (mirrors live).
     performance_guard.enter(PerformanceStageV1::Vad);
     let vad_started = std::time::Instant::now();
-    let vad_threshold = 1.0 - (vad_sensitivity as f32 / 100.0);
-    let (samples_for_transcription, vad_trimmed) = match vad::vad_model_path() {
-        Some(vad_path) if vad_path.exists() => {
-            let vad_path_str = vad_path.to_string_lossy().to_string();
-            let samples_owned = samples.clone();
-            let vad_result = tokio::task::spawn_blocking(move || {
-                vad::filter_speech(&vad_path_str, &samples_owned, vad_threshold)
-            })
-            .await
-            .unwrap_or_else(|e| Err(format!("VAD task panicked: {}", e)));
+    let (samples_for_transcription, vad_trimmed) = if !vad::is_enabled(vad_sensitivity) {
+        tracing::info!(target: "pipeline", "transcribe_file: VAD disabled for lowest-latency transcription");
+        (samples.clone(), false)
+    } else {
+        let vad_threshold = 1.0 - (vad_sensitivity as f32 / 100.0);
+        match vad::vad_model_path() {
+            Some(vad_path) if vad_path.exists() => {
+                let vad_path_str = vad_path.to_string_lossy().to_string();
+                let samples_owned = samples.clone();
+                let vad_result = tokio::task::spawn_blocking(move || {
+                    vad::filter_speech(&vad_path_str, &samples_owned, vad_threshold)
+                })
+                .await
+                .unwrap_or_else(|e| Err(format!("VAD task panicked: {}", e)));
 
-            match vad_result {
-                Ok(vad::VadResult::NoSpeech) => {
-                    tracing::info!(target: "pipeline", "transcribe_file: VAD detected no speech");
-                    let _ = performance_guard.finish(
-                        RunOutcomeV1::NoSpeech,
-                        vec![
-                            StageTimingV1::measured(
-                                PerformanceStageV1::Vad,
-                                vad_started.elapsed().as_millis() as u64,
-                            ),
-                            StageTimingV1::measured(
-                                PerformanceStageV1::TotalProcessing,
-                                total_started.elapsed().as_millis() as u64,
-                            ),
-                        ],
-                        Some(ContentFreeInputSummaryV1::audio(
-                            (duration_secs * 1_000.0).round() as u64,
-                        )),
-                        Some(runtime_identity(&model_name, ModelWarmStateV1::Unknown)),
-                    );
-                    return Ok(serde_json::json!({
-                        "type": "file_transcription", "text": "", "duration": duration_secs
-                    }));
-                }
-                Ok(vad::VadResult::Speech(trimmed)) => {
-                    let vad_trimmed = trimmed.len() != samples.len();
-                    (trimmed, vad_trimmed)
-                }
-                Err(e) => {
-                    tracing::warn!(target: "pipeline", "transcribe_file: VAD failed ({}), proceeding without filtering", e);
-                    (samples.clone(), false)
+                match vad_result {
+                    Ok(vad::VadResult::NoSpeech) => {
+                        tracing::info!(target: "pipeline", "transcribe_file: VAD detected no speech");
+                        let _ = performance_guard.finish(
+                            RunOutcomeV1::NoSpeech,
+                            vec![
+                                StageTimingV1::measured(
+                                    PerformanceStageV1::Vad,
+                                    vad_started.elapsed().as_millis() as u64,
+                                ),
+                                StageTimingV1::measured(
+                                    PerformanceStageV1::TotalProcessing,
+                                    total_started.elapsed().as_millis() as u64,
+                                ),
+                            ],
+                            Some(ContentFreeInputSummaryV1::audio(
+                                (duration_secs * 1_000.0).round() as u64,
+                            )),
+                            Some(runtime_identity(&model_name, ModelWarmStateV1::Unknown)),
+                        );
+                        return Ok(serde_json::json!({
+                            "type": "file_transcription", "text": "", "duration": duration_secs
+                        }));
+                    }
+                    Ok(vad::VadResult::Speech(trimmed)) => {
+                        let vad_trimmed = trimmed.len() != samples.len();
+                        (trimmed, vad_trimmed)
+                    }
+                    Err(e) => {
+                        tracing::warn!(target: "pipeline", "transcribe_file: VAD failed ({}), proceeding without filtering", e);
+                        (samples.clone(), false)
+                    }
                 }
             }
-        }
-        _ => {
-            // VAD model missing — kick off a background download for next time.
-            let handle = app_handle.clone();
-            tokio::spawn(async move {
-                if let Err(e) = super::models::ensure_vad_model(&handle).await {
-                    tracing::warn!(target: "pipeline", "transcribe_file: VAD model download failed ({})", e);
-                }
-            });
-            (samples.clone(), false)
+            _ => {
+                // VAD model missing — kick off a background download for next time.
+                let handle = app_handle.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = super::models::ensure_vad_model(&handle).await {
+                        tracing::warn!(target: "pipeline", "transcribe_file: VAD model download failed ({})", e);
+                    }
+                });
+                (samples.clone(), false)
+            }
         }
     };
     let vad_ms = vad_started.elapsed().as_millis() as u64;

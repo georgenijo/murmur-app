@@ -369,7 +369,9 @@ export const DEFAULT_SETTINGS: Settings = {
   // non-Whisper models may auto-detect or ignore this value.
   language: 'auto',
   autoPaste: false,
-  autoPasteDelayMs: 50,
+  // Native CGEvents can paste immediately in the common case. Apps that move
+  // focus asynchronously can still opt into a settling delay in Settings.
+  autoPasteDelayMs: 0,
   recordingMode: 'hold_down',
   hotkeyMissFeedback: false,
   // Opt-in: a recording that ends itself is a surprise until you ask for it.
@@ -501,6 +503,14 @@ export function loadSettings(): Settings {
       const validLanguages = new Set<string>(LANGUAGE_OPTIONS.map((o) => o.value));
       if (typeof parsed.language !== 'string' || !validLanguages.has(parsed.language)) {
         parsed.language = DEFAULT_SETTINGS.language;
+      }
+
+      // Native paste has a zero-delay fast path. Keep persisted values bounded
+      // to the same range accepted by the Rust command.
+      if (typeof parsed.autoPasteDelayMs !== 'number' || !Number.isFinite(parsed.autoPasteDelayMs)) {
+        parsed.autoPasteDelayMs = DEFAULT_SETTINGS.autoPasteDelayMs;
+      } else {
+        parsed.autoPasteDelayMs = Math.max(0, Math.min(500, Math.trunc(parsed.autoPasteDelayMs)));
       }
 
       // transformHoldKey: `null` (disabled) or one of TRANSFORM_KEY_OPTIONS.

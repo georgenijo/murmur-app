@@ -297,7 +297,7 @@ impl Default for DictationState {
             // configure_dictation; this is only the pre-configure fallback.
             language: "auto".to_string(),
             auto_paste: false,
-            auto_paste_delay_ms: 50,
+            auto_paste_delay_ms: 0,
             vad_sensitivity: 50,
             custom_vocabulary: String::new(),
             vocabulary_entries: Vec::new(),
@@ -627,6 +627,11 @@ impl Default for AppState {
 mod tests {
     use super::*;
     use crate::dictation_context::{resolve, ResolverInputs, SessionOverrides};
+
+    #[test]
+    fn dictation_defaults_to_immediate_paste() {
+        assert_eq!(DictationState::default().auto_paste_delay_ms, 0);
+    }
 
     fn snapshot(model_name: &str) -> Arc<crate::dictation_context::DictationContextSnapshot> {
         let settings = DictationState {

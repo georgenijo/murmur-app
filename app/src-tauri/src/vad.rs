@@ -30,6 +30,11 @@ pub enum VadResult {
     Speech(Vec<f32>),
 }
 
+/// Zero is the explicit lowest-latency setting; non-zero values run VAD.
+pub fn is_enabled(sensitivity: u32) -> bool {
+    sensitivity > 0
+}
+
 /// Run Silero VAD on the given 16kHz mono samples and return only speech segments.
 ///
 /// `model_path` must point to a valid Silero VAD GGML model file.
@@ -103,6 +108,13 @@ fn filter_speech_with_context(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zero_sensitivity_disables_vad() {
+        assert!(!is_enabled(0));
+        assert!(is_enabled(1));
+        assert!(is_enabled(100));
+    }
 
     #[test]
     fn missing_model_returns_an_error_without_populating_cache() {
