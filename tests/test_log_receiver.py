@@ -80,6 +80,7 @@ class LogReceiverHealthTests(unittest.TestCase):
                 level="warn",
                 stream="audio",
                 data={
+                    "owner": 44,
                     "backend": "auhal",
                     "capture_id": 10,
                     "last_setup_step": "stream_start",
@@ -115,6 +116,73 @@ class LogReceiverHealthTests(unittest.TestCase):
         self.assertEqual(len(groups), 1)
         microphone = next(card for card in cards if card["area"] == "microphone")
         self.assertEqual(microphone["status"], "recovered")
+
+    def test_interleaved_owners_keep_recovery_evidence_scoped(self) -> None:
+        events = [
+            event(
+                "capture backend exceeded its active initialization budget",
+                timestamp="2026-08-05T00:00:00Z",
+                level="warn",
+                stream="audio",
+                data={"owner": 44, "backend": "auhal"},
+            ),
+            event(
+                "capture backend exceeded its active initialization budget",
+                timestamp="2026-08-05T00:00:01Z",
+                level="warn",
+                stream="audio",
+                data={"owner": 55, "backend": "auhal"},
+            ),
+            event(
+                "capture backend failed before retained audio; trying bounded fallback",
+                timestamp="2026-08-05T00:00:02Z",
+                level="warn",
+                stream="audio",
+                data={
+                    "owner": 55,
+                    "from_backend": "auhal",
+                    "to_backend": "cpal",
+                },
+            ),
+            event(
+                "capture backend failed before retained audio; trying bounded fallback",
+                timestamp="2026-08-05T00:00:03Z",
+                level="warn",
+                stream="audio",
+                data={
+                    "owner": 44,
+                    "from_backend": "auhal",
+                    "to_backend": "cpal",
+                },
+            ),
+            event(
+                "audio readiness accepted",
+                timestamp="2026-08-05T00:00:04Z",
+                stream="audio",
+                data={"owner": 44, "startup_ms": 900},
+            ),
+            event(
+                "audio readiness accepted",
+                timestamp="2026-08-05T00:00:05Z",
+                stream="audio",
+                data={"owner": 55, "startup_ms": 1_100},
+            ),
+        ]
+
+        recovered = [
+            item
+            for item in receiver.build_health_signals(events)
+            if item["code"] == "audio.fallback_recovered"
+        ]
+
+        self.assertEqual(len(recovered), 2)
+        self.assertEqual(
+            [
+                {receiver.event_value(source, "owner") for source in item["events"]}
+                for item in recovered
+            ],
+            [{44}, {55}],
+        )
 
     def test_exhausted_fallback_is_one_actionable_failure(self) -> None:
         events = [
@@ -178,6 +246,69 @@ class LogReceiverHealthTests(unittest.TestCase):
         self.assertEqual(groups[0]["status"], "action")
         self.assertEqual(groups[0]["title"], "Technical error")
         self.assertIn("no safe plain-English mapping", groups[0]["action"])
+
+    def test_data_labels_are_bounded_and_unknown_outcomes_share_one_group(self) -> None:
+        backend = "unsafe\n" + "x" * 200
+        timeout = event(
+            "capture backend exceeded its active initialization budget",
+            timestamp="2026-08-05T00:00:00Z",
+            level="warn",
+            stream="audio",
+            data={"owner": 1, "backend": backend},
+        )
+        transform_events = [
+            event(
+                "transform_pass_outcome",
+                timestamp=f"2026-08-05T00:00:0{second}Z",
+                stream="transform",
+                data={"outcome": "unmapped-" + str(second) + "-" + "y" * 200},
+            )
+            for second in (1, 2)
+        ]
+
+        timeout_signal = receiver.classify_event(timeout)
+        groups = receiver.group_problem_signals(
+            transform_events,
+            receiver.build_health_signals(transform_events),
+        )
+
+        self.assertNotIn("\n", timeout_signal["explanation"])
+        self.assertLess(len(timeout_signal["explanation"]), 100)
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]["group"], "transform.pass_outcome.other")
+        self.assertEqual(groups[0]["count"], 2)
+
+    def test_newer_microphone_state_overrides_older_ready_event(self) -> None:
+        ready = event(
+            "audio readiness accepted",
+            timestamp="2026-08-05T00:00:00Z",
+            stream="audio",
+            data={"owner": 44, "startup_ms": 900},
+        )
+        state = {
+            "received_at": receiver.event_epoch(ready) + 1,
+            "default_input_available": False,
+            "input_enumeration_ok": True,
+        }
+
+        cards = receiver.build_health_cards(
+            receiver.build_health_signals([ready]),
+            state,
+        )
+        microphone = next(card for card in cards if card["area"] == "microphone")
+
+        self.assertEqual(microphone["status"], "action")
+        self.assertEqual(microphone["title"], "No default microphone available")
+
+        state["received_at"] = receiver.event_epoch(ready) - 1
+        older_state_cards = receiver.build_health_cards(
+            receiver.build_health_signals([ready]),
+            state,
+        )
+        older_state_microphone = next(
+            card for card in older_state_cards if card["area"] == "microphone"
+        )
+        self.assertEqual(older_state_microphone["status"], "healthy")
 
     def test_render_install_escapes_unknown_content_and_keeps_raw_timeline(self) -> None:
         install_id = "12345678-abcd"

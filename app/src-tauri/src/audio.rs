@@ -1115,6 +1115,7 @@ fn run_backend(
                 target: "audio",
                 event_code = "audio.capture_backend_timeout",
                 capture_id,
+                owner = owner.telemetry_id(),
                 backend = backend_label(backend),
                 active_elapsed_ms = clock.elapsed(now).as_millis() as u64,
                 attempt_budget_ms = attempt_budget.as_millis() as u64,

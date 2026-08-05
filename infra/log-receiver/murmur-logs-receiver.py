@@ -253,6 +253,14 @@ def event_value(event, key, default=None):
     return data.get(key, default) if isinstance(data, dict) else default
 
 
+def event_label(event, key, default):
+    """Return a normalized, bounded label for one structured data value."""
+    value = event_value(event, key, default)
+    text = str(value if value not in (None, "") else default)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:40] or str(default)
+
+
 def format_duration_ms(value):
     try:
         milliseconds = max(0, int(value))
@@ -334,11 +342,11 @@ def classify_event(event):
             [event],
         )
     if code == "audio.capture_backend_timeout":
-        backend = event_value(event, "backend", "primary")
-        setup_step = event_value(event, "last_setup_step")
+        backend = event_label(event, "backend", "primary")
+        setup_step = event_label(event, "last_setup_step", "none")
         where = (
-            " while opening %s" % str(setup_step).replace("_", " ")
-            if setup_step and setup_step != "none"
+            " while opening %s" % setup_step.replace("_", " ")
+            if setup_step != "none"
             else ""
         )
         return signal(
@@ -351,8 +359,8 @@ def classify_event(event):
             [event],
         )
     if code == "audio.fallback_started":
-        source = event_value(event, "from_backend", "primary")
-        target = event_value(event, "to_backend", "backup")
+        source = event_label(event, "from_backend", "primary")
+        target = event_label(event, "to_backend", "backup")
         return signal(
             "microphone",
             "degraded",
@@ -378,10 +386,10 @@ def classify_event(event):
             [event],
         )
     if code in ("audio.capture_failed", "audio.lifecycle_failed"):
-        kind = event_value(event, "error_kind")
+        kind = event_label(event, "error_kind", "")
         detail = "Murmur could not start or retain microphone audio."
         if kind:
-            detail += " The reported failure was %s." % str(kind).replace("_", " ")
+            detail += " The reported failure was %s." % kind.replace("_", " ")
         return signal(
             "microphone",
             "action",
@@ -467,7 +475,7 @@ def classify_event(event):
             [event],
         )
     if code == "transform.pass_outcome":
-        outcome = str(event_value(event, "outcome", "unknown"))
+        outcome = event_label(event, "outcome", "unknown")
         if outcome in ("ok", "ready", "applied", "undone"):
             status = "healthy"
             title = "Transform completed"
@@ -488,6 +496,23 @@ def classify_event(event):
             title = "Transform outcome recorded"
             explanation = "Murmur recorded a transform outcome it cannot summarize safely."
             action = "Inspect Technical details for the raw outcome."
+        group_outcome = (
+            outcome
+            if outcome
+            in (
+                "ok",
+                "ready",
+                "applied",
+                "undone",
+                "cancelled",
+                "capture_aborted",
+                "empty",
+                "error",
+                "failed",
+                "transcription_error",
+            )
+            else "other"
+        )
         return signal(
             "transforms",
             status,
@@ -496,41 +521,57 @@ def classify_event(event):
             explanation,
             action,
             [event],
-            group="transform.pass_outcome.%s" % outcome,
+            group="transform.pass_outcome.%s" % group_outcome,
         )
     return None
 
 
 def correlation_key(event):
     owner = event_value(event, "owner")
-    return str(owner) if owner is not None else "single-audio-owner"
+    if isinstance(owner, int) and not isinstance(owner, bool) and 0 <= owner < 2**64:
+        return str(owner)
+    if isinstance(owner, str) and owner.isdigit() and len(owner) <= 20:
+        return str(int(owner))
+    return None
 
 
 def build_health_signals(events):
     """Build ordered health signals, correlating fallback with later readiness."""
     signals = []
-    pending_timeouts = []
+    pending_timeouts = {}
     pending_fallbacks = {}
     failure_signals = {}
     for event in events:
         code = event_code(event)
         if code == "audio.capture_backend_timeout":
-            pending_timeouts.append(event)
+            key = correlation_key(event)
+            if key is None:
+                classified = classify_event(event)
+                if classified:
+                    signals.append(classified)
+            else:
+                pending_timeouts[key] = event
             continue
         if code == "audio.fallback_started":
             key = correlation_key(event)
+            if key is None:
+                classified = classify_event(event)
+                if classified:
+                    signals.append(classified)
+                continue
             evidence = []
-            if pending_timeouts:
-                evidence.append(pending_timeouts.pop())
+            timeout = pending_timeouts.pop(key, None)
+            if timeout:
+                evidence.append(timeout)
             evidence.append(event)
             pending_fallbacks[key] = evidence
             continue
         if code == "audio.capture_ready":
             key = correlation_key(event)
-            fallback = pending_fallbacks.pop(key, None)
+            fallback = pending_fallbacks.pop(key, None) if key is not None else None
             if fallback:
-                source = event_value(fallback[-1], "from_backend", "primary")
-                target = event_value(fallback[-1], "to_backend", "backup")
+                source = event_label(fallback[-1], "from_backend", "primary")
+                target = event_label(fallback[-1], "to_backend", "backup")
                 signals.append(
                     signal(
                         "microphone",
@@ -546,8 +587,8 @@ def build_health_signals(events):
                 continue
         if code in ("audio.capture_failed", "audio.lifecycle_failed"):
             key = correlation_key(event)
-            fallback = pending_fallbacks.pop(key, None)
-            existing_failure = failure_signals.get(key)
+            fallback = pending_fallbacks.pop(key, None) if key is not None else None
+            existing_failure = failure_signals.get(key) if key is not None else None
             if existing_failure is not None:
                 existing_failure["events"].append(event)
                 existing_failure["last_epoch"] = max(
@@ -562,13 +603,14 @@ def build_health_signals(events):
                         event_epoch(e) for e in classified["events"]
                     )
                 signals.append(classified)
-                failure_signals[key] = classified
+                if key is not None:
+                    failure_signals[key] = classified
             continue
         classified = classify_event(event)
         if classified:
             signals.append(classified)
 
-    for event in pending_timeouts:
+    for event in pending_timeouts.values():
         classified = classify_event(event)
         if classified:
             signals.append(classified)
@@ -650,20 +692,6 @@ def build_health_cards(signals, state):
         }
         for area, label in HEALTH_AREAS
     }
-    if isinstance(state, dict) and "default_input_available" in state:
-        if state.get("input_enumeration_ok") is False:
-            cards["microphone"].update(
-                title="Microphone status unavailable",
-                explanation="Murmur could not enumerate audio inputs in the latest state check.",
-                action="Check again after capture is idle.",
-            )
-        elif state.get("default_input_available") is False:
-            cards["microphone"].update(
-                status="action",
-                title="No default microphone available",
-                explanation="The latest privacy-safe state snapshot found no default input.",
-                action="Connect or select a microphone, then retry.",
-            )
     for item in signals:
         area = item["area"]
         if area not in cards:
@@ -678,6 +706,30 @@ def build_health_cards(signals, state):
             "last_epoch": item["last_epoch"],
             "events": item["events"],
         }
+    if isinstance(state, dict) and "default_input_available" in state:
+        state_epoch = state.get("received_at", 0)
+        if not isinstance(state_epoch, (int, float)):
+            state_epoch = 0
+        microphone = cards["microphone"]
+        if state_epoch >= microphone["last_epoch"]:
+            if state.get("input_enumeration_ok") is False:
+                microphone.update(
+                    status="diagnostic",
+                    title="Microphone status unavailable",
+                    explanation="Murmur could not enumerate audio inputs in the latest state check.",
+                    action="Check again after capture is idle.",
+                    last_epoch=state_epoch,
+                    events=[],
+                )
+            elif state.get("default_input_available") is False:
+                microphone.update(
+                    status="action",
+                    title="No default microphone available",
+                    explanation="The latest privacy-safe state snapshot found no default input.",
+                    action="Connect or select a microphone, then retry.",
+                    last_epoch=state_epoch,
+                    events=[],
+                )
     return [cards[area] for area, _ in HEALTH_AREAS]
 
 
