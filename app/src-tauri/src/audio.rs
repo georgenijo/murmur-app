@@ -45,23 +45,17 @@ const CAPTURE_TERMINATION_BUDGET: Duration = Duration::from_secs(2);
 const CAPTURE_PROTOCOL_RESERVE: Duration = Duration::from_secs(2);
 const CAPTURE_ACTIVE_BUDGET: Duration = Duration::from_secs(30);
 const CAPTURE_WORKER_IDENTIFIER: &str = "com.localdictation.capture-worker";
-pub(crate) const STREAM_BUILD_TIMEOUT: Duration = Duration::from_secs(10);
 static NEXT_CAPTURE_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AudioFailureKind {
     PermissionDenied,
     DeviceUnavailable,
-    DeviceBusy,
-    DeviceChanged,
     HostUnavailable,
     InvalidInput,
     ResourceExhausted,
     StreamInvalidated,
     UnsupportedConfig,
-    UnsupportedOperation,
-    RealtimeDenied,
-    Xrun,
     BackendError,
     ProtocolError,
     FirstBufferTimeout,
@@ -77,16 +71,11 @@ impl AudioFailureKind {
         match self {
             Self::PermissionDenied => "permission_denied",
             Self::DeviceUnavailable => "device_unavailable",
-            Self::DeviceBusy => "device_busy",
-            Self::DeviceChanged => "device_changed",
             Self::HostUnavailable => "host_unavailable",
             Self::InvalidInput => "invalid_input",
             Self::ResourceExhausted => "resource_exhausted",
             Self::StreamInvalidated => "stream_invalidated",
             Self::UnsupportedConfig => "unsupported_config",
-            Self::UnsupportedOperation => "unsupported_operation",
-            Self::RealtimeDenied => "realtime_denied",
-            Self::Xrun => "xrun",
             Self::BackendError => "backend_error",
             Self::ProtocolError => "protocol_error",
             Self::FirstBufferTimeout => "first_buffer_timeout",
@@ -117,12 +106,6 @@ impl AudioFailure {
             }
             AudioFailureKind::DeviceUnavailable => {
                 "The selected microphone is unavailable. Choose another microphone and try again."
-            }
-            AudioFailureKind::DeviceBusy => {
-                "The selected microphone is busy. Close other audio apps and try again."
-            }
-            AudioFailureKind::DeviceChanged => {
-                "The microphone route changed while capture was starting."
             }
             AudioFailureKind::StreamInvalidated => {
                 "The microphone stream was invalidated. Try recording again."
@@ -204,7 +187,6 @@ pub(crate) enum AudioInitPhase {
     DeviceEnumeration,
     ConfigLookup,
     StreamBuild,
-    StreamPlay,
     FirstBufferWait,
     Runtime,
 }
@@ -215,7 +197,6 @@ impl AudioInitPhase {
             Self::DeviceEnumeration => "device_enumeration",
             Self::ConfigLookup => "config_lookup",
             Self::StreamBuild => "stream_build",
-            Self::StreamPlay => "stream_play",
             Self::FirstBufferWait => "first_buffer_wait",
             Self::Runtime => "runtime",
         }
