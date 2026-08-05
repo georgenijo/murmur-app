@@ -89,6 +89,22 @@ describe('loadSettings', () => {
     expect(settings.autoPaste).toBe(true);
   });
 
+  it('allows zero-delay paste and bounds malformed persisted delays', () => {
+    for (const [stored, expected] of [
+      [0, 0],
+      [23.9, 23],
+      [900, 500],
+      [-10, 0],
+      ['slow', DEFAULT_SETTINGS.autoPasteDelayMs],
+    ] as const) {
+      localStorage.setItem('dictation-settings', JSON.stringify({
+        ...DEFAULT_SETTINGS,
+        autoPasteDelayMs: stored,
+      }));
+      expect(loadSettings().autoPasteDelayMs).toBe(expected);
+    }
+  });
+
   it('migrates and validates per-app smart and CLI formatting overrides', () => {
     localStorage.setItem('dictation-settings', JSON.stringify({
       ...DEFAULT_SETTINGS,

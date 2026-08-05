@@ -28,7 +28,13 @@ The VAD context uses one CPU thread with GPU acceleration disabled. Because `Whi
 
 ## Sensitivity
 
-VAD sensitivity is user-configurable on a 0-100 scale (default: 50). The internal threshold is computed as:
+VAD sensitivity is user-configurable on a 0-100 scale (default: 50). Zero is
+an explicit Off setting: Murmur skips VAD and sends the original samples to the
+transcriber, removing the VAD stage from the post-release critical path. This
+is the lowest-latency option, but it gives up no-speech rejection and may
+transcribe background noise.
+
+For values 5-100, the internal threshold is computed as:
 
 ```text
 threshold = 1.0 - (sensitivity / 100.0)
@@ -36,8 +42,9 @@ threshold = 1.0 - (sensitivity / 100.0)
 
 - **Higher sensitivity** (e.g., 80) = lower threshold = keeps more audio, less aggressive trimming
 - **Lower sensitivity** (e.g., 20) = higher threshold = trims silence more aggressively
+- **Off** (0) = skip VAD entirely
 
-The slider appears in the Recording section of the settings panel, labeled "Voice Detection" with a percentage display. Values are sent to the Rust backend via `configure_dictation` and clamped to 0-100.
+The slider appears in the Recording section of the settings panel, labeled "Voice Detection" with a percentage display or "Off" at zero. Values are sent to the Rust backend via `configure_dictation` and clamped to 0-100.
 
 ## VAD Model
 
@@ -65,8 +72,8 @@ In `run_transcription_pipeline()`, the VAD phase runs after pre-VAD diagnostics 
 
 The VAD execution time is logged as `vad_ms` in the structured telemetry output alongside `inference_ms`, `paste_ms`, and `total_ms`. This timing data is visible in Settings → Performance. See [log-viewer.md](log-viewer.md) for details.
 
-Every live recording runs VAD once against the final full buffer after recording stops. If VAD is unavailable or fails, Murmur proceeds once with the unfiltered full buffer.
+Every live recording with non-zero sensitivity runs VAD once against the final full buffer after recording stops. At zero, or if VAD is unavailable or fails, Murmur proceeds once with the unfiltered full buffer.
 
 ## Settings
 
-- `vadSensitivity: number` — Sensitivity value (0-100, default 50). Persisted to localStorage. Sent to Rust via `configure_dictation`.
+- `vadSensitivity: number` — Sensitivity value (0 = Off; 5-100 = enabled; default 50). Persisted to localStorage. Sent to Rust via `configure_dictation`.

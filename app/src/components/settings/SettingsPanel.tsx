@@ -105,7 +105,7 @@ function PasteDelaySlider({ value, onCommit }: { value: number; onCommit: (value
       </div>
       <input
         type="range"
-        min={10}
+        min={0}
         max={500}
         step={10}
         value={draft}
@@ -113,7 +113,7 @@ function PasteDelaySlider({ value, onCommit }: { value: number; onCommit: (value
         onPointerUp={() => onCommit(draft)}
         className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-surface-container-highest accent-primary"
       />
-      <p className="mt-1 text-xs text-on-surface-variant">Increase this if paste lands in the wrong window.</p>
+      <p className="mt-1 text-xs text-on-surface-variant">Increase this only if paste lands in the wrong window.</p>
     </div>
   );
 }
@@ -125,7 +125,7 @@ function VadSensitivitySlider({ value, onCommit }: { value: number; onCommit: (v
     <div>
       <div className="mb-1 flex items-center justify-between">
         <label className="text-xs text-on-surface-variant">Sensitivity</label>
-        <span className="text-xs font-medium text-on-surface">{draft}%</span>
+        <span className="text-xs font-medium text-on-surface">{draft === 0 ? 'Off' : `${draft}%`}</span>
       </div>
       <input
         type="range"
@@ -137,7 +137,7 @@ function VadSensitivitySlider({ value, onCommit }: { value: number; onCommit: (v
         onPointerUp={() => onCommit(draft)}
         className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-surface-container-highest accent-primary"
       />
-      <p className="mt-1 text-xs text-on-surface-variant">Higher keeps more audio; lower trims silence more aggressively.</p>
+      <p className="mt-1 text-xs text-on-surface-variant">Off skips silence filtering for the lowest latency. Otherwise, higher keeps more audio.</p>
     </div>
   );
 }

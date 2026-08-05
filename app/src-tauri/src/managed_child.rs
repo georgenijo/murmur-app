@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::{Duration, Instant};
 
+const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(1);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConfirmedTermination {
     pub exit_code: Option<i32>,
@@ -119,7 +121,7 @@ impl ManagedChild {
                     return None;
                 }
                 Ok(None) if Instant::now() < deadline => {
-                    std::thread::sleep(Duration::from_millis(5));
+                    std::thread::sleep(EXIT_POLL_INTERVAL);
                 }
                 Ok(None) | Err(_) => return None,
             }
@@ -166,7 +168,7 @@ impl ManagedChild {
             if Instant::now() >= deadline {
                 return false;
             }
-            std::thread::sleep(Duration::from_millis(5));
+            std::thread::sleep(EXIT_POLL_INTERVAL);
         }
         #[cfg(not(unix))]
         {

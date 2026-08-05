@@ -31,6 +31,9 @@ pub fn compute_peak(samples: &[f32]) -> f32 {
 }
 
 const AUDIO_LEVEL_THROTTLE_MS: u64 = 16;
+// Keep key-release-to-helper-stop latency below one display frame. The worker
+// otherwise waits on helper output and only observes host commands on timeout.
+const CAPTURE_COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(2);
 const HELPER_STOP_DEADLINE: Duration = Duration::from_secs(2);
 const HELPER_CONTROL_DEADLINE: Duration = Duration::from_secs(3);
 const PERMISSION_POLL_INTERVAL: Duration = Duration::from_millis(250);
@@ -1149,7 +1152,7 @@ fn run_backend(
             };
         }
 
-        match reader_rx.recv_timeout(Duration::from_millis(20)) {
+        match reader_rx.recv_timeout(CAPTURE_COMMAND_POLL_INTERVAL) {
             Ok(HelperRead::Frame(ProductionFrame::Pcm(pcm))) => {
                 if pcm.sequence != expected_sequence
                     || pcm.samples.is_empty()
@@ -1543,6 +1546,15 @@ pub fn resample(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
     if from_rate == to_rate {
         return samples.to_vec();
     }
+    // The native macOS capture path normally produces 48 kHz audio. For exact
+    // integer downsampling (48k -> 16k, 32k -> 16k), linear interpolation lands
+    // on an original sample every time, so step_by is bit-for-bit equivalent
+    // without per-sample floating-point position and interpolation work.
+    if from_rate > to_rate && from_rate % to_rate == 0 {
+        let step = (from_rate / to_rate) as usize;
+        let new_len = samples.len() / step;
+        return samples.iter().step_by(step).take(new_len).copied().collect();
+    }
     let ratio = from_rate as f64 / to_rate as f64;
     let new_len = (samples.len() as f64 / ratio) as usize;
     let mut resampled = Vec::with_capacity(new_len);
@@ -1564,6 +1576,13 @@ pub fn resample(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn integer_downsampling_uses_the_same_source_positions_as_linear_interpolation() {
+        let samples = (0..10).map(|value| value as f32).collect::<Vec<_>>();
+        assert_eq!(resample(&samples, 48_000, 16_000), vec![0.0, 3.0, 6.0]);
+        assert_eq!(resample(&samples, 32_000, 16_000), vec![0.0, 2.0, 4.0, 6.0, 8.0]);
+    }
 
     #[test]
     fn macos_prefers_direct_auhal_with_cpal_fallback() {
