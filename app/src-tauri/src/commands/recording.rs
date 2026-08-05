@@ -605,7 +605,8 @@ fn transcript_stage_timing(
 ) -> Option<StageTimingV1> {
     use crate::transcript_transform::{
         StageOutcome, CLEANUP_STAGE, CLI_COMMAND_STAGE, IDE_CONTEXT_STAGE, SMART_CORRECTION_STAGE,
-        SMART_FORMATTING_STAGE, VOICE_COMMANDS_STAGE,
+        SMART_FORMATTING_STAGE, SPOKEN_NUMBERS_STAGE, SPOKEN_STRUCTURE_STAGE,
+        VOICE_COMMANDS_STAGE,
     };
 
     let stage = match report.stage {
@@ -613,6 +614,8 @@ fn transcript_stage_timing(
         VOICE_COMMANDS_STAGE => PerformanceStageV1::VoiceCommands,
         SMART_CORRECTION_STAGE => PerformanceStageV1::SmartCorrection,
         SMART_FORMATTING_STAGE => PerformanceStageV1::SmartFormatting,
+        SPOKEN_STRUCTURE_STAGE => PerformanceStageV1::SpokenStructure,
+        SPOKEN_NUMBERS_STAGE => PerformanceStageV1::SpokenNumbers,
         IDE_CONTEXT_STAGE => PerformanceStageV1::IdeContext,
         CLI_COMMAND_STAGE => PerformanceStageV1::CliCommand,
         _ => return None,
@@ -867,6 +870,8 @@ async fn run_transcription_pipeline(
             voice_commands_enabled: context.enabled_command_groups.built_in_voice_commands,
             smart_correction_enabled: transformations.correction_enabled,
             smart_formatting_enabled: transformations.smart_formatting_enabled,
+            spoken_structure_policy: transformations.spoken_structure_policy,
+            spoken_numbers_enabled: transformations.spoken_numbers_enabled,
             ide_context_enabled: transformations.ide_context_enabled,
             cli_command_enabled: transformations.cli_formatting_enabled,
         },
@@ -2217,6 +2222,17 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                 );
                 return;
             }
+            // Core Audio is intentionally started before the immutable
+            // per-recording context is resolved. Keep capturing, but do not
+            // publish Recording until that snapshot is installed.
+            if state.app_state.active_context(recording_id).is_none() {
+                tracing::info!(
+                    target: "pipeline",
+                    recording_id,
+                    "start_native_recording: audio ready, awaiting context"
+                );
+                return;
+            }
             dictation.status = DictationStatus::Recording;
             *state.app_state.last_transcription_at.lock_or_recover() =
                 Some(std::time::Instant::now());
@@ -2383,6 +2399,34 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
     }
 }
 
+fn publish_recording_ready_if_audio_ready<R: tauri::Runtime>(
+    app_handle: &tauri::AppHandle<R>,
+    recording_id: u64,
+) -> bool {
+    if !audio_lifecycle::is_dictation_recording(recording_id) {
+        return false;
+    }
+
+    let state = app_handle.state::<State>();
+    let mut dictation = state.app_state.dictation.lock_or_recover();
+    if state.app_state.recording_id.load(Ordering::SeqCst) != recording_id
+        || dictation.status != DictationStatus::Starting
+        || state.app_state.active_context(recording_id).is_none()
+    {
+        return false;
+    }
+
+    dictation.status = DictationStatus::Recording;
+    *state.app_state.last_transcription_at.lock_or_recover() = Some(std::time::Instant::now());
+    let _ = app_handle.emit("recording-status-changed", "recording");
+    tracing::info!(
+        target: "pipeline",
+        recording_id,
+        "start_native_recording: context ready after audio"
+    );
+    true
+}
+
 #[tauri::command]
 pub async fn start_native_recording(
     app_handle: tauri::AppHandle,
@@ -2515,37 +2559,6 @@ pub async fn start_native_recording(
             }
         }
     };
-    let bundle_id = crate::frontmost::frontmost_bundle_id();
-    refresh_expired_ide_context(&app_handle, &state.app_state, bundle_id.as_deref());
-    let context = resolve_live_context(&state.app_state, &state.knowledge, bundle_id.as_deref());
-    state
-        .app_state
-        .set_active_context(rid, Arc::clone(&context));
-    if let Err(error) = state.performance.begin_dictation(
-        rid,
-        runtime_identity(&context.transcription.model_name, ModelWarmStateV1::Unknown),
-    ) {
-        tracing::warn!(
-            target: "system",
-            recording_id = rid,
-            "performance run start failed: {}",
-            error
-        );
-    }
-    tracing::info!(
-        target: "pipeline",
-        recording_id = rid,
-        frontmost_app_detected = context.app.bundle_id.is_some(),
-        matched_profile = context.matched_profile.is_some(),
-        writing_style = context.writing_style.as_str(),
-        writing_style_code = context.writing_style.code(),
-        vocabulary_version = context.vocabulary.version,
-        context_reads_enabled = context.context_capture.selected_text
-            || context.context_capture.surrounding_screen_text
-            || context.context_capture.clipboard
-            || context.context_capture.local_project_index,
-        "dictation context resolved"
-    );
     let origin = match origin.as_deref() {
         Some("hold") => "hold",
         _ => "toggle",
@@ -2594,6 +2607,65 @@ pub async fn start_native_recording(
         };
     }
     tracing::info!(target: "pipeline", "start_native_recording: starting");
+
+    // Capture first so frontmost-app detection, profile resolution, and IDE
+    // refresh cannot clip the opening word. The lifecycle Ready bridge waits
+    // for this immutable snapshot before it publishes Recording.
+    let bundle_id = crate::frontmost::frontmost_bundle_id();
+    refresh_expired_ide_context(&app_handle, &state.app_state, bundle_id.as_deref());
+    let context = resolve_live_context(&state.app_state, &state.knowledge, bundle_id.as_deref());
+    {
+        let dictation = state.app_state.dictation.lock_or_recover();
+        if state.app_state.recording_id.load(Ordering::SeqCst) != rid
+            || dictation.status != DictationStatus::Starting
+        {
+            tracing::warn!(
+                target: "pipeline",
+                recording_id = rid,
+                status = ?dictation.status,
+                "dictation context discarded after audio initialization ended"
+            );
+            return Ok(serde_json::json!({
+                "type": "audio_recovering",
+                "state": match dictation.status {
+                    DictationStatus::Idle => "idle",
+                    DictationStatus::Starting => "starting",
+                    DictationStatus::Recording => "recording",
+                    DictationStatus::Recovering => "recovering",
+                    DictationStatus::Processing => "processing",
+                }
+            }));
+        }
+        if let Err(error) = state.performance.begin_dictation(
+            rid,
+            runtime_identity(&context.transcription.model_name, ModelWarmStateV1::Unknown),
+        ) {
+            tracing::warn!(
+                target: "system",
+                recording_id = rid,
+                "performance run start failed: {}",
+                error
+            );
+        }
+        state
+            .app_state
+            .set_active_context(rid, Arc::clone(&context));
+    }
+    tracing::info!(
+        target: "pipeline",
+        recording_id = rid,
+        frontmost_app_detected = context.app.bundle_id.is_some(),
+        matched_profile = context.matched_profile.is_some(),
+        writing_style = context.writing_style.as_str(),
+        writing_style_code = context.writing_style.code(),
+        vocabulary_version = context.vocabulary.version,
+        context_reads_enabled = context.context_capture.selected_text
+            || context.context_capture.surrounding_screen_text
+            || context.context_capture.clipboard
+            || context.context_capture.local_project_index,
+        "dictation context resolved"
+    );
+    publish_recording_ready_if_audio_ready(&app_handle, rid);
     spawn_model_preparation(
         app_handle.clone(),
         context.transcription.model_name.clone(),

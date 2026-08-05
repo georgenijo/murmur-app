@@ -179,6 +179,28 @@ impl From<FixtureCliMode> for CliFormattingMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum FixtureSpokenStructurePolicy {
+    Off,
+    Basic,
+    Extended,
+    Union,
+}
+
+impl From<FixtureSpokenStructurePolicy>
+    for crate::spoken_structure::SpokenStructurePolicy
+{
+    fn from(value: FixtureSpokenStructurePolicy) -> Self {
+        match value {
+            FixtureSpokenStructurePolicy::Off => Self::Off,
+            FixtureSpokenStructurePolicy::Basic => Self::Basic,
+            FixtureSpokenStructurePolicy::Extended => Self::Extended,
+            FixtureSpokenStructurePolicy::Union => Self::Union,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 struct FixtureStageConfig {
@@ -188,6 +210,8 @@ struct FixtureStageConfig {
     voice_commands: bool,
     smart_correction: bool,
     smart_formatting: bool,
+    spoken_structure: Option<FixtureSpokenStructurePolicy>,
+    spoken_numbers: bool,
     ide_context: bool,
     cli_command: bool,
 }
@@ -663,6 +687,8 @@ fn validate_fixture(
         crate::transcript_transform::VOICE_COMMANDS_STAGE,
         crate::transcript_transform::SMART_CORRECTION_STAGE,
         crate::transcript_transform::SMART_FORMATTING_STAGE,
+        crate::transcript_transform::SPOKEN_STRUCTURE_STAGE,
+        crate::transcript_transform::SPOKEN_NUMBERS_STAGE,
         crate::transcript_transform::IDE_CONTEXT_STAGE,
         crate::transcript_transform::CLI_COMMAND_STAGE,
     ];
@@ -1130,6 +1156,18 @@ fn run_transform(
             voice_commands_enabled: fixture.context.stages.voice_commands,
             smart_correction_enabled: fixture.context.stages.smart_correction,
             smart_formatting_enabled: fixture.context.stages.smart_formatting,
+            spoken_structure_policy: fixture
+                .context
+                .stages
+                .spoken_structure
+                .map(Into::into)
+                .unwrap_or_else(|| {
+                    crate::spoken_structure::SpokenStructurePolicy::resolve(
+                        fixture.context.stages.voice_commands,
+                        fixture.context.stages.smart_formatting,
+                    )
+                }),
+            spoken_numbers_enabled: fixture.context.stages.spoken_numbers,
             ide_context_enabled: fixture.context.stages.ide_context,
             cli_command_enabled: fixture.context.stages.cli_command,
         },

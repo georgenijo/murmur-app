@@ -34,6 +34,8 @@ export type PerformanceStageV1 =
   | 'voiceCommands'
   | 'smartCorrection'
   | 'smartFormatting'
+  | 'spokenStructure'
+  | 'spokenNumbers'
   | 'ideContext'
   | 'cliCommand'
   | 'fileOutput'
@@ -175,7 +177,8 @@ const unavailableReasons = new Set<UnavailableReasonV1>([
 export const PERFORMANCE_STAGES_V1: readonly PerformanceStageV1[] = [
   'captureFinalization', 'fileDecode', 'vad', 'modelQueue', 'modelLoad',
   'inferenceDecode', 'transcriptTransform', 'cleanup', 'voiceCommands',
-  'smartCorrection', 'smartFormatting', 'ideContext', 'cliCommand',
+  'smartCorrection', 'smartFormatting', 'spokenStructure', 'spokenNumbers',
+  'ideContext', 'cliCommand',
   'fileOutput', 'clipboardPaste', 'fileReturn', 'totalProcessing',
   'selectedTextCapture', 'instructionCapture', 'instructionAsr',
   'sidecarSpawnLoad', 'generation', 'reviewReady', 'apply', 'undo',

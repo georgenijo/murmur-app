@@ -17,6 +17,8 @@ pub(crate) const CLEANUP_STAGE: &str = "cleanup";
 pub(crate) const VOICE_COMMANDS_STAGE: &str = "voice_commands";
 pub(crate) const SMART_CORRECTION_STAGE: &str = "smart_correction";
 pub(crate) const SMART_FORMATTING_STAGE: &str = "smart_formatting";
+pub(crate) const SPOKEN_STRUCTURE_STAGE: &str = "spoken_structure";
+pub(crate) const SPOKEN_NUMBERS_STAGE: &str = "spoken_numbers";
 pub(crate) const IDE_CONTEXT_STAGE: &str = "ide_context";
 pub(crate) const CLI_COMMAND_STAGE: &str = "cli_command";
 
@@ -48,6 +50,8 @@ pub(crate) struct TranscriptStageConfig {
     pub voice_commands_enabled: bool,
     pub smart_correction_enabled: bool,
     pub smart_formatting_enabled: bool,
+    pub spoken_structure_policy: crate::spoken_structure::SpokenStructurePolicy,
+    pub spoken_numbers_enabled: bool,
     pub ide_context_enabled: bool,
     pub cli_command_enabled: bool,
 }
@@ -61,6 +65,9 @@ impl TranscriptStageConfig {
             voice_commands_enabled: false,
             smart_correction_enabled: false,
             smart_formatting_enabled: false,
+            spoken_structure_policy:
+                crate::spoken_structure::SpokenStructurePolicy::Off,
+            spoken_numbers_enabled: false,
             ide_context_enabled: false,
             cli_command_enabled: false,
         }
@@ -81,6 +88,9 @@ impl TranscriptStageConfig {
             voice_commands_enabled: false,
             smart_correction_enabled: false,
             smart_formatting_enabled: false,
+            spoken_structure_policy:
+                crate::spoken_structure::SpokenStructurePolicy::Off,
+            spoken_numbers_enabled: false,
             ide_context_enabled: false,
             cli_command_enabled: false,
         }
@@ -273,6 +283,10 @@ impl TranscriptPipeline {
             Box::new(SmartFormattingStage {
                 cli_lexicon: cli_lexicon.clone(),
             }),
+            Box::new(SpokenStructureStage {
+                cli_lexicon: cli_lexicon.clone(),
+            }),
+            Box::new(SpokenNumbersStage),
             Box::new(IdeContextStage {
                 index: ide_context_index,
             }),
@@ -480,7 +494,7 @@ impl TranscriptTransform for VoiceCommandsStage {
     }
 
     fn transform(&self, text: &str, _context: &TranscriptContext) -> Result<String, StageError> {
-        Ok(crate::voice_commands::apply_voice_commands_with_resolved(
+        Ok(crate::voice_commands::apply_custom_voice_commands_for_pipeline(
             text,
             true,
             &self.voice_commands,
@@ -501,6 +515,12 @@ struct CliCommandStage {
 struct SmartFormattingStage {
     cli_lexicon: CliLexicon,
 }
+
+struct SpokenStructureStage {
+    cli_lexicon: CliLexicon,
+}
+
+struct SpokenNumbersStage;
 
 struct IdeContextStage {
     index: Option<Arc<IdeContextIndex>>,
@@ -549,6 +569,49 @@ impl TranscriptTransform for SmartFormattingStage {
             return Ok(text.to_string());
         }
         Ok(crate::smart_formatting::format_smart_prose(text))
+    }
+}
+
+impl TranscriptTransform for SpokenStructureStage {
+    fn name(&self) -> &'static str {
+        SPOKEN_STRUCTURE_STAGE
+    }
+
+    fn failure_policy(&self) -> StageFailurePolicy {
+        StageFailurePolicy::Required
+    }
+
+    fn enabled(&self, context: &TranscriptContext) -> bool {
+        context.source == TranscriptSource::Live
+            && context.stages.spoken_structure_policy.is_enabled()
+    }
+
+    fn transform(&self, text: &str, context: &TranscriptContext) -> Result<String, StageError> {
+        if is_cli_utterance(text, context.cli_formatting_mode, &self.cli_lexicon) {
+            return Ok(crate::spoken_structure::restore_literal_output(text));
+        }
+        Ok(crate::spoken_structure::apply_spoken_structure(
+            text,
+            context.stages.spoken_structure_policy,
+        ))
+    }
+}
+
+impl TranscriptTransform for SpokenNumbersStage {
+    fn name(&self) -> &'static str {
+        SPOKEN_NUMBERS_STAGE
+    }
+
+    fn failure_policy(&self) -> StageFailurePolicy {
+        StageFailurePolicy::Required
+    }
+
+    fn enabled(&self, context: &TranscriptContext) -> bool {
+        context.source == TranscriptSource::Live && context.stages.spoken_numbers_enabled
+    }
+
+    fn transform(&self, text: &str, _context: &TranscriptContext) -> Result<String, StageError> {
+        Ok(crate::spoken_numbers::normalize_spoken_numbers(text))
     }
 }
 
@@ -627,6 +690,7 @@ mod tests {
         assert!(!cfg.voice_commands_enabled, "voice-commands must be OFF for instructions");
         assert!(!cfg.cli_command_enabled, "CLI formatting must be OFF for instructions");
         assert!(!cfg.smart_formatting_enabled, "smart-formatting must be OFF for instructions");
+        assert!(!cfg.spoken_numbers_enabled, "spoken numbers must be OFF for instructions");
         assert!(!cfg.smart_correction_enabled, "smart-correction must be OFF for instructions");
         assert!(!cfg.ide_context_enabled, "IDE-context must be OFF for instructions");
     }
@@ -649,6 +713,9 @@ mod tests {
             voice_commands_enabled: true,
             smart_correction_enabled: true,
             smart_formatting_enabled: false,
+            spoken_structure_policy:
+                crate::spoken_structure::SpokenStructurePolicy::Basic,
+            spoken_numbers_enabled: true,
             ide_context_enabled: false,
             cli_command_enabled: true,
         }
@@ -719,6 +786,8 @@ mod tests {
             },
             TranscriptStageConfig {
                 voice_commands_enabled: false,
+                spoken_structure_policy:
+                    crate::spoken_structure::SpokenStructurePolicy::Off,
                 ..all_stages()
             },
         ];
@@ -768,6 +837,8 @@ mod tests {
                 VOICE_COMMANDS_STAGE,
                 SMART_CORRECTION_STAGE,
                 SMART_FORMATTING_STAGE,
+                SPOKEN_STRUCTURE_STAGE,
+                SPOKEN_NUMBERS_STAGE,
                 IDE_CONTEXT_STAGE,
                 CLI_COMMAND_STAGE,
             ]
@@ -800,6 +871,9 @@ mod tests {
             voice_commands_enabled: false,
             smart_correction_enabled: true,
             smart_formatting_enabled: false,
+            spoken_structure_policy:
+                crate::spoken_structure::SpokenStructurePolicy::Off,
+            spoken_numbers_enabled: false,
             ide_context_enabled: true,
             cli_command_enabled: true,
         };
@@ -820,8 +894,10 @@ mod tests {
         );
         assert!(output.stages[2].changed);
         assert_eq!(output.stages[3].outcome, StageOutcome::Skipped);
-        assert!(output.stages[4].changed);
-        assert_eq!(output.stages[5].stage, CLI_COMMAND_STAGE);
+        assert_eq!(output.stages[4].outcome, StageOutcome::Skipped);
+        assert_eq!(output.stages[5].outcome, StageOutcome::Skipped);
+        assert!(output.stages[6].changed);
+        assert_eq!(output.stages[7].stage, CLI_COMMAND_STAGE);
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -834,6 +910,9 @@ mod tests {
             voice_commands_enabled: false,
             smart_correction_enabled: false,
             smart_formatting_enabled: false,
+            spoken_structure_policy:
+                crate::spoken_structure::SpokenStructurePolicy::Off,
+            spoken_numbers_enabled: false,
             ide_context_enabled: false,
             cli_command_enabled: false,
         };
@@ -855,6 +934,9 @@ mod tests {
             voice_commands_enabled: true,
             smart_correction_enabled: false,
             smart_formatting_enabled: false,
+            spoken_structure_policy:
+                crate::spoken_structure::SpokenStructurePolicy::Basic,
+            spoken_numbers_enabled: false,
             ide_context_enabled: false,
             cli_command_enabled: false,
         };
@@ -868,6 +950,130 @@ mod tests {
     }
 
     #[test]
+    fn spoken_structure_policy_matrix_has_one_owner() {
+        let cases = [
+            (
+                false,
+                false,
+                crate::spoken_structure::SpokenStructurePolicy::Off,
+                "hello period root slash users",
+            ),
+            (
+                true,
+                false,
+                crate::spoken_structure::SpokenStructurePolicy::Basic,
+                "hello. root slash users",
+            ),
+            (
+                false,
+                true,
+                crate::spoken_structure::SpokenStructurePolicy::Extended,
+                "hello. root/users",
+            ),
+            (
+                true,
+                true,
+                crate::spoken_structure::SpokenStructurePolicy::Union,
+                "hello. root/users",
+            ),
+        ];
+
+        for (voice_commands, smart_formatting, policy, expected) in cases {
+            let stages = TranscriptStageConfig {
+                voice_commands_enabled: voice_commands,
+                smart_formatting_enabled: smart_formatting,
+                spoken_structure_policy: policy,
+                ..TranscriptStageConfig::verbatim()
+            };
+            let output = transform_transcript(
+                "hello period root slash users".to_string(),
+                &live_context(stages),
+                TranscriptTransformResources::empty(),
+            )
+            .unwrap();
+            assert_eq!(output.text, expected, "policy: {policy:?}");
+            assert_eq!(
+                output
+                    .stages
+                    .iter()
+                    .filter(|report| report.stage == SPOKEN_STRUCTURE_STAGE)
+                    .count(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn scratch_that_observes_boundaries_created_by_spoken_structure() {
+        let stages = TranscriptStageConfig {
+            voice_commands_enabled: true,
+            spoken_structure_policy:
+                crate::spoken_structure::SpokenStructurePolicy::Basic,
+            ..TranscriptStageConfig::verbatim()
+        };
+        for (input, expected) in [
+            ("one period two scratch that", "one."),
+            ("hello new line world scratch that", "hello\n"),
+        ] {
+            let output = transform_transcript(
+                input.to_string(),
+                &live_context(stages),
+                TranscriptTransformResources::empty(),
+            )
+            .unwrap();
+            assert_eq!(output.text, expected);
+        }
+    }
+
+    #[test]
+    fn custom_command_output_is_literal_to_spoken_structure() {
+        let stages = TranscriptStageConfig {
+            voice_commands_enabled: true,
+            spoken_structure_policy:
+                crate::spoken_structure::SpokenStructurePolicy::Basic,
+            ..TranscriptStageConfig::verbatim()
+        };
+        let output = transform_transcript(
+            "insert literal".to_string(),
+            &live_context(stages),
+            TranscriptTransformResources {
+                custom_commands: vec![(
+                    "insert literal".to_string(),
+                    "literal period and new line".to_string(),
+                )],
+                ..TranscriptTransformResources::empty()
+            },
+        )
+        .unwrap();
+        assert_eq!(output.text, "literal period and new line");
+
+        let cli_output = transform_transcript(
+            "command echo insert literal".to_string(),
+            &live_context(stages),
+            TranscriptTransformResources {
+                custom_commands: vec![(
+                    "insert literal".to_string(),
+                    "literal period".to_string(),
+                )],
+                ..TranscriptTransformResources::empty()
+            },
+        )
+        .unwrap();
+        assert_eq!(cli_output.text, "command echo literal period");
+
+        let legacy_precedence = transform_transcript(
+            "period end".to_string(),
+            &live_context(stages),
+            TranscriptTransformResources {
+                custom_commands: vec![("period end".to_string(), "replaced".to_string())],
+                ..TranscriptTransformResources::empty()
+            },
+        )
+        .unwrap();
+        assert_eq!(legacy_precedence.text, ". end");
+    }
+
+    #[test]
     fn smart_correction_stage_can_be_enabled_independently() {
         let stages = TranscriptStageConfig {
             cleanup_enabled: false,
@@ -876,6 +1082,9 @@ mod tests {
             voice_commands_enabled: false,
             smart_correction_enabled: true,
             smart_formatting_enabled: false,
+            spoken_structure_policy:
+                crate::spoken_structure::SpokenStructurePolicy::Off,
+            spoken_numbers_enabled: false,
             ide_context_enabled: false,
             cli_command_enabled: false,
         };
@@ -901,7 +1110,7 @@ mod tests {
         let output = transform_transcript(raw.to_string(), &context, resources(true)).unwrap();
         assert_eq!(output.text.as_bytes(), raw.as_bytes());
         assert_eq!(output.original_text.as_bytes(), raw.as_bytes());
-        assert_eq!(output.stages.len(), 6);
+        assert_eq!(output.stages.len(), 8);
         assert!(output
             .stages
             .iter()
@@ -917,6 +1126,9 @@ mod tests {
             voice_commands_enabled: false,
             smart_correction_enabled: true,
             smart_formatting_enabled: false,
+            spoken_structure_policy:
+                crate::spoken_structure::SpokenStructurePolicy::Off,
+            spoken_numbers_enabled: false,
             ide_context_enabled: false,
             cli_command_enabled: true,
         };
@@ -931,8 +1143,10 @@ mod tests {
         assert_eq!(output.text, "npm run tauri dev");
         assert_eq!(output.stages[2].stage, SMART_CORRECTION_STAGE);
         assert_eq!(output.stages[3].stage, SMART_FORMATTING_STAGE);
-        assert_eq!(output.stages[4].stage, IDE_CONTEXT_STAGE);
-        assert_eq!(output.stages[5].stage, CLI_COMMAND_STAGE);
+        assert_eq!(output.stages[4].stage, SPOKEN_STRUCTURE_STAGE);
+        assert_eq!(output.stages[5].stage, SPOKEN_NUMBERS_STAGE);
+        assert_eq!(output.stages[6].stage, IDE_CONTEXT_STAGE);
+        assert_eq!(output.stages[7].stage, CLI_COMMAND_STAGE);
     }
 
     #[test]
@@ -944,6 +1158,9 @@ mod tests {
             voice_commands_enabled: false,
             smart_correction_enabled: false,
             smart_formatting_enabled: true,
+            spoken_structure_policy:
+                crate::spoken_structure::SpokenStructurePolicy::Extended,
+            spoken_numbers_enabled: false,
             ide_context_enabled: false,
             cli_command_enabled: true,
         };
@@ -956,7 +1173,8 @@ mod tests {
         .unwrap();
         assert_eq!(output.text, "I'm missing skills like /chat and /vault-out.");
         assert!(!output.stages[3].changed);
-        assert!(output.stages[5].changed);
+        assert!(!output.stages[4].changed);
+        assert!(output.stages[7].changed);
     }
 
     #[test]
@@ -971,6 +1189,9 @@ mod tests {
                 voice_commands_enabled: false,
                 smart_correction_enabled: true,
                 smart_formatting_enabled: false,
+                spoken_structure_policy:
+                    crate::spoken_structure::SpokenStructurePolicy::Off,
+                spoken_numbers_enabled: false,
                 ide_context_enabled: false,
                 cli_command_enabled: case.cli,
             };
@@ -1005,6 +1226,9 @@ mod tests {
             voice_commands_enabled: false,
             smart_correction_enabled: false,
             smart_formatting_enabled: true,
+            spoken_structure_policy:
+                crate::spoken_structure::SpokenStructurePolicy::Extended,
+            spoken_numbers_enabled: false,
             ide_context_enabled: false,
             cli_command_enabled: true,
         };
@@ -1017,8 +1241,10 @@ mod tests {
         assert_eq!(prose.text, "The tasks are:\n1. Review\n2. Ship");
         assert!(prose.stages[3].changed);
         assert_eq!(prose.stages[3].stage, SMART_FORMATTING_STAGE);
-        assert_eq!(prose.stages[4].stage, IDE_CONTEXT_STAGE);
-        assert_eq!(prose.stages[5].stage, CLI_COMMAND_STAGE);
+        assert_eq!(prose.stages[4].stage, SPOKEN_STRUCTURE_STAGE);
+        assert_eq!(prose.stages[5].stage, SPOKEN_NUMBERS_STAGE);
+        assert_eq!(prose.stages[6].stage, IDE_CONTEXT_STAGE);
+        assert_eq!(prose.stages[7].stage, CLI_COMMAND_STAGE);
 
         let command = transform_transcript(
             "command echo open quote first second close quote".to_string(),
@@ -1055,6 +1281,59 @@ mod tests {
         .unwrap();
         assert_eq!(output.text.as_bytes(), raw.as_bytes());
         assert_eq!(output.stages[3].outcome, StageOutcome::Skipped);
+    }
+
+    #[test]
+    fn spoken_numbers_are_an_independent_live_dictation_stage() {
+        let stages = TranscriptStageConfig {
+            spoken_numbers_enabled: true,
+            ..TranscriptStageConfig::verbatim()
+        };
+        let output = transform_transcript(
+            "eight hundred fifty-seven and ten million one hundred three thousand four hundred forty-five"
+                .to_string(),
+            &live_context(stages),
+            TranscriptTransformResources::empty(),
+        )
+        .unwrap();
+
+        assert_eq!(output.text, "857 and 10,103,445");
+        assert_eq!(output.stages[5].stage, SPOKEN_NUMBERS_STAGE);
+        assert!(output.stages[5].changed);
+
+        let instruction = transform_transcript(
+            "make this three paragraphs".to_string(),
+            &live_context(TranscriptStageConfig::instruction_cleanup()),
+            TranscriptTransformResources::empty(),
+        )
+        .unwrap();
+        assert_eq!(instruction.text, "Make this three paragraphs");
+        assert_eq!(instruction.stages[5].outcome, StageOutcome::Skipped);
+    }
+
+    #[test]
+    fn spoken_slash_punctuation_and_number_labels_compose_in_pipeline_order() {
+        let stages = TranscriptStageConfig {
+            smart_formatting_enabled: true,
+            spoken_structure_policy:
+                crate::spoken_structure::SpokenStructurePolicy::Extended,
+            spoken_numbers_enabled: true,
+            ..TranscriptStageConfig::verbatim()
+        };
+        let output = transform_transcript(
+            "slash step one question mark".to_string(),
+            &live_context(stages),
+            TranscriptTransformResources::empty(),
+        )
+        .unwrap();
+
+        assert_eq!(output.text, "/step 1?");
+        assert_eq!(output.stages[3].stage, SMART_FORMATTING_STAGE);
+        assert!(!output.stages[3].changed);
+        assert_eq!(output.stages[4].stage, SPOKEN_STRUCTURE_STAGE);
+        assert!(output.stages[4].changed);
+        assert_eq!(output.stages[5].stage, SPOKEN_NUMBERS_STAGE);
+        assert!(output.stages[5].changed);
     }
 
     struct AppendStage {

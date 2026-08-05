@@ -81,6 +81,11 @@ All transform events carry a `transformPassId` where a pass exists, so a delayed
 |-------|---------|--------|---------------|-----------|
 | `app-event` | `AppEvent` | `telemetry.rs` (`TauriEmitterLayer`) | For **every** `tracing` event in the Rust backend. | Log viewer (`useEventStore`). Release `pipeline` strings are stripped; `transform` strings are restricted by key **and** value to an explicit stable vocabulary in all builds. |
 
+Transcript stage telemetry uses the versioned stage vocabulary from
+`PerformanceStageV1`, including `spokenStructure`. It carries only stage
+identity, timing, outcome, and changed state; transcript and command content
+remain excluded.
+
 ## Updater
 
 | Event | Payload | Source | When it fires | Listeners |

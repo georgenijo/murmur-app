@@ -43,6 +43,8 @@ Voice Commands
 → derived/exact vocabulary
 → fuzzy vocabulary
 → Smart Formatting
+→ Spoken Structure
+→ spoken numbers
 → IDE context
 → CLI formatting
 ```

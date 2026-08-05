@@ -860,6 +860,8 @@ fn default_delivery_context() -> TranscriptContext {
             voice_commands_enabled: snapshot.enabled_command_groups.built_in_voice_commands,
             smart_correction_enabled: snapshot.transformations.correction_enabled,
             smart_formatting_enabled: snapshot.transformations.smart_formatting_enabled,
+            spoken_structure_policy: snapshot.transformations.spoken_structure_policy,
+            spoken_numbers_enabled: snapshot.transformations.spoken_numbers_enabled,
             ide_context_enabled: snapshot.transformations.ide_context_enabled,
             cli_command_enabled: snapshot.transformations.cli_formatting_enabled,
         },
@@ -1888,13 +1890,15 @@ mod tests {
         let stages = context.stages;
         // Mirrors DictationState::default(): cleanup gate off (filler/capitalize
         // remain configured but unused until cleanup is enabled), voice commands
-        // off, correction on, smart formatting off, IDE off, CLI stage on (Auto).
+        // off, correction on, smart formatting off, spoken numbers on, IDE off,
+        // and the CLI stage on (Auto).
         assert!(!stages.cleanup_enabled);
         assert!(stages.cleanup_remove_filler);
         assert!(stages.cleanup_capitalize);
         assert!(!stages.voice_commands_enabled);
         assert!(stages.smart_correction_enabled);
         assert!(!stages.smart_formatting_enabled);
+        assert!(stages.spoken_numbers_enabled);
         assert!(!stages.ide_context_enabled);
         assert!(stages.cli_command_enabled);
     }

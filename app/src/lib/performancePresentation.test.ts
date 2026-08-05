@@ -36,6 +36,8 @@ describe('performance presentation semantics', () => {
       'voiceCommands',
       'smartCorrection',
       'smartFormatting',
+      'spokenStructure',
+      'spokenNumbers',
       'ideContext',
       'cliCommand',
       'fileOutput',

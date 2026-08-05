@@ -12,6 +12,7 @@ thread_local! {
 pub const VAD_MODEL_FILENAME: &str = "ggml-silero-v5.1.2.bin";
 pub const VAD_MODEL_URL: &str =
     "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin";
+const SPEECH_PAD_MS: i32 = 120;
 
 /// Expected path for the VAD model under the app's models directory.
 pub fn vad_model_path() -> Option<PathBuf> {
@@ -71,6 +72,10 @@ fn filter_speech_with_context(
 
     let mut vad_params = WhisperVadParams::default();
     vad_params.set_threshold(threshold);
+    // Preserve the initial consonant around VAD boundaries. The upstream
+    // default is only 30 ms, which is easy to clip when speech begins as the
+    // hotkey is pressed.
+    vad_params.set_speech_pad(SPEECH_PAD_MS);
 
     let segments = ctx
         .segments_from_samples(vad_params, samples)

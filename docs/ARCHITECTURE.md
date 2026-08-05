@@ -73,8 +73,10 @@ The **transcript transform pipeline** (`transcript_transform.rs`) runs stages in
 2. `voice_commands` — typed replacements/snippets from the knowledge store
 3. `smart_correction` — vocabulary matcher (exact tier + optional fuzzy tier)
 4. `smart_formatting` — deterministic prose grammar, lists, same-utterance backtracking (live only)
-5. `ide_context` — project symbol correction and `@file` canonicalization (live only, opt-in)
-6. `cli_command` — spoken CLI command formatting
+5. `spoken_structure` — punctuation, breaks, paired delimiters, symbols, and sentence-boundary editing (live only)
+6. `spoken_numbers` — default English cardinal, scale, negative, and decimal rendering (live dictation)
+7. `ide_context` — project symbol correction and `@file` canonicalization (live only, opt-in)
+8. `cli_command` — spoken CLI command formatting
 
 ### Selected-text transform
 
@@ -176,6 +178,8 @@ deliberately escaped process group. See the
 | `resource_monitor.rs` | CPU/RSS sampling, 1s heartbeat, idle-timeout enforcement |
 | `selection.rs` | AX selection capture with secure-field fail-closed and clipboard fallback |
 | `smart_formatting.rs` | Deterministic prose formatting and same-utterance backtracking |
+| `spoken_numbers.rs` | Deterministic English spoken-cardinal rendering |
+| `spoken_structure.rs` | Single owner for spoken punctuation, layout, symbols, arbitration, and `scratch that` |
 | `state.rs` | `DictationStatus`, `TransformStatus`, `DictationState`, `AppState` |
 | `telemetry.rs` | Structured event system: `TauriEmitterLayer`, ring buffer, JSONL, privacy stripping |
 | `transcriber/` | `TranscriptionBackend` trait + whisper / parakeet / coreml implementations |

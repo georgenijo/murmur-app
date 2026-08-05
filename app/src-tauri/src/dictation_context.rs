@@ -85,6 +85,8 @@ pub struct TransformationSettings {
     pub cli_formatting_mode: CliFormattingMode,
     pub cli_formatting_enabled: bool,
     pub smart_formatting_enabled: bool,
+    pub spoken_structure_policy: crate::spoken_structure::SpokenStructurePolicy,
+    pub spoken_numbers_enabled: bool,
     pub ide_context_enabled: bool,
     pub ide_context_index: Option<Arc<IdeContextIndex>>,
 }
@@ -254,6 +256,11 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
             .iter()
             .any(|command| command.allow_clipboard_read);
     let custom_voice_commands = voice_commands && !resolved_voice_commands.is_empty();
+    let spoken_structure_policy =
+        crate::spoken_structure::SpokenStructurePolicy::resolve(
+            voice_commands,
+            smart_formatting_enabled,
+        );
 
     DictationContextSnapshot {
         app: ActiveAppIdentity {
@@ -284,6 +291,10 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
             cli_formatting_mode,
             cli_formatting_enabled,
             smart_formatting_enabled,
+            spoken_structure_policy,
+            // Numeric rendering is a default live-dictation behavior. The
+            // explicit Verbatim profile remains the byte-preserving escape hatch.
+            spoken_numbers_enabled: writing_style != WritingStyle::Verbatim,
             ide_context_enabled,
             ide_context_index: if ide_context_enabled {
                 inputs.ide_context_index
@@ -435,6 +446,10 @@ mod tests {
                 voice_commands_enabled: snapshot.enabled_command_groups.built_in_voice_commands,
                 smart_correction_enabled: snapshot.transformations.correction_enabled,
                 smart_formatting_enabled: snapshot.transformations.smart_formatting_enabled,
+                spoken_structure_policy: snapshot
+                    .transformations
+                    .spoken_structure_policy,
+                spoken_numbers_enabled: snapshot.transformations.spoken_numbers_enabled,
                 ide_context_enabled: snapshot.transformations.ide_context_enabled,
                 cli_command_enabled: snapshot.transformations.cli_formatting_enabled,
             },
@@ -760,6 +775,7 @@ mod tests {
     fn ide_context_requires_explicit_matching_profile_and_bypasses_prose() {
         let mut global = DictationState {
             smart_formatting_enabled: true,
+            voice_commands_enabled: true,
             ..DictationState::default()
         };
         let mut editor = profile("com.example.Editor", None, None);
@@ -774,6 +790,10 @@ mod tests {
         );
         assert!(opted_in.transformations.ide_context_enabled);
         assert!(!opted_in.transformations.smart_formatting_enabled);
+        assert_eq!(
+            opted_in.transformations.spoken_structure_policy,
+            crate::spoken_structure::SpokenStructurePolicy::Basic
+        );
         assert!(opted_in.context_capture.local_project_index);
         assert_eq!(opted_in.teaching_project_root.as_deref(), Some("/explicit/project"));
         assert!(!opted_in.context_capture.surrounding_screen_text);
@@ -869,14 +889,14 @@ mod tests {
         };
 
         let cases = [
-            (WritingStyle::Conversational, true, true, false, false, true),
-            (WritingStyle::Polished, true, true, true, true, true),
-            (WritingStyle::Notes, true, true, true, true, true),
-            (WritingStyle::CodeTechnical, false, false, false, true, true),
-            (WritingStyle::Verbatim, false, false, false, false, false),
+            (WritingStyle::Conversational, true, true, false, true, false, true),
+            (WritingStyle::Polished, true, true, true, true, true, true),
+            (WritingStyle::Notes, true, true, true, true, true, true),
+            (WritingStyle::CodeTechnical, false, false, false, true, true, true),
+            (WritingStyle::Verbatim, false, false, false, false, false, false),
         ];
 
-        for (style, cleanup, commands, prose, correction, cli_stage) in cases {
+        for (style, cleanup, commands, prose, numbers, correction, cli_stage) in cases {
             let mut app = profile("com.example.App", None, None);
             app.writing_style = Some(style);
             global.app_profiles = vec![app];
@@ -892,6 +912,13 @@ mod tests {
                 commands
             );
             assert_eq!(snapshot.transformations.smart_formatting_enabled, prose);
+            assert_eq!(
+                snapshot.transformations.spoken_structure_policy,
+                crate::spoken_structure::SpokenStructurePolicy::resolve(
+                    commands, prose
+                )
+            );
+            assert_eq!(snapshot.transformations.spoken_numbers_enabled, numbers);
             assert_eq!(snapshot.transformations.correction_enabled, correction);
             assert_eq!(snapshot.transformations.cli_formatting_enabled, cli_stage);
         }
@@ -921,6 +948,11 @@ mod tests {
             assert!(snapshot.enabled_command_groups.built_in_voice_commands);
             assert!(!snapshot.transformations.correction_enabled);
             assert!(snapshot.transformations.smart_formatting_enabled);
+            assert_eq!(
+                snapshot.transformations.spoken_structure_policy,
+                crate::spoken_structure::SpokenStructurePolicy::Union
+            );
+            assert!(snapshot.transformations.spoken_numbers_enabled);
             assert_eq!(
                 snapshot.transformations.cli_formatting_mode,
                 CliFormattingMode::Auto
@@ -978,6 +1010,10 @@ mod tests {
 
         assert!(!snapshot.transformations.cleanup_enabled);
         assert!(!snapshot.transformations.smart_formatting_enabled);
+        assert_eq!(
+            snapshot.transformations.spoken_structure_policy,
+            crate::spoken_structure::SpokenStructurePolicy::Off
+        );
         assert_eq!(
             snapshot.transformations.cli_formatting_mode,
             CliFormattingMode::Disabled

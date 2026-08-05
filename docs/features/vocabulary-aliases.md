@@ -9,7 +9,7 @@ Aliases are deterministic, local, Unicode-aware, case-insensitive exact phrase m
 The live transformation order remains:
 
 ```text
-cleanup -> Voice Commands -> explicit aliases -> derived/exact vocabulary -> fuzzy correction -> Smart Formatting -> IDE context -> CLI formatting
+cleanup -> Voice Commands -> explicit aliases -> derived/exact vocabulary -> fuzzy correction -> Smart Formatting -> spoken numbers -> IDE context -> CLI formatting
 ```
 
 Voice Commands intentionally trigger insertions/actions and remain separate. Settings reject an alias that collides with a built-in or custom Voice Command phrase. Already-canonical terms are protected. Explicit user aliases outrank future learned rules, built-in vocabulary, derived exact forms, and generic fuzzy matching. IDE symbols remain context-specific after generic correction, and CLI formatting remains final and authoritative. Thus `npm run Tori dev` becomes `npm run Tauri dev` in correction and then `npm run tauri dev` in the CLI stage.
