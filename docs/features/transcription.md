@@ -57,17 +57,18 @@ Transcription processing is local. Network access occurs for model setup and may
   in `Recovering` until the worker exits and is joined. Rapid retries therefore
   cannot create overlapping in-process CoreAudio owners.
 - Dictation start returns after ownership is accepted, without waiting for
-  Core Audio. The worker reports device enumeration, config lookup, stream
-  build, play, first-buffer wait, stop, runtime failure, and exit events back to
-  the supervisor.
+  Core Audio. The helper reports device enumeration, stream construction,
+  first-buffer wait, active capture, stop, runtime failure, and exit events back
+  to the supervisor.
 - `Starting` emits a still-connecting signal after 5 seconds and has a
   30-second active-time contract: AUHAL 8s, AUHAL termination 2s, CPAL 16s,
   CPAL termination 2s, and 2s reserve. A genuine pending macOS TCC prompt
   suspends active deadlines and has a separate 120-second watchdog. Denial and
-  Stop remain immediate. `stream.play()` means only that start was requested:
-  `Recording` is reached only after the callback has retained a nonempty mono
-  buffer. Play-success with no callback fails as `first_buffer_timeout`, so a
-  successful zero-sample recording cannot begin.
+  Stop remain immediate. A successfully opened and started native stream does
+  not imply readiness: `Recording` is reached only after the callback has
+  retained a nonempty mono buffer. Reaching first-buffer wait without a callback
+  fails as `first_buffer_timeout`, so a successful zero-sample recording cannot
+  begin.
 - PCM retention and waveform publication are separate gates. The callback
   retains the first buffer before signalling readiness and continues retaining
   this generation's PCM while the supervisor accepts it. Levels remain disabled
@@ -91,11 +92,11 @@ Transcription processing is local. Network access occurs for model setup and may
 - A timed-out backend can advance only after its owned helper process group is
   positively confirmed empty. Unconfirmed termination leaves the lifecycle in
   exclusive recovery and suppresses fallback and new starts.
-- CPAL errors are reduced immediately to stable content-free kinds
-  (`permission_denied`, `device_unavailable`, `device_busy`, `device_changed`,
-  `stream_invalidated`, `invalid_input`, `resource_exhausted`, and bounded
-  fallback kinds). Phase/error telemetry never includes a device label, UID,
-  raw backend message, or audio/transcript content.
+- Capture-worker errors are reduced immediately to stable content-free kinds
+  (`permission_denied`, `device_unavailable`, `stream_invalidated`,
+  `invalid_input`, `resource_exhausted`, and bounded fallback kinds).
+  Phase/error telemetry never includes a device label, UID, raw backend
+  message, or audio/transcript content.
 - Recording duration begins at accepted readiness, not at the user's initial
   activation.
 - Multi-channel to mono conversion (averages channels) supports every PCM

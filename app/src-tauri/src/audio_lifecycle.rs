@@ -1424,7 +1424,6 @@ mod tests {
                     AudioInitPhase::DeviceEnumeration,
                     AudioInitPhase::ConfigLookup,
                     AudioInitPhase::StreamBuild,
-                    AudioInitPhase::StreamPlay,
                 ] {
                     let _ = event_sender.send(AudioWorkerEvent::PhaseEntered { owner, phase });
                     let _ = event_sender.send(AudioWorkerEvent::PhaseExited {
@@ -1499,7 +1498,7 @@ mod tests {
                 let _ = event_sender.send(AudioWorkerEvent::RuntimeFailed {
                     owner,
                     failure: AudioFailure::new(
-                        AudioFailureKind::DeviceBusy,
+                        AudioFailureKind::StreamInvalidated,
                         AudioInitPhase::Runtime,
                     ),
                 });
@@ -1768,7 +1767,7 @@ mod tests {
         for phase in [
             AudioInitPhase::DeviceEnumeration,
             AudioInitPhase::StreamBuild,
-            AudioInitPhase::StreamPlay,
+            AudioInitPhase::FirstBufferWait,
         ] {
             let (supervisor, gate, _, sink, active_flags) =
                 harness(phase, SupervisorConfig::default());
@@ -2010,7 +2009,7 @@ mod tests {
     #[test]
     fn empty_first_buffer_event_cannot_enter_recording() {
         let (supervisor, gate, _, sink, active_flags) =
-            harness(AudioInitPhase::StreamPlay, SupervisorConfig::default());
+            harness(AudioInitPhase::FirstBufferWait, SupervisorConfig::default());
         let owner = AudioOwner::Dictation(10);
         assert_eq!(start(&supervisor, owner).recv().unwrap(), Ok(()));
         supervisor
@@ -2179,7 +2178,7 @@ mod tests {
     }
 
     #[test]
-    fn play_success_without_callback_fails_as_first_buffer_timeout() {
+    fn first_buffer_wait_without_callback_fails_as_timeout() {
         let sink = Arc::new(RecordingSink::default());
         let (phase_sender, phase_receiver) = mpsc::channel();
         let supervisor = spawn_supervisor(
@@ -2214,7 +2213,7 @@ mod tests {
                 .unwrap()
                 .iter()
                 .any(|(_, event)| *event == AudioLifecycleEvent::Ready),
-            "play success cannot become Recording without retained PCM"
+            "first-buffer wait cannot become Recording without retained PCM"
         );
         wait_until("no-callback worker did not exit after timeout", || {
             !supervisor.public.is_active()
@@ -2237,7 +2236,7 @@ mod tests {
                 matches!(
                     event,
                     AudioLifecycleEvent::InitializationFailed {
-                        kind: AudioFailureKind::DeviceBusy,
+                        kind: AudioFailureKind::StreamInvalidated,
                         ..
                     }
                 )
@@ -2255,7 +2254,7 @@ mod tests {
                     matches!(
                         event,
                         AudioLifecycleEvent::InitializationFailed {
-                            kind: AudioFailureKind::DeviceBusy,
+                            kind: AudioFailureKind::StreamInvalidated,
                             ..
                         }
                     )
