@@ -39,6 +39,7 @@ INSTALL_ID_RE = re.compile(r"^[0-9a-fA-F-]{8,64}$")
 MAX_INSTALLS = 150
 MAX_TOTAL = 10 * 1024 * 1024 * 1024  # 10 GB across all installs
 EXPORT_LIMITS = (200, 500)
+MAX_SCOPED_EXPORT_BYTES = 32 * 1024 * 1024
 LLM_REPORT_FORMAT = "murmur-fleet-llm/v1"
 _usage_cache = {"t": 0.0, "bytes": 0, "dirs": 0}
 
@@ -94,8 +95,12 @@ def tail_lines(path, n, max_bytes=64 * 1024):
         return []
 
 
-def tail_raw_lines(path, n):
-    """Return the exact newest n non-empty byte lines in chronological order."""
+class ExportWindowTooLarge(Exception):
+    pass
+
+
+def tail_raw_lines(path, n, max_bytes=MAX_SCOPED_EXPORT_BYTES):
+    """Return exact newest lines, or fail before returning a partial window."""
     if n <= 0:
         return []
     try:
@@ -103,14 +108,22 @@ def tail_raw_lines(path, n):
         remaining = size
         blocks = []
         newline_count = 0
+        read_bytes = 0
         with open(path, "rb") as f:
-            while remaining > 0 and newline_count <= n:
-                block_size = min(64 * 1024, remaining)
+            while (
+                remaining > 0
+                and newline_count <= n
+                and read_bytes < max_bytes
+            ):
+                block_size = min(64 * 1024, remaining, max_bytes - read_bytes)
                 remaining -= block_size
                 f.seek(remaining)
                 block = f.read(block_size)
                 blocks.append(block)
+                read_bytes += len(block)
                 newline_count += block.count(b"\n")
+        if remaining > 0 and newline_count <= n:
+            raise ExportWindowTooLarge
         lines = b"".join(reversed(blocks)).splitlines()
         return [line for line in lines if line.strip()][-n:]
     except OSError:
@@ -1198,9 +1211,9 @@ def load_json_file(path):
         return {}
 
 
-def load_recent_events(path, limit):
+def load_recent_events(path, limit, max_bytes=MAX_SCOPED_EXPORT_BYTES):
     events = []
-    for raw in tail_raw_lines(path, limit):
+    for raw in tail_raw_lines(path, limit, max_bytes=max_bytes):
         try:
             event = json.loads(raw)
         except ValueError:
@@ -2033,7 +2046,17 @@ class Handler(BaseHTTPRequestHandler):
                 except ValueError:
                     return self._reply(400, b"limit must be 200 or 500")
                 if limit is not None:
-                    lines = tail_raw_lines(path, limit)
+                    try:
+                        lines = tail_raw_lines(
+                            path,
+                            limit,
+                            max_bytes=MAX_SCOPED_EXPORT_BYTES,
+                        )
+                    except ExportWindowTooLarge:
+                        return self._reply(
+                            413,
+                            b"recent event window is too large; download entire log",
+                        )
                     payload = b"\n".join(lines) + (b"\n" if lines else b"")
                     return self._attachment(
                         payload,
@@ -2067,7 +2090,17 @@ class Handler(BaseHTTPRequestHandler):
                     limit = export_limit(params, default=200)
                 except ValueError:
                     return self._reply(400, b"limit must be 200 or 500")
-                events = load_recent_events(path, limit)
+                try:
+                    events = load_recent_events(
+                        path,
+                        limit,
+                        max_bytes=MAX_SCOPED_EXPORT_BYTES,
+                    )
+                except ExportWindowTooLarge:
+                    return self._reply(
+                        413,
+                        b"recent event window is too large; use raw entire log",
+                    )
                 meta = load_json_file(os.path.join(ROOT, install_id, "meta.json"))
                 state = load_json_file(os.path.join(ROOT, install_id, "state.json"))
                 report = render_llm_report(

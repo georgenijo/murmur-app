@@ -390,6 +390,18 @@ class LogReceiverExportTests(unittest.TestCase):
         self.assertEqual(records[0]["sequence"], 200)
         self.assertEqual(records[-1]["sequence"], 699)
 
+    def test_tail_raw_lines_fails_instead_of_returning_a_partial_window(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "events.jsonl"
+            path.write_text(
+                "\n".join(json.dumps({"value": "x" * 1_000}) for _ in range(10))
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(receiver.ExportWindowTooLarge):
+                receiver.tail_raw_lines(str(path), 10, max_bytes=512)
+
     def test_llm_report_maps_known_events_and_bounds_untrusted_content(self) -> None:
         events = [
             event(
@@ -504,7 +516,9 @@ class LogReceiverExportRouteTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
         self.original_root = receiver.ROOT
+        self.addCleanup(setattr, receiver, "ROOT", self.original_root)
         receiver.ROOT = self.directory.name
         install_dir = Path(self.directory.name) / self.install_id
         install_dir.mkdir()
@@ -541,15 +555,11 @@ class LogReceiverExportRouteTests(unittest.TestCase):
                 ("127.0.0.1", 0), receiver.Handler
             )
         self.server.daemon_threads = True
+        self.addCleanup(self.server.server_close)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
-
-    def tearDown(self) -> None:
-        self.server.shutdown()
-        self.server.server_close()
-        self.thread.join(timeout=2)
-        receiver.ROOT = self.original_root
-        self.directory.cleanup()
+        self.addCleanup(self.thread.join, 2)
+        self.addCleanup(self.server.shutdown)
 
     def get(self, path: str) -> tuple[int, dict[str, str], bytes]:
         connection = http.client.HTTPConnection(
@@ -599,6 +609,13 @@ class LogReceiverExportRouteTests(unittest.TestCase):
             full_headers["Content-Disposition"],
             'attachment; filename="murmur-12345678-prod.jsonl"',
         )
+
+        with mock.patch.object(receiver, "MAX_SCOPED_EXPORT_BYTES", 512):
+            capped_status, _, capped_body = self.get(
+                f"/install/{self.install_id}/raw?kind=prod&limit=200"
+            )
+        self.assertEqual(capped_status, 413)
+        self.assertIn(b"download entire log", capped_body)
 
     def test_llm_route_and_install_page_expose_bounded_controls(self) -> None:
         status, headers, body = self.get(
