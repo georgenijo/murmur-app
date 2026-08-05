@@ -39,6 +39,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- Fleet log install pages now offer exact latest-200/latest-500 JSONL downloads
+  and LLM-ready Markdown reports with plain-English event meanings, grouped
+  findings, bounded device context, and untrusted-telemetry guidance (#457).
 - The fleet diagnostics dashboard now leads with privacy-safe plain-English
   health for microphone capture, shortcuts, dictation, updates, and transforms;
   repeated warnings collapse into counted incidents, recovered fallback is
