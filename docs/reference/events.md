@@ -112,7 +112,8 @@ interface AppEvent {
   stream: StreamName;             // tracing target
   level: LevelName;
   summary: string;                // the tracing message
-  data: Record<string, unknown>;  // structured fields, after privacy stripping
+  data: Record<string, unknown>;  // structured fields after privacy stripping;
+                                  // high-value outcomes may include allowlisted event_code
 }
 
 type StreamName = 'pipeline' | 'audio' | 'keyboard' | 'transform' | 'system';

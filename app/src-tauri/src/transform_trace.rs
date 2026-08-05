@@ -45,6 +45,7 @@ pub fn resolution(
     if let Some(error_code) = error_code {
         tracing::info!(
             target: "transform",
+            event_code = "transform.pass_outcome",
             transform_pass_id,
             outcome,
             stage,
@@ -54,6 +55,7 @@ pub fn resolution(
     } else {
         tracing::info!(
             target: "transform",
+            event_code = "transform.pass_outcome",
             transform_pass_id,
             outcome,
             stage,

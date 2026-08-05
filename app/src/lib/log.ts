@@ -12,8 +12,18 @@ function write(level: string, tag: string, message: string, data?: Record<string
       && candidatePassId > 0
       ? candidatePassId
       : null;
+  const candidateEventCode = data?.event_code;
+  const eventCode =
+    typeof candidateEventCode === 'string'
+      ? candidateEventCode
+      : null;
   // Fire-and-forget — don't await, don't block the caller
-  invoke('log_frontend', { level, message: line, transformPassId }).catch(() => {});
+  invoke('log_frontend', {
+    level,
+    message: line,
+    transformPassId,
+    eventCode,
+  }).catch(() => {});
 }
 
 export const flog = {

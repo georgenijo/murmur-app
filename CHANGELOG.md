@@ -39,6 +39,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- The fleet diagnostics dashboard now leads with privacy-safe plain-English
+  health for microphone capture, shortcuts, dictation, updates, and transforms;
+  repeated warnings collapse into counted incidents, recovered fallback is
+  distinguished from failure, and raw technical evidence remains expandable
+  (#454).
 - Production microphone capture now runs behind a signed, killable helper with
   capture-scoped binary PCM framing, an allocation-free SPSC callback boundary,
   CPAL and direct AUHAL backends, exact-device pre-buffer failover, deterministic

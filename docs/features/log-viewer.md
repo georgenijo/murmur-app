@@ -25,7 +25,7 @@ type AppEvent = {
   stream: StreamName;   // "pipeline" | "audio" | "keyboard" | "transform" | "system"
   level: LevelName;     // "trace" | "debug" | "info" | "warn" | "error"
   summary: string;      // the tracing message
-  data: Record<string, unknown>; // structured fields
+  data: Record<string, unknown>; // structured fields; may include a stable event_code
 };
 ```
 
@@ -48,6 +48,14 @@ When the JSONL file exceeds 5MB, it is rotated — renamed to `.jsonl.1` — and
 ### Privacy Stripping
 
 In release builds, all string-valued fields from `pipeline` target events are stripped from the `data` object. Only numeric fields survive. For the `transform` stream in both debug and release builds, each string must match an explicit key-specific enum/bucket vocabulary; unknown keys or values are dropped. Numeric and boolean diagnostic fields are retained. The `summary` (message) field is not stripped and transform summaries are constant. This prevents transcription or transform content from being persisted in structured log data.
+
+The one exception to pipeline string removal is an exact allowlisted
+`event_code`. Event codes are fixed identifiers such as
+`pipeline.dictation_completed`; arbitrary values are removed. Transform event
+codes pass through the same exact-value allowlist. Frontend-originated codes
+are validated by Rust before entering the structured event. This gives local
+and fleet presentation layers a stable semantic key without permitting user
+content or arbitrary labels.
 
 ### Pretty-Printed Log File
 

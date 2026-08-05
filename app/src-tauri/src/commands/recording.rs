@@ -2782,7 +2782,12 @@ pub async fn stop_native_recording(
     let pipeline = match pipeline_result {
         Ok(result) => result,
         Err(error) => {
-            tracing::error!(target: "pipeline", "stop_native_recording: pipeline failed: {}", error);
+            tracing::error!(
+                target: "pipeline",
+                event_code = "pipeline.dictation_failed",
+                "stop_native_recording: pipeline failed: {}",
+                error
+            );
             return Err(error);
         }
     };
@@ -2805,6 +2810,7 @@ pub async fn stop_native_recording(
 
     tracing::info!(
         target: "pipeline",
+        event_code = "pipeline.dictation_completed",
         recording_id = rid,
         vad_ms = timings.vad_ms,
         model_load_ms = timings.model_load_ms,

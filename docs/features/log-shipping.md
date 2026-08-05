@@ -68,8 +68,9 @@ events.jsonl  ──(log_shipper.rs, every 60s)──▶  POST https://georgenij
 - Batches are cut at line boundaries, max 1 MB per POST, max 8 POSTs per tick.
 - Auth is a static bearer token baked into the binary — spam control for the
   public URL, not a security boundary.
-- Dev builds ship `events.dev.jsonl` with `X-Dev: 1`; the receiver stores them
-  as `events.dev.jsonl` so dev noise is separable.
+- Normal dev builds do not ship. The receiver acknowledges and discards
+  `X-Dev: 1` batches from older builds so their local retry offsets can advance
+  without adding development noise to the fleet.
 - `MURMUR_LOG_ENDPOINT=<url>` overrides the endpoint for testing.
 
 ### Receiver (whoop-vm)
@@ -86,8 +87,33 @@ events.jsonl  ──(log_shipper.rs, every 60s)──▶  POST https://georgenij
 
 `https://murmur.georgenijo.com` (Cloudflare Access, george.nijo8@gmail.com
 only) — one row per install stream with device name, OS, version, event count,
-and freshness; click a row for the per-device page (recent warnings/errors on
-top, last 200 events below). Served by the same receiver process.
+and freshness. Each installation page leads with a **Plain-English health**
+summary for microphone capture, shortcuts, dictation, updates, and transforms.
+Repeated equivalent problems are grouped with occurrence counts, and ordered
+evidence distinguishes automatic recovery from an unresolved failure. Raw
+events remain available in an expandable technical timeline and as a complete
+JSONL download. Served by the same receiver process.
+
+### Operator event semantics
+
+High-value producers attach an allowlisted, privacy-safe `event_code` inside
+the structured `data` object. Examples include
+`audio.capture_backend_timeout`, `audio.fallback_started`,
+`audio.capture_ready`, `audio.capture_failed`,
+`keyboard.listener_silent`, `pipeline.dictation_completed`,
+`transform.pass_outcome`, and `updater.install_failed`.
+
+The dashboard maps those stable codes plus bounded fields to operator-facing
+language. A bounded compatibility table recognizes the corresponding constant
+summary strings in historical JSONL. Unknown events are never guessed: warnings
+and errors remain visible as technical events with their original escaped
+summary and data.
+
+Health conclusions are limited to the loaded event window. A fallback is shown
+as recovered only when later readiness for the same audio owner proves it;
+otherwise the outcome remains degraded or unknown. Listener silence is
+diagnostic rather than proof of failure because an idle or sleeping Mac also
+produces no global keyboard callbacks.
 
 ## Reading the logs
 

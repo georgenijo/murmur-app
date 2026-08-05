@@ -782,6 +782,7 @@ fn handle_worker_event(
                 public.set_phase(PublicPhase::Recording);
                 tracing::info!(
                     target: "audio",
+                    event_code = "audio.capture_ready",
                     owner = owner.telemetry_id(),
                     owner_kind = owner.kind(),
                     startup_ms = current.accepted_at.elapsed().as_millis() as u64,
@@ -1051,6 +1052,7 @@ fn report_failure_once(attempt: &mut Attempt, sink: &dyn LifecycleSink, failure:
     attempt.failure_reported = true;
     tracing::error!(
         target: "audio",
+        event_code = "audio.lifecycle_failed",
         owner = attempt.owner.telemetry_id(),
         owner_kind = attempt.owner.kind(),
         error_kind = failure.kind.as_str(),
