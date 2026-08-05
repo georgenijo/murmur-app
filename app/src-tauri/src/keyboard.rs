@@ -852,7 +852,11 @@ fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
             // them directly from this background thread.
             #[cfg(target_os = "macos")]
             set_is_main_thread(false);
-            tracing::info!(target: "keyboard", "rdev listener thread started");
+            tracing::info!(
+                target: "keyboard",
+                event_code = "keyboard.listener_started",
+                "rdev listener thread started"
+            );
 
             let callback = move |event: Event| {
                 // The dictation listener (LISTENER_ACTIVE) and the transform
@@ -1276,7 +1280,12 @@ fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
             };
 
             if let Err(e) = listen(callback) {
-                tracing::error!(target: "keyboard", "rdev listener error: {:?}", e);
+                tracing::error!(
+                    target: "keyboard",
+                    event_code = "keyboard.listener_failed",
+                    "rdev listener error: {:?}",
+                    e
+                );
                 LISTENER_THREAD_SPAWNED.store(false, Ordering::SeqCst);
                 LISTENER_ACTIVE.store(false, Ordering::SeqCst);
                 let _ = error_handle.emit("keyboard-listener-error", format!("{:?}", e));
@@ -1298,6 +1307,7 @@ fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                     LAST_TAP_SILENCE_WARNING_AT_MS.store(now, Ordering::SeqCst);
                     tracing::warn!(
                         target: "keyboard",
+                        event_code = "keyboard.listener_silent",
                         silent_for_ms = silent_for_ms,
                         threshold_ms = TAP_SILENCE_WARNING_MS,
                         "listener heartbeat — no rdev callbacks observed"

@@ -37,3 +37,12 @@ curl -s https://georgenijo.com/murmur/healthz   # expect: ok
 `meta.json` (device identity), `state.json` (latest mic/device snapshot).
 Caps: 8 MB/request, 200 MB/install, 10 GB global, 150 installs.
 Dev-tagged batches are acked and discarded.
+
+## Tests
+
+The receiver stays stdlib-only. Its plain-English classification, recovery
+correlation, grouping, unknown-event fallback, and HTML escaping are covered by:
+
+```bash
+python3 -m unittest tests/test_log_receiver.py
+```

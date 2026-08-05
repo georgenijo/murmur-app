@@ -159,6 +159,703 @@ def ago(ts):
     return "%dd ago" % (s // 86400)
 
 
+HEALTH_AREAS = (
+    ("microphone", "Microphone"),
+    ("shortcuts", "Shortcuts"),
+    ("dictation", "Dictation"),
+    ("updates", "Updates"),
+    ("transforms", "Transforms"),
+)
+
+EVENT_CODE_COMPATIBILITY = (
+    ("rdev listener thread started", "keyboard.listener_started"),
+    ("listener heartbeat — no rdev callbacks observed", "keyboard.listener_silent"),
+    ("rdev listener error:", "keyboard.listener_failed"),
+    (
+        "capture backend exceeded its active initialization budget",
+        "audio.capture_backend_timeout",
+    ),
+    (
+        "capture backend failed before retained audio; trying bounded fallback",
+        "audio.fallback_started",
+    ),
+    ("audio readiness accepted", "audio.capture_ready"),
+    (
+        "both capture backend attempts failed before first PCM",
+        "audio.capture_failed",
+    ),
+    ("audio lifecycle failed", "audio.lifecycle_failed"),
+    ("transcription complete", "pipeline.dictation_completed"),
+    ("stop_native_recording: pipeline failed:", "pipeline.dictation_failed"),
+    ("transform_pass_outcome", "transform.pass_outcome"),
+    ("[updater] no update available", "updater.check_current"),
+    ("[updater] check failed", "updater.check_failed"),
+    (
+        "[updater] install blocked by macOS App Translocation",
+        "updater.install_blocked",
+    ),
+    ("[updater] installed, relaunching", "updater.install_ready"),
+    ("[updater] download/install failed", "updater.install_failed"),
+)
+
+STATUS_PRIORITY = {
+    "healthy": 0,
+    "diagnostic": 1,
+    "recovered": 2,
+    "degraded": 3,
+    "action": 4,
+}
+
+STATUS_LABELS = {
+    "healthy": "OK",
+    "diagnostic": "FYI",
+    "recovered": "Recovered",
+    "degraded": "Watch",
+    "action": "Action",
+}
+
+
+def event_code(event):
+    """Return a stable event code, with a bounded fallback for old JSONL."""
+    data = event.get("data")
+    if isinstance(data, dict):
+        code = data.get("event_code")
+        if isinstance(code, str) and re.match(r"^[a-z][a-z0-9_.-]{2,80}$", code):
+            return code
+    summary = str(event.get("summary", ""))
+    for prefix, code in EVENT_CODE_COMPATIBILITY:
+        if summary.startswith(prefix):
+            return code
+    return None
+
+
+def event_epoch(event):
+    try:
+        return datetime.fromisoformat(
+            str(event.get("timestamp", "")).replace("Z", "+00:00")
+        ).timestamp()
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def display_event_time(event):
+    try:
+        dt = datetime.fromisoformat(
+            str(event.get("timestamp", "")).replace("Z", "+00:00")
+        )
+        return dt.astimezone(EASTERN).strftime("%b %-d, %H:%M:%S")
+    except (ValueError, TypeError):
+        return str(event.get("timestamp", ""))[:24] or "unknown"
+
+
+def event_value(event, key, default=None):
+    data = event.get("data")
+    return data.get(key, default) if isinstance(data, dict) else default
+
+
+def event_label(event, key, default):
+    """Return a normalized, bounded label for one structured data value."""
+    value = event_value(event, key, default)
+    text = str(value if value not in (None, "") else default)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:40] or str(default)
+
+
+def format_duration_ms(value):
+    try:
+        milliseconds = max(0, int(value))
+    except (TypeError, ValueError):
+        return None
+    if milliseconds < 1_000:
+        return "%d ms" % milliseconds
+    if milliseconds < 60_000:
+        return "%.1f seconds" % (milliseconds / 1_000)
+    if milliseconds < 3_600_000:
+        return "%d minutes" % (milliseconds // 60_000)
+    hours = milliseconds / 3_600_000
+    return "%.1f hours" % hours
+
+
+def signal(
+    area,
+    status,
+    code,
+    title,
+    explanation,
+    action,
+    events,
+    group=None,
+):
+    source_events = list(events)
+    return {
+        "area": area,
+        "status": status,
+        "code": code,
+        "group": group or code,
+        "title": title,
+        "explanation": explanation,
+        "action": action,
+        "events": source_events,
+        "first_epoch": min((event_epoch(e) for e in source_events), default=0),
+        "last_epoch": max((event_epoch(e) for e in source_events), default=0),
+        "count": 1,
+    }
+
+
+def classify_event(event):
+    """Translate one event without guessing beyond its stable evidence."""
+    code = event_code(event)
+    if code == "keyboard.listener_started":
+        return signal(
+            "shortcuts",
+            "healthy",
+            code,
+            "Shortcut listener started",
+            "Murmur is listening for the configured global shortcut.",
+            "No action required.",
+            [event],
+        )
+    if code == "keyboard.listener_silent":
+        elapsed = format_duration_ms(event_value(event, "silent_for_ms"))
+        detail = (
+            "No global keyboard callback was observed for %s." % elapsed
+            if elapsed
+            else "No global keyboard callback was observed for a while."
+        )
+        return signal(
+            "shortcuts",
+            "diagnostic",
+            code,
+            "No recent shortcut activity",
+            detail + " This is usually normal while the Mac is idle or asleep.",
+            "Check only if Murmur's shortcut has stopped responding.",
+            [event],
+        )
+    if code == "keyboard.listener_failed":
+        return signal(
+            "shortcuts",
+            "action",
+            code,
+            "Shortcut listener failed",
+            "Murmur's global keyboard listener exited with an error.",
+            "Restart Murmur, then verify Accessibility permission if shortcuts still fail.",
+            [event],
+        )
+    if code == "audio.capture_backend_timeout":
+        backend = event_label(event, "backend", "primary")
+        setup_step = event_label(event, "last_setup_step", "none")
+        where = (
+            " while opening %s" % setup_step.replace("_", " ")
+            if setup_step != "none"
+            else ""
+        )
+        return signal(
+            "microphone",
+            "degraded",
+            code,
+            "A microphone backend timed out",
+            "The %s capture backend took too long%s." % (backend, where),
+            "Murmur may recover by switching backends; check the later outcome.",
+            [event],
+        )
+    if code == "audio.fallback_started":
+        source = event_label(event, "from_backend", "primary")
+        target = event_label(event, "to_backend", "backup")
+        return signal(
+            "microphone",
+            "degraded",
+            code,
+            "Murmur switched microphone backends",
+            "The %s backend failed before audio arrived, so Murmur tried %s."
+            % (source, target),
+            "The loaded events do not yet prove whether fallback succeeded.",
+            [event],
+        )
+    if code == "audio.capture_ready":
+        startup = format_duration_ms(event_value(event, "startup_ms"))
+        detail = "Microphone audio became ready"
+        if startup:
+            detail += " in %s" % startup
+        return signal(
+            "microphone",
+            "healthy",
+            code,
+            "Microphone started",
+            detail + ".",
+            "No action required.",
+            [event],
+        )
+    if code in ("audio.capture_failed", "audio.lifecycle_failed"):
+        kind = event_label(event, "error_kind", "")
+        detail = "Murmur could not start or retain microphone audio."
+        if kind:
+            detail += " The reported failure was %s." % kind.replace("_", " ")
+        return signal(
+            "microphone",
+            "action",
+            code,
+            "Microphone failed",
+            detail,
+            "Try recording again; inspect Technical details if the failure repeats.",
+            [event],
+            group="audio.capture_failed",
+        )
+    if code == "pipeline.dictation_completed":
+        duration = format_duration_ms(event_value(event, "total_ms"))
+        detail = "The most recent recognized dictation completed successfully"
+        if duration:
+            detail += " in %s" % duration
+        return signal(
+            "dictation",
+            "healthy",
+            code,
+            "Dictation completed",
+            detail + ".",
+            "No action required.",
+            [event],
+        )
+    if code == "pipeline.dictation_failed":
+        return signal(
+            "dictation",
+            "action",
+            code,
+            "Dictation processing failed",
+            "Microphone audio reached the processing pipeline, but dictation did not complete.",
+            "Retry once; inspect Technical details if it happens again.",
+            [event],
+        )
+    if code == "updater.check_current":
+        return signal(
+            "updates",
+            "healthy",
+            code,
+            "Murmur is up to date",
+            "The latest update check completed and found no newer release.",
+            "No action required.",
+            [event],
+        )
+    if code == "updater.check_failed":
+        return signal(
+            "updates",
+            "degraded",
+            code,
+            "Update check failed",
+            "Murmur could not check for a new version.",
+            "Murmur will try again later; check the network if this persists.",
+            [event],
+        )
+    if code == "updater.install_blocked":
+        return signal(
+            "updates",
+            "action",
+            code,
+            "Update installation is blocked",
+            "macOS App Translocation prevents Murmur from safely installing the update.",
+            "Move Murmur to Applications from Finder, reopen it, and retry.",
+            [event],
+        )
+    if code == "updater.install_ready":
+        return signal(
+            "updates",
+            "healthy",
+            code,
+            "Update installed",
+            "The update finished installing and Murmur began relaunching.",
+            "No action required.",
+            [event],
+        )
+    if code == "updater.install_failed":
+        return signal(
+            "updates",
+            "action",
+            code,
+            "Update installation failed",
+            "Murmur could not finish downloading or installing the update.",
+            "Retry the update; inspect Technical details if it fails again.",
+            [event],
+        )
+    if code == "transform.pass_outcome":
+        outcome = event_label(event, "outcome", "unknown")
+        if outcome in ("ok", "ready", "applied", "undone"):
+            status = "healthy"
+            title = "Transform completed"
+            explanation = "The selected-text transform reached %s." % outcome
+            action = "No action required."
+        elif outcome in ("cancelled", "capture_aborted", "empty"):
+            status = "diagnostic"
+            title = "Transform did not make a change"
+            explanation = "The transform ended as %s." % outcome.replace("_", " ")
+            action = "No action required unless this was unexpected."
+        elif outcome in ("error", "failed", "transcription_error"):
+            status = "action"
+            title = "Transform failed"
+            explanation = "The selected-text transform did not complete."
+            action = "Retry once; inspect Technical details if it repeats."
+        else:
+            status = "diagnostic"
+            title = "Transform outcome recorded"
+            explanation = "Murmur recorded a transform outcome it cannot summarize safely."
+            action = "Inspect Technical details for the raw outcome."
+        group_outcome = (
+            outcome
+            if outcome
+            in (
+                "ok",
+                "ready",
+                "applied",
+                "undone",
+                "cancelled",
+                "capture_aborted",
+                "empty",
+                "error",
+                "failed",
+                "transcription_error",
+            )
+            else "other"
+        )
+        return signal(
+            "transforms",
+            status,
+            code,
+            title,
+            explanation,
+            action,
+            [event],
+            group="transform.pass_outcome.%s" % group_outcome,
+        )
+    return None
+
+
+def correlation_key(event):
+    owner = event_value(event, "owner")
+    if isinstance(owner, int) and not isinstance(owner, bool) and 0 <= owner < 2**64:
+        return str(owner)
+    if isinstance(owner, str) and owner.isdigit() and len(owner) <= 20:
+        return str(int(owner))
+    return None
+
+
+def build_health_signals(events):
+    """Build ordered health signals, correlating fallback with later readiness."""
+    signals = []
+    pending_timeouts = {}
+    pending_fallbacks = {}
+    failure_signals = {}
+    for event in events:
+        code = event_code(event)
+        if code == "audio.capture_backend_timeout":
+            key = correlation_key(event)
+            if key is None:
+                classified = classify_event(event)
+                if classified:
+                    signals.append(classified)
+            else:
+                pending_timeouts[key] = event
+            continue
+        if code == "audio.fallback_started":
+            key = correlation_key(event)
+            if key is None:
+                classified = classify_event(event)
+                if classified:
+                    signals.append(classified)
+                continue
+            evidence = []
+            timeout = pending_timeouts.pop(key, None)
+            if timeout:
+                evidence.append(timeout)
+            evidence.append(event)
+            pending_fallbacks[key] = evidence
+            continue
+        if code == "audio.capture_ready":
+            key = correlation_key(event)
+            fallback = pending_fallbacks.pop(key, None) if key is not None else None
+            if fallback:
+                source = event_label(fallback[-1], "from_backend", "primary")
+                target = event_label(fallback[-1], "to_backend", "backup")
+                signals.append(
+                    signal(
+                        "microphone",
+                        "recovered",
+                        "audio.fallback_recovered",
+                        "Microphone recovered with its backup backend",
+                        "The %s backend failed, Murmur switched to %s, and audio became ready."
+                        % (source, target),
+                        "No action required unless fallback happens repeatedly.",
+                        fallback + [event],
+                    )
+                )
+                continue
+        if code in ("audio.capture_failed", "audio.lifecycle_failed"):
+            key = correlation_key(event)
+            fallback = pending_fallbacks.pop(key, None) if key is not None else None
+            existing_failure = failure_signals.get(key) if key is not None else None
+            if existing_failure is not None:
+                existing_failure["events"].append(event)
+                existing_failure["last_epoch"] = max(
+                    existing_failure["last_epoch"], event_epoch(event)
+                )
+                continue
+            classified = classify_event(event)
+            if classified:
+                if fallback:
+                    classified["events"] = fallback + classified["events"]
+                    classified["first_epoch"] = min(
+                        event_epoch(e) for e in classified["events"]
+                    )
+                signals.append(classified)
+                if key is not None:
+                    failure_signals[key] = classified
+            continue
+        classified = classify_event(event)
+        if classified:
+            signals.append(classified)
+
+    for event in pending_timeouts.values():
+        classified = classify_event(event)
+        if classified:
+            signals.append(classified)
+    for evidence in pending_fallbacks.values():
+        classified = classify_event(evidence[-1])
+        if classified:
+            classified["events"] = evidence
+            classified["first_epoch"] = min(event_epoch(e) for e in evidence)
+            signals.append(classified)
+    signals.sort(key=lambda item: item["last_epoch"])
+    return signals
+
+
+def unknown_problem_signal(event):
+    level = str(event.get("level", "info"))
+    if level not in ("warn", "error"):
+        return None
+    summary = str(event.get("summary", ""))[:160] or "Unlabeled technical event"
+    status = "action" if level == "error" else "diagnostic"
+    return signal(
+        "technical",
+        status,
+        "unknown.%s" % level,
+        "Technical error" if level == "error" else "Technical warning",
+        summary,
+        "Review the raw event; Murmur has no safe plain-English mapping for it yet.",
+        [event],
+        group="unknown.%s.%s.%s"
+        % (level, str(event.get("stream", ""))[:40], summary),
+    )
+
+
+def group_problem_signals(events, signals):
+    recognized_ids = {id(event) for item in signals for event in item["events"]}
+    problem_signals = [item for item in signals if item["status"] != "healthy"]
+    for event in events:
+        if id(event) in recognized_ids:
+            continue
+        unknown = unknown_problem_signal(event)
+        if unknown:
+            problem_signals.append(unknown)
+
+    grouped = {}
+    for item in problem_signals:
+        key = item["group"]
+        existing = grouped.get(key)
+        if existing is None:
+            grouped[key] = dict(item)
+            grouped[key]["events"] = list(item["events"])
+            continue
+        existing["count"] += item["count"]
+        existing["first_epoch"] = min(existing["first_epoch"], item["first_epoch"])
+        existing["last_epoch"] = max(existing["last_epoch"], item["last_epoch"])
+        existing["events"].extend(item["events"])
+        if STATUS_PRIORITY[item["status"]] > STATUS_PRIORITY[existing["status"]]:
+            existing["status"] = item["status"]
+            existing["title"] = item["title"]
+            existing["explanation"] = item["explanation"]
+            existing["action"] = item["action"]
+
+    return sorted(
+        grouped.values(),
+        key=lambda item: (STATUS_PRIORITY[item["status"]], item["last_epoch"]),
+        reverse=True,
+    )
+
+
+def build_health_cards(signals, state):
+    cards = {
+        area: {
+            "area": area,
+            "label": label,
+            "status": "diagnostic",
+            "title": "No recent evidence",
+            "explanation": "No recognized health event is present in the loaded log window.",
+            "action": "Open the raw timeline for older or unmapped events.",
+            "last_epoch": 0,
+            "events": [],
+        }
+        for area, label in HEALTH_AREAS
+    }
+    for item in signals:
+        area = item["area"]
+        if area not in cards:
+            continue
+        cards[area] = {
+            "area": area,
+            "label": dict(HEALTH_AREAS)[area],
+            "status": item["status"],
+            "title": item["title"],
+            "explanation": item["explanation"],
+            "action": item["action"],
+            "last_epoch": item["last_epoch"],
+            "events": item["events"],
+        }
+    if isinstance(state, dict) and "default_input_available" in state:
+        state_epoch = state.get("received_at", 0)
+        if not isinstance(state_epoch, (int, float)):
+            state_epoch = 0
+        microphone = cards["microphone"]
+        if state_epoch >= microphone["last_epoch"]:
+            if state.get("input_enumeration_ok") is False:
+                microphone.update(
+                    status="diagnostic",
+                    title="Microphone status unavailable",
+                    explanation="Murmur could not enumerate audio inputs in the latest state check.",
+                    action="Check again after capture is idle.",
+                    last_epoch=state_epoch,
+                    events=[],
+                )
+            elif state.get("default_input_available") is False:
+                microphone.update(
+                    status="action",
+                    title="No default microphone available",
+                    explanation="The latest privacy-safe state snapshot found no default input.",
+                    action="Connect or select a microphone, then retry.",
+                    last_epoch=state_epoch,
+                    events=[],
+                )
+    return [cards[area] for area, _ in HEALTH_AREAS]
+
+
+def raw_event_row(event):
+    level = str(event.get("level", "info"))
+    row_class = level if level in ("warn", "error") else ""
+    data = event.get("data")
+    data = data if isinstance(data, dict) else {}
+    data_str = " ".join(
+        "%s=%s" % (key, value) for key, value in list(data.items())[:6]
+    )
+    return (
+        '<tr class="%s"><td class="num">%s</td>'
+        '<td><span class="stream">%s</span></td>'
+        '<td><span class="lvl %s">%s</span></td>'
+        '<td><code>%s</code><div class="meta">%s</div></td></tr>'
+        % (
+            row_class,
+            html.escape(eastern_time(str(event.get("timestamp", "")))),
+            html.escape(str(event.get("stream", ""))),
+            html.escape(level),
+            html.escape(level),
+            html.escape(str(event.get("summary", ""))[:160]),
+            html.escape(data_str[:160]),
+        )
+    )
+
+
+def compact_event(event):
+    level = str(event.get("level", "info"))
+    data = event.get("data")
+    data = data if isinstance(data, dict) else {}
+    data_str = " ".join(
+        "%s=%s" % (key, value) for key, value in list(data.items())[:6]
+    )
+    return (
+        '<div class="health-event %s"><div class="health-event-head">'
+        '<span class="num">%s</span><span class="stream">%s</span>'
+        '<span class="lvl %s">%s</span></div><code>%s</code>'
+        '<div class="meta">%s</div></div>'
+        % (
+            html.escape(level if level in ("warn", "error") else "info"),
+            html.escape(eastern_time(str(event.get("timestamp", "")))),
+            html.escape(str(event.get("stream", ""))),
+            html.escape(level),
+            html.escape(level),
+            html.escape(str(event.get("summary", ""))[:160]),
+            html.escape(data_str[:160]),
+        )
+    )
+
+
+def render_health_card(card):
+    seen = (
+        "Last evidence %s" % ago(card["last_epoch"])
+        if card["last_epoch"]
+        else "No recognized event in this window"
+    )
+    evidence = ""
+    if card.get("events"):
+        evidence = (
+            '<details class="health-evidence"><summary>Technical details</summary>'
+            '<div class="health-source">%s</div></details>'
+            % "".join(
+                compact_event(event)
+                for event in sorted(card["events"], key=event_epoch, reverse=True)
+            )
+        )
+    return (
+        '<article class="health-card %s">'
+        '<div class="health-head"><span class="health-area">%s</span>'
+        '<span class="status %s">%s</span></div>'
+        '<strong>%s</strong><p>%s</p>'
+        '<div class="meta">%s · %s</div>%s</article>'
+        % (
+            html.escape(card["status"]),
+            html.escape(card["label"]),
+            html.escape(card["status"]),
+            html.escape(STATUS_LABELS.get(card["status"], card["status"])),
+            html.escape(card["title"]),
+            html.escape(card["explanation"]),
+            html.escape(card["action"]),
+            html.escape(seen),
+            evidence,
+        )
+    )
+
+
+def render_problem_group(item):
+    evidence = sorted(item["events"], key=event_epoch, reverse=True)
+    shown = evidence[:20]
+    hidden_note = ""
+    if len(evidence) > len(shown):
+        hidden_note = (
+            '<p class="meta">Showing the newest %d of %d source events. '
+            "The raw timeline below retains the complete loaded evidence.</p>"
+            % (len(shown), len(evidence))
+        )
+    first_event = min(evidence, key=event_epoch) if evidence else {}
+    last_event = max(evidence, key=event_epoch) if evidence else {}
+    occurrence = "1 occurrence" if item["count"] == 1 else "%d occurrences" % item["count"]
+    return (
+        '<details class="problem-card %s"><summary>'
+        '<span><span class="status %s">%s</span><strong>%s</strong>'
+        '<span class="problem-copy">%s</span></span>'
+        '<span class="problem-count">%s</span></summary>'
+        '<div class="problem-detail"><p>%s</p><p><strong>%s</strong></p>'
+        '<p class="meta">First seen %s · Last seen %s</p>'
+        "%s<table><tbody>%s</tbody></table></div></details>"
+        % (
+            html.escape(item["status"]),
+            html.escape(item["status"]),
+            html.escape(STATUS_LABELS.get(item["status"], item["status"])),
+            html.escape(item["title"]),
+            html.escape(item["explanation"]),
+            html.escape(occurrence),
+            html.escape(item["explanation"]),
+            html.escape(item["action"]),
+            html.escape(display_event_time(first_event)),
+            html.escape(display_event_time(last_event)),
+            hidden_note,
+            "".join(raw_event_row(event) for event in shown),
+        )
+    )
+
+
 def render_dashboard():
     installs = collect_installs()
     now = time.time()
@@ -213,8 +910,9 @@ def render_dashboard():
 <meta http-equiv="refresh" content="30">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>murmur fleet logs</title><style>
-body{background:#0b1120;color:#e2e8f0;font:15px/1.5 -apple-system,system-ui,sans-serif;margin:2rem auto;max-width:70rem;padding:0 1rem}
+body{background:#0b1120;color:#e2e8f0;font:15px/1.5 -apple-system,system-ui,sans-serif;margin:2rem auto;max-width:78rem;padding:0 1rem}
 h1{font-size:1.3rem;margin:0}
+h2{font-size:1rem;margin:1.7rem 0 .7rem}
 .sub{color:#64748b;margin:.3rem 0 1.4rem;font-size:.85rem}
 table{border-collapse:collapse;width:100%%}
 th{text-align:left;color:#64748b;font-size:.75rem;text-transform:uppercase;letter-spacing:.05em;padding:.4rem .7rem;border-bottom:1px solid #1e293b}
@@ -234,6 +932,33 @@ tr.warn td{background:#2a1e0a}tr.error td{background:#2a0f14}
 .lvl.info{color:#94a3b8}.lvl.warn{background:#3b2f14;color:#fbbf24}.lvl.error{background:#450a0a;color:#f87171}
 .stream{color:#818cf8;font-size:.8em}
 .back{color:#64748b;font-size:.85rem}
+.health-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(13rem,1fr));gap:.7rem}
+.health-card{border:1px solid #1e293b;border-radius:12px;background:#111a2d;padding:.8rem .9rem;min-height:8.5rem}
+.health-card.healthy{border-color:#14532d}.health-card.recovered{border-color:#854d0e}
+.health-card.degraded{border-color:#92400e}.health-card.action{border-color:#7f1d1d}
+.health-head{display:flex;align-items:center;justify-content:space-between;gap:.5rem;margin-bottom:.55rem}
+.health-area{color:#94a3b8;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
+.health-card strong{display:block;font-size:.92rem}.health-card p{color:#cbd5e1;font-size:.82rem;margin:.3rem 0 .65rem}
+.health-evidence{margin-top:.65rem}.health-evidence>summary{color:#93c5fd;cursor:pointer;font-size:.73rem}
+.health-source{display:grid;gap:.35rem;margin-top:.45rem;max-height:14rem;overflow-x:hidden;overflow-y:auto}
+.health-event{border-left:2px solid #334155;padding:.35rem .45rem}.health-event.warn{border-color:#854d0e}.health-event.error{border-color:#7f1d1d}
+.health-event-head{align-items:center;display:flex;gap:.4rem;margin-bottom:.22rem}.health-event code{display:block;overflow-wrap:anywhere;white-space:normal;word-break:break-word}
+.status{display:inline-block;border-radius:99px;font-size:.65rem;font-weight:750;letter-spacing:.035em;padding:.12rem .42rem;text-transform:uppercase;white-space:nowrap}
+.status.healthy{background:#14532d;color:#86efac}.status.diagnostic{background:#1e293b;color:#94a3b8}
+.status.recovered{background:#713f12;color:#fde68a}.status.degraded{background:#78350f;color:#fbbf24}
+.status.action{background:#7f1d1d;color:#fecaca}
+.problem-list{display:grid;gap:.55rem}
+.problem-card{border:1px solid #1e293b;border-radius:10px;background:#111827;overflow:hidden}
+.problem-card.action{border-color:#7f1d1d}.problem-card.degraded{border-color:#92400e}
+.problem-card.recovered{border-color:#854d0e}
+.problem-card summary{align-items:center;cursor:pointer;display:flex;justify-content:space-between;gap:1rem;list-style:none;padding:.75rem .85rem}
+.problem-card summary::-webkit-details-marker{display:none}
+.problem-card summary>span:first-child{align-items:center;display:flex;flex-wrap:wrap;gap:.55rem;min-width:0}
+.problem-copy{color:#94a3b8;font-size:.8rem}.problem-count{color:#64748b;font-size:.76rem;white-space:nowrap}
+.problem-detail{border-top:1px solid #1e293b;padding:.15rem .85rem .85rem}
+.problem-detail p{font-size:.84rem;margin:.6rem 0}
+.raw-timeline{border-top:1px solid #1e293b;margin-top:1.8rem;padding-top:.6rem}
+.raw-timeline>summary{cursor:pointer;font-size:1rem;font-weight:700;margin:.6rem 0}
 </style></head><body>%s</body></html>""" % body
 
 
@@ -257,28 +982,6 @@ def render_install(install_id, kind, n=200):
             events.append(json.loads(line))
         except ValueError:
             continue
-    problems = [e for e in events if e.get("level") in ("warn", "error")]
-
-    def row(e):
-        lvl = e.get("level", "info")
-        cls = lvl if lvl in ("warn", "error") else ""
-        data = e.get("data") or {}
-        data_str = " ".join("%s=%s" % (k, v) for k, v in list(data.items())[:6])
-        return (
-            '<tr class="%s"><td class="num">%s</td>'
-            '<td><span class="stream">%s</span></td>'
-            '<td><span class="lvl %s">%s</span></td>'
-            '<td><code>%s</code><div class="meta">%s</div></td></tr>'
-            % (
-                cls,
-                html.escape(eastern_time(str(e.get("timestamp", "")))),
-                html.escape(str(e.get("stream", ""))),
-                lvl,
-                lvl,
-                html.escape(str(e.get("summary", ""))[:160]),
-                html.escape(data_str[:160]),
-            )
-        )
 
     title = meta.get("device_name") or install_id[:8]
     sub = " · ".join(
@@ -290,38 +993,96 @@ def render_install(install_id, kind, n=200):
             install_id,
         ) if x
     )
-    info_html = ""
+    state = {}
     try:
         with open(os.path.join(ROOT, install_id, "state.json")) as f:
             state = json.load(f)
-        others = [d for d in state.get("input_devices", []) if d != state.get("default_input")]
+    except (OSError, ValueError):
+        pass
+
+    signals = build_health_signals(events)
+    health_cards = build_health_cards(signals, state)
+    problem_groups = group_problem_signals(events, signals)
+    health_html = (
+        "<h2>Plain-English health</h2>"
+        "<div class='health-grid'>%s</div>"
+        "<p class='meta'>Based on the %d loaded events. Unknown events remain "
+        "visible in the technical timeline and are never guessed.</p>"
+        % ("".join(render_health_card(card) for card in health_cards), len(events))
+    )
+
+    info_html = ""
+    if state:
         chips = []
         for ev in reversed(events):
             if str(ev.get("summary", "")).startswith("configure_dictation"):
                 data = ev.get("data") or {}
                 chips = ["%s: %s" % (k, v) for k, v in sorted(data.items())][:12]
                 break
+        if "default_input_available" in state:
+            microphone = "Available" if state.get("default_input_available") else "Unavailable"
+            input_count = state.get("input_device_count")
+            inputs = (
+                "%s detected%s"
+                % (
+                    input_count,
+                    " (count capped)" if state.get("input_device_count_capped") else "",
+                )
+                if isinstance(input_count, int)
+                else "unknown"
+            )
+            enumeration = (
+                "Succeeded" if state.get("input_enumeration_ok") else "Failed"
+            )
+        else:
+            microphone = state.get("default_input") or "unknown"
+            others = [
+                device
+                for device in state.get("input_devices", [])
+                if device != state.get("default_input")
+            ]
+            inputs = ", ".join(others) or "unknown"
+            enumeration = "Legacy state snapshot"
         info_html = (
             '<h2>quick info</h2><table><tbody>'
             '<tr><td>Microphone</td><td><strong>%s</strong></td></tr>'
-            '<tr><td>Other inputs</td><td>%s</td></tr>'
+            '<tr><td>Inputs</td><td>%s</td></tr>'
+            '<tr><td>Enumeration</td><td>%s</td></tr>'
             '<tr><td>Settings</td><td class="meta">%s</td></tr>'
             '<tr><td>As of</td><td>%s</td></tr>'
             '</tbody></table>'
             % (
-                html.escape(state.get("default_input") or "unknown"),
-                html.escape(", ".join(others)) or "&mdash;",
+                html.escape(str(microphone)),
+                html.escape(str(inputs)),
+                html.escape(str(enumeration)),
                 html.escape(" · ".join(chips)) or "&mdash;",
                 ago(state.get("received_at", 0)),
             )
         )
-    except (OSError, ValueError):
-        pass
-    problems_html = ""
-    if problems:
-        problems_html = (
-            "<h2>recent warnings &amp; errors (%d)</h2><table><tbody>%s</tbody></table>"
-            % (len(problems), "".join(row(e) for e in reversed(problems[-25:])))
+
+    attention_groups = [
+        item for item in problem_groups if item["status"] in ("action", "degraded")
+    ]
+    explanation_groups = [
+        item for item in problem_groups if item["status"] in ("recovered", "diagnostic")
+    ]
+    if attention_groups:
+        attention_html = (
+            "<h2>What needs attention</h2><div class='problem-list'>%s</div>"
+            % "".join(render_problem_group(item) for item in attention_groups[:25])
+        )
+    else:
+        attention_html = (
+            "<h2>What needs attention</h2>"
+            "<p class='sub'>No recognized problems in the loaded event window.</p>"
+        )
+    explanations_html = ""
+    if explanation_groups:
+        explanations_html = (
+            "<h2>Recent explanations</h2>"
+            "<p class='sub'>Grouped background signals and incidents that recovered "
+            "without requiring action.</p><div class='problem-list'>%s</div>"
+            % "".join(render_problem_group(item) for item in explanation_groups[:25])
         )
     base = "/install/%s" % install_id
     body = (
@@ -331,19 +1092,21 @@ def render_install(install_id, kind, n=200):
         "show last <a href='%s?kind=%s&n=200'>200</a> / "
         "<a href='%s?kind=%s&n=1000'>1,000</a> / "
         "<a href='%s?kind=%s&n=5000'>5,000</a> &middot; "
-        "<a href='%s/raw?kind=%s'>&darr; download entire log (.jsonl)</a></p>%s%s"
-        "<h2>last %d events (newest first)</h2>"
-        "<table><tbody>%s</tbody></table>"
+        "<a href='%s/raw?kind=%s'>&darr; download entire log (.jsonl)</a></p>"
+        "%s%s%s"
+        "<details class='raw-timeline'><summary>Raw technical timeline "
+        "(%d loaded events)</summary><table><tbody>%s</tbody></table></details>"
         % (
             html.escape(title),
             html.escape(sub),
             "{:,}".format(total),
             size_mb,
             base, kind, base, kind, base, kind, base, kind,
+            health_html,
             info_html,
-            problems_html,
+            attention_html + explanations_html,
             len(events),
-            "".join(row(e) for e in reversed(events)),
+            "".join(raw_event_row(event) for event in reversed(events)),
         )
     )
     page = render_dashboard()  # reuse the <style> shell

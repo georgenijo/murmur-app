@@ -170,8 +170,31 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for TauriEmitterLayer 
 /// discipline. Transform traces may retain only stable enum/bucket fields;
 /// arbitrary strings (and therefore transform content, paths, app/device
 /// identifiers, or raw errors) are discarded in both debug and release builds.
+pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
+    match value {
+        "keyboard.listener_started" => Some("keyboard.listener_started"),
+        "keyboard.listener_silent" => Some("keyboard.listener_silent"),
+        "keyboard.listener_failed" => Some("keyboard.listener_failed"),
+        "audio.capture_backend_timeout" => Some("audio.capture_backend_timeout"),
+        "audio.fallback_started" => Some("audio.fallback_started"),
+        "audio.capture_ready" => Some("audio.capture_ready"),
+        "audio.capture_failed" => Some("audio.capture_failed"),
+        "audio.lifecycle_failed" => Some("audio.lifecycle_failed"),
+        "pipeline.dictation_completed" => Some("pipeline.dictation_completed"),
+        "pipeline.dictation_failed" => Some("pipeline.dictation_failed"),
+        "transform.pass_outcome" => Some("transform.pass_outcome"),
+        "updater.check_current" => Some("updater.check_current"),
+        "updater.check_failed" => Some("updater.check_failed"),
+        "updater.install_blocked" => Some("updater.install_blocked"),
+        "updater.install_ready" => Some("updater.install_ready"),
+        "updater.install_failed" => Some("updater.install_failed"),
+        _ => None,
+    }
+}
+
 fn is_safe_transform_string(key: &str, value: &str) -> bool {
     match key {
+        "event_code" => canonical_event_code(value).is_some(),
         "event" => matches!(value, "hold_start" | "hold_stop" | "armed" | "stopped"),
         "reason" => matches!(
             value,
@@ -321,7 +344,13 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
         return;
     };
     if !debug_build && stream == "pipeline" {
-        obj.retain(|_, value| !value.is_string());
+        obj.retain(|key, value| {
+            !value.is_string()
+                || (key == "event_code"
+                    && value
+                        .as_str()
+                        .is_some_and(|code| canonical_event_code(code).is_some()))
+        });
         return;
     }
     if stream == "transform" {
@@ -559,6 +588,7 @@ mod tests {
     #[test]
     fn transform_event_sanitizer_keeps_documented_stable_values() {
         let mut data = serde_json::json!({
+            "event_code": "transform.pass_outcome",
             "event": "hold_stop",
             "reason": "released",
             "from": "listening",
@@ -574,6 +604,7 @@ mod tests {
 
         sanitize_event_data("transform", &mut data, true);
 
+        assert_eq!(data["event_code"], "transform.pass_outcome");
         assert_eq!(data["event"], "hold_stop");
         assert_eq!(data["reason"], "released");
         assert_eq!(data["from"], "listening");
@@ -594,6 +625,7 @@ mod tests {
             "transform_pass_id": 23,
             "duration_ms": 9,
             "won": true,
+            "event_code": sentinel,
             "event": sentinel,
             "reason": sentinel,
             "from": sentinel,
@@ -616,5 +648,28 @@ mod tests {
         assert!(!encoded.contains("SENTINEL"));
         assert!(!encoded.contains("/Users/private"));
         assert_eq!(data.as_object().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn release_pipeline_keeps_only_allowlisted_event_codes_from_string_fields() {
+        let mut data = serde_json::json!({
+            "recording_id": 9,
+            "total_ms": 420,
+            "event_code": "pipeline.dictation_completed",
+            "model": "PRIVATE_MODEL",
+            "error": "/Users/private/project"
+        });
+
+        sanitize_event_data("pipeline", &mut data, false);
+
+        assert_eq!(data["recording_id"], 9);
+        assert_eq!(data["total_ms"], 420);
+        assert_eq!(data["event_code"], "pipeline.dictation_completed");
+        assert!(data.get("model").is_none());
+        assert!(data.get("error").is_none());
+
+        data["event_code"] = serde_json::Value::String("private.content".to_string());
+        sanitize_event_data("pipeline", &mut data, false);
+        assert!(data.get("event_code").is_none());
     }
 }

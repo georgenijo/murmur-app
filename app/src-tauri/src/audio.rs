@@ -1113,7 +1113,9 @@ fn run_backend(
             // for the step -> Core Audio call mapping).
             tracing::warn!(
                 target: "audio",
+                event_code = "audio.capture_backend_timeout",
                 capture_id,
+                owner = owner.telemetry_id(),
                 backend = backend_label(backend),
                 active_elapsed_ms = clock.elapsed(now).as_millis() as u64,
                 attempt_budget_ms = attempt_budget.as_millis() as u64,
@@ -1413,6 +1415,7 @@ fn run_capture_backend_sequence(
                 }
                 tracing::warn!(
                     target: "audio",
+                    event_code = "audio.fallback_started",
                     owner = owner.telemetry_id(),
                     from_backend = backend_label(backend),
                     to_backend = backend_label(backends[1]),
@@ -1427,6 +1430,7 @@ fn run_capture_backend_sequence(
                 if !retained_audio && attempt_index == 1 {
                     tracing::error!(
                         target: "audio",
+                        event_code = "audio.capture_failed",
                         owner = owner.telemetry_id(),
                         primary_backend = backend_label(backends[0]),
                         fallback_backend = backend_label(backend),

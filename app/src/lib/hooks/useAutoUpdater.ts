@@ -94,7 +94,9 @@ export function useAutoUpdater(): UseAutoUpdaterReturn {
       setLastCheckTimestamp(Date.now());
 
       if (!update?.available || !update.version) {
-        flog.info('updater', 'no update available');
+        flog.info('updater', 'no update available', {
+          event_code: 'updater.check_current',
+        });
         if (shouldPresentManualResult()) {
           setIsUpdateDialogOpen(false);
           setUpdateStatus({ phase: 'up-to-date' });
@@ -150,7 +152,10 @@ export function useAutoUpdater(): UseAutoUpdaterReturn {
         }
       }
     } catch (err) {
-      flog.error('updater', 'check failed', { error: String(err) });
+      flog.error('updater', 'check failed', {
+        event_code: 'updater.check_failed',
+        error: String(err),
+      });
       if (shouldPresentManualResult()) {
         setIsUpdateDialogOpen(false);
         setUpdateStatus({
@@ -240,7 +245,9 @@ export function useAutoUpdater(): UseAutoUpdaterReturn {
     try {
       const environment = await getUpdateInstallEnvironment();
       if (environment.appTranslocated) {
-        flog.warn('updater', 'install blocked by macOS App Translocation');
+        flog.warn('updater', 'install blocked by macOS App Translocation', {
+          event_code: 'updater.install_blocked',
+        });
         setUpdateStatus({
           phase: 'error',
           stage: 'install',
@@ -281,11 +288,16 @@ export function useAutoUpdater(): UseAutoUpdaterReturn {
       });
 
       setUpdateStatus({ phase: 'ready', version });
-      flog.info('updater', 'installed, relaunching');
+      flog.info('updater', 'installed, relaunching', {
+        event_code: 'updater.install_ready',
+      });
       clearSkippedVersion();
       await relaunch();
     } catch (err) {
-      flog.error('updater', 'download/install failed', { error: String(err) });
+      flog.error('updater', 'download/install failed', {
+        event_code: 'updater.install_failed',
+        error: String(err),
+      });
       setUpdateStatus({
         phase: 'error',
         stage: 'install',

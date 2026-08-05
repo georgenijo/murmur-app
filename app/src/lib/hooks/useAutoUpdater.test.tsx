@@ -11,6 +11,9 @@ const mocks = vi.hoisted(() => ({
   sendNotification: vi.fn(),
   listen: vi.fn(),
   getUpdateInstallEnvironment: vi.fn(),
+  flogInfo: vi.fn(),
+  flogWarn: vi.fn(),
+  flogError: vi.fn(),
 }));
 
 vi.mock('@tauri-apps/plugin-updater', () => ({ check: mocks.check }));
@@ -27,9 +30,9 @@ vi.mock('../updaterEnvironment', () => ({
 }));
 vi.mock('../log', () => ({
   flog: {
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
+    info: mocks.flogInfo,
+    warn: mocks.flogWarn,
+    error: mocks.flogError,
   },
 }));
 
@@ -109,6 +112,18 @@ describe('useAutoUpdater presentation state', () => {
     expect(localStorage.getItem('skipped-update-version')).toBe('0.23.0');
   });
 
+  it('logs the stable current-version event code when no update is available', async () => {
+    mocks.check.mockResolvedValue({ available: false });
+
+    await act(async () => current.checkForUpdate());
+
+    expect(mocks.flogInfo).toHaveBeenCalledWith(
+      'updater',
+      'no update available',
+      { event_code: 'updater.check_current' },
+    );
+  });
+
   it('keeps a failed manual check inline instead of opening a broken retry modal', async () => {
     mocks.check.mockRejectedValue(new Error('offline'));
 
@@ -120,6 +135,14 @@ describe('useAutoUpdater presentation state', () => {
       message: 'Error: offline',
     });
     expect(current.isUpdateDialogOpen).toBe(false);
+    expect(mocks.flogError).toHaveBeenCalledWith(
+      'updater',
+      'check failed',
+      {
+        event_code: 'updater.check_failed',
+        error: 'Error: offline',
+      },
+    );
   });
 
   it('blocks installation before download when Gatekeeper translocated the app', async () => {
@@ -146,6 +169,11 @@ describe('useAutoUpdater presentation state', () => {
       .toContain('read-only security location');
     expect(localStorage.getItem('pending-update-release-notes')).toBeNull();
     expect(current.isUpdateDialogOpen).toBe(true);
+    expect(mocks.flogWarn).toHaveBeenCalledWith(
+      'updater',
+      'install blocked by macOS App Translocation',
+      { event_code: 'updater.install_blocked' },
+    );
   });
 
   it('keeps the normal writable installation path unchanged', async () => {
@@ -163,5 +191,33 @@ describe('useAutoUpdater presentation state', () => {
     expect(downloadAndInstall).toHaveBeenCalledOnce();
     expect(mocks.relaunch).toHaveBeenCalledOnce();
     expect(current.updateStatus).toEqual({ phase: 'ready', version: '0.24.2' });
+    expect(mocks.flogInfo).toHaveBeenCalledWith(
+      'updater',
+      'installed, relaunching',
+      { event_code: 'updater.install_ready' },
+    );
+  });
+
+  it('logs the stable install-failure event code when download fails', async () => {
+    const downloadAndInstall = vi.fn().mockRejectedValue(new Error('disk full'));
+    mocks.check.mockResolvedValue({
+      available: true,
+      version: '0.24.2',
+      body: 'Release notes',
+      downloadAndInstall,
+    });
+
+    await act(async () => current.checkForUpdate());
+    await act(async () => current.startDownload());
+
+    expect(mocks.relaunch).not.toHaveBeenCalled();
+    expect(mocks.flogError).toHaveBeenCalledWith(
+      'updater',
+      'download/install failed',
+      {
+        event_code: 'updater.install_failed',
+        error: 'Error: disk full',
+      },
+    );
   });
 });
