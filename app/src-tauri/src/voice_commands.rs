@@ -14,16 +14,7 @@ use crate::knowledge_store::{
 
 const MAX_EXPANDED_SNIPPET_CHARS: usize = 65_536;
 
-pub(crate) const BUILTIN_COMMAND_PHRASES: &[&str] = &[
-    "new paragraph",
-    "new line",
-    "scratch that",
-    "open paren",
-    "close paren",
-    "question mark",
-    "period",
-    "comma",
-];
+pub(crate) use crate::spoken_structure::BASIC_COMMAND_PHRASES as BUILTIN_COMMAND_PHRASES;
 
 pub(crate) fn is_builtin_phrase(normalized_phrase: &str) -> bool {
     BUILTIN_COMMAND_PHRASES
@@ -165,57 +156,10 @@ pub fn apply_voice_commands(text: &str, enabled: bool) -> String {
     if !enabled {
         return text.to_string();
     }
-
-    // Multi-word commands are matched before single-word ones so "new paragraph"
-    // wins over "new" + "paragraph" and "question mark" isn't split.
-    //
-    // Each command carries a kind that controls how surrounding whitespace is
-    // handled when it's spliced into the output.
-    const COMMANDS: &[(&str, Command)] = &[
-        ("new paragraph", Command::Replace("\n\n")),
-        ("new line", Command::Replace("\n")),
-        ("scratch that", Command::ScratchThat),
-        ("open paren", Command::OpenBracket("(")),
-        ("close paren", Command::CloseBracket(")")),
-        ("question mark", Command::Punctuation("?")),
-        ("period", Command::Punctuation(".")),
-        ("comma", Command::Punctuation(",")),
-    ];
-
-    let lower = text.to_lowercase();
-    let chars: Vec<char> = text.chars().collect();
-    let lower_chars: Vec<char> = lower.chars().collect();
-
-    let mut out = String::with_capacity(text.len());
-    let mut i = 0;
-    while i < chars.len() {
-        let mut matched = false;
-        for (phrase, command) in COMMANDS {
-            let phrase_chars: Vec<char> = phrase.chars().collect();
-            if matches_at(&lower_chars, i, &phrase_chars) {
-                command.apply(&mut out);
-                i += phrase_chars.len();
-                // Command kinds that splice tightly against the following word
-                // (Replace, OpenBracket) must swallow the single inline space
-                // that separated the command phrase from the next word, e.g.
-                // "hello new line world" -> "hello\nworld" and
-                // "open paren x" -> "(x". Punctuation/CloseBracket attach to the
-                // prior word and must leave that space so the next word doesn't
-                // collide ("one comma two" stays "one, two").
-                if command.splices_tightly() && i < chars.len() && chars[i] == ' ' {
-                    i += 1;
-                }
-                matched = true;
-                break;
-            }
-        }
-        if !matched {
-            out.push(chars[i]);
-            i += 1;
-        }
-    }
-
-    out
+    crate::spoken_structure::apply_spoken_structure(
+        text,
+        crate::spoken_structure::SpokenStructurePolicy::Basic,
+    )
 }
 
 /// Apply the built-in command map, then any user-defined `custom` commands.
@@ -263,12 +207,56 @@ pub(crate) fn apply_voice_commands_with_resolved(
             clipboard_read: false,
         };
     }
-    let mut out = apply_voice_commands(text, true);
-    let mut matched = out != text;
+    let out = apply_voice_commands(text, true);
+    let matched = out != text;
+    apply_resolved_commands(out, matched, commands, runtime, false, false)
+}
+
+/// Pipeline-only custom command expansion.
+///
+/// Structural built-ins are intentionally deferred to the dedicated Spoken
+/// Structure stage. Expanded content is encoded as an in-memory literal so
+/// words inside a replacement or snippet are never reinterpreted as fresh
+/// punctuation commands.
+pub(crate) fn apply_custom_voice_commands_for_pipeline(
+    text: &str,
+    enabled: bool,
+    commands: &[ResolvedVoiceCommand],
+    runtime: &dyn VoiceCommandRuntime,
+) -> VoiceCommandApplication {
+    if !enabled {
+        return VoiceCommandApplication {
+            text: text.to_string(),
+            matched: false,
+            clipboard_required: false,
+            clipboard_read: false,
+        };
+    }
+    apply_resolved_commands(text.to_string(), false, commands, runtime, true, true)
+}
+
+fn apply_resolved_commands(
+    mut out: String,
+    mut matched: bool,
+    commands: &[ResolvedVoiceCommand],
+    runtime: &dyn VoiceCommandRuntime,
+    protect_structural_output: bool,
+    preserve_builtin_precedence: bool,
+) -> VoiceCommandApplication {
     let mut clipboard_required = false;
     let mut clipboard_read = false;
     let now = runtime.now();
     for command in commands {
+        if preserve_builtin_precedence
+            && BUILTIN_COMMAND_PHRASES
+                .iter()
+                .any(|builtin| contains_phrase(&command.phrase, builtin))
+        {
+            // Before structural processing moved to its own stage, the built-in
+            // phrase was consumed before this broader custom phrase could
+            // match. Keep that observable precedence for existing commands.
+            continue;
+        }
         if !contains_phrase(&out, &command.phrase) {
             continue;
         }
@@ -285,7 +273,10 @@ pub(crate) fn apply_voice_commands_with_resolved(
             }
         };
         match replacement {
-            Ok(replacement) => {
+            Ok(mut replacement) => {
+                if protect_structural_output {
+                    replacement = crate::spoken_structure::protect_literal_output(&replacement);
+                }
                 out = replace_phrase(&out, &command.phrase, &replacement);
             }
             Err(_) => {
@@ -435,57 +426,6 @@ fn replace_phrase(text: &str, phrase: &str, replacement: &str) -> String {
     out
 }
 
-/// How a matched command rewrites the output buffer.
-enum Command {
-    /// Insert literal text (e.g. newline) verbatim.
-    Replace(&'static str),
-    /// Attach punctuation to the prior word: trim trailing space, then append.
-    Punctuation(&'static str),
-    /// Open bracket: ensure a leading space, append, then suppress the next space.
-    OpenBracket(&'static str),
-    /// Close bracket: attach to the prior word (trim trailing space), then append.
-    CloseBracket(&'static str),
-    /// Delete the previous sentence from the output buffer.
-    ScratchThat,
-}
-
-impl Command {
-    /// True when the command attaches directly to the *following* word, so the
-    /// single inline space that separated the command phrase from that word
-    /// should be consumed. `Replace` (newline) and `OpenBracket` both lead into
-    /// the next word with no space; `Punctuation` and `CloseBracket` attach to
-    /// the prior word and keep the space before the next one.
-    fn splices_tightly(&self) -> bool {
-        matches!(self, Command::Replace(_) | Command::OpenBracket(_))
-    }
-
-    fn apply(&self, out: &mut String) {
-        match self {
-            Command::Replace(s) => {
-                // Trim a space we may have just emitted before the command word,
-                // so "hello new line" -> "hello\n" rather than "hello \n".
-                trim_trailing_inline_space(out);
-                out.push_str(s);
-            }
-            Command::Punctuation(p) | Command::CloseBracket(p) => {
-                trim_trailing_inline_space(out);
-                out.push_str(p);
-            }
-            Command::OpenBracket(b) => {
-                trim_trailing_inline_space(out);
-                if !out.is_empty() && !out.ends_with('\n') {
-                    out.push(' ');
-                }
-                out.push_str(b);
-            }
-            Command::ScratchThat => {
-                trim_trailing_inline_space(out);
-                delete_previous_sentence(out);
-            }
-        }
-    }
-}
-
 /// True if `phrase` occurs in `haystack` starting at `start`, bounded by
 /// non-alphanumeric characters on both sides (word-boundary match).
 fn matches_at(haystack: &[char], start: usize, phrase: &[char]) -> bool {
@@ -507,39 +447,6 @@ fn matches_at(haystack: &[char], start: usize, phrase: &[char]) -> bool {
         return false;
     }
     true
-}
-
-/// Remove a single trailing space (but not a newline) from the buffer so
-/// punctuation/brackets attach to the prior word.
-fn trim_trailing_inline_space(out: &mut String) {
-    if out.ends_with(' ') {
-        out.pop();
-    }
-}
-
-/// Delete the previous sentence from `out`, where a sentence is delimited by
-/// `.`, `!`, `?`, or a newline. Leaves the delimiter (and any text before it)
-/// intact, trimming trailing whitespace so the next word flows on cleanly.
-fn delete_previous_sentence(out: &mut String) {
-    // Drop trailing whitespace first so we look at real content.
-    while out.ends_with(|c: char| c.is_whitespace()) {
-        out.pop();
-    }
-    // Find the boundary of the prior sentence: the last sentence-ending
-    // delimiter or newline still in the buffer.
-    let boundary = out
-        .char_indices()
-        .rev()
-        .find(|(_, c)| matches!(c, '.' | '!' | '?' | '\n'))
-        .map(|(idx, c)| idx + c.len_utf8());
-    match boundary {
-        Some(b) => out.truncate(b),
-        None => out.clear(),
-    }
-    // Trim any whitespace left between the delimiter and the next word.
-    while out.ends_with(' ') {
-        out.pop();
-    }
 }
 
 #[cfg(test)]
@@ -702,6 +609,26 @@ mod tests {
         assert_eq!(
             apply_voice_commands("hello comma world period new line bye", true),
             "hello, world.\nbye"
+        );
+    }
+
+    #[test]
+    fn punctuation_commands_absorb_adjacent_model_auto_punctuation() {
+        assert_eq!(
+            apply_voice_commands("I have one idea. period", true),
+            "I have one idea."
+        );
+        assert_eq!(
+            apply_voice_commands("Are we ready? question mark", true),
+            "Are we ready?"
+        );
+        assert_eq!(
+            apply_voice_commands("Are we ready. question mark.", true),
+            "Are we ready?"
+        );
+        assert_eq!(
+            apply_voice_commands("Count one comma, two comma, three period.", true),
+            "Count one, two, three."
         );
     }
 

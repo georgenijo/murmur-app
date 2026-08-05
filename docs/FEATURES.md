@@ -80,13 +80,19 @@ Current as of **v0.21.3**. This is the breadth-first inventory of what ships; ea
 
 ## 4. Text intelligence
 
-All stages are deterministic and local. They run in one ordered pipeline: **cleanup → voice commands → smart correction → smart formatting → IDE context → CLI formatting**.
+All stages are deterministic and local. They run in one ordered pipeline: **cleanup → voice commands → smart correction → smart formatting → spoken structure → spoken numbers → IDE context → CLI formatting**.
 
 ### Cleanup
 Filler removal ("um", "uh") and sentence capitalization, each independently toggleable.
 
 ### Smart formatting — [features/smart-formatting.md](features/smart-formatting.md)
-Turns clear spoken enumerations into lists; applies explicitly cued email/URL/symbol/quote/paragraph grammar; handles bounded same-utterance restatements ("no wait, make that…"). Bypassed in CLI/code/verbatim contexts and for imported files.
+Turns clear spoken enumerations into lists; applies explicitly cued email/URL grammar; handles bounded same-utterance restatements ("no wait, make that…"). Bypassed in CLI/code/verbatim contexts and for imported files.
+
+### Spoken structure — [features/spoken-structure.md](features/spoken-structure.md)
+Single owner for spoken punctuation, lines, paragraphs, quotes, parentheses, slashes, symbols, ASR-punctuation arbitration, and sentence-boundary-aware `scratch that`. Basic/Extended/Union policy preserves existing Voice Commands and Smart Formatting enablement without double-processing.
+
+### Spoken numbers — [features/spoken-number-formatting.md](features/spoken-number-formatting.md)
+Renders English cardinals as digits by default: single values, compound hundreds, descending scales through quadrillions, negatives, and spoken decimals. Invalid scale order fails closed at the last unambiguous group; Verbatim, imported audio, and transform instructions remain literal.
 
 ### CLI command formatting — [features/cli-command-formatting.md](features/cli-command-formatting.md)
 Deterministic formatting for spoken npm/npx, Git, Cargo, Docker, kubectl and similar commands — versions, flags, paths, operators, quotes, canonical aliases. Detection is prefix/trigger/profile bounded; project `package.json` names extend the local lexicon; ordinary prose is untouched.

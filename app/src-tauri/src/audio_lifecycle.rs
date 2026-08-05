@@ -1299,6 +1299,12 @@ pub(crate) fn is_audio_active() -> bool {
     supervisor().public.is_active()
 }
 
+pub(crate) fn is_dictation_recording(recording_id: u64) -> bool {
+    supervisor()
+        .public
+        .is_recording_for(AudioOwner::Dictation(recording_id))
+}
+
 pub(crate) fn is_transform_recording(transform_pass_id: u64) -> bool {
     supervisor()
         .public

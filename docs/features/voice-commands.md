@@ -1,6 +1,6 @@
 # Voice Commands 2.0
 
-Voice Commands are local, deterministic text transformations for live dictation. Built-in commands such as `new line` still run first. User commands are stored in the Rust-owned personal knowledge repository and captured in the immutable recording-start context.
+Voice Commands are local, deterministic text transformations for live dictation. User commands are stored in the Rust-owned personal knowledge repository and captured in the immutable recording-start context. Reserved structural built-ins such as `new line` are rendered later by the single Spoken Structure stage.
 
 ## Command types
 
@@ -29,12 +29,14 @@ Commands are global or scoped to one configured app bundle identifier. The exist
 
 Vocabulary aliases and Voice Command phrases remain one conflict domain. Saving either side validates against the other atomically.
 
+Expanded replacement and snippet content is protected in memory until Spoken Structure finishes. Literal words such as `period` and `new line` inside authored command output are therefore never reinterpreted as newly spoken commands. The protected representation is never persisted or logged.
+
 ## Preview and delivery
 
 Settings can create, test, preview, edit, enable, disable, and delete commands. Preview invokes the real Rust matcher but never writes to the clipboard or triggers paste. Live command expansion remains in the existing ordered pipeline:
 
 ```text
-cleanup → built-in/user Voice Commands → Smart Correction → Smart Formatting → IDE context → CLI formatting → final delivery
+cleanup → user Voice Commands → Smart Correction → Smart Formatting → Spoken Structure → spoken numbers → IDE context → CLI formatting → final delivery
 ```
 
 Imported-file transcription remains verbatim and does not execute Voice Commands.

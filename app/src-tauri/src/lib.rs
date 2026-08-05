@@ -33,6 +33,8 @@ mod platform;
 mod resource_monitor;
 mod selection;
 mod smart_formatting;
+mod spoken_numbers;
+mod spoken_structure;
 mod state;
 pub mod telemetry;
 pub mod transcriber;

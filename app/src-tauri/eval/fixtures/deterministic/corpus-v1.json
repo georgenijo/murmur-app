@@ -31,12 +31,32 @@
   },
   {
     "fixtureVersion": 1,
+    "id": "spoken-cardinal-numbers",
+    "tier": "deterministic",
+    "provenance": {"kind": "curatedSynthetic", "source": "Spoken Number Formatting documented examples", "containsRealUserData": false, "deletion": "Delete this JSON entry and any generated local reports."},
+    "input": {"rawAsr": "one, two, and eight hundred fifty-seven plus ten million one hundred three thousand four hundred forty-five", "expectedRawAsr": ["one, two, and eight hundred fifty-seven plus ten million one hundred three thousand four hundred forty-five"]},
+    "context": {"stages": {"spokenNumbers": true}},
+    "expected": {"finalText": "1, 2, and 857 plus 10,103,445", "deliveredText": "1, 2, and 857 plus 10,103,445", "stages": [{"name": "spoken_numbers", "outcome": "applied", "changed": true}]},
+    "timing": {"rawAsrMs": 21, "transformMs": 1, "deliveryMs": 1}
+  },
+  {
+    "fixtureVersion": 1,
+    "id": "spoken-structure-fraction",
+    "tier": "deterministic",
+    "provenance": {"kind": "curatedSynthetic", "source": "Spoken Structure architecture regression", "containsRealUserData": false, "deletion": "Delete this JSON entry and any generated local reports."},
+    "input": {"rawAsr": "The answer is one slash two question mark.", "expectedRawAsr": ["The answer is one slash two question mark."]},
+    "context": {"stages": {"spokenStructure": "extended", "spokenNumbers": true}},
+    "expected": {"finalText": "The answer is 1/2?", "deliveredText": "The answer is 1/2?", "stages": [{"name": "spoken_structure", "outcome": "applied", "changed": true}, {"name": "spoken_numbers", "outcome": "applied", "changed": true}]},
+    "timing": {"rawAsrMs": 21, "transformMs": 1, "deliveryMs": 1}
+  },
+  {
+    "fixtureVersion": 1,
     "id": "bulleted-list-custom-command",
     "tier": "deterministic",
     "provenance": {"kind": "curatedSynthetic", "source": "Issue #267 list corpus", "containsRealUserData": false, "deletion": "Delete this JSON entry and any generated local reports."},
     "input": {"rawAsr": "Packing list new line bullet charger new line bullet cable", "expectedRawAsr": ["Packing list new line bullet charger new line bullet cable"]},
     "context": {"stages": {"voiceCommands": true}, "resources": {"voiceCommands": [{"id": "bullet", "phrase": "bullet", "commandType": "text_replacement", "content": "-", "allowClipboardRead": false, "appScoped": false}]}},
-    "expected": {"finalText": "Packing list\n- charger\n- cable", "deliveredText": "Packing list\n- charger\n- cable", "stages": [{"name": "voice_commands", "outcome": "applied", "changed": true}]},
+    "expected": {"finalText": "Packing list\n- charger\n- cable", "deliveredText": "Packing list\n- charger\n- cable", "stages": [{"name": "voice_commands", "outcome": "applied", "changed": true}, {"name": "spoken_structure", "outcome": "applied", "changed": true}]},
     "timing": {"rawAsrMs": 20, "transformMs": 1, "deliveryMs": 1}
   },
   {
@@ -46,7 +66,7 @@
     "provenance": {"kind": "curatedSynthetic", "source": "Issue #267 punctuation corpus", "containsRealUserData": false, "deletion": "Delete this JSON entry and any generated local reports."},
     "input": {"rawAsr": "Hello comma world period new paragraph Next line question mark", "expectedRawAsr": ["Hello comma world period new paragraph Next line question mark"]},
     "context": {"stages": {"voiceCommands": true}},
-    "expected": {"finalText": "Hello, world.\n\nNext line?", "deliveredText": "Hello, world.\n\nNext line?", "stages": [{"name": "voice_commands", "outcome": "applied", "changed": true}]},
+    "expected": {"finalText": "Hello, world.\n\nNext line?", "deliveredText": "Hello, world.\n\nNext line?", "stages": [{"name": "spoken_structure", "outcome": "applied", "changed": true}]},
     "timing": {"rawAsrMs": 21, "transformMs": 1, "deliveryMs": 1}
   },
   {

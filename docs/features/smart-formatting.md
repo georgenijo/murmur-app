@@ -39,22 +39,22 @@ Ship it Monday.
 
 Backtracking never reaches an earlier utterance, history entry, clipboard delivery, or pasted text.
 
-### Explicit structured tokens
+### Explicit email and URL grammar
 
 - Email formatting requires an earlier `email` cue plus bounded `at` / `dot` tokens. Local-part `dot`, `underscore`, `dash`, `hyphen`, and `plus` tokens are supported within the 12-token address bound.
 - URL formatting requires a leading `URL` or `web address` cue, an explicit `dot`, and no more than 20 tokens. `http(s) colon slash slash`, path slashes, dashes, and colons are deterministic.
-- Quotes and parentheses require a matched `open ...` / `close ...` pair containing at most 240 characters.
-- Paragraph, line, punctuation, dash, and symbol tokens are bounded whole phrases such as `new paragraph`, `question mark`, `em dash`, `plus sign`, or `equals sign`.
 - The stage fails closed for utterances larger than 16 KiB, bounding all grammar scans before allocating token lists or transformed output.
 
-No email or URL structure is inferred from ordinary prose without its cue. Unpaired quote/parenthesis markers and over-limit structures remain literal.
+No email or URL structure is inferred from ordinary prose without its cue.
+Punctuation, quotes, parentheses, paragraphs, and symbols are owned by the
+following [Spoken Structure](spoken-structure.md) stage.
 
 ## Pipeline, delivery, and privacy
 
 The live order is:
 
 ```text
-cleanup → voice commands → Smart Correction → Smart Formatting → CLI formatting → final text
+cleanup → voice commands → Smart Correction → Smart Formatting → Spoken Structure → spoken numbers → CLI formatting → final text
 ```
 
 Only the final transformed text reaches optional file output, the clipboard, auto-paste, history, and stats. Clipboard and paste therefore still happen once, after all stages complete. Imported audio keeps the existing raw-ASR behavior with every transformation stage skipped.
@@ -64,6 +64,7 @@ For tests and pipeline diagnostics, the pipeline result holds original and final
 ## Source and tests
 
 - Grammar: `app/src-tauri/src/smart_formatting.rs`
+- Spoken token grammar: `app/src-tauri/src/spoken_structure.rs`
 - Stage order and context bypass: `app/src-tauri/src/transcript_transform.rs`
 - Immutable profile resolution: `app/src-tauri/src/dictation_context.rs`
 - Setting and migration: `app/src/lib/settings.ts`

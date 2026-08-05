@@ -7,6 +7,7 @@ const MAX_BACKTRACK_REPLACEMENT_WORDS: usize = 4;
 const MAX_BACKTRACK_REPLACEMENT_CHARS: usize = 64;
 const MAX_LIST_ITEMS: usize = 10;
 const MAX_LIST_ITEM_WORDS: usize = 24;
+#[cfg(test)]
 const MAX_PAIRED_CONTENT_CHARS: usize = 240;
 const MAX_SMART_FORMATTING_INPUT_BYTES: usize = 16 * 1024;
 
@@ -26,8 +27,6 @@ pub(crate) fn format_smart_prose(input: &str) -> String {
     let mut output = apply_bounded_backtrack(input);
     output = format_explicit_email(&output);
     output = format_explicit_url(&output);
-    output = replace_paired_markers(&output);
-    output = replace_spoken_markers(&output);
     format_spoken_enumeration(&output)
 }
 
@@ -433,147 +432,6 @@ fn format_explicit_url(input: &str) -> String {
     output
 }
 
-fn replace_paired_markers(input: &str) -> String {
-    let pairs = [
-        ("open double quote", "close double quote", "\"", "\""),
-        ("open single quote", "close single quote", "'", "'"),
-        ("open quote", "close quote", "\"", "\""),
-        ("open parenthesis", "close parenthesis", "(", ")"),
-        ("open paren", "close paren", "(", ")"),
-    ];
-    pairs
-        .iter()
-        .fold(input.to_string(), |text, (open, close, left, right)| {
-            replace_bounded_pair(&text, open, close, left, right)
-        })
-}
-
-fn replace_bounded_pair(input: &str, open: &str, close: &str, left: &str, right: &str) -> String {
-    let lower = input.to_ascii_lowercase();
-    let Some(open_start) = find_bounded_phrase(&lower, open, 0) else {
-        return input.to_string();
-    };
-    let content_start = open_start + open.len();
-    let Some(close_start) = find_bounded_phrase(&lower, close, content_start) else {
-        return input.to_string();
-    };
-    let content = input[content_start..close_start].trim();
-    if content.is_empty()
-        || content.len() > MAX_PAIRED_CONTENT_CHARS
-        || content.contains(['\n', '\r'])
-    {
-        return input.to_string();
-    }
-    let mut output = String::with_capacity(input.len());
-    output.push_str(input[..open_start].trim_end());
-    if !output.is_empty() && !output.ends_with([' ', '\n']) {
-        output.push(' ');
-    }
-    output.push_str(left);
-    output.push_str(content);
-    output.push_str(right);
-    let suffix = input[close_start + close.len()..].trim_start();
-    if !suffix.is_empty() {
-        output.push(' ');
-        output.push_str(suffix);
-    }
-    output
-}
-
-#[derive(Clone, Copy)]
-enum SpokenMarker {
-    Break(&'static str),
-    Punctuation(&'static str),
-    Infix(&'static str),
-    Tight(&'static str),
-}
-
-fn replace_spoken_markers(input: &str) -> String {
-    const MARKERS: &[(&str, SpokenMarker)] = &[
-        ("new paragraph", SpokenMarker::Break("\n\n")),
-        ("new line", SpokenMarker::Break("\n")),
-        ("exclamation mark", SpokenMarker::Punctuation("!")),
-        ("question mark", SpokenMarker::Punctuation("?")),
-        ("semicolon", SpokenMarker::Punctuation(";")),
-        ("colon", SpokenMarker::Punctuation(":")),
-        ("period", SpokenMarker::Punctuation(".")),
-        ("comma", SpokenMarker::Punctuation(",")),
-        ("em dash", SpokenMarker::Infix("—")),
-        ("en dash", SpokenMarker::Infix("–")),
-        ("at sign", SpokenMarker::Infix("@")),
-        ("hash sign", SpokenMarker::Infix("#")),
-        ("number sign", SpokenMarker::Infix("#")),
-        ("percent sign", SpokenMarker::Infix("%")),
-        ("plus sign", SpokenMarker::Infix("+")),
-        ("equals sign", SpokenMarker::Infix("=")),
-        ("ampersand", SpokenMarker::Infix("&")),
-        ("hyphen", SpokenMarker::Tight("-")),
-    ];
-
-    let lower = input.to_ascii_lowercase();
-    let mut output = String::with_capacity(input.len());
-    let mut index = 0;
-    let mut changed = false;
-    while index < input.len() {
-        let Some((_, ch)) = input[index..].char_indices().next() else {
-            break;
-        };
-        let mut matched = None;
-        for (phrase, marker) in MARKERS {
-            if lower[index..].starts_with(phrase) && is_phrase_boundary(&lower, index, phrase.len())
-            {
-                matched = Some((phrase.len(), *marker));
-                break;
-            }
-        }
-        if let Some((length, marker)) = matched {
-            changed = true;
-            apply_spoken_marker(&mut output, marker);
-            index += length;
-            if input[index..].starts_with(' ') {
-                index += 1;
-            }
-        } else {
-            output.push(ch);
-            index += ch.len_utf8();
-        }
-    }
-    if changed {
-        output.trim().to_string()
-    } else {
-        input.to_string()
-    }
-}
-
-fn apply_spoken_marker(output: &mut String, marker: SpokenMarker) {
-    while output.ends_with(' ') {
-        output.pop();
-    }
-    match marker {
-        SpokenMarker::Break(value) => {
-            while output.ends_with('\n') && value == "\n\n" {
-                output.pop();
-            }
-            output.push_str(value);
-        }
-        SpokenMarker::Punctuation(value) => {
-            output.push_str(value);
-            // The scanner consumes the source space after a spoken marker, so
-            // restore word separation. Final trimming removes this at EOF, and
-            // the next marker trims it before inserting a break or symbol.
-            output.push(' ');
-        }
-        SpokenMarker::Infix(value) => {
-            if !output.is_empty() && !output.ends_with([' ', '\n']) {
-                output.push(' ');
-            }
-            output.push_str(value);
-            output.push(' ');
-        }
-        SpokenMarker::Tight(value) => output.push_str(value),
-    }
-}
-
 fn word_spans(input: &str) -> Vec<WordSpan> {
     let mut words = Vec::new();
     let mut start: Option<usize> = None;
@@ -598,15 +456,6 @@ fn word_spans(input: &str) -> Vec<WordSpan> {
     words
 }
 
-fn find_bounded_phrase(haystack_lower: &str, phrase: &str, from: usize) -> Option<usize> {
-    haystack_lower[from..]
-        .match_indices(phrase)
-        .find_map(|(offset, _)| {
-            let start = from + offset;
-            is_phrase_boundary(haystack_lower, start, phrase.len()).then_some(start)
-        })
-}
-
 fn is_phrase_boundary(haystack: &str, start: usize, length: usize) -> bool {
     let before = haystack[..start].chars().next_back();
     let after = haystack[start + length..].chars().next();
@@ -624,6 +473,14 @@ fn starts_with_words(words: &[String], start: usize, phrase: &[&str]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn format_with_structure(input: &str) -> String {
+        let prose = format_smart_prose(input);
+        crate::spoken_structure::apply_spoken_structure(
+            &prose,
+            crate::spoken_structure::SpokenStructurePolicy::Extended,
+        )
+    }
 
     #[test]
     fn formats_clear_spoken_enumeration() {
@@ -732,7 +589,7 @@ mod tests {
             "Say open quote {} close quote",
             "content ".repeat(MAX_PAIRED_CONTENT_CHARS)
         );
-        assert_eq!(format_smart_prose(&long_pair), long_pair);
+        assert_eq!(format_with_structure(&long_pair), long_pair);
 
         let long_email =
             "Email address one dot two dot three dot four dot five dot six at example dot com";
@@ -742,22 +599,62 @@ mod tests {
     #[test]
     fn explicit_punctuation_quotes_parentheses_and_paragraphs_are_deterministic() {
         assert_eq!(
-            format_smart_prose(
+            format_with_structure(
                 "Say open quote ship it close quote period new paragraph Thanks exclamation mark"
             ),
             "Say \"ship it\".\n\nThanks!"
         );
         assert_eq!(
-            format_smart_prose("Use open paren optional close paren em dash carefully"),
+            format_with_structure("Use open paren optional close paren em dash carefully"),
             "Use (optional) — carefully"
         );
         assert_eq!(
-            format_smart_prose("Set x plus sign y equals sign ten percent sign"),
+            format_with_structure("Set x plus sign y equals sign ten percent sign"),
             "Set x + y = ten %"
         );
-        assert_eq!(format_smart_prose("one period two"), "one. two");
+        assert_eq!(
+            format_with_structure("slash step one question mark"),
+            "/step one?"
+        );
+        assert_eq!(
+            format_with_structure("root forward slash users backslash george"),
+            "root/users\\george"
+        );
+        assert_eq!(
+            format_with_structure("Use slash command chat"),
+            "Use slash command chat"
+        );
+        assert_eq!(format_with_structure("one period two"), "one. two");
         let unpaired = "Say open quote this stays literal";
-        assert_eq!(format_smart_prose(unpaired), unpaired);
+        assert_eq!(format_with_structure(unpaired), unpaired);
+    }
+
+    #[test]
+    fn spoken_punctuation_absorbs_adjacent_model_auto_punctuation() {
+        assert_eq!(
+            format_with_structure("I have one idea. period"),
+            "I have one idea."
+        );
+        assert_eq!(
+            format_with_structure("Are we ready? question mark"),
+            "Are we ready?"
+        );
+        assert_eq!(
+            format_with_structure("Are we ready. question mark."),
+            "Are we ready?"
+        );
+        assert_eq!(
+            format_with_structure("slash step one question mark."),
+            "/step one?"
+        );
+        assert_eq!(
+            format_with_structure("Count one comma, two comma, three period."),
+            "Count one, two, three."
+        );
+        assert_eq!(
+            format_with_structure("Really question mark exclamation mark"),
+            "Really?!"
+        );
     }
 
     #[test]
@@ -783,8 +680,8 @@ mod tests {
             "Say open quote ship it close quote period",
         ];
         for fixture in fixtures {
-            let once = format_smart_prose(fixture);
-            assert_eq!(format_smart_prose(&once), once, "fixture: {fixture}");
+            let once = format_with_structure(fixture);
+            assert_eq!(format_with_structure(&once), once, "fixture: {fixture}");
         }
     }
 

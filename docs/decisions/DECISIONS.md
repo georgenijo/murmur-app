@@ -6,6 +6,31 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 ---
 
+## 2026-08-05: Spoken Structure is the single owner for dictated punctuation and layout
+
+**Decision:** Replace the overlapping Voice Commands and Smart Formatting
+punctuation scanners with one `spoken_structure` engine and ordered pipeline
+stage. Resolve an immutable Off/Basic/Extended/Union policy from the existing
+Voice Commands and Smart Formatting settings. Keep user replacements/snippets
+in Voice Commands; keep email, URL, enumeration, and backtracking grammar in
+Smart Formatting; move punctuation, breaks, paired delimiters, symbols, ASR
+punctuation arbitration, and `scratch that` into Spoken Structure. Protect
+command-generated text until that pass so authored output remains literal.
+
+**Rationale:** Split ownership made behavior depend on toggle order and forced
+the same duplicate-punctuation fix into two scanners. `scratch that` also
+requires the sentence boundaries created by punctuation in the same
+left-to-right pass. One bounded UTF-8-safe engine removes the drift while the
+policy preserves existing Basic and Extended behavior without a settings
+migration.
+
+**Status:** active
+
+**References:** `spoken_structure.rs`, `transcript_transform.rs`,
+`dictation_context.rs`, `docs/features/spoken-structure.md`
+
+---
+
 ## 2026-08-04: Hang diagnostics are server-armed per install, never on by default
 
 **Decision:** The client ships a dormant hang-diagnostics collector (worker

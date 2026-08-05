@@ -40,13 +40,13 @@ Each fixture declares:
 - local provenance, deletion guidance, and `containsRealUserData: false`;
 - fixture-provided raw ASR for deterministic runs, or a workspace-relative WAV plus exact installed model/backend for hardware runs;
 - a recognition reference transcript and one or more bounded acceptable raw-ASR outputs (the first bounded output is the reference when `referenceTranscript` is omitted);
-- fixture-only stage switches, profile metadata, vocabulary, voice commands, CLI prompt, and IDE symbols/files;
+- fixture-only stage switches, explicit Off/Basic/Extended/Union Spoken Structure policy, profile metadata, vocabulary, voice commands, CLI prompt, and IDE symbols/files;
 - expected final and delivered text plus selected stage outcomes;
 - fixed deterministic timing values.
 
 Adding a case requires only another valid JSON object; evaluator code does not contain a fixture registry.
 
-The repository corpus covers standalone and longer-sentence backtracking, numbered and bulleted lists, spoken punctuation/paragraphs, npm/npx/Git/Cargo/Docker/kubectl command formatting, Tauri/Tori/Tory aliases, Cursor profile/project file and symbol context, fixed date/time plus fake clipboard snippets, long final-only behavior, and ordinary-prose false-positive cases.
+The repository corpus covers standalone and longer-sentence backtracking, numbered and bulleted lists, spoken structure plus fractions, spoken punctuation/paragraphs, npm/npx/Git/Cargo/Docker/kubectl command formatting, Tauri/Tori/Tory aliases, Cursor profile/project file and symbol context, fixed date/time plus fake clipboard snippets, long final-only behavior, and ordinary-prose false-positive cases.
 
 ## Metrics and final-only behavior
 

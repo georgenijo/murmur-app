@@ -39,7 +39,7 @@ Output is always the canonical root-relative text beginning with `@`; absolute p
 The live pipeline order is:
 
 ```text
-cleanup → voice commands → Smart Correction → Smart Formatting → IDE context → CLI formatting
+cleanup → voice commands → Smart Correction → Smart Formatting → Spoken Structure → spoken numbers → IDE context → CLI formatting
 ```
 
 Explicit IDE opt-in disables Smart Formatting for that recording so prose structure cannot interfere with code-oriented text. Generic correction resources still run first, and the reviewed CLI stage remains final and authoritative. Imported-file transcription never runs the IDE stage.

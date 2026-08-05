@@ -85,6 +85,8 @@ pub enum PerformanceStageV1 {
     VoiceCommands,
     SmartCorrection,
     SmartFormatting,
+    SpokenStructure,
+    SpokenNumbers,
     IdeContext,
     CliCommand,
     FileOutput,

@@ -512,6 +512,8 @@ const ALL_STAGES: &[PerformanceStageV1] = &[
     PerformanceStageV1::VoiceCommands,
     PerformanceStageV1::SmartCorrection,
     PerformanceStageV1::SmartFormatting,
+    PerformanceStageV1::SpokenStructure,
+    PerformanceStageV1::SpokenNumbers,
     PerformanceStageV1::IdeContext,
     PerformanceStageV1::CliCommand,
     PerformanceStageV1::FileOutput,
