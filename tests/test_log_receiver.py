@@ -463,6 +463,64 @@ class LogReceiverActivityMetricTests(unittest.TestCase):
             "2026-08-05T00:02:00Z",
         )
 
+    def test_activity_scan_skips_deeply_nested_json_and_continues(self) -> None:
+        activation = event(
+            "start_native_recording: audio ready",
+            timestamp="2026-08-05T00:01:00Z",
+            stream="pipeline",
+        )
+        success = event(
+            "transcription complete",
+            timestamp="2026-08-05T00:02:00Z",
+            stream="pipeline",
+            data={"char_count": 8},
+        )
+        deeply_nested = '{"value":' * 1_100 + "0" + "}" * 1_100
+        deeply_nested_bytes = deeply_nested.encode("utf-8")
+        original_json_loads = receiver.json.loads
+
+        def loads_with_recursion_guard(raw):
+            if raw == deeply_nested_bytes:
+                raise RecursionError("synthetic decoder nesting limit")
+            return original_json_loads(raw)
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "events.jsonl"
+            path.write_text(
+                "\n".join(
+                    (
+                        json.dumps(activation),
+                        json.dumps(success),
+                        deeply_nested,
+                    )
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            no_newline_path = Path(directory) / "nested-only.jsonl"
+            no_newline_path.write_text(deeply_nested, encoding="utf-8")
+            with mock.patch.object(
+                receiver.json,
+                "loads",
+                side_effect=loads_with_recursion_guard,
+            ):
+                metrics = receiver.find_activity_metrics(str(path))
+                nested_only_events = list(
+                    receiver.bounded_jsonl_events_reverse(str(no_newline_path))
+                )
+
+        self.assertFalse(nested_only_events)
+
+        self.assertEqual(
+            metrics["last_activated"]["timestamp"],
+            "2026-08-05T00:01:00Z",
+        )
+        self.assertEqual(
+            metrics["last_successful_transcription"]["timestamp"],
+            "2026-08-05T00:02:00Z",
+        )
+
     def test_activity_time_shows_relative_and_exact_eastern_time(self) -> None:
         item = event(
             "start_native_recording: audio ready",

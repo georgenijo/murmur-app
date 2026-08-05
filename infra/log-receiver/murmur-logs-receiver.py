@@ -750,7 +750,7 @@ def bounded_jsonl_events_reverse(
                     if raw:
                         try:
                             event = json.loads(raw)
-                        except (TypeError, ValueError):
+                        except (TypeError, ValueError, RecursionError):
                             event = None
                         if isinstance(event, dict):
                             yield event
@@ -763,7 +763,7 @@ def bounded_jsonl_events_reverse(
             if raw:
                 try:
                     event = json.loads(raw)
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, RecursionError):
                     event = None
                 if isinstance(event, dict):
                     yield event
