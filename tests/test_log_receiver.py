@@ -365,6 +365,123 @@ class LogReceiverHealthTests(unittest.TestCase):
         self.assertNotIn("<img src=x>", page)
 
 
+class LogReceiverActivityMetricTests(unittest.TestCase):
+    def test_activity_metrics_require_proven_activation_and_nonempty_dictation(
+        self,
+    ) -> None:
+        events = [
+            event(
+                "start_native_recording: starting",
+                timestamp="2026-08-05T00:00:00Z",
+                stream="pipeline",
+            ),
+            event(
+                "start_native_recording: audio ready",
+                timestamp="2026-08-05T00:01:00Z",
+                stream="pipeline",
+            ),
+            event(
+                "transcription complete",
+                timestamp="2026-08-05T00:02:00Z",
+                stream="pipeline",
+                data={"char_count": 24, "word_count": 4},
+            ),
+            event(
+                "transcription complete",
+                timestamp="2026-08-05T00:03:00Z",
+                stream="pipeline",
+                data={"char_count": 0, "word_count": 0},
+            ),
+            event(
+                "file transcription complete",
+                timestamp="2026-08-05T00:04:00Z",
+                stream="pipeline",
+                data={"char_count": 100, "word_count": 18},
+            ),
+            event(
+                "start_native_recording: starting",
+                timestamp="2026-08-05T00:05:00Z",
+                stream="pipeline",
+            ),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "events.jsonl"
+            path.write_text(
+                "\n".join(json.dumps(item) for item in events)
+                + "\n{malformed json}\n",
+                encoding="utf-8",
+            )
+
+            metrics = receiver.find_activity_metrics(str(path))
+
+        self.assertEqual(
+            metrics["last_activated"]["timestamp"],
+            "2026-08-05T00:01:00Z",
+        )
+        self.assertEqual(
+            metrics["last_successful_transcription"]["timestamp"],
+            "2026-08-05T00:02:00Z",
+        )
+
+    def test_activity_scan_handles_cross_buffer_records_and_skips_oversized_lines(
+        self,
+    ) -> None:
+        activation = event(
+            "start_native_recording: audio ready",
+            timestamp="2026-08-05T00:01:00Z",
+            stream="pipeline",
+            data={"padding": "x" * 70_000},
+        )
+        success = event(
+            "transcription complete",
+            timestamp="2026-08-05T00:02:00Z",
+            stream="pipeline",
+            data={"char_count": 8, "padding": "y" * 70_000},
+        )
+        oversized = event(
+            "start_native_recording: audio ready",
+            timestamp="2026-08-05T00:03:00Z",
+            stream="pipeline",
+            data={"padding": "z" * 600_000},
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "events.jsonl"
+            path.write_text(
+                "\n".join(json.dumps(item) for item in (activation, success, oversized))
+                + "\n",
+                encoding="utf-8",
+            )
+
+            metrics = receiver.find_activity_metrics(str(path))
+
+        self.assertEqual(
+            metrics["last_activated"]["timestamp"],
+            "2026-08-05T00:01:00Z",
+        )
+        self.assertEqual(
+            metrics["last_successful_transcription"]["timestamp"],
+            "2026-08-05T00:02:00Z",
+        )
+
+    def test_activity_time_shows_relative_and_exact_eastern_time(self) -> None:
+        item = event(
+            "start_native_recording: audio ready",
+            timestamp="2026-08-05T00:00:00Z",
+        )
+        now = receiver.event_epoch(item) + 120
+
+        with mock.patch.object(receiver.time, "time", return_value=now):
+            rendered = receiver.render_activity_time(item)
+
+        self.assertIn("<strong>2m ago</strong>", rendered)
+        self.assertIn("Aug 4, 2026 at 8:00:00 PM EDT", rendered)
+        self.assertIn('datetime="2026-08-05T00:00:00Z"', rendered)
+        self.assertIn(
+            "Not found in retained log",
+            receiver.render_activity_time(None),
+        )
+
+
 class LogReceiverExportTests(unittest.TestCase):
     def test_tail_raw_lines_returns_exact_newest_records_across_blocks(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -524,13 +641,20 @@ class LogReceiverExportRouteTests(unittest.TestCase):
         install_dir.mkdir()
         with (install_dir / "events.jsonl").open("w", encoding="utf-8") as handle:
             for sequence in range(600):
+                summary = "heartbeat"
+                data = {"sequence": sequence}
+                if sequence == 0:
+                    summary = "start_native_recording: audio ready"
+                elif sequence == 1:
+                    summary = "transcription complete"
+                    data["char_count"] = 42
                 handle.write(
                     json.dumps(
                         event(
-                            "heartbeat",
+                            summary,
                             timestamp="2026-08-05T00:00:00Z",
                             stream="system",
-                            data={"sequence": sequence},
+                            data=data,
                         )
                     )
                     + "\n"
@@ -657,6 +781,9 @@ class LogReceiverExportRouteTests(unittest.TestCase):
         self.assertIn(
             f"/install/{self.install_id}/llm?kind=prod&amp;limit=500", page
         )
+        self.assertIn("Last activated", page)
+        self.assertIn("Last successful transcription", page)
+        self.assertNotIn("Not found in retained log", page)
 
 
 if __name__ == "__main__":

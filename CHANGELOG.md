@@ -39,6 +39,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- Fleet log install pages now show the last proven microphone activation and
+  last non-empty live transcription with relative and exact Eastern timestamps,
+  derived from the complete retained event stream with bounded memory (#459).
 - Fleet log install pages now offer exact latest-200/latest-500 JSONL downloads
   and LLM-ready Markdown reports with plain-English event meanings, grouped
   findings, bounded device context, and untrusted-telemetry guidance (#457).

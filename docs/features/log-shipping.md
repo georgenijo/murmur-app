@@ -95,6 +95,16 @@ events remain available in an expandable technical timeline and as exact
 latest-200, latest-500, or complete JSONL downloads. Served by the same receiver
 process.
 
+The per-install **quick info** table shows two retained-log activity metrics:
+**Last activated** is the newest native recording event that proves microphone
+audio became ready, while **Last successful transcription** is the newest
+completed live dictation with a positive character count. Start requests,
+failed initialization, cancelled/no-speech runs, empty output, and imported-file
+transcription do not advance those metrics. Each value includes relative age and
+an exact Eastern timestamp. The receiver scans the complete retained JSONL with
+a strict per-record memory bound, independent of the visible 200/1,000/5,000
+event window; an absent match is reported as not found in the retained log.
+
 Each install page also offers latest-200 and latest-500 **LLM-ready Markdown**
 reports. The versioned `murmur-fleet-llm/v1` format includes bounded device and
 microphone-state context, current health, deduplicated findings, and the original
