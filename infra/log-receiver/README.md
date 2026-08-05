@@ -42,7 +42,8 @@ Dev-tagged batches are acked and discarded.
 
 The receiver stays stdlib-only. Its plain-English classification, recovery
 correlation, grouping, unknown-event fallback, exact newest-N downloads,
-LLM-ready Markdown rendering, route bounds, and HTML escaping are covered by:
+LLM-ready Markdown rendering, bounded retained-log activity metrics, route
+bounds, and HTML escaping are covered by:
 
 ```bash
 python3 -m unittest tests/test_log_receiver.py
@@ -52,3 +53,5 @@ Install pages expose raw JSONL downloads for the latest 200, latest 500, or the
 complete stream. The LLM-ready latest-200/latest-500 downloads use the versioned
 `murmur-fleet-llm/v1` Markdown format documented in
 [`docs/features/log-shipping.md`](../../docs/features/log-shipping.md).
+Quick info also reports the latest proven microphone activation and latest
+non-empty live transcription across the complete retained stream.

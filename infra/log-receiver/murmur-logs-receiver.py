@@ -40,6 +40,7 @@ MAX_INSTALLS = 150
 MAX_TOTAL = 10 * 1024 * 1024 * 1024  # 10 GB across all installs
 EXPORT_LIMITS = (200, 500)
 MAX_SCOPED_EXPORT_BYTES = 32 * 1024 * 1024
+MAX_ACTIVITY_EVENT_BYTES = 512 * 1024
 LLM_REPORT_FORMAT = "murmur-fleet-llm/v1"
 _usage_cache = {"t": 0.0, "bytes": 0, "dirs": 0}
 
@@ -227,6 +228,7 @@ EVENT_CODE_COMPATIBILITY = (
         "audio.capture_failed",
     ),
     ("audio lifecycle failed", "audio.lifecycle_failed"),
+    ("start_native_recording: audio ready", "recording.native_audio_ready"),
     ("transcription complete", "pipeline.dictation_completed"),
     ("stop_native_recording: pipeline failed:", "pipeline.dictation_failed"),
     ("transform_pass_outcome", "transform.pass_outcome"),
@@ -705,6 +707,131 @@ def event_epoch(event):
         ).timestamp()
     except (ValueError, TypeError):
         return 0.0
+
+
+def bounded_jsonl_events_reverse(
+    path,
+    max_line_bytes=MAX_ACTIVITY_EVENT_BYTES,
+    block_bytes=64 * 1024,
+):
+    """Yield newest JSON objects first with fixed block and record bounds."""
+    if max_line_bytes <= 0 or block_bytes <= 0:
+        return
+    try:
+        remaining = os.path.getsize(path)
+        handle = open(path, "rb")
+    except OSError:
+        return
+    with handle:
+        parts = []
+        line_bytes = 0
+        oversized = False
+        while remaining > 0:
+            read_size = min(block_bytes, remaining)
+            remaining -= read_size
+            handle.seek(remaining)
+            block = handle.read(read_size)
+            block_end = len(block)
+            while True:
+                newline = block.rfind(b"\n", 0, block_end)
+                segment = block[newline + 1:block_end]
+                if not oversized:
+                    if line_bytes + len(segment) > max_line_bytes:
+                        parts.clear()
+                        line_bytes = 0
+                        oversized = True
+                    elif segment:
+                        parts.append(segment)
+                        line_bytes += len(segment)
+                if newline < 0:
+                    break
+                if not oversized and line_bytes:
+                    raw = b"".join(reversed(parts)).strip()
+                    if raw:
+                        try:
+                            event = json.loads(raw)
+                        except (TypeError, ValueError, RecursionError):
+                            event = None
+                        if isinstance(event, dict):
+                            yield event
+                parts = []
+                line_bytes = 0
+                oversized = False
+                block_end = newline
+        if not oversized and line_bytes:
+            raw = b"".join(reversed(parts)).strip()
+            if raw:
+                try:
+                    event = json.loads(raw)
+                except (TypeError, ValueError, RecursionError):
+                    event = None
+                if isinstance(event, dict):
+                    yield event
+
+
+def find_activity_metrics(path, max_line_bytes=MAX_ACTIVITY_EVENT_BYTES):
+    """Find the newest proven activation and non-empty live transcription."""
+    metrics = {
+        "last_activated": None,
+        "last_successful_transcription": None,
+    }
+    for event in bounded_jsonl_events_reverse(
+        path,
+        max_line_bytes=max_line_bytes,
+    ):
+        epoch = event_epoch(event)
+        if epoch <= 0:
+            continue
+        code = event_code(event)
+        metric = None
+        if code == "recording.native_audio_ready":
+            metric = "last_activated"
+        elif code == "pipeline.dictation_completed":
+            data = event.get("data")
+            data = data if isinstance(data, dict) else {}
+            char_count = data.get("char_count")
+            if (
+                isinstance(char_count, int)
+                and not isinstance(char_count, bool)
+                and char_count > 0
+            ):
+                metric = "last_successful_transcription"
+        if metric is not None and metrics[metric] is None:
+            metrics[metric] = {"timestamp": str(event.get("timestamp", ""))[:80]}
+        if all(value is not None for value in metrics.values()):
+            break
+    return metrics
+
+
+def render_activity_time(event):
+    """Render relative and exact Eastern time for one activity event."""
+    epoch = event_epoch(event) if isinstance(event, dict) else 0.0
+    if epoch <= 0:
+        return '<span class="meta">Not found in retained log</span>'
+    try:
+        dt = datetime.fromtimestamp(epoch, EASTERN)
+    except (OverflowError, OSError, ValueError):
+        return '<span class="meta">Not found in retained log</span>'
+    hour = dt.strftime("%I").lstrip("0") or "0"
+    exact = "%s %d, %d at %s:%s %s %s" % (
+        dt.strftime("%b"),
+        dt.day,
+        dt.year,
+        hour,
+        dt.strftime("%M:%S"),
+        dt.strftime("%p"),
+        dt.tzname() or "ET",
+    )
+    timestamp = str(event.get("timestamp", ""))[:80]
+    return (
+        '<time datetime="%s"><strong>%s</strong>'
+        '<span class="meta"> &middot; %s</span></time>'
+        % (
+            html.escape(timestamp),
+            html.escape(ago(epoch)),
+            html.escape(exact),
+        )
+    )
 
 
 def display_event_time(event):
@@ -1757,6 +1884,7 @@ def render_install(install_id, kind, n=200):
             state = json.load(f)
     except (OSError, ValueError):
         pass
+    activity = find_activity_metrics(path)
 
     signals = build_health_signals(events)
     health_cards = build_health_cards(signals, state)
@@ -1769,14 +1897,17 @@ def render_install(install_id, kind, n=200):
         % ("".join(render_health_card(card) for card in health_cards), len(events))
     )
 
-    info_html = ""
+    chips = []
+    for ev in reversed(events):
+        if str(ev.get("summary", "")).startswith("configure_dictation"):
+            data = ev.get("data") or {}
+            chips = ["%s: %s" % (k, v) for k, v in sorted(data.items())][:12]
+            break
+    microphone = "unknown"
+    inputs = "unknown"
+    enumeration = "No device state received"
+    state_age = "Unavailable"
     if state:
-        chips = []
-        for ev in reversed(events):
-            if str(ev.get("summary", "")).startswith("configure_dictation"):
-                data = ev.get("data") or {}
-                chips = ["%s: %s" % (k, v) for k, v in sorted(data.items())][:12]
-                break
         if "default_input_available" in state:
             microphone = "Available" if state.get("default_input_available") else "Unavailable"
             input_count = state.get("input_device_count")
@@ -1801,22 +1932,33 @@ def render_install(install_id, kind, n=200):
             ]
             inputs = ", ".join(others) or "unknown"
             enumeration = "Legacy state snapshot"
-        info_html = (
-            '<h2>quick info</h2><table><tbody>'
-            '<tr><td>Microphone</td><td><strong>%s</strong></td></tr>'
-            '<tr><td>Inputs</td><td>%s</td></tr>'
-            '<tr><td>Enumeration</td><td>%s</td></tr>'
-            '<tr><td>Settings</td><td class="meta">%s</td></tr>'
-            '<tr><td>As of</td><td>%s</td></tr>'
-            '</tbody></table>'
-            % (
-                html.escape(str(microphone)),
-                html.escape(str(inputs)),
-                html.escape(str(enumeration)),
-                html.escape(" · ".join(chips)) or "&mdash;",
-                ago(state.get("received_at", 0)),
-            )
+        received_at = state.get("received_at")
+        if (
+            isinstance(received_at, (int, float))
+            and not isinstance(received_at, bool)
+            and received_at > 0
+        ):
+            state_age = ago(received_at)
+    info_html = (
+        '<h2>quick info</h2><table><tbody>'
+        '<tr><td>Microphone</td><td><strong>%s</strong></td></tr>'
+        '<tr><td>Inputs</td><td>%s</td></tr>'
+        '<tr><td>Enumeration</td><td>%s</td></tr>'
+        '<tr><td>Settings</td><td class="meta">%s</td></tr>'
+        '<tr><td>Last activated</td><td>%s</td></tr>'
+        '<tr><td>Last successful transcription</td><td>%s</td></tr>'
+        '<tr><td>Device state as of</td><td>%s</td></tr>'
+        '</tbody></table>'
+        % (
+            html.escape(str(microphone)),
+            html.escape(str(inputs)),
+            html.escape(str(enumeration)),
+            html.escape(" · ".join(chips)) or "&mdash;",
+            render_activity_time(activity["last_activated"]),
+            render_activity_time(activity["last_successful_transcription"]),
+            html.escape(state_age),
         )
+    )
 
     attention_groups = [
         item for item in problem_groups if item["status"] in ("action", "degraded")
