@@ -217,7 +217,7 @@ export function HistoryPanel({
             data-expanded="true"
             className="history-search"
           >
-            <span className="pointer-events-none absolute inset-y-0 left-0 z-10 grid w-8 place-items-center text-on-surface-variant">
+            <span className="pointer-events-none absolute inset-y-0 left-0 z-10 grid w-7 place-items-center text-on-surface-variant">
               <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M17 11a6 6 0 11-12 0 6 6 0 0112 0z" />
               </svg>
@@ -236,7 +236,7 @@ export function HistoryPanel({
               }}
               placeholder="Search transcripts"
               aria-label="Search transcripts"
-              className="absolute inset-0 h-full w-full border-0 bg-transparent py-1 pl-8 pr-9 text-xs text-on-surface outline-none placeholder:text-on-surface-variant [&::-webkit-search-cancel-button]:appearance-none"
+              className="absolute inset-0 h-full w-full border-0 bg-transparent py-1 pl-7 pr-7 text-xs text-on-surface outline-none placeholder:text-on-surface-variant [&::-webkit-search-cancel-button]:appearance-none"
             />
             {query ? (
               <button

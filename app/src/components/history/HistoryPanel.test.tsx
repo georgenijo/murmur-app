@@ -153,6 +153,22 @@ describe('HistoryPanel', () => {
     expect(container.textContent).toContain('Copied 1 entry');
   });
 
+  it('reports a per-entry clipboard failure without copying another entry', async () => {
+    writeText.mockRejectedValueOnce(new Error('clipboard unavailable'));
+    await render();
+
+    const newestCard = Array.from(container.querySelectorAll('article')).find((card) =>
+      card.textContent?.includes('remember the invariant'),
+    )!;
+    const copy = newestCard.querySelector('.transcript-copy') as HTMLButtonElement;
+    await act(async () => copy.click());
+
+    expect(writeText).toHaveBeenCalledOnce();
+    expect(writeText).toHaveBeenCalledWith('remember the invariant');
+    expect(container.textContent).toContain('Could not copy to the clipboard.');
+    expect(copy.dataset.copied).toBe('false');
+  });
+
   it('saves an export through the native dialog and the validated command', async () => {
     await render();
     await act(async () => moreActions().click());

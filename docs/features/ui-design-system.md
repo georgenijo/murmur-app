@@ -47,7 +47,7 @@ Use these before creating a feature-local control or surface.
 |------|----------|
 | Native chrome | Traffic lights, wordmark, status, hint, Record, and Settings share one row |
 | Status | Minimum 72px; state changes do not remove its container |
-| Record | 72px border-box width; timer remains mounted and changes visibility |
+| Record | Minimum 72px border-box width; timer remains mounted and changes visibility |
 | Toolbar | 28px controls; search is 180px and expands to 260px on focus |
 | History | 5px list gap; cards use an 8px vertical inset |
 | Metadata | Time/source left; words/duration flush right |
@@ -66,3 +66,8 @@ layout.
 Component tests enforce the stable header contracts and confirm that Copy is
 outside the transcript counts row. Native smoke testing covers Settings
 navigation, transcript-card actions, and the history overflow menu.
+
+`npm run test:visual` runs Playwright goldens at the canonical 720×560 size for
+light and dark appearances across idle, recording, processing, and Settings.
+Update those baselines only after comparing the rendered fixture with the Open
+Design source and repeating the bundled native smoke test.

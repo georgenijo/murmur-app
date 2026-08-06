@@ -31,6 +31,7 @@ export function PermissionsBanner() {
   const [checking, setChecking] = useState(true);
   const [resetError, setResetError] = useState<string | null>(null);
   const [micResetError, setMicResetError] = useState<string | null>(null);
+  const [moreOpen, setMoreOpen] = useState(false);
 
   const checkPermissions = useCallback(async () => {
     setChecking(true);
@@ -143,7 +144,11 @@ export function PermissionsBanner() {
       >
         Open System Settings
       </button>
-      <details className="relative shrink-0">
+      <details
+        open={moreOpen}
+        onToggle={(event) => setMoreOpen(event.currentTarget.open)}
+        className="relative shrink-0"
+      >
         <summary className="cursor-pointer list-none rounded px-1 py-0.5 font-semibold hover:bg-warning/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-warning">
           More
         </summary>

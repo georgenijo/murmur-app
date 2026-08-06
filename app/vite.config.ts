@@ -20,7 +20,8 @@ export default defineConfig(async () => ({
       ignored: ["**/src-tauri/**"],
     },
   },
-  // Multi-page: main window + overlay + transform review popover
+  // Multi-page production windows. Vite serves visual-fixtures.html in dev for
+  // Playwright, but it is deliberately excluded from packaged builds.
   build: {
     rollupOptions: {
       input: {

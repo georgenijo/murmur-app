@@ -116,6 +116,15 @@ export function MainHeader({
             type="button"
             onClick={() => void (isCapturing ? onStop() : onRecord())}
             disabled={!initialized || busy}
+            aria-label={
+              status === 'recording'
+                ? `Stop recording, ${formatTimer(recordingDuration)}`
+                : status === 'starting'
+                  ? 'Cancel recording'
+                  : busy
+                    ? label
+                    : 'Record'
+            }
             className={`ui-record-pill active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 ${
               isCapturing
                 ? 'border border-error/50 bg-error/10 text-error hover:bg-error/15'
@@ -128,10 +137,18 @@ export function MainHeader({
               }`}
               aria-hidden="true"
             />
-            <span>{status === 'starting' ? 'Cancel' : status === 'recording' ? 'Stop' : 'Record'}</span>
+            <span>
+              {status === 'starting'
+                ? 'Cancel'
+                : status === 'recording'
+                  ? 'Stop'
+                  : busy
+                    ? label
+                    : 'Record'}
+            </span>
             {' '}
             <span
-              aria-hidden={!isCapturing}
+              aria-hidden={status !== 'recording'}
               className={`overflow-hidden font-mono text-[10px] ${
                 status === 'recording' ? 'visible w-auto' : 'invisible w-0'
               }`}

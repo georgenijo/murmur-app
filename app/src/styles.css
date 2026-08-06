@@ -171,7 +171,6 @@ textarea {
 .ui-record-pill {
   box-sizing: border-box;
   display: inline-flex;
-  width: var(--ui-record-width);
   min-width: var(--ui-record-width);
   height: var(--ui-control-compact);
   align-items: center;

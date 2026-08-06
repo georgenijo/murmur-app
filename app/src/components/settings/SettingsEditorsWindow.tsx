@@ -125,7 +125,7 @@ export function SettingsEditorsWindow({
     <div className="fixed inset-0 z-[70] flex flex-col overflow-hidden bg-background text-on-surface">
       <WindowHeader contextLabel="Settings · Editors">
         <span data-tauri-drag-region className="flex-1" />
-        <button type="button" onClick={onClose} className="rounded-lg px-2 py-1.5 text-xs font-bold text-on-surface hover:bg-surface-container-low">Done</button>
+        <button type="button" onClick={onClose} className="rounded-md px-2 py-1 text-[11px] font-bold leading-none text-on-surface hover:bg-surface-container-low">Done</button>
       </WindowHeader>
 
       <nav aria-label="Settings editors" className="flex shrink-0 flex-nowrap justify-start gap-1 overflow-x-auto px-5 py-3 sm:justify-center">

@@ -169,7 +169,33 @@ describe('Sonic Canvas component details', () => {
       expect(elements.header.classList).toContain('ui-window-header');
       expect(elements.statusChip.classList).toContain('ui-status-chip');
       expect(elements.record.classList).toContain('ui-record-pill');
+      if (status === 'processing') {
+        expect(elements.record.getAttribute('aria-label')).toBe('Processing');
+      }
     }
+  });
+
+  it('does not expose the reserved timer while recording starts', async () => {
+    await act(async () => {
+      root.render(
+        <MainHeader
+          status="starting"
+          initialized
+          recordingDuration={0}
+          recordingMode="hold_down"
+          onRecord={vi.fn()}
+          onStop={vi.fn()}
+          onOpenSettings={vi.fn()}
+          settingsOpen={false}
+          triggerKey="shift_l"
+        />,
+      );
+    });
+
+    const record = container.querySelector('[data-testid="record-pill"]') as HTMLButtonElement;
+    expect(record.getAttribute('aria-label')).toBe('Cancel recording');
+    expect(record.querySelector('.font-mono')?.getAttribute('aria-hidden')).toBe('true');
+    expect(record.querySelector('.font-mono')?.textContent).toBe('0:00');
   });
 
   it('preserves history copy and confirmed clear actions', async () => {
