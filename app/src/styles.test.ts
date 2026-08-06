@@ -102,3 +102,19 @@ describe('Sonic Canvas semantic color tokens', () => {
     expect(contrast(theme.error, theme.background)).toBeGreaterThanOrEqual(4.5);
   });
 });
+
+describe('Murmur layout contracts', () => {
+  it('locks the compact chrome and history geometry to shared tokens', () => {
+    expect(css).toContain('--ui-window-header-height: 1.625rem;');
+    expect(css).toContain('--ui-record-width: 4.5rem;');
+    expect(css).toContain('--ui-status-min-width: 4.5rem;');
+    expect(css).toContain('--ui-history-gap: 0.3125rem;');
+    expect(css).toContain('--ui-history-card-y: 0.5rem;');
+  });
+
+  it('keeps transcript copy actions out of metadata layout', () => {
+    expect(css).toMatch(
+      /\.transcript-copy\s*\{[^}]*position:\s*absolute;[^}]*right:\s*var\(--ui-space-4\);[^}]*bottom:\s*var\(--ui-space-3\);/s,
+    );
+  });
+});

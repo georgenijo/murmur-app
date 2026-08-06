@@ -7,6 +7,7 @@ import { TransformsManager } from './TransformsManager';
 import { VocabScanStrip } from './VocabScanStrip';
 import { VocabularyAliasesEditor } from './VocabularyAliasesEditor';
 import { VoiceCommandsManager } from './VoiceCommandsManager';
+import { WindowHeader } from '../ui/WindowHeader';
 
 export type SettingsEditorTab =
   | 'vocabulary'
@@ -122,12 +123,10 @@ export function SettingsEditorsWindow({
 
   return (
     <div className="fixed inset-0 z-[70] flex flex-col overflow-hidden bg-background text-on-surface">
-      <header data-tauri-drag-region className="main-header flex h-[62px] shrink-0 items-center gap-4 border-b border-outline-variant/15 bg-background/95 px-5">
-        <span data-tauri-drag-region className="text-[15px] font-bold tracking-tight text-primary">Murmur</span>
-        <span data-tauri-drag-region className="text-sm text-on-surface-variant">Settings · Editors</span>
+      <WindowHeader contextLabel="Settings · Editors">
         <span data-tauri-drag-region className="flex-1" />
         <button type="button" onClick={onClose} className="rounded-lg px-2 py-1.5 text-xs font-bold text-on-surface hover:bg-surface-container-low">Done</button>
-      </header>
+      </WindowHeader>
 
       <nav aria-label="Settings editors" className="flex shrink-0 flex-nowrap justify-start gap-1 overflow-x-auto px-5 py-3 sm:justify-center">
         {TABS.map((tab) => (
@@ -136,11 +135,7 @@ export function SettingsEditorsWindow({
             type="button"
             aria-current={activeTab === tab.id ? 'page' : undefined}
             onClick={() => setActiveTab(tab.id)}
-            className={`shrink-0 rounded-full px-3 py-1.5 text-[11px] font-semibold transition-colors ${
-              activeTab === tab.id
-                ? 'bg-on-surface text-background'
-                : 'bg-surface-container-low text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface'
-            }`}
+            className="ui-filter-chip shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
           >
             {tab.label}
           </button>

@@ -34,6 +34,37 @@
   --error: var(--murmur-error);
   --success: var(--murmur-success);
   --warning: var(--murmur-warning);
+
+  /* Murmur UI geometry. Feature components consume these contracts instead of
+     inventing local measurements, keeping every workspace on the same rhythm. */
+  --ui-font-caption: 0.625rem;
+  --ui-font-label: 0.6875rem;
+  --ui-font-body: 0.78125rem;
+  --ui-font-title: 0.8125rem;
+  --ui-space-1: 0.125rem;
+  --ui-space-2: 0.25rem;
+  --ui-space-3: 0.375rem;
+  --ui-space-4: 0.5rem;
+  --ui-space-5: 0.625rem;
+  --ui-space-6: 0.75rem;
+  --ui-space-7: 0.875rem;
+  --ui-radius-control: 0.4375rem;
+  --ui-radius-card: 0.625rem;
+  --ui-radius-popover: 0.75rem;
+  --ui-control-compact: 1.625rem;
+  --ui-control-standard: 1.75rem;
+  /* The native overlay contributes ~20px above the web content on macOS.
+     A 26px web row produces the 46px single-line chrome in the specification. */
+  --ui-window-header-height: 1.625rem;
+  --ui-window-controls-inset: 5.125rem;
+  --ui-record-width: 4.5rem;
+  --ui-status-min-width: 4.5rem;
+  --ui-history-gap: 0.3125rem;
+  --ui-history-card-y: 0.5rem;
+  --ui-history-card-x: 0.6875rem;
+  --ui-motion-fast: 120ms;
+  --ui-motion-standard: 200ms;
+  --ui-ease-out: cubic-bezier(.2, .86, .24, 1);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -98,10 +129,231 @@ textarea {
   outline-offset: 1px;
 }
 
-/* The main window uses the native macOS overlay title bar. Keep the single-line
-   header clear of the real traffic lights while allowing the whole row to drag. */
+/* Native macOS overlay chrome. The real traffic lights occupy the leading
+   inset; the web contents share their title-bar baseline and never draw a
+   second row or fake controls. */
+.ui-window-header,
 .main-header {
-  padding-left: 82px;
+  box-sizing: border-box;
+  display: flex;
+  height: var(--ui-window-header-height);
+  flex-shrink: 0;
+  align-items: center;
+  gap: var(--ui-space-4);
+  padding: 0 var(--ui-space-5);
+  padding-left: var(--ui-window-controls-inset);
+}
+
+.ui-window-wordmark {
+  user-select: none;
+  font-size: var(--ui-font-title);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--murmur-primary);
+}
+
+.ui-status-chip {
+  display: inline-flex;
+  min-width: var(--ui-status-min-width);
+  min-height: 1.375rem;
+  align-items: center;
+  gap: var(--ui-space-3);
+  border-radius: 999px;
+  padding: 0.1875rem 0.625rem 0.1875rem 0.5rem;
+  background: var(--murmur-surface-container-low);
+  color: var(--murmur-on-surface);
+  font-size: var(--ui-font-label);
+  font-weight: 600;
+  line-height: 1rem;
+  white-space: nowrap;
+}
+
+.ui-record-pill {
+  box-sizing: border-box;
+  display: inline-flex;
+  width: var(--ui-record-width);
+  min-width: var(--ui-record-width);
+  height: var(--ui-control-compact);
+  align-items: center;
+  justify-content: center;
+  gap: 0.3125rem;
+  border-radius: 999px;
+  padding-inline: var(--ui-space-5);
+  font-size: var(--ui-font-label);
+  font-weight: 650;
+  line-height: 1;
+  transition:
+    filter var(--ui-motion-fast),
+    transform var(--ui-motion-fast),
+    background-color var(--ui-motion-fast),
+    color var(--ui-motion-fast);
+}
+
+.ui-icon-button {
+  display: grid;
+  width: var(--ui-control-compact);
+  height: var(--ui-control-compact);
+  flex-shrink: 0;
+  place-items: center;
+  border-radius: var(--ui-radius-control);
+  color: var(--murmur-on-surface-variant);
+  transition:
+    background-color var(--ui-motion-fast),
+    color var(--ui-motion-fast);
+}
+
+.ui-icon-button:hover {
+  background: var(--murmur-surface-container-high);
+  color: var(--murmur-on-surface);
+}
+
+.ui-filter-chip {
+  display: inline-flex;
+  height: var(--ui-control-standard);
+  align-items: center;
+  border-radius: 999px;
+  padding-inline: var(--ui-space-5);
+  background: var(--murmur-surface-container-lowest);
+  color: var(--murmur-on-surface-variant);
+  font-size: 0.65625rem;
+  font-weight: 550;
+  transition:
+    background-color var(--ui-motion-fast),
+    color var(--ui-motion-fast);
+}
+
+.ui-filter-chip[aria-pressed="true"],
+.ui-filter-chip[aria-current="page"] {
+  background: var(--murmur-on-surface);
+  color: var(--murmur-background);
+}
+
+.ui-filter-chip:hover {
+  background: var(--murmur-surface-container);
+  color: var(--murmur-on-surface);
+}
+
+.history-toolbar {
+  display: flex;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ui-space-3);
+  padding: var(--ui-space-1) var(--ui-space-7) var(--ui-space-4);
+}
+
+.history-search {
+  position: relative;
+  width: 11.25rem;
+  height: var(--ui-control-standard);
+  flex-shrink: 0;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--murmur-outline-variant) 30%, transparent);
+  border-radius: 0.5rem;
+  background: var(--murmur-surface-container-lowest);
+  transition:
+    width 250ms var(--ui-ease-out),
+    border-color var(--ui-motion-standard),
+    box-shadow var(--ui-motion-standard);
+}
+
+.history-search:focus-within {
+  width: 16.25rem;
+  border-color: color-mix(in srgb, var(--murmur-primary) 70%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--murmur-primary) 10%, transparent);
+}
+
+.history-list {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--ui-history-gap);
+  overflow-y: auto;
+  padding: var(--ui-space-1) var(--ui-space-7) var(--ui-space-5);
+}
+
+.transcript-card {
+  position: relative;
+  width: 100%;
+  border: 1px solid color-mix(in srgb, var(--murmur-outline-variant) 25%, transparent);
+  border-radius: var(--ui-radius-card);
+  padding: var(--ui-history-card-y) var(--ui-history-card-x);
+  background: var(--murmur-surface-container-lowest);
+  text-align: left;
+  transition:
+    border-color var(--ui-motion-fast),
+    background-color var(--ui-motion-fast);
+}
+
+.transcript-card:hover {
+  border-color: color-mix(in srgb, var(--murmur-outline-variant) 45%, transparent);
+  background: var(--murmur-surface-container-low);
+}
+
+.transcript-card[data-copied="true"] {
+  border-color: var(--murmur-success);
+}
+
+.transcript-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-3);
+  margin-bottom: var(--ui-space-1);
+  color: var(--murmur-on-surface-variant);
+  font-size: var(--ui-font-caption);
+  font-variant-numeric: tabular-nums;
+  line-height: 1rem;
+}
+
+.transcript-text {
+  color: var(--murmur-on-surface);
+  font-size: var(--ui-font-body);
+  line-height: 1.5;
+}
+
+.transcript-copy {
+  position: absolute;
+  right: var(--ui-space-4);
+  bottom: var(--ui-space-3);
+  border-radius: 0.25rem;
+  padding: 0.0625rem 0.3125rem;
+  color: var(--murmur-on-surface-variant);
+  font-size: 0.5625rem;
+  font-weight: 550;
+  line-height: 1rem;
+  opacity: 0;
+  transition:
+    opacity var(--ui-motion-fast),
+    color var(--ui-motion-fast),
+    background-color var(--ui-motion-fast);
+}
+
+.transcript-card:hover .transcript-copy,
+.transcript-copy:focus-visible,
+.transcript-copy[data-copied="true"] {
+  opacity: 1;
+}
+
+.transcript-copy:hover {
+  background: var(--murmur-surface-container-high);
+  color: var(--murmur-on-surface);
+}
+
+.transcript-teach {
+  margin-top: 0.1875rem;
+  border-radius: 0.3125rem;
+  padding: 0.0625rem 0.375rem;
+  background: var(--murmur-surface-container);
+  color: var(--murmur-on-surface-variant);
+  font-size: 0.59375rem;
+  font-weight: 600;
+  line-height: 1rem;
+}
+
+.transcript-teach:hover {
+  background: var(--murmur-surface-container-high);
+  color: var(--murmur-on-surface);
 }
 
 /* The notch overlay is a transparent window — the surface background above

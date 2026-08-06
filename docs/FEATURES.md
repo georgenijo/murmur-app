@@ -166,6 +166,11 @@ project scan share one six-tab editor window.
 ### Appearance — [features/appearance.md](features/appearance.md)
 Local System/Light/Dark appearance with accessible custom accent, background, foreground, and contrast controls. The main window owns the revisioned local document and native title-bar appearance; the transparent overlay and transform review remain unsynchronized always-dark glass. Import/export is bounded, atomic, UTF-8 JSON and never touches the clipboard.
 
+### UI design system — [features/ui-design-system.md](features/ui-design-system.md)
+Shared native chrome, semantic appearance colors, constrained geometry/type
+tokens, compact control primitives, and transcript-card invariants keep the
+eight redesigned surfaces visually consistent as features evolve.
+
 ### Onboarding — [features/onboarding-flow.md](features/onboarding-flow.md)
 First-launch wizard: Welcome → Microphone → Accessibility → Model download →
 Hotkey → Done. The mic step fires the native macOS prompt in-app; both permission

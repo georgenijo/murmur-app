@@ -121,119 +121,98 @@ export function PermissionsBanner() {
     return null;
   }
 
+  const needsAccessibility = permissions.accessibility !== 'granted';
+  const message = micDenied && needsAccessibility
+    ? 'Microphone and Accessibility access are needed.'
+    : micDenied
+      ? 'Microphone access was revoked.'
+      : 'Accessibility access is needed for auto-paste.';
+
   return (
-    <div className="bg-primary/10 px-4 py-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex-1">
-          <h3 className="text-sm font-medium text-on-surface">
-            Permissions Required
-          </h3>
-          <div className="mt-2 space-y-2">
-            {/* Microphone Permission */}
-            <div className="flex items-center gap-2">
-              <span className={`w-2 h-2 rounded-full ${
-                micOk ? 'bg-success' : 'bg-error'
-              }`} />
-              <span className="text-sm text-on-surface">
-                Microphone: {micOk ? 'Granted' : 'Required for recording'}
-              </span>
-              {micDenied && (
-                <button
-                  onClick={handleOpenMicrophone}
-                  className="text-xs text-on-surface underline hover:no-underline"
-                >
-                  Open Settings
-                </button>
-              )}
-            </div>
-
-            {/* Microphone troubleshooting: reset a stale TCC entry */}
-            {micDenied && (
-              <div className="ml-4 space-y-1">
-                <button
-                  onClick={handleResetMicrophone}
-                  className="text-xs text-on-surface underline hover:no-underline"
-                >
-                  Still not working? Reset &amp; Open Settings
-                </button>
-                <p className="text-xs text-on-surface">
-                  Clears Murmur's stale Microphone entry, then opens System Settings.
-                  macOS will re-prompt the next time you record.
-                </p>
-                {micResetError && (
-                  <p
-                    role="alert"
-                    className="rounded-md border border-error bg-surface-container-lowest px-2 py-1 text-xs text-error"
-                  >
-                    {micResetError}
-                  </p>
-                )}
-              </div>
-            )}
-
-            {/* Accessibility Permission */}
-            <div className="flex items-center gap-2">
-              <span className={`w-2 h-2 rounded-full ${
-                permissions.accessibility === 'granted'
-                  ? 'bg-success'
-                  : 'bg-error'
-              }`} />
-              <span className="text-sm text-on-surface">
-                Accessibility: {permissions.accessibility === 'granted' ? 'Granted' : 'Required for text pasting'}
-              </span>
-              {permissions.accessibility !== 'granted' && (
-                <button
-                  onClick={handleOpenAccessibility}
-                  className="text-xs text-on-surface underline hover:no-underline"
-                >
-                  Open Settings
-                </button>
-              )}
-            </div>
-
-            {/* Accessibility troubleshooting: reset a stale TCC entry */}
-            {permissions.accessibility !== 'granted' && (
-              <div className="ml-4 space-y-1">
-                <button
-                  onClick={handleResetAccessibility}
-                  className="text-xs text-on-surface underline hover:no-underline"
-                >
-                  Still not working? Reset &amp; Open Settings
-                </button>
-                <p className="text-xs text-on-surface">
-                  Clears Murmur's stale Accessibility entry, then opens System Settings.
-                  You'll still need to turn Murmur back on manually.
-                </p>
-                {resetError && (
-                  <p
-                    role="alert"
-                    className="rounded-md border border-error bg-surface-container-lowest px-2 py-1 text-xs text-error"
-                  >
-                    {resetError}
-                  </p>
-                )}
-              </div>
-            )}
-          </div>
-
+    <div
+      role="region"
+      aria-label="Permission warning"
+      className="relative mx-3.5 mb-1.5 flex shrink-0 items-center gap-2 rounded-lg bg-warning/10 px-3 py-2 text-xs text-warning"
+    >
+      <span aria-hidden="true" className="h-1.5 w-1.5 shrink-0 rounded-full bg-warning" />
+      <span className="min-w-0 flex-1 truncate">{message}</span>
+      <button
+        type="button"
+        onClick={micDenied ? handleOpenMicrophone : handleOpenAccessibility}
+        className="shrink-0 font-semibold underline underline-offset-2 hover:no-underline"
+      >
+        Open System Settings
+      </button>
+      <details className="relative shrink-0">
+        <summary className="cursor-pointer list-none rounded px-1 py-0.5 font-semibold hover:bg-warning/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-warning">
+          More
+        </summary>
+        <div className="absolute right-0 top-6 z-40 w-72 space-y-2 rounded-xl border border-outline-variant/25 bg-surface-container-lowest p-3 text-on-surface shadow-2xl">
           <button
+            type="button"
             onClick={checkPermissions}
-            className="mt-2 text-xs text-on-surface hover:underline"
+            className="text-xs font-semibold hover:underline"
           >
             Re-check permissions
           </button>
+          {micDenied && (
+            <div className="space-y-1 border-t border-outline-variant/20 pt-2">
+              <button
+                type="button"
+                onClick={handleResetMicrophone}
+                className="text-xs font-semibold underline hover:no-underline"
+              >
+                Reset Microphone permission
+              </button>
+              <p className="text-[10px] leading-relaxed text-on-surface-variant">
+                Clears Murmur's stale Microphone entry, then opens System Settings.
+                macOS will re-prompt the next time you record.
+              </p>
+              {micResetError && (
+                <p
+                  role="alert"
+                  className="rounded-md border border-error bg-surface-container-lowest px-2 py-1 text-xs text-error"
+                >
+                  {micResetError}
+                </p>
+              )}
+            </div>
+          )}
+          {needsAccessibility && (
+            <div className="space-y-1 border-t border-outline-variant/20 pt-2">
+              <button
+                type="button"
+                onClick={handleResetAccessibility}
+                className="text-xs font-semibold underline hover:no-underline"
+              >
+                Reset Accessibility permission
+              </button>
+              <p className="text-[10px] leading-relaxed text-on-surface-variant">
+                Clears Murmur's stale Accessibility entry, then opens System Settings.
+                You'll still need to turn Murmur back on manually.
+              </p>
+              {resetError && (
+                <p
+                  role="alert"
+                  className="rounded-md border border-error bg-surface-container-lowest px-2 py-1 text-xs text-error"
+                >
+                  {resetError}
+                </p>
+              )}
+            </div>
+          )}
         </div>
-
-        <button
-          onClick={() => setDismissed(true)}
-          className="rounded-md p-0.5 text-on-surface transition-colors hover:bg-surface-container-lowest"
-          aria-label="Dismiss"
-        >
-          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-          </svg>
-        </button>
-      </div>
+      </details>
+      <button
+        type="button"
+        onClick={() => setDismissed(true)}
+        className="grid h-5 w-5 shrink-0 place-items-center rounded text-warning transition-colors hover:bg-warning/10"
+        aria-label="Dismiss"
+      >
+        <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+        </svg>
+      </button>
     </div>
   );
 }

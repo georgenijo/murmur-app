@@ -511,11 +511,7 @@ export function SettingsPanel({
                   setActiveCat(category.id);
                   setDiagnosticsOpen(false);
                 }}
-                className={`rounded-full px-4 py-1.5 text-xs font-semibold transition-colors ${
-                  activeCat === category.id
-                    ? 'bg-on-surface text-background'
-                    : 'text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface'
-                }`}
+                className="ui-filter-chip px-4 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
               >
                 {category.label}{matches > 0 ? ` (${matches})` : ''}
               </button>
