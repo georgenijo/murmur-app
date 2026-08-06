@@ -227,6 +227,7 @@ export function SettingsPanel({
 }: SettingsPanelProps) {
   const { byName: runtimeByName } = useModelRuntimeCatalog(isOpen);
   const [activeCat, setActiveCat] = useState<string>(() => resolvePage(pageRequest?.page));
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(pageRequest?.page === 'performance');
   const [searchQuery, setSearchQuery] = useState('');
   const [editorTab, setEditorTab] = useState<SettingsEditorTab | null>(null);
   const searchResults = useMemo(() => {
@@ -240,6 +241,7 @@ export function SettingsPanel({
     if (!pageRequest || pageRequest.token === requestTokenRef.current) return;
     requestTokenRef.current = pageRequest.token;
     setActiveCat(resolvePage(pageRequest.page));
+    setDiagnosticsOpen(pageRequest.page === 'performance');
   }, [pageRequest]);
   const [version, setVersion] = useState('');
   const [confirmReset, setConfirmReset] = useState(false);
@@ -505,7 +507,10 @@ export function SettingsPanel({
                 key={category.id}
                 type="button"
                 aria-current={activeCat === category.id ? 'page' : undefined}
-                onClick={() => setActiveCat(category.id)}
+                onClick={() => {
+                  setActiveCat(category.id);
+                  setDiagnosticsOpen(false);
+                }}
                 className={`rounded-full px-4 py-1.5 text-xs font-semibold transition-colors ${
                   activeCat === category.id
                     ? 'bg-on-surface text-background'
@@ -542,6 +547,7 @@ export function SettingsPanel({
                       type="button"
                       onClick={() => {
                         setActiveCat(result.tab);
+                        setDiagnosticsOpen(result.title === 'Diagnostics');
                         setSearchQuery('');
                       }}
                       className="flex w-full items-center gap-4 border-b border-outline-variant/15 px-4 py-3 text-left last:border-b-0 hover:bg-surface-container-low"
@@ -550,7 +556,9 @@ export function SettingsPanel({
                         <span className="block text-sm font-semibold text-on-surface">{result.title}</span>
                         <span className="mt-0.5 block text-xs text-on-surface-variant">{result.detail}</span>
                       </span>
-                      <span className="rounded-full bg-surface-container-high px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-on-surface-variant">{result.tab}</span>
+                      <span className="rounded-full bg-surface-container-high px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-on-surface-variant">
+                        {SETTINGS_CATEGORIES.find((category) => category.id === result.tab)?.label ?? result.tab}
+                      </span>
                       <span aria-hidden="true" className="text-on-surface-variant">›</span>
                     </button>
                   ))}
@@ -862,8 +870,14 @@ export function SettingsPanel({
           </SettingsSection>
 
           <SettingsSection pageId="model" activePage={activeCat} title="Advanced Diagnostics" subtitle="Events, run history, performance, comparisons, and transform traces">
-            <details className="group">
-              <summary className="flex cursor-pointer list-none items-center justify-between rounded-lg px-1 py-1 text-sm font-semibold text-on-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+            <details className="group" open={diagnosticsOpen}>
+              <summary
+                onClick={(event) => {
+                  event.preventDefault();
+                  setDiagnosticsOpen((open) => !open);
+                }}
+                className="flex cursor-pointer list-none items-center justify-between rounded-lg px-1 py-1 text-sm font-semibold text-on-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+              >
                 Advanced
                 <span aria-hidden="true" className="text-on-surface-variant transition-transform group-open:rotate-180">⌄</span>
               </summary>
@@ -891,7 +905,16 @@ export function SettingsPanel({
               </summary>
               <div className="mt-3 space-y-2 border-t border-outline-variant/20 pt-3">
                 <button type="button" onClick={() => void startOverlayCalibration()} className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs font-medium text-on-surface-variant transition-colors hover:bg-surface-container hover:text-primary">Calibrate Overlay Position</button>
-                <button type="button" onClick={() => setActiveCat('model')} className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs font-medium text-on-surface-variant transition-colors hover:bg-surface-container hover:text-primary">View Performance</button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveCat('model');
+                    setDiagnosticsOpen(true);
+                  }}
+                  className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs font-medium text-on-surface-variant transition-colors hover:bg-surface-container hover:text-primary"
+                >
+                  View Performance
+                </button>
                 <button type="button" aria-label={confirmReset ? 'Confirm reset statistics' : 'Reset statistics'} onClick={resetStats} className={`w-full rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${confirmReset ? 'border-error/40 bg-error/10 text-error' : 'border-outline-variant/30 bg-surface-container-lowest text-on-surface-variant hover:bg-surface-container hover:text-primary'}`}>{confirmReset ? 'Confirm Reset' : 'Reset Stats'}</button>
               </div>
             </details>

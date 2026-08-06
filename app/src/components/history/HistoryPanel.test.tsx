@@ -75,6 +75,7 @@ describe('HistoryPanel', () => {
     await act(async () => root.unmount());
     container.remove();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it('keeps the empty state when there is no history', async () => {
@@ -87,6 +88,30 @@ describe('HistoryPanel', () => {
   it('orders entries newest first', async () => {
     await render();
     expect(cardText()[0]).toContain('remember the invariant');
+  });
+
+  it('expands and collapses only overflowing transcripts', async () => {
+    vi.stubGlobal('ResizeObserver', class {
+      observe() {}
+      disconnect() {}
+      unobserve() {}
+    });
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(40);
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.textContent?.includes('a transcript long enough to overflow') ? 80 : 40;
+    });
+    await render({
+      entries: [
+        entry({ id: 'short', text: 'short transcript' }),
+        entry({ id: 'long', text: 'a transcript long enough to overflow' }),
+      ],
+    });
+
+    expect(buttons().filter((button) => button.textContent === 'Show more')).toHaveLength(1);
+    await act(async () => byText('Show more')!.click());
+    expect(byText('Show less')).toBeTruthy();
+    await act(async () => byText('Show less')!.click());
+    expect(buttons().filter((button) => button.textContent === 'Show more')).toHaveLength(1);
   });
 
   it('filters as you type and highlights the match', async () => {

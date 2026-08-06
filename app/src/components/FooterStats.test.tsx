@@ -31,7 +31,7 @@ describe('FooterStats', () => {
 
   it('renders compact usage text and opens detailed insights on demand', async () => {
     await act(async () => root.render(<FooterStats statsVersion={0} />));
-    expect(container.textContent).toContain('3,344 words');
+    expect(container.textContent).toContain(`${(3344).toLocaleString()} words`);
     expect(container.textContent).toContain('203 wpm');
     expect(container.textContent).toContain('125 recordings');
     expect(container.textContent).toContain('1 day streak');

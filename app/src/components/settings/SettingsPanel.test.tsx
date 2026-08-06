@@ -126,6 +126,27 @@ describe('SettingsPanel information architecture', () => {
     expect(container.querySelector('nav [aria-current="page"]')?.textContent).toBe('App');
     expect(container.textContent).toContain('Appearance settings');
   });
+
+  it('opens diagnostics when the cross-tab result explicitly targets them', async () => {
+    const input = container.querySelector('input[placeholder="Search all settings"]') as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => {
+      setter.call(input, 'diagnostics');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    const result = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent?.includes('Diagnostics'),
+    ) as HTMLButtonElement;
+    expect(result.textContent).toContain('Model');
+    await act(async () => result.click());
+
+    expect(container.querySelector('nav [aria-current="page"]')?.textContent).toBe('Model');
+    const diagnostics = Array.from(container.querySelectorAll('details')).find(
+      (details) => details.textContent?.includes('Diagnostics workspace'),
+    ) as HTMLDetailsElement;
+    expect(diagnostics.open).toBe(true);
+  });
 });
 
 describe('effectiveAutoPaste', () => {

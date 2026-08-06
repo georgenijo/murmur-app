@@ -236,9 +236,13 @@ export function OverlayWidget() {
         onCancel={() => setCalibrating(false)}
         onCommit={(delta) => {
           const next = Math.max(-12, Math.min(48, verticalOffset + delta));
-          localStorage.setItem('murmur-overlay-vertical-offset', String(next));
           setVerticalOffset(next);
           setCalibrating(false);
+          try {
+            localStorage.setItem('murmur-overlay-vertical-offset', String(next));
+          } catch {
+            // Non-fatal: the offset applies for this session and resets next launch.
+          }
         }}
       />
     </div>

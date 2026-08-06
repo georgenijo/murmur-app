@@ -17,6 +17,7 @@ export function NotchCalibrationBand({
 }: NotchCalibrationBandProps) {
   const [dragOffset, setDragOffset] = useState(0);
   const dragOffsetRef = useRef(0);
+  const draggedRef = useRef(false);
   const startYRef = useRef(0);
   const bandRef = useRef<HTMLDivElement>(null);
 
@@ -42,6 +43,7 @@ export function NotchCalibrationBand({
       }}
       onPointerDown={(event) => {
         event.stopPropagation();
+        draggedRef.current = false;
         startYRef.current = event.clientY - dragOffset;
         event.currentTarget.setPointerCapture(event.pointerId);
       }}
@@ -49,15 +51,15 @@ export function NotchCalibrationBand({
         event.stopPropagation();
         if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
         const next = Math.max(-12, Math.min(48, event.clientY - startYRef.current));
+        if (next !== dragOffsetRef.current) draggedRef.current = true;
         dragOffsetRef.current = next;
         setDragOffset(next);
       }}
       onPointerUp={(event) => {
         event.stopPropagation();
-        if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-          event.currentTarget.releasePointerCapture(event.pointerId);
-        }
-        onCommit(dragOffsetRef.current);
+        if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+        event.currentTarget.releasePointerCapture(event.pointerId);
+        if (draggedRef.current) onCommit(dragOffsetRef.current);
       }}
       onClick={(event) => event.stopPropagation()}
       style={{

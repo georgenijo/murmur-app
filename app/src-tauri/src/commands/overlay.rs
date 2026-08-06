@@ -467,7 +467,7 @@ pub fn set_overlay_expanded(
 /// stateless avoids a second settings store while still ensuring the actual
 /// NSWindow moves, rather than merely translating web content inside it.
 #[tauri::command]
-pub fn set_overlay_vertical_offset(
+pub async fn set_overlay_vertical_offset(
     app: tauri::AppHandle,
     state: tauri::State<'_, State>,
     offset: f64,
@@ -500,9 +500,18 @@ pub fn set_overlay_vertical_offset(
             g.window_w,
         );
         let y = base_y + (offset * scale_factor).round() as i32;
-        overlay
-            .set_position(tauri::PhysicalPosition::new(x, y))
-            .map_err(|error| error.to_string())
+        let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+        app.run_on_main_thread(move || {
+            let result = overlay
+                .set_position(tauri::PhysicalPosition::new(x, y))
+                .map_err(|error| error.to_string());
+            let _ = tx.send(result);
+        })
+        .map_err(|error| error.to_string())?;
+        tokio::time::timeout(std::time::Duration::from_secs(2), rx)
+            .await
+            .map_err(|_| "overlay position update timed out".to_string())?
+            .map_err(|_| "overlay position update was dropped".to_string())?
     }
 }
 
