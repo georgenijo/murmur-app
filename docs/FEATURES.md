@@ -139,7 +139,12 @@ Hold a dedicated key with text selected in any app, speak an instruction, review
 ## 6. Interface
 
 ### Main window
-Status indicator, recording controls, the transcript history workspace, usage stats (words, WPM, recordings, approximate tokens), permissions banner, update and about modals. Hides on close.
+A single-line header combines app status, the configured hotkey hint, recording
+control, updates, and Settings. Transcript history owns the remaining workspace.
+A compact footer reports words, WPM, recordings, and streak, with detailed usage
+behind an Insights popover. File transcription is available through whole-window
+drag-and-drop, the command palette, and the history overflow menu; queued jobs
+appear as cancelable bottom-right toasts.
 
 ### History workspace — [features/history-workspace.md](features/history-workspace.md)
 Search with match highlighting (tokens are ANDed) and Mic/File filters over a rolling 200-entry history. Export exactly what is on screen as Markdown, plain text, or JSON — to the clipboard or, through a validated extension-allow-listed atomic write, to a file. Teaching context is never exported.
@@ -148,16 +153,27 @@ Search with match highlighting (tokens are ANDed) and Mic/File filters over a ro
 `⌘K` opens a keyboard-first launcher for every settings page and the common main-window actions, with deterministic tiered ranking. `⌘F` focuses transcript search, `⌘,` opens Settings, `⌘L` opens Settings → Performance.
 
 ### Overlay — [features/overlay.md](features/overlay.md)
-Notch-anchored Dynamic Island. Idle sits flush with the notch showing a small mic tab; recording expands with a red dot and a 7-bar waveform driven by real audio levels at 60fps via direct DOM writes; processing shows a spinner. Hover for 150ms opens a compact quick-settings card (intent-gated, so a graze doesn't pop it). Single click stops; double-click toggles locked mode. Non-activating — clicks never steal focus. Geometry comes entirely from Rust and re-derives on display changes.
+Notch-anchored Dynamic Island. Idle sits flush with the notch showing a small mic tab; recording expands with a red dot and a 7-bar waveform driven by real audio levels at 60fps via direct DOM writes; processing shows a spinner. Hover for 150ms opens a compact quick-settings card (intent-gated, so a graze doesn't pop it). Single click stops; double-click toggles locked mode. Non-activating — clicks never steal focus. Geometry comes entirely from Rust and re-derives on display changes. A Settings action opens a full-width calibration band whose bounded vertical offset is saved locally and reapplied after launch or display changes.
 
 ### Settings — [reference/settings.md](reference/settings.md)
-Nine task-oriented pages: **Recording**, **Transcription**, **Transform**, **Text & Vocabulary**, **Delivery**, **Benchmark**, **Performance**, **Appearance**, **General**. Benchmark owns local model comparisons; Performance owns live diagnostics and run history. Knowledge management lives under Text & Vocabulary.
+Four horizontal, cross-searchable tabs: **Dictation** (recording and delivery),
+**Model** (transcription, benchmark, and diagnostics), **Text** (cleanup,
+vocabulary, knowledge, commands, and selected-text transforms), and **App**
+(appearance and general behavior). Power-user controls live in Advanced
+disclosures. Vocabulary, aliases, knowledge, transforms, voice commands, and
+project scan share one six-tab editor window.
 
 ### Appearance — [features/appearance.md](features/appearance.md)
 Local System/Light/Dark appearance with accessible custom accent, background, foreground, and contrast controls. The main window owns the revisioned local document and native title-bar appearance; the transparent overlay and transform review remain unsynchronized always-dark glass. Import/export is bounded, atomic, UTF-8 JSON and never touches the clipboard.
 
 ### Onboarding — [features/onboarding-flow.md](features/onboarding-flow.md)
-First-launch wizard: Welcome → Microphone → Accessibility → Model download → Done. The mic step fires the native macOS prompt in-app; both permission steps poll live so a grant made in System Settings flips the step on return; denied/stale-TCC states get inline reset-and-retry. Already-downloaded models are detected and badged. Existing installs with permissions and a model are grandfathered. Re-runnable from Settings → General.
+First-launch wizard: Welcome → Microphone → Accessibility → Model download →
+Hotkey → Done. The mic step fires the native macOS prompt in-app; both permission
+steps poll live so a grant made in System Settings flips the step on return;
+denied/stale-TCC states get inline reset-and-retry. Already-downloaded models are
+detected and badged. The chosen recording mode and trigger key are saved at
+completion. Existing installs with permissions and a model are grandfathered.
+Re-runnable from Settings → App.
 
 ### System tray
 Static white waveform icon. Menu: Show Murmur, Disable Murmur (check item), Quit. Left-click shows the main window.
@@ -167,7 +183,10 @@ Static white waveform icon. Menu: Show Murmur, Disable Murmur (check item), Quit
 ## 7. Diagnostics and evaluation
 
 ### Performance workspace — [features/log-viewer.md](features/log-viewer.md)
-Embedded Settings page with Events, Performance, Runs, Transforms, and Reports tabs. Stream chips (`pipeline`, `audio`, `keyboard`, `transform`, `system`) and level filters, expandable JSON rows, auto-scroll that disengages on manual scroll, copy-all and clear.
+Embedded under Settings → Model → Advanced with **Events**, **Runs**,
+**Performance**, **Compare**, and **Transform** tabs. Stream chips (`pipeline`,
+`audio`, `keyboard`, `transform`, `system`) and level filters, expandable JSON
+rows, auto-scroll that disengages on manual scroll, copy-all and clear.
 
 ### Performance diagnostics — [features/performance-diagnostics.md](features/performance-diagnostics.md)
 Bounded local run history (200 runs, 600 resource samples) in SQLite: per-stage timings, CPU/memory timelines, transform-stage correlation, warm-vs-cold state, and RSS deltas. Incomplete runs claiming success are rejected. No dictated text is ever recorded.

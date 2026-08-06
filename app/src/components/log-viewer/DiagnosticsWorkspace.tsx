@@ -19,7 +19,13 @@ import {
 } from '../../lib/eventFilters';
 
 type Tab = 'events' | 'performance' | 'runs' | 'transforms' | 'reports';
-const TABS: Tab[] = ['events', 'performance', 'runs', 'transforms', 'reports'];
+const TABS: { id: Tab; label: string }[] = [
+  { id: 'events', label: 'Events' },
+  { id: 'runs', label: 'Runs' },
+  { id: 'performance', label: 'Performance' },
+  { id: 'reports', label: 'Compare' },
+  { id: 'transforms', label: 'Transform' },
+];
 
 export function DiagnosticsWorkspace() {
   const { events, clear } = useEventStore();
@@ -97,22 +103,22 @@ export function DiagnosticsWorkspace() {
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           {/* Tabs */}
           <div role="tablist" aria-label="Diagnostics views" className="flex max-w-full gap-1 overflow-x-auto rounded-xl bg-surface-container p-1">
-            {TABS.map((t) => (
+            {TABS.map(({ id, label }) => (
               <button
-                key={t}
+                key={id}
                 type="button"
                 role="tab"
-                id={`diagnostics-tab-${t}`}
-                aria-controls={`diagnostics-panel-${t}`}
-                aria-selected={tab === t}
-                onClick={() => setTab(t)}
+                id={`diagnostics-tab-${id}`}
+                aria-controls={`diagnostics-panel-${id}`}
+                aria-selected={tab === id}
+                onClick={() => setTab(id)}
                 className={`shrink-0 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-[background-color,box-shadow,color] ${
-                  tab === t
+                  tab === id
                     ? 'bg-surface-container-lowest text-on-surface shadow-sm'
                     : 'text-on-surface-variant hover:text-on-surface'
                 }`}
               >
-                {t.charAt(0).toUpperCase() + t.slice(1)}
+                {label}
               </button>
             ))}
           </div>

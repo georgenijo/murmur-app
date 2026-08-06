@@ -55,11 +55,13 @@ function shortDay(d: Date): string {
 interface UsageDashboardProps {
   // Bumped by App when a recording finishes (or stats reset) — forces a re-read.
   statsVersion: number;
+  displayMode?: 'inline' | 'popover';
 }
 
-export function UsageDashboard({ statsVersion }: UsageDashboardProps) {
+export function UsageDashboard({ statsVersion, displayMode = 'inline' }: UsageDashboardProps) {
   const [isCollapsed, setIsCollapsed] = useState(loadCollapsed);
   const [version, setVersion] = useState(0);
+  const expanded = displayMode === 'popover' || !isCollapsed;
 
   // Re-read stats whenever localStorage changes from another window/tab, and
   // when the panel is expanded so it reflects recordings made while collapsed.
@@ -74,8 +76,8 @@ export function UsageDashboard({ statsVersion }: UsageDashboardProps) {
   // Re-read on expand, on every storage bump, and when App signals new stats;
   // memoized so the derived charts don't recompute on unrelated re-renders.
   const stats = useMemo(
-    () => (isCollapsed ? null : loadStats()),
-    [isCollapsed, version, statsVersion],
+    () => (expanded ? loadStats() : null),
+    [expanded, version, statsVersion],
   );
 
   const streak = stats ? getCurrentStreak(stats) : 0;
@@ -99,7 +101,11 @@ export function UsageDashboard({ statsVersion }: UsageDashboardProps) {
   return (
     // Semantic CSS vars keep SVG fills/strokes synchronized with custom themes.
     <div
-      className="shrink-0 rounded-lg border border-outline-variant/40 bg-surface-container-low overflow-hidden"
+      className={`shrink-0 overflow-hidden ${
+        displayMode === 'popover'
+          ? 'bg-transparent'
+          : 'rounded-lg border border-outline-variant/40 bg-surface-container-low'
+      }`}
       style={{
         '--heat-0': 'var(--murmur-surface-container-high)',
         '--heat-1': 'color-mix(in srgb, var(--murmur-warning) 25%, var(--murmur-background))',
@@ -110,33 +116,34 @@ export function UsageDashboard({ statsVersion }: UsageDashboardProps) {
         '--wpm-stroke': 'var(--murmur-on-surface-variant)',
       } as CSSProperties}
     >
-      {/* Header row */}
-      <button
-        onClick={toggle}
-        className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-surface-container transition-colors"
-      >
-        <span className="text-xs font-medium text-on-surface-variant uppercase tracking-wider">
-          Insights
-        </span>
-        <div className="flex items-center gap-3">
-          <span className="text-xs text-on-surface-variant">
-            <span className="text-primary font-medium">Streak</span>
-            {' '}{streak} {streak === 1 ? 'day' : 'days'}
+      {displayMode === 'inline' && (
+        <button
+          onClick={toggle}
+          className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-surface-container transition-colors"
+        >
+          <span className="text-xs font-medium text-on-surface-variant uppercase tracking-wider">
+            Insights
           </span>
-          <svg
-            className={`w-3.5 h-3.5 text-on-surface-variant transition-transform duration-200 ${isCollapsed ? 'rotate-180' : ''}`}
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-            strokeWidth={2.5}
-          >
-            <path strokeLinecap="round" strokeLinejoin="round" d="M5 15l7-7 7 7" />
-          </svg>
-        </div>
-      </button>
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-on-surface-variant">
+              <span className="text-primary font-medium">Streak</span>
+              {' '}{streak} {streak === 1 ? 'day' : 'days'}
+            </span>
+            <svg
+              className={`w-3.5 h-3.5 text-on-surface-variant transition-transform duration-200 ${isCollapsed ? 'rotate-180' : ''}`}
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={2.5}
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" d="M5 15l7-7 7 7" />
+            </svg>
+          </div>
+        </button>
+      )}
 
-      {!isCollapsed && stats && (
-        <div className="px-3 pb-3 flex flex-col gap-4">
+      {expanded && stats && (
+        <div className={`px-3 pb-3 flex flex-col gap-4 ${displayMode === 'popover' ? 'pt-3' : ''}`}>
           {/* Heatmap — last ~8 weeks of words/day */}
           <Section title={`Activity · last ${HEATMAP_WEEKS} weeks`}>
             <svg

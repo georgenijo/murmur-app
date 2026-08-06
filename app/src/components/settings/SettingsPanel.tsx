@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
 import {
@@ -6,7 +6,7 @@ import {
   selectedDeviceExists,
   type AudioDeviceDescriptor,
 } from '../../lib/audioDevices';
-import { listen } from '@tauri-apps/api/event';
+import { emit, listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import {
   AUTO_STOP_SILENCE_OPTIONS,
@@ -20,7 +20,6 @@ import {
   type RecordingMode,
   type Settings,
   type TransformKey,
-  vocabularyPrompt,
 } from '../../lib/settings';
 import { useVocabScan } from '../../lib/hooks/useVocabScan';
 import { useModelRuntimeCatalog } from '../../lib/modelRuntime';
@@ -45,13 +44,9 @@ import type { UpdateStatus } from '../../lib/updater';
 import { Select } from '../ui/Select';
 import { AppOverridesEditor } from './AppOverridesEditor';
 import { AppearanceSettings } from './AppearanceSettings';
-import { KnowledgeManager } from './KnowledgeManager';
 import { PerformanceLab } from './PerformanceLab';
 import { SettingsSection } from './SettingsSection';
-import { TransformsManager } from './TransformsManager';
-import { VocabScanStrip } from './VocabScanStrip';
-import { VocabularyAliasesEditor } from './VocabularyAliasesEditor';
-import { VoiceCommandsManager } from './VoiceCommandsManager';
+import { SettingsEditorsWindow, type SettingsEditorTab } from './SettingsEditorsWindow';
 import { DiagnosticsWorkspace } from '../log-viewer/DiagnosticsWorkspace';
 
 function Toggle({ label, checked, onChange, disabled = false }: {
@@ -84,10 +79,10 @@ function SettingToggle({ title, description, label = title, checked, onChange, d
   disabled?: boolean;
 }) {
   return (
-    <div className="flex items-start justify-between gap-6">
+    <div className="flex min-h-[46px] items-center justify-between gap-6">
       <div>
         <p className="text-sm font-medium text-on-surface">{title}</p>
-        <p className="mt-1 text-xs text-on-surface-variant">{description}</p>
+        <p className="mt-0.5 text-xs leading-relaxed text-on-surface-variant">{description}</p>
       </div>
       <Toggle label={label} checked={checked} onChange={onChange} disabled={disabled} />
     </div>
@@ -160,24 +155,43 @@ interface SettingsPanelProps {
 }
 
 export const SETTINGS_CATEGORIES = [
-  { id: 'recording', label: 'Recording' },
-  { id: 'transcription', label: 'Transcription' },
-  { id: 'transform', label: 'Transform' },
-  { id: 'text-vocabulary', label: 'Text & Vocabulary' },
-  { id: 'delivery', label: 'Delivery' },
-  { id: 'benchmark', label: 'Benchmark' },
-  { id: 'performance', label: 'Performance' },
-  { id: 'appearance', label: 'Appearance' },
-  { id: 'general', label: 'General' },
+  { id: 'dictation', label: 'Dictation' },
+  { id: 'model', label: 'Model' },
+  { id: 'text', label: 'Text' },
+  { id: 'app', label: 'App' },
 ] as const;
 
 /** Coerce a requested page id back to a real page — an unknown id opens the
  *  first page rather than rendering an empty pane. */
 export function resolvePage(page: string | undefined): string {
-  return SETTINGS_CATEGORIES.some((category) => category.id === page)
-    ? page as string
-    : SETTINGS_CATEGORIES[0].id;
+  if (SETTINGS_CATEGORIES.some((category) => category.id === page)) return page as string;
+  if (page === 'recording' || page === 'delivery') return 'dictation';
+  if (page === 'transcription' || page === 'benchmark' || page === 'performance') return 'model';
+  if (page === 'text-vocabulary' || page === 'transform') return 'text';
+  if (page === 'appearance' || page === 'general') return 'app';
+  return SETTINGS_CATEGORIES[0].id;
 }
+
+const SETTINGS_SEARCH_ITEMS = [
+  { tab: 'dictation', title: 'Input Device', detail: 'Choose the microphone used while recording.', keywords: 'microphone audio device' },
+  { tab: 'dictation', title: 'Recording Trigger', detail: 'Hold, double-tap, or use both.', keywords: 'hotkey shortcut key' },
+  { tab: 'dictation', title: 'Stop on Silence', detail: 'Finish hands-free recordings after quiet.', keywords: 'automatic stop vad' },
+  { tab: 'dictation', title: 'Auto-Paste', detail: 'Paste clipboard results into the active app.', keywords: 'delivery clipboard' },
+  { tab: 'dictation', title: 'Save to File', detail: 'Save transcript or audio files locally.', keywords: 'delivery output folder wav txt' },
+  { tab: 'model', title: 'Transcription Model', detail: 'Select and manage the local speech model.', keywords: 'whisper parakeet core ml download' },
+  { tab: 'model', title: 'Language', detail: 'Choose a fixed language or automatic detection.', keywords: 'multilingual' },
+  { tab: 'model', title: 'Benchmark', detail: 'Compare installed models on this Mac.', keywords: 'performance lab speed accuracy' },
+  { tab: 'model', title: 'Diagnostics', detail: 'Inspect events, runs, performance, reports, and transforms.', keywords: 'logs events compare debugger' },
+  { tab: 'text', title: 'Smart Punctuation', detail: 'Add punctuation and sentence capitalization.', keywords: 'automatic punctuation' },
+  { tab: 'text', title: 'Cleanup', detail: 'Remove filler words and tidy transcript spacing.', keywords: 'filler capitalization' },
+  { tab: 'text', title: 'Vocabulary & Aliases', detail: 'Manage preferred words and spoken variants.', keywords: 'names spelling project scan developer terms' },
+  { tab: 'text', title: 'Knowledge', detail: 'Manage local corrections, snippets, and transforms.', keywords: 'voice commands replacement' },
+  { tab: 'text', title: 'Selected-text Transform', detail: 'Configure on-device rewriting.', keywords: 'llm rewrite shortcut' },
+  { tab: 'app', title: 'Launch at Login', detail: 'Start Murmur when you sign in.', keywords: 'startup autostart' },
+  { tab: 'app', title: 'Appearance', detail: 'Theme, accent, contrast, and color controls.', keywords: 'dark light colors' },
+  { tab: 'app', title: 'Updates', detail: 'Check for a newer Murmur release.', keywords: 'version upgrade' },
+  { tab: 'app', title: 'Setup Assistant', detail: 'Re-check permissions and model setup.', keywords: 'onboarding microphone accessibility' },
+] as const;
 
 export function effectiveAutoPaste(settings: Pick<Settings, 'autoPaste' | 'saveTranscript' | 'saveAudio'>): boolean {
   return settings.autoPaste && !settings.saveTranscript && !settings.saveAudio;
@@ -200,7 +214,6 @@ export function fileOutputDeliveryDescription(settings: Pick<Settings, 'autoPast
 
 export function SettingsPanel({
   isOpen,
-  onClose,
   settings,
   onUpdateSettings,
   status,
@@ -214,6 +227,14 @@ export function SettingsPanel({
 }: SettingsPanelProps) {
   const { byName: runtimeByName } = useModelRuntimeCatalog(isOpen);
   const [activeCat, setActiveCat] = useState<string>(() => resolvePage(pageRequest?.page));
+  const [searchQuery, setSearchQuery] = useState('');
+  const [editorTab, setEditorTab] = useState<SettingsEditorTab | null>(null);
+  const searchResults = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return [];
+    return SETTINGS_SEARCH_ITEMS.filter((item) =>
+      `${item.title} ${item.detail} ${item.keywords}`.toLowerCase().includes(query));
+  }, [searchQuery]);
   const requestTokenRef = useRef(pageRequest?.token);
   useEffect(() => {
     if (!pageRequest || pageRequest.token === requestTokenRef.current) return;
@@ -330,7 +351,7 @@ export function SettingsPanel({
   }, []);
 
   useEffect(() => {
-    if (!isOpen || activeCat !== 'transform') return;
+    if (!isOpen || activeCat !== 'text') return;
     void refreshTransformModel();
   }, [isOpen, activeCat, refreshTransformModel]);
 
@@ -446,47 +467,99 @@ export function SettingsPanel({
     }, 3000);
   };
 
-  return (
-    <div className="flex flex-1 overflow-hidden bg-surface text-on-surface">
-      <nav aria-label="Settings pages" className="flex w-48 shrink-0 flex-col overflow-y-auto bg-surface-container-low">
-        <div className="flex h-12 shrink-0 items-center justify-between px-3">
-          <h2 className="text-sm font-semibold text-on-surface">Settings</h2>
-          <button onClick={onClose} aria-label="Close settings" className="rounded-md p-1 text-on-surface-variant transition-colors hover:bg-surface-container-high hover:text-on-surface">
-            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
-          </button>
-        </div>
-        <div className="space-y-0.5 px-2 pb-3">
-          {SETTINGS_CATEGORIES.map((category) => (
-            <button
-              key={category.id}
-              type="button"
-              aria-current={activeCat === category.id ? 'page' : undefined}
-              onClick={() => setActiveCat(category.id)}
-              className={`w-full rounded-lg px-3 py-2 text-left text-sm transition-colors ${activeCat === category.id ? 'bg-surface-container-high font-medium text-primary' : 'text-on-surface-variant hover:bg-surface-container'}`}
-            >
-              {category.label}
-            </button>
-          ))}
-        </div>
-      </nav>
+  const startOverlayCalibration = async () => {
+    try {
+      await invoke('show_overlay');
+      await emit('start-overlay-calibration');
+    } catch (error) {
+      console.warn('Could not start overlay calibration', error);
+    }
+  };
 
+  return (
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background text-on-surface">
+      <div className="flex shrink-0 flex-wrap items-center gap-3 px-5 pb-3 pt-4">
+        <label className="relative min-w-[240px] flex-1">
+          <span className="sr-only">Search all settings</span>
+          <svg className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-on-surface-variant" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M17 11a6 6 0 11-12 0 6 6 0 0112 0z" />
+          </svg>
+          <input
+            type="search"
+            value={searchQuery}
+            onChange={(event) => setSearchQuery(event.target.value)}
+            placeholder="Search all settings"
+            className="h-10 w-full rounded-xl border border-outline-variant bg-surface-container-lowest pl-10 pr-9 text-sm text-on-surface outline-none placeholder:text-on-surface-variant focus:border-primary"
+          />
+          {searchQuery && (
+            <button type="button" onClick={() => setSearchQuery('')} aria-label="Clear settings search" className="absolute right-2 top-1/2 grid h-6 w-6 -translate-y-1/2 place-items-center rounded text-on-surface-variant hover:bg-surface-container">×</button>
+          )}
+        </label>
+        <nav aria-label="Settings pages" className="flex shrink-0 gap-1 rounded-full bg-surface-container-low p-1">
+          {SETTINGS_CATEGORIES.map((category) => {
+            const matches = searchQuery
+              ? searchResults.filter((result) => result.tab === category.id).length
+              : 0;
+            return (
+              <button
+                key={category.id}
+                type="button"
+                aria-current={activeCat === category.id ? 'page' : undefined}
+                onClick={() => setActiveCat(category.id)}
+                className={`rounded-full px-4 py-1.5 text-xs font-semibold transition-colors ${
+                  activeCat === category.id
+                    ? 'bg-on-surface text-background'
+                    : 'text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface'
+                }`}
+              >
+                {category.label}{matches > 0 ? ` (${matches})` : ''}
+              </button>
+            );
+          })}
+        </nav>
+      </div>
       <div
         ref={contentRef}
         data-testid="settings-content"
-        className={`min-w-0 flex-1 ${activeCat === 'performance' ? 'overflow-hidden' : 'overflow-y-auto'}`}
+        className="min-h-0 min-w-0 flex-1 overflow-y-auto"
       >
-        {activeCat === 'performance' ? (
-          <div className="flex h-full min-h-0 flex-col">
-            {configureError && <p role="alert" className="mx-4 mt-4 shrink-0 rounded-lg bg-error/10 px-3 py-2 text-xs text-error">{configureError}</p>}
-            <div className="min-h-0 flex-1">
-              <DiagnosticsWorkspace />
-            </div>
-          </div>
-        ) : (
-        <div className="max-w-2xl px-6 py-5">
+        <div className="mx-auto w-full max-w-4xl px-5 pb-8 pt-1">
           {configureError && <p role="alert" className="mb-4 rounded-lg bg-error/10 px-3 py-2 text-xs text-error">{configureError}</p>}
-
-          <SettingsSection pageId="recording" activePage={activeCat} title="Recording" subtitle="Microphone, voice detection, and shortcuts">
+          {searchQuery ? (
+            <section aria-label="Settings search results">
+              <p className="mb-3 text-xs font-bold uppercase tracking-[0.12em] text-on-surface-variant">
+                {searchResults.length} {searchResults.length === 1 ? 'result' : 'results'}
+              </p>
+              {searchResults.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-outline-variant/30 px-4 py-10 text-center text-sm text-on-surface-variant">
+                  No settings match “{searchQuery}”.
+                </div>
+              ) : (
+                <div className="overflow-hidden rounded-xl border border-outline-variant/25 bg-surface-container-lowest">
+                  {searchResults.map((result) => (
+                    <button
+                      key={`${result.tab}-${result.title}`}
+                      type="button"
+                      onClick={() => {
+                        setActiveCat(result.tab);
+                        setSearchQuery('');
+                      }}
+                      className="flex w-full items-center gap-4 border-b border-outline-variant/15 px-4 py-3 text-left last:border-b-0 hover:bg-surface-container-low"
+                    >
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-sm font-semibold text-on-surface">{result.title}</span>
+                        <span className="mt-0.5 block text-xs text-on-surface-variant">{result.detail}</span>
+                      </span>
+                      <span className="rounded-full bg-surface-container-high px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-on-surface-variant">{result.tab}</span>
+                      <span aria-hidden="true" className="text-on-surface-variant">›</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </section>
+          ) : (
+          <div className="settings-page">
+          <SettingsSection pageId="dictation" activePage={activeCat} title="Microphone & Trigger" subtitle="Recording input, shortcuts, silence, and delivery">
             <div>
               <label className="mb-2 block text-sm font-medium text-on-surface">Microphone</label>
               <Select value={settings.microphone} onChange={(microphone) => onUpdateSettings({ microphone })} disabled={isRecording} items={[{ value: 'system_default', label: 'System Default' }, ...audioDeviceSelectOptions(audioDevices)]} />
@@ -545,7 +618,7 @@ export function SettingsPanel({
             </div>
           </SettingsSection>
 
-          <SettingsSection pageId="transform" activePage={activeCat} title="Transform" subtitle="Selected-text rewrite with a local on-device model">
+          <SettingsSection pageId="text" activePage={activeCat} title="Selected-text Transform" subtitle="Local on-device rewriting and saved instructions">
             <div className="rounded-xl border border-primary/20 bg-primary/5 p-3">
               <p className="text-sm font-medium text-on-surface">Local only · Apple Silicon</p>
               <p className="mt-1 text-xs text-on-surface">
@@ -661,12 +734,17 @@ export function SettingsPanel({
               )}
             </div>
             <div className="border-t border-outline-variant/20 pt-4">
-              <h2 className="mb-1 text-sm font-medium text-on-surface">Saved transforms</h2>
-              <TransformsManager active={isOpen && activeCat === 'transform'} />
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <h2 className="text-sm font-medium text-on-surface">Saved transforms</h2>
+                  <p className="mt-1 text-xs text-on-surface-variant">Create reusable spoken rewrite instructions.</p>
+                </div>
+                <button type="button" onClick={() => setEditorTab('transforms')} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface hover:text-primary">Manage</button>
+              </div>
             </div>
           </SettingsSection>
 
-          <SettingsSection pageId="transcription" activePage={activeCat} title="Transcription" subtitle="Model, language, and runtime lifecycle">
+          <SettingsSection pageId="model" activePage={activeCat} title="Transcription Model" subtitle="Model, language, and runtime lifecycle">
             <div>
               <label className="mb-2 block text-sm font-medium text-on-surface">Transcription Model</label>
               <Select
@@ -703,7 +781,7 @@ export function SettingsPanel({
             </div>
           </SettingsSection>
 
-          <SettingsSection pageId="text-vocabulary" activePage={activeCat} title="Text & Vocabulary" subtitle="Cleanup, preferred terms, structured writing, and knowledge">
+          <SettingsSection pageId="text" activePage={activeCat} title="Text & Vocabulary" subtitle="Cleanup, preferred terms, structured writing, and knowledge">
             <SettingToggle title="Automatic Punctuation" label="Smart punctuation" description="Add periods, commas, and capitalization to transcriptions." checked={settings.smartPunctuation} onChange={() => onUpdateSettings({ smartPunctuation: !settings.smartPunctuation })} />
             <SettingToggle title="Transcript Cleanup" description="Remove filler and tidy spacing before delivery." checked={settings.cleanupEnabled} onChange={() => onUpdateSettings({ cleanupEnabled: !settings.cleanupEnabled })} />
             {settings.cleanupEnabled && (
@@ -712,41 +790,45 @@ export function SettingsPanel({
                 <SettingToggle title="Capitalize sentences" description="Capitalize detected sentence starts." checked={settings.cleanupCapitalize} onChange={() => onUpdateSettings({ cleanupCapitalize: !settings.cleanupCapitalize })} />
               </div>
             )}
-            <div className="border-t border-outline-variant/20 pt-4">
-              <h2 className="text-sm font-medium text-on-surface">Names & special words</h2>
-              <p className="mt-1 mb-3 text-xs text-on-surface-variant">
-                Fix a word once and Murmur will type it your way. For example, if Murmur hears “Tori,” tell it to type “Tauri.”
-              </p>
-              <VocabularyAliasesEditor entries={settings.vocabularyEntries} voiceCommands={settings.voiceCommands} onChange={(vocabularyEntries) => onUpdateSettings({ vocabularyEntries, customVocabulary: vocabularyPrompt(vocabularyEntries) })} />
+            <div className="grid gap-2 sm:grid-cols-2">
+              {([
+                ['vocabulary', 'Vocabulary', 'Review identifiers retained from project scans.'],
+                ['aliases', 'Aliases', 'Map spoken variants to canonical spellings.'],
+                ['knowledge', 'Knowledge', 'Manage corrections, terms, snippets, and transforms.'],
+                ['commands', 'Voice Commands', 'Create exact spoken replacements and snippets.'],
+              ] as const).map(([tab, title, detail]) => (
+                <button key={tab} type="button" onClick={() => setEditorTab(tab)} className="flex items-center gap-3 rounded-xl border border-outline-variant/20 bg-surface-container-low px-3 py-3 text-left hover:border-primary/35 hover:bg-surface-container">
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm font-semibold text-on-surface">{title}</span>
+                    <span className="mt-0.5 block text-[11px] leading-relaxed text-on-surface-variant">{detail}</span>
+                  </span>
+                  <span className="text-on-surface-variant" aria-hidden="true">›</span>
+                </button>
+              ))}
             </div>
-            <SettingToggle title="Developer Terms" description="Make built-in development terms and an optional project scan available only to apps configured as Code / technical or with Local IDE project context." checked={settings.codeVocabEnabled} onChange={() => onUpdateSettings({ codeVocabEnabled: !settings.codeVocabEnabled })} />
-            {settings.codeVocabEnabled && (
-              <div className="ml-3 space-y-2 border-l border-outline-variant/30 pl-3">
-                <p className="break-all rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface">{settings.codeVocabFolder || 'No folder — built-in developer terms only'}</p>
-                <div className="flex gap-3">
-                  <button type="button" onClick={() => void chooseCodeFolder()} className="text-xs font-medium text-on-surface-variant underline hover:text-primary">Choose Folder</button>
-                  {settings.codeVocabFolder && <button type="button" onClick={clearCodeFolder} className="text-xs font-medium text-on-surface-variant underline hover:text-primary">Clear</button>}
-                </div>
-                <VocabScanStrip status={vocabScan.status} walker={vocabScan.walker} stats={vocabScan.stats} folder={settings.codeVocabFolder} onScan={() => void runVocabScan(settings.codeVocabFolder)} onCancel={vocabScan.cancel} />
-                <p className="text-xs text-on-surface-variant">The selected folder is scanned locally; dependency and build folders are skipped. Unconfigured apps keep ordinary prose vocabulary.</p>
+            <details className="group">
+              <summary className="flex cursor-pointer list-none items-center justify-between rounded-lg py-1 text-sm font-semibold text-on-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+                Advanced
+                <span aria-hidden="true" className="text-on-surface-variant transition-transform group-open:rotate-180">⌄</span>
+              </summary>
+              <div className="mt-3 space-y-4 border-t border-outline-variant/20 pt-3">
+                <SettingToggle title="Developer Terms" description="Make built-in development terms and an optional project scan available only to apps configured as Code / technical or with Local IDE project context." checked={settings.codeVocabEnabled} onChange={() => onUpdateSettings({ codeVocabEnabled: !settings.codeVocabEnabled })} />
+                {settings.codeVocabEnabled && (
+                  <div className="ml-3 space-y-2 border-l border-outline-variant/30 pl-3">
+                    <p className="break-all rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface">{settings.codeVocabFolder || 'No folder — built-in developer terms only'}</p>
+                    <button type="button" onClick={() => setEditorTab('scan')} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface hover:text-primary">Manage Project Scan</button>
+                    <p className="text-xs text-on-surface-variant">The selected folder is scanned locally; dependency and build folders are skipped. Unconfigured apps keep ordinary prose vocabulary.</p>
+                  </div>
+                )}
+                <SettingToggle title="Apply Preferred Spellings" label="Smart correction" description="Apply names, terms, and developer vocabulary after recognition on every model." checked={settings.correctionEnabled} onChange={() => onUpdateSettings({ correctionEnabled: !settings.correctionEnabled })} />
+                {settings.correctionEnabled && <div className="ml-3 border-l border-outline-variant/30 pl-3"><SettingToggle title="Correct Close Mishearings" label="Sounds-like matching" description="Recover close mishearings near your vocabulary; disable if you see unwanted swaps." checked={settings.correctionFuzzy} onChange={() => onUpdateSettings({ correctionFuzzy: !settings.correctionFuzzy })} /></div>}
+                <SettingToggle title="Structured Writing" label="Smart formatting" description="Apply explicitly spoken lists, symbols, punctuation, and same-utterance corrections locally." checked={settings.smartFormattingEnabled} onChange={() => onUpdateSettings({ smartFormattingEnabled: !settings.smartFormattingEnabled })} />
+                <SettingToggle title="Spoken Formatting" label="Voice commands" description="Use spoken tokens such as “new line,” “period,” or “scratch that” before delivery." checked={settings.voiceCommandsEnabled} onChange={() => onUpdateSettings({ voiceCommandsEnabled: !settings.voiceCommandsEnabled })} />
               </div>
-            )}
-            <SettingToggle title="Apply Preferred Spellings" label="Smart correction" description="Apply names, terms, and developer vocabulary after recognition on every model." checked={settings.correctionEnabled} onChange={() => onUpdateSettings({ correctionEnabled: !settings.correctionEnabled })} />
-            {settings.correctionEnabled && <div className="ml-3 border-l border-outline-variant/30 pl-3"><SettingToggle title="Correct Close Mishearings" label="Sounds-like matching" description="Recover close mishearings near your vocabulary; disable if you see unwanted swaps." checked={settings.correctionFuzzy} onChange={() => onUpdateSettings({ correctionFuzzy: !settings.correctionFuzzy })} /></div>}
-            <SettingToggle title="Structured Writing" label="Smart formatting" description="Apply explicitly spoken lists, symbols, punctuation, and same-utterance corrections locally." checked={settings.smartFormattingEnabled} onChange={() => onUpdateSettings({ smartFormattingEnabled: !settings.smartFormattingEnabled })} />
-            <SettingToggle title="Spoken Formatting" label="Voice commands" description="Use spoken tokens such as “new line,” “period,” or “scratch that” before delivery." checked={settings.voiceCommandsEnabled} onChange={() => onUpdateSettings({ voiceCommandsEnabled: !settings.voiceCommandsEnabled })} />
-            <div className="border-t border-outline-variant/20 pt-4">
-              <h2 className="text-sm font-medium text-on-surface">Phrase Replacements & Snippets</h2>
-              <p className="mt-1 mb-3 text-xs text-on-surface-variant">Create exact spoken phrases that insert replacement text or a multiline snippet.</p>
-              <VoiceCommandsManager active={isOpen && activeCat === 'text-vocabulary'} globallyEnabled={settings.voiceCommandsEnabled} profiles={settings.appProfiles} />
-            </div>
-            <div className="border-t border-outline-variant/20 pt-4">
-              <h2 className="mb-3 text-sm font-medium text-on-surface">Knowledge</h2>
-              <KnowledgeManager active={isOpen && activeCat === 'text-vocabulary'} profiles={settings.appProfiles} />
-            </div>
+            </details>
           </SettingsSection>
 
-          <SettingsSection pageId="delivery" activePage={activeCat} title="Delivery" subtitle="Clipboard, paste, file output, and app-specific overrides">
+          <SettingsSection pageId="dictation" activePage={activeCat} title="Delivery" subtitle="Clipboard, paste, file output, and app-specific overrides">
             <div className="rounded-xl border border-primary/20 bg-primary/5 p-3">
               <h2 className="text-sm font-medium text-on-surface">Always copied to clipboard</h2>
               <p className="mt-1 text-xs text-on-surface">Every completed transcription is copied first. Auto-paste and file output only change what happens next.</p>
@@ -765,27 +847,54 @@ export function SettingsPanel({
                 <p className="mt-2 text-xs text-on-surface-variant">{fileOutputDeliveryDescription(settings)}</p>
               </div>
             )}
-            <div className="border-t border-outline-variant/20 pt-4">
-              <h2 className="text-sm font-medium text-on-surface">App Overrides</h2>
+            <details className="group border-t border-outline-variant/20 pt-4">
+              <summary className="flex cursor-pointer list-none items-center justify-between rounded-lg py-1 text-sm font-semibold text-on-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+                Advanced
+                <span aria-hidden="true" className="text-on-surface-variant transition-transform group-open:rotate-180">⌄</span>
+              </summary>
               <p className="mt-1 mb-3 text-xs text-on-surface-variant">Override delivery and writing behavior for the frontmost macOS app.</p>
               <AppOverridesEditor profiles={settings.appProfiles} onChange={(appProfiles) => onUpdateSettings({ appProfiles })} />
-            </div>
+            </details>
           </SettingsSection>
 
-          <SettingsSection pageId="benchmark" activePage={activeCat} title="Benchmark" subtitle="Directional local model comparisons">
+          <SettingsSection pageId="model" activePage={activeCat} title="Benchmark" subtitle="Directional local model comparisons">
             <PerformanceLab status={status} settings={settings} onUpdateSettings={onUpdateSettings} />
           </SettingsSection>
 
-          <SettingsSection pageId="appearance" activePage={activeCat} title="Appearance" subtitle="Theme, contrast, and color customization">
+          <SettingsSection pageId="model" activePage={activeCat} title="Advanced Diagnostics" subtitle="Events, run history, performance, comparisons, and transform traces">
+            <details className="group">
+              <summary className="flex cursor-pointer list-none items-center justify-between rounded-lg px-1 py-1 text-sm font-semibold text-on-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+                Advanced
+                <span aria-hidden="true" className="text-on-surface-variant transition-transform group-open:rotate-180">⌄</span>
+              </summary>
+              <p className="mt-1 text-xs text-on-surface-variant">
+                Advanced local troubleshooting data. Transcript content is excluded unless you explicitly arm a capture.
+              </p>
+              <div className="mt-3 h-[520px] min-h-0 overflow-hidden rounded-xl border border-outline-variant/25 bg-surface-container-lowest">
+                <DiagnosticsWorkspace />
+              </div>
+            </details>
+          </SettingsSection>
+
+          <SettingsSection pageId="app" activePage={activeCat} title="Appearance" subtitle="Theme, contrast, and color customization">
             <AppearanceSettings />
           </SettingsSection>
 
-          <SettingsSection pageId="general" activePage={activeCat} title="General" subtitle="Startup, support, updates, and app information">
+          <SettingsSection pageId="app" activePage={activeCat} title="General" subtitle="Startup, support, updates, and app information">
             <SettingToggle title="Launch at Login" description="Start Murmur automatically when you log in." checked={settings.launchAtLogin} onChange={() => onUpdateSettings({ launchAtLogin: !settings.launchAtLogin })} />
             <button type="button" onClick={onRerunSetup} className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs font-medium text-on-surface-variant transition-colors hover:bg-surface-container hover:text-primary">Run Setup Assistant</button>
             <p className="-mt-3 text-xs text-on-surface-variant">Re-check permissions and model setup after a permission is revoked or stops working.</p>
-            <button type="button" onClick={() => setActiveCat('performance')} className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs font-medium text-on-surface-variant transition-colors hover:bg-surface-container hover:text-primary">View Performance</button>
-            <button type="button" aria-label={confirmReset ? 'Confirm reset statistics' : 'Reset statistics'} onClick={resetStats} className={`w-full rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${confirmReset ? 'border-error/40 bg-error/10 text-error' : 'border-outline-variant/30 bg-surface-container-lowest text-on-surface-variant hover:bg-surface-container hover:text-primary'}`}>{confirmReset ? 'Confirm Reset' : 'Reset Stats'}</button>
+            <details className="group">
+              <summary className="flex cursor-pointer list-none items-center justify-between rounded-lg py-1 text-sm font-semibold text-on-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+                Advanced
+                <span aria-hidden="true" className="text-on-surface-variant transition-transform group-open:rotate-180">⌄</span>
+              </summary>
+              <div className="mt-3 space-y-2 border-t border-outline-variant/20 pt-3">
+                <button type="button" onClick={() => void startOverlayCalibration()} className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs font-medium text-on-surface-variant transition-colors hover:bg-surface-container hover:text-primary">Calibrate Overlay Position</button>
+                <button type="button" onClick={() => setActiveCat('model')} className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs font-medium text-on-surface-variant transition-colors hover:bg-surface-container hover:text-primary">View Performance</button>
+                <button type="button" aria-label={confirmReset ? 'Confirm reset statistics' : 'Reset statistics'} onClick={resetStats} className={`w-full rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${confirmReset ? 'border-error/40 bg-error/10 text-error' : 'border-outline-variant/30 bg-surface-container-lowest text-on-surface-variant hover:bg-surface-container hover:text-primary'}`}>{confirmReset ? 'Confirm Reset' : 'Reset Stats'}</button>
+              </div>
+            </details>
             <div>
               <button type="button" onClick={() => void onCheckForUpdate()} disabled={updateStatus.phase === 'checking' || updateStatus.phase === 'downloading'} className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs font-medium text-on-surface-variant transition-colors hover:bg-surface-container hover:text-primary disabled:cursor-not-allowed disabled:opacity-50">{updateStatus.phase === 'checking' ? 'Checking…' : 'Check for Updates'}</button>
               {updateStatus.phase === 'up-to-date' && <p className="mt-1.5 text-xs text-success">You’re up to date.</p>}
@@ -803,6 +912,22 @@ export function SettingsPanel({
         </div>
         )}
       </div>
+      </div>
+      {editorTab && (
+        <SettingsEditorsWindow
+          initialTab={editorTab}
+          settings={settings}
+          onUpdateSettings={onUpdateSettings}
+          scanStatus={vocabScan.status}
+          scanWalker={vocabScan.walker}
+          scanStats={vocabScan.stats}
+          onChooseCodeFolder={() => void chooseCodeFolder()}
+          onClearCodeFolder={clearCodeFolder}
+          onScan={() => void runVocabScan(settings.codeVocabFolder)}
+          onCancelScan={vocabScan.cancel}
+          onClose={() => setEditorTab(null)}
+        />
+      )}
     </div>
   );
 }

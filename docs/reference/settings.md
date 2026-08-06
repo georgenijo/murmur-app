@@ -13,19 +13,18 @@ Dictation settings are stored in `localStorage` under the key
 versioned document under `murmur-appearance`; it is never merged into this
 interface or emitted through `dictation-settings`.
 
-The native Settings window has nine pages in this order (`SETTINGS_CATEGORIES`
-in `SettingsPanel.tsx`). While Settings is open, the dashboard usage cards are
-hidden so the workspace receives the available vertical space:
+The native Settings workspace has four horizontal tabs in this order
+(`SETTINGS_CATEGORIES` in `SettingsPanel.tsx`). The search field above them
+matches rows across every tab and routes a selected result to its owner:
 
-1. **Recording** — microphone, voice detection, recording trigger, and shortcut feedback
-2. **Transcription** — one model selector, language, model lifecycle/download state, and idle release
-3. **Transform** — enable + hold-key picker, local-LLM model status/download/remove/reset, and saved transforms
-4. **Text & Vocabulary** — punctuation, cleanup, names and terms, developer terms, corrections, structured writing, spoken commands, and personal knowledge
-5. **Delivery** — clipboard-first behavior, auto-paste, file output, and app overrides
-6. **Benchmark** — directional local model comparison and Performance Lab reports
-7. **Performance** — embedded Events, live resources, run history, transform diagnostics, and report comparison
-8. **Appearance** — System/Light/Dark mode, Sonic/custom colors, integer contrast from -100 through 100 (default 0), reset, and local theme-file exchange
-9. **General** — launch at login, setup, diagnostics navigation, statistics, updates, and version
+1. **Dictation** — microphone, voice detection, recording trigger, shortcut feedback, clipboard-first delivery, auto-paste, file output, and app overrides
+2. **Model** — model selector, language, lifecycle/download state, idle release, Performance Lab, and the advanced diagnostics workspace
+3. **Text** — punctuation, cleanup, names and terms, corrections, structured writing, spoken commands, personal knowledge, and selected-text transforms
+4. **App** — appearance, launch at login, setup, overlay calibration, statistics, updates, and version
+
+Power-user controls are collapsed under **Advanced** disclosures. Vocabulary,
+aliases, knowledge, transforms, voice commands, and project scan are
+consolidated in the six-tab `SettingsEditorsWindow`.
 
 Changing pages only changes presentation. It does not rename, discard, or
 reinterpret persisted fields. A round-trip compatibility test serializes and

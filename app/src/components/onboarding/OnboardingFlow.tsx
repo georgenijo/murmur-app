@@ -13,9 +13,9 @@ import { getModelRuntimeCatalog } from '../../lib/modelRuntime';
 import { DOWNLOAD_MODEL_KEYS, ModelDownloadPanel } from '../ModelDownloader';
 import type { DoubleTapKey, ModelOption, RecordingMode } from '../../lib/settings';
 
-type Step = 'welcome' | 'microphone' | 'accessibility' | 'model' | 'done';
+type Step = 'welcome' | 'microphone' | 'accessibility' | 'model' | 'hotkey' | 'done';
 
-const STEP_ORDER: Step[] = ['welcome', 'microphone', 'accessibility', 'model', 'done'];
+const STEP_ORDER: Step[] = ['welcome', 'microphone', 'accessibility', 'model', 'hotkey', 'done'];
 
 const KEY_LABELS: Record<DoubleTapKey, string> = {
   shift_l: 'Left Shift',
@@ -28,8 +28,8 @@ interface Props {
   /** Configured recording trigger, so the final tip shows the real binding. */
   recordingMode: RecordingMode;
   triggerKey: DoubleTapKey;
-  /** Called when the user finishes the wizard; receives the installed model. */
-  onComplete: (model: ModelOption) => void;
+  /** Called when the user finishes the wizard with the selected local setup. */
+  onComplete: (model: ModelOption, recordingMode: RecordingMode, triggerKey: DoubleTapKey) => void;
 }
 
 /**
@@ -63,6 +63,8 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   // drives the done-step summary row.
   const [modelInstalled, setModelInstalled] = useState(false);
   const [installedModel, setInstalledModel] = useState<ModelOption>(initialModel);
+  const [selectedRecordingMode, setSelectedRecordingMode] = useState(recordingMode);
+  const [selectedTriggerKey, setSelectedTriggerKey] = useState(triggerKey);
   // Lock Back while a download is in flight: unmounting the panel wouldn't stop
   // the Rust download_model command, and re-entering the step could start a
   // second concurrent download of the same file.
@@ -213,10 +215,14 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   };
 
   return (
-    <div className="h-screen bg-surface-container-low flex flex-col items-center justify-center p-8 font-[-apple-system,BlinkMacSystemFont,'Segoe_UI',Roboto,sans-serif]">
-      <div className="w-full max-w-md">
+    <div className="flex h-screen flex-col overflow-hidden bg-background font-[-apple-system,BlinkMacSystemFont,'Segoe_UI',Roboto,sans-serif]">
+      <header data-tauri-drag-region className="main-header flex h-[62px] shrink-0 items-center border-b border-outline-variant/10 px-5">
+        <span data-tauri-drag-region className="text-[15px] font-bold tracking-tight text-primary">Murmur</span>
+      </header>
+      <div className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto p-8">
+      <div className="w-full max-w-lg">
         {/* Progress dots */}
-        <div className="flex items-center justify-center gap-2 mb-8" aria-label={`Step ${stepIndex + 1} of ${STEP_ORDER.length}`}>
+        <div className="mb-10 flex items-center justify-center gap-2" aria-label={`Step ${stepIndex + 1} of ${STEP_ORDER.length}`}>
           {STEP_ORDER.map((s, i) => (
             <span
               key={s}
@@ -233,20 +239,20 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
 
         {step === 'welcome' && (
           <div className="text-center">
-            <h1 className="text-2xl font-semibold text-on-surface mb-2">
+            <h1 className="mb-3 text-2xl font-semibold text-on-surface">
               Welcome to Murmur
             </h1>
-            <p className="text-sm text-on-surface-variant mb-2">
+            <p className="mx-auto mb-3 max-w-md text-sm leading-relaxed text-on-surface-variant">
               Voice-to-text that runs entirely on your Mac. No cloud, no accounts —
               your audio never leaves this machine.
             </p>
-            <p className="text-sm text-on-surface-variant mb-8">
+            <p className="mx-auto mb-8 max-w-md text-sm leading-relaxed text-on-surface-variant">
               Setup takes about a minute: two macOS permissions and a one-time
-              model download.
+              model download, then your recording shortcut.
             </p>
             <button
               onClick={goNext}
-              className="w-full py-2.5 px-4 bg-primary hover:bg-primary text-on-primary text-sm font-medium rounded-lg transition-colors"
+              className="w-full rounded-full bg-[linear-gradient(135deg,var(--murmur-primary),var(--murmur-primary-dim))] px-4 py-3 text-sm font-bold text-on-primary shadow-[0_8px_22px_color-mix(in_srgb,var(--murmur-primary)_20%,transparent)] transition-[filter,transform] hover:brightness-105 active:scale-[0.99]"
             >
               Get Started
             </button>
@@ -414,6 +420,56 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
           </div>
         )}
 
+        {step === 'hotkey' && (
+          <div>
+            <StepHeading
+              title="Recording Shortcut"
+              granted
+              subtitle="Choose how Murmur listens. You can change both options later in Dictation settings."
+            />
+
+            <div className="mb-6 overflow-hidden rounded-xl border border-outline-variant/25 bg-surface-container-lowest">
+              <div className="border-b border-outline-variant/15 p-4">
+                <p className="mb-2 text-sm font-medium text-on-surface">Recording Trigger</p>
+                <div className="grid grid-cols-3 gap-2">
+                  {([
+                    ['hold_down', 'Hold Down'],
+                    ['double_tap', 'Double-Tap'],
+                    ['both', 'Both'],
+                  ] as const).map(([value, label]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => setSelectedRecordingMode(value)}
+                      className={`rounded-full px-3 py-2 text-xs font-semibold transition-colors ${
+                        selectedRecordingMode === value
+                          ? 'bg-on-surface text-background'
+                          : 'bg-surface-container-high text-on-surface-variant hover:text-on-surface'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="p-4">
+                <label className="mb-2 block text-sm font-medium text-on-surface">Trigger Key</label>
+                <select
+                  value={selectedTriggerKey}
+                  onChange={(event) => setSelectedTriggerKey(event.target.value as DoubleTapKey)}
+                  className="h-10 w-full rounded-xl border border-outline-variant bg-surface-container-high px-3 text-sm text-on-surface"
+                >
+                  <option value="shift_l">⇧ Left Shift</option>
+                  <option value="alt_l">⌥ Left Option</option>
+                  <option value="ctrl_r">⌃ Right Control</option>
+                </select>
+              </div>
+            </div>
+
+            <WizardFooter onBack={goBack} onNext={goNext} nextEnabled nextLabel="Continue" />
+          </div>
+        )}
+
         {step === 'done' && (
           <div>
             <h1 className="text-xl font-semibold text-on-surface mb-1 text-center">
@@ -434,11 +490,11 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
                 Try it out
               </p>
               <p className="text-xs text-on-surface-variant">
-                {recordingMode === 'double_tap' ? 'Double-tap ' : 'Hold '}
-                <kbd className="px-1 py-0.5 rounded bg-surface-container-lowest border border-outline-variant/40 font-mono text-[10px]">{KEY_LABELS[triggerKey]}</kbd>
-                {recordingMode === 'double_tap'
+                {selectedRecordingMode === 'double_tap' ? 'Double-tap ' : 'Hold '}
+                <kbd className="px-1 py-0.5 rounded bg-surface-container-lowest border border-outline-variant/40 font-mono text-[10px]">{KEY_LABELS[selectedTriggerKey]}</kbd>
+                {selectedRecordingMode === 'double_tap'
                   ? ' to start recording and tap it once to stop'
-                  : recordingMode === 'both'
+                  : selectedRecordingMode === 'both'
                   ? ' and speak, then release (or double-tap to toggle)'
                   : ' and speak, then release'}
                 {' '}— your words are transcribed and copied to the clipboard. The
@@ -448,13 +504,14 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
             </div>
 
             <button
-              onClick={() => onComplete(installedModel)}
-              className="w-full py-2.5 px-4 bg-primary hover:bg-primary text-on-primary text-sm font-medium rounded-lg transition-colors"
+              onClick={() => onComplete(installedModel, selectedRecordingMode, selectedTriggerKey)}
+              className="w-full rounded-full bg-[linear-gradient(135deg,var(--murmur-primary),var(--murmur-primary-dim))] px-4 py-3 text-sm font-bold text-on-primary shadow-[0_8px_22px_color-mix(in_srgb,var(--murmur-primary)_20%,transparent)] transition-[filter,transform] hover:brightness-105 active:scale-[0.99]"
             >
               Start Using Murmur
             </button>
           </div>
         )}
+      </div>
       </div>
     </div>
   );

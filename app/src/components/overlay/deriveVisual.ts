@@ -17,6 +17,7 @@ export type OverlayIndicator =
   | { kind: 'recovering' }
   | { kind: 'processing' }
   | { kind: 'transforming' }
+  | { kind: 'calibrating' }
   | { kind: 'idle'; dimmed: boolean };
 
 export interface OverlayVisual {
@@ -58,9 +59,12 @@ export function deriveVisual(
   showTransformBusy: boolean = false,
   showMicrophoneFailure: boolean = false,
   stillConnecting: boolean = false,
+  calibrating: boolean = false,
 ): OverlayVisual {
   let indicator: OverlayIndicator;
-  if (showCancelled) {
+  if (calibrating) {
+    indicator = { kind: 'calibrating' };
+  } else if (showCancelled) {
     indicator = { kind: 'cancelled' };
   } else if (showSecureField) {
     indicator = { kind: 'secureField' };
@@ -87,6 +91,6 @@ export function deriveVisual(
   return {
     indicator,
     showTapMissedLabel: showHotkeyMiss,
-    waveformVisible: status === 'recording',
+    waveformVisible: status === 'recording' && !calibrating,
   };
 }

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { flog } from '../lib/log';
 import { isDictationStatus } from '../lib/types';
@@ -17,6 +18,11 @@ import { NotchCalibrationBand } from './overlay/NotchCalibrationBand';
 
 export function OverlayWidget() {
   const geometry = useOverlayGeometry();
+  const [calibrating, setCalibrating] = useState(false);
+  const [verticalOffset, setVerticalOffset] = useState(() => {
+    const value = Number(localStorage.getItem('murmur-overlay-vertical-offset') ?? 0);
+    return Number.isFinite(value) ? Math.max(-12, Math.min(48, value)) : 0;
+  });
 
   // Shared mutable state written synchronously by both useOverlayRuntime's
   // Tauri listeners and useOverlaySettingsMirror's applySettingsSnapshot.
@@ -63,7 +69,30 @@ export function OverlayWidget() {
     runtime.showTransformBusy,
     runtime.showMicrophoneFailure,
     stillConnecting,
+    calibrating,
   );
+
+  useEffect(() => {
+    if (!geometry) return;
+    void invoke('set_overlay_vertical_offset', { offset: verticalOffset }).catch((error) => {
+      flog.warn('overlay', 'could not apply calibrated offset', { error: String(error) });
+    });
+  }, [geometry, verticalOffset]);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    listen('start-overlay-calibration', () => {
+      setCalibrating(true);
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   useEffect(() => {
     if (status !== 'starting') setStillConnecting(false);
@@ -143,19 +172,19 @@ export function OverlayWidget() {
   // Only the genuinely off/idle surface tucks the empty right wing beneath the
   // notch. Recording and processing keep the full top bar even without hover so
   // their right-side indicators never disappear.
-  const compactIdle = status === 'idle' && !expanded;
+  const compactIdle = status === 'idle' && !expanded && !calibrating;
   const pillW = compactIdle ? geometry.pillIdleW : geometry.pillActiveW;
   const pillMargin = compactIdle ? geometry.pillMarginIdle : geometry.pillMarginActive;
 
   return (
     <div
-      className="w-full h-full flex"
+      className="relative flex h-full w-full"
       style={{ background: 'transparent' }}
-      onMouseDown={recordingControls.handleMouseDown}
-      onDoubleClick={recordingControls.handleDoubleClick}
-      onClick={recordingControls.handleClick}
-      onMouseEnter={onHoverStart}
-      onMouseMove={onHoverStart}
+      onMouseDown={calibrating ? undefined : recordingControls.handleMouseDown}
+      onDoubleClick={calibrating ? undefined : recordingControls.handleDoubleClick}
+      onClick={calibrating ? undefined : recordingControls.handleClick}
+      onMouseEnter={calibrating ? undefined : onHoverStart}
+      onMouseMove={calibrating ? undefined : onHoverStart}
     >
       {/* Dynamic Island: top bar matches notch height; hover expands it downward
           to reveal the quick-settings dropdown. Idle/recording only changes the
@@ -163,9 +192,9 @@ export function OverlayWidget() {
       <div
         ref={islandRef}
         className="overlay-island cursor-pointer select-none overflow-hidden"
-        onMouseEnter={onHoverStart}
-        onMouseMove={onHoverStart}
-        onMouseLeave={onHoverEnd}
+        onMouseEnter={calibrating ? undefined : onHoverStart}
+        onMouseMove={calibrating ? undefined : onHoverStart}
+        onMouseLeave={calibrating ? undefined : onHoverEnd}
         style={{
           position: 'relative',
           borderRadius: '0 0 12px 12px',
@@ -187,7 +216,6 @@ export function OverlayWidget() {
           status={status}
           barRefs={waveform.barRefs}
         />
-        <NotchCalibrationBand geometry={geometry} />
         <OverlayDropdown
           geometry={geometry}
           expanded={expanded}
@@ -202,6 +230,17 @@ export function OverlayWidget() {
           onOpenSettings={settingsMirror.handleOpenSettings}
         />
       </div>
+      <NotchCalibrationBand
+        geometry={geometry}
+        active={calibrating}
+        onCancel={() => setCalibrating(false)}
+        onCommit={(delta) => {
+          const next = Math.max(-12, Math.min(48, verticalOffset + delta));
+          localStorage.setItem('murmur-overlay-vertical-offset', String(next));
+          setVerticalOffset(next);
+          setCalibrating(false);
+        }}
+      />
     </div>
   );
 }

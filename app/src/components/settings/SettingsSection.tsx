@@ -7,7 +7,7 @@ interface SettingsSectionProps {
   children: React.ReactNode;
   // Page mode: when `pageId` is set, the section renders as a flat, non-collapsible
   // settings page (static heading + body) and is shown only when activePage === pageId.
-  // Used by the two-pane settings layout where the left nav replaces accordions.
+  // Used by the tabbed settings layout where the horizontal nav owns page switching.
   pageId?: string;
   activePage?: string;
 }
@@ -34,13 +34,13 @@ export function SettingsSection({ title, subtitle, defaultExpanded = true, child
   if (pageId !== undefined) {
     if (activePage !== undefined && activePage !== pageId) return null;
     return (
-      <div>
-        <h1 className="text-base font-semibold text-on-surface">{title}</h1>
+      <section className="mb-7 last:mb-0">
+        <h1 className="text-[11px] font-bold uppercase tracking-[0.14em] text-on-surface-variant">{title}</h1>
         {subtitle && (
-          <p className="mt-0.5 text-xs text-on-surface-variant">{subtitle}</p>
+          <p className="mt-1 text-xs text-on-surface-variant">{subtitle}</p>
         )}
-        <div className="pt-4 space-y-4">{children}</div>
-      </div>
+        <div className="mt-3 overflow-hidden rounded-xl border border-outline-variant/25 bg-surface-container-lowest [&>*]:p-4 [&>*+*]:border-t [&>*+*]:border-outline-variant/15">{children}</div>
+      </section>
     );
   }
 

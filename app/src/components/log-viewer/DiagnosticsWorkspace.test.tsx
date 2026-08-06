@@ -62,33 +62,33 @@ describe('DiagnosticsWorkspace shared diagnostics shell', () => {
     container.remove();
   });
 
-  it('keeps the diagnostics views and adds accessible Transforms and Reports panels', async () => {
+  it('renders the five redesigned diagnostics tabs in their intended order', async () => {
     const tabs = Array.from(container.querySelectorAll('[role="tab"]'));
     expect(tabs.map(tab => tab.textContent)).toEqual([
       'Events',
-      'Performance',
       'Runs',
-      'Transforms',
-      'Reports',
+      'Performance',
+      'Compare',
+      'Transform',
     ]);
     expect(container.textContent).not.toContain('Metrics');
 
     await act(async () => (tabs[1] as HTMLButtonElement).click());
-    expect(container.querySelector('#diagnostics-panel-performance')).not.toBeNull();
+    expect(container.querySelector('#diagnostics-panel-runs')).not.toBeNull();
     expect(tabs[1].getAttribute('aria-selected')).toBe('true');
 
     await act(async () => (tabs[2] as HTMLButtonElement).click());
-    expect(container.querySelector('#diagnostics-panel-runs')).not.toBeNull();
+    expect(container.querySelector('#diagnostics-panel-performance')).not.toBeNull();
     expect(tabs[2].getAttribute('aria-selected')).toBe('true');
 
     await act(async () => (tabs[3] as HTMLButtonElement).click());
-    expect(container.querySelector('#diagnostics-panel-transforms')).not.toBeNull();
+    expect(container.querySelector('#diagnostics-panel-reports')).not.toBeNull();
     expect(tabs[3].getAttribute('aria-selected')).toBe('true');
-    expect(container.textContent).toContain('Transform diagnostics');
+    expect(container.textContent).toContain('Report comparison');
 
     await act(async () => (tabs[4] as HTMLButtonElement).click());
-    expect(container.querySelector('#diagnostics-panel-reports')).not.toBeNull();
+    expect(container.querySelector('#diagnostics-panel-transforms')).not.toBeNull();
     expect(tabs[4].getAttribute('aria-selected')).toBe('true');
-    expect(container.textContent).toContain('Report comparison');
+    expect(container.textContent).toContain('Transform diagnostics');
   });
 });

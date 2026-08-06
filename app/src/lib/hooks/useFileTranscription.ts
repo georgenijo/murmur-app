@@ -44,6 +44,7 @@ export function useFileTranscription({ addEntry }: UseFileTranscriptionProps) {
   queueRef.current = queue;
   const addEntryRef = useRef(addEntry);
   addEntryRef.current = addEntry;
+  const cancelledIdsRef = useRef(new Set<string>());
 
   // Sequentially process every still-`queued` item. Re-entrancy is guarded by
   // `runningRef`; the loop re-reads `queueRef` each pass so items enqueued mid-run
@@ -63,6 +64,11 @@ export function useFileTranscription({ addEntry }: UseFileTranscriptionProps) {
         flog.info('file-transcribe', 'start', { name: item.name });
 
         const res = await transcribeFile(item.path);
+
+        if (cancelledIdsRef.current.delete(item.id)) {
+          flog.info('file-transcribe', 'cancelled', { name: item.name });
+          continue;
+        }
 
         if (res.type === 'error') {
           const message = res.error || 'Transcription failed';
@@ -114,6 +120,25 @@ export function useFileTranscription({ addEntry }: UseFileTranscriptionProps) {
     setError('');
   }, []);
 
+  const cancel = useCallback((id: string) => {
+    const item = queueRef.current.find((candidate) => candidate.id === id);
+    if (!item || (item.status !== 'queued' && item.status !== 'transcribing')) return;
+    if (item.status === 'transcribing') cancelledIdsRef.current.add(id);
+    setQueue((current) => {
+      const next = updateItem(current, id, { status: 'error', error: 'Canceled' });
+      queueRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const dismiss = useCallback((id: string) => {
+    setQueue((current) => {
+      const next = current.filter((item) => item.id !== id || (item.status !== 'done' && item.status !== 'error'));
+      queueRef.current = next;
+      return next;
+    });
+  }, []);
+
   // Drag-and-drop via the Tauri webview — provides absolute file paths. Drag-drop
   // is an optional convenience; if the listener can't be registered the picker
   // button still works, so failures degrade gracefully rather than break the UI.
@@ -160,6 +185,8 @@ export function useFileTranscription({ addEntry }: UseFileTranscriptionProps) {
     isRunning,
     enqueue,
     transcribe,
+    cancel,
+    dismiss,
     reset,
   };
 }

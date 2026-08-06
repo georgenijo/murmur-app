@@ -1,7 +1,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { RecordingControls } from './RecordingControls';
+import { MainHeader } from './MainHeader';
 import { HistoryPanel } from './history/HistoryPanel';
 
 describe('Sonic Canvas component details', () => {
@@ -33,17 +33,21 @@ describe('Sonic Canvas component details', () => {
   ] as const)('shows the configured %s hotkey hint', async (triggerKey, label) => {
     await act(async () => {
       root.render(
-        <RecordingControls
+        <MainHeader
           status="idle"
           initialized
-          onStart={vi.fn()}
+          recordingDuration={0}
+          recordingMode="hold_down"
+          onRecord={vi.fn()}
           onStop={vi.fn()}
+          onOpenSettings={vi.fn()}
+          settingsOpen={false}
           triggerKey={triggerKey}
         />,
       );
     });
 
-    expect(container.textContent).toContain(`Press ${label} to begin`);
+    expect(container.textContent).toContain(`Hold ${label} to dictate`);
   });
 
   it('shows a word-count badge on each history card', async () => {
@@ -73,11 +77,15 @@ describe('Sonic Canvas component details', () => {
 
     await act(async () => {
       root.render(
-        <RecordingControls
+        <MainHeader
           status="idle"
           initialized
-          onStart={onStart}
+          recordingDuration={0}
+          recordingMode="hold_down"
+          onRecord={onStart}
           onStop={onStop}
+          onOpenSettings={vi.fn()}
+          settingsOpen={false}
           triggerKey="shift_l"
         />,
       );
@@ -87,11 +95,15 @@ describe('Sonic Canvas component details', () => {
 
     await act(async () => {
       root.render(
-        <RecordingControls
+        <MainHeader
           status="recording"
           initialized
-          onStart={onStart}
+          recordingDuration={12}
+          recordingMode="hold_down"
+          onRecord={onStart}
           onStop={onStop}
+          onOpenSettings={vi.fn()}
+          settingsOpen={false}
           triggerKey="shift_l"
         />,
       );
@@ -103,23 +115,27 @@ describe('Sonic Canvas component details', () => {
   it('keeps Stop Recording prominent without an unsupported solid-error text pair', async () => {
     await act(async () => {
       root.render(
-        <RecordingControls
+        <MainHeader
           status="recording"
           initialized
-          onStart={vi.fn()}
+          recordingDuration={12}
+          recordingMode="hold_down"
+          onRecord={vi.fn()}
           onStop={vi.fn()}
+          onOpenSettings={vi.fn()}
+          settingsOpen={false}
           triggerKey="shift_l"
         />,
       );
     });
 
     const stop = container.querySelector('button')!;
-    expect(stop.classList).toContain('border-2');
-    expect(stop.classList).toContain('border-error');
-    expect(stop.classList).toContain('bg-surface-container-lowest');
+    expect(stop.textContent).toContain('Stop 0:12');
+    expect(stop.classList).toContain('border');
+    expect(stop.classList).toContain('border-error/50');
+    expect(stop.classList).toContain('bg-error/10');
     expect(stop.classList).toContain('text-error');
-    expect(stop.classList).toContain('font-semibold');
-    expect(stop.classList).toContain('hover:bg-error/10');
+    expect(stop.classList).toContain('font-bold');
     expect(stop.classList).not.toContain('bg-error');
     expect(stop.classList).not.toContain('text-on-primary');
   });
@@ -143,14 +159,16 @@ describe('Sonic Canvas component details', () => {
     });
 
     const copyButton = container.querySelector('[aria-label^="Copy transcription"]') as HTMLButtonElement;
-    const clearButton = Array.from(container.querySelectorAll('button')).find((candidate) => candidate.textContent === 'Clear History')!;
     await act(async () => copyButton.click());
     expect(writeText).toHaveBeenCalledWith('Keep every interaction working');
 
     // Clearing is a two-step confirm — the first click only arms it.
+    const more = container.querySelector('[aria-label="More history actions"]') as HTMLButtonElement;
+    await act(async () => more.click());
+    const clearButton = Array.from(container.querySelectorAll('button')).find((candidate) => candidate.textContent === 'Clear history')!;
     await act(async () => clearButton.click());
     expect(onClear).not.toHaveBeenCalled();
-    expect(clearButton.textContent).toBe('Click again to confirm');
+    expect(clearButton.textContent).toBe('Clear all history?');
     await act(async () => clearButton.click());
     expect(onClear).toHaveBeenCalledOnce();
   });
@@ -162,7 +180,7 @@ describe('Sonic Canvas component details', () => {
         { id: 'newer', text: 'newest transcript', timestamp: 2, duration: 1 },
       ]} onClear={vi.fn()} onUpdateEntry={vi.fn()} />);
     });
-    const actions = Array.from(container.querySelectorAll('button')).filter((candidate) => candidate.textContent === 'Correct and Teach');
+    const actions = Array.from(container.querySelectorAll('button')).filter((candidate) => candidate.textContent === 'Correct & Teach');
     expect(actions).toHaveLength(1);
     await act(async () => actions[0].click());
     expect((container.querySelector('[aria-label="Corrected transcript"]') as HTMLTextAreaElement).value).toBe('newest transcript');

@@ -6,6 +6,7 @@ interface TranscriptionViewProps {
   onClearHistory: () => void;
   onUpdateHistoryEntry: (id: string, text: string) => void;
   focusSearchToken?: number;
+  onTranscribeFile: () => void;
 }
 
 export function TranscriptionView({
@@ -13,14 +14,16 @@ export function TranscriptionView({
   onClearHistory,
   onUpdateHistoryEntry,
   focusSearchToken,
+  onTranscribeFile,
 }: TranscriptionViewProps) {
   return (
-    <div className="flex flex-1 flex-col overflow-hidden rounded-2xl bg-surface-container-low p-3">
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <HistoryPanel
         entries={historyEntries}
         onClear={onClearHistory}
         onUpdateEntry={onUpdateHistoryEntry}
         focusSearchToken={focusSearchToken}
+        onTranscribeFile={onTranscribeFile}
       />
     </div>
   );

@@ -1,4 +1,4 @@
-import { useState, useEffect, lazy, Suspense, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { flog } from './lib/log';
@@ -9,13 +9,14 @@ import { isEditableTarget, mainWindowShortcut } from './lib/keyboardShortcuts';
 import { saveHistoryExport } from './lib/historyExport';
 import { PermissionsBanner } from './components/PermissionsBanner';
 import { AboutModal } from './components/AboutModal';
-import { StatusHeader } from './components/StatusHeader';
-import { RecordingControls } from './components/RecordingControls';
+import { MainHeader } from './components/MainHeader';
 import { TranscriptionView } from './components/TranscriptionView';
-import { FileTranscriptionPanel } from './components/FileTranscriptionPanel';
+import { FooterStats } from './components/FooterStats';
+import { FileTranscriptionToasts } from './components/FileTranscriptionToasts';
 import { useInitialization } from './lib/hooks/useInitialization';
 import { useSettings } from './lib/hooks/useSettings';
 import { useHistoryManagement } from './lib/hooks/useHistoryManagement';
+import { useFileTranscription } from './lib/hooks/useFileTranscription';
 import { useRecordingState } from './lib/hooks/useRecordingState';
 import { useHoldDownToggle } from './lib/hooks/useHoldDownToggle';
 import { useDoubleTapToggle } from './lib/hooks/useDoubleTapToggle';
@@ -31,15 +32,13 @@ import { UpdateModal } from './components/UpdateModal';
 import { WhatsNewModal } from './components/WhatsNewModal';
 import { UpdateIndicator } from './components/UpdateIndicator';
 import type { CompletedUpdate, UpdateStatus } from './lib/updater';
-import { StatsBar } from './components/StatsBar';
-const ResourceMonitor = lazy(() => import('./components/ResourceMonitor').then(m => ({ default: m.ResourceMonitor })));
-const UsageDashboard = lazy(() => import('./components/UsageDashboard').then(m => ({ default: m.UsageDashboard })));
 import { resetStats } from './lib/stats';
 import { ModelDownloader } from './components/ModelDownloader';
 import { OnboardingFlow } from './components/onboarding/OnboardingFlow';
 import { isOnboardingComplete, markOnboardingComplete, resetOnboarding } from './lib/onboarding';
 import { checkAccessibilityPermission, checkMicrophonePermissionStatus, checkModelExists } from './lib/dictation';
 import { getModelRuntimeCatalog } from './lib/modelRuntime';
+import { open } from '@tauri-apps/plugin-dialog';
 
 function App() {
   // --- Diagnostic: track when main window becomes visible/focused ---
@@ -110,11 +109,16 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const completeOnboarding = useCallback((model: typeof settings.model) => {
+  const completeOnboarding = useCallback((
+    model: typeof settings.model,
+    recordingMode: typeof settings.recordingMode,
+    doubleTapKey: typeof settings.doubleTapKey,
+  ) => {
     markOnboardingComplete();
+    updateSettings({ recordingMode, doubleTapKey });
     markModelReady(model);
     setOnboardingState('done');
-  }, [markModelReady]);
+  }, [markModelReady, updateSettings]);
 
   // Keep settings in sync when the overlay's quick controls change them.
   useOverlaySettingsSync(applyExternalSettings);
@@ -280,14 +284,26 @@ function App() {
   }, [updateStatus]);
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [mainTab, setMainTab] = useState<'record' | 'file'>('record');
   // Bumped to move focus into the history search box (command palette action).
   const [historySearchToken, setHistorySearchToken] = useState<number | undefined>(undefined);
   const focusHistorySearch = useCallback(() => {
-    setMainTab('record');
     setIsSettingsOpen(false);
     setHistorySearchToken((token) => (token ?? 0) + 1);
   }, []);
+
+  const fileTranscription = useFileTranscription({ addEntry });
+  const pickAudioFiles = useCallback(async () => {
+    try {
+      const selected = await open({
+        multiple: true,
+        filters: [{ name: 'Audio', extensions: ['wav', 'mp3', 'm4a'] }],
+      });
+      const paths = Array.isArray(selected) ? selected : selected ? [selected] : [];
+      if (paths.length > 0) fileTranscription.enqueue(paths);
+    } catch (e) {
+      flog.warn('file-transcribe', 'file dialog failed', { error: String(e) });
+    }
+  }, [fileTranscription.enqueue]);
 
   // Overlay gear button asks the main window to open the Settings panel.
   const openSettings = useCallback(() => setIsSettingsOpen(true), []);
@@ -339,6 +355,13 @@ function App() {
         run: () => updateSettings({ disabled: !settings.disabled }),
       },
       {
+        id: 'transcribe-file',
+        title: 'Transcribe audio file…',
+        section: 'Recording',
+        keywords: ['file', 'import', 'audio', 'wav', 'mp3', 'm4a'],
+        run: () => { void pickAudioFiles(); },
+      },
+      {
         id: 'history-search',
         title: 'Search transcripts',
         section: 'History',
@@ -366,18 +389,11 @@ function App() {
         },
       }] : []),
       {
-        id: 'tab-record',
-        title: 'Go to Record',
+        id: 'show-history',
+        title: 'Show transcription history',
         section: 'Navigation',
-        keywords: ['history', 'main'],
-        run: () => { setIsSettingsOpen(false); setMainTab('record'); },
-      },
-      {
-        id: 'tab-file',
-        title: 'Go to Transcribe File',
-        section: 'Navigation',
-        keywords: ['import', 'audio', 'wav'],
-        run: () => { setIsSettingsOpen(false); setMainTab('file'); },
+        keywords: ['record', 'main'],
+        run: () => setIsSettingsOpen(false),
       },
       ...SETTINGS_CATEGORIES.map((category) => ({
         id: `settings-${category.id}`,
@@ -418,7 +434,7 @@ function App() {
     return items;
   }, [
     status, historyEntries, settings.disabled, updateSettings, handleStart, handleStop,
-    focusHistorySearch, openSettingsPage, checkForUpdate, setShowAbout,
+    focusHistorySearch, openSettingsPage, checkForUpdate, setShowAbout, pickAudioFiles,
   ]);
 
   const error = initError || recordingError;
@@ -446,73 +462,66 @@ function App() {
   }
 
   return (
-    <div className="h-screen bg-background text-on-surface flex flex-col font-[-apple-system,BlinkMacSystemFont,'Segoe_UI',Roboto,sans-serif]">
+    <div className="relative flex h-screen flex-col overflow-hidden bg-background text-on-surface font-[-apple-system,BlinkMacSystemFont,'Segoe_UI',Roboto,sans-serif]">
       {import.meta.env.DEV && (
-        <div className="bg-warning/10 text-warning text-xs font-semibold text-center py-0.5 tracking-widest uppercase select-none">
+        <div className="absolute left-1/2 top-0 z-50 -translate-x-1/2 rounded-b-md bg-warning/15 px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest text-warning select-none">
           Dev
         </div>
       )}
-      <StatusHeader
+      <MainHeader
         status={status}
         initialized={initialized}
         recordingDuration={recordingDuration}
-        onSettingsToggle={() => setIsSettingsOpen(o => !o)}
-        isSettingsOpen={isSettingsOpen}
+        triggerKey={settings.doubleTapKey}
+        recordingMode={settings.recordingMode}
+        onRecord={handleStart}
+        onStop={handleStop}
+        onOpenSettings={() => setIsSettingsOpen((open) => !open)}
+        settingsOpen={isSettingsOpen}
+        mode={isSettingsOpen ? 'settings' : 'main'}
+        updateIndicator={(
+          <UpdateIndicator
+            status={updateStatus}
+            onOpen={showAvailableUpdate}
+            onRetryCheck={() => void checkForUpdate()}
+          />
+        )}
       />
 
       <PermissionsBanner />
 
-      <StatsBar statsVersion={combinedStatsVersion} hidden={isSettingsOpen} />
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        <main className={`relative min-h-0 flex-1 flex-col overflow-hidden px-4 pb-3 pt-3 ${isSettingsOpen ? 'hidden' : 'flex'}`}>
+          <TranscriptionView
+            historyEntries={historyEntries}
+            onClearHistory={clearHistory}
+            onUpdateHistoryEntry={updateEntry}
+            focusSearchToken={historySearchToken}
+            onTranscribeFile={pickAudioFiles}
+          />
 
-      <div className="flex-1 flex overflow-hidden">
-        <main className={`flex-1 flex-col overflow-hidden p-4 gap-4 ${isSettingsOpen ? 'hidden' : 'flex'}`}>
-          <div className="flex shrink-0 items-center gap-3">
-            <div className="flex gap-1 rounded-xl bg-surface-container p-1">
-              {(['record', 'file'] as const).map((tab) => (
-                <button
-                  key={tab}
-                  onClick={() => setMainTab(tab)}
-                  className={`px-3 py-1 text-sm font-medium rounded-md transition-colors ${
-                    mainTab === tab
-                      ? 'bg-surface-container-lowest text-on-surface shadow-sm'
-                      : 'text-on-surface-variant hover:text-on-surface'
-                  }`}
-                >
-                  {tab === 'record' ? 'Record' : 'Transcribe File'}
-                </button>
-              ))}
+          {error && (
+            <div className="absolute bottom-4 left-4 right-4 z-20 rounded-xl border border-error/30 bg-surface-container-lowest px-4 py-3 shadow-xl">
+              <p className="text-sm text-error">{error}</p>
             </div>
-            <UpdateIndicator
-              status={updateStatus}
-              onOpen={showAvailableUpdate}
-              onRetryCheck={() => void checkForUpdate()}
-            />
-          </div>
-
-          {mainTab === 'record' ? (
-            <>
-              <TranscriptionView
-                historyEntries={historyEntries}
-                onClearHistory={clearHistory}
-                onUpdateHistoryEntry={updateEntry}
-                focusSearchToken={historySearchToken}
-              />
-
-              {error && (
-                <div className="shrink-0 px-4 py-3 bg-error/10 border border-error/30 rounded-lg">
-                  <p className="text-error text-sm">{error}</p>
-                </div>
-              )}
-
-              <RecordingControls status={status} initialized={initialized} onStart={handleStart} onStop={handleStop} triggerKey={settings.doubleTapKey} />
-
-              <Suspense fallback={null}><UsageDashboard statsVersion={combinedStatsVersion} /></Suspense>
-
-              {import.meta.env.DEV && <Suspense fallback={null}><ResourceMonitor /></Suspense>}
-            </>
-          ) : (
-            <FileTranscriptionPanel addEntry={addEntry} />
           )}
+
+          {fileTranscription.isDragging && (
+            <div className="pointer-events-none absolute inset-3 z-40 grid place-items-center rounded-2xl border-2 border-dashed border-primary bg-background/90 backdrop-blur-sm">
+              <div className="text-center">
+                <span className="mx-auto mb-3 grid h-12 w-12 place-items-center rounded-2xl bg-primary/10 text-2xl text-on-surface">↓</span>
+                <p className="text-base font-semibold text-on-surface">Drop to transcribe</p>
+                <p className="mt-1 text-xs text-on-surface-variant">WAV, MP3, and M4A files</p>
+              </div>
+            </div>
+          )}
+
+          <FileTranscriptionToasts
+            queue={fileTranscription.queue}
+            error={fileTranscription.error}
+            onCancel={fileTranscription.cancel}
+            onDismiss={fileTranscription.dismiss}
+          />
         </main>
 
         {isSettingsOpen && (
@@ -536,6 +545,8 @@ function App() {
         />
         )}
       </div>
+
+      {!isSettingsOpen && <FooterStats statsVersion={combinedStatsVersion} />}
 
       <CommandPalette
         isOpen={isPaletteOpen}

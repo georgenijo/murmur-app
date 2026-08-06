@@ -142,4 +142,21 @@ describe('deriveVisual', () => {
     expect(visual.showTapMissedLabel).toBe(false);
     expect(visual.waveformVisible).toBe(false);
   });
+
+  it('calibration takes visual priority and hides the recording waveform', () => {
+    const visual = deriveVisual(
+      'recording',
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+    );
+    expect(visual.indicator).toEqual({ kind: 'calibrating' });
+    expect(visual.waveformVisible).toBe(false);
+  });
 });
