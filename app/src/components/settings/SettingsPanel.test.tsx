@@ -78,25 +78,23 @@ describe('SettingsPanel information architecture', () => {
     container.remove();
   });
 
-  it('renders ordered pages with Recording selected first (includes Transform)', () => {
+  it('renders the four redesigned settings tabs with Dictation selected first', () => {
     expect(SETTINGS_CATEGORIES.map((category) => category.label)).toEqual([
-      'Recording', 'Transcription', 'Transform', 'Text & Vocabulary', 'Delivery', 'Benchmark', 'Performance', 'Appearance', 'General',
+      'Dictation', 'Model', 'Text', 'App',
     ]);
     const nav = container.querySelector('nav[aria-label="Settings pages"]') as HTMLElement;
-    expect(Array.from(nav.querySelectorAll('button')).slice(1).map((button) => button.textContent)).toEqual(SETTINGS_CATEGORIES.map((category) => category.label));
-    expect(nav.querySelector('[aria-current="page"]')?.textContent).toBe('Recording');
-    expect(container.querySelector('h1')?.textContent).toBe('Recording');
+    expect(Array.from(nav.querySelectorAll('button')).map((button) => button.textContent)).toEqual(SETTINGS_CATEGORIES.map((category) => category.label));
+    expect(nav.querySelector('[aria-current="page"]')?.textContent).toBe('Dictation');
+    expect(container.querySelector('h1')?.textContent).toBe('Microphone & Trigger');
     expect(container.textContent).toContain('Microphone');
+    expect(container.textContent).toContain('Always copied to clipboard');
   });
 
-  it('moves vocabulary, app overrides, Benchmark, Performance, and startup into their intended pages', async () => {
+  it('groups the previous settings pages into Model, Text, and App', async () => {
     for (const [page, expected] of [
-      ['Text & Vocabulary', 'Names & special words'],
-      ['Delivery', 'Always copied to clipboard'],
-      ['Benchmark', 'Performance lab'],
-      ['Performance', 'Diagnostics workspace'],
-      ['Appearance', 'Appearance settings'],
-      ['General', 'Launch at Login'],
+      ['Model', 'Performance lab'],
+      ['Text', 'Vocabulary'],
+      ['App', 'Launch at Login'],
     ] as const) {
       const button = Array.from(container.querySelectorAll('nav button')).find((item) => item.textContent === page) as HTMLButtonElement;
       await act(async () => button.click());
@@ -106,13 +104,48 @@ describe('SettingsPanel information architecture', () => {
     expect(scrollTo).toHaveBeenCalledWith({ top: 0 });
   });
 
-  it('starts Performance at the diagnostics workspace without a redundant page heading', async () => {
-    const button = Array.from(container.querySelectorAll('nav button')).find((item) => item.textContent === 'Performance') as HTMLButtonElement;
+  it('keeps advanced diagnostics behind a disclosure on the Model tab', async () => {
+    const button = Array.from(container.querySelectorAll('nav button')).find((item) => item.textContent === 'Model') as HTMLButtonElement;
     await act(async () => button.click());
 
     expect(container.textContent).toContain('Diagnostics workspace');
-    expect(Array.from(container.querySelectorAll('h1')).some((heading) => heading.textContent === 'Performance')).toBe(false);
-    expect(container.textContent).not.toContain('Live diagnostics, recorded runs, transforms, and reports');
+    expect(Array.from(container.querySelectorAll('summary')).some((summary) => summary.textContent?.includes('Advanced'))).toBe(true);
+    expect(Array.from(container.querySelectorAll('details')).every((details) => !details.hasAttribute('open'))).toBe(true);
+  });
+
+  it('searches across tabs and routes a result to its owning tab', async () => {
+    const input = container.querySelector('input[placeholder="Search all settings"]') as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => {
+      setter.call(input, 'appearance');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(container.textContent).toContain('1 result');
+    const result = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes('Appearance')) as HTMLButtonElement;
+    await act(async () => result.click());
+    expect(container.querySelector('nav [aria-current="page"]')?.textContent).toBe('App');
+    expect(container.textContent).toContain('Appearance settings');
+  });
+
+  it('opens diagnostics when the cross-tab result explicitly targets them', async () => {
+    const input = container.querySelector('input[placeholder="Search all settings"]') as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => {
+      setter.call(input, 'diagnostics');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    const result = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent?.includes('Diagnostics'),
+    ) as HTMLButtonElement;
+    expect(result.textContent).toContain('Model');
+    await act(async () => result.click());
+
+    expect(container.querySelector('nav [aria-current="page"]')?.textContent).toBe('Model');
+    const diagnostics = Array.from(container.querySelectorAll('details')).find(
+      (details) => details.textContent?.includes('Diagnostics workspace'),
+    ) as HTMLDetailsElement;
+    expect(diagnostics.open).toBe(true);
   });
 });
 
@@ -161,7 +194,7 @@ describe('SettingsPanel transform block (#312 D1 round-2 findings 6-8)', () => {
         configureError={null}
       />,
     ));
-    const button = Array.from(container.querySelectorAll('nav button')).find((item) => item.textContent === 'Transform') as HTMLButtonElement;
+    const button = Array.from(container.querySelectorAll('nav button')).find((item) => item.textContent === 'Text') as HTMLButtonElement;
     await act(async () => button.click());
     // Let the transformModelStatus() fetch effect resolve.
     await act(async () => {});

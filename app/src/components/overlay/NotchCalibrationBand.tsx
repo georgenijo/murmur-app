@@ -1,43 +1,90 @@
+import { useEffect, useRef, useState } from 'react';
 import type { OverlayGeometry } from '../../lib/overlayGeometry';
 
 interface NotchCalibrationBandProps {
   geometry: OverlayGeometry;
+  active: boolean;
+  onCommit: (offset: number) => void;
+  onCancel: () => void;
 }
 
-/**
- * Dev-build-only visual aid: draws a translucent neon-magenta band over the
- * exact zone the overlay believes the physical notch occupies — the island's
- * center section between the two wings, full notch height (0 to
- * `geometry.collapsedH`). On real notched hardware this band must render
- * fully hidden behind the physical notch; any visible magenta means the
- * geometry or window positioning is wrong.
- *
- * Gated by `import.meta.env.DEV`, the same mechanism the main window's "Dev"
- * banner uses (see App.tsx). That flag is only true under the Vite dev
- * server (`npm run tauri dev`) — it is false in a bundled debug .app, since
- * `vite build` (which produces the bundled frontend for every Tauri build,
- * debug or release) always sets it to false. The band therefore shows only
- * during `tauri dev`, matching the existing dev banner's behavior exactly.
- */
-export function NotchCalibrationBand({ geometry }: NotchCalibrationBandProps) {
-  if (!import.meta.env.DEV) return null;
+/** Full-width drag surface used to calibrate the overlay's native Y position. */
+export function NotchCalibrationBand({
+  geometry,
+  active,
+  onCommit,
+  onCancel,
+}: NotchCalibrationBandProps) {
+  const [dragOffset, setDragOffset] = useState(0);
+  const dragOffsetRef = useRef(0);
+  const draggedRef = useRef(false);
+  const startYRef = useRef(0);
+  const bandRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (active) bandRef.current?.focus();
+    else {
+      dragOffsetRef.current = 0;
+      setDragOffset(0);
+    }
+  }, [active]);
+
+  if (!active) return null;
 
   return (
     <div
-      aria-hidden="true"
+      ref={bandRef}
+      role="dialog"
+      aria-label="Calibrate overlay position"
+      tabIndex={0}
+      onKeyDown={(event) => {
+        if (event.key === 'Escape') onCancel();
+        if (event.key === 'Enter') onCommit(dragOffsetRef.current);
+      }}
+      onPointerDown={(event) => {
+        event.stopPropagation();
+        draggedRef.current = false;
+        startYRef.current = event.clientY - dragOffset;
+        event.currentTarget.setPointerCapture(event.pointerId);
+      }}
+      onPointerMove={(event) => {
+        event.stopPropagation();
+        if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+        const next = Math.max(-12, Math.min(48, event.clientY - startYRef.current));
+        if (next !== dragOffsetRef.current) draggedRef.current = true;
+        dragOffsetRef.current = next;
+        setDragOffset(next);
+      }}
+      onPointerUp={(event) => {
+        event.stopPropagation();
+        if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+        event.currentTarget.releasePointerCapture(event.pointerId);
+        if (draggedRef.current) onCommit(dragOffsetRef.current);
+      }}
+      onClick={(event) => event.stopPropagation()}
       style={{
         position: 'absolute',
-        left: geometry.wingW,
-        // Keep the band equal to the detected physical notch width even when
-        // the idle island tucks its right wing underneath that band.
-        width: geometry.windowW - (2 * geometry.wingW),
+        left: 0,
+        width: geometry.windowW,
         top: 0,
         height: geometry.collapsedH,
-        background: 'rgba(255, 0, 200, 0.5)',
-        outline: '1px solid rgba(255, 0, 200, 0.9)',
-        pointerEvents: 'none',
-        zIndex: 10,
+        transform: `translateY(${dragOffset}px)`,
+        background: 'rgba(146, 219, 254, 0.16)',
+        border: '1px dashed rgba(146, 219, 254, 0.8)',
+        borderRadius: '0 0 12px 12px',
+        color: '#dbe4e9',
+        cursor: 'ns-resize',
+        zIndex: 20,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontSize: 10,
+        fontWeight: 700,
+        letterSpacing: '0.02em',
+        backdropFilter: 'blur(12px)',
       }}
-    />
+    >
+      ↕ Drag to position
+    </div>
   );
 }

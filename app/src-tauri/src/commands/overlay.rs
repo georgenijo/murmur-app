@@ -56,6 +56,16 @@ const DROPDOWN_H: f64 = 44.0;
 const FALLBACK_NOTCH_W: f64 = 80.0;
 const FALLBACK_NOTCH_H: f64 = 37.0;
 const MAX_REASONABLE_MENU_BAR_H: f64 = 128.0;
+const MIN_VERTICAL_OFFSET: f64 = -12.0;
+const MAX_VERTICAL_OFFSET: f64 = 48.0;
+
+fn clamp_vertical_offset(offset: f64) -> f64 {
+    if offset.is_finite() {
+        offset.clamp(MIN_VERTICAL_OFFSET, MAX_VERTICAL_OFFSET)
+    } else {
+        0.0
+    }
+}
 
 fn geometry_for(notch: Option<(f64, f64)>) -> OverlayGeometry {
     let (notch_w, notch_h) = notch.unwrap_or((FALLBACK_NOTCH_W, FALLBACK_NOTCH_H));
@@ -450,6 +460,61 @@ pub fn set_overlay_expanded(
     }
 }
 
+/// Apply a user-calibrated vertical offset to the notch-anchored overlay.
+///
+/// The frontend persists the logical-point offset in its local settings and
+/// reapplies it after launch/display changes. Keeping the native command
+/// stateless avoids a second settings store while still ensuring the actual
+/// NSWindow moves, rather than merely translating web content inside it.
+#[tauri::command]
+pub async fn set_overlay_vertical_offset(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, State>,
+    offset: f64,
+) -> Result<(), String> {
+    let offset = clamp_vertical_offset(offset);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (&app, &state, offset);
+        return Ok(());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let overlay = app
+            .get_webview_window("overlay")
+            .ok_or_else(|| "overlay window not found".to_string())?;
+        let g = geometry_for(*state.notch_info.lock_or_recover());
+        let monitor = app
+            .primary_monitor()
+            .map_err(|error| error.to_string())?
+            .or_else(|| overlay.current_monitor().ok().flatten())
+            .ok_or_else(|| "no monitor available".to_string())?;
+        let position = monitor.position();
+        let size = monitor.size();
+        let scale_factor = monitor.scale_factor();
+        let (x, base_y) = centered_physical_position(
+            (position.x, position.y),
+            (size.width, size.height),
+            scale_factor,
+            g.window_w,
+        );
+        let y = base_y + (offset * scale_factor).round() as i32;
+        let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+        app.run_on_main_thread(move || {
+            let result = overlay
+                .set_position(tauri::PhysicalPosition::new(x, y))
+                .map_err(|error| error.to_string());
+            let _ = tx.send(result);
+        })
+        .map_err(|error| error.to_string())?;
+        tokio::time::timeout(std::time::Duration::from_secs(2), rx)
+            .await
+            .map_err(|_| "overlay position update timed out".to_string())?
+            .map_err(|_| "overlay position update was dropped".to_string())?
+    }
+}
+
 /// Show and focus the main app window.
 ///
 /// The overlay uses this instead of frontend window APIs so it does not need
@@ -560,6 +625,15 @@ mod tests {
             centered_physical_position((0, 0), (5120, 2880), 2.0, 152.0),
             (2408, 0)
         );
+    }
+
+    #[test]
+    fn vertical_calibration_offset_is_finite_and_bounded() {
+        assert_eq!(clamp_vertical_offset(-13.0), MIN_VERTICAL_OFFSET);
+        assert_eq!(clamp_vertical_offset(49.0), MAX_VERTICAL_OFFSET);
+        assert_eq!(clamp_vertical_offset(12.5), 12.5);
+        assert_eq!(clamp_vertical_offset(f64::NAN), 0.0);
+        assert_eq!(clamp_vertical_offset(f64::INFINITY), 0.0);
     }
 
     #[test]

@@ -20,6 +20,20 @@
   --murmur-error: #a83836;
   --murmur-success: #146333;
   --murmur-warning: #654500;
+  --bg: var(--murmur-background);
+  --surface-lowest: var(--murmur-surface-container-lowest);
+  --surface-low: var(--murmur-surface-container-low);
+  --surface: var(--murmur-surface-container);
+  --surface-high: var(--murmur-surface-container-high);
+  --fg: var(--murmur-on-surface);
+  --muted: var(--murmur-on-surface-variant);
+  --border: var(--murmur-outline-variant);
+  --accent: var(--murmur-primary);
+  --accent-dim: var(--murmur-primary-dim);
+  --on-accent: var(--murmur-on-primary);
+  --error: var(--murmur-error);
+  --success: var(--murmur-success);
+  --warning: var(--murmur-warning);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -69,6 +83,25 @@ body {
   color: var(--murmur-on-surface);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  overscroll-behavior: none;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+*:focus-visible {
+  outline: 2px solid var(--murmur-primary);
+  outline-offset: 1px;
+}
+
+/* The main window uses the native macOS overlay title bar. Keep the single-line
+   header clear of the real traffic lights while allowing the whole row to drag. */
+.main-header {
+  padding-left: 82px;
 }
 
 /* The notch overlay is a transparent window — the surface background above

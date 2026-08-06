@@ -6,7 +6,7 @@ permissions were a dismissible banner.
 
 ## Flow
 
-Five steps, forward-only with Back links and per-step Skip where the app can
+Six steps, forward-only with Back links and per-step Skip where the app can
 partially function without the grant:
 
 1. **Welcome** — privacy pitch (local-only processing), what setup covers.
@@ -20,8 +20,9 @@ partially function without the grant:
 4. **Model** — embeds `ModelDownloadPanel` (shared with the standalone
    `ModelDownloader` gate); reads every offered model's install state from the
    shared runtime catalog and shows "already installed" on re-runs.
-5. **Done** — live summary of the three checks plus a "hold Left Shift and
-   speak" quick-start card.
+5. **Hotkey** — chooses Hold / Double-tap / Both and the trigger key.
+6. **Done** — live summary of the checks plus a quick-start card derived from
+   the selected recording mode and trigger key.
 
 ## Permission-state handling
 
@@ -47,7 +48,7 @@ step live. The wishy-washy TCC states are handled explicitly:
   place → set the flag silently** so existing installs never see the wizard on
   upgrade. Anything missing → show `OnboardingFlow`.
 
-Settings → About → **Run Setup Assistant** clears the flag and relaunches the
+Settings → App → **Run Setup Assistant** clears the flag and relaunches the
 wizard — the recovery path when a user revokes a permission and wants a guided
 re-grant instead of spelunking through System Settings.
 

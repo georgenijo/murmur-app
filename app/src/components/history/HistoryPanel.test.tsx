@@ -36,8 +36,8 @@ describe('HistoryPanel', () => {
   const cardText = () => Array.from(container.querySelectorAll('article')).map((a) => a.textContent ?? '');
   const searchShell = () => container.querySelector('[data-testid="history-search-shell"]') as HTMLDivElement;
   const searchInput = () => container.querySelector('input[type="search"]') as HTMLInputElement;
-  const searchTrigger = () => container.querySelector('[aria-label="Open transcript search"]') as HTMLButtonElement;
-  const searchClose = () => container.querySelector('[aria-label="Close transcript search"]') as HTMLButtonElement;
+  const searchClose = () => container.querySelector('[aria-label="Clear transcript search"]') as HTMLButtonElement;
+  const moreActions = () => container.querySelector('[aria-label="More history actions"]') as HTMLButtonElement;
 
   async function render(props: Partial<Parameters<typeof HistoryPanel>[0]> = {}) {
     await act(async () => {
@@ -61,24 +61,6 @@ describe('HistoryPanel', () => {
     });
   }
 
-  async function hoverSearch() {
-    await act(async () => {
-      searchShell().dispatchEvent(new MouseEvent('mouseover', {
-        bubbles: true,
-        relatedTarget: document.body,
-      }));
-    });
-  }
-
-  async function leaveSearch() {
-    await act(async () => {
-      searchShell().dispatchEvent(new MouseEvent('mouseout', {
-        bubbles: true,
-        relatedTarget: document.body,
-      }));
-    });
-  }
-
   beforeEach(() => {
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -93,17 +75,43 @@ describe('HistoryPanel', () => {
     await act(async () => root.unmount());
     container.remove();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it('keeps the empty state when there is no history', async () => {
     await render({ entries: [] });
     expect(container.textContent).toContain('No transcription history yet');
-    expect(container.querySelector('input[type="search"]')).toBeNull();
+    expect(searchInput()).not.toBeNull();
+    expect(container.textContent).toContain('0 entries');
   });
 
   it('orders entries newest first', async () => {
     await render();
     expect(cardText()[0]).toContain('remember the invariant');
+  });
+
+  it('expands and collapses only overflowing transcripts', async () => {
+    vi.stubGlobal('ResizeObserver', class {
+      observe() {}
+      disconnect() {}
+      unobserve() {}
+    });
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(40);
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.textContent?.includes('a transcript long enough to overflow') ? 80 : 40;
+    });
+    await render({
+      entries: [
+        entry({ id: 'short', text: 'short transcript' }),
+        entry({ id: 'long', text: 'a transcript long enough to overflow' }),
+      ],
+    });
+
+    expect(buttons().filter((button) => button.textContent === 'Show more')).toHaveLength(1);
+    await act(async () => byText('Show more')!.click());
+    expect(byText('Show less')).toBeTruthy();
+    await act(async () => byText('Show less')!.click());
+    expect(buttons().filter((button) => button.textContent === 'Show more')).toHaveLength(1);
   });
 
   it('filters as you type and highlights the match', async () => {
@@ -132,7 +140,7 @@ describe('HistoryPanel', () => {
   it('copies only the visible entries as markdown', async () => {
     await render();
     await type('tauri');
-    await act(async () => byText('Export ▾')!.click());
+    await act(async () => moreActions().click());
     const copyMarkdown = container.querySelector(
       'button[aria-label="Copy 1 shown as Markdown"]',
     ) as HTMLButtonElement;
@@ -147,7 +155,7 @@ describe('HistoryPanel', () => {
 
   it('saves an export through the native dialog and the validated command', async () => {
     await render();
-    await act(async () => byText('Export ▾')!.click());
+    await act(async () => moreActions().click());
     const saveJson = container.querySelector(
       'button[aria-label="Save 3 shown as JSON"]',
     ) as HTMLButtonElement;
@@ -163,7 +171,7 @@ describe('HistoryPanel', () => {
   it('says nothing when the save dialog is cancelled', async () => {
     save.mockResolvedValueOnce(null);
     await render();
-    await act(async () => byText('Export ▾')!.click());
+    await act(async () => moreActions().click());
     const saveMarkdown = container.querySelector(
       'button[aria-label="Save 3 shown as Markdown"]',
     ) as HTMLButtonElement;
@@ -176,10 +184,11 @@ describe('HistoryPanel', () => {
     const onClear = vi.fn();
     await render({ onClear });
 
-    const clear = byText('Clear History')!;
+    await act(async () => moreActions().click());
+    const clear = byText('Clear history')!;
     await act(async () => clear.click());
     expect(onClear).not.toHaveBeenCalled();
-    expect(container.textContent).toContain('Click again to confirm');
+    expect(clear.textContent).toBe('Clear all history?');
     await act(async () => clear.click());
     expect(onClear).toHaveBeenCalledOnce();
   });
@@ -191,49 +200,23 @@ describe('HistoryPanel', () => {
     expect(searchShell().dataset.expanded).toBe('true');
   });
 
-  it('previews on hover and collapses when the pointer leaves', async () => {
+  it('keeps search visible and keyboard reachable', async () => {
     await render();
-    expect(searchShell().dataset.expanded).toBe('false');
-    expect(searchInput().tabIndex).toBe(-1);
-
-    await hoverSearch();
     expect(searchShell().dataset.expanded).toBe('true');
     expect(searchInput().tabIndex).toBe(0);
-
-    await leaveSearch();
-    expect(searchShell().dataset.expanded).toBe('false');
-    expect(searchInput().tabIndex).toBe(-1);
   });
 
-  it('pins on click and does not collapse when hover ends during input', async () => {
+  it('keeps a non-empty query visible', async () => {
     await render();
-    await hoverSearch();
-    await act(async () => searchTrigger().click());
-    expect(document.activeElement).toBe(searchInput());
-
-    await leaveSearch();
-    expect(searchShell().dataset.expanded).toBe('true');
-
-    await act(async () => byText('Export ▾')!.focus());
-    expect(searchShell().dataset.expanded).toBe('false');
-  });
-
-  it('keeps a non-empty query visible after focus and hover leave', async () => {
-    await render();
-    await act(async () => searchTrigger().click());
     await type('tauri');
-    await leaveSearch();
-    await act(async () => byText('Export ▾')!.focus());
 
     expect(searchShell().dataset.expanded).toBe('true');
     expect(searchInput().value).toBe('tauri');
     expect(cardText()).toHaveLength(1);
   });
 
-  it('Escape clears, collapses, and suppresses hover until a genuine re-entry', async () => {
+  it('Escape clears the current search without hiding the control', async () => {
     await render();
-    await hoverSearch();
-    await act(async () => searchTrigger().click());
     await type('tauri');
 
     await act(async () => {
@@ -243,37 +226,23 @@ describe('HistoryPanel', () => {
       }));
     });
     expect(searchInput().value).toBe('');
-    expect(searchShell().dataset.expanded).toBe('false');
-    expect(cardText()).toHaveLength(3);
-
-    // The pointer is still notionally over the control, so Escape must win.
-    await hoverSearch();
-    expect(searchShell().dataset.expanded).toBe('false');
-
-    await leaveSearch();
-    await hoverSearch();
     expect(searchShell().dataset.expanded).toBe('true');
+    expect(cardText()).toHaveLength(3);
   });
 
-  it('the close control clears and collapses the active search', async () => {
+  it('the clear control resets the active search', async () => {
     await render();
-    await act(async () => searchTrigger().click());
     await type('tauri');
     await act(async () => searchClose().click());
 
     expect(searchInput().value).toBe('');
-    expect(searchShell().dataset.expanded).toBe('false');
-    expect(cardText()).toHaveLength(3);
-
-    // This click was keyboard-style with no pointer over the shell, so a new
-    // hover must work immediately rather than requiring a leave/re-entry.
-    await hoverSearch();
     expect(searchShell().dataset.expanded).toBe('true');
+    expect(cardText()).toHaveLength(3);
   });
 
-  it('uses a disclosure group and restores Export focus on Escape', async () => {
+  it('uses an actions group and restores trigger focus on Escape', async () => {
     await render();
-    const trigger = byText('Export ▾')!;
+    const trigger = moreActions();
     await act(async () => trigger.click());
     const firstAction = container.querySelector(
       'button[aria-label="Copy 3 shown as Markdown"]',
@@ -282,8 +251,15 @@ describe('HistoryPanel', () => {
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
     });
-    expect(container.querySelector('[aria-label="History export actions"]')).toBeNull();
-    expect(container.querySelector('[role="menu"]')).toBeNull();
+    expect(container.querySelector('[aria-label="History actions"]')).toBeNull();
     expect(document.activeElement).toBe(trigger);
+  });
+
+  it('offers file transcription from the overflow menu', async () => {
+    const onTranscribeFile = vi.fn();
+    await render({ onTranscribeFile });
+    await act(async () => moreActions().click());
+    await act(async () => byText('Transcribe audio file…')!.click());
+    expect(onTranscribeFile).toHaveBeenCalledOnce();
   });
 });

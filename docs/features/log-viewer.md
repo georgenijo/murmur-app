@@ -5,7 +5,7 @@
 All application logging goes through Rust's `tracing` crate, captured by a custom
 `TauriEmitterLayer` that routes every event to three destinations: an in-memory
 ring buffer, a persistent JSONL file, and real-time frontend emission. The
-embedded **Settings → Performance** workspace keeps these structured Events
+embedded **Settings → Model → Advanced** workspace keeps these structured Events
 beside a typed live Performance view and bounded per-run history.
 
 ## Telemetry Architecture (`telemetry.rs`)
@@ -87,12 +87,12 @@ Messages are formatted as `[tag] message` with optional JSON data. Calls are fir
 
 ## Embedded workspace
 
-The workspace is rendered inside the main window under **Settings →
-Performance**. **⌘L**, the command-palette diagnostics action, and General's
-**View Performance** button all navigate to the same page. The diagnostics
-tabs begin at the top of the settings content area without a duplicate page
-title. The diagnostics shell owns its inner scroll regions so live Events and
-charts remain usable without opening or managing a second native window.
+The workspace is rendered inside the main window under **Settings → Model →
+Advanced**. **⌘L**, the command-palette diagnostics action, and App's **View
+Performance** button all navigate to the Model tab. The diagnostics tabs are
+ordered **Events**, **Runs**, **Performance**, **Compare**, **Transform**. The
+diagnostics shell owns its inner scroll regions so live Events and charts
+remain usable without opening or managing a second native window.
 
 ### Events Tab
 

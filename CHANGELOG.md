@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- The main window now uses one line of recording chrome and gives the transcript
+  history the workspace. File transcription moved to drag-and-drop, the command
+  palette, and the history overflow menu; usage stats moved to a compact footer
+  with an Insights popover. Settings now uses four searchable tabs with a
+  consolidated six-tab editor window, onboarding includes explicit hotkey setup,
+  diagnostics uses the Events / Runs / Performance / Compare / Transform order,
+  and the notch overlay supports persisted vertical calibration.
 - Settings now uses the full workspace below the status bar: dashboard usage
   cards hide while Settings is open, and Performance begins directly with its
   diagnostics tabs instead of repeating a page title (#441).

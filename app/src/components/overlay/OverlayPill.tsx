@@ -41,7 +41,11 @@ export function OverlayPill({
           className="shrink-0 flex items-center justify-center"
           style={{ width: wingW }}
         >
-          {indicator.kind === 'cancelled' ? (
+          {indicator.kind === 'calibrating' ? (
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#92dbfe" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-label="calibrating overlay">
+              <path d="M12 3v18M8 7l4-4 4 4M8 17l4 4 4-4" />
+            </svg>
+          ) : indicator.kind === 'cancelled' ? (
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
               <line x1="6" y1="6" x2="18" y2="18" />
               <line x1="18" y1="6" x2="6" y2="18" />
