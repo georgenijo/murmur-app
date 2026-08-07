@@ -126,16 +126,30 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
 
     def test_release_versions_must_match(self) -> None:
         self.assertEqual(
-            release_tag_for_versions("0.18.0", "0.18.0", "0.18.0"), "v0.18.0"
+            release_tag_for_versions(*(["0.18.0"] * 6)), "v0.18.0"
         )
         for versions in (
-            ("0.18", "0.18", "0.18"),
-            ("0.18.0", "0.17.1", "0.18.0"),
-            ("0.18.0", "0.18.0", "0.17.1"),
+            ("0.18",) * 6,
+            ("0.18.0", "0.17.1", "0.18.0", "0.18.0", "0.18.0", "0.18.0"),
+            ("0.18.0", "0.18.0", "0.18.0", "0.17.1", "0.18.0", "0.18.0"),
+            ("0.18.0", "0.18.0", "0.18.0", "0.18.0", "0.17.1", "0.18.0"),
+            ("0.18.0", "0.18.0", "0.18.0", "0.18.0", "0.18.0", "0.17.1"),
         ):
             with self.subTest(versions=versions):
                 with self.assertRaises(AssertionError):
                     release_tag_for_versions(*versions)
+
+    def test_promotion_requires_release_version_and_changelog_gate(self) -> None:
+        workflow = (ROOT / ".github/workflows/release.yml").read_text()
+        for marker in (
+            "scripts/release_version.py check",
+            '--git-ref "$SOURCE_SHA"',
+        ):
+            with self.subTest(marker=marker):
+                mutated = workflow.replace(marker, "echo skipped", 1)
+                self.assertNotEqual(workflow, mutated)
+                with self.assertRaises(AssertionError):
+                    validate_promotion_policy(mutated)
 
     def test_existing_tag_must_match_source_commit(self) -> None:
         source = "a" * 40

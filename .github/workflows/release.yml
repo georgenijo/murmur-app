@@ -183,47 +183,9 @@ jobs:
               exit 1
             fi
 
-            if ! VERSIONS=$(python3 - "$SOURCE_SHA" <<'PY'
-          import json
-          import re
-          import subprocess
-          import sys
-
-          sha = sys.argv[1]
-
-          def at(path: str) -> str:
-              return subprocess.check_output(
-                  ["git", "show", f"{sha}:{path}"], text=True
-              )
-
-          tauri_version = json.loads(at("app/src-tauri/tauri.conf.json"))["version"]
-          cargo = at("app/src-tauri/Cargo.toml")
-          package = re.search(r"^\[package\]\s*(.*?)(?=^\[|\Z)", cargo, re.M | re.S)
-          cargo_version = re.search(
-              r'^version\s*=\s*"([^"]+)"', package.group(1), re.M
-          ).group(1)
-          lock = at("app/src-tauri/Cargo.lock")
-          ui_package = next(
-              block
-              for block in re.split(r"^\[\[package\]\]\s*$", lock, flags=re.M)
-              if re.search(r'^name\s*=\s*"ui"\s*$', block, re.M)
-          )
-          lock_version = re.search(
-              r'^version\s*=\s*"([^"]+)"', ui_package, re.M
-          ).group(1)
-          print(tauri_version, cargo_version, lock_version)
-          PY
-            ); then
-              echo "ERROR: could not read release versions from $SOURCE_SHA"
-              exit 1
-            fi
-            read -r VERSION CARGO_VERSION LOCK_VERSION <<< "$VERSIONS"
-            if ! echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'; then
-              echo "ERROR: invalid release version: $VERSION"
-              exit 1
-            fi
-            if [ "$CARGO_VERSION" != "$VERSION" ] || [ "$LOCK_VERSION" != "$VERSION" ]; then
-              echo "ERROR: release versions differ: tauri=$VERSION cargo=$CARGO_VERSION lock=$LOCK_VERSION"
+            if ! VERSION=$(python3 scripts/release_version.py check \
+                --git-ref "$SOURCE_SHA"); then
+              echo "ERROR: release versions or CHANGELOG differ at $SOURCE_SHA"
               exit 1
             fi
             RESOLVED_TAG="v$VERSION"

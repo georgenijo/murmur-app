@@ -98,7 +98,10 @@ jobs:
       - name: Workflow and artifact policy tests
         run: |
           python3 scripts/validate_workflow_policy.py
-          python3 -m unittest tests/test_release_artifacts.py tests/test_workflow_policy.py
+          python3 -m unittest \
+            tests/test_release_artifacts.py \
+            tests/test_release_version.py \
+            tests/test_workflow_policy.py
 
   rehearse-macos:
     needs: context

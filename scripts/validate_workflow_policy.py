@@ -100,12 +100,26 @@ def should_auto_promote(
 
 
 def release_tag_for_versions(
-    tauri_version: str, cargo_version: str, lock_version: str
+    tauri_version: str,
+    cargo_version: str,
+    lock_version: str,
+    package_version: str,
+    package_lock_version: str,
+    changelog_version: str,
 ) -> str:
     if not SEMVER.fullmatch(tauri_version):
         raise AssertionError(f"invalid release version: {tauri_version}")
-    if cargo_version != tauri_version or lock_version != tauri_version:
-        raise AssertionError("tauri.conf.json, Cargo.toml, and Cargo.lock differ")
+    if any(
+        version != tauri_version
+        for version in (
+            cargo_version,
+            lock_version,
+            package_version,
+            package_lock_version,
+            changelog_version,
+        )
+    ):
+        raise AssertionError("release version surfaces differ")
     return f"v{tauri_version}"
 
 
@@ -132,7 +146,9 @@ def validate_ci(ci: str) -> int:
     assert "scripts/validate_workflow_policy.py" in ci
     assert "scripts/release_artifacts.py" in ci
     assert "scripts/capture_agent_matrix.py" in ci
+    assert "'scripts/release_version.py'" in ci
     assert "tests/test_release_artifacts.py" in ci
+    assert "tests/test_release_version.py" in ci
     assert "tests/test_workflow_policy.py" in ci
     assert "tests/test_capture_agent_matrix.py" in ci
     capture_build = named_step_block(
@@ -182,6 +198,7 @@ def validate_release_build(workflow: str) -> int:
     assert "pull_request" not in workflow
     assert "self-hosted" not in workflow
     assert "contents: write" not in workflow
+    assert "tests/test_release_version.py" in workflow
     assert scalar(job_block(workflow, "context"), "if") == RELEASE_BUILD_GUARD
     for job in ("typecheck", "release-macos", "release-linux"):
         assert scalar(job_block(workflow, job), "needs") == "context"
@@ -278,6 +295,7 @@ def validate_release_rehearsal(workflow: str) -> int:
     for forbidden_trigger in ("\n  push:", "\n  pull_request:", "\n  workflow_run:"):
         assert forbidden_trigger not in workflow
     assert "permissions:\n  contents: read" in workflow
+    assert "tests/test_release_version.py" in workflow
     for forbidden in (
         "secrets.",
         "GITHUB_TOKEN",
@@ -473,13 +491,12 @@ def validate_promotion_policy(workflow: str) -> int:
     assert 'split("@")[0]) == ".github/workflows/release-build.yml"' in workflow
     assert "expired == false" in workflow
     assert "scripts/release_artifacts.py validate" in workflow
+    assert "scripts/release_version.py check" in workflow
+    assert '--git-ref "$SOURCE_SHA"' in workflow
     assert "--require-macos-capture-helper" in workflow
     assert "--require-macos-capture-agent" in workflow
     assert "--require-macos-capture-worker" in workflow
-    assert 'at("app/src-tauri/tauri.conf.json")' in workflow
-    assert 'at("app/src-tauri/Cargo.toml")' in workflow
-    assert 'at("app/src-tauri/Cargo.lock")' in workflow
-    assert "release versions differ" in workflow
+    assert "release versions or CHANGELOG differ" in workflow
     assert "already_published=true" in workflow
     assert "contains unexpected asset" in workflow
     assert 'gh release view "$TAG"' in workflow
@@ -524,7 +541,7 @@ def validate_promotion_policy(workflow: str) -> int:
     expected = (True, False, False, False, False)
     for case, result in zip(auto_cases, expected):
         assert should_auto_promote(**case) is result
-    assert release_tag_for_versions("0.18.0", "0.18.0", "0.18.0") == "v0.18.0"
+    assert release_tag_for_versions(*(["0.18.0"] * 6)) == "v0.18.0"
     assert tag_action(None, "a" * 40) == "create"
     assert tag_action("a" * 40, "a" * 40) == "reuse"
     return len(publish_steps) + len(auto_cases)
