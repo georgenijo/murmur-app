@@ -58,7 +58,9 @@
      therefore own the full mockup height and center itself on the native
      traffic lights instead of assuming AppKit contributes a top inset. */
   --ui-window-header-height: 2.625rem;
-  --ui-window-controls-inset: 4.5rem;
+  /* The native controls end around x=68px with the configured 10px inset.
+     Start web chrome at 80px to preserve a deliberate 12px wordmark gap. */
+  --ui-window-controls-inset: 5rem;
   --ui-record-width: 4.5rem;
   --ui-status-min-width: 4.5rem;
   --ui-history-gap: 0.3125rem;

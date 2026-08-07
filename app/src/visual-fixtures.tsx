@@ -67,6 +67,7 @@ function VisualFixture() {
         status={status}
         initialized
         recordingDuration={12}
+        audioLevel={status === 'recording' ? 0.045 : 0}
         recordingMode={requestedState === 'update-recovering' ? 'both' : 'hold_down'}
         onRecord={() => {}}
         onStop={() => {}}

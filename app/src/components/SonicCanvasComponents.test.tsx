@@ -130,7 +130,8 @@ describe('Sonic Canvas component details', () => {
     });
 
     const stop = container.querySelector('[data-testid="record-pill"]') as HTMLButtonElement;
-    expect(stop.textContent).toContain('Stop 0:12');
+    expect(stop.textContent?.trim()).toBe('Stop');
+    expect(stop.getAttribute('aria-label')).toBe('Stop recording, 0:12');
     expect(stop.classList).toContain('ui-record-pill');
     expect(stop.classList).toContain('border');
     expect(stop.classList).toContain('border-error/50');
@@ -138,6 +139,37 @@ describe('Sonic Canvas component details', () => {
     expect(stop.classList).toContain('text-error');
     expect(stop.classList).not.toContain('bg-error');
     expect(stop.classList).not.toContain('text-on-primary');
+  });
+
+  it('drives the recording waveform from live audio instead of a pulse animation', async () => {
+    const renderRecording = async (audioLevel: number) => {
+      await act(async () => {
+        root.render(
+          <MainHeader
+            status="recording"
+            initialized
+            recordingDuration={12}
+            audioLevel={audioLevel}
+            recordingMode="hold_down"
+            onRecord={vi.fn()}
+            onStop={vi.fn()}
+            onOpenSettings={vi.fn()}
+            settingsOpen={false}
+            triggerKey="shift_l"
+          />,
+        );
+      });
+      return Array.from(
+        container.querySelectorAll('[data-testid="main-recording-waveform"] > span'),
+      ).map((bar) => (bar as HTMLElement).style.height);
+    };
+
+    const quietHeights = await renderRecording(0);
+    const speakingHeights = await renderRecording(0.05);
+
+    expect(quietHeights).toEqual(['2px', '2px', '2px', '2px', '2px']);
+    expect(speakingHeights).not.toEqual(quietHeights);
+    expect(container.querySelector('[data-testid="main-recording-waveform"] .animate-pulse')).toBeNull();
   });
 
   it('keeps stable header geometry while state labels change', async () => {
@@ -177,7 +209,7 @@ describe('Sonic Canvas component details', () => {
     }
   });
 
-  it('does not expose the reserved timer while recording starts', async () => {
+  it('keeps the starting control compact without exposing a stale timer', async () => {
     await act(async () => {
       root.render(
         <MainHeader
@@ -196,8 +228,8 @@ describe('Sonic Canvas component details', () => {
 
     const record = container.querySelector('[data-testid="record-pill"]') as HTMLButtonElement;
     expect(record.getAttribute('aria-label')).toBe('Cancel recording');
-    expect(record.querySelector('.font-mono')?.getAttribute('aria-hidden')).toBe('true');
-    expect(record.querySelector('.font-mono')?.textContent).toBe('0:00');
+    expect(record.textContent?.trim()).toBe('Cancel');
+    expect(record.querySelector('.font-mono')).toBeNull();
   });
 
   it('preserves history copy and confirmed clear actions', async () => {

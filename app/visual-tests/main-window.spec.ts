@@ -67,6 +67,9 @@ test('the window header flows into the history toolbar without a divider', async
   await expect.poll(() => header.evaluate((element) => (
     getComputedStyle(element).borderBottomWidth
   ))).toBe('0px');
+  await expect.poll(() => page.locator('.ui-window-wordmark').evaluate((element) => (
+    element.getBoundingClientRect().left
+  ))).toBe(80);
 });
 
 test('update discovery cannot expand or wrap the recovering header', async ({ page }) => {
@@ -113,4 +116,16 @@ test('settings editors preserve the primary hierarchy and provide a real back ac
 
   await page.keyboard.press('Escape');
   await expect(page.getByRole('heading', { name: 'Text & Vocabulary' })).toBeVisible();
+});
+
+test('the main recording waveform reacts to audio without pulse animation', async ({ page }) => {
+  await page.goto('/visual-fixtures.html?state=recording&appearance=dark');
+  const waveform = page.getByTestId('main-recording-waveform');
+
+  await expect(waveform.locator('span')).toHaveCount(5);
+  await expect(waveform.locator('.animate-pulse')).toHaveCount(0);
+  const heights = await waveform.locator('span').evaluateAll((bars) => (
+    bars.map((bar) => getComputedStyle(bar).height)
+  ));
+  expect(new Set(heights).size).toBeGreaterThan(1);
 });

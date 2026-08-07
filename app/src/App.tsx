@@ -140,7 +140,7 @@ function App() {
   const { historyEntries, addEntry, updateEntry, clearHistory } = useHistoryManagement();
   const {
     status, recordingDuration, error: recordingError,
-    handleStart, handleHoldStart, handleStop, toggleRecording, statsVersion,
+    handleStart, handleHoldStart, handleStop, toggleRecording, audioLevel, statsVersion,
   } = useRecordingState({ addEntry, microphone: settings.microphone });
   const [statsResetVersion, setStatsResetVersion] = useState(0);
   const combinedStatsVersion = statsVersion + statsResetVersion;
@@ -472,6 +472,7 @@ function App() {
         status={status}
         initialized={initialized}
         recordingDuration={recordingDuration}
+        audioLevel={audioLevel}
         triggerKey={settings.doubleTapKey}
         recordingMode={settings.recordingMode}
         onRecord={handleStart}
