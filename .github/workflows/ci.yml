@@ -49,8 +49,14 @@ jobs:
               - 'scripts/capture_agent_matrix.py'
               - 'scripts/smoke_test_capture_worker.py'
               - 'scripts/validate_capture_boundary.py'
+              - 'scripts/validate_reference_docs.py'
               - 'scripts/release_version.py'
+              - 'CLAUDE.md'
+              - 'AGENTS.md'
+              - 'docs/ARCHITECTURE.md'
+              - 'docs/reference/**'
               - 'infra/log-receiver/**'
+              - 'tests/test_reference_docs.py'
               - 'tests/test_release_artifacts.py'
               - 'tests/test_release_version.py'
               - 'tests/test_workflow_policy.py'
@@ -62,7 +68,9 @@ jobs:
         run: |
           python3 scripts/validate_workflow_policy.py
           python3 scripts/validate_capture_boundary.py
+          python3 scripts/validate_reference_docs.py
           python3 -m unittest \
+            tests/test_reference_docs.py \
             tests/test_release_artifacts.py \
             tests/test_release_version.py \
             tests/test_workflow_policy.py \
