@@ -12,6 +12,9 @@
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+
+use crate::MutexExt;
 
 const ENDPOINT: &str = "https://georgenijo.com/murmur/ingest";
 pub(crate) const TOKEN: &str = "a1b4068693a1f3868bcf03c01ebcf1e9f000080b3e8bfcb0";
@@ -21,6 +24,8 @@ const STARTUP_DELAY_SECS: u64 = 15;
 const MAX_BATCH_BYTES: usize = 1024 * 1024;
 /// Defensive bound for the aggregate input-device count shipped in `/state`.
 const MAX_AUDIO_INPUT_COUNT: usize = 256;
+
+static AUDIO_STATE_CACHE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
 #[derive(Serialize, Deserialize)]
 struct ShipperState {
@@ -278,14 +283,22 @@ fn aggregate_audio_state<T>(
     .to_string()
 }
 
-/// Current audio-input aggregate, serialized stably so a change is detectable
-/// by string comparison. Runs blocking Core Audio enumeration without reading
-/// any presentation labels or backend identifiers.
-fn audio_state() -> String {
-    match crate::audio::list_input_devices() {
-        Ok(inputs) => aggregate_audio_state(!inputs.is_empty(), inputs, true),
-        Err(_) => aggregate_audio_state(false, std::iter::empty::<()>(), false),
-    }
+fn audio_state_cache() -> &'static Mutex<Option<String>> {
+    AUDIO_STATE_CACHE.get_or_init(|| Mutex::new(None))
+}
+
+/// Cache the privacy-safe aggregate produced by an explicit device-list
+/// request. The log shipper never initiates Core Audio enumeration itself.
+pub(crate) fn record_audio_input_enumeration(input_count: Option<usize>) {
+    let snapshot = match input_count {
+        Some(count) => aggregate_audio_state(count > 0, 0..count, true),
+        None => aggregate_audio_state(false, std::iter::empty::<()>(), false),
+    };
+    *audio_state_cache().lock_or_recover() = Some(snapshot);
+}
+
+fn cached_audio_state() -> Option<String> {
+    audio_state_cache().lock_or_recover().clone()
 }
 
 async fn ship_state(
@@ -364,7 +377,9 @@ pub fn start() {
         let mut last_snapshot: Option<String> = None;
         loop {
             tick(&client, &endpoint, &device).await;
-            // Event-driven device/state snapshot: POST only when it changes.
+            // Device/state snapshots are populated only by an existing explicit
+            // enumeration request (for example, when Settings opens). Reading
+            // this cache must never spawn a capture helper from the shipper.
             // The install id is re-read after tick(): the first tick persists
             // it, so a fresh install reports state under its real identity
             // instead of a throwaway UUID.
@@ -372,13 +387,19 @@ pub fn start() {
                 .filter(|p| p.exists())
                 .map(|p| load_state(&p).install_id);
             if let Some(install_id) = &state_install_id {
-                let snap = tokio::task::spawn_blocking(audio_state)
-                    .await
-                    .unwrap_or_default();
-                if !snap.is_empty() && last_snapshot.as_deref() != Some(snap.as_str()) {
-                    if ship_state(&client, &state_endpoint, install_id, &device, snap.clone()).await
-                    {
-                        last_snapshot = Some(snap);
+                if let Some(snap) = cached_audio_state() {
+                    if last_snapshot.as_deref() != Some(snap.as_str()) {
+                        if ship_state(
+                            &client,
+                            &state_endpoint,
+                            install_id,
+                            &device,
+                            snap.clone(),
+                        )
+                        .await
+                        {
+                            last_snapshot = Some(snap);
+                        }
                     }
                 }
             }
@@ -483,6 +504,23 @@ mod tests {
         // A second fresh load (different path) gets a different UUID.
         let other = load_state(&dir.join("nope.json"));
         assert_ne!(other.install_id, fresh.install_id);
+    }
+
+    #[test]
+    fn audio_state_cache_tracks_only_explicit_enumeration_results() {
+        record_audio_input_enumeration(Some(3));
+        let success: serde_json::Value =
+            serde_json::from_str(&cached_audio_state().unwrap()).unwrap();
+        assert_eq!(success["default_input_available"], true);
+        assert_eq!(success["input_device_count"], 3);
+        assert_eq!(success["input_enumeration_ok"], true);
+
+        record_audio_input_enumeration(None);
+        let failure: serde_json::Value =
+            serde_json::from_str(&cached_audio_state().unwrap()).unwrap();
+        assert_eq!(failure["default_input_available"], false);
+        assert_eq!(failure["input_device_count"], 0);
+        assert_eq!(failure["input_enumeration_ok"], false);
     }
 
     #[tokio::test]

@@ -397,7 +397,7 @@ fn hello(
     }
 }
 
-pub fn list_input_devices() -> Result<Vec<AudioDeviceDescriptor>, String> {
+fn enumerate_input_devices() -> Result<Vec<AudioDeviceDescriptor>, String> {
     let (capture_id, nonce, nonce_hex) = capture_identity();
     let (mut child, mut input, output) =
         spawn_helper(capture_id, &nonce_hex).map_err(|failure| failure.to_string())?;
@@ -444,6 +444,14 @@ pub fn list_input_devices() -> Result<Vec<AudioDeviceDescriptor>, String> {
         .wait_for_exit(Instant::now() + HELPER_STOP_DEADLINE)
         .or_else(|| child.hard_kill_confirmed(Instant::now() + HELPER_STOP_DEADLINE));
     Ok(devices)
+}
+
+pub fn list_input_devices() -> Result<Vec<AudioDeviceDescriptor>, String> {
+    let result = enumerate_input_devices();
+    crate::log_shipper::record_audio_input_enumeration(
+        result.as_ref().ok().map(|devices| devices.len()),
+    );
+    result
 }
 
 pub fn start_transform_capture_audio(
