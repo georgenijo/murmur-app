@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- Advanced Diagnostics can pop out into a movable standalone window and now
+  includes a local, content-free latency map for History, Settings pages, and
+  diagnostics navigation.
+
+### Changed
+
+- History and Settings navigation now keeps isolated compositor surfaces warm,
+  gates inactive diagnostics work, and renders large event histories in a
+  bounded window. Typical History-to-Settings latency fell from 112 ms to
+  29 ms in release-build measurements, with overall P95 reduced from 197 ms
+  to 59 ms.
+
 ## [0.29.0] - 2026-08-07
 
 ### Added

@@ -2,7 +2,11 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { flog } from './lib/log';
-import { SettingsPanel, SETTINGS_CATEGORIES } from './components/settings';
+import {
+  SettingsPanel,
+  SETTINGS_CATEGORIES,
+  settingsLatencyView,
+} from './components/settings';
 import { CommandPalette } from './components/CommandPalette';
 import type { PaletteCommand } from './lib/commandPalette';
 import { isEditableTarget, mainWindowShortcut } from './lib/keyboardShortcuts';
@@ -39,6 +43,15 @@ import { isOnboardingComplete, markOnboardingComplete, resetOnboarding } from '.
 import { checkAccessibilityPermission, checkMicrophonePermissionStatus, checkModelExists } from './lib/dictation';
 import { getModelRuntimeCatalog } from './lib/modelRuntime';
 import { open } from '@tauri-apps/plugin-dialog';
+import {
+  beginCurrentUiTransition,
+  useUiLatencyDestination,
+  type UiLatencyTrigger,
+} from './lib/uiLatency';
+
+const PERFORMANCE_BUILD_BADGE = import.meta.env.VITE_MURMUR_BUILD_ID?.startsWith('settings-phase2-')
+  ? 'Use this · Phase 2 Perf'
+  : undefined;
 
 function App() {
   // --- Diagnostic: track when main window becomes visible/focused ---
@@ -144,7 +157,10 @@ function App() {
   } = useRecordingState({ addEntry, microphone: settings.microphone });
   const [statsResetVersion, setStatsResetVersion] = useState(0);
   const combinedStatsVersion = statsVersion + statsResetVersion;
-  const handleResetStats = () => { resetStats(); setStatsResetVersion(v => v + 1); };
+  const handleResetStats = useCallback(() => {
+    resetStats();
+    setStatsResetVersion(v => v + 1);
+  }, []);
   // Keep the global hotkeys disarmed until onboarding completes — accessibility
   // can be granted mid-wizard, and a hold/double-tap must not start a recording
   // behind the OnboardingFlow screen.
@@ -285,12 +301,38 @@ function App() {
   }, [updateStatus]);
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [settingsPageRequest, setSettingsPageRequest] = useState<{ page: string; token: number } | null>(null);
+  const settingsViewRef = useRef('settings.dictation');
+  const settingsActiveRef = useRef(isSettingsOpen);
+  settingsActiveRef.current = isSettingsOpen;
+  const trackSettingsView = useCallback((view: string) => {
+    settingsViewRef.current = view;
+  }, []);
+  useUiLatencyDestination(
+    onboardingState === 'done' && modelReady === true && !isSettingsOpen
+      ? 'main.history'
+      : null,
+  );
+  useUiLatencyDestination(isSettingsOpen ? settingsViewRef.current : null);
+
+  const closeSettings = useCallback((trigger: UiLatencyTrigger = 'programmatic') => {
+    if (!isSettingsOpen) return;
+    beginCurrentUiTransition('main.history', trigger);
+    setIsSettingsOpen(false);
+  }, [isSettingsOpen]);
+
+  const openSettings = useCallback((trigger: UiLatencyTrigger = 'programmatic') => {
+    if (isSettingsOpen) return;
+    beginCurrentUiTransition(settingsViewRef.current, trigger);
+    setIsSettingsOpen(true);
+  }, [isSettingsOpen]);
+
   // Bumped to move focus into the history search box (command palette action).
   const [historySearchToken, setHistorySearchToken] = useState<number | undefined>(undefined);
-  const focusHistorySearch = useCallback(() => {
-    setIsSettingsOpen(false);
+  const focusHistorySearch = useCallback((trigger: UiLatencyTrigger = 'programmatic') => {
+    closeSettings(trigger);
     setHistorySearchToken((token) => (token ?? 0) + 1);
-  }, []);
+  }, [closeSettings]);
 
   const fileTranscription = useFileTranscription({ addEntry });
   const pickAudioFiles = useCallback(async () => {
@@ -307,13 +349,19 @@ function App() {
   }, [fileTranscription.enqueue]);
 
   // Overlay gear button asks the main window to open the Settings panel.
-  const openSettings = useCallback(() => setIsSettingsOpen(true), []);
-  useOpenSettingsListener(openSettings);
+  const openSettingsFromOverlay = useCallback(() => openSettings('programmatic'), [openSettings]);
+  useOpenSettingsListener(openSettingsFromOverlay);
+
+  const rerunSetup = useCallback(() => {
+    setIsSettingsOpen(false);
+    resetOnboarding();
+    setOnboardingState('needed');
+  }, []);
 
   // ---- Command palette (⌘K) ----------------------------------------------
   const [isPaletteOpen, setIsPaletteOpen] = useState(false);
-  const [settingsPageRequest, setSettingsPageRequest] = useState<{ page: string; token: number } | null>(null);
   const openSettingsPage = useCallback((page: string) => {
+    beginCurrentUiTransition(settingsLatencyView(page), 'programmatic');
     setSettingsPageRequest((previous) => ({ page, token: (previous?.token ?? 0) + 1 }));
     setIsSettingsOpen(true);
   }, []);
@@ -324,13 +372,13 @@ function App() {
       if (!shortcut) return;
       event.preventDefault();
       if (shortcut === 'palette') setIsPaletteOpen((open) => !open);
-      else if (shortcut === 'search') { setIsPaletteOpen(false); focusHistorySearch(); }
-      else if (shortcut === 'settings') { setIsPaletteOpen(false); setIsSettingsOpen(true); }
+      else if (shortcut === 'search') { setIsPaletteOpen(false); focusHistorySearch('keyboard'); }
+      else if (shortcut === 'settings') { setIsPaletteOpen(false); openSettings('keyboard'); }
       else openSettingsPage('performance');
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [focusHistorySearch, openSettingsPage]);
+  }, [focusHistorySearch, openSettings, openSettingsPage]);
 
   const commands = useMemo<PaletteCommand[]>(() => {
     const isRecording = status === 'recording' || status === 'starting';
@@ -394,7 +442,7 @@ function App() {
         title: 'Show transcription history',
         section: 'Navigation',
         keywords: ['record', 'main'],
-        run: () => setIsSettingsOpen(false),
+        run: () => closeSettings('programmatic'),
       },
       ...SETTINGS_CATEGORIES.map((category) => ({
         id: `settings-${category.id}`,
@@ -435,7 +483,7 @@ function App() {
     return items;
   }, [
     status, historyEntries, settings.disabled, updateSettings, handleStart, handleStop,
-    focusHistorySearch, openSettingsPage, checkForUpdate, setShowAbout, pickAudioFiles,
+    focusHistorySearch, openSettingsPage, closeSettings, checkForUpdate, setShowAbout, pickAudioFiles,
   ]);
 
   const error = initError || recordingError;
@@ -478,9 +526,13 @@ function App() {
         recordingMode={settings.recordingMode}
         onRecord={handleStart}
         onStop={handleStop}
-        onOpenSettings={() => setIsSettingsOpen((open) => !open)}
+        onOpenSettings={() => {
+          if (isSettingsOpen) closeSettings('pointer');
+          else openSettings('pointer');
+        }}
         settingsOpen={isSettingsOpen}
         mode={isSettingsOpen ? 'settings' : 'main'}
+        buildBadge={PERFORMANCE_BUILD_BADGE}
         updateIndicator={(
           <UpdateIndicator
             status={updateStatus}
@@ -492,8 +544,12 @@ function App() {
 
       <PermissionsBanner />
 
-      <div className="flex min-h-0 flex-1 overflow-hidden">
-        <main className={`relative min-h-0 flex-1 flex-col overflow-hidden ${isSettingsOpen ? 'hidden' : 'flex'}`}>
+      <div className="relative min-h-0 flex-1 overflow-hidden">
+        <main
+          aria-hidden={isSettingsOpen}
+          {...(isSettingsOpen ? { inert: '' } : {})}
+          className={`ui-persistent-surface absolute inset-0 flex min-h-0 flex-col overflow-hidden ${isSettingsOpen ? 'pointer-events-none opacity-0' : 'opacity-100'}`}
+        >
           <TranscriptionView
             historyEntries={historyEntries}
             onClearHistory={clearHistory}
@@ -526,29 +582,34 @@ function App() {
           />
         </main>
 
-        {isSettingsOpen && (
-        <SettingsPanel
-          isOpen={isSettingsOpen}
-          onClose={() => setIsSettingsOpen(false)}
-          settings={settings}
-          onUpdateSettings={updateSettings}
-          status={status}
-          onResetStats={handleResetStats}
-          onRerunSetup={() => {
-            setIsSettingsOpen(false);
-            resetOnboarding();
-            setOnboardingState('needed');
-          }}
-          accessibilityGranted={accessibilityGranted}
-          onCheckForUpdate={checkForUpdate}
-          updateStatus={updateStatus}
-          configureError={configureError}
-          pageRequest={settingsPageRequest}
-        />
-        )}
+        <section
+          aria-hidden={!isSettingsOpen}
+          {...(!isSettingsOpen ? { inert: '' } : {})}
+          className={`ui-persistent-surface absolute inset-0 flex min-h-0 overflow-hidden ${isSettingsOpen ? 'opacity-100' : 'pointer-events-none opacity-0'}`}
+        >
+          <SettingsPanel
+            settings={settings}
+            onUpdateSettings={updateSettings}
+            status={status}
+            onResetStats={handleResetStats}
+            onRerunSetup={rerunSetup}
+            accessibilityGranted={accessibilityGranted}
+            onCheckForUpdate={checkForUpdate}
+            updateStatus={updateStatus}
+            configureError={configureError}
+            pageRequest={settingsPageRequest}
+            onLatencyViewChange={trackSettingsView}
+            activeRef={settingsActiveRef}
+          />
+        </section>
       </div>
 
-      {!isSettingsOpen && <FooterStats statsVersion={combinedStatsVersion} />}
+      <div
+        aria-hidden={isSettingsOpen}
+        className={`shrink-0 ${isSettingsOpen ? 'pointer-events-none opacity-0' : 'opacity-100'}`}
+      >
+        <FooterStats statsVersion={combinedStatsVersion} />
+      </div>
 
       <CommandPalette
         isOpen={isPaletteOpen}

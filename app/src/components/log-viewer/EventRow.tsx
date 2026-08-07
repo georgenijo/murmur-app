@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import type { AppEvent } from '../../lib/events';
 import { STREAM_COLORS, LEVEL_COLORS } from '../../lib/events';
 import type { StreamName, LevelName } from '../../lib/events';
@@ -7,7 +7,7 @@ interface EventRowProps {
   event: AppEvent;
 }
 
-export function EventRow({ event }: EventRowProps) {
+export const EventRow = memo(function EventRow({ event }: EventRowProps) {
   const [expanded, setExpanded] = useState(false);
   const streamColors = STREAM_COLORS[event.stream as StreamName] ?? STREAM_COLORS.system;
   const levelColor = LEVEL_COLORS[event.level as LevelName] ?? LEVEL_COLORS.info;
@@ -18,9 +18,9 @@ export function EventRow({ event }: EventRowProps) {
 
   return (
     <div
-      className={event.level === 'error'
+      className={`diagnostic-event-row ${event.level === 'error'
         ? 'border-l-4 border-error bg-surface-container-lowest'
-        : ''}
+        : ''}`}
     >
       <div
         className={`grid grid-cols-[88px_52px_88px_minmax(0,1fr)] items-baseline gap-2 px-3 py-1.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary ${hasData ? 'cursor-pointer hover:bg-surface-container-low' : ''}`}
@@ -66,4 +66,4 @@ export function EventRow({ event }: EventRowProps) {
       )}
     </div>
   );
-}
+});

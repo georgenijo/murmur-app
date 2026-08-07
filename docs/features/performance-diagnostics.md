@@ -133,6 +133,7 @@ There is no network upload or remote telemetry.
 | `get_performance_run` | Read one V1 run by opaque ID |
 | `get_performance_resource_window` | Read the persistent ten-minute sample window |
 | `clear_performance_diagnostics` | Clear only the diagnostics database |
+| `show_diagnostics_window` | Show the persistent pop-out on an exact allowlisted tab |
 | `performance-run-completed` | Live typed completion event |
 | `performance-resource-sample` | Live typed one-second sample event |
 
@@ -143,6 +144,12 @@ bounded records directly, then uses `get_performance_run` for detail. Its phase
 waterfall preserves canonical stage order and availability but does not infer
 absolute offsets that V1 does not record. Correlated Events navigation matches
 the structured canonical correlation field rather than parsing event summaries.
+
+Every Diagnostics tab has a **Pop out** action. It opens the persistent
+Diagnostics window on the currently selected tab, allowing the main window to
+remain navigable while events, resource samples, and UI latency samples update.
+Closing the pop-out hides it so opening it again avoids another WebView cold
+start.
 
 ## Capture startup health
 
@@ -158,3 +165,39 @@ behavior. It accepts only the stable `auhal` and `cpal` backend labels and exact
 event codes (plus exact historical summaries); it never reads device labels,
 UIDs, transcript content, or free-form errors. Fewer than five successful
 captures is reported as insufficient data rather than healthy or degraded.
+
+## UI navigation latency
+
+The Diagnostics **Latency** tab records content-free frontend transitions
+separately from the Rust-owned pipeline run store. A transition begins in the
+interaction handler before its React state update. It records:
+
+- time to the destination's React layout-effect commit;
+- time to the first `requestAnimationFrame`, the primary JS-visible response
+  metric after the compositor-only History/Settings swap;
+- the observed interval between the first and second animation frames, used to
+  expose missed frames and display scheduling differences;
+- time to a second `requestAnimationFrame`, used as the stable painted-frame
+  proxy retained for regression continuity;
+- the source and destination view IDs plus pointer, keyboard, or programmatic
+  trigger;
+- the app version, Git revision (including a dirty-worktree marker), and
+  development/release build mode. `MURMUR_BUILD_ID` can override the revision
+  label for named before/after profiling runs.
+
+Murmur also emits User Timing marks and measures for each completed transition,
+so the same route is visible in a Web Inspector performance recording.
+
+The newest 500 V1 samples are retained in local WebView storage under
+`murmur-ui-latency-v1`. Samples contain no transcript text, settings values,
+paths, app identities, search text, or free-form errors. The Latency workspace
+groups exact route edges and reports count, median commit, median/P95 first
+frame, median frame count, and paint-proxy summaries. Build filtering and JSON
+copy support local before/after comparisons. Clear removes only UI latency
+samples.
+
+The inline Advanced Diagnostics workspace is mounted only while its disclosure
+is open. Its event and performance subscriptions are disabled while inactive,
+the full bounded event buffer remains available for filtering and copying, and
+only the newest 100 matching rows are rendered. This keeps the hidden Settings
+surface quiet without changing the persistent pop-out window's live behavior.

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
 import {
@@ -42,13 +42,17 @@ import {
 import type { DictationStatus } from '../../lib/types';
 import type { UpdateStatus } from '../../lib/updater';
 import { isNotchPillInstalled } from '../../lib/dictation';
+import { beginCurrentUiTransition, useUiLatencyDestination } from '../../lib/uiLatency';
 import { Select } from '../ui/Select';
 import { AppOverridesEditor } from './AppOverridesEditor';
 import { AppearanceSettings } from './AppearanceSettings';
 import { PerformanceLab } from './PerformanceLab';
 import { SettingsSection } from './SettingsSection';
 import { SettingsEditorsWindow, type SettingsEditorTab } from './SettingsEditorsWindow';
-import { DiagnosticsWorkspace } from '../log-viewer/DiagnosticsWorkspace';
+import {
+  DiagnosticsWorkspace,
+  type DiagnosticsTab,
+} from '../log-viewer/DiagnosticsWorkspace';
 
 function Toggle({ label, checked, onChange, disabled = false }: {
   label: string;
@@ -138,9 +142,14 @@ function VadSensitivitySlider({ value, onCommit }: { value: number; onCommit: (v
   );
 }
 
+function sameAudioDevices(left: AudioDeviceDescriptor[], right: AudioDeviceDescriptor[]): boolean {
+  return left.length === right.length
+    && left.every((device, index) => (
+      device.id === right[index]?.id && device.name === right[index]?.name
+    ));
+}
+
 interface SettingsPanelProps {
-  isOpen: boolean;
-  onClose: () => void;
   settings: Settings;
   onUpdateSettings: (updates: Partial<Settings>) => void;
   status: DictationStatus;
@@ -153,6 +162,9 @@ interface SettingsPanelProps {
   /** Page to show, from the command palette. The token makes a repeat request
    *  for the page you are already on still register. */
   pageRequest?: { page: string; token: number } | null;
+  onLatencyViewChange?: (view: string) => void;
+  /** Stable ref avoids re-rendering the warm Settings tree when its surface is hidden. */
+  activeRef?: React.RefObject<boolean>;
 }
 
 export const SETTINGS_CATEGORIES = [
@@ -171,6 +183,11 @@ export function resolvePage(page: string | undefined): string {
   if (page === 'text-vocabulary' || page === 'transform') return 'text';
   if (page === 'appearance' || page === 'general') return 'app';
   return SETTINGS_CATEGORIES[0].id;
+}
+
+export function settingsLatencyView(page: string | undefined): string {
+  if (page === 'performance') return 'settings.model.diagnostics';
+  return `settings.${resolvePage(page)}`;
 }
 
 const SETTINGS_SEARCH_ITEMS = [
@@ -213,8 +230,7 @@ export function fileOutputDeliveryDescription(settings: Pick<Settings, 'autoPast
     : 'Clipboard copying stays on; auto-paste remains off.';
 }
 
-export function SettingsPanel({
-  isOpen,
+export const SettingsPanel = memo(function SettingsPanel({
   settings,
   onUpdateSettings,
   status,
@@ -225,12 +241,24 @@ export function SettingsPanel({
   updateStatus,
   configureError,
   pageRequest = null,
+  onLatencyViewChange,
+  activeRef,
 }: SettingsPanelProps) {
-  const { byName: runtimeByName } = useModelRuntimeCatalog(isOpen);
+  const { byName: runtimeByName } = useModelRuntimeCatalog();
   const [activeCat, setActiveCat] = useState<string>(() => resolvePage(pageRequest?.page));
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(pageRequest?.page === 'performance');
+  const [diagnosticsWindowError, setDiagnosticsWindowError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [editorTab, setEditorTab] = useState<SettingsEditorTab | null>(null);
+  const latencyView = editorTab
+    ? `settings.text.editor.${editorTab}`
+    : diagnosticsOpen && activeCat === 'model'
+      ? 'settings.model.diagnostics'
+      : `settings.${activeCat}`;
+  useUiLatencyDestination(activeRef?.current === false ? null : latencyView);
+  useLayoutEffect(() => {
+    onLatencyViewChange?.(latencyView);
+  }, [latencyView, onLatencyViewChange]);
   const searchResults = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
     if (!query) return [];
@@ -251,10 +279,7 @@ export function SettingsPanel({
   const confirmResetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => { void getVersion().then(setVersion); }, []);
-  useEffect(() => {
-    if (!isOpen) setEditorTab(null);
-  }, [isOpen]);
-  useEffect(() => { contentRef.current?.scrollTo({ top: 0 }); }, [activeCat, editorTab]);
+  useLayoutEffect(() => { contentRef.current?.scrollTo({ top: 0 }); }, [activeCat, editorTab]);
   useEffect(() => () => {
     if (confirmResetTimeoutRef.current) clearTimeout(confirmResetTimeoutRef.current);
   }, []);
@@ -292,11 +317,23 @@ export function SettingsPanel({
     onUpdateSettings({ codeVocabFolder: '', codeVocabLastScan: null });
   };
   const openEditor = useCallback((tab: SettingsEditorTab) => {
+    beginCurrentUiTransition(`settings.text.editor.${tab}`, 'pointer');
     setActiveCat('text');
     setSearchQuery('');
     setEditorTab(tab);
   }, []);
-  const closeEditor = useCallback(() => setEditorTab(null), []);
+  const closeEditor = useCallback(() => {
+    beginCurrentUiTransition('settings.text', 'programmatic');
+    setEditorTab(null);
+  }, []);
+  const popOutDiagnostics = useCallback(async (tab: DiagnosticsTab) => {
+    setDiagnosticsWindowError(null);
+    try {
+      await invoke('show_diagnostics_window', { tab });
+    } catch {
+      setDiagnosticsWindowError('Diagnostics could not be opened in a separate window.');
+    }
+  }, []);
 
   const selectedRuntime = runtimeByName.get(settings.model);
   const modelAvailable = selectedRuntime ? selectedRuntime.installState === 'installed' : null;
@@ -342,29 +379,75 @@ export function SettingsPanel({
 
   const [audioDevices, setAudioDevices] = useState<AudioDeviceDescriptor[]>([]);
   useEffect(() => {
-    if (!isOpen) return;
-    invoke<AudioDeviceDescriptor[]>('list_audio_devices').then(setAudioDevices).catch(() => setAudioDevices([]));
-  }, [isOpen]);
+    let cancelled = false;
+    const refresh = () => {
+      invoke<AudioDeviceDescriptor[]>('list_audio_devices')
+        .then((devices) => {
+          if (!cancelled) {
+            setAudioDevices((current) => sameAudioDevices(current, devices) ? current : devices);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) setAudioDevices((current) => current.length === 0 ? current : []);
+        });
+    };
+    refresh();
+    return () => { cancelled = true; };
+  }, []);
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = () => {
+      if (activeRef && !activeRef.current) return;
+      invoke<AudioDeviceDescriptor[]>('list_audio_devices')
+        .then((devices) => {
+          if (!cancelled) {
+            setAudioDevices((current) => sameAudioDevices(current, devices) ? current : devices);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) setAudioDevices((current) => current.length === 0 ? current : []);
+        });
+    };
+    window.addEventListener('focus', refresh);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('focus', refresh);
+    };
+  }, [activeRef]);
 
   const [notchPillInstalled, setNotchPillInstalled] = useState(false);
   useEffect(() => {
-    if (!isOpen) {
-      setNotchPillInstalled(false);
-      return;
-    }
-
     let cancelled = false;
-    isNotchPillInstalled()
-      .then((installed) => {
-        if (!cancelled) setNotchPillInstalled(installed);
-      })
-      .catch(() => {
-        if (!cancelled) setNotchPillInstalled(false);
-      });
+    const refresh = () => {
+      isNotchPillInstalled()
+        .then((installed) => {
+          if (!cancelled) setNotchPillInstalled(installed);
+        })
+        .catch(() => {
+          if (!cancelled) setNotchPillInstalled(false);
+        });
+    };
+    refresh();
+    return () => { cancelled = true; };
+  }, []);
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = () => {
+      if (activeRef && !activeRef.current) return;
+      isNotchPillInstalled()
+        .then((installed) => {
+          if (!cancelled) setNotchPillInstalled(installed);
+        })
+        .catch(() => {
+          if (!cancelled) setNotchPillInstalled(false);
+        });
+    };
+    window.addEventListener('focus', refresh);
     return () => {
       cancelled = true;
+      window.removeEventListener('focus', refresh);
     };
-  }, [isOpen]);
+  }, [activeRef]);
 
   // ---- Transform model block (#312 D1) ------------------------------------
   const [transformModel, setTransformModel] = useState<TransformModelStatus | null>(null);
@@ -384,12 +467,11 @@ export function SettingsPanel({
   }, []);
 
   useEffect(() => {
-    if (!isOpen || activeCat !== 'text') return;
+    if (activeCat !== 'text') return;
     void refreshTransformModel();
-  }, [isOpen, activeCat, refreshTransformModel]);
+  }, [activeCat, refreshTransformModel]);
 
   useEffect(() => {
-    if (!isOpen) return;
     let unlisten: (() => void) | null = null;
     listen<{ received?: number; total?: number }>(
       'transform-model-download-progress',
@@ -406,7 +488,7 @@ export function SettingsPanel({
     return () => {
       unlisten?.();
     };
-  }, [isOpen]);
+  }, []);
 
   const updateTransformHoldKey = async (next: TransformKey | null) => {
     setTransformKeyError(null);
@@ -542,6 +624,7 @@ export function SettingsPanel({
                 type="button"
                 aria-current={activeCat === category.id ? 'page' : undefined}
                 onClick={() => {
+                  beginCurrentUiTransition(`settings.${category.id}`, 'pointer');
                   setActiveCat(category.id);
                   setDiagnosticsOpen(false);
                   setEditorTab(null);
@@ -591,6 +674,10 @@ export function SettingsPanel({
                       key={`${result.tab}-${result.title}`}
                       type="button"
                       onClick={() => {
+                        const destination = result.title === 'Diagnostics'
+                          ? 'settings.model.diagnostics'
+                          : `settings.${result.tab}`;
+                        beginCurrentUiTransition(destination, 'pointer');
                         setActiveCat(result.tab);
                         setDiagnosticsOpen(result.title === 'Diagnostics');
                         setSearchQuery('');
@@ -920,7 +1007,11 @@ export function SettingsPanel({
               <summary
                 onClick={(event) => {
                   event.preventDefault();
-                  setDiagnosticsOpen((open) => !open);
+                  beginCurrentUiTransition(
+                    diagnosticsOpen ? 'settings.model' : 'settings.model.diagnostics',
+                    'pointer',
+                  );
+                  setDiagnosticsOpen(!diagnosticsOpen);
                 }}
                 className="flex cursor-pointer list-none items-center justify-between rounded-lg px-1 py-1 text-sm font-semibold text-on-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
               >
@@ -930,9 +1021,19 @@ export function SettingsPanel({
               <p className="mt-1 text-xs text-on-surface-variant">
                 Advanced local troubleshooting data. Transcript content is excluded unless you explicitly arm a capture.
               </p>
-              <div className="mt-3 h-[520px] min-h-0 overflow-hidden rounded-xl border border-outline-variant/25 bg-surface-container-lowest">
-                <DiagnosticsWorkspace />
-              </div>
+              {diagnosticsOpen && (
+                <div className="mt-3 h-[520px] min-h-0 overflow-hidden rounded-xl border border-outline-variant/25 bg-surface-container-lowest">
+                  <DiagnosticsWorkspace
+                    active
+                    onPopOut={(tab) => { void popOutDiagnostics(tab); }}
+                  />
+                </div>
+              )}
+              {diagnosticsWindowError && (
+                <p role="alert" className="mt-2 text-xs text-error">
+                  {diagnosticsWindowError}
+                </p>
+              )}
             </details>
           </SettingsSection>
 
@@ -984,4 +1085,4 @@ export function SettingsPanel({
       </div>
     </div>
   );
-}
+});

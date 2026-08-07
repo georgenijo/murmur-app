@@ -1,1 +1,6 @@
-export { SettingsPanel, SETTINGS_CATEGORIES } from './SettingsPanel';
+export {
+  SettingsPanel,
+  SETTINGS_CATEGORIES,
+  resolvePage,
+  settingsLatencyView,
+} from './SettingsPanel';

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useEventStore } from '../../lib/hooks/useEventStore';
 import { usePerformanceDiagnostics } from '../../lib/hooks/usePerformanceDiagnostics';
 import { usePerformanceHealth } from '../../lib/hooks/usePerformanceHealth';
@@ -9,7 +9,9 @@ import { PerformanceView } from './PerformanceView';
 import { RunsView } from './RunsView';
 import { ReportCompareView } from './ReportCompareView';
 import { TransformDiagnosticsView } from './TransformDiagnosticsView';
+import { LatencyMapView } from './LatencyMapView';
 import { LEVELS, STREAMS, type StreamName, type LevelName } from '../../lib/events';
+import { beginCurrentUiTransition, useUiLatencyDestination } from '../../lib/uiLatency';
 import {
   CORRELATION_FIELD_LABELS,
   formatEventForCopy,
@@ -18,20 +20,37 @@ import {
   type CorrelationFilter,
 } from '../../lib/eventFilters';
 
-type Tab = 'events' | 'performance' | 'runs' | 'transforms' | 'reports';
-const TABS: { id: Tab; label: string }[] = [
+export type DiagnosticsTab = 'events' | 'performance' | 'latency' | 'runs' | 'transforms' | 'reports';
+const MAX_RENDERED_EVENTS = 100;
+const TABS: { id: DiagnosticsTab; label: string }[] = [
   { id: 'events', label: 'Events' },
   { id: 'runs', label: 'Runs' },
   { id: 'performance', label: 'Performance' },
+  { id: 'latency', label: 'Latency' },
   { id: 'reports', label: 'Compare' },
   { id: 'transforms', label: 'Transform' },
 ];
 
-export function DiagnosticsWorkspace() {
-  const { events, clear } = useEventStore();
-  const [tab, setTab] = useState<Tab>('events');
-  const performance = usePerformanceDiagnostics(true);
-  const health = usePerformanceHealth(tab === 'performance');
+export function isDiagnosticsTab(value: string): value is DiagnosticsTab {
+  return TABS.some(tab => tab.id === value);
+}
+
+interface DiagnosticsWorkspaceProps {
+  active?: boolean;
+  requestedTab?: DiagnosticsTab;
+  onPopOut?: (tab: DiagnosticsTab) => void;
+}
+
+export function DiagnosticsWorkspace({
+  active = true,
+  requestedTab,
+  onPopOut,
+}: DiagnosticsWorkspaceProps) {
+  const { events, clear } = useEventStore(active);
+  const [tab, setTab] = useState<DiagnosticsTab>(requestedTab ?? 'events');
+  useUiLatencyDestination(active ? `settings.model.diagnostics.${tab}` : null);
+  const performance = usePerformanceDiagnostics(active);
+  const health = usePerformanceHealth(active && tab === 'performance');
   const [activeStreams, setActiveStreams] = useState<Set<StreamName>>(
     () => new Set(['pipeline', 'audio', 'transform', 'system'])
   );
@@ -44,6 +63,10 @@ export function DiagnosticsWorkspace() {
   );
   const listRef = useRef<HTMLDivElement>(null);
   const autoScrollRef = useRef(true);
+
+  useEffect(() => {
+    if (requestedTab) setTab(requestedTab);
+  }, [requestedTab]);
 
   const toggleStream = useCallback((stream: StreamName) => {
     setActiveStreams(prev => {
@@ -63,18 +86,24 @@ export function DiagnosticsWorkspace() {
     });
   }, []);
 
-  const filteredEvents = events.filter(
+  const filteredEvents = useMemo(() => events.filter(
     e => activeStreams.has(e.stream as StreamName)
       && activeLevels.has(e.level as LevelName)
       && matchesCorrelation(e, correlation)
+  ), [activeLevels, activeStreams, correlation, events]);
+  const renderedEvents = useMemo(
+    () => filteredEvents.slice(-MAX_RENDERED_EVENTS),
+    [filteredEvents],
   );
+  const renderedEventOffset = filteredEvents.length - renderedEvents.length;
 
   // Auto-scroll to bottom when new events arrive
   useEffect(() => {
+    if (!active || tab !== 'events') return;
     if (autoScrollRef.current && listRef.current) {
       listRef.current.scrollTop = listRef.current.scrollHeight;
     }
-  }, [filteredEvents.length]);
+  }, [active, renderedEvents.length, tab]);
 
   const handleScroll = useCallback(() => {
     if (!listRef.current) return;
@@ -111,7 +140,12 @@ export function DiagnosticsWorkspace() {
                 id={`diagnostics-tab-${id}`}
                 aria-controls={`diagnostics-panel-${id}`}
                 aria-selected={tab === id}
-                onClick={() => setTab(id)}
+                onClick={() => {
+                  if (tab !== id) {
+                    beginCurrentUiTransition(`settings.model.diagnostics.${id}`, 'pointer');
+                    setTab(id);
+                  }
+                }}
                 className={`shrink-0 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-[background-color,box-shadow,color] ${
                   tab === id
                     ? 'bg-surface-container-lowest text-on-surface shadow-sm'
@@ -123,8 +157,20 @@ export function DiagnosticsWorkspace() {
             ))}
           </div>
           {/* Actions */}
-          {tab === 'events' && (
+          {(onPopOut || tab === 'events') && (
             <div className="flex flex-wrap gap-2">
+              {onPopOut && (
+                <button
+                  type="button"
+                  onClick={() => onPopOut(tab)}
+                  aria-label="Open Diagnostics in a separate window"
+                  className="rounded-lg border border-outline-variant/10 bg-surface-container-lowest px-3 py-1.5 text-xs font-medium text-on-surface-variant shadow-sm transition-colors hover:bg-surface-container hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                >
+                  <span aria-hidden="true">↗</span> Pop out
+                </button>
+              )}
+              {tab === 'events' && (
+                <>
               <button
                 type="button"
                 onClick={handleCopyAll}
@@ -139,6 +185,8 @@ export function DiagnosticsWorkspace() {
               >
                 Clear Events
               </button>
+                </>
+              )}
             </div>
           )}
         </div>
@@ -197,9 +245,19 @@ export function DiagnosticsWorkspace() {
               No events to display
             </div>
           ) : (
-            filteredEvents.map((event, i) => (
-              <EventRow key={`${event.timestamp}-${i}`} event={event} />
-            ))
+            <>
+              {renderedEvents.length < filteredEvents.length && (
+                <div className="border-b border-outline-variant/15 bg-surface-container-low px-3 py-2 font-sans text-[11px] text-on-surface-variant">
+                  Showing the newest {renderedEvents.length} of {filteredEvents.length} events. Copy includes every filtered event.
+                </div>
+              )}
+              {renderedEvents.map((event, index) => (
+                <EventRow
+                  key={`${event.timestamp}-${renderedEventOffset + index}`}
+                  event={event}
+                />
+              ))}
+            </>
           )}
         </div>
       )}
@@ -220,6 +278,16 @@ export function DiagnosticsWorkspace() {
               health.refresh();
             }}
           />
+        </div>
+      )}
+      {tab === 'latency' && (
+        <div
+          role="tabpanel"
+          id="diagnostics-panel-latency"
+          aria-labelledby="diagnostics-tab-latency"
+          className="flex-1 overflow-y-auto"
+        >
+          <LatencyMapView />
         </div>
       )}
       {tab === 'runs' && (
