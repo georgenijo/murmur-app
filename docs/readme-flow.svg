@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 280" width="1200" height="280" role="img" aria-labelledby="title desc">
+  <title id="title">The Murmur workflow</title>
+  <desc id="desc">Three colorful cards: hold a key, speak naturally, and receive polished text anywhere.</desc>
+  <defs>
+    <linearGradient id="panel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#101b21"/>
+      <stop offset="1" stop-color="#0b1115"/>
+    </linearGradient>
+    <linearGradient id="blue" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#92dbfe"/>
+      <stop offset="1" stop-color="#6ab6ff"/>
+    </linearGradient>
+    <linearGradient id="violet" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#b59cff"/>
+      <stop offset="1" stop-color="#8d72ff"/>
+    </linearGradient>
+    <linearGradient id="green" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#91f0c0"/>
+      <stop offset="1" stop-color="#56cf9a"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-30%" width="140%" height="170%">
+      <feDropShadow dx="0" dy="12" stdDeviation="18" flood-color="#000" flood-opacity=".26"/>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="280" rx="26" fill="#081014"/>
+  <path d="M0 220C180 150 330 300 520 224s330-80 680-10" fill="none" stroke="#92dbfe" stroke-opacity=".06" stroke-width="2"/>
+
+  <g filter="url(#shadow)">
+    <rect x="42" y="34" width="326" height="212" rx="23" fill="url(#panel)" stroke="#92dbfe" stroke-opacity=".2"/>
+    <circle cx="91" cy="83" r="25" fill="url(#blue)"/>
+    <text x="91" y="91" text-anchor="middle" fill="#071114" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="25" font-weight="750">⇧</text>
+    <text x="129" y="76" fill="#70838d" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" letter-spacing="1.6">01</text>
+    <text x="129" y="98" fill="#dce8ed" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="20" font-weight="700">Hold</text>
+    <text x="70" y="147" fill="#f1f7f9" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="28" font-weight="720">Press your key.</text>
+    <text x="70" y="181" fill="#8fa2ab" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="17">No app switching. No text box.</text>
+    <rect x="70" y="203" width="136" height="5" rx="2.5" fill="#92dbfe" opacity=".36"/>
+
+    <rect x="437" y="34" width="326" height="212" rx="23" fill="url(#panel)" stroke="#b59cff" stroke-opacity=".22"/>
+    <circle cx="486" cy="83" r="25" fill="url(#violet)"/>
+    <path d="M476 85v-4m7 10V75m7 20V71m7 18V77" stroke="#100c21" stroke-width="2.8" stroke-linecap="round"/>
+    <text x="524" y="76" fill="#70838d" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" letter-spacing="1.6">02</text>
+    <text x="524" y="98" fill="#dce8ed" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="20" font-weight="700">Speak</text>
+    <text x="465" y="147" fill="#f1f7f9" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="28" font-weight="720">Talk like yourself.</text>
+    <text x="465" y="181" fill="#8fa2ab" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="17">Murmur cleans it up locally.</text>
+    <rect x="465" y="203" width="172" height="5" rx="2.5" fill="#b59cff" opacity=".42"/>
+
+    <rect x="832" y="34" width="326" height="212" rx="23" fill="url(#panel)" stroke="#91f0c0" stroke-opacity=".2"/>
+    <circle cx="881" cy="83" r="25" fill="url(#green)"/>
+    <path d="m870 83 7 7 14-17" fill="none" stroke="#092017" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="919" y="76" fill="#70838d" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" letter-spacing="1.6">03</text>
+    <text x="919" y="98" fill="#dce8ed" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="20" font-weight="700">Release</text>
+    <text x="860" y="147" fill="#f1f7f9" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="28" font-weight="720">Text lands there.</text>
+    <text x="860" y="181" fill="#8fa2ab" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="17">Clipboard first. Auto-paste optional.</text>
+    <rect x="860" y="203" width="206" height="5" rx="2.5" fill="#91f0c0" opacity=".4"/>
+  </g>
+
+  <path d="M383 140h37" stroke="#92dbfe" stroke-opacity=".38" stroke-width="2.5" stroke-linecap="round"/>
+  <path d="m413 133 8 7-8 7" fill="none" stroke="#92dbfe" stroke-opacity=".65" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M778 140h37" stroke="#b59cff" stroke-opacity=".4" stroke-width="2.5" stroke-linecap="round"/>
+  <path d="m808 133 8 7-8 7" fill="none" stroke="#b59cff" stroke-opacity=".68" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

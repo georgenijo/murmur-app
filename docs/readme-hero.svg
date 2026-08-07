@@ -1,0 +1,120 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 560" width="1200" height="560" role="img" aria-labelledby="title desc">
+  <title id="title">Murmur — your voice, already typed</title>
+  <desc id="desc">A colorful Murmur hero graphic showing a local voice waveform becoming polished text.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#071114"/>
+      <stop offset="0.52" stop-color="#0b1218"/>
+      <stop offset="1" stop-color="#111022"/>
+    </linearGradient>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#92dbfe"/>
+      <stop offset="0.52" stop-color="#8ab4ff"/>
+      <stop offset="1" stop-color="#b59cff"/>
+    </linearGradient>
+    <linearGradient id="result" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#91f0c0"/>
+      <stop offset="1" stop-color="#92dbfe"/>
+    </linearGradient>
+    <radialGradient id="glowBlue">
+      <stop offset="0" stop-color="#3cc8ff" stop-opacity=".32"/>
+      <stop offset="1" stop-color="#3cc8ff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowPurple">
+      <stop offset="0" stop-color="#8f6bff" stop-opacity=".28"/>
+      <stop offset="1" stop-color="#8f6bff" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="20" stdDeviation="24" flood-color="#000" flood-opacity=".42"/>
+    </filter>
+    <filter id="soft" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="18"/>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="560" rx="34" fill="url(#bg)"/>
+  <circle cx="160" cy="80" r="270" fill="url(#glowBlue)"/>
+  <circle cx="1050" cy="500" r="330" fill="url(#glowPurple)"/>
+  <path d="M0 465 C250 390 385 555 635 475 S965 350 1200 438 V560 H0Z" fill="#92dbfe" opacity=".025"/>
+  <path d="M0 500 C250 425 405 580 660 505 S980 385 1200 470" fill="none" stroke="#92dbfe" stroke-opacity=".12" stroke-width="2"/>
+
+  <!-- Left: brand and promise -->
+  <g transform="translate(72 66)">
+    <g>
+      <rect width="54" height="54" rx="17" fill="url(#brand)"/>
+      <path d="M16 29v-4M22 35V19M28 39V15M34 34V20M40 29v-4" stroke="#081015" stroke-width="3.4" stroke-linecap="round"/>
+      <text x="72" y="36" fill="#dbe4e9" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="21" font-weight="750" letter-spacing="5">MURMUR</text>
+    </g>
+
+    <text x="0" y="150" fill="#f3f8fa" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="66" font-weight="780" letter-spacing="-2.5">Your voice.</text>
+    <text x="0" y="220" fill="url(#brand)" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="66" font-weight="780" letter-spacing="-2.5">Already typed.</text>
+    <text x="2" y="274" fill="#aab9c0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="22">Hold a key. Speak naturally. Keep moving.</text>
+
+    <g transform="translate(0 324)">
+      <rect width="188" height="42" rx="21" fill="#92dbfe" fill-opacity=".11" stroke="#92dbfe" stroke-opacity=".35"/>
+      <circle cx="22" cy="21" r="5" fill="#82e6b0"/>
+      <text x="37" y="27" fill="#caeefd" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="14" font-weight="650" letter-spacing=".8">LOCAL INFERENCE</text>
+      <rect x="202" width="152" height="42" rx="21" fill="#b59cff" fill-opacity=".1" stroke="#b59cff" stroke-opacity=".3"/>
+      <path d="M224 14v14M218 21h12" stroke="#c7b7ff" stroke-width="2.4" stroke-linecap="round"/>
+      <text x="240" y="27" fill="#ded5ff" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="14" font-weight="650">NO API KEYS</text>
+    </g>
+
+    <text x="2" y="417" fill="#62747d" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14" letter-spacing="1.2">CORE ML  ·  METAL  ·  CPU</text>
+  </g>
+
+  <!-- Right: voice becomes text -->
+  <g filter="url(#shadow)">
+    <rect x="690" y="54" width="438" height="452" rx="27" fill="#111b21" stroke="#92dbfe" stroke-opacity=".18"/>
+    <rect x="691" y="55" width="436" height="52" rx="26" fill="#172229"/>
+    <path d="M691 82h436" stroke="#92dbfe" stroke-opacity=".09"/>
+    <circle cx="720" cy="81" r="5" fill="#ff6b6b"/>
+    <circle cx="739" cy="81" r="5" fill="#f4bd65"/>
+    <circle cx="758" cy="81" r="5" fill="#75d79d"/>
+    <rect x="975" y="67" width="126" height="28" rx="14" fill="#82e6b0" fill-opacity=".09"/>
+    <circle cx="992" cy="81" r="4" fill="#82e6b0"/>
+    <text x="1003" y="86" fill="#a5e8c1" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="650">ON DEVICE</text>
+  </g>
+
+  <g transform="translate(728 136)">
+    <text x="0" y="18" fill="#70828b" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" letter-spacing="1.5">LISTENING</text>
+    <g transform="translate(0 42)">
+      <rect x="0" y="43" width="10" height="34" rx="5" fill="#92dbfe" opacity=".35"/>
+      <rect x="19" y="26" width="10" height="68" rx="5" fill="#92dbfe" opacity=".55"/>
+      <rect x="38" y="8" width="10" height="104" rx="5" fill="#92dbfe" opacity=".8"/>
+      <rect x="57" y="33" width="10" height="54" rx="5" fill="#92dbfe" opacity=".62"/>
+      <rect x="76" y="17" width="10" height="86" rx="5" fill="#9fc5ff" opacity=".86"/>
+      <rect x="95" y="0" width="10" height="120" rx="5" fill="#b59cff"/>
+      <rect x="114" y="23" width="10" height="74" rx="5" fill="#9fc5ff" opacity=".88"/>
+      <rect x="133" y="36" width="10" height="48" rx="5" fill="#92dbfe" opacity=".64"/>
+      <rect x="152" y="15" width="10" height="90" rx="5" fill="#92dbfe" opacity=".82"/>
+      <rect x="171" y="29" width="10" height="62" rx="5" fill="#92dbfe" opacity=".55"/>
+      <rect x="190" y="45" width="10" height="30" rx="5" fill="#92dbfe" opacity=".35"/>
+    </g>
+
+    <g transform="translate(0 190)">
+      <path d="M0 0h362" stroke="#92dbfe" stroke-opacity=".1"/>
+      <circle cx="16" cy="36" r="16" fill="url(#result)"/>
+      <path d="m9 36 5 5 10-11" fill="none" stroke="#092019" stroke-width="2.7" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="44" y="31" fill="#6e848e" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" letter-spacing="1.4">DELIVERED</text>
+      <text x="44" y="56" fill="#e4edf1" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="19" font-weight="600">Ship the release after CI is green.</text>
+      <rect x="44" y="75" width="272" height="7" rx="3.5" fill="#dbe4e9" opacity=".12"/>
+      <rect x="44" y="92" width="196" height="7" rx="3.5" fill="#dbe4e9" opacity=".08"/>
+    </g>
+
+    <g transform="translate(0 342)">
+      <rect width="362" height="58" rx="15" fill="#92dbfe" fill-opacity=".06" stroke="#92dbfe" stroke-opacity=".12"/>
+      <text x="18" y="24" fill="#70828b" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" letter-spacing="1.3">HOLD</text>
+      <rect x="18" y="31" width="40" height="19" rx="6" fill="#dbe4e9" fill-opacity=".12"/>
+      <text x="31" y="45" fill="#c5d3d9" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12">⇧</text>
+      <path d="M82 29h30" stroke="#92dbfe" stroke-opacity=".28" stroke-width="2" stroke-linecap="round"/>
+      <path d="m106 24 7 5-7 5" fill="none" stroke="#92dbfe" stroke-opacity=".55" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="132" y="24" fill="#70828b" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" letter-spacing="1.3">SPEAK</text>
+      <path d="M134 41h4m5-6v12m5-18v24m5-14v4m5-9v14" stroke="#b59cff" stroke-width="2.4" stroke-linecap="round"/>
+      <path d="M188 29h30" stroke="#92dbfe" stroke-opacity=".28" stroke-width="2" stroke-linecap="round"/>
+      <path d="m212 24 7 5-7 5" fill="none" stroke="#92dbfe" stroke-opacity=".55" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="238" y="24" fill="#70828b" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" letter-spacing="1.3">RELEASE</text>
+      <rect x="238" y="31" width="106" height="19" rx="9.5" fill="#82e6b0" fill-opacity=".11"/>
+      <text x="250" y="45" fill="#9ee7bc" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11" font-weight="650">TEXT IS READY</text>
+    </g>
+  </g>
+</svg>

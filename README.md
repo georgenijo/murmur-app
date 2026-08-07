@@ -1,139 +1,309 @@
-<picture><source media="(prefers-color-scheme: dark)" srcset="docs/banner-dark.svg"><img src="docs/banner.svg" alt="murmur — Local voice-to-text for macOS" width="100%"></picture>
+<p align="center">
+  <img src="docs/readme-hero.svg" alt="Murmur — your voice, already typed" width="100%">
+</p>
 
-# Murmur
+<p align="center">
+  <a href="https://github.com/georgenijo/murmur-app/releases/latest"><img alt="Download Murmur for macOS" src="https://img.shields.io/badge/Download_for_macOS-14%2B-92DBFE?style=for-the-badge&amp;logo=apple&amp;logoColor=081015"></a>
+  <a href="#build-from-source"><img alt="Build from source" src="https://img.shields.io/badge/Build_from_source-Rust_%2B_React-B59CFF?style=for-the-badge&amp;logo=rust&amp;logoColor=white"></a>
+</p>
 
-Privacy-first voice-to-text for macOS. Hold a key, speak, release — your words land in any app. No cloud, no subscriptions — audio and your words never leave your machine.
+<p align="center">
+  <a href="https://github.com/georgenijo/murmur-app/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/georgenijo/murmur-app?color=91f0c0"></a>
+  <a href="https://github.com/georgenijo/murmur-app/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/georgenijo/murmur-app/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-8ab4ff.svg"></a>
+</p>
 
-Built with [Tauri 2](https://tauri.app/) (Rust + React), with local transcription through Core ML on the Apple Neural Engine, whisper.cpp on Metal, or sherpa-onnx on CPU.
+<p align="center">
+  <strong>No cloud inference. No API keys. No subscription.</strong><br>
+  <sub>Speech and rewriting stay on your machine. Release builds send privacy-stripped diagnostic metadata by default—never audio or text. <a href="#privacy-without-the-hand-waving">Details and opt-out.</a></sub>
+</p>
 
-## Features
+## Talk. Don't type.
 
-- **100% local speech and text** — transcription, text rewriting, and benchmarking all run on-device. Audio and your words never leave the machine
-- **Diagnostics upload** — privacy-stripped event logs (timing, errors, pipeline stats — never audio or transcription text) upload to the maintainer for debugging, tagged with a random install ID, the Mac's device name, and macOS version. Launch with `MURMUR_LOG_SHIPPER=off` to disable
-- **Apple Neural Engine by default** — multilingual Parakeet v3 through Core ML for very low-latency transcription; other engines a click away
-- **Three recording modes** — Hold Down, Double-Tap, or Both (hold and double-tap on the same key)
-- **Clipboard-first output** — text always copied to the clipboard. Optional auto-paste into your focused app, plus optional transcript/audio file output
-- **Selected-text Transform** — select text anywhere, hold a second key, say "make this shorter", and review a local LLM's proposal before it replaces anything. Never auto-applies
-- **Text that comes out right** — deterministic local cleanup, smart formatting, spoken CLI command grammar, custom vocabulary with sounds-like correction, and typed voice commands with snippets and variables
-- **Learns your terms** — correct a transcription once and teach Murmur the exact replacement, scoped globally, per app, or per project
-- **Per-app profiles** — writing style and delivery behavior per application, resolved once per recording
-- **Floating overlay** — notch-anchored widget with a live waveform and hover quick-settings; never steals focus
-- **Performance Lab** — benchmark installed models on identical speech: latency, realtime factor, memory, and three tiers of word error rate
-- **Diagnostics** — structured event log, bounded local run history, and CPU/memory timelines, all content-free
-- **MIT licensed** — use it, fork it, build on it
+Murmur is the keyboard shortcut for the thought you already finished having.
+Hold a key, say it naturally, and release. Your words show up in the app you
+were already using—cleaned up, copied, and ready to send.
 
-## Installation
+<p align="center">
+  <img src="docs/readme-flow.svg" alt="Hold a key, speak naturally, and release to receive polished text" width="100%">
+</p>
 
-1. Download the latest `.dmg` from the [Releases](https://github.com/georgenijo/murmur-app/releases) page
-2. Open the DMG and drag **Murmur** to your Applications folder
-3. Launch the app — the setup assistant walks you through microphone and Accessibility permissions and downloads a model
+## More than a transcription box
 
-Launch Murmur from Applications. Running a downloaded copy from its disk image
-or another quarantined location can make macOS mount it read-only, which prevents
-in-app updates. If Murmur reports this condition, quit it and use Finder to move
-or reinstall it in Applications before reopening it.
+<table>
+  <tr>
+    <td width="33%" valign="top">
+      <h3>⚡ Feels instant</h3>
+      <p>Parakeet on the Apple Neural Engine by default. The model warms while you speak, not after.</p>
+    </td>
+    <td width="33%" valign="top">
+      <h3>✨ Comes out clean</h3>
+      <p>Filler removal, punctuation, structure, numbers, corrections, and formatting—all deterministic and local.</p>
+    </td>
+    <td width="33%" valign="top">
+      <h3>📋 Works anywhere</h3>
+      <p>Clipboard first, with optional auto-paste. Notes, chat, email, terminals, editors—stay in flow.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="33%" valign="top">
+      <h3>🧠 Learns your language</h3>
+      <p>Teach names, jargon, code symbols, snippets, and per-app writing styles without training a cloud model.</p>
+    </td>
+    <td width="33%" valign="top">
+      <h3>🪄 Rewrites by voice</h3>
+      <p>Select text, say “make this sharper,” review the local LLM's diff, then approve—or don't.</p>
+    </td>
+    <td width="33%" valign="top">
+      <h3>🛡️ Built to fail closed</h3>
+      <p>Secure fields, ambiguous corrections, stale async work, and unknown models are refused instead of guessed.</p>
+    </td>
+  </tr>
+</table>
 
-Requires macOS 14+ on Apple Silicon.
+## The app gets out of your way
 
-### Permissions
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="app/visual-tests/main-window.spec.ts-snapshots/dark-recording-darwin.png">
+  <img src="app/visual-tests/main-window.spec.ts-snapshots/light-recording-darwin.png" alt="Murmur recording in the transcript history workspace" width="100%">
+</picture>
 
-Grant these in **System Settings > Privacy & Security** when prompted:
+The main window is a searchable transcript workspace, not a giant Record
+button. A notch-anchored overlay gives you status, waveform, and quick controls
+without stealing focus. Drag in WAV, MP3, or M4A files when you want the same
+local transcription pipeline without the microphone.
 
-| Permission | Required for |
-|------------|-------------|
-| Microphone | Recording your voice |
-| Accessibility | Keyboard detection, auto-paste, and reading/replacing the selection for Transform |
+## Pick your rhythm
 
-## Models
+| Hold | Tap | Go hands-free |
+|---|---|---|
+| Hold a modifier, speak, release. | Double-tap to start; tap once to stop. | Let trailing silence finish toggle-started recordings. |
 
-Choose a model based on your speed/accuracy tradeoff. Models download automatically on first launch, or you can switch models in Settings at any time.
+Use **Hold Down**, **Double-Tap**, or **Both** on Left Shift, Left Option, or
+Right Control. Murmur rejects modifier-plus-letter shortcuts, long taps, slow
+double-taps, and repeated-key noise so normal typing stays normal.
 
-| Model | Engine | Accelerator | Size | Notes |
-|-------|--------|-------------|------|-------|
-| Parakeet v3 | Core ML | Apple Neural Engine | ~470 MB | Default, multilingual, lowest latency |
-| Parakeet v2 | sherpa-onnx | CPU | ~1.2 GB | English CPU fallback; also the non-Apple-Silicon path |
+## Say it better, without starting over
+
+Selected-text **Transform** turns voice into an editing gesture:
+
+> Select a paragraph → hold the Transform key → say “shorter and more direct” →
+> inspect the word diff → Approve, Retry, Cancel, or Undo.
+
+The pinned Qwen2.5-1.5B model runs in a separately signed, sandboxed llama.cpp
+helper with no network entitlement. It never auto-applies. Secure fields and
+unprovable Accessibility states fail closed.
+
+[See how Transform handles native, browser, and Electron apps →](docs/features/selected-text-transform.md)
+
+## Install in a minute
+
+1. [Download the latest `.dmg`](https://github.com/georgenijo/murmur-app/releases/latest).
+2. Drag **Murmur** into **Applications**.
+3. Launch it. The setup assistant handles Microphone, Accessibility, hotkey
+   choice, and the first local model.
+
+> [!IMPORTANT]
+> Launch Murmur from Applications—not permanently from the disk image. macOS
+> App Translocation can make a quarantined copy read-only and block updates.
+
+| Platform | Experience |
+|---|---|
+| **Apple Silicon · macOS 14+** | Everything: Core ML/ANE, Metal, Transform, native Accessibility, notch overlay, signed updates |
+| **Linux** | `.deb` and AppImage with core dictation through CPU Parakeet or Whisper; macOS-only surfaces and Transform are unavailable |
+| **Intel Mac / Windows** | Not supported |
+
+---
+
+## Go deeper
+
+Everything below is for the curious, the cautious, and the people about to
+open a pull request.
+
+<details>
+<summary><strong>🎛️ Seven local transcription models</strong></summary>
+
+Models install on demand and switch from Settings. Murmur prepares the selected
+model while recording and keeps it warm according to the configured idle policy.
+
+| Model | Runtime | Accelerator | Size | Language |
+|---|---|---:|---:|---|
+| Parakeet TDT 0.6B v3 | FluidAudio / Core ML | Apple Neural Engine | ~470 MB | Multilingual |
+| Parakeet TDT 0.6B v2 | sherpa-onnx | CPU | ~1.2 GB | English |
 | Whisper Tiny | whisper.cpp | Metal GPU | ~75 MB | English |
 | Whisper Base | whisper.cpp | Metal GPU | ~150 MB | English |
 | Whisper Small | whisper.cpp | Metal GPU | ~500 MB | English |
 | Whisper Medium | whisper.cpp | Metal GPU | ~1.5 GB | English |
-| Whisper Large Turbo | whisper.cpp | Metal GPU | ~3 GB | Multilingual |
+| Whisper Large v3 Turbo | whisper.cpp | Metal GPU | ~3 GB | Multilingual |
 
-Open **Settings > Performance** to benchmark installed configurations on your
-machine. Accuracy is measured as word error rate against bundled speech with
-known reference transcripts.
+Parakeet v3 is the Apple Silicon default. **Settings → Model → Benchmark**
+compares installed configurations using latency, real-time factor, memory, and
+raw/normalized/delivered word error rate on your machine.
 
-## Recording Modes
+</details>
 
-Configure in the Settings panel:
+<a id="privacy-without-the-hand-waving"></a>
+<details>
+<summary><strong>🔒 Privacy without the hand-waving</strong></summary>
 
-**Hold Down** — hold a modifier key (Shift, Option, or Control) to record. Release to stop and transcribe.
+Murmur's boundary is based on data type—not a misleading “never touches the
+network” claim.
 
-**Double-Tap** — quickly double-tap a modifier key to start recording. Single tap to stop. The detector rejects held keys, modifier+letter combos, slow taps, and triple-tap spam.
+| Data | What happens |
+|---|---|
+| Microphone audio | Processed locally; never uploaded. Written only when **Save Audio to File** is on |
+| Dictated text | Transcribed and transformed locally; excluded from diagnostic uploads |
+| Selected text, instructions, proposals | Handled by the sandboxed local sidecar; never sent to a hosted model or normal logs |
+| History and usage | Local `localStorage`, with a rolling 200-entry history cap |
+| Knowledge and learned rules | Local SQLite; inspectable, exportable, and deletable in Settings |
+| Performance diagnostics | Content-free, bounded local SQLite history; clearable in Settings |
+| Models and app updates | Downloaded from pinned release/model sources |
 
-**Both** — both gestures on the same key, disambiguated by a 200ms hold-promotion window.
+Production builds upload privacy-stripped structured events for support. They
+include timing, state, stable error codes, pipeline outcomes, a random install
+ID, computer name, macOS version, and bounded hardware facts. They exclude
+audio, transcript text, selected text, rewrite content, knowledge values,
+project paths, and clipboard content. Development builds do not upload.
 
-Transcribed text is always copied to your clipboard. Enable **Auto-Paste** in Settings to have it pasted automatically into your focused app.
+Set `MURMUR_LOG_SHIPPER=off` in Murmur's launch environment to opt out. Detailed
+capture-hang bundles remain dormant unless that specific installation is armed
+with its owner's agreement, and collection is recorded in the local event log.
 
-## Selected-text Transform
+[Full log-shipping contract](docs/features/log-shipping.md) ·
+[Performance diagnostics](docs/features/performance-diagnostics.md)
 
-Select text in any app, hold the transform key (Right Option by default, off until you enable it), and speak an instruction — "make this shorter", "fix grammar", or the name of a preset or saved transform.
+</details>
 
-A local LLM proposes a rewrite in a small popover with a word diff. Nothing is written until you approve, and Undo restores the original. The model is a pinned Qwen2.5-1.5B-Instruct that runs in a separate signed helper process with no network access. Password fields fail closed.
+<details>
+<summary><strong>⚙️ Under the hood</strong></summary>
 
-## Tech Stack
+```text
+Global hotkey
+    │
+    ▼
+Rust/Tauri coordinator ───────► signed capture worker (CPAL / AUHAL)
+    │                                      │
+    │ policy + generation ownership        │ 16 kHz mono PCM
+    │                                      ▼
+    └──────────────► Silero VAD ─► local ASR backend
+                                      │
+                                      ▼
+                         ordered transcript pipeline
+                                      │
+                                      ▼
+                         clipboard ─► paste / files
 
-| Layer | Technology |
-|-------|-----------|
-| App framework | Tauri 2 |
-| Backend | Rust |
-| Frontend | React 18, TypeScript, Tailwind CSS 4 |
-| Transcription | FluidAudio/Core ML, whisper-rs/Metal, sherpa-onnx/CPU |
-| Local rewriting | llama.cpp in a signed sidecar process |
-| Audio capture | cpal |
-| Keyboard listener | rdev |
-| Clipboard | arboard |
-| Auto-paste | CGEvent (osascript fallback) |
-| Local storage | SQLite (rusqlite) |
-| Build tool | Vite 6 |
+Selected text ─► AX capture ─► instruction ASR ─► local-LLM sidecar
+                                                        │
+                                                        ▼
+                                               review ─► approved apply
+```
 
-## Building from Source
+Production microphone ownership is isolated in a signed, killable process. The
+main app owns policy and retained PCM; the worker owns macOS audio objects. A
+blocked Core Audio call can be bounded and its exact process group terminated
+without stale capture work overwriting a newer recording.
+
+Every backend uses one `TranscriptionBackend` interface, then one ordered
+pipeline:
+
+```text
+cleanup → voice commands → smart correction → smart formatting
+        → spoken structure → spoken numbers → IDE context → CLI formatting
+```
+
+Monotonic generation IDs and immutable recording snapshots guard asynchronous
+work. The rewrite LLM remains out of process because llama.cpp and whisper.cpp
+vendor incompatible ggml runtimes.
+
+[Read the architecture guide →](docs/ARCHITECTURE.md)
+
+</details>
+
+<a id="build-from-source"></a>
+<details>
+<summary><strong>🛠️ Build from source</strong></summary>
+
+### Prerequisites
+
+- Apple Silicon Mac with macOS 14+ for the full app
+- Xcode Command Line Tools and [CMake](https://cmake.org/)
+- [Node.js](https://nodejs.org/) 18+, [Rust](https://rustup.rs/) stable, Python 3
 
 ```bash
 git clone https://github.com/georgenijo/murmur-app.git
 cd murmur-app
 
-python3 scripts/build_local_llm_sidecar.py   # required first on macOS
+# Required first on Apple Silicon macOS; builds all four bundled helpers.
+python3 scripts/build_local_llm_sidecar.py
 
 cd app
-npm install
-npm run tauri:dev        # Dev with hot reload and isolated dev bundle/data
-npm run tauri build      # Production .app and .dmg
+npm ci
+npm run tauri:dev
 ```
 
-Requires macOS 14+ on Apple Silicon, [Node.js](https://nodejs.org/) 18+, [Rust](https://rustup.rs/) (latest stable), and Python 3.
+The helpers are gitignored Tauri `externalBin` files. On macOS, a fresh clone
+cannot run `tauri dev`, `tauri build`, `cargo check`, or `cargo test` until they
+exist. Build a production app and DMG with `npm run tauri:build`.
 
-The sidecar step is not optional: the macOS Tauri config declares the sidecar as an `externalBin`, so builds — and even `cargo check` — fail until that binary exists. See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
-
-### Running Tests
+### Test
 
 ```bash
-cd app/src-tauri && cargo test -- --test-threads=1   # Rust unit tests
-cd app && npm test                                    # frontend unit tests
-cd app && npx tsc --noEmit                            # TypeScript type check
+cd app
+npx tsc --noEmit
+npm test
+npx playwright install chromium  # first run only
+npm run test:visual
+
+cd src-tauri
+cargo fmt --all -- --check
+cargo test -- --test-threads=1
+
+cd ../..
+python3 -m unittest discover -s tests
 ```
 
-## Architecture
+Model- and microphone-backed suites are explicit opt-ins. See
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for permissions, integration tests,
+logs, production builds, and troubleshooting.
 
+</details>
+
+<details>
+<summary><strong>🗺️ Repository map</strong></summary>
+
+```text
+murmur-app/
+├── app/
+│   ├── src/                         React UI, hooks, settings, pure logic
+│   └── src-tauri/
+│       ├── src/                     Rust app, capture policy, ASR, transforms
+│       ├── sidecars/capture/        Signed capture helper/worker
+│       ├── sidecars/local-llm/      Sandboxed llama.cpp rewrite helper
+│       ├── crates/                  Versioned helper protocols
+│       └── tests/                   Rust integration suites
+├── bench/                           Speech/accuracy fixtures
+├── docs/                            Architecture, features, ADRs, references
+├── infra/log-receiver/              Privacy-bounded diagnostics receiver
+├── scripts/                         Build, signing, release, and QA tooling
+├── tests/                           Workflow/artifact policy tests
+└── tools/murmur-diag/               Local diagnostics inspection tool
 ```
-Hotkey (rdev) → Audio Capture (cpal) → Transcription Engine → Transcript Pipeline → Clipboard (arboard) → Auto-Paste (CGEvent)
-       ↕                  ↕                     ↕                      ↕                                        ↕
-   Frontend (React) ←——— Tauri IPC ———→ Rust Backend ———→ Tray + Overlay + Transform Popover ———→ LLM Sidecar (separate process)
-```
 
-Transcription engines sit behind one `TranscriptionBackend` trait and one model catalog. Post-recognition text passes through a single ordered pipeline (cleanup → voice commands → correction → formatting → IDE context → CLI). The local rewriting LLM runs out of process, because llama.cpp's ggml ABI clashes with whisper's.
+</details>
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full picture and [docs/FEATURES.md](docs/FEATURES.md) for the feature map.
+## Explore the docs
+
+[**Features**](docs/FEATURES.md) ·
+[**Architecture**](docs/ARCHITECTURE.md) ·
+[**Development**](docs/DEVELOPMENT.md) ·
+[**First run**](docs/onboarding.md) ·
+[**Commands & events**](docs/reference/) ·
+[**Decisions**](docs/decisions/DECISIONS.md) ·
+[**Changelog**](CHANGELOG.md) ·
+[**Releases**](docs/release.md)
 
 ## License
 
-[MIT](LICENSE)
+Murmur is [MIT licensed](LICENSE). Third-party licenses and attributions live
+in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
