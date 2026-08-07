@@ -100,6 +100,17 @@ python3 ~/Library/Application\ Support/Murmur\ Bench/tools/murmur_bench_remote.p
   --machine-label mac-mini
 ```
 
+From any machine with Fleet configured, the repository wrapper supplies those
+trusted Mac Mini paths:
+
+```bash
+python3 scripts/murmur_bench_fleet.py \
+  --baseline origin/main \
+  --candidate origin/my-branch \
+  --preset standard \
+  --models base.en
+```
+
 Both refs must contain the internal harness, so the first completed run of this
 feature establishes the baseline for subsequent commits. Use Quick (5 clips ×
 1) for a fast candidate smoke run, Standard (20 × 1) for routine comparisons,
