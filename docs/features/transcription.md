@@ -96,6 +96,9 @@ Transcription processing is local. Network access occurs for model setup and may
 - A timed-out backend can advance only after its owned helper process group is
   positively confirmed empty. Unconfirmed termination leaves the lifecycle in
   exclusive recovery and suppresses fallback and new starts.
+- If a stop caller times out first, the helper remains exclusively owned until
+  it exits and is joined. That late completion publishes Idle to clear the
+  current dictation's Processing state before a new recording can start.
 - Capture-worker errors are reduced immediately to stable content-free kinds
   (`permission_denied`, `device_unavailable`, `stream_invalidated`,
   `invalid_input`, `resource_exhausted`, and bounded fallback kinds).

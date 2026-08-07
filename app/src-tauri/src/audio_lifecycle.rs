@@ -828,8 +828,16 @@ fn finish_attempt(attempt: &mut Option<Attempt>, sink: &dyn LifecycleSink, publi
     match finished.phase {
         AttemptPhase::Stopping => {
             let samples = take_samples(&mut finished);
-            if let Some(response) = finished.stop_response.take() {
-                let _ = response.send(Ok(samples));
+            let response_delivered = finished
+                .stop_response
+                .take()
+                .is_some_and(|response| response.send(Ok(samples)).is_ok());
+            if !response_delivered {
+                sink.notify(
+                    finished.app_handle.as_ref(),
+                    finished.owner,
+                    AudioLifecycleEvent::Idle,
+                );
             }
         }
         AttemptPhase::Starting => {
@@ -2448,6 +2456,73 @@ mod tests {
             Ok(vec![0.25])
         );
         wait_until("stopping worker was not joined", || {
+            !supervisor.public.is_active()
+        });
+        shutdown(&supervisor);
+    }
+
+    #[test]
+    fn completed_teardown_notifies_idle_when_the_stop_caller_timed_out() {
+        let gate = Gate::closed();
+        let sink = Arc::new(RecordingSink::default());
+        let supervisor = spawn_supervisor(
+            Arc::new(BlockingTeardownFactory { gate: gate.clone() }),
+            sink.clone(),
+            SupervisorConfig::default(),
+        );
+        let owner = AudioOwner::Dictation(99);
+        assert_eq!(start(&supervisor, owner).recv().unwrap(), Ok(()));
+        wait_until("worker never reached recording", || {
+            supervisor.public.is_recording_for(owner)
+        });
+
+        let (response_sender, response_receiver) = mpsc::channel();
+        supervisor
+            .sender
+            .send(SupervisorMessage::Stop {
+                owner: Some(owner),
+                response: response_sender,
+            })
+            .unwrap();
+        drop(response_receiver);
+
+        assert_eq!(
+            start(&supervisor, AudioOwner::Dictation(100))
+                .recv()
+                .unwrap(),
+            Err(AudioStartError::AudioRecovering),
+            "the blocked worker must retain exclusive ownership"
+        );
+
+        gate.open();
+        wait_until("joined teardown did not publish idle", || {
+            sink.events
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(event_owner, event)| {
+                    *event_owner == owner && *event == AudioLifecycleEvent::Idle
+                })
+        });
+        wait_until("stopping worker was not joined", || {
+            !supervisor.public.is_active()
+        });
+
+        let retry_owner = AudioOwner::Dictation(101);
+        assert_eq!(start(&supervisor, retry_owner).recv().unwrap(), Ok(()));
+        wait_until("fresh owner never reached recording", || {
+            supervisor.public.is_recording_for(retry_owner)
+        });
+        let (retry_stop_sender, retry_stop_receiver) = mpsc::channel();
+        supervisor
+            .sender
+            .send(SupervisorMessage::Stop {
+                owner: Some(retry_owner),
+                response: retry_stop_sender,
+            })
+            .unwrap();
+        assert_eq!(retry_stop_receiver.recv().unwrap(), Ok(vec![0.25]));
+        wait_until("retry worker was not joined", || {
             !supervisor.public.is_active()
         });
         shutdown(&supervisor);

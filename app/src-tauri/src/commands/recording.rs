@@ -2427,6 +2427,7 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                     dictation.status,
                     DictationStatus::Starting
                         | DictationStatus::Recording
+                        | DictationStatus::Processing
                         | DictationStatus::Recovering
                 )
             {
@@ -3543,6 +3544,58 @@ mod tests {
                 error_code: StableRunErrorV1::AudioCaptureFailed,
             }
         );
+    }
+
+    #[test]
+    fn idle_after_a_timed_out_stop_clears_processing_for_the_current_recording() {
+        let recording_id = 384;
+        let app_state = AppState::default();
+        app_state.recording_id.store(recording_id, Ordering::SeqCst);
+        app_state.dictation.lock_or_recover().status = DictationStatus::Processing;
+        keyboard::set_processing(true);
+
+        let app = tauri::test::mock_builder()
+            .manage(State {
+                app_state,
+                benchmark: Arc::new(crate::benchmark::BenchmarkCoordinator::new()),
+                knowledge: crate::knowledge_store::KnowledgeStore::default(),
+                correct_and_teach: crate::correct_and_teach::CorrectAndTeachState::default(),
+                performance: crate::performance_metrics::PerformanceMetrics::default(),
+                transform_diagnostics: crate::transform_diagnostics::TransformDiagnostics::default(
+                ),
+                notch_info: std::sync::Mutex::new(None),
+                display_snapshot: std::sync::Mutex::new(None),
+                transform_popover_anchor: std::sync::Mutex::new(None),
+                transform_main_was_visible: std::sync::Mutex::new(None),
+                transform_runtime: Arc::new(crate::llm_sidecar::LlmSidecar::new()),
+            })
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build mock Tauri app");
+        let app_handle = app.handle().clone();
+        let emitted_idle = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        {
+            let emitted_idle = Arc::clone(&emitted_idle);
+            app_handle.listen_any("recording-status-changed", move |event| {
+                if event.payload() == "\"idle\"" {
+                    emitted_idle.store(true, Ordering::SeqCst);
+                }
+            });
+        }
+
+        handle_audio_lifecycle_with(
+            app_handle.clone(),
+            recording_id,
+            AudioLifecycleEvent::Idle,
+            |_, _| {},
+        );
+
+        let state = app_handle.state::<State>();
+        assert_eq!(
+            state.app_state.dictation.lock_or_recover().status,
+            DictationStatus::Idle
+        );
+        assert!(!keyboard::is_processing());
+        assert!(emitted_idle.load(Ordering::SeqCst));
     }
 
     struct RetryTestBackend {
