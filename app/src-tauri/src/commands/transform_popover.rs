@@ -75,7 +75,12 @@ const CENTERED_HEIGHT_FRACTION: f64 = 0.38;
 /// screen's height. `screen_frame` is the *visible* frame — it already
 /// excludes the menu bar / notch band, so clamping `y` to `screen_frame.y`
 /// keeps the popover from ever overlapping that area.
-fn box_for(width: f64, height: f64, selection_bounds: Option<Rect>, screen_frame: Rect) -> PopoverBox {
+fn box_for(
+    width: f64,
+    height: f64,
+    selection_bounds: Option<Rect>,
+    screen_frame: Rect,
+) -> PopoverBox {
     let frame_left = screen_frame.x;
     let frame_right = screen_frame.x + screen_frame.width;
     let frame_top = screen_frame.y;
@@ -103,13 +108,25 @@ fn box_for(width: f64, height: f64, selection_bounds: Option<Rect>, screen_frame
             let max_x = (frame_right - width).max(frame_left);
             x = x.clamp(frame_left, max_x);
 
-            PopoverBox { x, y, width, height, flipped }
+            PopoverBox {
+                x,
+                y,
+                width,
+                height,
+                flipped,
+            }
         }
         None => {
             let x = frame_left + (screen_frame.width - width) / 2.0;
             let center_y = frame_top + screen_frame.height * CENTERED_HEIGHT_FRACTION;
             let y = center_y - height / 2.0;
-            PopoverBox { x, y, width, height, flipped: false }
+            PopoverBox {
+                x,
+                y,
+                width,
+                height,
+                flipped: false,
+            }
         }
     }
 }
@@ -161,7 +178,12 @@ fn visible_frame_for_monitor(
     let width = size.0 / scale_factor;
     let height = size.1 / scale_factor;
     let inset = if is_primary_monitor { menu_bar_h } else { 0.0 };
-    Rect { x, y: y + inset, width, height: (height - inset).max(0.0) }
+    Rect {
+        x,
+        y: y + inset,
+        width,
+        height: (height - inset).max(0.0),
+    }
 }
 
 /// The active screen's visible frame (excluding the cached menu bar / notch
@@ -311,14 +333,14 @@ pub(crate) fn show_popover_internal(
                 "set_size_failed",
                 window.set_size(tauri::LogicalSize::new(target.width, target.height)),
             )
-                .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())?;
             trace_effect_error(
                 transform_pass_id,
                 "show",
                 "set_position_failed",
                 window.set_position(tauri::LogicalPosition::new(target.x, target.y)),
             )
-                .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())?;
             apply_popover_window_treatment(&window, true);
             trace_effect_error(transform_pass_id, "show", "show_failed", window.show())
                 .map_err(|e| e.to_string())?;
@@ -356,18 +378,13 @@ pub(crate) fn hide_popover_internal(app: &tauri::AppHandle) -> Result<(), String
         *state.transform_main_was_visible.lock_or_recover() = None;
     }
     match app.get_webview_window("transform-review") {
-        Some(window) => trace_effect_error(
-            transform_pass_id,
-            "hide",
-            "hide_failed",
-            window.hide(),
-        )
-        .map(|()| {
-            if let Some(pass_id) = transform_pass_id {
-                crate::transform_trace::effect(pass_id, "hide", "ok", None);
-            }
-        })
-        .map_err(|e| e.to_string()),
+        Some(window) => trace_effect_error(transform_pass_id, "hide", "hide_failed", window.hide())
+            .map(|()| {
+                if let Some(pass_id) = transform_pass_id {
+                    crate::transform_trace::effect(pass_id, "hide", "ok", None);
+                }
+            })
+            .map_err(|e| e.to_string()),
         None => {
             tracing::warn!(target: "system", "hide_transform_popover: transform-review window not found — skipping");
             if let Some(pass_id) = transform_pass_id {
@@ -414,7 +431,11 @@ pub(crate) fn set_expanded_internal(
     let anchor = *state.transform_popover_anchor.lock_or_recover();
     let screen_frame = active_screen_visible_frame(app, state);
     let geometry = popover_geometry_for(anchor, screen_frame);
-    let target = if expanded { geometry.expanded } else { geometry.compact };
+    let target = if expanded {
+        geometry.expanded
+    } else {
+        geometry.compact
+    };
 
     match app.get_webview_window("transform-review") {
         Some(window) => {
@@ -424,14 +445,14 @@ pub(crate) fn set_expanded_internal(
                 "set_size_failed",
                 window.set_size(tauri::LogicalSize::new(target.width, target.height)),
             )
-                .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())?;
             trace_effect_error(
                 transform_pass_id,
                 "expand",
                 "set_position_failed",
                 window.set_position(tauri::LogicalPosition::new(target.x, target.y)),
             )
-                .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())?;
             if let Some(pass_id) = transform_pass_id {
                 crate::transform_trace::effect(pass_id, "expand", "ok", None);
             }
@@ -460,7 +481,10 @@ pub(crate) fn set_expanded_internal(
 /// re-hide it immediately after — the popover still gets key focus, the main
 /// window never gets a chance to visibly flash on screen.
 #[tauri::command]
-pub fn set_transform_popover_focusable(app: tauri::AppHandle, focusable: bool) -> Result<(), String> {
+pub fn set_transform_popover_focusable(
+    app: tauri::AppHandle,
+    focusable: bool,
+) -> Result<(), String> {
     set_focusable_internal(&app, focusable)
 }
 
@@ -486,7 +510,10 @@ fn should_rehide_main(sticky_was_visible: Option<bool>, currently_visible: Optio
 }
 
 /// Non-command core of `set_transform_popover_focusable` (issue #312 PR-C2).
-pub(crate) fn set_focusable_internal(app: &tauri::AppHandle, focusable: bool) -> Result<(), String> {
+pub(crate) fn set_focusable_internal(
+    app: &tauri::AppHandle,
+    focusable: bool,
+) -> Result<(), String> {
     let transform_pass_id = app
         .try_state::<State>()
         .and_then(|state| state.app_state.active_transform_pass_id());
@@ -505,9 +532,8 @@ pub(crate) fn set_focusable_internal(app: &tauri::AppHandle, focusable: bool) ->
                 let sticky_was_visible = app
                     .try_state::<State>()
                     .and_then(|s| *s.transform_main_was_visible.lock_or_recover());
-                let currently_visible = main_window
-                    .as_ref()
-                    .map(|w| w.is_visible().unwrap_or(true));
+                let currently_visible =
+                    main_window.as_ref().map(|w| w.is_visible().unwrap_or(true));
                 let main_was_hidden = should_rehide_main(sticky_was_visible, currently_visible);
 
                 let _ = window.set_focus();
@@ -529,7 +555,12 @@ pub(crate) fn set_focusable_internal(app: &tauri::AppHandle, focusable: bool) ->
         None => {
             tracing::warn!(target: "system", "set_transform_popover_focusable: transform-review window not found — skipping");
             if let Some(pass_id) = transform_pass_id {
-                crate::transform_trace::effect(pass_id, "focusable", "error", Some("window_missing"));
+                crate::transform_trace::effect(
+                    pass_id,
+                    "focusable",
+                    "error",
+                    Some("window_missing"),
+                );
             }
             Ok(())
         }
@@ -590,14 +621,24 @@ mod tests {
     use super::*;
 
     fn frame() -> Rect {
-        Rect { x: 0.0, y: 25.0, width: 1440.0, height: 875.0 }
+        Rect {
+            x: 0.0,
+            y: 25.0,
+            width: 1440.0,
+            height: 875.0,
+        }
     }
 
     #[test]
     fn compact_never_larger_than_expanded() {
         for anchor in [
             None,
-            Some(Rect { x: 560.0, y: 300.0, width: 120.0, height: 20.0 }),
+            Some(Rect {
+                x: 560.0,
+                y: 300.0,
+                width: 120.0,
+                height: 20.0,
+            }),
         ] {
             let g = popover_geometry_for(anchor, frame());
             assert!(g.expanded.width >= g.compact.width);
@@ -610,7 +651,12 @@ mod tests {
         // Selection right at the top edge of the visible frame: anchoring
         // above would go past frame_top, so the degenerate clamp branch must
         // still respect it.
-        let sel = Some(Rect { x: 700.0, y: 26.0, width: 100.0, height: 10.0 });
+        let sel = Some(Rect {
+            x: 700.0,
+            y: 26.0,
+            width: 100.0,
+            height: 10.0,
+        });
         let g = popover_geometry_for(sel, frame());
         assert!(g.compact.y >= frame().y);
         assert!(g.expanded.y >= frame().y);
@@ -618,7 +664,12 @@ mod tests {
 
     #[test]
     fn anchored_below_selection_with_room() {
-        let sel = Rect { x: 560.0, y: 300.0, width: 120.0, height: 20.0 };
+        let sel = Rect {
+            x: 560.0,
+            y: 300.0,
+            width: 120.0,
+            height: 20.0,
+        };
         let g = popover_geometry_for(Some(sel), frame());
         assert!(!g.compact.flipped);
         assert!(!g.expanded.flipped);
@@ -628,7 +679,12 @@ mod tests {
 
     #[test]
     fn flips_above_when_bottom_would_clip() {
-        let sel = Rect { x: 560.0, y: 850.0, width: 120.0, height: 20.0 };
+        let sel = Rect {
+            x: 560.0,
+            y: 850.0,
+            width: 120.0,
+            height: 20.0,
+        };
         let g = popover_geometry_for(Some(sel), frame());
         assert!(g.compact.flipped);
         assert!(g.expanded.flipped);
@@ -638,12 +694,22 @@ mod tests {
 
     #[test]
     fn clamps_horizontally_at_left_and_right_edges() {
-        let left_sel = Rect { x: 20.0, y: 300.0, width: 40.0, height: 20.0 };
+        let left_sel = Rect {
+            x: 20.0,
+            y: 300.0,
+            width: 40.0,
+            height: 20.0,
+        };
         let g_left = popover_geometry_for(Some(left_sel), frame());
         assert_eq!(g_left.compact.x, 0.0);
         assert_eq!(g_left.expanded.x, 0.0);
 
-        let right_sel = Rect { x: 1400.0, y: 300.0, width: 30.0, height: 20.0 };
+        let right_sel = Rect {
+            x: 1400.0,
+            y: 300.0,
+            width: 30.0,
+            height: 20.0,
+        };
         let g_right = popover_geometry_for(Some(right_sel), frame());
         assert_eq!(g_right.compact.x, frame().width - COMPACT_W);
         assert_eq!(g_right.expanded.x, frame().width - EXPANDED_W);
@@ -717,7 +783,15 @@ mod tests {
     #[test]
     fn visible_frame_applies_inset_only_on_primary_monitor() {
         let primary = visible_frame_for_monitor((0.0, 0.0), (2880.0, 1800.0), 2.0, true, 25.0);
-        assert_eq!(primary, Rect { x: 0.0, y: 25.0, width: 1440.0, height: 875.0 });
+        assert_eq!(
+            primary,
+            Rect {
+                x: 0.0,
+                y: 25.0,
+                width: 1440.0,
+                height: 875.0
+            }
+        );
 
         // Secondary display to the left of the primary one, at physical
         // x=-1920 (a common real-world negative-coordinate arrangement).
@@ -726,7 +800,12 @@ mod tests {
             visible_frame_for_monitor((-1920.0, 0.0), (1920.0, 1080.0), 1.0, false, 25.0);
         assert_eq!(
             secondary_left,
-            Rect { x: -1920.0, y: 0.0, width: 1920.0, height: 1080.0 }
+            Rect {
+                x: -1920.0,
+                y: 0.0,
+                width: 1920.0,
+                height: 1080.0
+            }
         );
     }
 
@@ -738,7 +817,12 @@ mod tests {
             visible_frame_for_monitor((2560.0, 0.0), (3840.0, 2160.0), 2.0, false, 25.0);
         assert_eq!(
             secondary_right,
-            Rect { x: 1280.0, y: 0.0, width: 1920.0, height: 1080.0 }
+            Rect {
+                x: 1280.0,
+                y: 0.0,
+                width: 1920.0,
+                height: 1080.0
+            }
         );
     }
 

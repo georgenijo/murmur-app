@@ -29,7 +29,12 @@ pub fn decode_to_mono_16k(path: &str) -> Result<Vec<f32>, String> {
     }
 
     let probed = symphonia::default::get_probe()
-        .format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
+        .format(
+            &hint,
+            mss,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
         .map_err(|e| format!("Unsupported or corrupt audio file: {}", e))?;
     let mut format = probed.format;
 
@@ -46,7 +51,10 @@ pub fn decode_to_mono_16k(path: &str) -> Result<Vec<f32>, String> {
 
     // Source rate/channels are taken from the decoded buffers (authoritative),
     // falling back to track metadata for the initial values.
-    let mut source_rate = track.codec_params.sample_rate.unwrap_or(WHISPER_SAMPLE_RATE);
+    let mut source_rate = track
+        .codec_params
+        .sample_rate
+        .unwrap_or(WHISPER_SAMPLE_RATE);
     let mut channels = track.codec_params.channels.map(|c| c.count()).unwrap_or(1);
     let mut interleaved: Vec<f32> = Vec::new();
 
@@ -54,7 +62,9 @@ pub fn decode_to_mono_16k(path: &str) -> Result<Vec<f32>, String> {
         let packet = match format.next_packet() {
             Ok(p) => p,
             // Clean end-of-stream.
-            Err(SymphoniaError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(SymphoniaError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                break
+            }
             Err(SymphoniaError::ResetRequired) => break,
             Err(e) => return Err(format!("Error reading audio packet: {}", e)),
         };
@@ -112,9 +122,17 @@ mod tests {
     use super::*;
 
     /// Write a minimal 16-bit PCM WAV to a temp path and return the path.
-    fn write_wav(samples_per_channel: &[i16], channels: u16, sample_rate: u32) -> std::path::PathBuf {
+    fn write_wav(
+        samples_per_channel: &[i16],
+        channels: u16,
+        sample_rate: u32,
+    ) -> std::path::PathBuf {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("murmur_decode_test_{}_{}.wav", std::process::id(), samples_per_channel.len()));
+        let path = dir.join(format!(
+            "murmur_decode_test_{}_{}.wav",
+            std::process::id(),
+            samples_per_channel.len()
+        ));
         let spec = hound::WavSpec {
             channels,
             sample_rate,
@@ -137,7 +155,11 @@ mod tests {
         let out = decode_to_mono_16k(path.to_str().unwrap()).unwrap();
         let _ = std::fs::remove_file(&path);
         // Length preserved (allow tiny rounding slack, though none expected here).
-        assert!((out.len() as i64 - 16_000).abs() <= 1, "got {} samples", out.len());
+        assert!(
+            (out.len() as i64 - 16_000).abs() <= 1,
+            "got {} samples",
+            out.len()
+        );
     }
 
     #[test]
@@ -153,7 +175,11 @@ mod tests {
         let out = decode_to_mono_16k(path.to_str().unwrap()).unwrap();
         let _ = std::fs::remove_file(&path);
         // 32kHz -> 16kHz halves the sample count.
-        assert!((out.len() as i64 - 16_000).abs() <= 2, "got {} samples", out.len());
+        assert!(
+            (out.len() as i64 - 16_000).abs() <= 2,
+            "got {} samples",
+            out.len()
+        );
         // Channel average of 2000 and 0 ≈ 1000/32768 ≈ 0.0305.
         let mid = out[out.len() / 2];
         assert!((mid - 0.0305).abs() < 0.01, "got {mid}");

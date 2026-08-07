@@ -42,7 +42,9 @@ pub fn request_accessibility_permission() -> Result<(), String> {
         open_system_preference_pane("Privacy_Accessibility")
     }
     #[cfg(not(target_os = "macos"))]
-    { Ok(()) }
+    {
+        Ok(())
+    }
 }
 
 /// Read the running process's bundle identifier (macOS).

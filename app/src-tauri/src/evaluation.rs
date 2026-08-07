@@ -186,9 +186,7 @@ enum FixtureSpokenStructurePolicy {
     Union,
 }
 
-impl From<FixtureSpokenStructurePolicy>
-    for crate::spoken_structure::SpokenStructurePolicy
-{
+impl From<FixtureSpokenStructurePolicy> for crate::spoken_structure::SpokenStructurePolicy {
     fn from(value: FixtureSpokenStructurePolicy) -> Self {
         match value {
             FixtureSpokenStructurePolicy::Off => Self::Off,

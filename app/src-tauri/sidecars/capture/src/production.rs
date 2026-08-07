@@ -25,14 +25,14 @@ use std::io::{Read, Write};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
-#[cfg(not(test))]
-use std::cell::UnsafeCell;
-#[cfg(not(test))]
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 #[cfg(test)]
 use loom::cell::UnsafeCell;
 #[cfg(test)]
 use loom::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+#[cfg(not(test))]
+use std::cell::UnsafeCell;
+#[cfg(not(test))]
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 const RING_CAPACITY: usize = 48_000 * 8;
 const STOP_DEADLINE: Duration = Duration::from_secs(2);
@@ -526,8 +526,8 @@ mod tests {
         assert_eq!(
             parse_nonce("00112233445566778899aAbBcCdDeEfF"),
             Ok([
-                0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
-                0xcc, 0xdd, 0xee, 0xff,
+                0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
+                0xee, 0xff,
             ])
         );
         assert_eq!(parse_nonce("0011"), Err(()));
@@ -539,13 +539,8 @@ mod tests {
         let capture_id = 42;
         let nonce = [7; 16];
         let mut bytes = Vec::new();
-        write_production_control(
-            &mut bytes,
-            capture_id,
-            nonce,
-            &ProductionHostMessage::Hello,
-        )
-        .unwrap();
+        write_production_control(&mut bytes, capture_id, nonce, &ProductionHostMessage::Hello)
+            .unwrap();
 
         assert_eq!(
             read_control(&mut Cursor::new(bytes), capture_id, nonce),

@@ -46,15 +46,19 @@ fn next_base_name(dir: &Path) -> String {
     let mut highest = 0u32;
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
-            if let Some(stem) = Path::new(&entry.file_name()).file_stem().and_then(|s| s.to_str()) {
+            if let Some(stem) = Path::new(&entry.file_name())
+                .file_stem()
+                .and_then(|s| s.to_str())
+            {
                 if let Some(n) = sequence_of(stem) {
                     highest = highest.max(n);
                 }
             }
         }
     }
-    let taken = |name: &str| dir.join(format!("{}.wav", name)).exists()
-        || dir.join(format!("{}.txt", name)).exists();
+    let taken = |name: &str| {
+        dir.join(format!("{}.wav", name)).exists() || dir.join(format!("{}.txt", name)).exists()
+    };
     let mut n = highest + 1;
     loop {
         let candidate = format!("murmur-{:04}", n);
@@ -155,8 +159,7 @@ pub fn write_benchmark_report(
     }
 
     let path = dir.join(&safe);
-    std::fs::write(&path, json)
-        .map_err(|e| format!("Failed to write benchmark report: {}", e))?;
+    std::fs::write(&path, json).map_err(|e| format!("Failed to write benchmark report: {}", e))?;
 
     tracing::info!(
         target: "pipeline",
@@ -187,14 +190,9 @@ mod tests {
     fn writes_wav_and_txt() {
         let dir = temp_dir("both");
         let samples = vec![0.0f32, 0.5, -0.5, 1.0, -1.0];
-        let written = write_dictation_outputs(
-            &samples,
-            "hello world",
-            true,
-            true,
-            dir.to_str().unwrap(),
-        )
-        .unwrap();
+        let written =
+            write_dictation_outputs(&samples, "hello world", true, true, dir.to_str().unwrap())
+                .unwrap();
         assert_eq!(written, 2);
 
         let wav = dir.join("murmur-0001.wav");
@@ -212,14 +210,9 @@ mod tests {
     #[test]
     fn empty_text_skips_transcript() {
         let dir = temp_dir("empty_text");
-        let written = write_dictation_outputs(
-            &[0.1f32, 0.2],
-            "   ",
-            true,
-            true,
-            dir.to_str().unwrap(),
-        )
-        .unwrap();
+        let written =
+            write_dictation_outputs(&[0.1f32, 0.2], "   ", true, true, dir.to_str().unwrap())
+                .unwrap();
         assert_eq!(written, 1);
         assert!(dir.join("murmur-0001.wav").exists());
         assert!(!dir.join("murmur-0001.txt").exists());
@@ -228,14 +221,9 @@ mod tests {
     #[test]
     fn transcript_only_skips_audio() {
         let dir = temp_dir("txt_only");
-        let written = write_dictation_outputs(
-            &[0.1f32],
-            "text only",
-            false,
-            true,
-            dir.to_str().unwrap(),
-        )
-        .unwrap();
+        let written =
+            write_dictation_outputs(&[0.1f32], "text only", false, true, dir.to_str().unwrap())
+                .unwrap();
         assert_eq!(written, 1);
         assert!(!dir.join("murmur-0001.wav").exists());
         assert!(dir.join("murmur-0001.txt").exists());
@@ -244,14 +232,9 @@ mod tests {
     #[test]
     fn neither_toggle_writes_nothing() {
         let dir = temp_dir("none");
-        let written = write_dictation_outputs(
-            &[0.1f32],
-            "ignored",
-            false,
-            false,
-            dir.to_str().unwrap(),
-        )
-        .unwrap();
+        let written =
+            write_dictation_outputs(&[0.1f32], "ignored", false, false, dir.to_str().unwrap())
+                .unwrap();
         assert_eq!(written, 0);
     }
 

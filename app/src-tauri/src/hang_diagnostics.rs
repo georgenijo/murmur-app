@@ -43,8 +43,7 @@ pub(crate) fn configure(
     armed: bool,
     collect_now_epoch: u64,
 ) {
-    *config_cell().lock_or_recover() =
-        Some((install_id.to_string(), bundle_endpoint.to_string()));
+    *config_cell().lock_or_recover() = Some((install_id.to_string(), bundle_endpoint.to_string()));
     let was = ARMED.swap(armed, Ordering::Relaxed);
     if armed && !was {
         tracing::warn!(
@@ -133,11 +132,7 @@ pub(crate) struct HangProbe {
 }
 
 impl HangProbe {
-    pub(crate) fn start(
-        capture_id: u64,
-        backend: &'static str,
-        worker_pid: u32,
-    ) -> Option<Self> {
+    pub(crate) fn start(capture_id: u64, backend: &'static str, worker_pid: u32) -> Option<Self> {
         if !armed() {
             return None;
         }
@@ -247,11 +242,19 @@ fn collect_bundle(
     );
     section(
         "power assertions",
-        &run_capped("/usr/bin/pmset", &["-g", "assertions"], Duration::from_secs(10)),
+        &run_capped(
+            "/usr/bin/pmset",
+            &["-g", "assertions"],
+            Duration::from_secs(10),
+        ),
     );
     section(
         "system HAL plug-ins",
-        &run_capped("/bin/ls", &["-la", "/Library/Audio/Plug-Ins/HAL"], Duration::from_secs(5)),
+        &run_capped(
+            "/bin/ls",
+            &["-la", "/Library/Audio/Plug-Ins/HAL"],
+            Duration::from_secs(5),
+        ),
     );
     section(
         "user HAL plug-ins",
@@ -345,7 +348,9 @@ mod tests {
             run_capped("/bin/sleep", &["5"], Duration::from_millis(100)),
             "<command deadline exceeded>"
         );
-        assert!(run_capped("/nonexistent-binary", &[], Duration::from_secs(1))
-            .starts_with("<spawn failed"));
+        assert!(
+            run_capped("/nonexistent-binary", &[], Duration::from_secs(1))
+                .starts_with("<spawn failed")
+        );
     }
 }

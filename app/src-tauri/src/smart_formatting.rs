@@ -65,8 +65,7 @@ fn apply_bounded_backtrack(input: &str) -> String {
     let replacement_raw = input[marker_end..]
         .trim_start_matches(|ch: char| ch.is_whitespace() || matches!(ch, ',' | ':' | '-' | '—'))
         .trim();
-    let replacement =
-        replacement_raw.trim_end_matches(['.', ',', ';', '!', '?']);
+    let replacement = replacement_raw.trim_end_matches(['.', ',', ';', '!', '?']);
     let replacement_words = replacement.split_whitespace().count();
     if replacement.is_empty()
         || replacement.len() > MAX_BACKTRACK_REPLACEMENT_CHARS

@@ -140,8 +140,11 @@ fn headless_benchmark() {
         .filter(|model| model.installed)
         .map(|model| model.model_name.clone())
         .collect::<Vec<_>>();
-    let model_names = parse_models(std::env::var("MURMUR_BENCH_MODELS").ok().as_deref(), &installed)
-        .expect("MURMUR_BENCH_MODELS");
+    let model_names = parse_models(
+        std::env::var("MURMUR_BENCH_MODELS").ok().as_deref(),
+        &installed,
+    )
+    .expect("MURMUR_BENCH_MODELS");
 
     println!("headless benchmark: preset={preset:?} models={model_names:?}");
 

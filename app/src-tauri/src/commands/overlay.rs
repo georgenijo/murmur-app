@@ -225,8 +225,7 @@ pub(crate) fn register_screen_change_observer(app_handle: tauri::AppHandle) {
     let notification_name =
         NSNotificationName::from_str("NSApplicationDidChangeScreenParametersNotification");
 
-    const SCREEN_CHANGE_DEBOUNCE: std::time::Duration =
-        std::time::Duration::from_millis(125);
+    const SCREEN_CHANGE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(125);
     let (notification_sender, notification_receiver) = std::sync::mpsc::channel::<()>();
     let worker_handle = app_handle.clone();
     std::thread::Builder::new()
@@ -276,11 +275,9 @@ pub(crate) fn register_screen_change_observer(app_handle: tauri::AppHandle) {
         })
         .expect("screen change debounce worker must spawn");
 
-    let block = block2::RcBlock::new(
-        move |_notification: std::ptr::NonNull<NSNotification>| {
-            let _ = notification_sender.send(());
-        },
-    );
+    let block = block2::RcBlock::new(move |_notification: std::ptr::NonNull<NSNotification>| {
+        let _ = notification_sender.send(());
+    });
 
     unsafe {
         let center = NSNotificationCenter::defaultCenter();

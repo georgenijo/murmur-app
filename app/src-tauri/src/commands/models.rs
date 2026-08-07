@@ -80,23 +80,31 @@ pub async fn download_model(
             .map_err(|e| format!("Failed to create models directory: {}", e))?;
 
         if definition.install_kind == InstallKind::Coreml {
-            let _ = app_handle.emit("download-progress", serde_json::json!({
-                "received": 0,
-                "total": 0,
-                "phase": "installing"
-            }));
+            let _ = app_handle.emit(
+                "download-progress",
+                serde_json::json!({
+                    "received": 0,
+                    "total": 0,
+                    "phase": "installing"
+                }),
+            );
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             {
                 let model_name = model_name.clone();
-                tokio::task::spawn_blocking(move || transcriber::coreml::prepare_model(&model_name))
-                    .await
-                    .map_err(|error| format!("Core ML setup task failed: {error}"))??;
+                tokio::task::spawn_blocking(move || {
+                    transcriber::coreml::prepare_model(&model_name)
+                })
+                .await
+                .map_err(|error| format!("Core ML setup task failed: {error}"))??;
             }
-            let _ = app_handle.emit("download-progress", serde_json::json!({
-                "received": 1,
-                "total": 1,
-                "phase": "installing"
-            }));
+            let _ = app_handle.emit(
+                "download-progress",
+                serde_json::json!({
+                    "received": 1,
+                    "total": 1,
+                    "phase": "installing"
+                }),
+            );
         } else if definition.install_kind == InstallKind::Parakeet {
             download_parakeet_model(&app_handle, &model_name, &models_dir).await?;
         } else {
@@ -150,17 +158,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!(
-            "murmur-{label}-{}-{nonce}",
-            std::process::id()
-        ))
+        std::env::temp_dir().join(format!("murmur-{label}-{}-{nonce}", std::process::id()))
     }
 
-    fn write_parakeet_archive(
-        archive_path: &std::path::Path,
-        dir_name: &str,
-        complete: bool,
-    ) {
+    fn write_parakeet_archive(archive_path: &std::path::Path, dir_name: &str, complete: bool) {
         let source_root = archive_path.with_extension("source");
         let bundle = source_root.join(dir_name);
         fs::create_dir_all(&bundle).unwrap();
@@ -221,9 +222,15 @@ mod tests {
             model_name,
             &models_dir
         ));
-        assert_eq!(fs::read(partial.join("encoder.fp16.onnx")).unwrap(), b"encoder");
+        assert_eq!(
+            fs::read(partial.join("encoder.fp16.onnx")).unwrap(),
+            b"encoder"
+        );
         assert!(!models_dir.join(format!(".{dir_name}.extracting")).exists());
-        assert!(archive_path.exists(), "caller owns archive cleanup after success");
+        assert!(
+            archive_path.exists(),
+            "caller owns archive cleanup after success"
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -451,11 +458,14 @@ async fn extract_parakeet_archive_on_worker(
 }
 
 fn emit_installing(app_handle: &tauri::AppHandle) {
-    let _ = app_handle.emit("download-progress", serde_json::json!({
-        "received": 0,
-        "total": 0,
-        "phase": "installing"
-    }));
+    let _ = app_handle.emit(
+        "download-progress",
+        serde_json::json!({
+            "received": 0,
+            "total": 0,
+            "phase": "installing"
+        }),
+    );
 }
 
 fn extract_parakeet_archive(
@@ -472,27 +482,24 @@ fn extract_parakeet_archive(
     if final_dir.exists()
         && !transcriber::parakeet::specific_model_exists_in(model_name, models_dir)
     {
-        std::fs::remove_dir_all(&final_dir)
-            .map_err(|e| {
-                ParakeetInstallError::Installation(format!(
-                    "Failed to remove incomplete model bundle: {}",
-                    e
-                ))
-            })?;
-    }
-    std::fs::create_dir_all(&staging_root)
-        .map_err(|e| {
+        std::fs::remove_dir_all(&final_dir).map_err(|e| {
             ParakeetInstallError::Installation(format!(
-                "Failed to create extraction staging directory: {}",
+                "Failed to remove incomplete model bundle: {}",
                 e
             ))
         })?;
+    }
+    std::fs::create_dir_all(&staging_root).map_err(|e| {
+        ParakeetInstallError::Installation(format!(
+            "Failed to create extraction staging directory: {}",
+            e
+        ))
+    })?;
 
     let extraction = (|| {
-        let file = std::fs::File::open(archive_path)
-            .map_err(|e| {
-                ParakeetInstallError::Installation(format!("Failed to open archive: {}", e))
-            })?;
+        let file = std::fs::File::open(archive_path).map_err(|e| {
+            ParakeetInstallError::Installation(format!("Failed to open archive: {}", e))
+        })?;
         let decompressor = bzip2::read::BzDecoder::new(file);
         let mut archive = tar::Archive::new(decompressor);
         archive
@@ -503,13 +510,12 @@ fn extract_parakeet_archive(
                 "Extracted Parakeet bundle is incomplete".to_string(),
             ));
         }
-        std::fs::rename(&staged_dir, &final_dir)
-            .map_err(|e| {
-                ParakeetInstallError::Installation(format!(
-                    "Failed to publish Parakeet model bundle: {}",
-                    e
-                ))
-            })?;
+        std::fs::rename(&staged_dir, &final_dir).map_err(|e| {
+            ParakeetInstallError::Installation(format!(
+                "Failed to publish Parakeet model bundle: {}",
+                e
+            ))
+        })?;
         Ok(())
     })();
 
@@ -523,8 +529,7 @@ fn classify_archive_unpack_error(error: std::io::Error) -> ParakeetInstallError 
     if matches!(
         error.kind(),
         std::io::ErrorKind::InvalidData | std::io::ErrorKind::UnexpectedEof
-    )
-        || normalized.contains("data integrity")
+    ) || normalized.contains("data integrity")
         || normalized.contains("corrupt")
         || normalized.contains("failed to iterate over archive")
     {
@@ -543,9 +548,10 @@ pub(crate) async fn ensure_vad_model(app_handle: &tauri::AppHandle) -> Result<()
         return Ok(());
     }
 
-    let model_path = vad::vad_model_path()
-        .ok_or_else(|| "Could not determine VAD model path".to_string())?;
-    let models_dir = model_path.parent()
+    let model_path =
+        vad::vad_model_path().ok_or_else(|| "Could not determine VAD model path".to_string())?;
+    let models_dir = model_path
+        .parent()
         .ok_or_else(|| "Could not determine models directory".to_string())?;
 
     tokio::fs::create_dir_all(models_dir)
@@ -587,7 +593,10 @@ pub(crate) async fn stream_download(
         .map_err(|e| format!("Download request failed: {}", e))?;
 
     if !response.status().is_success() {
-        return Err(format!("Download failed with status: {}", response.status()));
+        return Err(format!(
+            "Download failed with status: {}",
+            response.status()
+        ));
     }
 
     let total = response.content_length().unwrap_or(0);
@@ -607,17 +616,21 @@ pub(crate) async fn stream_download(
                 .await
                 .map_err(|e| format!("Failed to write to file: {}", e))?;
             received += chunk.len() as u64;
-            let _ = app_handle.emit("download-progress", serde_json::json!({
-                "received": received,
-                "total": total,
-                "phase": "downloading"
-            }));
+            let _ = app_handle.emit(
+                "download-progress",
+                serde_json::json!({
+                    "received": received,
+                    "total": total,
+                    "phase": "downloading"
+                }),
+            );
         }
         file.flush()
             .await
             .map_err(|e| format!("Failed to flush file: {}", e))?;
         Ok::<(), String>(())
-    }.await;
+    }
+    .await;
 
     if let Err(e) = stream_result {
         let _ = tokio::fs::remove_file(dest).await;

@@ -1,9 +1,7 @@
 use crate::correction::CorrectionMatcher;
 use crate::model_runtime;
 use crate::resource_monitor::get_process_rss_mb;
-use crate::transcriber::{
-    TranscriptionBackend, COREML_MODEL_NAME, WHISPER_SAMPLE_RATE,
-};
+use crate::transcriber::{TranscriptionBackend, COREML_MODEL_NAME, WHISPER_SAMPLE_RATE};
 use crate::transcript_transform::{
     transform_transcript, TranscriptContext, TranscriptSource, TranscriptStageConfig,
     TranscriptTransformResources,
@@ -20,8 +18,13 @@ const BENCHMARK_REPORT_VERSION: u32 = 2;
 
 /// Whisper model names ordered smallest-to-largest. Used to pick the
 /// cheapest selected whisper model for the untimed shared-init warm-up.
-const WHISPER_SIZE_ORDER: &[&str] =
-    &["tiny.en", "base.en", "small.en", "medium.en", "large-v3-turbo"];
+const WHISPER_SIZE_ORDER: &[&str] = &[
+    "tiny.en",
+    "base.en",
+    "small.en",
+    "medium.en",
+    "large-v3-turbo",
+];
 struct Fixture {
     id: &'static str,
     label: &'static str,
@@ -1062,7 +1065,11 @@ fn recommendations(results: &[ModelResult]) -> Recommendations {
     // differences do not distort the ranking (see `normalized_words`).
     let most_accurate = successful
         .iter()
-        .filter_map(|result| result.normalized_word_error_rate.map(|value| (*result, value)))
+        .filter_map(|result| {
+            result
+                .normalized_word_error_rate
+                .map(|value| (*result, value))
+        })
         .min_by(|left, right| left.1.total_cmp(&right.1))
         .map(|(result, _)| result.model_name.clone());
 
@@ -1089,8 +1096,7 @@ fn recommendations(results: &[ModelResult]) -> Recommendations {
             })
             .filter_map(|result| result.realtime_factor.map(|value| (*result, value)))
             .collect::<Vec<_>>();
-        pick_by_metric_with_tiebreak(&balanced_candidates)
-            .map(|result| result.model_name.clone())
+        pick_by_metric_with_tiebreak(&balanced_candidates).map(|result| result.model_name.clone())
     });
 
     Recommendations {
@@ -1495,20 +1501,35 @@ mod tests {
     #[test]
     fn normalizer_collapses_formatting_and_itn_differences() {
         // The concrete pairs from the issue must normalize to identical tokens.
-        assert_eq!(normalized_words("16 kHz"), normalized_words("sixteen kilohertz"));
+        assert_eq!(
+            normalized_words("16 kHz"),
+            normalized_words("sixteen kilohertz")
+        );
         assert_eq!(normalized_words("Mac OS"), normalized_words("macOS"));
         assert_eq!(normalized_words("front end"), normalized_words("frontend"));
         // A few more equivalences the tables promise.
-        assert_eq!(normalized_words("500 MB"), normalized_words("five hundred megabytes"));
-        assert_eq!(normalized_words("2 ms"), normalized_words("two milliseconds"));
+        assert_eq!(
+            normalized_words("500 MB"),
+            normalized_words("five hundred megabytes")
+        );
+        assert_eq!(
+            normalized_words("2 ms"),
+            normalized_words("two milliseconds")
+        );
         assert_eq!(normalized_words("twenty one"), normalized_words("21"));
-        assert_eq!(normalized_words("the 1st run"), normalized_words("the first run"));
+        assert_eq!(
+            normalized_words("the 1st run"),
+            normalized_words("the first run")
+        );
     }
 
     #[test]
     fn normalized_word_errors_ignores_formatting_but_keeps_recognition_errors() {
         // Formatting/ITN differences score zero under normalization.
-        assert_eq!(normalized_word_errors("16 kHz", "sixteen kilohertz"), (0, 2));
+        assert_eq!(
+            normalized_word_errors("16 kHz", "sixteen kilohertz"),
+            (0, 2)
+        );
         assert_eq!(normalized_word_errors("front end", "frontend"), (0, 1));
         assert_eq!(normalized_word_errors("Mac OS", "macOS"), (0, 1));
 
@@ -1547,7 +1568,10 @@ mod tests {
         // xxlong + fast on top (issue #273).
         assert_eq!(BenchmarkPreset::Quick.fixtures().len(), 2);
         assert_eq!(BenchmarkPreset::Quick.iterations(), 3);
-        assert_eq!(BenchmarkPreset::Standard.fixtures().len(), STANDARD_FIXTURE_COUNT);
+        assert_eq!(
+            BenchmarkPreset::Standard.fixtures().len(),
+            STANDARD_FIXTURE_COUNT
+        );
         assert_eq!(BenchmarkPreset::Standard.fixtures().len(), 7);
         assert_eq!(BenchmarkPreset::Thorough.fixtures().len(), FIXTURES.len());
         assert_eq!(BenchmarkPreset::Thorough.fixtures().len(), 9);
@@ -1558,8 +1582,7 @@ mod tests {
             BenchmarkPreset::Standard.fixtures().len() > BenchmarkPreset::Quick.fixtures().len()
         );
         assert!(
-            BenchmarkPreset::Thorough.fixtures().len()
-                > BenchmarkPreset::Standard.fixtures().len()
+            BenchmarkPreset::Thorough.fixtures().len() > BenchmarkPreset::Standard.fixtures().len()
         );
     }
 
@@ -1633,8 +1656,8 @@ mod tests {
                 }
             })
             .collect();
-        let prepared = prepare_fixtures(&new_fixtures, 0.5)
-            .expect("new fixtures should decode and pass VAD");
+        let prepared =
+            prepare_fixtures(&new_fixtures, 0.5).expect("new fixtures should decode and pass VAD");
         assert_eq!(prepared.len(), NEW_FIXTURE_IDS.len());
 
         let mut backend = backend_for("tiny.en").expect("whisper backend");
@@ -1650,7 +1673,9 @@ mod tests {
                 .expect("transcribe new fixture");
             println!(
                 "[{:>9} {:>5.1}s] {}",
-                fixture.fixture.id, fixture.audio_seconds, transcript.trim()
+                fixture.fixture.id,
+                fixture.audio_seconds,
+                transcript.trim()
             );
             assert!(
                 !words(&transcript).is_empty(),
@@ -1670,7 +1695,9 @@ mod tests {
     #[ignore = "requires installed VAD + large-v3-turbo; run on the mac"]
     fn large_v3_turbo_spot_check_new_fixtures() {
         let mut backend = backend_for("large-v3-turbo").expect("whisper backend");
-        backend.load_model("large-v3-turbo").expect("load large-v3-turbo");
+        backend
+            .load_model("large-v3-turbo")
+            .expect("load large-v3-turbo");
         let vad_path = crate::vad::vad_model_path()
             .filter(|path| path.exists())
             .expect("VAD model installed");
@@ -1679,12 +1706,11 @@ mod tests {
             let fixture = fixture_by_id(id);
             let samples =
                 crate::transcriber::parse_wav_to_samples(fixture.wav).expect("decode wav");
-            let samples = match crate::vad::filter_speech(&vad_path, &samples, 0.5)
-                .expect("VAD run")
-            {
-                crate::vad::VadResult::Speech(samples) => samples,
-                crate::vad::VadResult::NoSpeech => panic!("{id} VAD found no speech"),
-            };
+            let samples =
+                match crate::vad::filter_speech(&vad_path, &samples, 0.5).expect("VAD run") {
+                    crate::vad::VadResult::Speech(samples) => samples,
+                    crate::vad::VadResult::NoSpeech => panic!("{id} VAD found no speech"),
+                };
             let transcript = backend
                 .transcribe(&samples, "en", None, true)
                 .expect("transcribe");
@@ -1866,7 +1892,13 @@ mod tests {
 
     #[test]
     fn whisper_models_get_the_dev_prompt_and_others_do_not() {
-        for whisper in ["tiny.en", "base.en", "small.en", "medium.en", "large-v3-turbo"] {
+        for whisper in [
+            "tiny.en",
+            "base.en",
+            "small.en",
+            "medium.en",
+            "large-v3-turbo",
+        ] {
             let prompt = whisper_initial_prompt(whisper)
                 .unwrap_or_else(|| panic!("{whisper} should receive an initial prompt"));
             assert!(
@@ -1997,7 +2029,10 @@ mod tests {
             .map_err(|error| error.to_string())
         });
 
-        assert!(!delivered.transform_failed, "default transform must not fail");
+        assert!(
+            !delivered.transform_failed,
+            "default transform must not fail"
+        );
         assert!(
             !delivered.transcript.trim().is_empty(),
             "delivered transcript should be populated"

@@ -258,11 +258,10 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
             .iter()
             .any(|command| command.allow_clipboard_read);
     let custom_voice_commands = voice_commands && !resolved_voice_commands.is_empty();
-    let spoken_structure_policy =
-        crate::spoken_structure::SpokenStructurePolicy::resolve(
-            voice_commands,
-            smart_formatting_enabled,
-        );
+    let spoken_structure_policy = crate::spoken_structure::SpokenStructurePolicy::resolve(
+        voice_commands,
+        smart_formatting_enabled,
+    );
 
     DictationContextSnapshot {
         app: ActiveAppIdentity {
@@ -449,9 +448,7 @@ mod tests {
                 voice_commands_enabled: snapshot.enabled_command_groups.built_in_voice_commands,
                 smart_correction_enabled: snapshot.transformations.correction_enabled,
                 smart_formatting_enabled: snapshot.transformations.smart_formatting_enabled,
-                spoken_structure_policy: snapshot
-                    .transformations
-                    .spoken_structure_policy,
+                spoken_structure_policy: snapshot.transformations.spoken_structure_policy,
                 spoken_numbers_enabled: snapshot.transformations.spoken_numbers_enabled,
                 ide_context_enabled: snapshot.transformations.ide_context_enabled,
                 cli_command_enabled: snapshot.transformations.cli_formatting_enabled,
@@ -798,7 +795,10 @@ mod tests {
             crate::spoken_structure::SpokenStructurePolicy::Basic
         );
         assert!(opted_in.context_capture.local_project_index);
-        assert_eq!(opted_in.teaching_project_root.as_deref(), Some("/explicit/project"));
+        assert_eq!(
+            opted_in.teaching_project_root.as_deref(),
+            Some("/explicit/project")
+        );
         assert!(!opted_in.context_capture.surrounding_screen_text);
         assert!(!opted_in.context_capture.selected_text);
         assert!(!opted_in.context_capture.clipboard);
@@ -892,11 +892,35 @@ mod tests {
         };
 
         let cases = [
-            (WritingStyle::Conversational, true, true, false, true, false, true),
+            (
+                WritingStyle::Conversational,
+                true,
+                true,
+                false,
+                true,
+                false,
+                true,
+            ),
             (WritingStyle::Polished, true, true, true, true, true, true),
             (WritingStyle::Notes, true, true, true, true, true, true),
-            (WritingStyle::CodeTechnical, false, false, false, true, true, true),
-            (WritingStyle::Verbatim, false, false, false, false, false, false),
+            (
+                WritingStyle::CodeTechnical,
+                false,
+                false,
+                false,
+                true,
+                true,
+                true,
+            ),
+            (
+                WritingStyle::Verbatim,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+            ),
         ];
 
         for (style, cleanup, commands, prose, numbers, correction, cli_stage) in cases {
@@ -917,9 +941,7 @@ mod tests {
             assert_eq!(snapshot.transformations.smart_formatting_enabled, prose);
             assert_eq!(
                 snapshot.transformations.spoken_structure_policy,
-                crate::spoken_structure::SpokenStructurePolicy::resolve(
-                    commands, prose
-                )
+                crate::spoken_structure::SpokenStructurePolicy::resolve(commands, prose)
             );
             assert_eq!(snapshot.transformations.spoken_numbers_enabled, numbers);
             assert_eq!(snapshot.transformations.correction_enabled, correction);

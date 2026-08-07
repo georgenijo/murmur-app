@@ -57,8 +57,8 @@ const KNOWN_TOOLS: &[&str] = &[
 ];
 
 const PROSE_MARKERS: &[&str] = &[
-    "and", "are", "can", "does", "has", "helps", "is", "makes", "means", "provides",
-    "should", "then", "uses", "was", "will",
+    "and", "are", "can", "does", "has", "helps", "is", "makes", "means", "provides", "should",
+    "then", "uses", "was", "will",
 ];
 
 const INLINE_REFERENCE_STOPWORDS: &[&str] = &[
@@ -231,7 +231,11 @@ pub(crate) fn canonicalize_cli(
     mode: CliFormattingMode,
     lexicon: &CliLexicon,
 ) -> String {
-    if input.as_bytes().iter().any(|byte| matches!(byte, b'\n' | b'\r')) {
+    if input
+        .as_bytes()
+        .iter()
+        .any(|byte| matches!(byte, b'\n' | b'\r'))
+    {
         return canonicalize_lines(input, mode, lexicon);
     }
     canonicalize_line(input, mode, lexicon)

@@ -2,8 +2,8 @@ use crate::managed_child::{bundled_sibling, ManagedChild};
 use crate::MutexExt;
 use murmur_capture_helper_protocol::{
     read_production_frame, write_production_control, CaptureBackend, CapturePhase,
-    CaptureSetupStep, FailureCode, ProductionFrame, ProductionHelperMessage,
-    ProductionHostMessage, SessionNonce, SetupTransition,
+    CaptureSetupStep, FailureCode, ProductionFrame, ProductionHelperMessage, ProductionHostMessage,
+    SessionNonce, SetupTransition,
 };
 use serde::Serialize;
 use std::fmt;
@@ -1075,8 +1075,11 @@ fn run_backend(
         {
             // Halfway to the budget with no PCM: sample the worker now, while
             // the blocked native call is still on its stack.
-            hang_probe =
-                crate::hang_diagnostics::HangProbe::start(capture_id, backend_label(backend), worker_pid);
+            hang_probe = crate::hang_diagnostics::HangProbe::start(
+                capture_id,
+                backend_label(backend),
+                worker_pid,
+            );
         }
         if !retained_audio && clock.elapsed(now) >= attempt_budget {
             end_permission_prompt_pause(
@@ -1548,7 +1551,12 @@ pub fn resample(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
     if from_rate > to_rate && from_rate.is_multiple_of(to_rate) {
         let step = (from_rate / to_rate) as usize;
         let new_len = samples.len() / step;
-        return samples.iter().step_by(step).take(new_len).copied().collect();
+        return samples
+            .iter()
+            .step_by(step)
+            .take(new_len)
+            .copied()
+            .collect();
     }
     let ratio = from_rate as f64 / to_rate as f64;
     let new_len = (samples.len() as f64 / ratio) as usize;
@@ -1576,7 +1584,10 @@ mod tests {
     fn integer_downsampling_uses_the_same_source_positions_as_linear_interpolation() {
         let samples = (0..10).map(|value| value as f32).collect::<Vec<_>>();
         assert_eq!(resample(&samples, 48_000, 16_000), vec![0.0, 3.0, 6.0]);
-        assert_eq!(resample(&samples, 32_000, 16_000), vec![0.0, 2.0, 4.0, 6.0, 8.0]);
+        assert_eq!(
+            resample(&samples, 32_000, 16_000),
+            vec![0.0, 2.0, 4.0, 6.0, 8.0]
+        );
     }
 
     #[test]

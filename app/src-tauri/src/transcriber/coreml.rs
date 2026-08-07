@@ -174,7 +174,11 @@ impl TranscriptionBackend for CoreMlBackend {
             .transcribe_samples(samples)
             .map_err(|error| format!("Core ML transcription failed: {error}"))?;
         let text = normalize_result_text(&result.text);
-        let output = if smart_punctuation { text.clone() } else { strip_punctuation(&text) };
+        let output = if smart_punctuation {
+            text.clone()
+        } else {
+            strip_punctuation(&text)
+        };
 
         tracing::info!(
             target: "pipeline",

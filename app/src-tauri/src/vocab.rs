@@ -18,30 +18,137 @@ use std::path::Path;
 /// (and ranks ahead of) this list.
 pub const BUILTIN_DEV_TERMS: &[&str] = &[
     // JS/TS framework + hooks
-    "useEffect", "useState", "useRef", "useCallback", "useMemo", "useContext",
-    "TypeScript", "JavaScript", "JSX", "TSX", "npm", "npx", "pnpm", "yarn",
-    "Node.js", "Deno", "Vite", "Webpack", "ESLint", "Prettier", "Tailwind",
-    "React", "Vue", "Svelte", "Next.js", "async", "await", "Promise", "nullable",
+    "useEffect",
+    "useState",
+    "useRef",
+    "useCallback",
+    "useMemo",
+    "useContext",
+    "TypeScript",
+    "JavaScript",
+    "JSX",
+    "TSX",
+    "npm",
+    "npx",
+    "pnpm",
+    "yarn",
+    "Node.js",
+    "Deno",
+    "Vite",
+    "Webpack",
+    "ESLint",
+    "Prettier",
+    "Tailwind",
+    "React",
+    "Vue",
+    "Svelte",
+    "Next.js",
+    "async",
+    "await",
+    "Promise",
+    "nullable",
     // Rust
-    "Rust", "cargo", "rustc", "clippy", "tokio", "serde", "async", "trait",
-    "enum", "struct", "impl", "Mutex", "Arc", "borrow", "lifetime", "macro",
-    "stdout", "stderr", "stdin", "dylib", "rustup", "Tauri", "whisper-rs",
+    "Rust",
+    "cargo",
+    "rustc",
+    "clippy",
+    "tokio",
+    "serde",
+    "async",
+    "trait",
+    "enum",
+    "struct",
+    "impl",
+    "Mutex",
+    "Arc",
+    "borrow",
+    "lifetime",
+    "macro",
+    "stdout",
+    "stderr",
+    "stdin",
+    "dylib",
+    "rustup",
+    "Tauri",
+    "whisper-rs",
     // Python
-    "Python", "pip", "venv", "pytest", "numpy", "pandas", "asyncio", "dataclass",
-    "Django", "Flask", "FastAPI", "PyTorch", "TensorFlow",
+    "Python",
+    "pip",
+    "venv",
+    "pytest",
+    "numpy",
+    "pandas",
+    "asyncio",
+    "dataclass",
+    "Django",
+    "Flask",
+    "FastAPI",
+    "PyTorch",
+    "TensorFlow",
     // Go / other langs
-    "Golang", "goroutine", "Kotlin", "Swift", "SwiftUI", "Xcode",
+    "Golang",
+    "goroutine",
+    "Kotlin",
+    "Swift",
+    "SwiftUI",
+    "Xcode",
     // Web / protocols / data
-    "API", "REST", "GraphQL", "JSON", "YAML", "TOML", "HTTP", "HTTPS", "WebSocket",
-    "OAuth", "JWT", "CORS", "UUID", "regex", "stdin", "CRUD", "SQL",
+    "API",
+    "REST",
+    "GraphQL",
+    "JSON",
+    "YAML",
+    "TOML",
+    "HTTP",
+    "HTTPS",
+    "WebSocket",
+    "OAuth",
+    "JWT",
+    "CORS",
+    "UUID",
+    "regex",
+    "stdin",
+    "CRUD",
+    "SQL",
     // Databases / infra / devops
-    "Postgres", "PostgreSQL", "SQLite", "Redis", "MongoDB", "Docker", "Kubernetes",
-    "kubectl", "nginx", "Terraform", "Ansible", "GitHub", "GitLab", "CI/CD",
-    "DevOps", "Kafka", "RabbitMQ", "gRPC",
+    "Postgres",
+    "PostgreSQL",
+    "SQLite",
+    "Redis",
+    "MongoDB",
+    "Docker",
+    "Kubernetes",
+    "kubectl",
+    "nginx",
+    "Terraform",
+    "Ansible",
+    "GitHub",
+    "GitLab",
+    "CI/CD",
+    "DevOps",
+    "Kafka",
+    "RabbitMQ",
+    "gRPC",
     // General CS / build
-    "localhost", "config", "env", "boolean", "int", "struct", "endpoint",
-    "middleware", "namespace", "runtime", "stack trace", "codebase", "repo",
-    "commit", "rebase", "changelog", "metadata", "macOS", "Linux",
+    "localhost",
+    "config",
+    "env",
+    "boolean",
+    "int",
+    "struct",
+    "endpoint",
+    "middleware",
+    "namespace",
+    "runtime",
+    "stack trace",
+    "codebase",
+    "repo",
+    "commit",
+    "rebase",
+    "changelog",
+    "metadata",
+    "macOS",
+    "Linux",
 ];
 
 /// Skip individual files larger than this (bytes). A single huge minified bundle
@@ -59,9 +166,8 @@ pub const MAX_TOTAL_BYTES: u64 = 32 * 1024 * 1024;
 /// Source file extensions we scan. Kept to common code formats so we don't pull
 /// identifiers out of, say, lockfiles or binary assets.
 pub const SOURCE_EXTENSIONS: &[&str] = &[
-    "rs", "ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "go", "java", "kt",
-    "swift", "c", "h", "cc", "cpp", "hpp", "cs", "rb", "php", "scala", "sh",
-    "lua", "dart", "vue", "svelte",
+    "rs", "ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "go", "java", "kt", "swift", "c", "h",
+    "cc", "cpp", "hpp", "cs", "rb", "php", "scala", "sh", "lua", "dart", "vue", "svelte",
 ];
 
 /// Render [`BUILTIN_DEV_TERMS`] as a space-joined initial-prompt string, deduped
@@ -138,9 +244,27 @@ fn push_manifest_term(terms: &mut Vec<String>, term: &str) {
 /// Directory names we never descend into while walking a project. These hold
 /// dependencies, build output, or VCS data — not the user's own identifiers.
 const SKIP_DIRS: &[&str] = &[
-    "node_modules", "target", ".git", "dist", "build", ".next", "vendor",
-    "__pycache__", ".venv", "venv", ".svn", ".hg", "Pods", "DerivedData",
-    ".cargo", ".idea", ".vscode", "coverage", "out", "cache", "caches",
+    "node_modules",
+    "target",
+    ".git",
+    "dist",
+    "build",
+    ".next",
+    "vendor",
+    "__pycache__",
+    ".venv",
+    "venv",
+    ".svn",
+    ".hg",
+    "Pods",
+    "DerivedData",
+    ".cargo",
+    ".idea",
+    ".vscode",
+    "coverage",
+    "out",
+    "cache",
+    "caches",
 ];
 
 /// Return true if a directory with this name should not be descended into.
@@ -158,22 +282,120 @@ fn is_stop_word(word: &str) -> bool {
     matches!(
         word,
         // Common control-flow / declaration keywords across languages
-        "the" | "and" | "for" | "you" | "this" | "that" | "with" | "function"
-            | "return" | "const" | "let" | "var" | "import" | "export" | "from"
-            | "class" | "struct" | "enum" | "impl" | "trait" | "type" | "interface"
-            | "public" | "private" | "protected" | "static" | "final" | "void"
-            | "null" | "true" | "false" | "none" | "self" | "super" | "new"
-            | "delete" | "async" | "await" | "yield" | "throw" | "throws" | "catch"
-            | "try" | "finally" | "while" | "break" | "continue" | "else" | "elif"
-            | "match" | "case" | "switch" | "default" | "default_" | "where" | "when"
-            | "then" | "def" | "fun" | "func" | "val" | "use" | "mod" | "pub"
-            | "string" | "number" | "boolean" | "bool" | "int" | "float" | "double"
-            | "char" | "byte" | "long" | "short" | "object" | "array" | "list"
-            | "map" | "set" | "not" | "are" | "was" | "were" | "has" | "have"
-            | "had" | "will" | "can" | "all" | "any" | "out" | "get"
-            | "value" | "values" | "data" | "result" | "error" | "name" | "names"
-            | "key" | "keys" | "item" | "items" | "args" | "kwargs" | "params"
-            | "param" | "index" | "length" | "size" | "count" | "into" | "über"
+        "the"
+            | "and"
+            | "for"
+            | "you"
+            | "this"
+            | "that"
+            | "with"
+            | "function"
+            | "return"
+            | "const"
+            | "let"
+            | "var"
+            | "import"
+            | "export"
+            | "from"
+            | "class"
+            | "struct"
+            | "enum"
+            | "impl"
+            | "trait"
+            | "type"
+            | "interface"
+            | "public"
+            | "private"
+            | "protected"
+            | "static"
+            | "final"
+            | "void"
+            | "null"
+            | "true"
+            | "false"
+            | "none"
+            | "self"
+            | "super"
+            | "new"
+            | "delete"
+            | "async"
+            | "await"
+            | "yield"
+            | "throw"
+            | "throws"
+            | "catch"
+            | "try"
+            | "finally"
+            | "while"
+            | "break"
+            | "continue"
+            | "else"
+            | "elif"
+            | "match"
+            | "case"
+            | "switch"
+            | "default"
+            | "default_"
+            | "where"
+            | "when"
+            | "then"
+            | "def"
+            | "fun"
+            | "func"
+            | "val"
+            | "use"
+            | "mod"
+            | "pub"
+            | "string"
+            | "number"
+            | "boolean"
+            | "bool"
+            | "int"
+            | "float"
+            | "double"
+            | "char"
+            | "byte"
+            | "long"
+            | "short"
+            | "object"
+            | "array"
+            | "list"
+            | "map"
+            | "set"
+            | "not"
+            | "are"
+            | "was"
+            | "were"
+            | "has"
+            | "have"
+            | "had"
+            | "will"
+            | "can"
+            | "all"
+            | "any"
+            | "out"
+            | "get"
+            | "value"
+            | "values"
+            | "data"
+            | "result"
+            | "error"
+            | "name"
+            | "names"
+            | "key"
+            | "keys"
+            | "item"
+            | "items"
+            | "args"
+            | "kwargs"
+            | "params"
+            | "param"
+            | "index"
+            | "length"
+            | "size"
+            | "count"
+            | "into"
+            | "über"
     )
 }
 
@@ -255,10 +477,7 @@ fn is_candidate(token: &str) -> bool {
     let has_underscore = token.contains('_');
     let has_digit = token.bytes().any(|c| c.is_ascii_digit());
     // Internal uppercase after the first char => camelCase / PascalCase shape.
-    let has_internal_upper = token
-        .bytes()
-        .skip(1)
-        .any(|c| c.is_ascii_uppercase());
+    let has_internal_upper = token.bytes().skip(1).any(|c| c.is_ascii_uppercase());
     // A leading uppercase letter => PascalCase / acronym (e.g. "TauriApp", "API").
     let leads_upper = first.is_ascii_uppercase();
 
@@ -349,7 +568,9 @@ impl VocabAccumulator {
     fn add_identifier(&mut self, ident: &str) {
         let key = ident.to_ascii_lowercase();
         *self.freq.entry(key.clone()).or_insert(0) += 1;
-        self.surface.entry(key.clone()).or_insert_with(|| ident.to_string());
+        self.surface
+            .entry(key.clone())
+            .or_insert_with(|| ident.to_string());
         let next = &mut self.next_order;
         self.order.entry(key).or_insert_with(|| {
             let o = *next;
@@ -379,7 +600,10 @@ impl VocabAccumulator {
         }
         let mut ranked: Vec<(&String, u32)> = self.freq.iter().map(|(k, v)| (k, *v)).collect();
         // Sort by descending frequency, then ascending first-seen order for stable ties.
-        ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| self.order[a.0].cmp(&self.order[b.0])));
+        ranked.sort_by(|a, b| {
+            b.1.cmp(&a.1)
+                .then_with(|| self.order[a.0].cmp(&self.order[b.0]))
+        });
         ranked
             .into_iter()
             .take(max_terms)
@@ -595,7 +819,13 @@ pub fn collect_source_files<F: FnMut(&Path, usize), G: FnMut(&Path)>(
         }
     }
 
-    ScanOutcome { vocab, files_read, dirs_skipped, total_bytes, capped }
+    ScanOutcome {
+        vocab,
+        files_read,
+        dirs_skipped,
+        total_bytes,
+        capped,
+    }
 }
 
 #[cfg(test)]
@@ -690,7 +920,13 @@ mod tests {
         );
         assert_eq!(
             terms,
-            vec!["@acme/my-app", "tauri:dev", "test", "ccusage", "create-vite"]
+            vec![
+                "@acme/my-app",
+                "tauri:dev",
+                "test",
+                "ccusage",
+                "create-vite"
+            ]
         );
         assert!(!terms.iter().any(|term| term.contains("private")));
         assert!(!terms.iter().any(|term| term.contains("CustomerProject")));
@@ -773,8 +1009,20 @@ mod tests {
         let files = vec![("a.rs", "fooBar barBaz barBaz barBaz")];
         let ranked = ranked_vocab_terms(&files, 10);
         assert_eq!(ranked.len(), 2);
-        assert_eq!(ranked[0], RankedTerm { term: "barBaz".into(), freq: 3 });
-        assert_eq!(ranked[1], RankedTerm { term: "fooBar".into(), freq: 1 });
+        assert_eq!(
+            ranked[0],
+            RankedTerm {
+                term: "barBaz".into(),
+                freq: 3
+            }
+        );
+        assert_eq!(
+            ranked[1],
+            RankedTerm {
+                term: "fooBar".into(),
+                freq: 1
+            }
+        );
     }
 
     #[test]
@@ -790,7 +1038,10 @@ mod tests {
         // share ranked_terms_to_prompt so the prompt and the ranked list can't drift.
         let files = vec![("a.rs", "alphaOne betaTwo alphaOne")];
         let ranked = ranked_vocab_terms(&files, 10);
-        assert_eq!(ranked_terms_to_prompt(&ranked), build_vocab_prompt(&files, 10));
+        assert_eq!(
+            ranked_terms_to_prompt(&ranked),
+            build_vocab_prompt(&files, 10)
+        );
         assert_eq!(ranked[0].term, "alphaOne", "ranked={:?}", ranked);
     }
 
@@ -849,11 +1100,21 @@ mod tests {
         }
         // fooBar seen 3x total across files => ranks first.
         let ranked = acc.ranked(10);
-        assert_eq!(ranked[0], RankedTerm { term: "fooBar".into(), freq: 3 });
+        assert_eq!(
+            ranked[0],
+            RankedTerm {
+                term: "fooBar".into(),
+                freq: 3
+            }
+        );
         assert_eq!(acc.len(), 3, "fooBar, barBaz, quxQuux");
         // Folding files one at a time matches ranking them all together.
         let batch = ranked_vocab_terms(
-            &[("a", "fooBar barBaz"), ("b", "fooBar fooBar"), ("c", "quxQuux")],
+            &[
+                ("a", "fooBar barBaz"),
+                ("b", "fooBar fooBar"),
+                ("c", "quxQuux"),
+            ],
             10,
         );
         assert_eq!(ranked, batch, "streaming fold == batch ranking");
@@ -893,9 +1154,15 @@ mod tests {
         assert!(p.contains("kubectl"));
         // "async"/"struct" appear multiple times in the source list but must be
         // deduped (case-insensitively) in the rendered prompt.
-        let count_async = p.split(' ').filter(|t| t.eq_ignore_ascii_case("async")).count();
+        let count_async = p
+            .split(' ')
+            .filter(|t| t.eq_ignore_ascii_case("async"))
+            .count();
         assert_eq!(count_async, 1, "async should appear once, prompt={:?}", p);
-        let count_struct = p.split(' ').filter(|t| t.eq_ignore_ascii_case("struct")).count();
+        let count_struct = p
+            .split(' ')
+            .filter(|t| t.eq_ignore_ascii_case("struct"))
+            .count();
         assert_eq!(count_struct, 1, "struct should appear once");
     }
 
@@ -954,11 +1221,19 @@ mod tests {
         // on_file receives the running distinct-term count (monotonically grows as
         // files fold in); by the last file it equals the accumulator's total.
         assert!(last_term_count > 0, "on_file receives a running term count");
-        assert_eq!(last_term_count, outcome.vocab.len(), "final tally matches accumulator");
+        assert_eq!(
+            last_term_count,
+            outcome.vocab.len(),
+            "final tally matches accumulator"
+        );
         assert!(!outcome.capped, "small tree should not be capped");
         assert!(outcome.total_bytes > 0);
         // The accumulator folded both files' identifiers (fooBar, barBaz, useWidget).
-        assert!(outcome.vocab.len() >= 3, "got {} terms", outcome.vocab.len());
+        assert!(
+            outcome.vocab.len() >= 3,
+            "got {} terms",
+            outcome.vocab.len()
+        );
     }
 
     #[test]
@@ -989,17 +1264,30 @@ mod tests {
         std::fs::write(dir.join("main.rs"), "let realThing = 1;").unwrap();
 
         let mut skipped: Vec<String> = Vec::new();
-        let outcome = collect_source_files(&dir, |_, _| {}, |p| {
-            skipped.push(p.file_name().unwrap().to_string_lossy().to_string());
-        });
+        let outcome = collect_source_files(
+            &dir,
+            |_, _| {},
+            |p| {
+                skipped.push(p.file_name().unwrap().to_string_lossy().to_string());
+            },
+        );
         std::fs::remove_dir_all(&dir).ok();
 
         // Only the top-level real source file; the two skip-dirs are not descended.
         assert_eq!(outcome.files_read, 1, "got {} files", outcome.files_read);
         assert_eq!(outcome.dirs_skipped, 2, "node_modules + .git both skipped");
         // on_skip fires once per declined dir, carrying its path.
-        assert_eq!(skipped.len(), 2, "on_skip fired per skipped dir, got {:?}", skipped);
-        assert!(skipped.contains(&"node_modules".to_string()), "got {:?}", skipped);
+        assert_eq!(
+            skipped.len(),
+            2,
+            "on_skip fired per skipped dir, got {:?}",
+            skipped
+        );
+        assert!(
+            skipped.contains(&"node_modules".to_string()),
+            "got {:?}",
+            skipped
+        );
         assert!(skipped.contains(&".git".to_string()), "got {:?}", skipped);
     }
 
@@ -1012,14 +1300,22 @@ mod tests {
         for proj in ["projA", "projB"] {
             let src = dir.join(proj).join("src");
             std::fs::create_dir_all(&src).unwrap();
-            std::fs::write(dir.join(proj).join(format!("{}Top.rs", proj)), "let topThing = 1;").unwrap();
+            std::fs::write(
+                dir.join(proj).join(format!("{}Top.rs", proj)),
+                "let topThing = 1;",
+            )
+            .unwrap();
             std::fs::write(src.join("deepThing.rs"), "let deepThing = 1;").unwrap();
         }
 
         let mut order: Vec<String> = Vec::new();
-        let outcome = collect_source_files(&dir, |p, _| {
-            order.push(p.file_name().unwrap().to_string_lossy().to_string());
-        }, |_| {});
+        let outcome = collect_source_files(
+            &dir,
+            |p, _| {
+                order.push(p.file_name().unwrap().to_string_lossy().to_string());
+            },
+            |_| {},
+        );
         std::fs::remove_dir_all(&dir).ok();
 
         assert_eq!(outcome.files_read, 4);
@@ -1028,8 +1324,16 @@ mod tests {
         let pos_a_top = order.iter().position(|n| n == "projATop.rs").unwrap();
         let pos_b_top = order.iter().position(|n| n == "projBTop.rs").unwrap();
         let pos_deep = order.iter().position(|n| n == "deepThing.rs").unwrap();
-        assert!(pos_a_top < pos_deep, "shallow projA file before deep, order={:?}", order);
-        assert!(pos_b_top < pos_deep, "shallow projB file before deep, order={:?}", order);
+        assert!(
+            pos_a_top < pos_deep,
+            "shallow projA file before deep, order={:?}",
+            order
+        );
+        assert!(
+            pos_b_top < pos_deep,
+            "shallow projB file before deep, order={:?}",
+            order
+        );
     }
 
     #[test]
@@ -1056,7 +1360,11 @@ mod tests {
         let prompt = build_vocab_prompt(&files, 5);
         // useEffect appears twice; should be present and ranked highly.
         assert!(prompt.contains("useEffect"), "prompt was {:?}", prompt);
-        assert!(prompt.contains("configureDictation"), "prompt was {:?}", prompt);
+        assert!(
+            prompt.contains("configureDictation"),
+            "prompt was {:?}",
+            prompt
+        );
         // 'react'/'from'/'import'/'function'/'const'/'return' must be filtered.
         assert!(!prompt.contains("function"));
         assert!(!prompt.contains("import"));

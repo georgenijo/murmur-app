@@ -54,7 +54,11 @@ pub fn normalize(s: &str) -> String {
     s.split_whitespace()
         .map(|word| word.trim_matches(|c: char| !c.is_alphanumeric()))
         .filter(|word| !word.is_empty())
-        .map(|word| word.chars().flat_map(char::to_lowercase).collect::<String>())
+        .map(|word| {
+            word.chars()
+                .flat_map(char::to_lowercase)
+                .collect::<String>()
+        })
         .collect::<Vec<_>>()
         .join(" ")
 }
