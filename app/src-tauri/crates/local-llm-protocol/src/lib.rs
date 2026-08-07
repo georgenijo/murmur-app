@@ -2,7 +2,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::io::{Read, Write};
 
 pub const PROTOCOL_NAME: &str = "murmur.local_llm";
-pub const PROTOCOL_VERSION: u16 = 2;
+pub const PROTOCOL_VERSION: u16 = 3;
 pub const MODEL_FD: i32 = 3;
 pub const MAX_FRAME_BYTES: usize = 64 * 1024;
 pub const MAX_INSTRUCTION_BYTES: usize = 4 * 1024;
@@ -179,6 +179,14 @@ pub enum HelperMessage {
         runtime_version: String,
         model: ModelIdentity,
         backend: String,
+    },
+    OutputChunk {
+        protocol: String,
+        version: u16,
+        session_nonce: String,
+        request_id: String,
+        sequence: u32,
+        text: String,
     },
     Result {
         protocol: String,

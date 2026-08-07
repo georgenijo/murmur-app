@@ -3,7 +3,7 @@
 //! The app links **only** `murmur-local-llm-protocol`; it never links
 //! `llama-cpp-2`. This module owns the child helper process lifecycle: it
 //! verifies the pinned model file, spawns the helper with an empty environment
-//! and the model handed over as inherited read-only fd 3, drives protocol v1
+//! and the model handed over as inherited read-only fd 3, drives protocol v3
 //! over piped stdin/stdout, and enforces every app-side limit, deadline,
 //! cancellation, crash circuit-breaker, RSS ceiling, and idle-unload rule from
 //! the ADR (docs/decisions/2026-07-20-signed-local-llm-sidecar.md).
@@ -98,6 +98,11 @@ pub struct TransformOutput {
     pub finish_reason: FinishReason,
     pub output_tokens: u32,
 }
+
+/// Pass-scoped streaming callback. The supervisor delivers a monotonically
+/// sequenced cumulative preview; callers must still treat the final
+/// [`TransformOutput`] as authoritative.
+pub type ChunkCallback = Arc<dyn Fn(u32, String) + Send + Sync>;
 
 /// Content-free timing metadata returned only by the correlated transform
 /// entry point. `None` means that phase was never entered, not a synthetic
@@ -713,10 +718,23 @@ mod supported {
         }
     }
 
+    struct PrewarmGuard {
+        sidecar: Arc<LlmSidecar>,
+    }
+    impl Drop for PrewarmGuard {
+        fn drop(&mut self) {
+            self.sidecar.prewarming.store(false, Ordering::Release);
+        }
+    }
+
     pub struct LlmSidecar {
         plan: SpawnPlan,
         host_guard: OnceLock<Arc<dyn HostGuard>>,
         busy: AtomicBool,
+        /// True while an arm-triggered helper/model handshake owns the heavy
+        /// runtime. Recording paths treat this as busy, while the transform
+        /// request itself may queue behind the same `inner` lock.
+        prewarming: AtomicBool,
         /// PID of the resident helper, including while its startup handshake
         /// is loading the model. Kept atomic because `transform_blocking`
         /// holds `inner` across the request while the resource sampler must
@@ -769,6 +787,7 @@ mod supported {
                 plan,
                 host_guard: OnceLock::new(),
                 busy: AtomicBool::new(false),
+                prewarming: AtomicBool::new(false),
                 resident_pid: AtomicU32::new(0),
                 inflight_cancel: Mutex::new(None),
                 inner: Mutex::new(Inner {
@@ -795,10 +814,11 @@ mod supported {
             self.inner.lock().unwrap_or_else(|p| p.into_inner())
         }
 
-        /// True while a transform is in flight. Recording paths guard on this so
-        /// ASR never starts over a resident transform runtime.
+        /// True while a transform request or warm-on-arm handshake is in
+        /// flight. Recording paths guard on this so ASR never starts over a
+        /// resident transform runtime.
         pub fn is_transform_busy(&self) -> bool {
-            self.busy.load(Ordering::Acquire)
+            self.busy.load(Ordering::Acquire) || self.prewarming.load(Ordering::Acquire)
         }
 
         /// True once the circuit breaker has latched disabled after repeated
@@ -874,6 +894,75 @@ mod supported {
             child
         }
 
+        /// Start or refresh the resident helper as soon as a transform key is
+        /// armed. This does not claim the request busy flag: if the user
+        /// releases while the model is still loading, the real request queues
+        /// on `inner` and immediately reuses the completed handshake.
+        pub async fn prewarm_for_pass(
+            self: &Arc<Self>,
+            transform_pass_id: u64,
+            cancel: CancelToken,
+        ) -> Result<(), TransformError> {
+            if self
+                .prewarming
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
+                return Err(TransformError::Busy);
+            }
+            let this = Arc::clone(self);
+            let started = Instant::now();
+            let result = tokio::task::spawn_blocking(move || {
+                let _prewarm = PrewarmGuard {
+                    sidecar: Arc::clone(&this),
+                };
+                this.prewarm_blocking(&cancel)
+            })
+            .await
+            .unwrap_or(Err(TransformError::Internal));
+            tracing::info!(
+                target: "pipeline",
+                transform_pass_id,
+                outcome = result.as_ref().map(|_| "ok").unwrap_or_else(|error| error.as_str()),
+                duration_ms = started.elapsed().as_millis() as u64,
+                "llm_prewarm"
+            );
+            result
+        }
+
+        fn prewarm_blocking(&self, cancel: &CancelToken) -> Result<(), TransformError> {
+            let mut inner = self.lock();
+            if inner.breaker.is_disabled(Instant::now()) {
+                return Err(TransformError::Disabled);
+            }
+            if self.guard().heavy_runtime_active().is_some() {
+                return Err(TransformError::HeavyRuntimeActive);
+            }
+            if cancel.is_cancelled() {
+                return Err(TransformError::Cancelled);
+            }
+            if inner.child.is_none() {
+                let model_path = self.plan.model_path()?;
+                let mut diagnostics = SidecarDiagnostics::default();
+                self.guard().release_asr();
+                match self.spawn_and_handshake(&model_path, cancel, &mut diagnostics) {
+                    Ok(child) => inner.child = Some(child),
+                    Err(TransformError::ModelMismatch) => {
+                        self.plan.cleanup_bad_model();
+                        return Err(TransformError::ModelMismatch);
+                    }
+                    Err(error) => {
+                        if error != TransformError::Cancelled {
+                            inner.breaker.record_failure(Instant::now());
+                        }
+                        return Err(error);
+                    }
+                }
+            }
+            inner.last_activity = Instant::now();
+            Ok(())
+        }
+
         /// Async transform facade. Serializes to one in-flight request via a
         /// busy flag (queue-reject: a second concurrent call gets `Busy`).
         pub async fn transform(
@@ -883,7 +972,7 @@ mod supported {
             deadline: Duration,
             cancel: CancelToken,
         ) -> Result<TransformOutput, TransformError> {
-            self.transform_inner(instruction, input, deadline, cancel, None)
+            self.transform_inner(instruction, input, deadline, cancel, None, None)
                 .await
                 .result
         }
@@ -904,6 +993,30 @@ mod supported {
                 deadline,
                 cancel,
                 Some(transform_pass_id),
+                None,
+            )
+            .await
+        }
+
+        /// Correlated transform with bounded incremental output for the review
+        /// popover. Chunks are preview-only; the final result remains the only
+        /// value that can enter the apply session.
+        pub async fn transform_for_pass_streaming(
+            self: &Arc<Self>,
+            transform_pass_id: u64,
+            instruction: &str,
+            input: &str,
+            deadline: Duration,
+            cancel: CancelToken,
+            on_chunk: ChunkCallback,
+        ) -> CorrelatedTransformOutcome {
+            self.transform_inner(
+                instruction,
+                input,
+                deadline,
+                cancel,
+                Some(transform_pass_id),
+                Some(on_chunk),
             )
             .await
         }
@@ -915,6 +1028,7 @@ mod supported {
             deadline: Duration,
             cancel: CancelToken,
             transform_pass_id: Option<u64>,
+            on_chunk: Option<ChunkCallback>,
         ) -> CorrelatedTransformOutcome {
             // App-side limit enforcement (defence in depth over the helper).
             if instruction.len() > MAX_INSTRUCTION_BYTES
@@ -959,7 +1073,13 @@ mod supported {
             let started = Instant::now();
             let join = tokio::task::spawn_blocking(move || {
                 let _busy = busy_guard;
-                this.transform_blocking(&instruction, &input, deadline, &cancel)
+                this.transform_blocking(
+                    &instruction,
+                    &input,
+                    deadline,
+                    &cancel,
+                    on_chunk.as_deref(),
+                )
             })
             .await;
 
@@ -1005,6 +1125,7 @@ mod supported {
             input: &str,
             deadline: Duration,
             cancel: &CancelToken,
+            on_chunk: Option<&(dyn Fn(u32, String) + Send + Sync)>,
         ) -> CorrelatedTransformOutcome {
             let mut inner = self.lock();
             let cache_hit = inner.child.is_some();
@@ -1094,6 +1215,7 @@ mod supported {
                     &self.plan,
                     cancel,
                     &mut diagnostics,
+                    on_chunk,
                 )
             };
 
@@ -1557,6 +1679,12 @@ mod supported {
                 session_nonce,
                 ..
             }
+            | HelperMessage::OutputChunk {
+                protocol,
+                version,
+                session_nonce,
+                ..
+            }
             | HelperMessage::Result {
                 protocol,
                 version,
@@ -1594,6 +1722,7 @@ mod supported {
         plan: &SpawnPlan,
         cancel: &CancelToken,
         diagnostics: &mut SidecarDiagnostics,
+        on_chunk: Option<&(dyn Fn(u32, String) + Send + Sync)>,
     ) -> RequestOutcome {
         let transform = HostMessage::Transform {
             protocol: PROTOCOL_NAME.to_string(),
@@ -1615,6 +1744,8 @@ mod supported {
         let deadline_at = Instant::now() + wait;
         let mut receipt_seen = false;
         let mut first_token_seen = false;
+        let mut next_sequence = 0_u32;
+        let mut streamed_output = String::new();
         loop {
             // User cancel (e.g. Esc / short-tap) wins over the deadline wait.
             if cancel.is_cancelled() {
@@ -1698,6 +1829,7 @@ mod supported {
                             if output.len() > MAX_OUTPUT_BYTES
                                 || output_tokens > MAX_OUTPUT_TOKENS
                                 || output.contains('\0')
+                                || output != streamed_output.trim()
                             {
                                 return RequestOutcome::OutputInvalid;
                             }
@@ -1706,6 +1838,28 @@ mod supported {
                                 finish_reason,
                                 output_tokens,
                             });
+                        }
+                        HelperMessage::OutputChunk {
+                            request_id: got,
+                            sequence,
+                            text,
+                            ..
+                        } => {
+                            if got != request_id
+                                || !first_token_seen
+                                || sequence != next_sequence
+                                || text.is_empty()
+                                || text.contains('\0')
+                                || streamed_output.len() + text.len() > MAX_OUTPUT_BYTES
+                            {
+                                return RequestOutcome::Protocol;
+                            }
+                            streamed_output.push_str(&text);
+                            if let Some(callback) = on_chunk {
+                                callback(sequence, streamed_output.clone());
+                            }
+                            next_sequence = next_sequence.checked_add(1).unwrap_or(u32::MAX);
+                            continue;
                         }
                         HelperMessage::Error {
                             code,
@@ -1941,6 +2095,14 @@ impl LlmSidecar {
         Err(TransformError::Unsupported)
     }
 
+    pub async fn prewarm_for_pass(
+        self: &Arc<Self>,
+        _transform_pass_id: u64,
+        _cancel: CancelToken,
+    ) -> Result<(), TransformError> {
+        Err(TransformError::Unsupported)
+    }
+
     pub async fn transform_for_pass(
         self: &Arc<Self>,
         _transform_pass_id: u64,
@@ -1948,6 +2110,18 @@ impl LlmSidecar {
         _input: &str,
         _deadline: Duration,
         _cancel: CancelToken,
+    ) -> CorrelatedTransformOutcome {
+        CorrelatedTransformOutcome::before_runtime(TransformError::Unsupported)
+    }
+
+    pub async fn transform_for_pass_streaming(
+        self: &Arc<Self>,
+        _transform_pass_id: u64,
+        _instruction: &str,
+        _input: &str,
+        _deadline: Duration,
+        _cancel: CancelToken,
+        _on_chunk: ChunkCallback,
     ) -> CorrelatedTransformOutcome {
         CorrelatedTransformOutcome::before_runtime(TransformError::Unsupported)
     }

@@ -116,6 +116,40 @@ describe('useTransformReviewDriver (real driver)', () => {
     expect(current!.errorCode).toBe('model_not_downloaded');
   });
 
+  it('accepts only newer chunks for the active thinking pass', async () => {
+    mocks.invoke.mockResolvedValue({ ...CONTENT, proposed: '' });
+
+    function Harness() {
+      current = useTransformReviewDriver(true);
+      return null;
+    }
+
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      mocks.listeners['transform-state-changed']?.({
+        payload: { state: 'thinking', transformPassId: 45 },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      mocks.listeners['transform-proposal-chunk']?.({
+        payload: { transformPassId: 45, sequence: 0, text: 'Partial' },
+      });
+      mocks.listeners['transform-proposal-chunk']?.({
+        payload: { transformPassId: 44, sequence: 1, text: 'wrong pass' },
+      });
+      mocks.listeners['transform-proposal-chunk']?.({
+        payload: { transformPassId: 45, sequence: 0, text: 'stale' },
+      });
+    });
+
+    expect(current!.content.proposed).toBe('Partial');
+    expect(current!.state).toBe('thinking');
+  });
+
   it('approve/cancel/retry invoke the real transform-flow commands', async () => {
     mocks.invoke.mockResolvedValue(CONTENT);
 

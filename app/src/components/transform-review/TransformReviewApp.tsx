@@ -159,6 +159,17 @@ export function TransformReviewApp() {
     >
       <ReviewChip vm={vm} />
 
+      {vm.showStreamingPreview && (
+        <div
+          aria-label="Transform preview"
+          aria-live="polite"
+          className="mx-3 mb-2 max-h-24 overflow-hidden rounded-lg bg-white/[0.045] px-3 py-2 text-[12px] leading-relaxed text-white/75"
+        >
+          {driver.content.proposed}
+          <span aria-hidden="true" className="ml-0.5 inline-block h-3 w-px animate-pulse bg-white/55 align-middle" />
+        </div>
+      )}
+
       {vm.showDiff && <ReviewDiff original={driver.content.original} proposed={driver.content.proposed} />}
 
       {vm.errorMessage && !vm.showUndo && (

@@ -300,16 +300,11 @@ pub async fn capture_selection(
             Result<TransformSnapshot, SelectionError>,
             Option<(i32, Option<String>)>,
         );
-        // Chromium builds its accessibility tree lazily: the FIRST AX queries
-        // against a Chromium app fail or time out, and the very act of
-        // querying flips its "assistive client present" switch and starts the
-        // tree build. Observed live on Brave (issue #329): three presses
-        // failed with ax_unavailable, the fourth succeeded with full
-        // range+bounds. So retry the AX capture a couple of times with a
-        // warm-up gap before falling back — the retries run while the user is
-        // still holding the key/speaking, so the latency is invisible, and an
-        // AX capture is strictly better than the clipboard fallback (it has
-        // range + bounds for anchoring and AX write-back).
+        // Keep the AX warm-up ladder for native and unknown apps, where a
+        // range/bounds capture is worth the retry. Known Chromium browsers
+        // overwhelmingly fall back to Copy in shipped telemetry, so after one
+        // secure-field-aware AX attempt they go directly to the bounded
+        // clipboard fallback instead of paying two 250ms gaps (#340).
         const AX_ATTEMPTS: u32 = 3;
         const AX_RETRY_GAP: std::time::Duration = std::time::Duration::from_millis(250);
 
@@ -357,13 +352,19 @@ pub async fn capture_selection(
                 // re-runs from scratch) — success and the fail-closed errors
                 // (SecureField, AccessibilityDenied, TooLarge) are final.
                 Err(err) if retry_eligible(err) => {
-                    if attempt + 1 < AX_ATTEMPTS {
+                    let known_chromium = frontmost
+                        .as_ref()
+                        .and_then(|(_, bundle_id)| bundle_id.as_deref())
+                        .is_some_and(is_known_chromium_browser);
+                    if attempt + 1 < AX_ATTEMPTS && !known_chromium {
                         tracing::info!(
                             target: "transform",
                             transform_pass_id,
                             attempt = attempt + 1,
                             "AX capture incomplete — retrying after warm-up gap"
                         );
+                    } else {
+                        break;
                     }
                 }
                 _ => break,
@@ -439,6 +440,20 @@ pub async fn capture_selection(
         let _ = app_handle;
         Err(SelectionError::AxUnavailable)
     }
+}
+
+fn is_known_chromium_browser(bundle_id: &str) -> bool {
+    [
+        "com.google.Chrome",
+        "com.brave.Browser",
+        "com.microsoft.edgemac",
+        "com.vivaldi.Vivaldi",
+        "com.operasoftware.Opera",
+        "org.chromium.Chromium",
+        "company.thebrowser.Browser",
+    ]
+    .iter()
+    .any(|prefix| bundle_id == *prefix || bundle_id.starts_with(&format!("{prefix}.")))
 }
 
 /// Clipboard-based selection capture (issue #329), used when the AX path
@@ -1102,6 +1117,23 @@ mod tests {
         assert_eq!(length_bucket(16384), "4097-16384");
         assert_eq!(length_bucket(16385), ">16384");
         assert_eq!(length_bucket(usize::MAX), ">16384");
+    }
+
+    #[test]
+    fn chromium_browser_bundle_ids_skip_the_retry_ladder() {
+        for bundle_id in [
+            "com.google.Chrome",
+            "com.google.Chrome.beta",
+            "com.brave.Browser",
+            "com.microsoft.edgemac.Dev",
+            "org.chromium.Chromium",
+            "company.thebrowser.Browser",
+        ] {
+            assert!(is_known_chromium_browser(bundle_id), "{bundle_id}");
+        }
+        assert!(!is_known_chromium_browser("com.apple.Safari"));
+        assert!(!is_known_chromium_browser("com.tinyspeck.slackmacgap"));
+        assert!(!is_known_chromium_browser("com.google.ChromeHelper"));
     }
 
     #[test]

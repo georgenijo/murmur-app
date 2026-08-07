@@ -67,7 +67,8 @@ Local Stage 0 evidence on 2026-07-20 passed for both debug and optimized
 release helpers on Apple M4/macOS 26.5.1: the finalizer preserved the exact
 split entitlement sets and hardened runtime; the sandboxed helper re-verified
 the 1,117,320,736-byte model fd, reported `metal:MTL0`, completed a fixed
-inference, and shut down through protocol v1. Developer ID, notarization,
+inference, incremental output preview, and shutdown through protocol v3.
+Developer ID, notarization,
 stapling, quarantine, and updater-archive evidence remain required from the
 trusted non-publishing CI rehearsal before this ADR becomes Accepted.
 

@@ -12,7 +12,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ui_lib::llm_sidecar::{
-    model_file_digest, CancelToken, LlmSidecar, TestSpawnConfig, TransformError, TransformOutput,
+    model_file_digest, CancelToken, ChunkCallback, LlmSidecar, TestSpawnConfig, TransformError,
+    TransformOutput,
 };
 
 fn helper_path() -> PathBuf {
@@ -91,6 +92,84 @@ async fn successful_transform_round_trip() {
     assert_eq!(out.output_tokens, 3);
     // The helper is healthy and kept resident for reuse.
     assert!(sidecar.has_live_child());
+}
+
+#[tokio::test]
+async fn prewarm_makes_the_first_transform_a_cache_hit() {
+    let fixture = fixture_model();
+    let sidecar = sidecar("happy", &fixture);
+    sidecar
+        .prewarm_for_pass(70, CancelToken::new())
+        .await
+        .unwrap();
+    assert!(sidecar.has_live_child());
+
+    let outcome = sidecar
+        .transform_for_pass(
+            71,
+            "Rewrite this politely.",
+            "gimme the report",
+            Duration::from_secs(5),
+            CancelToken::new(),
+        )
+        .await;
+    assert!(outcome.result.is_ok());
+    assert_eq!(outcome.cache_hit, Some(true));
+}
+
+#[tokio::test]
+async fn cancelled_prewarm_reaps_partial_helper_and_releases_runtime_busy() {
+    let fixture = fixture_model();
+    let sidecar = Arc::new(LlmSidecar::for_test(config_with(
+        "happy",
+        &fixture,
+        vec![("MOCK_READY_DELAY_MS".to_string(), "600".to_string())],
+    )));
+    let token = CancelToken::new();
+    let task_sidecar = Arc::clone(&sidecar);
+    let task_token = token.clone();
+    let task = tokio::spawn(async move { task_sidecar.prewarm_for_pass(73, task_token).await });
+
+    for _ in 0..100 {
+        if sidecar.has_live_child() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(sidecar.has_live_child());
+    assert!(sidecar.is_transform_busy());
+    token.cancel();
+
+    assert_eq!(task.await.unwrap(), Err(TransformError::Cancelled));
+    assert!(!sidecar.has_live_child());
+    assert!(!sidecar.is_transform_busy());
+}
+
+#[tokio::test]
+async fn streaming_delivers_monotonic_cumulative_preview_before_final_result() {
+    let fixture = fixture_model();
+    let sidecar = sidecar("happy", &fixture);
+    let previews = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let captured = Arc::clone(&previews);
+    let callback: ChunkCallback = Arc::new(move |sequence, text| {
+        captured.lock().unwrap().push((sequence, text));
+    });
+
+    let outcome = sidecar
+        .transform_for_pass_streaming(
+            72,
+            "Rewrite this politely.",
+            "gimme the report",
+            Duration::from_secs(5),
+            CancelToken::new(),
+            callback,
+        )
+        .await;
+    assert_eq!(outcome.result.unwrap().output, "mock-output");
+    assert_eq!(
+        *previews.lock().unwrap(),
+        vec![(0, "mock-".to_string()), (1, "mock-output".to_string())]
+    );
 }
 
 #[tokio::test]

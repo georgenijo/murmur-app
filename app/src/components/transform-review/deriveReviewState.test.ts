@@ -65,6 +65,16 @@ describe('deriveReviewState', () => {
     expect(vmJustBefore.showStillWorkingHint).toBe(false);
   });
 
+  it('thinking: reveals streamed text without enabling approval', () => {
+    const vm = deriveReviewState(input({
+      state: 'thinking',
+      proposed: 'A partial proposal',
+    }));
+    expect(vm.showStreamingPreview).toBe(true);
+    expect(vm.showDiff).toBe(false);
+    expect(vm.approveEnabled).toBe(false);
+  });
+
   it('ready: shows the diff and all three actions', () => {
     const vm = deriveReviewState(input({
       state: 'ready', instruction: 'make this shorter', original: 'a b c', proposed: 'a c',
