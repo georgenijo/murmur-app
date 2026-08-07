@@ -13,7 +13,7 @@ pub const SYNTHETIC_FIXTURE_DIGEST: &str =
 // Production capture uses a separate, binary-framed protocol. Probe v1 above
 // remains stable so shipped attribution/recovery evidence stays readable.
 pub const PRODUCTION_PROTOCOL_NAME: &str = "murmur.capture";
-pub const PRODUCTION_PROTOCOL_VERSION: u16 = 3;
+pub const PRODUCTION_PROTOCOL_VERSION: u16 = 4;
 pub const PRODUCTION_MAGIC: [u8; 4] = *b"MRMR";
 pub const PRODUCTION_HEADER_BYTES: usize = 36;
 pub const MAX_CONTROL_BYTES: usize = 16 * 1024;
@@ -55,6 +55,7 @@ pub enum ProductionHostMessage {
     Enumerate,
     Start {
         device_id: Option<String>,
+        fallback_to_default: bool,
         backend: CaptureBackend,
     },
     Stop,
@@ -582,6 +583,23 @@ mod tests {
             read_production_frame::<ProductionHelperMessage>(&mut bytes.as_slice(), 43, nonce),
             Err(FrameError::StaleCapture)
         ));
+    }
+
+    #[test]
+    fn production_start_round_trip_preserves_device_fallback_policy() {
+        let nonce = [8_u8; 16];
+        let message = ProductionHostMessage::Start {
+            device_id: Some("preferred-device".to_string()),
+            fallback_to_default: true,
+            backend: CaptureBackend::Auhal,
+        };
+        let mut bytes = Vec::new();
+        write_production_control(&mut bytes, 12, nonce, &message).unwrap();
+        assert_eq!(
+            read_production_frame::<ProductionHostMessage>(&mut bytes.as_slice(), 12, nonce)
+                .unwrap(),
+            ProductionFrame::Control(message),
+        );
     }
 
     #[test]

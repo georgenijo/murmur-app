@@ -2432,6 +2432,7 @@ pub async fn start_native_recording(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, State>,
     device_name: Option<String>,
+    fallback_to_default: Option<bool>,
     origin: Option<String>,
 ) -> Result<serde_json::Value, String> {
     // This lock covers only the synchronous ownership transition. Core Audio
@@ -2563,9 +2564,19 @@ pub async fn start_native_recording(
         Some("hold") => "hold",
         _ => "toggle",
     };
+    // A default-device request has nothing to fall back from. Keeping this
+    // false also prevents malformed callers from claiming fallback semantics
+    // without supplying an explicit preferred device.
+    let fallback_to_default = device_name.is_some() && fallback_to_default.unwrap_or(false);
     tracing::info!(
         target: "pipeline",
-        device_selection = if device_name.is_some() { "explicit" } else { "system_default" },
+        device_selection = if fallback_to_default {
+            "preferred_with_default_fallback"
+        } else if device_name.is_some() {
+            "explicit"
+        } else {
+            "system_default"
+        },
         recording_id = rid,
         origin,
         "start_native_recording"
@@ -2574,9 +2585,13 @@ pub async fn start_native_recording(
     // fast device open could emit Recording first and this command would then
     // overwrite the frontend with a stale Starting event.
     let _ = app_handle.emit("recording-status-changed", "starting");
-    if let Err(error) =
-        audio_lifecycle::start_dictation_recording(app_handle.clone(), device_name, rid, origin)
-    {
+    if let Err(error) = audio_lifecycle::start_dictation_recording(
+        app_handle.clone(),
+        device_name,
+        fallback_to_default,
+        rid,
+        origin,
+    ) {
         tracing::error!(target: "audio", "start_native_recording: audio failed: {}", error);
         state.app_state.clear_active_context(rid);
         let mut dictation = state.app_state.dictation.lock_or_recover();

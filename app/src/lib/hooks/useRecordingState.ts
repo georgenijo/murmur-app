@@ -11,9 +11,14 @@ import type { HistoryInterruption } from '../history';
 interface UseRecordingStateProps {
   addEntry: (text: string, duration: number, source?: 'recording' | 'file', sourceName?: string, teachingContext?: TeachingContext, interruption?: HistoryInterruption) => void;
   microphone: string;
+  microphoneFallbackToDefault?: boolean;
 }
 
-export function useRecordingState({ addEntry, microphone }: UseRecordingStateProps) {
+export function useRecordingState({
+  addEntry,
+  microphone,
+  microphoneFallbackToDefault = false,
+}: UseRecordingStateProps) {
   const [status, setStatus] = useState<DictationStatus>('idle');
   const [transcription, setTranscription] = useState('');
   const [error, setError] = useState('');
@@ -26,9 +31,13 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
   // Refs for stable callbacks (hotkey toggle reads current state)
   const statusRef = useRef(status);
   const microphoneRef = useRef(microphone);
+  const microphoneFallbackRef = useRef(microphoneFallbackToDefault);
   const recordingStartTimeRef = useRef(recordingStartTime);
   useEffect(() => { statusRef.current = status; }, [status]);
   useEffect(() => { microphoneRef.current = microphone; }, [microphone]);
+  useEffect(() => {
+    microphoneFallbackRef.current = microphoneFallbackToDefault;
+  }, [microphoneFallbackToDefault]);
   const isStartingRef = useRef(false);
   const startOperationRef = useRef<Promise<void> | null>(null);
   const isStoppingRef = useRef(false);
@@ -209,7 +218,11 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
     const operation = (async () => {
       try {
         setError('');
-        const res = await startRecording(microphoneRef.current, origin);
+        const res = await startRecording(
+          microphoneRef.current,
+          origin,
+          microphoneFallbackRef.current,
+        );
         // These two responses may describe a transform-owned supervisor
         // attempt while dictation itself is Idle. Lifecycle events remain the
         // authority; never let a later invoke response overwrite them.

@@ -490,7 +490,27 @@ export function SettingsPanel({
             <div>
               <label className="mb-2 block text-sm font-medium text-on-surface">Microphone</label>
               <Select value={settings.microphone} onChange={(microphone) => onUpdateSettings({ microphone })} disabled={isRecording} items={[{ value: 'system_default', label: 'System Default' }, ...audioDeviceSelectOptions(audioDevices)]} />
-              {missingDevice && <p className="mt-2 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-on-surface">Selected device not found — choose an available microphone or System Default.</p>}
+              {missingDevice && (
+                <p className="mt-2 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-on-surface">
+                  {settings.microphoneFallbackToDefault
+                    ? 'Preferred microphone is disconnected — Murmur will use the current macOS default until it returns.'
+                    : 'Selected device not found — choose an available microphone, enable automatic fallback, or use System Default.'}
+                </p>
+              )}
+              {settings.microphone !== DEFAULT_SETTINGS.microphone && (
+                <div className="mt-3">
+                  <SettingToggle
+                    title="Use Default When Unavailable"
+                    label="Use system default microphone when preferred microphone is unavailable"
+                    description="Keep this microphone preferred when connected; otherwise use the current macOS default for the next recording."
+                    checked={settings.microphoneFallbackToDefault}
+                    disabled={isRecording}
+                    onChange={() => onUpdateSettings({
+                      microphoneFallbackToDefault: !settings.microphoneFallbackToDefault,
+                    })}
+                  />
+                </div>
+              )}
             </div>
             <div>
               <p className="mb-2 text-sm font-medium text-on-surface">Voice Detection</p>

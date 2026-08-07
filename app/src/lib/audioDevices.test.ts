@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   audioDeviceSelectOptions,
+  microphoneCaptureArgs,
   migrateLegacyMicrophoneId,
   selectedDeviceExists,
 } from './audioDevices';
@@ -34,5 +35,20 @@ describe('audio device persistence', () => {
       { value: 'USB-A', label: 'Studio Mic (USB-A)' },
       { value: 'USB-B', label: 'Studio Mic (USB-B)' },
     ]);
+  });
+
+  it('builds an opt-in preferred-device fallback policy', () => {
+    expect(microphoneCaptureArgs('USB-A', true)).toEqual({
+      deviceName: 'USB-A',
+      fallbackToDefault: true,
+    });
+    expect(microphoneCaptureArgs('USB-A', false)).toEqual({
+      deviceName: 'USB-A',
+      fallbackToDefault: false,
+    });
+    expect(microphoneCaptureArgs('system_default', true)).toEqual({
+      deviceName: null,
+      fallbackToDefault: false,
+    });
   });
 });

@@ -50,6 +50,7 @@ interface Settings {
   hotkeyMissFeedback: boolean;
   autoStopSilenceMs: number;               // 0 = off (default)
   microphone: string;
+  microphoneFallbackToDefault: boolean;
   disabled: boolean;
 
   // Transform (selected-text rewrite)
@@ -197,7 +198,8 @@ New text replacements and snippets are Rust-owned knowledge records rather than 
 
 | Setting | Type | Default | Valid Options/Range | Description |
 |---------|------|---------|-------------------|-------------|
-| `microphone` | `string` | `'system_default'` | `'system_default'` or a descriptor `id` from `list_audio_devices` | Stable audio input ID for recording. On CoreAudio this is the raw device UID, without CPAL's host prefix. Display names are presentation-only. When set to `'system_default'`, the frontend sends `null` and the backend uses the live system default. A missing explicit ID fails closed; it never records from another physical microphone. Unique legacy display-name values migrate to the matching stable ID when the settings panel enumerates devices; duplicate or missing names remain unresolved and require reselection. |
+| `microphone` | `string` | `'system_default'` | `'system_default'` or a descriptor `id` from `list_audio_devices` | Stable preferred audio input ID for recording. On CoreAudio this is the raw device UID, without CPAL's host prefix. Display names are presentation-only. When set to `'system_default'`, the frontend sends `null` and the backend resolves the live system default at the start of each recording. Unique legacy display-name values migrate to the matching stable ID when the settings panel enumerates devices; duplicate or missing names remain unresolved and require reselection. |
+| `microphoneFallbackToDefault` | `boolean` | `false` | `true` / `false` | Applies only to an explicit preferred microphone. When enabled and that stable ID is absent during device resolution, the signed capture worker uses the current macOS default for that recording. The preferred ID remains persisted, so the next recording uses it again automatically after reconnection. It does not switch an in-progress recording and does not fall back for stream/configuration failures on a device that is still present. Older settings default to `false` to preserve fail-closed routing until the user opts in. |
 | `launchAtLogin` | `boolean` | `false` | `true` / `false` | Whether the app starts automatically on macOS login. Uses `@tauri-apps/plugin-autostart` with `MacosLauncher::LaunchAgent`. On mount, the hook checks the actual OS autostart state and reconciles with the stored setting (handles the case where the user removed the login item from System Settings). |
 
 ---
@@ -241,6 +243,7 @@ When settings change, `useSettings.updateSettings` pushes the following fields t
 | `hotkeyMissFeedback` | _(controls overlay rejection feedback)_ | Frontend only |
 | `autoStopSilenceMs` | _(drives the frontend silence detector)_ | Frontend only |
 | `microphone` | _(sent as param to `start_native_recording`)_ | Per recording |
+| `microphoneFallbackToDefault` | _(sent as `fallbackToDefault` with capture commands)_ | Per recording |
 | `launchAtLogin` | _(sent via autostart plugin)_ | Via OS API |
 | `benchmarkOutputDir` | _(sent as param to `save_benchmark_report` / `open_benchmark_output_folder`)_ | On save/reveal |
 | `benchmarkAutoSave` | _(read in the Performance Lab; drives auto-save after each run)_ | Frontend only |

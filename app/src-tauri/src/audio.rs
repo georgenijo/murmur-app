@@ -289,6 +289,7 @@ pub(crate) struct AudioWorkerSpec {
     pub active: Arc<AtomicBool>,
     pub app_handle: Option<tauri::AppHandle>,
     pub device_id: Option<String>,
+    pub fallback_to_default: bool,
 }
 
 fn capture_identity() -> (u64, SessionNonce, String) {
@@ -339,7 +340,7 @@ fn spawn_helper(
     let spawn_started = Instant::now();
     let child = ManagedChild::spawn_with_arguments(
         &path,
-        &["--production-v3", &capture_id_text, nonce_hex],
+        &["--production-v4", &capture_id_text, nonce_hex],
         &[],
     )
     .map_err(|_| {
@@ -468,9 +469,15 @@ pub fn list_input_devices() -> Result<Vec<AudioDeviceDescriptor>, String> {
 pub fn start_transform_capture_audio(
     app_handle: Option<tauri::AppHandle>,
     device_id: Option<String>,
+    fallback_to_default: bool,
     transform_pass_id: u64,
 ) -> Result<(), String> {
-    crate::audio_lifecycle::start_transform_recording(app_handle, device_id, transform_pass_id)
+    crate::audio_lifecycle::start_transform_recording(
+        app_handle,
+        device_id,
+        fallback_to_default,
+        transform_pass_id,
+    )
 }
 
 enum HelperRead {
@@ -782,6 +789,7 @@ fn run_backend(
     owner: crate::audio_lifecycle::AudioOwner,
     backend: CaptureBackend,
     device_id: Option<&str>,
+    fallback_to_default: bool,
     ctx: AttemptContext,
     command_receiver: &Receiver<AudioCommand>,
     shared: &Arc<Mutex<Vec<f32>>>,
@@ -864,6 +872,7 @@ fn run_backend(
         nonce,
         &ProductionHostMessage::Start {
             device_id: device_id.map(str::to_string),
+            fallback_to_default,
             backend,
         },
     )
@@ -1462,6 +1471,7 @@ fn run_audio_capture(spec: AudioWorkerSpec, event_sender: &AudioWorkerEventSende
         active,
         app_handle,
         device_id,
+        fallback_to_default,
     } = spec;
     tracing::info!(
         target: "audio",
@@ -1491,6 +1501,7 @@ fn run_audio_capture(spec: AudioWorkerSpec, event_sender: &AudioWorkerEventSende
                 owner,
                 backend,
                 device_id.as_deref(),
+                fallback_to_default,
                 AttemptContext {
                     is_primary: backend == backends[0],
                     memo_promoted,

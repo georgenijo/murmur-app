@@ -19,6 +19,9 @@ Current as of **v0.21.3**. This is the breadth-first inventory of what ships; ea
 - One final-after-stop transcription path for every backend. Delivery happens exactly once.
 - Recordings under 0.3s are discarded as phantom triggers.
 - Imported-file transcription (`transcribe_file`) runs the same pipeline with live-only stages skipped.
+- An explicit microphone can be kept as the preferred device while opting into
+  live system-default fallback whenever that device is disconnected. The next
+  recording returns to the preferred stable ID automatically when it reconnects.
 
 ### Voice activity detection — [features/vad.md](features/vad.md)
 

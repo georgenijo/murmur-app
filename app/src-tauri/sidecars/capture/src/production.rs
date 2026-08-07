@@ -164,7 +164,10 @@ fn enumerate() -> Result<Vec<ProductionDevice>, FailureCode> {
         .collect())
 }
 
-fn cpal_device(requested: Option<&str>) -> Result<cpal::Device, FailureCode> {
+fn cpal_device(
+    requested: Option<&str>,
+    fallback_to_default: bool,
+) -> Result<cpal::Device, FailureCode> {
     let host = cpal::default_host();
     if let Some(requested) = requested {
         let devices = host
@@ -189,10 +192,15 @@ fn cpal_device(requested: Option<&str>) -> Result<cpal::Device, FailureCode> {
                 legacy_matches.push(device);
             }
         }
-        exact_match
+        let preferred = exact_match.or_else(|| {
+            (legacy_matches.len() == 1)
+                .then(|| legacy_matches.into_iter().next().expect("length checked"))
+        });
+        preferred
             .or_else(|| {
-                (legacy_matches.len() == 1)
-                    .then(|| legacy_matches.into_iter().next().expect("length checked"))
+                fallback_to_default
+                    .then(|| host.default_input_device())
+                    .flatten()
             })
             .ok_or(FailureCode::NoInputDevice)
     } else {
@@ -230,12 +238,13 @@ where
 
 fn start_cpal(
     requested: Option<&str>,
+    fallback_to_default: bool,
     ring: Arc<SpscRing>,
     failed: Arc<AtomicBool>,
     emit: &mut impl FnMut(CaptureSetupStep, SetupTransition) -> Result<(), FailureCode>,
 ) -> Result<(CaptureStream, u32), FailureCode> {
     emit(CaptureSetupStep::DeviceResolution, SetupTransition::Entered)?;
-    let device = cpal_device(requested)?;
+    let device = cpal_device(requested, fallback_to_default)?;
     emit(
         CaptureSetupStep::DeviceResolution,
         SetupTransition::Completed,
@@ -284,16 +293,25 @@ fn start_cpal(
 
 fn start_auhal(
     requested: Option<&str>,
+    fallback_to_default: bool,
     ring: Arc<SpscRing>,
     emit: &mut impl FnMut(CaptureSetupStep, SetupTransition) -> Result<(), FailureCode>,
 ) -> Result<(CaptureStream, u32), FailureCode> {
     emit(CaptureSetupStep::DeviceResolution, SetupTransition::Entered)?;
     let device = match requested {
-        Some(uid) => get_audio_device_ids_for_scope(Scope::Input)
-            .map_err(|_| FailureCode::EnumerationFailed)?
-            .into_iter()
-            .find(|id| raw_uid(*id).as_deref() == Some(uid))
-            .ok_or(FailureCode::NoInputDevice)?,
+        Some(uid) => {
+            let preferred = get_audio_device_ids_for_scope(Scope::Input)
+                .map_err(|_| FailureCode::EnumerationFailed)?
+                .into_iter()
+                .find(|id| raw_uid(*id).as_deref() == Some(uid));
+            preferred
+                .or_else(|| {
+                    fallback_to_default
+                        .then(|| get_default_device_id(true))
+                        .flatten()
+                })
+                .ok_or(FailureCode::NoInputDevice)?
+        }
         None => get_default_device_id(true).ok_or(FailureCode::NoInputDevice)?,
     };
     emit(
@@ -435,7 +453,11 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
             .map_err(|_| ())?;
             return Ok(());
         }
-        ProductionHostMessage::Start { device_id, backend } => {
+        ProductionHostMessage::Start {
+            device_id,
+            fallback_to_default,
+            backend,
+        } => {
             drop(stdin);
             write_production_control(
                 &mut stdout,
@@ -465,13 +487,17 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
             let started = match backend {
                 CaptureBackend::Cpal => start_cpal(
                     device_id.as_deref(),
+                    fallback_to_default,
                     Arc::clone(&ring),
                     Arc::clone(&failed),
                     &mut emit_setup,
                 ),
-                CaptureBackend::Auhal => {
-                    start_auhal(device_id.as_deref(), Arc::clone(&ring), &mut emit_setup)
-                }
+                CaptureBackend::Auhal => start_auhal(
+                    device_id.as_deref(),
+                    fallback_to_default,
+                    Arc::clone(&ring),
+                    &mut emit_setup,
+                ),
             };
             drop(emit_setup);
             let (mut stream, sample_rate) = match started {

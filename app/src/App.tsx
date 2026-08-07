@@ -137,7 +137,11 @@ function App() {
   const {
     status, recordingDuration, error: recordingError,
     handleStart, handleHoldStart, handleStop, toggleRecording, statsVersion,
-  } = useRecordingState({ addEntry, microphone: settings.microphone });
+  } = useRecordingState({
+    addEntry,
+    microphone: settings.microphone,
+    microphoneFallbackToDefault: settings.microphoneFallbackToDefault,
+  });
   const [statsResetVersion, setStatsResetVersion] = useState(0);
   const combinedStatsVersion = statsVersion + statsResetVersion;
   const handleResetStats = () => { resetStats(); setStatsResetVersion(v => v + 1); };
@@ -168,6 +172,7 @@ function App() {
     accessibilityGranted,
     transformHoldKey: settings.transformHoldKey,
     microphone: settings.microphone,
+    microphoneFallbackToDefault: settings.microphoneFallbackToDefault,
   });
   const { showAbout, setShowAbout } = useShowAboutListener();
   const updater = useAutoUpdater();

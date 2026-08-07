@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
-import { DEFAULT_SETTINGS, Settings, AppProfile, VoiceCommand, VocabularyEntry } from './settings';
+import { Settings, AppProfile, VoiceCommand, VocabularyEntry } from './settings';
+import { microphoneCaptureArgs } from './audioDevices';
 
 export interface DictationResponse {
   type: string;
@@ -18,10 +19,12 @@ export async function initDictation(): Promise<DictationResponse> {
 export async function startRecording(
   deviceName?: string,
   origin: 'toggle' | 'hold' = 'toggle',
+  fallbackToDefault = false,
 ): Promise<DictationResponse> {
   try {
+    const microphone = microphoneCaptureArgs(deviceName, fallbackToDefault);
     return await invoke('start_native_recording', {
-      deviceName: deviceName && deviceName !== DEFAULT_SETTINGS.microphone ? deviceName : null,
+      ...microphone,
       origin,
     });
   } catch (err) {

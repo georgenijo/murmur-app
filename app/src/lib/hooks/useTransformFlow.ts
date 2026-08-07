@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { DEFAULT_SETTINGS } from '../settings';
+import { microphoneCaptureArgs } from '../audioDevices';
 import { flog } from '../log';
 import {
   INITIAL_TRANSFORM_FLOW_STATE,
@@ -19,6 +19,8 @@ interface UseTransformFlowProps {
   transformHoldKey: string | null;
   /** Selected microphone device id (same contract as start_native_recording). */
   microphone?: string;
+  /** Use the system default only when the explicit preferred id is absent. */
+  microphoneFallbackToDefault?: boolean;
 }
 
 interface TransformKeyPayload {
@@ -61,12 +63,17 @@ export function useTransformFlow({
   accessibilityGranted,
   transformHoldKey,
   microphone,
+  microphoneFallbackToDefault = false,
 }: UseTransformFlowProps) {
   const stateRef = useRef<TransformFlowState>(INITIAL_TRANSFORM_FLOW_STATE);
   const microphoneRef = useRef(microphone);
+  const microphoneFallbackRef = useRef(microphoneFallbackToDefault);
   useEffect(() => {
     microphoneRef.current = microphone;
   }, [microphone]);
+  useEffect(() => {
+    microphoneFallbackRef.current = microphoneFallbackToDefault;
+  }, [microphoneFallbackToDefault]);
 
   useEffect(() => {
     if (!enabled || !initialized || !accessibilityGranted || !transformHoldKey) return;
@@ -77,8 +84,10 @@ export function useTransformFlow({
     let unlistenEscape: (() => void) | null = null;
 
     const deviceNameArg = () => {
-      const mic = microphoneRef.current;
-      return mic && mic !== DEFAULT_SETTINGS.microphone ? mic : null;
+      return microphoneCaptureArgs(
+        microphoneRef.current,
+        microphoneFallbackRef.current,
+      );
     };
 
     const dispatch = (input: TransformFlowInput) => {
@@ -95,7 +104,7 @@ export function useTransformFlow({
         }
         const args = step.command === 'start_transform_capture'
           ? {
-              deviceName: deviceNameArg(),
+              ...deviceNameArg(),
               transformPassId: step.transformPassId,
             }
           : { transformPassId: step.transformPassId };

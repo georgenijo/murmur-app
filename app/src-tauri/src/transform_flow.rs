@@ -1674,6 +1674,7 @@ pub(crate) async fn start_transform_capture(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, crate::State>,
     device_name: Option<String>,
+    fallback_to_default: Option<bool>,
     transform_pass_id: u64,
 ) -> Result<(), String> {
     state.transform_diagnostics.begin(transform_pass_id);
@@ -1769,6 +1770,7 @@ pub(crate) async fn start_transform_capture(
         if let Err(e) = crate::audio::start_transform_capture_audio(
             Some(app_handle.clone()),
             device_name,
+            fallback_to_default.unwrap_or(false),
             transform_pass_id,
         ) {
             crate::transform_trace::audio(transform_pass_id, "armed", "error", 0, 0);
@@ -2346,6 +2348,7 @@ pub(crate) async fn retry_transform_instruction(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, crate::State>,
     device_name: Option<String>,
+    fallback_to_default: Option<bool>,
 ) -> Result<(), String> {
     let _transition = state.app_state.recording_transition.lock().await;
 
@@ -2390,6 +2393,7 @@ pub(crate) async fn retry_transform_instruction(
     if let Err(e) = crate::audio::start_transform_capture_audio(
         Some(app_handle.clone()),
         device_name,
+        fallback_to_default.unwrap_or(false),
         transform_pass_id,
     ) {
         crate::transform_trace::audio(transform_pass_id, "armed", "error", 0, 0);

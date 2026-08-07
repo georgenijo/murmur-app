@@ -316,6 +316,7 @@ struct StartRequest {
     owner: AudioOwner,
     app_handle: Option<tauri::AppHandle>,
     device_id: Option<String>,
+    fallback_to_default: bool,
     origin: String,
     wait_until_ready: bool,
     response: Sender<Result<(), AudioStartError>>,
@@ -609,6 +610,7 @@ fn handle_start(
         active: Arc::clone(&active),
         app_handle: request.app_handle.clone(),
         device_id: request.device_id,
+        fallback_to_default: request.fallback_to_default,
     };
     let thread_handle = match factory.spawn(spec, worker_event_sender.clone()) {
         Ok(handle) => handle,
@@ -1169,6 +1171,7 @@ fn send_start(
     owner: AudioOwner,
     app_handle: Option<tauri::AppHandle>,
     device_id: Option<String>,
+    fallback_to_default: bool,
     origin: &str,
     wait_until_ready: bool,
 ) -> Result<(), AudioStartError> {
@@ -1179,6 +1182,7 @@ fn send_start(
             owner,
             app_handle,
             device_id,
+            fallback_to_default,
             origin: origin.to_string(),
             wait_until_ready,
             response: response_sender,
@@ -1197,6 +1201,7 @@ fn send_start(
 pub(crate) fn start_dictation_recording(
     app_handle: tauri::AppHandle,
     device_id: Option<String>,
+    fallback_to_default: bool,
     recording_id: u64,
     origin: &str,
 ) -> Result<(), AudioStartError> {
@@ -1204,6 +1209,7 @@ pub(crate) fn start_dictation_recording(
         AudioOwner::Dictation(recording_id),
         Some(app_handle),
         device_id,
+        fallback_to_default,
         origin,
         false,
     )
@@ -1212,12 +1218,14 @@ pub(crate) fn start_dictation_recording(
 pub(crate) fn start_transform_recording(
     app_handle: Option<tauri::AppHandle>,
     device_id: Option<String>,
+    fallback_to_default: bool,
     transform_pass_id: u64,
 ) -> Result<(), String> {
     send_start(
         AudioOwner::Transform(transform_pass_id),
         app_handle,
         device_id,
+        fallback_to_default,
         "transform",
         false,
     )
@@ -1511,7 +1519,7 @@ mod tests {
     }
 
     struct SpecCaptureFactory {
-        specs: Arc<Mutex<Vec<(AudioOwner, Option<String>)>>>,
+        specs: Arc<Mutex<Vec<(AudioOwner, Option<String>, bool)>>>,
     }
 
     impl WorkerFactory for SpecCaptureFactory {
@@ -1520,10 +1528,11 @@ mod tests {
             spec: AudioWorkerSpec,
             event_sender: AudioWorkerEventSender,
         ) -> Result<JoinHandle<()>, String> {
-            self.specs
-                .lock()
-                .unwrap()
-                .push((spec.owner, spec.device_id.clone()));
+            self.specs.lock().unwrap().push((
+                spec.owner,
+                spec.device_id.clone(),
+                spec.fallback_to_default,
+            ));
             Ok(std::thread::spawn(move || {
                 let owner = spec.owner;
                 let _ = spec.command_receiver.recv();
@@ -1658,6 +1667,15 @@ mod tests {
         owner: AudioOwner,
         device_id: Option<String>,
     ) -> Receiver<Result<(), AudioStartError>> {
+        start_with_policy(supervisor, owner, device_id, false)
+    }
+
+    fn start_with_policy(
+        supervisor: &AudioSupervisor,
+        owner: AudioOwner,
+        device_id: Option<String>,
+        fallback_to_default: bool,
+    ) -> Receiver<Result<(), AudioStartError>> {
         let (sender, receiver) = mpsc::channel();
         supervisor
             .sender
@@ -1665,6 +1683,7 @@ mod tests {
                 owner,
                 app_handle: None,
                 device_id,
+                fallback_to_default,
                 origin: "hold".to_string(),
                 wait_until_ready: false,
                 response: sender,
@@ -2277,20 +2296,22 @@ mod tests {
             Arc::new(RecordingSink::default()),
             SupervisorConfig::default(),
         );
-        for (owner, device_id) in [
-            (AudioOwner::Dictation(90), None),
-            (AudioOwner::Transform(90), None),
+        for (owner, device_id, fallback_to_default) in [
+            (AudioOwner::Dictation(90), None, false),
+            (AudioOwner::Transform(90), None, false),
             (
                 AudioOwner::Dictation(91),
                 Some("raw-coreaudio-uid".to_string()),
+                true,
             ),
             (
                 AudioOwner::Transform(91),
                 Some("raw-coreaudio-uid".to_string()),
+                true,
             ),
         ] {
             assert_eq!(
-                start_with_device(&supervisor, owner, device_id)
+                start_with_policy(&supervisor, owner, device_id, fallback_to_default)
                     .recv()
                     .unwrap(),
                 Ok(())
@@ -2303,15 +2324,17 @@ mod tests {
         assert_eq!(
             *specs.lock().unwrap(),
             vec![
-                (AudioOwner::Dictation(90), None),
-                (AudioOwner::Transform(90), None),
+                (AudioOwner::Dictation(90), None, false),
+                (AudioOwner::Transform(90), None, false),
                 (
                     AudioOwner::Dictation(91),
-                    Some("raw-coreaudio-uid".to_string())
+                    Some("raw-coreaudio-uid".to_string()),
+                    true,
                 ),
                 (
                     AudioOwner::Transform(91),
-                    Some("raw-coreaudio-uid".to_string())
+                    Some("raw-coreaudio-uid".to_string()),
+                    true,
                 ),
             ]
         );

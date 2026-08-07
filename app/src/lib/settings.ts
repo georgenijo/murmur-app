@@ -210,6 +210,12 @@ export interface Settings {
    */
   autoStopSilenceMs: number;
   microphone: string;
+  /**
+   * When an explicit preferred microphone is disconnected, use the live
+   * macOS default for that recording. The preferred stable ID remains saved,
+   * so it is selected again automatically when it returns.
+   */
+  microphoneFallbackToDefault: boolean;
   launchAtLogin: boolean;
   vadSensitivity: number;
   idleTimeoutMinutes: number;
@@ -377,6 +383,8 @@ export const DEFAULT_SETTINGS: Settings = {
   // Opt-in: a recording that ends itself is a surprise until you ask for it.
   autoStopSilenceMs: 0,
   microphone: 'system_default',
+  // Existing explicit selections stay fail-closed until the user opts in.
+  microphoneFallbackToDefault: false,
   launchAtLogin: false,
   vadSensitivity: 50,
   idleTimeoutMinutes: 5,
@@ -511,6 +519,12 @@ export function loadSettings(): Settings {
         parsed.autoPasteDelayMs = DEFAULT_SETTINGS.autoPasteDelayMs;
       } else {
         parsed.autoPasteDelayMs = Math.max(0, Math.min(500, Math.trunc(parsed.autoPasteDelayMs)));
+      }
+
+      // Falling back can route audio through a different physical device, so
+      // older/malformed settings remain fail-closed until explicitly enabled.
+      if (typeof parsed.microphoneFallbackToDefault !== 'boolean') {
+        parsed.microphoneFallbackToDefault = DEFAULT_SETTINGS.microphoneFallbackToDefault;
       }
 
       // transformHoldKey: `null` (disabled) or one of TRANSFORM_KEY_OPTIONS.

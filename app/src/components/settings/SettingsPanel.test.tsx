@@ -89,6 +89,38 @@ describe('SettingsPanel information architecture', () => {
     expect(container.textContent).toContain('Microphone');
   });
 
+  it('offers automatic system-default fallback for an explicit preferred microphone', async () => {
+    const onUpdateSettings = vi.fn();
+    await act(async () => root.render(
+      <SettingsPanel
+        isOpen
+        onClose={vi.fn()}
+        settings={{
+          ...DEFAULT_SETTINGS,
+          microphone: 'webcam-device',
+          microphoneFallbackToDefault: false,
+        }}
+        onUpdateSettings={onUpdateSettings}
+        status="idle"
+        onResetStats={vi.fn()}
+        onRerunSetup={vi.fn()}
+        accessibilityGranted
+        onCheckForUpdate={vi.fn(async () => {})}
+        updateStatus={{ phase: 'idle' }}
+        configureError={null}
+      />,
+    ));
+
+    const fallback = container.querySelector(
+      'button[aria-label="Use system default microphone when preferred microphone is unavailable"]',
+    ) as HTMLButtonElement;
+    expect(fallback).not.toBeNull();
+    await act(async () => fallback.click());
+    expect(onUpdateSettings).toHaveBeenCalledWith({
+      microphoneFallbackToDefault: true,
+    });
+  });
+
   it('moves vocabulary, app overrides, Benchmark, Performance, and startup into their intended pages', async () => {
     for (const [page, expected] of [
       ['Text & Vocabulary', 'Names & special words'],

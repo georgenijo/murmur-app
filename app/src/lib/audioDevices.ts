@@ -10,6 +10,29 @@ export interface AudioDeviceSelectOption {
   label: string;
 }
 
+export interface MicrophoneCaptureArgs {
+  deviceName: string | null;
+  fallbackToDefault: boolean;
+}
+
+/**
+ * Convert persisted microphone policy into the bounded command arguments used
+ * by every capture entry point. System Default never needs a second fallback;
+ * an explicit stable ID may opt into default-device fallback.
+ */
+export function microphoneCaptureArgs(
+  microphone: string | null | undefined,
+  fallbackToDefault: boolean,
+): MicrophoneCaptureArgs {
+  const deviceName = microphone && microphone !== 'system_default'
+    ? microphone
+    : null;
+  return {
+    deviceName,
+    fallbackToDefault: deviceName !== null && fallbackToDefault,
+  };
+}
+
 /** Preserve concise unique labels; append the stable ID only for collisions. */
 export function audioDeviceSelectOptions(
   devices: AudioDeviceDescriptor[],

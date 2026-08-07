@@ -87,11 +87,11 @@ describe('useTransformFlow Escape recovery', () => {
     expect(flowCalls).toEqual([
       [
         'start_transform_capture',
-        { deviceName: null, transformPassId: 7 },
+        { deviceName: null, fallbackToDefault: false, transformPassId: 7 },
       ],
       [
         'start_transform_capture',
-        { deviceName: null, transformPassId: 8 },
+        { deviceName: null, fallbackToDefault: false, transformPassId: 8 },
       ],
     ]);
   });
@@ -144,11 +144,11 @@ describe('useTransformFlow Escape recovery', () => {
     expect(flowCalls).toEqual([
       [
         'start_transform_capture',
-        { deviceName: null, transformPassId: 7 },
+        { deviceName: null, fallbackToDefault: false, transformPassId: 7 },
       ],
       [
         'start_transform_capture',
-        { deviceName: null, transformPassId: 8 },
+        { deviceName: null, fallbackToDefault: false, transformPassId: 8 },
       ],
       [
         'cancel_transform',

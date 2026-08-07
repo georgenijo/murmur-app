@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the final signed capture worker's production-v3 startup protocol."""
+"""Exercise the final signed capture worker's production-v4 startup protocol."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from typing import BinaryIO
 
 
 MAGIC = b"MRMR"
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4
 HEADER_BYTES = 36
 MAX_CONTROL_BYTES = 16 * 1024
 
@@ -110,7 +110,7 @@ def smoke_test(worker: Path, timeout_seconds: float = 5.0) -> None:
     capture_id = secrets.randbits(63) or 1
     nonce = os.urandom(16)
     process = subprocess.Popen(
-        [str(worker), "--production-v3", str(capture_id), nonce.hex()],
+        [str(worker), "--production-v4", str(capture_id), nonce.hex()],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -131,7 +131,12 @@ def smoke_test(worker: Path, timeout_seconds: float = 5.0) -> None:
             encode_control_frame(
                 capture_id,
                 nonce,
-                {"type": "start", "deviceId": None, "backend": "auhal"},
+                {
+                    "type": "start",
+                    "deviceId": "murmur-smoke-missing-preferred-device",
+                    "fallbackToDefault": True,
+                    "backend": "auhal",
+                },
             )
         )
         process.stdin.flush()
@@ -142,6 +147,18 @@ def smoke_test(worker: Path, timeout_seconds: float = 5.0) -> None:
             "backend": "auhal",
         }:
             raise SmokeError("capture worker did not enter the stream-open phase")
+        for transition in ("entered", "completed"):
+            setup = read_control_frame(process.stdout, capture_id, nonce, deadline)
+            if setup != {
+                "type": "setupStep",
+                "backend": "auhal",
+                "step": "deviceResolution",
+                "transition": transition,
+            }:
+                raise SmokeError(
+                    "capture worker did not resolve a missing preferred device "
+                    "through system-default fallback"
+                )
     finally:
         terminate_worker(process)
         for stream in (process.stdin, process.stdout, process.stderr):
@@ -158,7 +175,7 @@ def main() -> int:
         smoke_test(arguments.worker, arguments.timeout_seconds)
     except SmokeError as error:
         raise SystemExit(f"ERROR: {error}") from error
-    print("signed capture worker production-v3 startup smoke passed")
+    print("signed capture worker production-v4 fallback startup smoke passed")
     return 0
 
 
