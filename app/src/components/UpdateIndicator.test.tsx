@@ -30,8 +30,10 @@ describe('UpdateIndicator', () => {
       );
     });
 
-    expect(container.textContent).toContain('Update available · v0.23.0');
-    await act(async () => container.querySelector('button')?.click());
+    const button = container.querySelector('button');
+    expect(button?.getAttribute('aria-label')).toBe('Murmur v0.23.0 is available. View update');
+    expect(button?.textContent).toBe('');
+    await act(async () => button?.click());
     expect(onOpen).toHaveBeenCalledOnce();
   });
 
@@ -45,7 +47,7 @@ describe('UpdateIndicator', () => {
         />,
       );
     });
-    expect(container.querySelector('[role="status"]')?.textContent).toContain('Checking');
+    expect(container.querySelector('[role="status"]')?.getAttribute('aria-label')).toBe('Checking for updates');
 
     await act(async () => {
       root.render(
@@ -94,7 +96,7 @@ describe('UpdateIndicator', () => {
       );
     });
 
-    expect(container.textContent).toContain('Update needs attention');
+    expect(container.querySelector('button')?.getAttribute('aria-label')).toBe('Update installation needs attention');
     await act(async () => container.querySelector('button')?.click());
     expect(onOpen).toHaveBeenCalledOnce();
     expect(onRetryCheck).not.toHaveBeenCalled();

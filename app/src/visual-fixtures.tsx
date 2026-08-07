@@ -5,6 +5,7 @@ import { MainHeader } from './components/MainHeader';
 import { FooterStats } from './components/FooterStats';
 import { HistoryPanel } from './components/history/HistoryPanel';
 import { SettingsPanel } from './components/settings/SettingsPanel';
+import { UpdateIndicator } from './components/UpdateIndicator';
 import { DEFAULT_SETTINGS } from './lib/settings';
 import type { DictationStatus } from './lib/types';
 import './styles.css';
@@ -16,7 +17,9 @@ const status: DictationStatus = requestedState === 'recording'
   ? 'recording'
   : requestedState === 'processing'
     ? 'processing'
-    : 'idle';
+    : requestedState === 'update-recovering'
+      ? 'recovering'
+      : 'idle';
 
 document.documentElement.dataset.appearance = appearance;
 
@@ -64,13 +67,25 @@ function VisualFixture() {
         status={status}
         initialized
         recordingDuration={12}
-        recordingMode="hold_down"
+        recordingMode={requestedState === 'update-recovering' ? 'both' : 'hold_down'}
         onRecord={() => {}}
         onStop={() => {}}
         onOpenSettings={() => {}}
         settingsOpen={settingsOpen}
         triggerKey="shift_l"
         mode={settingsOpen ? 'settings' : 'main'}
+        updateIndicator={requestedState === 'update-recovering' ? (
+          <UpdateIndicator
+            status={{
+              phase: 'available',
+              version: 'v0.27.1',
+              notes: '',
+              isForced: false,
+            }}
+            onOpen={() => {}}
+            onRetryCheck={() => {}}
+          />
+        ) : undefined}
       />
       {settingsOpen ? (
         <SettingsPanel

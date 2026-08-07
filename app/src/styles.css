@@ -175,7 +175,9 @@ textarea {
 .ui-record-pill {
   box-sizing: border-box;
   display: inline-flex;
+  width: var(--ui-record-width);
   min-width: var(--ui-record-width);
+  max-width: var(--ui-record-width);
   height: var(--ui-control-compact);
   align-items: center;
   justify-content: center;
@@ -193,16 +195,36 @@ textarea {
 }
 
 .ui-icon-button {
+  box-sizing: border-box;
   display: grid;
   width: var(--ui-control-compact);
+  min-width: var(--ui-control-compact);
+  max-width: var(--ui-control-compact);
   height: var(--ui-control-compact);
+  min-height: var(--ui-control-compact);
+  max-height: var(--ui-control-compact);
   flex-shrink: 0;
+  overflow: hidden;
+  padding: 0;
   place-items: center;
   border-radius: var(--ui-radius-control);
   color: var(--murmur-on-surface-variant);
   transition:
     background-color var(--ui-motion-fast),
     color var(--ui-motion-fast);
+}
+
+.ui-visually-hidden {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  clip-path: inset(50%) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
 }
 
 .ui-icon-button:hover {

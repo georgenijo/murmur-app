@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-const states = ['idle', 'recording', 'processing', 'settings'] as const;
+const states = ['idle', 'recording', 'processing', 'update-recovering', 'settings'] as const;
 const appearances = ['light', 'dark'] as const;
 
 for (const appearance of appearances) {
@@ -67,4 +67,33 @@ test('the window header flows into the history toolbar without a divider', async
   await expect.poll(() => header.evaluate((element) => (
     getComputedStyle(element).borderBottomWidth
   ))).toBe('0px');
+});
+
+test('update discovery cannot expand or wrap the recovering header', async ({ page }) => {
+  await page.goto('/visual-fixtures.html?state=update-recovering&appearance=light');
+
+  const header = page.locator('.ui-window-header');
+  const update = page.getByTestId('update-indicator');
+  const hotkey = page.getByTestId('hotkey-hint');
+  const record = page.getByTestId('record-pill');
+
+  await expect(header).toBeVisible();
+  await expect(update).toHaveAccessibleName('Murmur v0.27.1 is available. View update');
+  await expect(record).toHaveAccessibleName('Recovering');
+  await expect(record).toContainText('Wait');
+
+  const geometry = await Promise.all([
+    header.boundingBox(),
+    update.boundingBox(),
+    hotkey.boundingBox(),
+    record.boundingBox(),
+  ]);
+  const [headerBox, updateBox, hotkeyBox, recordBox] = geometry;
+
+  expect(updateBox?.width).toBeLessThanOrEqual(26);
+  expect(updateBox?.height).toBeLessThanOrEqual(26);
+  expect(hotkeyBox?.height).toBeLessThanOrEqual(18);
+  expect(recordBox?.width).toBe(72);
+  expect(recordBox?.height).toBeLessThanOrEqual(26);
+  expect(headerBox?.height).toBe(42);
 });

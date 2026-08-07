@@ -104,7 +104,8 @@ export function MainHeader({
           {updateIndicator}
 
           <p
-            className={`hidden select-none text-xs text-on-surface-variant transition-opacity sm:block ${
+            data-testid="hotkey-hint"
+            className={`hidden shrink-0 select-none whitespace-nowrap text-xs text-on-surface-variant transition-opacity sm:block ${
               isCapturing || busy ? 'pointer-events-none opacity-0' : 'opacity-100'
             }`}
           >
@@ -143,7 +144,7 @@ export function MainHeader({
                 : status === 'recording'
                   ? 'Stop'
                   : busy
-                    ? label
+                    ? 'Wait'
                     : 'Record'}
             </span>
             {' '}

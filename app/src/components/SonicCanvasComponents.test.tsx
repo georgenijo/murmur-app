@@ -172,6 +172,7 @@ describe('Sonic Canvas component details', () => {
       expect(elements.record.classList).toContain('ui-record-pill');
       if (status === 'processing') {
         expect(elements.record.getAttribute('aria-label')).toBe('Processing');
+        expect(elements.record.textContent).toContain('Wait');
       }
     }
   });
