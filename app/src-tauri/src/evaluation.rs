@@ -67,6 +67,9 @@ struct EvaluationFixture {
 
 #[derive(Deserialize)]
 #[serde(untagged)]
+// Boxing either variant would only trade stack size for allocation while
+// fixture documents are short-lived inputs to the offline evaluator.
+#[allow(clippy::large_enum_variant)]
 enum FixtureDocument {
     One(EvaluationFixture),
     Many(Vec<EvaluationFixture>),
@@ -155,18 +158,13 @@ fn default_fixed_now() -> String {
     "2026-07-20T09:07:00-04:00".to_string()
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 enum FixtureCliMode {
+    #[default]
     Auto,
     Enabled,
     Disabled,
-}
-
-impl Default for FixtureCliMode {
-    fn default() -> Self {
-        Self::Auto
-    }
 }
 
 impl From<FixtureCliMode> for CliFormattingMode {

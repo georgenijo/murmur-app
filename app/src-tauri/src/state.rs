@@ -7,9 +7,10 @@ use std::time::Instant;
 
 pub use crate::transcriber::WHISPER_SAMPLE_RATE;
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DictationStatus {
+    #[default]
     Idle,
     Starting,
     Recording,
@@ -17,19 +18,14 @@ pub enum DictationStatus {
     Processing,
 }
 
-impl Default for DictationStatus {
-    fn default() -> Self {
-        Self::Idle
-    }
-}
-
 /// Status of the AX-selection transform pipeline (issue #312). Deliberately a
 /// separate field on `AppState`, NOT a `DictationStatus` variant — dictation
 /// recording/processing and a transform pass are independent activities that
 /// each need to know about (and block) the other, not a shared state machine.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TransformStatus {
+    #[default]
     Idle,
     /// Reading the AX selection (`selection::capture_selection`).
     Capturing,
@@ -43,12 +39,6 @@ pub enum TransformStatus {
     ReviewPending,
     /// Writing the accepted result back (clipboard/injection).
     Applying,
-}
-
-impl Default for TransformStatus {
-    fn default() -> Self {
-        Self::Idle
-    }
 }
 
 impl TransformStatus {
@@ -186,9 +176,10 @@ pub struct VoiceCommand {
     pub replacement: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum VocabularyScope {
+    #[default]
     Global,
     App {
         #[serde(rename = "bundleId")]
@@ -199,12 +190,6 @@ pub enum VocabularyScope {
         bundle_id: String,
         root: String,
     },
-}
-
-impl Default for VocabularyScope {
-    fn default() -> Self {
-        Self::Global
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

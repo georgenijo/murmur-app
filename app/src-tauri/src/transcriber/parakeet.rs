@@ -56,7 +56,7 @@ impl ParakeetVariant {
             .iter()
             .all(|f| {
                 let p = dir.join(f);
-                p.is_file() && p.metadata().map_or(false, |m| m.len() > 0)
+                p.is_file() && p.metadata().is_ok_and(|m| m.len() > 0)
             })
     }
 }
@@ -122,6 +122,7 @@ pub fn download_spec(model_name: &str) -> Option<(String, String)> {
     Some((url, v.dir.to_string()))
 }
 
+#[derive(Default)]
 pub struct ParakeetBackend {
     recognizer: Option<OfflineRecognizer>,
     loaded_model_name: Option<String>,
@@ -130,15 +131,6 @@ pub struct ParakeetBackend {
 impl ParakeetBackend {
     pub fn new() -> Self {
         Self::default()
-    }
-}
-
-impl Default for ParakeetBackend {
-    fn default() -> Self {
-        Self {
-            recognizer: None,
-            loaded_model_name: None,
-        }
     }
 }
 
@@ -247,7 +239,7 @@ impl TranscriptionBackend for ParakeetBackend {
         };
         KNOWN_MODELS
             .iter()
-            .any(|m| variant_for(m).map_or(false, |v| v.is_complete(&models_dir)))
+            .any(|m| variant_for(m).is_some_and(|v| v.is_complete(&models_dir)))
     }
 
     fn models_dir(&self) -> Result<PathBuf, String> {

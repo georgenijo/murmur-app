@@ -270,6 +270,37 @@ fn collect_bundle(
     bundle
 }
 
+fn ship_bundle(capture_id: u64, bundle: String) {
+    let Some((install_id, endpoint)) = config_cell().lock_or_recover().clone() else {
+        return;
+    };
+    let outcome = tauri::async_runtime::block_on(async move {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .ok()?;
+        client
+            .post(&endpoint)
+            .header(
+                "Authorization",
+                format!("Bearer {}", crate::log_shipper::TOKEN),
+            )
+            .header("X-Install-Id", install_id)
+            .header("Content-Type", "text/plain")
+            .body(bundle)
+            .send()
+            .await
+            .ok()
+            .map(|response| response.status().is_success())
+    });
+    tracing::info!(
+        target: "audio",
+        capture_id,
+        shipped = outcome.unwrap_or(false),
+        "hang diagnostics: bundle upload finished"
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -317,35 +348,4 @@ mod tests {
         assert!(run_capped("/nonexistent-binary", &[], Duration::from_secs(1))
             .starts_with("<spawn failed"));
     }
-}
-
-fn ship_bundle(capture_id: u64, bundle: String) {
-    let Some((install_id, endpoint)) = config_cell().lock_or_recover().clone() else {
-        return;
-    };
-    let outcome = tauri::async_runtime::block_on(async move {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(30))
-            .build()
-            .ok()?;
-        client
-            .post(&endpoint)
-            .header(
-                "Authorization",
-                format!("Bearer {}", crate::log_shipper::TOKEN),
-            )
-            .header("X-Install-Id", install_id)
-            .header("Content-Type", "text/plain")
-            .body(bundle)
-            .send()
-            .await
-            .ok()
-            .map(|response| response.status().is_success())
-    });
-    tracing::info!(
-        target: "audio",
-        capture_id,
-        shipped = outcome.unwrap_or(false),
-        "hang diagnostics: bundle upload finished"
-    );
 }

@@ -606,6 +606,9 @@ fn quarantine_unconfirmed_child(
     }
 }
 
+// These arguments mirror the authenticated helper shutdown frame plus the
+// ownership evidence needed when termination cannot be confirmed.
+#[allow(clippy::too_many_arguments)]
 fn terminate_or_quarantine(
     child: ManagedChild,
     input: Option<std::process::ChildStdin>,
@@ -767,6 +770,9 @@ fn stop_requested_between_attempts(command_receiver: &Receiver<AudioCommand>) ->
     )
 }
 
+// Keep the attempt's ownership, cancellation, buffer, application, and event
+// channels explicit; bundling them would obscure the capture lifecycle.
+#[allow(clippy::too_many_arguments)]
 fn run_backend(
     owner: crate::audio_lifecycle::AudioOwner,
     backend: CaptureBackend,
@@ -1539,7 +1545,7 @@ pub fn resample(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
     // integer downsampling (48k -> 16k, 32k -> 16k), linear interpolation lands
     // on an original sample every time, so step_by is bit-for-bit equivalent
     // without per-sample floating-point position and interpolation work.
-    if from_rate > to_rate && from_rate % to_rate == 0 {
+    if from_rate > to_rate && from_rate.is_multiple_of(to_rate) {
         let step = (from_rate / to_rate) as usize;
         let new_len = samples.len() / step;
         return samples.iter().step_by(step).take(new_len).copied().collect();

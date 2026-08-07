@@ -388,8 +388,8 @@ pub fn start() {
                 .map(|p| load_state(&p).install_id);
             if let Some(install_id) = &state_install_id {
                 if let Some(snap) = cached_audio_state() {
-                    if last_snapshot.as_deref() != Some(snap.as_str()) {
-                        if ship_state(
+                    if last_snapshot.as_deref() != Some(snap.as_str())
+                        && ship_state(
                             &client,
                             &state_endpoint,
                             install_id,
@@ -400,7 +400,6 @@ pub fn start() {
                         {
                             last_snapshot = Some(snap);
                         }
-                    }
                 }
             }
             tokio::time::sleep(std::time::Duration::from_secs(TICK_SECS)).await;

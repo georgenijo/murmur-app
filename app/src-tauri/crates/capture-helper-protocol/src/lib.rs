@@ -102,8 +102,8 @@ pub enum ProductionHelperMessage {
 /// that hung. Step names are content-free: no device identity ever rides on
 /// this message. AUHAL steps map to native Core Audio calls as follows:
 ///
-/// - `AudioUnitNew`: `AudioComponentFindNext` + `AudioComponentInstanceNew`
-///   + `AudioUnitInitialize` (one bracket; the safe wrapper creates and
+/// - `AudioUnitNew`: `AudioComponentFindNext`, `AudioComponentInstanceNew`,
+///   and `AudioUnitInitialize` (one bracket; the safe wrapper creates and
 ///   initializes in a single call)
 /// - `EnableInputIo` / `DisableOutputIo`:
 ///   `AudioUnitSetProperty(kAudioOutputUnitProperty_EnableIO)` on the input /
@@ -451,7 +451,7 @@ pub fn write_production_pcm(
     if samples.is_empty() || samples.len() > MAX_PCM_SAMPLES {
         return Err(FrameError::InvalidPcm);
     }
-    let payload_len = 16 + samples.len() * std::mem::size_of::<f32>();
+    let payload_len = 16 + std::mem::size_of_val(samples);
     write_production_header(writer, 1, payload_len, capture_id, nonce)?;
     writer
         .write_all(&sequence.to_le_bytes())

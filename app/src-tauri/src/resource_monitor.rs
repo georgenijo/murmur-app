@@ -251,7 +251,7 @@ pub fn start_heartbeat(app_handle: tauri::AppHandle) {
                 );
             }
 
-            if ticks % 60 == 0 {
+            if ticks.is_multiple_of(60) {
                 let rss = get_process_rss_mb();
                 let rust = crate::rust_heap_mb();
                 let ffi = crate::ffi_heap_mb();

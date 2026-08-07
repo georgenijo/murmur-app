@@ -81,6 +81,7 @@ pub fn specific_model_exists(model_name: &str) -> bool {
     get_model_path(model_name).is_ok()
 }
 
+#[derive(Default)]
 pub struct WhisperBackend {
     context: Option<WhisperContext>,
     state: Option<WhisperState>,
@@ -165,16 +166,6 @@ fn append_segment(text: &mut String, segment_text: &str) {
         text.push(' ');
     }
     text.push_str(segment_text);
-}
-
-impl Default for WhisperBackend {
-    fn default() -> Self {
-        Self {
-            context: None,
-            state: None,
-            loaded_model_name: None,
-        }
-    }
 }
 
 impl TranscriptionBackend for WhisperBackend {
