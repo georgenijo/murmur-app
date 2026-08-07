@@ -948,7 +948,14 @@ mod supported {
             if inner.child.is_none() {
                 let model_path = self.plan.model_path()?;
                 let mut diagnostics = SidecarDiagnostics::default();
-                self.guard().release_asr();
+                // Deliberately NOT releasing the ASR model here: the pass that
+                // armed this prewarm still needs it to transcribe the spoken
+                // instruction after key-release, and unloading it now would put
+                // a cold ASR reload on that critical path. The single-heavy-
+                // runtime rule is restored by the release in
+                // finish_transform_instruction once the instruction ASR is
+                // done; until then the two runtimes briefly co-reside while
+                // the helper loads under the held key.
                 match self.spawn_and_handshake(&model_path, cancel, &mut diagnostics) {
                     Ok(child) => inner.child = Some(child),
                     Err(TransformError::ModelMismatch) => {
