@@ -87,7 +87,9 @@ Read these before working on a feature:
 | `keyboard.rs` | Hold-down, double-tap, and transform-hold detectors; shared rdev listener thread |
 | `audio.rs` / `audio_lifecycle.rs` | cpal capture plus the single-owner async initialization supervisor, cancellation/recovery, join ownership, mono conversion, and 16kHz resampling |
 | `audio_decode.rs` | Imported audio-file decoding |
-| `transcriber/` | `TranscriptionBackend` trait + whisper / parakeet / coreml backends |
+| `capture_agent_probe.rs` / `capture_helper_probe.rs` | Signed helper registration, callback-health probes, cancellation, and confirmed-termination evidence |
+| `code_signing.rs` / `managed_child.rs` | Runtime helper identity validation and direct-child/process-group ownership |
+| `transcriber/` (`whisper.rs`, `parakeet.rs`, `coreml.rs`) | `TranscriptionBackend` trait and backend implementations |
 | `model_runtime.rs` | Model catalog + serialized load/warm/readiness/unload lifecycle |
 | `dictation_context.rs` | Immutable per-recording context snapshot |
 | `transcript_transform.rs` | Ordered post-recognition pipeline (cleanup → commands → correction → formatting → IDE → CLI) |
@@ -95,7 +97,7 @@ Read these before working on a feature:
 | `vocab.rs` / `vocabulary_alias.rs` | Code-vocabulary scanning and explicit spoken aliases |
 | `voice_commands.rs` | Typed voice command execution and variable expansion |
 | `correct_and_teach.rs` | Bounded local diff proposals; never writes without confirmation |
-| `knowledge_store/` | SQLite knowledge store: migrations, repository, backup/quarantine |
+| `knowledge_store/` (`repository.rs`, `types.rs`) | SQLite knowledge store: migrations, repository, typed records, backup/quarantine |
 | `selection.rs` | AX selection capture for transform (secure-field fail-closed) |
 | `transform_apply.rs` | Approve/undo write-back (only path that writes to the target app) |
 | `transform_flow.rs` | End-to-end transform orchestrator + Tauri commands |
@@ -103,7 +105,9 @@ Read these before working on a feature:
 | `transform_diagnostics.rs` / `transform_trace.rs` | Per-pass records, consented captures, pass-scoped correlation |
 | `llm_sidecar.rs` | Host supervisor for signed local-LLM helper (no in-process llama) |
 | `log_shipper.rs` | Zero-config diagnostic log upload (tails events.jsonl → central ingest) |
+| `hang_diagnostics.rs` | Consented, bounded capture-hang diagnostic arming and probe collection |
 | `smart_formatting.rs` | Deterministic prose formatting and same-utterance backtracking |
+| `spoken_numbers.rs` / `spoken_structure.rs` | Deterministic spoken-number, punctuation, layout, symbol, and backtracking grammar |
 | `ide_context.rs` | Memory-only bounded IDE symbol and root-relative file index |
 | `injector.rs` | Clipboard (arboard) + auto-paste (CGEvent, osascript fallback) |
 | `file_output.rs` | Numbered `.txt` / `.wav` output |
@@ -112,11 +116,13 @@ Read these before working on a feature:
 | `telemetry.rs` | Structured event system: TauriEmitterLayer, ring buffer, JSONL, privacy stripping |
 | `vad.rs` | Silero VAD speech filtering via whisper-rs (thread-local context cache) |
 | `benchmark.rs` / `evaluation.rs` | Performance Lab scoring and the `murmur-eval` fixture harness |
-| `performance_metrics/` | SQLite run history, stage timings, resource samples, retention |
+| `performance_metrics/` (`repository.rs`, `types.rs`) | SQLite run history, typed stage/resource records, retention |
 | `resource_monitor.rs` | CPU/RSS sampling, 1s heartbeat, idle-timeout enforcement |
 | `alloc.rs` | Custom malloc zone separating Rust heap from whisper.cpp's FFI heap |
 | `platform/` | Platform abstraction seams (macOS / Linux) |
+| `sidecars/capture/` | Killable production capture worker and isolated audio callback boundary |
 | `sidecars/local-llm/` | The signed `murmur-llm-sidecar` crate (llama.cpp) |
+| `crates/capture-helper-protocol` | Host ↔ capture worker framing, handshake, and control protocol |
 | `crates/local-llm-protocol` | Host ↔ sidecar protocol types |
 
 ### Frontend (`app/src/`)

@@ -144,10 +144,14 @@ def validate_ci(ci: str) -> int:
     ci_pass_step = named_step_block(ci, "Check CI result", 6)
     assert "${{ needs.visual-regression.result }}" in ci_pass_step
     assert "scripts/validate_workflow_policy.py" in ci
+    assert "'scripts/validate_reference_docs.py'" in ci
+    assert "python3 scripts/validate_reference_docs.py" in ci
+    assert "'docs/reference/**'" in ci
     assert "scripts/release_artifacts.py" in ci
     assert "scripts/capture_agent_matrix.py" in ci
     assert "'scripts/release_version.py'" in ci
     assert "tests/test_release_artifacts.py" in ci
+    assert ci.count("tests/test_reference_docs.py") >= 2
     assert "tests/test_release_version.py" in ci
     assert "tests/test_workflow_policy.py" in ci
     assert "tests/test_capture_agent_matrix.py" in ci

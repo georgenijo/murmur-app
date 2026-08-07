@@ -18,6 +18,18 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class WorkflowPolicyMutationTests(unittest.TestCase):
+    def test_ci_runs_reference_doc_drift_check(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        for marker in (
+            "python3 scripts/validate_reference_docs.py\n",
+            "            tests/test_reference_docs.py \\\n",
+        ):
+            with self.subTest(marker=marker.strip()):
+                mutated = workflow.replace(marker, "", 1)
+                self.assertNotEqual(workflow, mutated)
+                with self.assertRaises(AssertionError):
+                    validate_ci(mutated)
+
     def test_ci_pins_and_enforces_clippy(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         for old in (
