@@ -6,8 +6,10 @@ permissions were a dismissible banner.
 
 ## Flow
 
-Six steps, forward-only with Back links and per-step Skip where the app can
-partially function without the grant:
+Six steps with a persistent top-left Back control after Welcome and per-step
+Skip where the app can partially function without the grant. Back remains
+visible but disabled while a model download is active, because leaving the
+step cannot cancel the underlying download safely:
 
 1. **Welcome** — privacy pitch (local-only processing), what setup covers.
 2. **Microphone** — fires the *native* macOS permission dialog in-app via the
