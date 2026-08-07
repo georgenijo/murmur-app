@@ -273,6 +273,7 @@ pub fn run() {
             commands::permissions::check_microphone_permission_status,
             commands::permissions::reset_microphone_permission,
             commands::permissions::list_audio_devices,
+            commands::integrations::is_notchpill_installed,
             commands::keyboard::start_keyboard_listener,
             commands::keyboard::stop_keyboard_listener,
             commands::keyboard::update_keyboard_key,
