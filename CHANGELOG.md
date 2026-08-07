@@ -25,6 +25,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- Main-window chrome, transcript cards, and Settings now follow shared geometry
+  tokens: native traffic lights align with the single header row, Record and
+  status controls remain stable across recording states, and Copy no longer
+  reserves space in transcript metadata (#466).
 - Microphone initialization now gives AUHAL and CPAL separate bounded attempts,
   requires confirmed helper termination before fallback, honors Stop between
   attempts, suspends active deadlines during a pending macOS permission prompt,

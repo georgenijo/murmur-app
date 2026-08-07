@@ -39,7 +39,7 @@ export function SettingsSection({ title, subtitle, defaultExpanded = true, child
         {subtitle && (
           <p className="mt-1 text-xs text-on-surface-variant">{subtitle}</p>
         )}
-        <div className="mt-3 overflow-hidden rounded-xl border border-outline-variant/25 bg-surface-container-lowest [&>*]:p-4 [&>*+*]:border-t [&>*+*]:border-outline-variant/15">{children}</div>
+        <div className="mt-3 overflow-hidden rounded-xl border border-outline-variant/25 bg-surface-container-lowest [&>*]:p-3 [&>*+*]:border-t [&>*+*]:border-outline-variant/15">{children}</div>
       </section>
     );
   }

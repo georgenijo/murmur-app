@@ -37,6 +37,8 @@ dictation_log.jsonl
 
 # Build artifacts
 app/dist/
+app/playwright-report/
+app/test-results/
 app/tauri
 app/tsc
 app/ui@*

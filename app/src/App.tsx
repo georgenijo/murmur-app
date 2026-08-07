@@ -491,7 +491,7 @@ function App() {
       <PermissionsBanner />
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
-        <main className={`relative min-h-0 flex-1 flex-col overflow-hidden px-4 pb-3 pt-3 ${isSettingsOpen ? 'hidden' : 'flex'}`}>
+        <main className={`relative min-h-0 flex-1 flex-col overflow-hidden ${isSettingsOpen ? 'hidden' : 'flex'}`}>
           <TranscriptionView
             historyEntries={historyEntries}
             onClearHistory={clearHistory}

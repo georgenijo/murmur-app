@@ -112,7 +112,7 @@ describe('Sonic Canvas component details', () => {
     expect(onStop).toHaveBeenCalledOnce();
   });
 
-  it('keeps Stop Recording prominent without an unsupported solid-error text pair', async () => {
+  it('keeps the recording control on the stable compact design contract', async () => {
     await act(async () => {
       root.render(
         <MainHeader
@@ -129,15 +129,74 @@ describe('Sonic Canvas component details', () => {
       );
     });
 
-    const stop = container.querySelector('button')!;
+    const stop = container.querySelector('[data-testid="record-pill"]') as HTMLButtonElement;
     expect(stop.textContent).toContain('Stop 0:12');
+    expect(stop.classList).toContain('ui-record-pill');
     expect(stop.classList).toContain('border');
     expect(stop.classList).toContain('border-error/50');
     expect(stop.classList).toContain('bg-error/10');
     expect(stop.classList).toContain('text-error');
-    expect(stop.classList).toContain('font-bold');
     expect(stop.classList).not.toContain('bg-error');
     expect(stop.classList).not.toContain('text-on-primary');
+  });
+
+  it('keeps stable header geometry while state labels change', async () => {
+    const renderHeader = async (status: 'idle' | 'recording' | 'processing') => {
+      await act(async () => {
+        root.render(
+          <MainHeader
+            status={status}
+            initialized
+            recordingDuration={12}
+            recordingMode="hold_down"
+            onRecord={vi.fn()}
+            onStop={vi.fn()}
+            onOpenSettings={vi.fn()}
+            settingsOpen={false}
+            triggerKey="shift_l"
+          />,
+        );
+      });
+      return {
+        header: container.querySelector('header')!,
+        statusChip: container.querySelector('[data-testid="main-status-chip"]')!,
+        record: container.querySelector('[data-testid="record-pill"]')!,
+      };
+    };
+
+    for (const status of ['idle', 'recording', 'processing'] as const) {
+      const elements = await renderHeader(status);
+      expect(elements.header.classList).toContain('ui-window-header');
+      expect(elements.header.classList).not.toContain('border-b');
+      expect(elements.statusChip.classList).toContain('ui-status-chip');
+      expect(elements.record.classList).toContain('ui-record-pill');
+      if (status === 'processing') {
+        expect(elements.record.getAttribute('aria-label')).toBe('Processing');
+      }
+    }
+  });
+
+  it('does not expose the reserved timer while recording starts', async () => {
+    await act(async () => {
+      root.render(
+        <MainHeader
+          status="starting"
+          initialized
+          recordingDuration={0}
+          recordingMode="hold_down"
+          onRecord={vi.fn()}
+          onStop={vi.fn()}
+          onOpenSettings={vi.fn()}
+          settingsOpen={false}
+          triggerKey="shift_l"
+        />,
+      );
+    });
+
+    const record = container.querySelector('[data-testid="record-pill"]') as HTMLButtonElement;
+    expect(record.getAttribute('aria-label')).toBe('Cancel recording');
+    expect(record.querySelector('.font-mono')?.getAttribute('aria-hidden')).toBe('true');
+    expect(record.querySelector('.font-mono')?.textContent).toBe('0:00');
   });
 
   it('preserves history copy and confirmed clear actions', async () => {
@@ -159,6 +218,9 @@ describe('Sonic Canvas component details', () => {
     });
 
     const copyButton = container.querySelector('[aria-label^="Copy transcription"]') as HTMLButtonElement;
+    const counts = container.querySelector('[data-testid="transcript-counts"]')!;
+    expect(counts.contains(copyButton)).toBe(false);
+    expect(copyButton.closest('[data-testid="transcript-card"]')).not.toBeNull();
     await act(async () => copyButton.click());
     expect(writeText).toHaveBeenCalledWith('Keep every interaction working');
 

@@ -224,7 +224,7 @@ export function Select<T extends string = string>({
         aria-label={ariaLabel}
         disabled={disabled}
         onClick={() => (isOpen ? close() : open())}
-        className={`flex w-full items-center justify-between rounded-lg border border-on-surface-variant bg-surface-container-lowest px-3 py-2 text-left text-sm text-on-surface transition-colors focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary ${
+        className={`flex h-8 w-full items-center justify-between rounded-lg border border-on-surface-variant bg-surface-container-lowest px-3 text-left text-sm text-on-surface transition-colors focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary ${
           disabled ? 'opacity-50 cursor-not-allowed' : ''
         }`}
       >

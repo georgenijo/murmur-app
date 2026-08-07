@@ -11,6 +11,7 @@ import {
 } from '../../lib/dictation';
 import { getModelRuntimeCatalog } from '../../lib/modelRuntime';
 import { DOWNLOAD_MODEL_KEYS, ModelDownloadPanel } from '../ModelDownloader';
+import { WindowHeader } from '../ui/WindowHeader';
 import type { DoubleTapKey, ModelOption, RecordingMode } from '../../lib/settings';
 
 type Step = 'welcome' | 'microphone' | 'accessibility' | 'model' | 'hotkey' | 'done';
@@ -216,9 +217,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background font-[-apple-system,BlinkMacSystemFont,'Segoe_UI',Roboto,sans-serif]">
-      <header data-tauri-drag-region className="main-header flex h-[62px] shrink-0 items-center border-b border-outline-variant/10 px-5">
-        <span data-tauri-drag-region className="text-[15px] font-bold tracking-tight text-primary">Murmur</span>
-      </header>
+      <WindowHeader />
       <div className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto p-8">
       <div className="w-full max-w-lg">
         {/* Progress dots */}

@@ -58,7 +58,7 @@ function ClampedTranscript({ text, query }: { text: string; query: string }) {
     <>
       <p
         ref={textRef}
-        className="text-[13px] leading-[1.55] text-on-surface"
+        className="transcript-text"
         style={expanded ? undefined : {
           display: '-webkit-box',
           WebkitBoxOrient: 'vertical',
@@ -72,7 +72,7 @@ function ClampedTranscript({ text, query }: { text: string; query: string }) {
         <button
           type="button"
           onClick={() => setExpanded((value) => !value)}
-          className="mt-1 rounded px-0.5 py-0.5 text-[11px] font-semibold text-on-surface-variant hover:text-on-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          className="mt-0.5 rounded px-0.5 py-0.5 text-xs font-semibold text-on-surface-variant hover:text-on-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
         >
           {expanded ? 'Show less' : 'Show more'}
         </button>
@@ -210,15 +210,15 @@ export function HistoryPanel({
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
-      <div className="mb-3 shrink-0 space-y-2">
-        <div className="flex flex-wrap items-center gap-2">
+      <div className="shrink-0">
+        <div className="history-toolbar">
           <div
             data-testid="history-search-shell"
             data-expanded="true"
-            className="relative h-9 w-[min(25rem,52vw)] shrink-0 overflow-hidden rounded-xl border border-outline-variant/30 bg-surface-container-lowest shadow-sm transition-[border-color,box-shadow] focus-within:border-primary/70 focus-within:shadow-[0_0_0_3px_color-mix(in_srgb,var(--murmur-primary)_10%,transparent)]"
+            className="history-search"
           >
-            <span className="pointer-events-none absolute inset-y-0 left-0 z-10 grid w-9 place-items-center text-on-surface-variant">
-              <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <span className="pointer-events-none absolute inset-y-0 left-0 z-10 grid w-7 place-items-center text-on-surface-variant">
+              <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M17 11a6 6 0 11-12 0 6 6 0 0112 0z" />
               </svg>
             </span>
@@ -236,19 +236,19 @@ export function HistoryPanel({
               }}
               placeholder="Search transcripts"
               aria-label="Search transcripts"
-              className="absolute inset-0 h-full w-full border-0 bg-transparent py-1.5 pl-9 pr-10 text-sm text-on-surface outline-none placeholder:text-on-surface-variant [&::-webkit-search-cancel-button]:appearance-none"
+              className="absolute inset-0 h-full w-full border-0 bg-transparent py-1 pl-7 pr-7 text-sm text-on-surface outline-none placeholder:text-on-surface-variant [&::-webkit-search-cancel-button]:appearance-none"
             />
             {query ? (
               <button
                 type="button"
                 onClick={closeSearch}
                 aria-label="Clear transcript search"
-                className="absolute right-1.5 top-1.5 z-10 grid h-6 w-6 place-items-center rounded-md bg-on-surface/5 text-sm leading-none text-on-surface-variant transition-colors hover:bg-on-surface/10 hover:text-on-surface focus:outline-none focus-visible:ring-1 focus-visible:ring-primary"
+                className="absolute right-1 top-1 z-10 grid h-5 w-5 place-items-center rounded bg-on-surface/5 text-xs leading-none text-on-surface-variant transition-colors hover:bg-on-surface/10 hover:text-on-surface focus:outline-none focus-visible:ring-1 focus-visible:ring-primary"
               >
                 ×
               </button>
             ) : (
-              <kbd className="pointer-events-none absolute right-2 top-1.5 rounded-md bg-surface-container-high px-2 py-0.5 font-[inherit] text-[10px] text-on-surface-variant">/</kbd>
+              <kbd className="pointer-events-none absolute right-2 top-1 rounded bg-surface-container-high px-1 py-0.5 font-mono text-[9px] text-on-surface-variant">/</kbd>
             )}
           </div>
 
@@ -258,13 +258,13 @@ export function HistoryPanel({
               type="button"
               aria-pressed={filter === option.value}
               onClick={() => setFilter(option.value)}
-              className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary ${filter === option.value ? 'bg-on-surface text-background' : 'bg-surface-container-low text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface'}`}
+              className="ui-filter-chip focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
             >
               {option.label}
             </button>
           ))}
 
-          <span className="ml-auto text-[11px] text-on-surface-variant">
+          <span className="ml-auto text-xs tabular-nums text-on-surface-variant">
             {visible.length === entries.length
               ? `${entries.length} ${entries.length === 1 ? 'entry' : 'entries'}`
               : `${visible.length} of ${entries.length}`}
@@ -278,7 +278,7 @@ export function HistoryPanel({
               aria-expanded={exportOpen}
               aria-controls={exportPanelId}
               aria-label="More history actions"
-              className="grid h-8 w-8 place-items-center rounded-lg text-lg leading-none text-on-surface-variant transition-colors hover:bg-surface-container-low hover:text-on-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+              className="ui-icon-button text-base leading-none focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
             >
               ···
             </button>
@@ -295,7 +295,7 @@ export function HistoryPanel({
                     closeExportAndFocus();
                     onTranscribeFile();
                   }}
-                  className="block w-full px-3 py-2 text-left text-xs font-medium text-on-surface hover:bg-surface-container"
+                  className="block w-full px-3 py-2 text-left text-[length:var(--ui-font-label)] font-medium text-on-surface hover:bg-surface-container"
                 >
                   Transcribe audio file…
                 </button>
@@ -313,7 +313,7 @@ export function HistoryPanel({
                       type="button"
                       aria-label={`Copy ${visible.length} shown as ${format.label}`}
                       onClick={() => void handleCopyExport(format.value)}
-                      className="block w-full px-3 py-1.5 text-left text-xs text-on-surface hover:bg-surface-container"
+                      className="block w-full px-3 py-1.5 text-left text-[length:var(--ui-font-label)] text-on-surface hover:bg-surface-container"
                     >
                       {format.label}
                     </button>
@@ -330,7 +330,7 @@ export function HistoryPanel({
                       type="button"
                       aria-label={`Save ${visible.length} shown as ${format.label}`}
                       onClick={() => void handleSaveExport(format.value)}
-                      className="block w-full px-3 py-1.5 text-left text-xs text-on-surface hover:bg-surface-container"
+                      className="block w-full px-3 py-1.5 text-left text-[length:var(--ui-font-label)] text-on-surface hover:bg-surface-container"
                     >
                       {format.label}…
                     </button>
@@ -341,7 +341,7 @@ export function HistoryPanel({
                   type="button"
                   onClick={handleClear}
                   disabled={entries.length === 0}
-                  className={`block w-full px-3 py-2 text-left text-xs font-medium disabled:opacity-40 ${
+                  className={`block w-full px-3 py-2 text-left text-[length:var(--ui-font-label)] font-medium disabled:opacity-40 ${
                     confirmClear ? 'bg-error/10 text-error' : 'text-error hover:bg-error/10'
                   }`}
                 >
@@ -353,11 +353,11 @@ export function HistoryPanel({
         </div>
 
         {notice && (
-          <p role="status" className="rounded-lg bg-surface-container px-2.5 py-1.5 text-[11px] text-on-surface-variant">{notice}</p>
+          <p role="status" className="mx-3.5 mb-1.5 rounded-lg bg-surface-container px-2.5 py-1.5 text-[11px] text-on-surface-variant">{notice}</p>
         )}
       </div>
 
-      <div className="flex-1 space-y-2 overflow-y-auto pr-1">
+      <div className="history-list">
         {entries.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center text-on-surface-variant">
             <span className="mb-3 grid h-12 w-12 place-items-center rounded-2xl bg-surface-container-low text-xl">◌</span>
@@ -373,18 +373,23 @@ export function HistoryPanel({
           const wordCount = entry.text.trim() ? entry.text.trim().split(/\s+/).length : 0;
           const isNewest = entry.id === newestId;
           return (
-            <article key={entry.id} className={`group w-full rounded-xl border px-3.5 py-3 text-left transition-[border-color,background-color] ${copiedId === entry.id ? 'border-success bg-surface-container-lowest' : 'border-outline-variant/25 bg-surface-container-lowest hover:border-outline-variant/45 hover:bg-surface-container-low'}`}>
-              <div className="mb-1 flex items-center justify-between gap-2">
-                <div className="flex min-w-0 items-center gap-2">
-                  <span className="shrink-0 text-xs text-on-surface-variant">{formatTimestamp(entry.timestamp)}</span>
+            <article
+              key={entry.id}
+              data-testid="transcript-card"
+              data-copied={copiedId === entry.id}
+              className="transcript-card group"
+            >
+              <div className="transcript-meta">
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <span className="shrink-0">{formatTimestamp(entry.timestamp)}</span>
                   {entrySource(entry) === 'file' ? (
-                    <span title={entry.sourceName} className="inline-flex max-w-[180px] min-w-0 items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-on-surface">
-                      <svg className="h-2.5 w-2.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" /></svg>
+                    <span title={entry.sourceName} className="inline-flex max-w-[120px] min-w-0 items-center gap-0.5 rounded-full bg-primary/10 px-1.5 text-xs font-medium text-on-surface">
+                      <svg className="h-2 w-2 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" /></svg>
                       <span className="truncate">{entry.sourceName || 'File'}</span>
                     </span>
                   ) : (
-                    <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-surface-container px-2 py-0.5 text-[10px] font-medium text-on-surface-variant">
-                      <svg className="h-2.5 w-2.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-14 0m7 7v3m-4 0h8m-4-6a3 3 0 01-3-3V5a3 3 0 016 0v4a3 3 0 01-3 3z" /></svg>
+                    <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-surface-container px-1.5 text-xs font-medium text-on-surface-variant">
+                      <svg className="h-2 w-2 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-14 0m7 7v3m-4 0h8m-4-6a3 3 0 01-3-3V5a3 3 0 016 0v4a3 3 0 01-3 3z" /></svg>
                       Mic
                     </span>
                   )}
@@ -397,21 +402,31 @@ export function HistoryPanel({
                     </span>
                   )}
                 </div>
-                <div className="flex shrink-0 items-center gap-2">
-                  <span className="text-[11px] text-on-surface-variant">{wordCount} {wordCount === 1 ? 'word' : 'words'}</span>
-                  <span className="text-xs text-on-surface-variant">{formatDuration(entry.duration)}</span>
-                  {copiedId === entry.id ? (
-                    <span className="text-xs font-medium text-success">Copied!</span>
-                  ) : (
-                    <button type="button" onClick={() => void handleCopy(entry)} aria-label={`Copy transcription from ${formatTimestamp(entry.timestamp)}`} className="rounded-md px-2 py-1 text-xs font-semibold text-on-surface-variant opacity-0 transition-opacity hover:bg-surface-container hover:text-on-surface focus:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary group-hover:opacity-100">Copy</button>
-                  )}
+                <div data-testid="transcript-counts" className="ml-auto flex shrink-0 items-center gap-1.5">
+                  <span>{wordCount} {wordCount === 1 ? 'word' : 'words'}</span>
+                  <span className="font-mono text-xs">{formatDuration(entry.duration)}</span>
                 </div>
               </div>
               <ClampedTranscript text={entry.text} query={query} />
+              <button
+                type="button"
+                onClick={() => void handleCopy(entry)}
+                aria-label={`Copy transcription from ${formatTimestamp(entry.timestamp)}`}
+                data-copied={copiedId === entry.id}
+                className={`transcript-copy focus:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
+                  copiedId === entry.id ? 'text-success' : ''
+                }`}
+              >
+                {copiedId === entry.id ? 'Copied' : 'Copy'}
+              </button>
               {isNewest && (
-                <div className="mt-2">
-                  <button type="button" onClick={() => setTeachingEntry(entry)} className="rounded-md bg-surface-container-high px-2.5 py-1 text-[11px] font-semibold text-on-surface hover:bg-primary/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary">Correct &amp; Teach</button>
-                </div>
+                <button
+                  type="button"
+                  onClick={() => setTeachingEntry(entry)}
+                  className="transcript-teach focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                >
+                  Correct &amp; Teach
+                </button>
               )}
             </article>
           );
