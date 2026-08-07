@@ -55,6 +55,10 @@ events.jsonl  ──(log_shipper.rs, every 60s)──▶  POST https://georgenij
                                                    │
                                                    ▼
                                     ~/murmur-logs/<install-uuid>/events[.dev].jsonl
+                                                   │
+                                      hourly systemd timer
+                                                   ▼
+                                    capture-watch.json + dashboard alert
 ```
 
 ### Shipper (`app/src-tauri/src/log_shipper.rs`)
@@ -83,6 +87,10 @@ events.jsonl  ──(log_shipper.rs, every 60s)──▶  POST https://georgenij
   `127.0.0.1:8600`, run by systemd unit `murmur-logs.service` (user `george`).
 - Validates the bearer token, the `X-Install-Id` shape, and that every line
   parses as JSON before appending. 8 MB request cap, 200 MB per-install cap.
+- Adds a bounded `ingest_app_version` annotation from the app-version request
+  header to each accepted production event. This is receiver-side attribution
+  from an existing header, not a new client-collected field. Historical lines
+  remain untouched and are treated as an `unknown` non-comparable cohort.
 - Exposed at `https://georgenijo.com/murmur/ingest` via a `location` block in
   `/etc/nginx/sites-enabled/georgenijo.com`. Health: `/murmur/healthz`.
 - The ingest token is in fleet secrets: `fleet secret get murmur-log-ingest-token`.
@@ -121,6 +129,32 @@ telemetry rather than instructions. This is prompt-injection hardening, not a
 claim that event text is trusted: operators should attach the report as
 diagnostic data and ask the model to prioritize Action/Watch findings, correlate
 the ordered sequence, and cite event codes in its diagnosis.
+
+### Scheduled capture-startup watch
+
+`murmur-capture-watch.timer` runs an hourly, stdlib-only, line-by-line scan of
+the retained production JSONL. Its versioned report groups only privacy-safe
+capture metrics by install and receiver-observed app version:
+
+- readiness `startup_ms` p50/p95;
+- active initialization timeouts split by stable backend and
+  `last_setup_step`;
+- fallback and both-backends-failed counts;
+- ready-recording counts per completed attempted app session.
+
+The watch alerts when a newest comparable cohort (at least five readiness
+samples) has a p50 above twice the preceding version on the same install, or
+when the same install/version has two completed attempted sessions with zero
+ready recordings. An app session is delimited by `startup_baseline`; idle
+launches and the currently open session cannot create a zero-ready verdict.
+
+Reports contain no raw event summaries, device fields, content, paths, or free
+form errors. Backend/setup-step values are allowlisted and unknown values
+collapse to `unknown`. Memory is bounded to the newest 500 startup samples per
+cohort and 64 explicit versions per install; excess versions collapse into a
+non-comparable `overflow` cohort. The report is atomically replaced at
+`~/murmur-logs/capture-watch.json`; an alert also makes the one-shot exit
+nonzero for systemd/journal visibility and appears on the protected dashboard.
 
 ### Operator event semantics
 

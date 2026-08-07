@@ -42,6 +42,8 @@ EXPORT_LIMITS = (200, 500)
 MAX_SCOPED_EXPORT_BYTES = 32 * 1024 * 1024
 MAX_ACTIVITY_EVENT_BYTES = 512 * 1024
 LLM_REPORT_FORMAT = "murmur-fleet-llm/v1"
+CAPTURE_WATCH_REPORT = "capture-watch.json"
+APP_VERSION_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+-]{0,39}$")
 _usage_cache = {"t": 0.0, "bytes": 0, "dirs": 0}
 
 
@@ -71,6 +73,96 @@ def atomic_write_json(path, obj):
         os.replace(tmp, path)
     except OSError:
         pass
+
+
+def ingest_app_version(value):
+    """Accept only the bounded release identifier already sent by the shipper."""
+    return value if isinstance(value, str) and APP_VERSION_RE.fullmatch(value) else None
+
+
+def annotate_ingested_event(event, app_version):
+    """Attach receiver-observed version without changing event content fields."""
+    if isinstance(event, dict):
+        event = dict(event)
+        event.pop("ingest_app_version", None)
+        if app_version:
+            event["ingest_app_version"] = app_version
+    return event
+
+
+def load_capture_watch_report():
+    try:
+        with open(os.path.join(ROOT, CAPTURE_WATCH_REPORT)) as handle:
+            report = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(report, dict) or report.get("schema_version") != 1:
+        return None
+    if report.get("status") not in ("healthy", "alert", "insufficient_data"):
+        return None
+    if not isinstance(report.get("alerts"), list):
+        return None
+    return report
+
+
+def render_capture_watch(report):
+    if report is None:
+        return (
+            "<div class='watch-banner diagnostic'><strong>Capture regression watch</strong>"
+            "<span>No scheduled report is available yet.</span></div>"
+        )
+    generated = html.escape(str(report.get("generated_at", ""))[:40])
+    alerts = report["alerts"][:20]
+    if not alerts:
+        label = (
+            "Insufficient versioned data"
+            if report["status"] == "insufficient_data"
+            else "No capture-startup regressions detected"
+        )
+        return (
+            "<div class='watch-banner healthy'><strong>Capture regression watch</strong>"
+            "<span>%s · last run %s</span></div>" % (label, generated or "unknown")
+        )
+
+    rows = []
+    for alert in alerts:
+        if not isinstance(alert, dict):
+            continue
+        install = html.escape(str(alert.get("install_id", ""))[:8])
+        if alert.get("kind") == "startup_p50_regression":
+            rows.append(
+                "<li><code>%s</code> v%s → v%s: p50 %s ms → %s ms (%sx)</li>"
+                % (
+                    install,
+                    html.escape(str(alert.get("baseline_version", ""))[:40]),
+                    html.escape(str(alert.get("candidate_version", ""))[:40]),
+                    html.escape(str(alert.get("baseline_p50_ms", ""))[:20]),
+                    html.escape(str(alert.get("candidate_p50_ms", ""))[:20]),
+                    html.escape(str(alert.get("ratio", ""))[:20]),
+                )
+            )
+        elif alert.get("kind") == "repeated_zero_ready_sessions":
+            rows.append(
+                "<li><code>%s</code> v%s: %s attempted sessions ended with zero "
+                "ready recordings</li>"
+                % (
+                    install,
+                    html.escape(str(alert.get("app_version", ""))[:40]),
+                    html.escape(str(alert.get("zero_ready_sessions", ""))[:20]),
+                )
+            )
+    return (
+        "<div class='watch-banner alert'><strong>Capture regression watch · "
+        "%d alert%s</strong><span>Last run %s</span><ul>%s</ul></div>"
+        % (
+            len(alerts),
+            "" if len(alerts) == 1 else "s",
+            generated or "unknown",
+            "".join(rows) or "<li>Unrecognized bounded alert record</li>",
+        )
+    )
+
+
 EASTERN = ZoneInfo("America/New_York")
 
 
@@ -1737,6 +1829,7 @@ def render_problem_group(item):
 
 def render_dashboard():
     installs = collect_installs()
+    capture_watch = render_capture_watch(load_capture_watch_report())
     now = time.time()
     rows = []
     for i in installs:
@@ -1775,6 +1868,7 @@ def render_dashboard():
     body = (
         "<h1>murmur fleet logs</h1>"
         "<p class='sub'>%d install stream%s · refreshes every 30s · %s</p>"
+        "%s"
         "<table><thead><tr><th>device</th><th>version</th>"
         "<th>last event</th></tr></thead>"
         "<tbody>%s</tbody></table>"
@@ -1782,6 +1876,7 @@ def render_dashboard():
             len(installs),
             "" if len(installs) == 1 else "s",
             datetime.now(EASTERN).strftime("%Y-%m-%d %-I:%M %p ET"),
+            capture_watch,
             "".join(rows) or '<tr><td colspan="3">no installs yet</td></tr>',
         )
     )
@@ -1805,6 +1900,10 @@ code{color:#93c5fd;font-size:.85em}
 .badge.dev{background:#3b2f14;color:#fbbf24}
 .new{font-size:.65rem;color:#0b1120;background:#4ade80;border-radius:99px;padding:.1rem .4rem;margin-left:.5rem;font-weight:700}
 .meta{color:#64748b;font-size:.75rem;margin-top:.15rem}
+.watch-banner{border:1px solid #1e293b;border-radius:10px;display:grid;gap:.3rem;margin:0 0 1.2rem;padding:.7rem .85rem}
+.watch-banner span{color:#94a3b8;font-size:.78rem}.watch-banner ul{margin:.25rem 0 0;padding-left:1.25rem}
+.watch-banner.healthy{border-color:#14532d}.watch-banner.diagnostic{border-color:#334155}
+.watch-banner.alert{background:#2a0f14;border-color:#7f1d1d}
 a{color:#e2e8f0;text-decoration:none}a:hover{text-decoration:underline}
 tr.warn td{background:#2a1e0a}tr.error td{background:#2a0f14}
 .lvl{font-size:.7rem;padding:.05rem .4rem;border-radius:4px}
@@ -2087,15 +2186,23 @@ class Handler(BaseHTTPRequestHandler):
             return self._reply(204)
 
         lines = []
+        app_version = ingest_app_version(self.headers.get("X-App-Version", ""))
         for raw in body.split(b"\n"):
             raw = raw.strip()
             if not raw:
                 continue
             try:
-                json.loads(raw)
+                event = json.loads(raw)
             except ValueError:
                 return self._reply(400, b"bad json line")
-            lines.append(raw)
+            event = annotate_ingested_event(event, app_version)
+            lines.append(
+                json.dumps(
+                    event,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            )
         if not lines:
             return self._reply(400, b"empty")
 
