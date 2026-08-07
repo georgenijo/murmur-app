@@ -2193,6 +2193,19 @@ pub(crate) async fn finish_transform_instruction(
         };
     let audio_duration_ms = samples.len() as u64 * 1_000 / crate::state::WHISPER_SAMPLE_RATE as u64;
     let input_bytes = original.len();
+    // Instruction ASR is done; release the ASR model before generation so at
+    // most one heavy runtime is resident from here on. A prewarmed helper
+    // (child already spawned) skips the request path's own release, so this is
+    // the only site that restores the invariant on that path; on the cold path
+    // the request-time release is an idempotent no-op after this one. Skipped
+    // on transcription failure — the pass ends or retries instruction capture,
+    // and both need ASR again.
+    if instruction.is_ok() {
+        let _ = state.app_state.model_runtime.unload(
+            Some(&app_handle),
+            crate::model_runtime::UnloadReason::MemoryPressure,
+        );
+    }
     if let Some(guard) = performance_guard.as_mut() {
         guard.enter(PerformanceStageV1::SidecarSpawnLoad);
     }
