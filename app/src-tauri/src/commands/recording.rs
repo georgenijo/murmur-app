@@ -957,11 +957,6 @@ async fn run_transcription_pipeline(
     performance_guard.enter(PerformanceStageV1::ClipboardPaste);
     if !text.is_empty() {
         let text_to_inject = text.clone();
-        // Opt-in mirror to NotchPill: best-effort local file write, never blocks
-        // or affects injection. Fires alongside the clipboard write.
-        if delivery.mirror_to_notchpill {
-            injector::mirror_caption(&text_to_inject);
-        }
         let paste_delay_ms = delivery.paste_delay_ms;
         let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
         app_handle
@@ -992,6 +987,17 @@ async fn run_transcription_pipeline(
                 let _ = app_handle.emit("auto-paste-failed", paste_hint);
             }
             Ok(Ok(Ok(()))) => {}
+        }
+        // Opt-in mirror to NotchPill: best-effort local file write. It runs
+        // *after* the clipboard write so disk I/O can never delay the primary
+        // output path, and off the pipeline thread so it stays out of paste_ms.
+        // Ownership is re-checked here because the pipeline can be cancelled or
+        // superseded during the paste, and the caption file is last-write-wins:
+        // a stale write would leave NotchPill showing text the user just
+        // abandoned.
+        if delivery.mirror_to_notchpill && !app_state.is_cancelled(recording_id) {
+            let caption = text.clone();
+            tokio::task::spawn_blocking(move || injector::mirror_caption(&caption));
         }
     }
     let paste_ms = t_inject.elapsed().as_millis() as u64;

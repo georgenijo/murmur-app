@@ -55,19 +55,36 @@ fn write_caption_to(dir: &std::path::Path, text: &str) -> bool {
     };
     let target = dir.join("latest-caption.json");
     let tmp = dir.join(format!("latest-caption.json.tmp.{}", std::process::id()));
-    if std::fs::write(&tmp, &bytes).is_err() {
-        return false;
-    }
-    // Owner-only. This file holds a verbatim record of the last thing the user
-    // said out loud, and the default 0644 makes that readable by every account
-    // on the machine. Set on the temp file before the rename so the caption is
-    // never briefly world-readable at its real path.
+    // Owner-only, applied at create time rather than after the write. This file
+    // holds a verbatim record of the last thing the user said out loud, and the
+    // default 0666-minus-umask makes that readable by every account on the
+    // machine. Chmod-after-write left a window where the content was already on
+    // disk at the permissive mode; `mode()` closes it because the kernel applies
+    // it in the same open() that creates the file.
+    // `create_new` is what makes the mode authoritative, so a leftover temp from
+    // a crashed run holding this pid must be cleared or every later write fails.
+    let _ = std::fs::remove_file(&tmp);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
     }
-    std::fs::rename(&tmp, &target).is_ok()
+    // Fail closed: any failure removes the temp file rather than leaving
+    // verbatim transcript content behind at an unknown mode.
+    let wrote = match options.open(&tmp) {
+        Ok(mut file) => {
+            use std::io::Write;
+            file.write_all(&bytes).is_ok() && file.flush().is_ok()
+        }
+        Err(_) => false,
+    };
+    if !wrote || std::fs::rename(&tmp, &target).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return false;
+    }
+    true
 }
 
 /// Copy text to clipboard and optionally simulate Cmd+V paste.
@@ -1205,5 +1222,43 @@ mod caption_tests {
         assert!(!write_caption_to(&tmp, "   "));
         assert!(!tmp.join("latest-caption.json").exists());
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// The caption is a verbatim record of speech, so the mode is part of the
+    /// contract, not an implementation detail. Asserted on the real file after
+    /// the rename because that is what another account could open.
+    #[cfg(unix)]
+    #[test]
+    fn write_caption_to_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = std::env::temp_dir().join(format!("murmur-cap-mode-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        assert!(write_caption_to(&tmp, "spoken secret"));
+        let mode = std::fs::metadata(tmp.join("latest-caption.json"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "caption must not be group/world readable");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Repeat writes must keep working. `create_new` makes the mode
+    /// authoritative but fails on an existing temp, so a leftover from a crashed
+    /// run at the same pid would otherwise wedge the feature permanently.
+    #[test]
+    fn write_caption_to_recovers_from_a_leftover_temp() {
+        let dir = std::env::temp_dir().join(format!("murmur-cap-stale-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let stale = dir.join(format!("latest-caption.json.tmp.{}", std::process::id()));
+        std::fs::write(&stale, b"junk").unwrap();
+        assert!(write_caption_to(&dir, "first"));
+        assert!(write_caption_to(&dir, "second"));
+        assert!(!stale.exists(), "temp file must not survive a successful write");
+        let raw = std::fs::read_to_string(dir.join("latest-caption.json")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(v["text"], "second");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

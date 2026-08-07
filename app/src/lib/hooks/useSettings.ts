@@ -138,6 +138,7 @@ export function useSettings() {
               smartPunctuation: previousSettings.smartPunctuation,
               saveTranscript: previousSettings.saveTranscript,
               saveAudio: previousSettings.saveAudio,
+              mirrorToNotchPill: previousSettings.mirrorToNotchPill,
               outputDir: previousSettings.outputDir,
               appProfiles: previousSettings.appProfiles,
               voiceCommandsEnabled: previousSettings.voiceCommandsEnabled,
