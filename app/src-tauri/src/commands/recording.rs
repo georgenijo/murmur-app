@@ -3196,9 +3196,7 @@ pub async fn transcribe_file(
             return Err("Wait for the benchmark to finish before transcribing a file.".to_string());
         }
         if state.corpus.is_active() {
-            return Err(
-                "Finish the corpus recording before transcribing a file.".to_string(),
-            );
+            return Err("Finish the corpus recording before transcribing a file.".to_string());
         }
         // Transform's Thinking phase (issue #312) will share this same Whisper
         // backend, so it must be mutually exclusive with file transcription too.

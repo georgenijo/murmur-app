@@ -193,7 +193,10 @@ fn validate_request(request: &CorpusStartRequest) -> Result<(), String> {
             .iter()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
     {
-        return Err("Corpus prompt ID must contain only lowercase letters, numbers, and hyphens".to_string());
+        return Err(
+            "Corpus prompt ID must contain only lowercase letters, numbers, and hyphens"
+                .to_string(),
+        );
     }
     if request.prompt_index == 0 || request.prompt_index > 999 {
         return Err("Corpus prompt index must be between 1 and 999".to_string());
@@ -250,11 +253,7 @@ fn audio_quality(samples: &[f32]) -> (f32, f32, f32, Vec<String>) {
     let clipping_percent = if samples.is_empty() {
         0.0
     } else {
-        samples
-            .iter()
-            .filter(|sample| sample.abs() >= 0.99)
-            .count() as f32
-            / samples.len() as f32
+        samples.iter().filter(|sample| sample.abs() >= 0.99).count() as f32 / samples.len() as f32
             * 100.0
     };
     let duration_ms = samples.len() as u64 / 16;
@@ -281,10 +280,12 @@ fn persist_recording(
     }
     let root = corpus_root()?;
     let audio_dir = root.join("audio");
-    std::fs::create_dir_all(&audio_dir)
-        .map_err(|error| format!("Could not create the personal corpus audio directory: {error}"))?;
-    std::fs::create_dir_all(root.join("reports"))
-        .map_err(|error| format!("Could not create the personal corpus report directory: {error}"))?;
+    std::fs::create_dir_all(&audio_dir).map_err(|error| {
+        format!("Could not create the personal corpus audio directory: {error}")
+    })?;
+    std::fs::create_dir_all(root.join("reports")).map_err(|error| {
+        format!("Could not create the personal corpus report directory: {error}")
+    })?;
 
     let mut manifest = read_manifest(&root)?;
     let take = manifest
@@ -352,7 +353,9 @@ fn persist_recording(
     {
         let _ = std::fs::remove_file(&temporary_manifest);
         let _ = std::fs::remove_file(&final_path);
-        return Err(format!("Could not update the personal corpus manifest: {error}"));
+        return Err(format!(
+            "Could not update the personal corpus manifest: {error}"
+        ));
     }
 
     tracing::info!(
@@ -555,8 +558,9 @@ pub async fn get_corpus_summary() -> Result<CorpusSummary, String> {
         let root = corpus_root()?;
         std::fs::create_dir_all(root.join("audio"))
             .map_err(|error| format!("Could not create the personal corpus directory: {error}"))?;
-        std::fs::create_dir_all(root.join("reports"))
-            .map_err(|error| format!("Could not create the personal corpus report directory: {error}"))?;
+        std::fs::create_dir_all(root.join("reports")).map_err(|error| {
+            format!("Could not create the personal corpus report directory: {error}")
+        })?;
         let manifest = read_manifest(&root)?;
         Ok(CorpusSummary {
             corpus_directory: root.to_string_lossy().into_owned(),
