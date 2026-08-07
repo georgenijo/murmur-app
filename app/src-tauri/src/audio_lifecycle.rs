@@ -224,51 +224,7 @@ impl WorkerFactory for ProductionWorkerFactory {
         spec: AudioWorkerSpec,
         event_sender: AudioWorkerEventSender,
     ) -> Result<JoinHandle<()>, String> {
-        #[cfg(debug_assertions)]
-        if should_inject_hung_stream_build() {
-            let owner = spec.owner;
-            return std::thread::Builder::new()
-                .name("murmur-audio-fault".to_string())
-                .spawn(move || {
-                    for phase in [
-                        audio::AudioInitPhase::DeviceEnumeration,
-                        audio::AudioInitPhase::ConfigLookup,
-                    ] {
-                        let _ = event_sender.send(AudioWorkerEvent::PhaseEntered { owner, phase });
-                        let _ = event_sender.send(AudioWorkerEvent::PhaseExited {
-                            owner,
-                            phase,
-                            elapsed_ms: 0,
-                        });
-                    }
-                    let _ = event_sender.send(AudioWorkerEvent::PhaseEntered {
-                        owner,
-                        phase: audio::AudioInitPhase::StreamBuild,
-                    });
-                    // Model a synchronous Core Audio call that never returns.
-                    loop {
-                        std::thread::park();
-                    }
-                })
-                .map_err(|error| format!("Failed to spawn audio fault worker: {error}"));
-        }
         audio::spawn_capture_worker(spec, event_sender)
-    }
-}
-
-#[cfg(debug_assertions)]
-fn should_inject_hung_stream_build() -> bool {
-    match std::env::var("MURMUR_AUDIO_TEST_SCENARIO").ok().as_deref() {
-        Some("hang_stream_build") => true,
-        Some("hang_stream_build_once") => std::env::var_os("MURMUR_AUDIO_TEST_SENTINEL")
-            .is_some_and(|path| {
-                std::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(path)
-                    .is_ok()
-            }),
-        _ => false,
     }
 }
 
@@ -1425,7 +1381,6 @@ mod tests {
                 let owner = spec.owner;
                 for phase in [
                     AudioInitPhase::DeviceEnumeration,
-                    AudioInitPhase::ConfigLookup,
                     AudioInitPhase::StreamBuild,
                 ] {
                     let _ = event_sender.send(AudioWorkerEvent::PhaseEntered { owner, phase });
@@ -1849,7 +1804,7 @@ mod tests {
                 retry_gate: Some(retry_gate.clone()),
                 spawn_count: Arc::clone(&spawn_count),
                 active_flags,
-                phase: AudioInitPhase::ConfigLookup,
+                phase: AudioInitPhase::StreamBuild,
                 phase_entered: Some(phase_sender),
             }),
             sink.clone(),
@@ -1984,7 +1939,7 @@ mod tests {
     #[test]
     fn stale_worker_generation_cannot_activate_current_attempt() {
         let (supervisor, gate, _, sink, active_flags) =
-            harness(AudioInitPhase::ConfigLookup, SupervisorConfig::default());
+            harness(AudioInitPhase::StreamBuild, SupervisorConfig::default());
         let owner = AudioOwner::Dictation(9);
         assert_eq!(start(&supervisor, owner).recv().unwrap(), Ok(()));
         supervisor
