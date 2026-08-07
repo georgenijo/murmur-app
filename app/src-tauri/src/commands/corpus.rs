@@ -299,7 +299,9 @@ pub(crate) fn load_benchmark_fixtures() -> Result<Vec<CorpusBenchmarkFixture>, S
                 .map_err(|_| "A selected personal corpus WAV could not be read".to_string())?;
             let actual_sha256 = format!("{:x}", Sha256::digest(&wav));
             if !actual_sha256.eq_ignore_ascii_case(&recording.sha256) {
-                return Err("A selected personal corpus WAV failed integrity validation".to_string());
+                return Err(
+                    "A selected personal corpus WAV failed integrity validation".to_string()
+                );
             }
             Ok(CorpusBenchmarkFixture {
                 id: recording.prompt_id,
@@ -660,7 +662,7 @@ pub fn open_corpus_folder(app_handle: tauri::AppHandle) -> Result<(), String> {
 }
 
 pub(crate) fn plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
-    tauri::plugin::Builder::new("internal-benchmark")
+    tauri::plugin::Builder::<R>::new("internal-benchmark")
         .invoke_handler(tauri::generate_handler![
             start_corpus_recording,
             stop_corpus_recording,

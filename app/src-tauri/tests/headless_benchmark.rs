@@ -41,9 +41,9 @@ fn parse_corpus(value: Option<&str>) -> Result<BenchmarkCorpusSource, String> {
         #[cfg(feature = "internal-benchmark")]
         Some("personal") => Ok(BenchmarkCorpusSource::Personal),
         #[cfg(not(feature = "internal-benchmark"))]
-        Some("personal") => Err(
-            "MURMUR_BENCH_CORPUS=personal requires --features internal-benchmark".to_string(),
-        ),
+        Some("personal") => {
+            Err("MURMUR_BENCH_CORPUS=personal requires --features internal-benchmark".to_string())
+        }
         Some(other) => Err(format!(
             "Unknown MURMUR_BENCH_CORPUS '{other}' (expected bundled|personal)"
         )),
@@ -190,9 +190,7 @@ fn headless_benchmark() {
     )
     .expect("MURMUR_BENCH_MODELS");
 
-    println!(
-        "headless benchmark: corpus={corpus:?} preset={preset:?} models={model_names:?}"
-    );
+    println!("headless benchmark: corpus={corpus:?} preset={preset:?} models={model_names:?}");
 
     let request = BenchmarkRequest {
         model_names,

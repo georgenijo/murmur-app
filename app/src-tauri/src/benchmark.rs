@@ -1578,7 +1578,10 @@ mod tests {
                 })
                 .collect::<Vec<_>>()
         };
-        let quick = benchmark_corpus(BenchmarkCorpusSource::Bundled, &metadata(BenchmarkPreset::Quick));
+        let quick = benchmark_corpus(
+            BenchmarkCorpusSource::Bundled,
+            &metadata(BenchmarkPreset::Quick),
+        );
         let standard = benchmark_corpus(
             BenchmarkCorpusSource::Bundled,
             &metadata(BenchmarkPreset::Standard),
