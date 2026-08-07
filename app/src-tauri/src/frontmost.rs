@@ -254,7 +254,9 @@ pub fn frontmost_app_identity() -> FrontmostAppIdentity {
     let process_id = NSWorkspace::sharedWorkspace()
         .frontmostApplication()
         .and_then(|application| {
-            let native_bundle = application.bundleIdentifier().map(|value| value.to_string());
+            let native_bundle = application
+                .bundleIdentifier()
+                .map(|value| value.to_string());
             (native_bundle == bundle_id).then(|| application.processIdentifier())
         });
     FrontmostAppIdentity {

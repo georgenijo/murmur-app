@@ -13,13 +13,9 @@ pub const MIN_VAD_MODEL_BYTES: u64 = 512 * 1024;
 
 const PREFIX_BYTES: usize = 512;
 
-pub fn validate_binary_model(
-    path: &Path,
-    minimum_bytes: u64,
-    label: &str,
-) -> Result<(), String> {
-    let metadata = std::fs::metadata(path)
-        .map_err(|error| format!("Could not inspect {label}: {error}"))?;
+pub fn validate_binary_model(path: &Path, minimum_bytes: u64, label: &str) -> Result<(), String> {
+    let metadata =
+        std::fs::metadata(path).map_err(|error| format!("Could not inspect {label}: {error}"))?;
     if !metadata.is_file() {
         return Err(format!("{label} is not a regular file"));
     }
@@ -30,8 +26,8 @@ pub fn validate_binary_model(
         ));
     }
 
-    let mut file = std::fs::File::open(path)
-        .map_err(|error| format!("Could not open {label}: {error}"))?;
+    let mut file =
+        std::fs::File::open(path).map_err(|error| format!("Could not open {label}: {error}"))?;
     let mut prefix = [0_u8; PREFIX_BYTES];
     let read = file
         .read(&mut prefix)
@@ -68,7 +64,9 @@ mod tests {
 
     #[test]
     fn rejects_common_successful_error_payloads() {
-        assert!(response_document_prefix(b"<!doctype html><title>Proxy</title>"));
+        assert!(response_document_prefix(
+            b"<!doctype html><title>Proxy</title>"
+        ));
         assert!(response_document_prefix(b"  {\"error\":\"unauthorized\"}"));
         assert!(response_document_prefix(
             b"version https://git-lfs.github.com/spec/v1\n"
