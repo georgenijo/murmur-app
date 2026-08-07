@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import shlex
 import subprocess
 import sys
 
@@ -70,7 +71,7 @@ def main() -> int:
         str(args.timeout),
         args.node,
         "--",
-        *remote,
+        shlex.join(remote),
     ]
     print("Running benchmark on Fleet node", args.node, flush=True)
     return subprocess.run(command, check=False).returncode
