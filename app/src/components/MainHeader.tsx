@@ -95,7 +95,7 @@ export function MainHeader({
         <button
           type="button"
           onClick={onOpenSettings}
-          className="rounded-md px-2 py-1 text-[11px] font-bold text-on-surface transition-colors hover:bg-surface-container-low focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          className="rounded-md px-3 py-1 text-[length:var(--ui-font-label)] font-semibold text-on-surface transition-colors hover:bg-surface-container-low focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
         >
           Done
         </button>
@@ -104,7 +104,7 @@ export function MainHeader({
           {updateIndicator}
 
           <p
-            className={`hidden select-none text-[10px] text-on-surface-variant transition-opacity sm:block ${
+            className={`hidden select-none text-xs text-on-surface-variant transition-opacity sm:block ${
               isCapturing || busy ? 'pointer-events-none opacity-0' : 'opacity-100'
             }`}
           >
@@ -149,7 +149,7 @@ export function MainHeader({
             {' '}
             <span
               aria-hidden={status !== 'recording'}
-              className={`overflow-hidden font-mono text-[10px] ${
+              className={`overflow-hidden font-mono text-xs ${
                 status === 'recording' ? 'visible w-auto' : 'invisible w-0'
               }`}
             >

@@ -105,6 +105,9 @@ describe('Sonic Canvas semantic color tokens', () => {
 
 describe('Murmur layout contracts', () => {
   it('locks the compact chrome and history geometry to shared tokens', () => {
+    expect(css).toContain('--ui-font-caption: 0.75rem;');
+    expect(css).toContain('--ui-font-label: 0.8125rem;');
+    expect(css).toContain('--ui-font-body: 0.875rem;');
     expect(css).toContain('--ui-window-header-height: 2.625rem;');
     expect(css).toContain('--ui-record-width: 4.5rem;');
     expect(css).toContain('--ui-status-min-width: 4.5rem;');
@@ -115,6 +118,12 @@ describe('Murmur layout contracts', () => {
   it('keeps transcript copy actions out of metadata layout', () => {
     expect(css).toMatch(
       /\.transcript-copy\s*\{[^}]*position:\s*absolute;[^}]*right:\s*var\(--ui-space-4\);[^}]*bottom:\s*var\(--ui-space-3\);/s,
+    );
+  });
+
+  it('does not let hover override a selected filter chip', () => {
+    expect(css).toContain(
+      '.ui-filter-chip:hover:not([aria-pressed="true"]):not([aria-current="page"])',
     );
   });
 });

@@ -37,10 +37,11 @@
 
   /* Murmur UI geometry. Feature components consume these contracts instead of
      inventing local measurements, keeping every workspace on the same rhythm. */
-  --ui-font-caption: 0.625rem;
-  --ui-font-label: 0.6875rem;
-  --ui-font-body: 0.78125rem;
-  --ui-font-title: 0.8125rem;
+  /* One three-step type ramp across the app: captions, controls, and body. */
+  --ui-font-caption: 0.75rem;
+  --ui-font-label: 0.8125rem;
+  --ui-font-body: 0.875rem;
+  --ui-font-title: 0.875rem;
   --ui-space-1: 0.125rem;
   --ui-space-2: 0.25rem;
   --ui-space-3: 0.375rem;
@@ -113,6 +114,8 @@
 body {
   background: var(--murmur-background);
   color: var(--murmur-on-surface);
+  font-size: var(--ui-font-body);
+  line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   overscroll-behavior: none;
@@ -215,22 +218,24 @@ textarea {
   padding-inline: var(--ui-space-5);
   background: var(--murmur-surface-container-lowest);
   color: var(--murmur-on-surface-variant);
-  font-size: 0.65625rem;
+  font-size: var(--ui-font-label);
   font-weight: 550;
   transition:
     background-color var(--ui-motion-fast),
     color var(--ui-motion-fast);
 }
 
-.ui-filter-chip[aria-pressed="true"],
-.ui-filter-chip[aria-current="page"] {
-  background: var(--murmur-on-surface);
-  color: var(--murmur-background);
-}
-
-.ui-filter-chip:hover {
+.ui-filter-chip:hover:not([aria-pressed="true"]):not([aria-current="page"]) {
   background: var(--murmur-surface-container);
   color: var(--murmur-on-surface);
+}
+
+.ui-filter-chip[aria-pressed="true"],
+.ui-filter-chip[aria-current="page"],
+.ui-filter-chip[aria-pressed="true"]:hover,
+.ui-filter-chip[aria-current="page"]:hover {
+  background: var(--murmur-on-surface);
+  color: var(--murmur-background);
 }
 
 .history-toolbar {
@@ -244,7 +249,7 @@ textarea {
 
 .history-search {
   position: relative;
-  width: 11.25rem;
+  width: 13rem;
   height: var(--ui-control-standard);
   flex-shrink: 0;
   overflow: hidden;
@@ -258,7 +263,7 @@ textarea {
 }
 
 .history-search:focus-within {
-  width: 16.25rem;
+  width: 18rem;
   border-color: color-mix(in srgb, var(--murmur-primary) 70%, transparent);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--murmur-primary) 10%, transparent);
 }
@@ -319,7 +324,7 @@ textarea {
   border-radius: 0.25rem;
   padding: 0.0625rem 0.3125rem;
   color: var(--murmur-on-surface-variant);
-  font-size: 0.5625rem;
+  font-size: var(--ui-font-caption);
   font-weight: 550;
   line-height: 1rem;
   opacity: 0;
@@ -346,7 +351,7 @@ textarea {
   padding: 0.0625rem 0.375rem;
   background: var(--murmur-surface-container);
   color: var(--murmur-on-surface-variant);
-  font-size: 0.59375rem;
+  font-size: var(--ui-font-caption);
   font-weight: 600;
   line-height: 1rem;
 }
@@ -354,6 +359,18 @@ textarea {
 .transcript-teach:hover {
   background: var(--murmur-surface-container-high);
   color: var(--murmur-on-surface);
+}
+
+.settings-search {
+  width: 14.375rem;
+  flex: none;
+  transition:
+    width 250ms var(--ui-ease-out),
+    border-color var(--ui-motion-standard);
+}
+
+.settings-search:focus-within {
+  width: 20rem;
 }
 
 /* The notch overlay is a transparent window — the surface background above

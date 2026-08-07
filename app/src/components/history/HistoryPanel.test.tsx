@@ -132,7 +132,13 @@ describe('HistoryPanel', () => {
 
   it('filters by source', async () => {
     await render();
-    await act(async () => byText('File')!.click());
+    const all = byText('All')!;
+    const file = byText('File')!;
+    expect(all.getAttribute('aria-pressed')).toBe('true');
+    expect(file.getAttribute('aria-pressed')).toBe('false');
+    await act(async () => file.click());
+    expect(all.getAttribute('aria-pressed')).toBe('false');
+    expect(file.getAttribute('aria-pressed')).toBe('true');
     expect(cardText()).toHaveLength(1);
     expect(cardText()[0]).toContain('standup.wav');
   });

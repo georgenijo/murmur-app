@@ -16,6 +16,10 @@ drifting away from it.
   scale, spacing rhythm, control heights, radii, chrome inset, history density,
   elevation, and motion.
 
+The type ramp is intentionally limited to three reusable sizes: 12px captions,
+13px controls, and 14px body text. Components should use those tokens instead
+of inventing local font sizes.
+
 Feature components must not replace semantic colors with literal palette
 values. New recurring measurements belong in `--ui-*`; one-off arbitrary
 Tailwind measurements in redesigned surfaces should be treated as a review

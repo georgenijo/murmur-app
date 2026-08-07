@@ -17,3 +17,45 @@ for (const appearance of appearances) {
     });
   }
 }
+
+test('selected history filters remain selected while hovered', async ({ page }) => {
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await page.goto('/visual-fixtures.html?state=idle&appearance=dark');
+  const mic = page.getByRole('button', { name: 'Mic' });
+  await mic.hover();
+  await mic.click();
+  await expect(mic).toHaveAttribute('aria-pressed', 'true');
+
+  await expect.poll(() => mic.evaluate((element) => {
+    const selected = getComputedStyle(element);
+    const probe = document.createElement('span');
+    probe.style.color = 'var(--murmur-on-surface)';
+    document.body.appendChild(probe);
+    const expectedBackground = getComputedStyle(probe).color;
+    probe.style.color = 'var(--murmur-background)';
+    const expectedForeground = getComputedStyle(probe).color;
+    probe.remove();
+    return {
+      backgroundMatches: selected.backgroundColor === expectedBackground,
+      foregroundMatches: selected.color === expectedForeground,
+    };
+  })).toEqual({ backgroundMatches: true, foregroundMatches: true });
+});
+
+test('the transcript search placeholder fits beside its shortcut badge', async ({ page }) => {
+  await page.goto('/visual-fixtures.html?state=idle&appearance=dark');
+  const search = page.getByRole('searchbox', { name: 'Search transcripts' });
+  const fit = await search.evaluate((input: HTMLInputElement) => {
+    const style = getComputedStyle(input);
+    const canvas = document.createElement('canvas');
+    const context = canvas.getContext('2d')!;
+    context.font = style.font;
+    const textWidth = context.measureText(input.placeholder).width;
+    const availableWidth = input.clientWidth
+      - parseFloat(style.paddingLeft)
+      - parseFloat(style.paddingRight);
+    return { textWidth, availableWidth };
+  });
+
+  expect(fit.textWidth).toBeLessThanOrEqual(fit.availableWidth);
+});

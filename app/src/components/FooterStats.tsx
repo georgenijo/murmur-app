@@ -32,7 +32,7 @@ export function FooterStats({ statsVersion }: FooterStatsProps) {
   const streak = getCurrentStreak(stats);
 
   return (
-    <footer className="relative flex h-8 shrink-0 items-center gap-1.5 border-t border-outline-variant/15 bg-background/95 px-3.5 text-[10.5px] text-on-surface-variant">
+    <footer className="relative flex h-8 shrink-0 items-center gap-1.5 border-t border-outline-variant/15 bg-background/95 px-3.5 text-xs text-on-surface-variant">
       <span><b className="font-bold text-on-surface">{stats.totalWords.toLocaleString()}</b> words</span>
       <span aria-hidden="true" className="text-outline-variant/60">·</span>
       <span><b className="font-bold text-on-surface">{wpm || '—'}</b> wpm</span>
@@ -46,7 +46,7 @@ export function FooterStats({ statsVersion }: FooterStatsProps) {
           type="button"
           onClick={() => setOpen((value) => !value)}
           aria-expanded={open}
-          className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-on-surface-variant transition-colors hover:bg-surface-container-low hover:text-on-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-xs font-semibold uppercase tracking-[0.12em] text-on-surface-variant transition-colors hover:bg-surface-container-low hover:text-on-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
         >
           Insights
           <svg className={`h-3 w-3 transition-transform ${open ? '' : 'rotate-180'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">

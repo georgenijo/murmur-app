@@ -480,8 +480,8 @@ export function SettingsPanel({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background text-on-surface">
-      <div className="flex shrink-0 flex-wrap items-center gap-3 px-5 pb-3 pt-4">
-        <label className="relative min-w-[240px] flex-1">
+      <div className="flex shrink-0 flex-wrap items-center gap-3 px-5 pb-3 pt-1">
+        <label className="settings-search relative min-w-[230px]">
           <span className="sr-only">Search all settings</span>
           <svg className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-on-surface-variant" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M17 11a6 6 0 11-12 0 6 6 0 0112 0z" />
@@ -491,7 +491,7 @@ export function SettingsPanel({
             value={searchQuery}
             onChange={(event) => setSearchQuery(event.target.value)}
             placeholder="Search all settings"
-            className="h-10 w-full rounded-xl border border-outline-variant bg-surface-container-lowest pl-10 pr-9 text-sm text-on-surface outline-none placeholder:text-on-surface-variant focus:border-primary"
+            className="h-8 w-full rounded-lg border border-outline-variant bg-surface-container-lowest pl-9 pr-8 text-sm text-on-surface outline-none placeholder:text-on-surface-variant focus:border-primary"
           />
           {searchQuery && (
             <button type="button" onClick={() => setSearchQuery('')} aria-label="Clear settings search" className="absolute right-2 top-1/2 grid h-6 w-6 -translate-y-1/2 place-items-center rounded text-on-surface-variant hover:bg-surface-container">×</button>
@@ -511,7 +511,7 @@ export function SettingsPanel({
                   setActiveCat(category.id);
                   setDiagnosticsOpen(false);
                 }}
-                className="ui-filter-chip px-4 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                className="ui-filter-chip px-3.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
               >
                 {category.label}{matches > 0 ? ` (${matches})` : ''}
               </button>
@@ -577,7 +577,7 @@ export function SettingsPanel({
               <p className="mb-2 text-sm font-medium text-on-surface">Recording Trigger</p>
               <div className="flex gap-2">
                 {RECORDING_MODE_OPTIONS.map((option) => (
-                  <button key={option.value} type="button" disabled={isRecording} onClick={() => onUpdateSettings({ recordingMode: option.value as RecordingMode })} className={`flex-1 rounded-lg border px-3 py-2 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${settings.recordingMode === option.value ? 'border-primary bg-primary text-on-primary' : 'border-outline-variant/30 bg-surface-container-lowest text-on-surface hover:bg-surface-container'}`}>{option.label}</button>
+                  <button key={option.value} type="button" disabled={isRecording} onClick={() => onUpdateSettings({ recordingMode: option.value as RecordingMode })} className={`h-8 flex-1 rounded-lg border px-3 text-[length:var(--ui-font-label)] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${settings.recordingMode === option.value ? 'border-primary bg-primary text-on-primary' : 'border-outline-variant/30 bg-surface-container-lowest text-on-surface hover:bg-surface-container'}`}>{option.label}</button>
                 ))}
               </div>
               {isRecording && <p className="mt-1 text-xs text-primary">Stop recording before changing mode.</p>}
@@ -607,7 +607,7 @@ export function SettingsPanel({
                     disabled={isRecording}
                     aria-pressed={settings.autoStopSilenceMs === option.value}
                     onClick={() => onUpdateSettings({ autoStopSilenceMs: option.value })}
-                    className={`flex-1 rounded-lg border px-3 py-2 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${settings.autoStopSilenceMs === option.value ? 'border-primary bg-primary text-on-primary' : 'border-outline-variant/30 bg-surface-container-lowest text-on-surface hover:bg-surface-container'}`}
+                    className={`h-8 flex-1 rounded-lg border px-3 text-[length:var(--ui-font-label)] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${settings.autoStopSilenceMs === option.value ? 'border-primary bg-primary text-on-primary' : 'border-outline-variant/30 bg-surface-container-lowest text-on-surface hover:bg-surface-container'}`}
                   >
                     {option.label}
                   </button>

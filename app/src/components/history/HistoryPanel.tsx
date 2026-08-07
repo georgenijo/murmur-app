@@ -72,7 +72,7 @@ function ClampedTranscript({ text, query }: { text: string; query: string }) {
         <button
           type="button"
           onClick={() => setExpanded((value) => !value)}
-          className="mt-0.5 rounded px-0.5 py-0.5 text-[10px] font-semibold text-on-surface-variant hover:text-on-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          className="mt-0.5 rounded px-0.5 py-0.5 text-xs font-semibold text-on-surface-variant hover:text-on-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
         >
           {expanded ? 'Show less' : 'Show more'}
         </button>
@@ -236,7 +236,7 @@ export function HistoryPanel({
               }}
               placeholder="Search transcripts"
               aria-label="Search transcripts"
-              className="absolute inset-0 h-full w-full border-0 bg-transparent py-1 pl-7 pr-7 text-xs text-on-surface outline-none placeholder:text-on-surface-variant [&::-webkit-search-cancel-button]:appearance-none"
+              className="absolute inset-0 h-full w-full border-0 bg-transparent py-1 pl-7 pr-7 text-sm text-on-surface outline-none placeholder:text-on-surface-variant [&::-webkit-search-cancel-button]:appearance-none"
             />
             {query ? (
               <button
@@ -264,7 +264,7 @@ export function HistoryPanel({
             </button>
           ))}
 
-          <span className="ml-auto text-[10.5px] tabular-nums text-on-surface-variant">
+          <span className="ml-auto text-xs tabular-nums text-on-surface-variant">
             {visible.length === entries.length
               ? `${entries.length} ${entries.length === 1 ? 'entry' : 'entries'}`
               : `${visible.length} of ${entries.length}`}
@@ -295,7 +295,7 @@ export function HistoryPanel({
                     closeExportAndFocus();
                     onTranscribeFile();
                   }}
-                  className="block w-full px-3 py-2 text-left text-xs font-medium text-on-surface hover:bg-surface-container"
+                  className="block w-full px-3 py-2 text-left text-[length:var(--ui-font-label)] font-medium text-on-surface hover:bg-surface-container"
                 >
                   Transcribe audio file…
                 </button>
@@ -313,7 +313,7 @@ export function HistoryPanel({
                       type="button"
                       aria-label={`Copy ${visible.length} shown as ${format.label}`}
                       onClick={() => void handleCopyExport(format.value)}
-                      className="block w-full px-3 py-1.5 text-left text-xs text-on-surface hover:bg-surface-container"
+                      className="block w-full px-3 py-1.5 text-left text-[length:var(--ui-font-label)] text-on-surface hover:bg-surface-container"
                     >
                       {format.label}
                     </button>
@@ -330,7 +330,7 @@ export function HistoryPanel({
                       type="button"
                       aria-label={`Save ${visible.length} shown as ${format.label}`}
                       onClick={() => void handleSaveExport(format.value)}
-                      className="block w-full px-3 py-1.5 text-left text-xs text-on-surface hover:bg-surface-container"
+                      className="block w-full px-3 py-1.5 text-left text-[length:var(--ui-font-label)] text-on-surface hover:bg-surface-container"
                     >
                       {format.label}…
                     </button>
@@ -341,7 +341,7 @@ export function HistoryPanel({
                   type="button"
                   onClick={handleClear}
                   disabled={entries.length === 0}
-                  className={`block w-full px-3 py-2 text-left text-xs font-medium disabled:opacity-40 ${
+                  className={`block w-full px-3 py-2 text-left text-[length:var(--ui-font-label)] font-medium disabled:opacity-40 ${
                     confirmClear ? 'bg-error/10 text-error' : 'text-error hover:bg-error/10'
                   }`}
                 >
@@ -383,12 +383,12 @@ export function HistoryPanel({
                 <div className="flex min-w-0 items-center gap-1.5">
                   <span className="shrink-0">{formatTimestamp(entry.timestamp)}</span>
                   {entrySource(entry) === 'file' ? (
-                    <span title={entry.sourceName} className="inline-flex max-w-[120px] min-w-0 items-center gap-0.5 rounded-full bg-primary/10 px-1.5 text-[9px] font-medium text-on-surface">
+                    <span title={entry.sourceName} className="inline-flex max-w-[120px] min-w-0 items-center gap-0.5 rounded-full bg-primary/10 px-1.5 text-xs font-medium text-on-surface">
                       <svg className="h-2 w-2 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" /></svg>
                       <span className="truncate">{entry.sourceName || 'File'}</span>
                     </span>
                   ) : (
-                    <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-surface-container px-1.5 text-[9px] font-medium text-on-surface-variant">
+                    <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-surface-container px-1.5 text-xs font-medium text-on-surface-variant">
                       <svg className="h-2 w-2 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-14 0m7 7v3m-4 0h8m-4-6a3 3 0 01-3-3V5a3 3 0 016 0v4a3 3 0 01-3 3z" /></svg>
                       Mic
                     </span>
@@ -404,7 +404,7 @@ export function HistoryPanel({
                 </div>
                 <div data-testid="transcript-counts" className="ml-auto flex shrink-0 items-center gap-1.5">
                   <span>{wordCount} {wordCount === 1 ? 'word' : 'words'}</span>
-                  <span className="font-mono text-[9px]">{formatDuration(entry.duration)}</span>
+                  <span className="font-mono text-xs">{formatDuration(entry.duration)}</span>
                 </div>
               </div>
               <ClampedTranscript text={entry.text} query={query} />
