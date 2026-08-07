@@ -12,11 +12,17 @@ import {
 } from './SettingsPanel';
 
 vi.mock('@tauri-apps/api/app', () => ({ getVersion: vi.fn(async () => '0.18.0') }));
-const coreMocks = vi.hoisted(() => ({ notchPillInstalled: false }));
+const coreMocks = vi.hoisted(() => ({
+  notchPillInstalled: false,
+  notchPillDetectionError: false,
+}));
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(async (command: string) => {
     if (command === 'list_audio_devices') return [];
-    if (command === 'is_notchpill_installed') return coreMocks.notchPillInstalled;
+    if (command === 'is_notchpill_installed') {
+      if (coreMocks.notchPillDetectionError) throw new Error('detector unavailable');
+      return coreMocks.notchPillInstalled;
+    }
     return undefined;
   }),
 }));
@@ -77,6 +83,7 @@ describe('SettingsPanel information architecture', () => {
 
   beforeEach(async () => {
     coreMocks.notchPillInstalled = false;
+    coreMocks.notchPillDetectionError = false;
     scrollTo.mockReset();
     Object.defineProperty(HTMLElement.prototype, 'scrollTo', { value: scrollTo, configurable: true });
     container = document.createElement('div');
@@ -112,6 +119,19 @@ describe('SettingsPanel information architecture', () => {
     await act(async () => renderPanel(true));
 
     expect(container.textContent).toContain('Mirror Captions to NotchPill');
+  });
+
+  it('hides the NotchPill setting when detection fails', async () => {
+    coreMocks.notchPillInstalled = true;
+    await act(async () => renderPanel(false));
+    await act(async () => renderPanel(true));
+    expect(container.textContent).toContain('Mirror Captions to NotchPill');
+
+    coreMocks.notchPillDetectionError = true;
+    await act(async () => renderPanel(false));
+    await act(async () => renderPanel(true));
+
+    expect(container.textContent).not.toContain('Mirror Captions to NotchPill');
   });
 
   it('groups the previous settings pages into Model, Text, and App', async () => {
