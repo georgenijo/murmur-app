@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
-use tauri::{Emitter, Manager};
+use tauri::Emitter;
 
 const REFACTOR_TEST_IDENTIFIER: &str = "com.localdictation.refactor-test";
 const PRODUCTION_LOG_DIRECTORY: &str = "local-dictation";
