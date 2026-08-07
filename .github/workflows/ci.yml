@@ -179,6 +179,7 @@ jobs:
         # hardware or downloaded models and stay out of CI deliberately.
         run: >-
           cd app/src-tauri &&
+          cargo build --example mock_llm_helper &&
           cargo test --test llm_sidecar_integration --test transform_flow_integration
           -- --test-threads=1
 
