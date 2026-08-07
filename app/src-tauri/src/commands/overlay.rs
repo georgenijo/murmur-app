@@ -316,13 +316,14 @@ fn raise_window_above_menubar(overlay: &tauri::WebviewWindow) {
             ns_window.setHasShadow(false);
 
             // Tauri's `visibleOnAllWorkspaces` only adds CanJoinAllSpaces.
-            // Keep this status-surface stationary across Mission Control /
-            // Stage Manager transitions and allow it into full-screen spaces.
-            // Without FullScreenAuxiliary, WindowServer can leave the overlay
-            // attached to Murmur's previous Space even though the window still
-            // exists and is visible there.
+            // Keep this status surface stationary across Mission Control,
+            // allow it into full-screen spaces, and let it join every Stage
+            // Manager application set. Without CanJoinAllApplications on
+            // macOS 26, WindowServer can leave the overlay attached to
+            // Murmur's previous set even though the window still exists.
             let mut behavior = ns_window.collectionBehavior();
             behavior |= objc2_app_kit::NSWindowCollectionBehavior::CanJoinAllSpaces;
+            behavior |= objc2_app_kit::NSWindowCollectionBehavior::CanJoinAllApplications;
             behavior |= objc2_app_kit::NSWindowCollectionBehavior::Stationary;
             behavior |= objc2_app_kit::NSWindowCollectionBehavior::IgnoresCycle;
             behavior |= objc2_app_kit::NSWindowCollectionBehavior::FullScreenAuxiliary;
