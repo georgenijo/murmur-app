@@ -43,9 +43,10 @@ fn log_directory_for(data_root: &Path, identifier: &str) -> PathBuf {
 }
 
 fn logs_dir() -> Option<PathBuf> {
-    LOG_DIRECTORY.get().cloned().or_else(|| {
-        dirs::data_dir().map(|root| log_directory_for(&root, "com.localdictation"))
-    })
+    LOG_DIRECTORY
+        .get()
+        .cloned()
+        .or_else(|| dirs::data_dir().map(|root| log_directory_for(&root, "com.localdictation")))
 }
 
 pub(crate) fn is_refactor_test_bundle(app_handle: &tauri::AppHandle) -> bool {
