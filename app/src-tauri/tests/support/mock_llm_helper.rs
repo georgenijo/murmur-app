@@ -1,4 +1,4 @@
-//! Protocol-v1 mock of `murmur-llm-sidecar`, for supervisor integration tests.
+//! Protocol-v3 mock of `murmur-llm-sidecar`, for supervisor integration tests.
 //!
 //! It never links llama.cpp and needs no real model. It performs the
 //! hello/ready handshake, verifies the inherited model fd 3 is a regular file
@@ -294,6 +294,17 @@ fn main() {
                             PhaseState::Completed,
                             Some(1),
                         );
+                        for (sequence, text) in ["mock-", "output"].into_iter().enumerate() {
+                            let chunk = HelperMessage::OutputChunk {
+                                protocol: PROTOCOL_NAME.to_string(),
+                                version: PROTOCOL_VERSION,
+                                session_nonce: session_nonce.clone(),
+                                request_id: request_id.clone(),
+                                sequence: sequence as u32,
+                                text: text.to_string(),
+                            };
+                            let _ = write_frame(&mut stdout, &chunk);
+                        }
                         let result = HelperMessage::Result {
                             protocol: PROTOCOL_NAME.to_string(),
                             version: PROTOCOL_VERSION,

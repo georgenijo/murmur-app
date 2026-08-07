@@ -401,6 +401,10 @@ pub struct AppState {
     /// protocol Cancel and settles promptly (see `cancel_transform`).
     pub transform_inflight:
         Mutex<Option<(tokio::task::AbortHandle, crate::llm_sidecar::CancelToken)>>,
+    /// Pass-scoped warm-on-arm cancellation token. A short tap or capture
+    /// failure cancels the helper/model handshake promptly so dictation is not
+    /// blocked behind abandoned prewarm work.
+    pub transform_prewarm: Mutex<Option<(u64, crate::llm_sidecar::CancelToken)>>,
 }
 
 impl AppState {
@@ -607,6 +611,7 @@ impl Default for AppState {
             transform_session_generation: AtomicU64::new(0),
             transform_apply_epoch: AtomicU64::new(0),
             transform_inflight: Mutex::new(None),
+            transform_prewarm: Mutex::new(None),
         }
     }
 }

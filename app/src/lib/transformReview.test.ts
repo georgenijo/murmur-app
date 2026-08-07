@@ -1,10 +1,36 @@
 import { describe, expect, it } from 'vitest';
 import {
   isPopoverBox,
+  isTransformProposalChunkEvent,
   isTransformReviewContent,
   isTransformStateChangedEvent,
   normalizeReviewErrorCode,
 } from './transformReview';
+
+describe('isTransformProposalChunkEvent', () => {
+  it('accepts a bounded cumulative preview and rejects stale-shaped data', () => {
+    expect(isTransformProposalChunkEvent({
+      transformPassId: 8,
+      sequence: 0,
+      text: 'A partial proposal',
+    })).toBe(true);
+    expect(isTransformProposalChunkEvent({
+      transformPassId: 0,
+      sequence: 0,
+      text: 'bad pass',
+    })).toBe(false);
+    expect(isTransformProposalChunkEvent({
+      transformPassId: 8,
+      sequence: -1,
+      text: 'bad sequence',
+    })).toBe(false);
+    expect(isTransformProposalChunkEvent({
+      transformPassId: 8,
+      sequence: 1,
+      text: 'bad\0text',
+    })).toBe(false);
+  });
+});
 
 describe('isTransformStateChangedEvent', () => {
   it('accepts a bare state with no errorCode', () => {

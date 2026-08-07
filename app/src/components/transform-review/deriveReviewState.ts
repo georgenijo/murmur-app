@@ -31,6 +31,7 @@ export interface ReviewViewModel {
   subText: string | null;
   statusText: string | null;
   showStillWorkingHint: boolean;
+  showStreamingPreview: boolean;
   showDiff: boolean;
   cancelEnabled: boolean;
   retryEnabled: boolean;
@@ -50,6 +51,7 @@ function baseViewModel(state: ReviewState, chipText: string): ReviewViewModel {
     subText: null,
     statusText: null,
     showStillWorkingHint: false,
+    showStreamingPreview: false,
     showDiff: false,
     cancelEnabled: false,
     retryEnabled: false,
@@ -97,6 +99,7 @@ export function deriveReviewState(input: ReviewStateInput): ReviewViewModel {
         ...baseViewModel(state, instruction || 'Listening…'),
         statusText: 'Transforming…',
         cancelEnabled: true,
+        showStreamingPreview: input.proposed.length > 0,
         showStillWorkingHint: thinkingElapsedMs >= REVIEW_STILL_WORKING_HINT_MS,
       };
 
