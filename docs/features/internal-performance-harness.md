@@ -82,8 +82,9 @@ meaningful only on the same hardware, OS, power state, model set, and corpus.
 The remote helper accepts explicit paths so it cannot infer or delete a broad
 home/workspace target. It fetches refs in a clean source repository, creates
 detached temporary worktrees under the supplied cache root, shares one Cargo
-release cache, runs both commits, compares their reports, then removes only
-those temporary worktrees.
+release cache, copies the four exact gitignored helper build prerequisites from
+the clean source checkout, runs both commits, compares their reports, then
+removes only those temporary worktrees. It never modifies the source helpers.
 
 Example on the Mac Mini:
 

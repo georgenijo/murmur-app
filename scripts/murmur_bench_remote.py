@@ -14,9 +14,18 @@ import datetime as dt
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
+
+
+EXTERNAL_BINARIES = (
+    "murmur-capture-agent-aarch64-apple-darwin",
+    "murmur-capture-helper-aarch64-apple-darwin",
+    "murmur-capture-worker-aarch64-apple-darwin",
+    "murmur-llm-sidecar-aarch64-apple-darwin",
+)
 
 
 def run(command: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None) -> None:
@@ -55,6 +64,22 @@ def benchmark_environment(cache_root: Path) -> dict[str, str]:
     return environment
 
 
+def seed_external_binaries(source: Path, worktree: Path) -> None:
+    destination = worktree / "app" / "src-tauri" / "binaries"
+    destination.mkdir(parents=True, exist_ok=True)
+    for name in EXTERNAL_BINARIES:
+        source_file = source / name
+        if not source_file.is_file():
+            raise ValueError(f"required local helper is missing: {source_file}")
+        target = destination / name
+        if target.exists():
+            raise ValueError(f"temporary worktree unexpectedly contains helper: {target}")
+        # These helpers are gitignored local build prerequisites. Copying the
+        # four exact files keeps detached refs self-contained without exposing
+        # or mutating the source checkout's helper directory.
+        shutil.copy2(source_file, target)
+
+
 def run_ref(
     *,
     repo: Path,
@@ -70,6 +95,7 @@ def run_ref(
     stamp: str,
     environment: dict[str, str],
     runner: Path,
+    binary_source: Path,
 ) -> Path:
     worktree_parent = cache_root / "worktrees"
     worktree_parent.mkdir(parents=True, exist_ok=True)
@@ -77,27 +103,28 @@ def run_ref(
     # git worktree add requires the destination not to exist.
     worktree.rmdir()
     run(["git", "worktree", "add", "--detach", str(worktree), sha], cwd=repo)
-    report = report_root / f"{stamp}-{role}-{safe_label(ref)}-{sha[:12]}.json"
-    command = [
-        sys.executable,
-        str(runner),
-        "run",
-        "--repo",
-        str(worktree),
-        "--output",
-        str(report),
-        "--corpus",
-        "personal",
-        "--corpus-dir",
-        str(corpus_dir),
-        "--preset",
-        preset,
-        "--machine-label",
-        machine_label,
-    ]
-    if models:
-        command.extend(["--models", models])
     try:
+        seed_external_binaries(binary_source, worktree)
+        report = report_root / f"{stamp}-{role}-{safe_label(ref)}-{sha[:12]}.json"
+        command = [
+            sys.executable,
+            str(runner),
+            "run",
+            "--repo",
+            str(worktree),
+            "--output",
+            str(report),
+            "--corpus",
+            "personal",
+            "--corpus-dir",
+            str(corpus_dir),
+            "--preset",
+            preset,
+            "--machine-label",
+            machine_label,
+        ]
+        if models:
+            command.extend(["--models", models])
         run(command, env=environment)
     finally:
         run(["git", "worktree", "remove", "--force", str(worktree)], cwd=repo)
@@ -112,6 +139,11 @@ def main() -> int:
     parser.add_argument("--corpus-dir", type=Path, required=True)
     parser.add_argument("--cache-root", type=Path, required=True)
     parser.add_argument("--report-root", type=Path, required=True)
+    parser.add_argument(
+        "--binary-source",
+        type=Path,
+        help="directory containing the four gitignored aarch64 helper binaries",
+    )
     parser.add_argument("--preset", choices=("quick", "standard", "thorough"), default="standard")
     parser.add_argument("--models", help="comma-separated model IDs")
     parser.add_argument("--machine-label", default="fleet-mac")
@@ -123,6 +155,11 @@ def main() -> int:
     corpus_dir = args.corpus_dir.expanduser().resolve()
     cache_root = args.cache_root.expanduser().resolve()
     report_root = args.report_root.expanduser().resolve()
+    binary_source = (
+        args.binary_source.expanduser().resolve()
+        if args.binary_source
+        else repo / "app" / "src-tauri" / "binaries"
+    )
     if not (repo / ".git").exists():
         parser.error(f"--repo is not a Git repository: {repo}")
     if not (corpus_dir / "manifest.json").is_file():
@@ -164,6 +201,7 @@ def main() -> int:
             stamp=stamp,
             environment=environment,
             runner=runner,
+            binary_source=binary_source,
         )
 
     comparison = report_root / f"{stamp}-comparison.json"
