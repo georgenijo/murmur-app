@@ -1858,7 +1858,7 @@ mod supported {
                             if let Some(callback) = on_chunk {
                                 callback(sequence, streamed_output.clone());
                             }
-                            next_sequence = next_sequence.checked_add(1).unwrap_or(u32::MAX);
+                            next_sequence = next_sequence.saturating_add(1);
                             continue;
                         }
                         HelperMessage::Error {

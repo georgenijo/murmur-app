@@ -837,26 +837,23 @@ fn run_backend(
     }
 
     let (capture_id, nonce, nonce_hex) = capture_identity();
-    let (child, mut input, output) = match spawn_helper(
-        capture_id,
-        &nonce_hex,
-        requested_capture_fault(),
-    ) {
-        Ok(value) => value,
-        Err(failure) => {
-            end_permission_prompt_pause(
-                &mut permission_prompt_started,
-                &mut clock,
-                owner,
-                event_sender,
-                Instant::now(),
-            );
-            return AttemptResult::Failed {
-                failure,
-                retained_audio: false,
-            };
-        }
-    };
+    let (child, mut input, output) =
+        match spawn_helper(capture_id, &nonce_hex, requested_capture_fault()) {
+            Ok(value) => value,
+            Err(failure) => {
+                end_permission_prompt_pause(
+                    &mut permission_prompt_started,
+                    &mut clock,
+                    owner,
+                    event_sender,
+                    Instant::now(),
+                );
+                return AttemptResult::Failed {
+                    failure,
+                    retained_audio: false,
+                };
+            }
+        };
     let output = match hello(&mut input, output, capture_id, nonce) {
         Ok(output) => output,
         Err(failure) => {

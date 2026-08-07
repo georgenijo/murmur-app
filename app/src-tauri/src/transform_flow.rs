@@ -855,6 +855,7 @@ pub(crate) fn enter_thinking(app_state: &AppState, fx: &dyn FlowEffects) -> bool
 /// frame and clears `busy` promptly. Terminal status writes use
 /// `try_transition(Thinking → ReviewPending)` so a cancel landing mid-flight
 /// cannot resurrect ReviewPending (which would wedge dictation).
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_transform(
     app_state: &AppState,
     fx: &dyn FlowEffects,
