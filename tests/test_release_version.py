@@ -130,7 +130,13 @@ class ReleaseVersionTests(unittest.TestCase):
                 prepare_release("1.3.0", "2026-02-03", root=root)
 
     def test_repository_release_surfaces_are_synchronized(self) -> None:
-        self.assertEqual(check_release("0.28.1", root=ROOT), "0.28.1")
+        # No pinned literal: check_release() self-validates every release
+        # surface against tauri.conf.json. Pinning the current version here
+        # would make this test fail at the next version-bump commit — which
+        # release-build.yml runs it on — and block the release after the bump
+        # is already on main.
+        version = check_release(root=ROOT)
+        self.assertRegex(version, r"^\d+\.\d+\.\d+$")
 
 
 if __name__ == "__main__":
