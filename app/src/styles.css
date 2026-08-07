@@ -58,6 +58,7 @@
      therefore own the full mockup height and center itself on the native
      traffic lights instead of assuming AppKit contributes a top inset. */
   --ui-window-header-height: 2.625rem;
+  --ui-window-content-offset-y: -0.125rem;
   /* The native controls end around x=68px with the configured 10px inset.
      Start web chrome at 80px to preserve a deliberate 12px wordmark gap. */
   --ui-window-controls-inset: 5rem;
@@ -145,9 +146,16 @@ textarea {
   height: var(--ui-window-header-height);
   flex-shrink: 0;
   align-items: center;
-  gap: var(--ui-space-4);
   padding: var(--ui-space-4) var(--ui-space-5);
   padding-left: var(--ui-window-controls-inset);
+}
+
+.ui-window-header-content {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: var(--ui-space-4);
+  transform: translateY(var(--ui-window-content-offset-y));
 }
 
 .ui-window-wordmark {

@@ -109,6 +109,7 @@ describe('Murmur layout contracts', () => {
     expect(css).toContain('--ui-font-label: 0.8125rem;');
     expect(css).toContain('--ui-font-body: 0.875rem;');
     expect(css).toContain('--ui-window-header-height: 2.625rem;');
+    expect(css).toContain('--ui-window-content-offset-y: -0.125rem;');
     expect(css).toContain('--ui-record-width: 4.5rem;');
     expect(css).toContain('--ui-status-min-width: 4.5rem;');
     expect(css).toContain('--ui-history-gap: 0.3125rem;');
