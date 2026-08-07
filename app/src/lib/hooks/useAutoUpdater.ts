@@ -58,6 +58,9 @@ export function useAutoUpdater(
   const [isUpdateDialogOpen, setIsUpdateDialogOpen] = useState(false);
   const updateRef = useRef<Update | null>(null);
   const operationRef = useRef<UpdaterOperation>('idle');
+  // Resolves when the in-flight check settles, so an Install click that races
+  // a background check waits instead of being silently dropped.
+  const pendingCheckRef = useRef<Promise<void> | null>(null);
   const isForcedRef = useRef(false);
   const manualPresentationRequestedRef = useRef(false);
 
@@ -99,6 +102,10 @@ export function useAutoUpdater(
     }
     if (operationRef.current === 'checking') return;
     operationRef.current = 'checking';
+    let settleCheck!: () => void;
+    pendingCheckRef.current = new Promise<void>((resolve) => {
+      settleCheck = resolve;
+    });
     isForcedRef.current = false;
 
     const shouldPresentManualResult = () =>
@@ -203,6 +210,8 @@ export function useAutoUpdater(
       if (operationRef.current === 'checking') {
         operationRef.current = 'idle';
       }
+      pendingCheckRef.current = null;
+      settleCheck();
       manualPresentationRequestedRef.current = false;
     }
   }, []);
@@ -270,6 +279,10 @@ export function useAutoUpdater(
   }, [updateStatus]);
 
   const startDownload = useCallback(async () => {
+    if (operationRef.current === 'checking') {
+      flog.info('updater', 'install waiting for in-flight update check');
+      await pendingCheckRef.current;
+    }
     if (operationRef.current !== 'idle') {
       flog.info('updater', 'install ignored because updater is already busy', {
         operation: operationRef.current,

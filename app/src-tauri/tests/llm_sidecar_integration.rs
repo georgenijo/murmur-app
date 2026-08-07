@@ -148,7 +148,13 @@ async fn cancelled_prewarm_reaps_partial_helper_and_releases_runtime_busy() {
 #[tokio::test]
 async fn streaming_delivers_monotonic_cumulative_preview_before_final_result() {
     let fixture = fixture_model();
-    let sidecar = sidecar("happy", &fixture);
+    // Space the mock's chunks past the preview coalescing interval so both
+    // reach the callback; back-to-back chunks may legitimately coalesce.
+    let sidecar = Arc::new(LlmSidecar::for_test(config_with(
+        "happy",
+        &fixture,
+        vec![("MOCK_CHUNK_DELAY_MS".to_string(), "80".to_string())],
+    )));
     let previews = Arc::new(std::sync::Mutex::new(Vec::new()));
     let captured = Arc::clone(&previews);
     let callback: ChunkCallback = Arc::new(move |sequence, text| {
@@ -170,6 +176,19 @@ async fn streaming_delivers_monotonic_cumulative_preview_before_final_result() {
         *previews.lock().unwrap(),
         vec![(0, "mock-".to_string()), (1, "mock-output".to_string())]
     );
+}
+
+#[tokio::test]
+async fn result_not_matching_streamed_chunks_fails_as_output_invalid() {
+    // Pins the chunk-replay protocol invariant: Result.output must equal the
+    // trimmed concatenation of the emitted OutputChunks. A helper that batches,
+    // coalesces, or trims chunks must be rejected, not trusted.
+    let fixture = fixture_model();
+    let sidecar = sidecar("chunk_mismatch", &fixture);
+    let err = run_transform(&sidecar, Duration::from_secs(5))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, TransformError::OutputInvalid));
 }
 
 #[tokio::test]

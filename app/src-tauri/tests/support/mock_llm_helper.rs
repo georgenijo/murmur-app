@@ -280,6 +280,38 @@ fn main() {
                         };
                         let _ = write_frame(&mut stdout, &result);
                     }
+                    // Emits well-formed chunks whose concatenation does not
+                    // match Result.output — the supervisor must reject the
+                    // Result as OutputInvalid (chunk-replay protocol invariant).
+                    "chunk_mismatch" => {
+                        phase(
+                            &mut stdout,
+                            &session_nonce,
+                            Some(&request_id),
+                            DiagnosticPhase::FirstToken,
+                            PhaseState::Completed,
+                            Some(1),
+                        );
+                        let chunk = HelperMessage::OutputChunk {
+                            protocol: PROTOCOL_NAME.to_string(),
+                            version: PROTOCOL_VERSION,
+                            session_nonce: session_nonce.clone(),
+                            request_id: request_id.clone(),
+                            sequence: 0,
+                            text: "mock-".to_string(),
+                        };
+                        let _ = write_frame(&mut stdout, &chunk);
+                        let result = HelperMessage::Result {
+                            protocol: PROTOCOL_NAME.to_string(),
+                            version: PROTOCOL_VERSION,
+                            session_nonce: session_nonce.clone(),
+                            request_id,
+                            output: "mock-output".to_string(),
+                            finish_reason: FinishReason::Stop,
+                            output_tokens: 3,
+                        };
+                        let _ = write_frame(&mut stdout, &result);
+                    }
                     _ => {
                         if let Ok(ms) = std::env::var("MOCK_DELAY_MS") {
                             if let Ok(ms) = ms.parse::<u64>() {
@@ -294,7 +326,13 @@ fn main() {
                             PhaseState::Completed,
                             Some(1),
                         );
+                        let chunk_delay_ms = std::env::var("MOCK_CHUNK_DELAY_MS")
+                            .ok()
+                            .and_then(|ms| ms.parse::<u64>().ok());
                         for (sequence, text) in ["mock-", "output"].into_iter().enumerate() {
+                            if let (Some(ms), true) = (chunk_delay_ms, sequence > 0) {
+                                std::thread::sleep(Duration::from_millis(ms));
+                            }
                             let chunk = HelperMessage::OutputChunk {
                                 protocol: PROTOCOL_NAME.to_string(),
                                 version: PROTOCOL_VERSION,

@@ -296,6 +296,40 @@ describe('useAutoUpdater presentation state', () => {
     expect(mocks.relaunch).toHaveBeenCalledOnce();
   });
 
+  it('waits out an in-flight check instead of dropping the install click', async () => {
+    const downloadAndInstall = vi.fn().mockResolvedValue(undefined);
+    const update = {
+      available: true,
+      version: '0.24.2',
+      body: '',
+      downloadAndInstall,
+    };
+    mocks.check.mockResolvedValue(update);
+    await act(async () => current.checkForUpdate());
+    expect(current.updateStatus).toMatchObject({ phase: 'available', version: '0.24.2' });
+
+    // A second (background-style) check is still in flight when Install is clicked.
+    let resolveCheck!: (value: typeof update) => void;
+    mocks.check.mockReturnValue(
+      new Promise((resolve) => {
+        resolveCheck = resolve;
+      })
+    );
+    let pendingCheck!: Promise<void>;
+    let install!: Promise<void>;
+    await act(async () => {
+      pendingCheck = current.checkForUpdate();
+      install = current.startDownload();
+      await Promise.resolve();
+    });
+    expect(downloadAndInstall).not.toHaveBeenCalled();
+
+    resolveCheck(update);
+    await act(async () => Promise.all([pendingCheck, install]));
+    expect(downloadAndInstall).toHaveBeenCalledOnce();
+    expect(mocks.relaunch).toHaveBeenCalledOnce();
+  });
+
   it('ignores a manual check while install owns the updater', async () => {
     let resolveEnvironment!: (value: { appTranslocated: boolean }) => void;
     const environment = new Promise<{ appTranslocated: boolean }>((resolve) => {

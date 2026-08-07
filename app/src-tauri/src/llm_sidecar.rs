@@ -83,6 +83,10 @@ pub const HELPER_BIN_NAME: &str = "murmur-llm-sidecar";
 pub const HELPER_IDENTIFIER: &str = "com.localdictation.local-llm-sidecar";
 
 /// RSS ceiling below which the helper runs unremarked (2 GiB).
+/// Minimum spacing between streaming-preview callback emits. Chunks always
+/// accumulate into the validated transcript; only the UI preview is coalesced.
+const PREVIEW_EMIT_INTERVAL: Duration = Duration::from_millis(33);
+
 const RSS_WARN_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// RSS ceiling above which the helper is force-killed (3 GiB).
 const RSS_KILL_BYTES: u64 = 3 * 1024 * 1024 * 1024;
@@ -1746,6 +1750,7 @@ mod supported {
         let mut first_token_seen = false;
         let mut next_sequence = 0_u32;
         let mut streamed_output = String::new();
+        let mut last_preview_emit: Option<Instant> = None;
         loop {
             // User cancel (e.g. Esc / short-tap) wins over the deadline wait.
             if cancel.is_cancelled() {
@@ -1826,6 +1831,14 @@ mod supported {
                             if !receipt_seen {
                                 return RequestOutcome::Protocol;
                             }
+                            // PROTOCOL INVARIANT: the helper must emit every
+                            // generated piece as an OutputChunk, untrimmed and
+                            // unbatched, and Result.output must equal the
+                            // concatenation of those chunks trimmed. Any helper
+                            // change that batches, coalesces, or trims chunks
+                            // during generation fails this check on every
+                            // request and latches the circuit breaker. Pinned
+                            // by the chunk_mismatch integration test.
                             if output.len() > MAX_OUTPUT_BYTES
                                 || output_tokens > MAX_OUTPUT_TOKENS
                                 || output.contains('\0')
@@ -1855,8 +1868,21 @@ mod supported {
                                 return RequestOutcome::Protocol;
                             }
                             streamed_output.push_str(&text);
+                            // Preview payloads are cumulative, so every emit
+                            // clones the whole accumulated string and crosses
+                            // the webview IPC boundary. Coalesce to one emit
+                            // per interval; skipped tail chunks are covered by
+                            // the final review content fetch.
                             if let Some(callback) = on_chunk {
-                                callback(sequence, streamed_output.clone());
+                                let now = Instant::now();
+                                let due = sequence == 0
+                                    || last_preview_emit.is_none_or(|at| {
+                                        now.duration_since(at) >= PREVIEW_EMIT_INTERVAL
+                                    });
+                                if due {
+                                    last_preview_emit = Some(now);
+                                    callback(sequence, streamed_output.clone());
+                                }
                             }
                             next_sequence = next_sequence.saturating_add(1);
                             continue;
