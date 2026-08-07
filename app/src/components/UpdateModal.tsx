@@ -13,6 +13,7 @@ interface UpdateModalProps {
 export function UpdateModal({ status, onDownload, onSkip, onDismiss }: UpdateModalProps) {
   if (
     status.phase !== 'available' &&
+    status.phase !== 'preparing' &&
     status.phase !== 'downloading' &&
     status.phase !== 'ready' &&
     status.phase !== 'error'
@@ -21,14 +22,16 @@ export function UpdateModal({ status, onDownload, onSkip, onDismiss }: UpdateMod
   }
 
   const isForced = (status.phase === 'available' || status.phase === 'error') && status.isForced;
+  const isPreparing = status.phase === 'preparing';
   const isDownloading = status.phase === 'downloading';
   const isReady = status.phase === 'ready';
   const isError = status.phase === 'error';
   const requiresReinstall = isError && status.recovery === 'reinstall';
-  const isBusy = isDownloading || isReady;
+  const isBusy = isPreparing || isDownloading || isReady;
 
   const version =
     status.phase === 'available' ? status.version :
+    status.phase === 'preparing' ? status.version :
     status.phase === 'downloading' ? status.version :
     status.phase === 'ready' ? status.version : '';
 
@@ -91,6 +94,12 @@ export function UpdateModal({ status, onDownload, onSkip, onDismiss }: UpdateMod
           )}
 
           {/* Download progress */}
+          {isPreparing && (
+            <p className="text-sm text-on-surface text-center mb-4">
+              Preparing update...
+            </p>
+          )}
+
           {isDownloading && (
             <div className="mb-4">
               <div className="flex justify-between text-xs text-on-surface-variant mb-1">

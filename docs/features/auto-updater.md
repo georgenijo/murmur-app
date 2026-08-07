@@ -39,6 +39,10 @@ The Core ML release raises Murmur's minimum macOS version from 13 to 14. Existin
 An old Mac installs the bridge from `latest.json`, relaunches on the new endpoint, and then receives the current Core ML build from `latest-v2.json`. The modern release job fails if it cannot resolve the signed v0.14.1 bridge asset, preventing a release that would strand older clients. Keep the bridge release published while pre-v0.14.1 clients may still exist.
 
 The manifest contains version information, download URLs, signatures, and an optional `min_version` field for forced updates.
+The modern channel's policy is version-controlled in
+`.github/updater-policy.json`. A `null` value omits `min_version`; a stable
+`major.minor.patch` value publishes it after verifying that it is not newer
+than the release. The legacy bridge manifest intentionally omits this policy.
 
 ## Update Flow
 
@@ -54,10 +58,13 @@ When a new version is available and the current version is above `min_version`:
    - "Update Now" — begins download
    - "Skip This Version" — stores the version in localStorage (`skipped-update-version`), suppresses future background checks for that version
    - "Later" — dismisses the modal without skipping; the update pill remains
-2. **Downloading** — Progress bar with percentage. Progress reported via Tauri's `downloadAndInstall` callback.
-3. **Ready** — "Installing and relaunching..." text displayed.
-4. **Relaunch** — App restarts automatically via `@tauri-apps/plugin-process`.
-5. **What's New** — After the relaunched binary confirms that it is the
+2. **Preparing** — A single updater owner verifies that the app is installed
+   in a writable location. Repeated actions and manual, timer, focus,
+   visibility, or wake checks cannot enter while this owner is active.
+3. **Downloading** — Progress bar with percentage. Progress reported via Tauri's `downloadAndInstall` callback.
+4. **Ready** — "Installing and relaunching..." text displayed.
+5. **Relaunch** — App restarts automatically via `@tauri-apps/plugin-process`.
+6. **What's New** — After the relaunched binary confirms that it is the
    downloaded version, a one-time modal shows that release's features, fixes,
    and other changes.
 
@@ -94,6 +101,12 @@ Check failures and installation failures remain distinct in `UpdateStatus`, so
 the Settings page and homepage indicator do not describe a completed download
 or failed installation as an update-check failure.
 
+The updater manifest policy fetch also distinguishes an intentionally absent
+`min_version` from an unavailable or malformed response. Once update
+availability is known, Murmur refuses to present it as optional unless the
+policy was verified. A policy failure is retryable as an update-check error and
+does not advance the successful-check timestamp.
+
 ### Background Notifications
 
 When an update is detected during a background check (not user-initiated), a native macOS notification is sent: "Murmur vX.Y.Z is ready to install." This requires notification permission to be granted.
@@ -119,6 +132,12 @@ fails if the body is missing or empty. `.github/release.yml` groups merged pull
 requests into **New Features** (`enhancement`), **Bug Fixes** (`bug`), and
 **Other Changes** categories.
 
+Immediately before publication, promotion compares the draft release body with
+the remotely downloaded updater manifest and fails if they differ. Published
+updater assets are immutable: do not edit a published release body
+independently. A correction that must reach both the public release and the
+in-app dialogs requires a patch release.
+
 The same sanitized notes appear in two places:
 
 - the update-available dialog, before download
@@ -142,6 +161,7 @@ type UpdateStatus =
   | { phase: 'checking' }
   | { phase: 'up-to-date' }
   | { phase: 'available'; version: string; notes: string; isForced: boolean }
+  | { phase: 'preparing'; version: string }
   | { phase: 'downloading'; version: string; progress: number }
   | { phase: 'ready'; version: string }
   | {
@@ -153,7 +173,9 @@ type UpdateStatus =
     };
 ```
 
-The update modal renders for `available`, `downloading`, `ready`, and `error` phases. The `idle`, `checking`, and `up-to-date` phases return null (no modal).
+The update modal renders for `available`, `preparing`, `downloading`, `ready`,
+and `error` phases. The `idle`, `checking`, and `up-to-date` phases return null
+(no modal).
 
 Post-update notes use separate `CompletedUpdate` state rather than adding a
 phase to `UpdateStatus`; this prevents the Settings update checker from treating
@@ -161,7 +183,7 @@ an already-installed release as an available update.
 
 ## Settings Integration
 
-- The "Check for Updates" button in the About section of settings triggers a manual check. It is disabled during `checking` or `downloading` phases.
+- The "Check for Updates" button in the About section of settings triggers a manual check. It is disabled during `checking`, `preparing`, `downloading`, and `ready` phases.
 - Status text shows: "Checking...", "You're up to date", "vX.Y.Z available", or "Update check failed".
 - The macOS menu-bar menu exposes the same manual check. It brings the main
   window forward, reports checking/up-to-date/error status beside the Record

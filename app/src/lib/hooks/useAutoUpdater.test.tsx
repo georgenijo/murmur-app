@@ -42,15 +42,17 @@ describe('useAutoUpdater presentation state', () => {
   let container: HTMLDivElement;
   let root: Root;
   let current: UseAutoUpdaterReturn;
+  let automaticChecksEnabled: boolean;
 
   function Harness() {
-    current = useAutoUpdater();
+    current = useAutoUpdater({ automaticChecksEnabled });
     return null;
   }
 
   beforeEach(async () => {
     localStorage.clear();
     vi.clearAllMocks();
+    automaticChecksEnabled = false;
     mocks.getVersion.mockResolvedValue('0.22.1');
     mocks.listen.mockResolvedValue(vi.fn());
     mocks.isPermissionGranted.mockResolvedValue(true);
@@ -145,6 +147,47 @@ describe('useAutoUpdater presentation state', () => {
     );
   });
 
+  it('fails closed when update availability is known but policy cannot be verified', async () => {
+    mocks.check.mockResolvedValue({
+      available: true,
+      version: '0.24.2',
+      body: 'Release notes',
+      downloadAndInstall: vi.fn(),
+    });
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
+
+    await act(async () => current.checkForUpdate());
+
+    expect(current.updateStatus).toMatchObject({
+      phase: 'error',
+      stage: 'check',
+      message: expect.stringContaining('verify the update policy'),
+    });
+    expect(localStorage.getItem('updater-last-check')).toBeNull();
+  });
+
+  it('opens a required update when the verified policy is above the installed version', async () => {
+    mocks.check.mockResolvedValue({
+      available: true,
+      version: '0.24.2',
+      body: 'Required reliability update',
+      downloadAndInstall: vi.fn(),
+    });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ min_version: '0.24.0' }),
+    }));
+
+    await act(async () => current.checkForUpdate());
+
+    expect(current.updateStatus).toMatchObject({
+      phase: 'available',
+      version: '0.24.2',
+      isForced: true,
+    });
+    expect(current.isUpdateDialogOpen).toBe(true);
+  });
+
   it('blocks installation before download when Gatekeeper translocated the app', async () => {
     const downloadAndInstall = vi.fn();
     mocks.check.mockResolvedValue({
@@ -219,5 +262,112 @@ describe('useAutoUpdater presentation state', () => {
         error: 'Error: disk full',
       },
     );
+  });
+
+  it('allows only one install owner while environment verification is pending', async () => {
+    let resolveEnvironment!: (value: { appTranslocated: boolean }) => void;
+    const environment = new Promise<{ appTranslocated: boolean }>((resolve) => {
+      resolveEnvironment = resolve;
+    });
+    const downloadAndInstall = vi.fn().mockResolvedValue(undefined);
+    mocks.check.mockResolvedValue({
+      available: true,
+      version: '0.24.2',
+      body: 'Release notes',
+      downloadAndInstall,
+    });
+    mocks.getUpdateInstallEnvironment.mockReturnValue(environment);
+
+    await act(async () => current.checkForUpdate());
+    let first!: Promise<void>;
+    let second!: Promise<void>;
+    await act(async () => {
+      first = current.startDownload();
+      second = current.startDownload();
+      await Promise.resolve();
+    });
+
+    expect(current.updateStatus).toEqual({ phase: 'preparing', version: '0.24.2' });
+    expect(mocks.getUpdateInstallEnvironment).toHaveBeenCalledOnce();
+
+    resolveEnvironment({ appTranslocated: false });
+    await act(async () => Promise.all([first, second]));
+    expect(downloadAndInstall).toHaveBeenCalledOnce();
+    expect(mocks.relaunch).toHaveBeenCalledOnce();
+  });
+
+  it('ignores a manual check while install owns the updater', async () => {
+    let resolveEnvironment!: (value: { appTranslocated: boolean }) => void;
+    const environment = new Promise<{ appTranslocated: boolean }>((resolve) => {
+      resolveEnvironment = resolve;
+    });
+    const downloadAndInstall = vi.fn().mockResolvedValue(undefined);
+    mocks.check.mockResolvedValue({
+      available: true,
+      version: '0.24.2',
+      body: '',
+      downloadAndInstall,
+    });
+    mocks.getUpdateInstallEnvironment.mockReturnValue(environment);
+
+    await act(async () => current.checkForUpdate());
+    let install!: Promise<void>;
+    await act(async () => {
+      install = current.startDownload();
+      await Promise.resolve();
+    });
+    await act(async () => current.checkForUpdate());
+
+    expect(mocks.check).toHaveBeenCalledOnce();
+    expect(current.updateStatus).toEqual({ phase: 'preparing', version: '0.24.2' });
+
+    resolveEnvironment({ appTranslocated: false });
+    await act(async () => install);
+  });
+
+  it('ignores a due native wake check while install owns the updater', async () => {
+    let wakeCheck: (() => void) | undefined;
+    mocks.listen.mockImplementation(async (event: string, callback: () => void) => {
+      if (event === 'updater-background-check-requested') wakeCheck = callback;
+      return vi.fn();
+    });
+    const downloadAndInstall = vi.fn().mockResolvedValue(undefined);
+    mocks.check.mockResolvedValue({
+      available: true,
+      version: '0.24.2',
+      body: '',
+      downloadAndInstall,
+    });
+
+    await act(async () => root.unmount());
+    automaticChecksEnabled = true;
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Harness />);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(current.updateStatus.phase).toBe('available');
+    expect(mocks.check).toHaveBeenCalledOnce();
+    expect(wakeCheck).toBeDefined();
+
+    let resolveEnvironment!: (value: { appTranslocated: boolean }) => void;
+    mocks.getUpdateInstallEnvironment.mockReturnValue(
+      new Promise<{ appTranslocated: boolean }>((resolve) => {
+        resolveEnvironment = resolve;
+      }),
+    );
+    let install!: Promise<void>;
+    await act(async () => {
+      install = current.startDownload();
+      await Promise.resolve();
+    });
+    localStorage.setItem('updater-last-check', '0');
+    await act(async () => wakeCheck?.());
+
+    expect(mocks.check).toHaveBeenCalledOnce();
+    expect(current.updateStatus).toEqual({ phase: 'preparing', version: '0.24.2' });
+
+    resolveEnvironment({ appTranslocated: false });
+    await act(async () => install);
   });
 });

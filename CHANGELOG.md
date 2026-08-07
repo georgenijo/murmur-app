@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Update checks and installs now have a single owner, preventing duplicate
+  downloads and state replacement during install preparation. Release
+  promotion can publish a validated source-controlled minimum-version policy
+  and fails if release notes drift from the updater manifest (#439).
+
 ## [0.28.1] - 2026-08-07
 
 ### Fixed

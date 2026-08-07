@@ -112,6 +112,67 @@ class ReleaseArtifactTests(unittest.TestCase):
                 self.root / "manifests",
             )
 
+    def test_manifest_generation_includes_valid_minimum_version_on_modern_channel(self) -> None:
+        validated_path = self.root / "validated.json"
+        validate_release(self.artifacts, SHA, RUN_ID, validated_path)
+        release_notes_path = self.root / "release-notes.md"
+        release_notes_path.write_text("Required reliability update.\n")
+
+        modern_path, legacy_path = write_updater_manifests(
+            validated_path,
+            "v1.2.3",
+            "owner/repo",
+            "https://example.invalid/bridge.app.tar.gz",
+            "bridge-signature",
+            release_notes_path,
+            self.root / "manifests",
+            min_version="1.1.0",
+        )
+
+        self.assertEqual(json.loads(modern_path.read_text())["min_version"], "1.1.0")
+        self.assertNotIn("min_version", json.loads(legacy_path.read_text()))
+
+    def test_manifest_generation_omits_absent_minimum_version(self) -> None:
+        validated_path = self.root / "validated.json"
+        validate_release(self.artifacts, SHA, RUN_ID, validated_path)
+        release_notes_path = self.root / "release-notes.md"
+        release_notes_path.write_text("Optional update.\n")
+
+        modern_path, _ = write_updater_manifests(
+            validated_path,
+            "v1.2.3",
+            "owner/repo",
+            "https://example.invalid/bridge.app.tar.gz",
+            "bridge-signature",
+            release_notes_path,
+            self.root / "manifests",
+        )
+
+        self.assertNotIn("min_version", json.loads(modern_path.read_text()))
+
+    def test_manifest_generation_rejects_invalid_or_future_minimum_version(self) -> None:
+        validated_path = self.root / "validated.json"
+        validate_release(self.artifacts, SHA, RUN_ID, validated_path)
+        release_notes_path = self.root / "release-notes.md"
+        release_notes_path.write_text("Policy validation.\n")
+        common = (
+            validated_path,
+            "v1.2.3",
+            "owner/repo",
+            "https://example.invalid/bridge.app.tar.gz",
+            "bridge-signature",
+            release_notes_path,
+            self.root / "manifests",
+        )
+
+        for invalid in ("", "v1.0.0", "1.2", "1.2.3-beta"):
+            with self.subTest(invalid=invalid):
+                with self.assertRaisesRegex(ArtifactError, "stable major.minor.patch"):
+                    write_updater_manifests(*common, min_version=invalid)
+
+        with self.assertRaisesRegex(ArtifactError, "newer than release"):
+            write_updater_manifests(*common, min_version="1.2.4")
+
     def test_commit_sha_mismatch_fails_closed(self) -> None:
         with self.assertRaisesRegex(ArtifactError, "commit_sha mismatch"):
             validate_release(self.artifacts, OTHER_SHA, RUN_ID)
