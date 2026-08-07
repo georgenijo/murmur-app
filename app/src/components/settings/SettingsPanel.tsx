@@ -41,6 +41,7 @@ import {
 } from '../../lib/transformSettings';
 import type { DictationStatus } from '../../lib/types';
 import type { UpdateStatus } from '../../lib/updater';
+import { isNotchPillInstalled } from '../../lib/dictation';
 import { Select } from '../ui/Select';
 import { AppOverridesEditor } from './AppOverridesEditor';
 import { AppearanceSettings } from './AppearanceSettings';
@@ -343,6 +344,26 @@ export function SettingsPanel({
   useEffect(() => {
     if (!isOpen) return;
     invoke<AudioDeviceDescriptor[]>('list_audio_devices').then(setAudioDevices).catch(() => setAudioDevices([]));
+  }, [isOpen]);
+
+  const [notchPillInstalled, setNotchPillInstalled] = useState(false);
+  useEffect(() => {
+    if (!isOpen) {
+      setNotchPillInstalled(false);
+      return;
+    }
+
+    let cancelled = false;
+    isNotchPillInstalled()
+      .then((installed) => {
+        if (!cancelled) setNotchPillInstalled(installed);
+      })
+      .catch(() => {
+        if (!cancelled) setNotchPillInstalled(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [isOpen]);
 
   // ---- Transform model block (#312 D1) ------------------------------------
@@ -871,7 +892,7 @@ export function SettingsPanel({
             {autoPasteOn && <PasteDelaySlider value={settings.autoPasteDelayMs} onCommit={(autoPasteDelayMs) => onUpdateSettings({ autoPasteDelayMs })} />}
             <SettingToggle title="Save Transcript to File" description="Write each completed transcription to a .txt file." checked={settings.saveTranscript} onChange={() => onUpdateSettings({ saveTranscript: !settings.saveTranscript })} />
             <SettingToggle title="Save Audio to File" description="Write each recording to a .wav file." checked={settings.saveAudio} onChange={() => onUpdateSettings({ saveAudio: !settings.saveAudio })} />
-            <SettingToggle title="Mirror Captions to NotchPill" description="Show your latest dictation in the NotchPill notch overlay. Stays on this Mac — only the final text is written locally." checked={settings.mirrorToNotchPill} onChange={() => onUpdateSettings({ mirrorToNotchPill: !settings.mirrorToNotchPill })} />
+            {notchPillInstalled && <SettingToggle title="Mirror Captions to NotchPill" description="Show your latest dictation in the NotchPill notch overlay. Stays on this Mac — only the final text is written locally." checked={settings.mirrorToNotchPill} onChange={() => onUpdateSettings({ mirrorToNotchPill: !settings.mirrorToNotchPill })} />}
             {saveToFile && (
               <div>
                 <p className="mb-1 text-xs text-on-surface-variant">Output Folder</p>

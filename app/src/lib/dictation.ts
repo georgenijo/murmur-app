@@ -62,6 +62,10 @@ export async function getStatus(): Promise<DictationResponse> {
   return await invoke('get_status');
 }
 
+export async function isNotchPillInstalled(): Promise<boolean> {
+  return await invoke('is_notchpill_installed');
+}
+
 export interface ConfigureOptions {
   model?: string;
   language?: string;

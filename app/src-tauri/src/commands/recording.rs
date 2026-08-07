@@ -992,17 +992,26 @@ async fn run_transcription_pipeline(
         // *after* the clipboard write so disk I/O can never delay the primary
         // output path, and off the pipeline thread so it stays out of paste_ms.
         //
-        // Ownership is checked before scheduling, which narrows the stale-write
-        // window to the gap between this check and the write landing -- it does
-        // not close it. A cancel arriving inside that gap still publishes this
-        // caption. Deliberate: `app_state` is a borrow and cannot cross into
-        // `spawn_blocking`, and the alternative -- plumbing an owned handle
-        // through purely for a best-effort mirror -- costs more than the
-        // millisecond it would buy. The consequence is bounded: NotchPill shows
-        // a caption the user abandoned until the next one replaces it.
         if delivery.mirror_to_notchpill && !app_state.is_cancelled(recording_id) {
             let caption = text.clone();
-            tokio::task::spawn_blocking(move || injector::mirror_caption(&caption));
+            let mirror_app_handle = app_handle.clone();
+            tokio::task::spawn_blocking(move || {
+                let state = mirror_app_handle.state::<State>();
+                if state.app_state.recording_id.load(Ordering::SeqCst) != recording_id
+                    || state.app_state.is_cancelled(recording_id)
+                {
+                    return;
+                }
+
+                if super::integrations::notchpill_installed() {
+                    injector::mirror_caption(&caption);
+                } else {
+                    // The preference may survive an uninstall so it can resume
+                    // after a reinstall, but no speech should remain mirrored
+                    // while the companion app is absent.
+                    injector::remove_mirrored_caption();
+                }
+            });
         }
     }
     let paste_ms = t_inject.elapsed().as_millis() as u64;
@@ -1512,14 +1521,13 @@ pub async fn configure_dictation(
         dictation.auto_paste = auto_paste;
     }
     if let Some(mirror) = options.get("mirrorToNotchPill").and_then(|v| v.as_bool()) {
-        let was_enabled = dictation.mirror_to_notchpill;
         dictation.mirror_to_notchpill = mirror;
-        // Turning the mirror off removes what it left behind. The file holds a
-        // verbatim record of the last thing the user said, so leaving it on
-        // disk after they switched the feature off would keep speech around
-        // past consent -- the same reasoning that makes it 0600 in the first
-        // place. Best-effort and errors swallowed, exactly like the write.
-        if was_enabled && !mirror {
+        // Disabled or unavailable mirroring removes what it left behind. The
+        // file holds a verbatim record of the last thing the user said, so
+        // leaving it on disk would keep speech around past consent -- the same
+        // reasoning that makes it 0600 in the first place. Best-effort and
+        // errors swallowed, exactly like the write.
+        if !mirror || !super::integrations::notchpill_installed() {
             injector::remove_mirrored_caption();
         }
     }
