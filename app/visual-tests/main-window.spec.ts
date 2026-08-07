@@ -72,6 +72,38 @@ test('the window header flows into the history toolbar without a divider', async
   ))).toBe(80);
 });
 
+for (const state of ['recording', 'update-recovering', 'settings'] as const) {
+  test(`${state} title-bar controls share the native traffic-light centerline`, async ({ page }) => {
+    await page.goto(`/visual-fixtures.html?state=${state}&appearance=light`);
+
+    const header = page.locator('.ui-window-header');
+    const items = [
+      header.locator('.ui-window-wordmark'),
+      header.getByTestId('main-status-chip'),
+      ...(state === 'settings'
+        ? [
+            header.getByText('Settings', { exact: true }),
+            header.getByRole('button', { name: 'Done' }),
+          ]
+        : [
+            header.getByTestId('record-pill'),
+            header.getByRole('button', { name: 'Open settings' }),
+          ]),
+    ];
+    const [headerBox, centers] = await Promise.all([
+      header.boundingBox(),
+      Promise.all(items.map((item) => item.evaluate((element) => {
+        const box = element.getBoundingClientRect();
+        return box.top + box.height / 2;
+      }))),
+    ]);
+
+    expect(Math.max(...centers) - Math.min(...centers)).toBeLessThanOrEqual(0.5);
+    expect(headerBox).not.toBeNull();
+    expect((headerBox!.y + headerBox!.height / 2) - centers[0]).toBeCloseTo(2, 1);
+  });
+}
+
 test('update discovery cannot expand or wrap the recovering header', async ({ page }) => {
   await page.goto('/visual-fixtures.html?state=update-recovering&appearance=light');
 

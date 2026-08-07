@@ -200,6 +200,7 @@ describe('Sonic Canvas component details', () => {
       const elements = await renderHeader(status);
       expect(elements.header.classList).toContain('ui-window-header');
       expect(elements.header.classList).not.toContain('border-b');
+      expect(elements.header.querySelector(':scope > .ui-window-header-content')).not.toBeNull();
       expect(elements.statusChip.classList).toContain('ui-status-chip');
       expect(elements.record.classList).toContain('ui-record-pill');
       if (status === 'processing') {
