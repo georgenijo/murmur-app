@@ -18,6 +18,18 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class WorkflowPolicyMutationTests(unittest.TestCase):
+    def test_ci_runs_capture_worker_unit_tests(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        mutated = workflow.replace(
+            "      - name: Run capture worker unit tests\n"
+            "        run: cd app/src-tauri && cargo test -p murmur-capture-helper\n\n",
+            "",
+            1,
+        )
+        self.assertNotEqual(workflow, mutated)
+        with self.assertRaises(AssertionError):
+            validate_ci(mutated)
+
     def test_ci_pass_requires_visual_regression_result(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         mutated = workflow.replace(

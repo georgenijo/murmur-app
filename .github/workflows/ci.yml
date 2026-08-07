@@ -168,6 +168,9 @@ jobs:
           CMAKE_CXX_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
         run: cd app/src-tauri && cargo test --lib -- --test-threads=1
 
+      - name: Run capture worker unit tests
+        run: cd app/src-tauri && cargo test -p murmur-capture-helper
+
       - name: Run hardware-free integration suites
         env:
           MACOSX_DEPLOYMENT_TARGET: "14.0"

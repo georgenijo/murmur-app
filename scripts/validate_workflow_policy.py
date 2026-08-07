@@ -145,6 +145,8 @@ def validate_ci(ci: str) -> int:
     assert "CARGO_TARGET_DIR=target/capture-worker-build" in capture_build
     assert "target/capture-worker-build/debug/murmur-capture-helper" in capture_build
     assert "binaries/murmur-capture-worker-aarch64-apple-darwin" in capture_build
+    capture_tests = named_step_block(ci, "Run capture worker unit tests", 6)
+    assert "cargo test -p murmur-capture-helper" in capture_tests
     llm_target = "binaries/murmur-llm-sidecar-aarch64-apple-darwin"
     assert capture_build.count(f": > {llm_target}") == 1
     assert capture_build.count(f"chmod +x {llm_target}") == 1
