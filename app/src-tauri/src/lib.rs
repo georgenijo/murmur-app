@@ -27,6 +27,7 @@ mod knowledge_store;
 pub mod llm_sidecar;
 mod log_shipper;
 pub mod managed_child;
+mod model_artifact;
 mod model_runtime;
 mod performance_metrics;
 mod platform;

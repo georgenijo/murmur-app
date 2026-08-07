@@ -153,8 +153,9 @@ fn cached_code_vocab_prompt(
 fn resolve_live_context(
     app_state: &AppState,
     knowledge: &crate::knowledge_store::KnowledgeStore,
-    bundle_id: Option<&str>,
+    app_identity: &crate::frontmost::FrontmostAppIdentity,
 ) -> Arc<DictationContextSnapshot> {
+    let bundle_id = app_identity.bundle_id.as_deref();
     let repository_voice_commands = match knowledge.voice_commands_for_context(bundle_id) {
         Ok(entries) => Some(crate::voice_commands::commands_from_knowledge(entries)),
         Err(error) => {
@@ -201,7 +202,7 @@ fn resolve_live_context(
                 })
         });
         let vocabulary_version = app_state.settings_revision.load(Ordering::SeqCst);
-        return Arc::new(dictation_context::resolve(ResolverInputs {
+        let mut context = dictation_context::resolve(ResolverInputs {
             bundle_id,
             global: &dictation,
             prompt,
@@ -210,7 +211,9 @@ fn resolve_live_context(
             vocabulary_version,
             voice_commands: repository_voice_commands.clone(),
             session_overrides: SessionOverrides::default(),
-        }));
+        });
+        context.app.process_id = app_identity.process_id;
+        return Arc::new(context);
     }
 }
 
@@ -959,6 +962,7 @@ async fn run_transcription_pipeline(
     if !text.is_empty() {
         let text_to_inject = text.clone();
         let paste_delay_ms = delivery.paste_delay_ms;
+        let target_process_id = context.app.process_id;
         let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
         app_handle
             .run_on_main_thread(move || {
@@ -966,6 +970,7 @@ async fn run_transcription_pipeline(
                     &text_to_inject,
                     effective_auto_paste,
                     paste_delay_ms,
+                    target_process_id,
                 ));
             })
             .map_err(|e| format!("Failed to dispatch to main thread: {}", e))?;
@@ -977,7 +982,12 @@ async fn run_transcription_pipeline(
         match tokio::time::timeout(std::time::Duration::from_secs(2), rx).await {
             Ok(Ok(Err(e))) => {
                 tracing::error!(target: "pipeline", "Text injection failed: {}", e);
-                let _ = app_handle.emit("auto-paste-failed", paste_hint);
+                let message = if e.contains("recording target") {
+                    "App focus changed. Text is in your clipboard; paste it when ready."
+                } else {
+                    paste_hint
+                };
+                let _ = app_handle.emit("auto-paste-failed", message);
             }
             Ok(Err(_)) => {
                 tracing::warn!(target: "pipeline", "Text injection sender dropped");
@@ -1098,8 +1108,8 @@ pub async fn process_audio(
     };
     keyboard::set_processing(true);
     let _ = app_handle.emit("recording-status-changed", "processing");
-    let bundle_id = crate::frontmost::frontmost_bundle_id();
-    let context = resolve_live_context(&state.app_state, &state.knowledge, bundle_id.as_deref());
+    let app_identity = crate::frontmost::frontmost_app_identity();
+    let context = resolve_live_context(&state.app_state, &state.knowledge, &app_identity);
     if let Err(error) = state.performance.begin_dictation(
         rid,
         runtime_identity(&context.transcription.model_name, ModelWarmStateV1::Unknown),
@@ -2653,9 +2663,13 @@ pub async fn start_native_recording(
     // Capture first so frontmost-app detection, profile resolution, and IDE
     // refresh cannot clip the opening word. The lifecycle Ready bridge waits
     // for this immutable snapshot before it publishes Recording.
-    let bundle_id = crate::frontmost::frontmost_bundle_id();
-    refresh_expired_ide_context(&app_handle, &state.app_state, bundle_id.as_deref());
-    let context = resolve_live_context(&state.app_state, &state.knowledge, bundle_id.as_deref());
+    let app_identity = crate::frontmost::frontmost_app_identity();
+    refresh_expired_ide_context(
+        &app_handle,
+        &state.app_state,
+        app_identity.bundle_id.as_deref(),
+    );
+    let context = resolve_live_context(&state.app_state, &state.knowledge, &app_identity);
     {
         let dictation = state.app_state.dictation.lock_or_recover();
         if state.app_state.recording_id.load(Ordering::SeqCst) != rid

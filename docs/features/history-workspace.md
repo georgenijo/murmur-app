@@ -6,6 +6,8 @@ Transcription history is where a dictated line goes to be found again. The works
 
 Everything here is local. History lives in `localStorage` under `dictation-history` with a rolling 200-entry cap (`trimHistory` drops the oldest beyond it, by index so same-millisecond ids can't confuse it), and the only thing that leaves the app is an export the user explicitly asks for. An entry worth keeping past the cap belongs in an export or the knowledge store, not in a special history state.
 
+Settings → Model & Output → Output includes **Save Transcription History**. Turning it off makes the single `addEntry` boundary discard new microphone and imported-file transcripts before they reach React state or localStorage. Current transcription delivery and content-free usage statistics continue normally. Previously saved entries remain visible until the user explicitly clears them, so changing a preference never silently deletes data.
+
 ## Search
 
 Search rests as a compact icon so it does not dominate the history toolbar. Hover previews the field; clicking the icon, focusing the input, or invoking the app-wide search shortcut pins it open. An active non-empty query also keeps the field visible after focus leaves.

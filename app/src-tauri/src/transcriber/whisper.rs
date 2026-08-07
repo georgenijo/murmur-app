@@ -60,7 +60,10 @@ fn get_model_path(model_name: &str) -> Result<PathBuf, String> {
 
     for dir in &search_paths {
         let path = dir.join(&filename);
-        if path.exists() {
+        if crate::model_artifact::binary_model_is_valid(
+            &path,
+            crate::model_artifact::MIN_WHISPER_MODEL_BYTES,
+        ) {
             return Ok(path);
         }
     }

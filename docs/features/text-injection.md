@@ -16,20 +16,21 @@ When `auto_paste` is enabled in settings:
 
 1. Copy text to clipboard
 2. Check `AXIsProcessTrusted()` — if accessibility not granted, stop here (text is still in clipboard)
-3. Wait for the configurable delay (default 50ms) for window focus to settle
-4. Resolve the frontmost process with `NSWorkspace` and query its focused element role with the macOS Accessibility API. Native AX timeout (`-25204`) returns `Unknown` immediately and skips the fallback (allow-paste). A native no-value response (`-25212`) also skips the fallback for non-Finder apps because web-backed editors can accept Cmd+V without exposing a focused AX element; Finder retains the compatibility query so its desktop/file-view guard remains effective. Other native failures fall back to the previous System Events `osascript` query.
-5. Skip auto-paste only when the focused role is on the confirmed non-editable denylist; unknown roles still allow paste
-6. Post Command-modified `V` key-down and key-up events through the CoreGraphics HID event tap. If event construction fails, fall back to the previous System Events `osascript` paste
-7. If the paste attempt reports a failure, wait 100ms and retry once
-8. If both attempts fail, emit `auto-paste-failed` so the frontend can notify the user
+3. Wait for the configurable delay (default 0ms) for window focus to settle
+4. Compare the current frontmost PID with the PID frozen at recording start. If the user moved to a different application, stop here and surface a clipboard-only notification rather than pasting into the new target.
+5. Resolve the frontmost process with `NSWorkspace` and query its focused element role with the macOS Accessibility API. Native AX timeout (`-25204`) returns `Unknown` immediately and skips the fallback (allow-paste). A native no-value response (`-25212`) also skips the fallback for non-Finder apps because web-backed editors can accept Cmd+V without exposing a focused AX element; Finder retains the compatibility query so its desktop/file-view guard remains effective. Other native failures fall back to the previous System Events `osascript` query.
+6. Skip auto-paste only when the focused role is on the confirmed non-editable denylist; unknown roles still allow paste
+7. Post Command-modified `V` key-down and key-up events through the CoreGraphics HID event tap. If event construction fails, fall back to the previous System Events `osascript` paste
+8. If the paste attempt reports a failure, wait 100ms and retry once
+9. If both attempts fail, emit `auto-paste-failed` so the frontend can notify the user
 
 ### Delay Rationale
 
-The clipboard write (`arboard::set_text()` → `NSPasteboard`) is synchronous, so no delay is needed for clipboard sync. The delay exists solely to let macOS window focus settle after the transcription pipeline returns. The default of 50ms is sufficient for most systems; users can increase up to 500ms via the settings slider if paste lands in the wrong window.
+The clipboard write (`arboard::set_text()` → `NSPasteboard`) is synchronous, so no delay is needed for clipboard sync. The delay exists solely to let macOS window focus settle after the transcription pipeline returns. The zero-delay default is sufficient for the native path; users can increase up to 500ms via the settings slider for applications that move focus asynchronously. The recording-target PID check runs after this delay, immediately before the focused-field query.
 
 ### Configurable Delay
 
-The paste delay is configurable via a range slider in the settings panel (10–500ms, step 10ms). The slider appears when auto-paste is enabled. The value is sent to the Rust backend via `configure_dictation` and clamped to the 10–500 range. This configured delay is one component of the broader **Clipboard / paste** performance stage, which also measures the clipboard write, focus safety query, Cmd+V event, and small dispatch overhead.
+The paste delay is configurable via a range slider in the settings panel (0–500ms, step 10ms). The slider appears when auto-paste is enabled. The value is sent to the Rust backend via `configure_dictation` and clamped to the 0–500 range. This configured delay is one component of the broader **Clipboard / paste** performance stage, which also measures the clipboard write, target/focus safety queries, Cmd+V event, and small dispatch overhead.
 
 ### Retry Behavior
 
@@ -37,7 +38,7 @@ CoreGraphics event posting has no delivery result, so a successful native post c
 
 ### Failure Notification
 
-When paste fails (injection error, sender dropped, or 2s timeout), the Rust pipeline emits an `auto-paste-failed` Tauri event with the message "Text is in your clipboard — press Cmd+V to paste manually." The frontend displays this in the existing error banner and auto-clears it after 5 seconds.
+When paste fails (injection error, sender dropped, or 2s timeout), the Rust pipeline emits an `auto-paste-failed` Tauri event. A recording-target mismatch uses the specific message "App focus changed. Text is in your clipboard; paste it when ready." Other failures retain the manual-paste hint. The frontend displays this in the existing error banner and auto-clears it after 5 seconds.
 
 ### Native path and compatibility fallback
 
@@ -96,7 +97,7 @@ auto-paste is enabled, with a "Grant" button that opens System Settings.
 ## Settings
 
 - `autoPaste: boolean` — enable/disable auto-paste. Persisted to localStorage.
-- `autoPasteDelayMs: number` — delay in ms before simulating Cmd+V (default 50, range 10–500). Persisted to localStorage.
+- `autoPasteDelayMs: number` — delay in ms before simulating Cmd+V (default 0, range 0–500). Persisted to localStorage.
 
 Both are sent to the Rust backend via `configure_dictation` command.
 

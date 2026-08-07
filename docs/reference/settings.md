@@ -57,6 +57,7 @@ interface Settings {
   // Delivery
   autoPaste: boolean;
   autoPasteDelayMs: number;
+  retainHistory: boolean;
   saveTranscript: boolean;
   saveAudio: boolean;
   mirrorToNotchPill: boolean;
@@ -155,6 +156,7 @@ model-selection side effects.
 |---------|------|---------|-------------------|-------------|
 | `autoPaste` | `boolean` | `false` | `true` / `false` | Stored preference for automatically pasting transcribed text after clipboard copy. Requires macOS Accessibility permission. Text is always copied. When either file-output toggle is on, the UI shows auto-paste unavailable without overwriting this preference. An enabled preference is labeled paused and resumes when file output is off; a disabled preference remains off. |
 | `autoPasteDelayMs` | `number` | `0` | 0-500 ms, step 10 in UI | Delay in milliseconds before auto-paste fires, to allow window focus to settle. Zero uses the immediate native-paste fast path; increase it only for apps that move focus asynchronously. The backend clamps this value to the 0-500 range. The UI slider only appears when `autoPaste` is enabled. |
+| `retainHistory` | `boolean` | `true` | `true` / `false` | Persist new microphone and imported-file transcripts in the local History workspace. When false, delivery and content-free statistics continue but new transcript content is discarded at the history boundary. Existing entries remain until explicitly cleared. |
 | `saveTranscript` | `boolean` | `false` | `true` / `false` | When enabled, each live dictation's transcript is written to a sequentially numbered `.txt` (`murmur-0001`, `murmur-0002`, …) in the output folder. When `saveTranscript` or `saveAudio` is on, auto-paste is suppressed (clipboard copy still happens). |
 | `saveAudio` | `boolean` | `false` | `true` / `false` | When enabled, each live dictation's audio is written to a matching `.wav` (16kHz mono, 16-bit PCM) in the output folder. |
 | `mirrorToNotchPill` | `boolean` | `false` | `true` / `false` | When enabled, the final transcript of each dictation is mirrored to `~/Library/Application Support/local-dictation/latest-caption.json` as `{text, timestamp}`, so NotchPill can display what was just said. The toggle is shown only when macOS Launch Services finds NotchPill's `com.local.notchpill` bundle. If NotchPill is removed, mirroring becomes dormant and the caption file is deleted without overwriting the saved preference; reinstalling the app restores the prior choice. Off by default. The file is owner-only (`0600`), holds only the most recent caption — each write replaces the last — and is written after the clipboard, best-effort, so it can never delay or affect dictation output. Nothing leaves the device. Switching the setting off deletes the file. |

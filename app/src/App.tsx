@@ -137,7 +137,7 @@ function App() {
     window.addEventListener('focus', check);
     return () => window.removeEventListener('focus', check);
   }, []);
-  const { historyEntries, addEntry, updateEntry, clearHistory } = useHistoryManagement();
+  const { historyEntries, addEntry, updateEntry, clearHistory } = useHistoryManagement(settings.retainHistory);
   const {
     status, recordingDuration, error: recordingError,
     handleStart, handleHoldStart, handleStop, toggleRecording, audioLevel, statsVersion,

@@ -15,6 +15,8 @@ use std::sync::Arc;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActiveAppIdentity {
     pub bundle_id: Option<String>,
+    /// Original frontmost process, retained only for final delivery ownership.
+    pub process_id: Option<i32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -266,6 +268,7 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
     DictationContextSnapshot {
         app: ActiveAppIdentity {
             bundle_id: inputs.bundle_id.map(str::to_string),
+            process_id: None,
         },
         matched_profile,
         teaching_project_root,

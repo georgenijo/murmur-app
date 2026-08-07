@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import type { TeachingContext } from '../correctAndTeach';
 import {
   HistoryEntry,
@@ -11,10 +11,15 @@ import {
   clearHistory as clearPersistedHistory,
 } from '../history';
 
-export function useHistoryManagement() {
+export function useHistoryManagement(retainHistory = true) {
   const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>(() => loadHistory());
+  const retainHistoryRef = useRef(retainHistory);
+  useEffect(() => {
+    retainHistoryRef.current = retainHistory;
+  }, [retainHistory]);
 
   const addEntry = useCallback((text: string, duration: number, source: HistorySource = 'recording', sourceName?: string, teachingContext?: TeachingContext, interruption?: HistoryInterruption) => {
+    if (!retainHistoryRef.current) return;
     setHistoryEntries(prev => {
       const newHistory = addHistoryEntry(prev, text, duration, source, sourceName, teachingContext, interruption);
       saveHistory(newHistory);
