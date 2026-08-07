@@ -7,6 +7,8 @@ You are starting a release session for the Murmur project. Work autonomously thr
 Read silently:
 - `app/src-tauri/tauri.conf.json` — current version
 - `app/src-tauri/Cargo.toml` — current version (must stay in sync)
+- `app/package.json` — current frontend package version (must stay in sync)
+- `app/package-lock.json` — current frontend lockfile version (must stay in sync)
 - `CHANGELOG.md` — version history
 
 ## 2. Assess Current State
@@ -59,13 +61,16 @@ the version bump, main push, and automatic tag/publish after all gates pass.
 
 Run these steps in order:
 
-1. Bump `"version"` in `app/src-tauri/tauri.conf.json`
-2. Bump `version` (package field only) in `app/src-tauri/Cargo.toml`
-3. Update the `ui` package version in `app/src-tauri/Cargo.lock`
-4. Commit all three version files with: `chore: bump version to {new_version}`
-5. Push: `git push origin main`
-6. Wait for the `Release Build` workflow on that exact commit to succeed.
-7. Verify its `typecheck`, `release-macos`, and `release-linux` jobs, signed
+1. Run `python3 scripts/release_version.py prepare {new_version}`. This updates
+   `tauri.conf.json`, `Cargo.toml`, `Cargo.lock`, `package.json`, and
+   `package-lock.json`, cuts the current `[Unreleased]` notes into a dated
+   `{new_version}` section, and opens a fresh empty `[Unreleased]` section.
+2. Review the version-file and CHANGELOG diff, then run
+   `python3 scripts/release_version.py check {new_version}`.
+3. Commit all six release files with: `chore: bump version to {new_version}`
+4. Push: `git push origin main`
+5. Wait for the `Release Build` workflow on that exact commit to succeed.
+6. Verify its `typecheck`, `release-macos`, and `release-linux` jobs, signed
    artifacts named with the exact 40-character commit SHA, package smoke tests,
    and cache summaries. Do not continue if any job or artifact is missing.
 

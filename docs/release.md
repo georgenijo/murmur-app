@@ -48,8 +48,10 @@ run ID, platform/updater names, sizes, and SHA-256 hashes. Promotion accepts one
 unexpired macOS artifact and one unexpired Linux artifact from a successful
 `Release Build` on `main` for the exact source commit. Automatic promotion also
 requires a successful `push` event, the version-bump commit prefix, and matching
-semver values in `tauri.conf.json`, `Cargo.toml`, and `Cargo.lock`. Any tag, run,
-filename, version, hash, or updater-signature mismatch fails before publication.
+semver values in `tauri.conf.json`, `Cargo.toml`, `Cargo.lock`, `package.json`,
+and `package-lock.json`. The newest dated CHANGELOG section must match that same
+version. Any tag, run, filename, version, changelog, hash, or updater-signature
+mismatch fails before publication.
 
 The modern updater manifest is generated from the downloaded `.sig` files.
 After release-asset upload, the workflow downloads the remote `.sig` assets and
@@ -105,10 +107,13 @@ SHA-named artifacts exist for the version-bump commit.
 ## Release authorization and recovery
 
 `prompts/PROMPT_RELEASE.md` requires explicit confirmation before pushing the
-version-bump commit. That push is the release action: after its exact trusted
-build succeeds, `Release` validates the run and three synchronized version files,
-downloads and verifies the immutable artifacts, creates `vX.Y.Z`, prepares the
-release, verifies remote updater integrity, and publishes.
+version-bump commit. `scripts/release_version.py prepare X.Y.Z` synchronizes the
+five version surfaces and cuts `[Unreleased]` into the dated release section;
+its `check` command enforces the same contract locally and during promotion.
+That push is the release action: after its exact trusted build succeeds,
+`Release` validates the run, synchronized versions, and CHANGELOG, downloads and
+verifies the immutable artifacts, creates `vX.Y.Z`, prepares the release,
+verifies remote updater integrity, and publishes.
 
 Manual `Release Build` dispatches remain non-publishing rehearsals, even when
 they succeed. The tag trigger remains an operator recovery path for an automatic

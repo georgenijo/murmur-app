@@ -49,8 +49,10 @@ jobs:
               - 'scripts/capture_agent_matrix.py'
               - 'scripts/smoke_test_capture_worker.py'
               - 'scripts/validate_capture_boundary.py'
+              - 'scripts/release_version.py'
               - 'infra/log-receiver/**'
               - 'tests/test_release_artifacts.py'
+              - 'tests/test_release_version.py'
               - 'tests/test_workflow_policy.py'
               - 'tests/test_capture_agent_matrix.py'
               - 'tests/test_capture_worker_smoke.py'
@@ -62,6 +64,7 @@ jobs:
           python3 scripts/validate_capture_boundary.py
           python3 -m unittest \
             tests/test_release_artifacts.py \
+            tests/test_release_version.py \
             tests/test_workflow_policy.py \
             tests/test_capture_agent_matrix.py \
             tests/test_capture_worker_smoke.py \

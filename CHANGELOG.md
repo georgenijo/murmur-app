@@ -6,6 +6,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.28.1] - 2026-08-07
+
+### Fixed
+
+- Main-window title-bar content now aligns with the native macOS traffic lights
+  without crowding the recording controls (#471).
+- The NotchPill caption-mirroring toggle now appears only when macOS finds the
+  companion app. Removing NotchPill makes mirroring dormant and deletes the
+  stale caption while preserving the preference for a later reinstall (#474).
+
+## [0.28.0] - 2026-08-06
+
+### Added
+
+- An opt-in integration mirrors live Murmur captions to NotchPill while keeping
+  the feature disabled by default and deleting the caption when switched off
+  (#468).
+
+### Changed
+
+- Header, settings-navigation, native-spacing, and waveform fixes complete the
+  history-workspace redesign introduced in 0.27.0 (#469).
+
+## [0.27.1] - 2026-08-06
+
+### Fixed
+
+- Main-window chrome, transcript cards, and Settings now follow shared geometry
+  tokens: native traffic lights align with the single header row, Record and
+  status controls remain stable across recording states, and Copy no longer
+  reserves space in transcript metadata (#466).
+
+## [0.27.0] - 2026-08-06
+
 ### Changed
 
 - The main window now uses one line of recording chrome and gives the transcript
@@ -15,6 +49,66 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   consolidated six-tab editor window, onboarding includes explicit hotkey setup,
   diagnostics uses the Events / Runs / Performance / Compare / Transform order,
   and the notch overlay supports persisted vertical calibration.
+- Spoken structure and number formatting now share one deterministic transform,
+  and obsolete audio states have been removed (#462, #463).
+
+### Added
+
+- Fleet log install pages now show the last proven microphone activation and
+  last non-empty live transcription with relative and exact Eastern timestamps,
+  derived from the complete retained event stream with bounded memory (#459).
+- Fleet log install pages now offer exact latest-200/latest-500 JSONL downloads
+  and LLM-ready Markdown reports with plain-English event meanings, grouped
+  findings, bounded device context, and untrusted-telemetry guidance (#457).
+
+## [0.26.0] - 2026-08-04
+
+### Added
+
+- The fleet diagnostics dashboard now leads with privacy-safe plain-English
+  health for microphone capture, shortcuts, dictation, updates, and transforms;
+  repeated warnings collapse into counted incidents, recovered fallback is
+  distinguished from failure, and raw technical evidence remains expandable
+  (#454).
+- The vocabulary editor is more compact and easier to scan and edit (#453).
+
+### Changed
+
+- Dictation no longer pays the previous fixed latency floor after capture
+  completes (#456).
+
+## [0.25.4] - 2026-08-04
+
+### Added
+
+- Maintainers can request bounded, on-demand diagnostic probes from installs
+  that explicitly opted into remote hang diagnostics (#452).
+
+## [0.25.3] - 2026-08-04
+
+### Added
+
+- Consented installs can be armed for privacy-bounded microphone hang
+  diagnostics, with safe truncation and explicit server control (#451).
+
+## [0.25.2] - 2026-08-04
+
+### Fixed
+
+- Capture remembers first-attempt backend hangs, gives the primary attempt a
+  bounded budget, and safely resets the slow-rescue preference (#450).
+
+## [0.25.1] - 2026-08-04
+
+### Fixed
+
+- A session-scoped backend preference skips repeated AUHAL timeouts and records
+  per-call capture timing without leaking device details (#445).
+
+## [0.25.0] - 2026-08-03
+
+### Changed
+
 - Settings now uses the full workspace below the status bar: dashboard usage
   cards hide while Settings is open, and Performance begins directly with its
   diagnostics tabs instead of repeating a page title (#441).
@@ -25,45 +119,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
-- The NotchPill caption-mirroring toggle now appears only when macOS finds the
-  companion app. Removing NotchPill makes mirroring dormant and deletes the
-  stale caption while preserving the preference for a later reinstall (#474).
-- Main-window chrome, transcript cards, and Settings now follow shared geometry
-  tokens: native traffic lights align with the single header row, Record and
-  status controls remain stable across recording states, and Copy no longer
-  reserves space in transcript metadata (#466).
 - Microphone initialization now gives AUHAL and CPAL separate bounded attempts,
   requires confirmed helper termination before fallback, honors Stop between
   attempts, suspends active deadlines during a pending macOS permission prompt,
   and reports privacy-safe setup sub-phases for root-cause attribution. This is
   a capture-contract repair, not a claim that the underlying Core Audio hang is
   eliminated (#436).
+
+## [0.24.2] - 2026-08-02
+
+### Fixed
+
 - In-app updates now detect macOS Gatekeeper App Translocation before
   downloading, explain how to reinstall Murmur from Finder, and distinguish
   installation failures from update-check failures (#432).
+
+## [0.24.1] - 2026-08-02
+
+### Fixed
+
 - The signed production capture worker now uses standalone microphone sandbox
   entitlements instead of invalid inheritance, preventing macOS from terminating
   it before protocol startup. Release builds execute the final packaged worker's
   hello/start handshake, and protocol startup failures no longer appear as
   unsupported microphone configurations or retry another backend (#428).
-- macOS microphone startup now tries the direct AUHAL capture path before CPAL,
-  avoiding an unbounded CPAL stream-open stall observed with healthy USB default
-  inputs. Content-free phase timings distinguish helper launch, stream open,
-  first callback, first retained PCM, and stop-to-exit latency (#426).
+
+## [0.24.0] - 2026-08-01
 
 ### Added
 
-- Fleet log install pages now show the last proven microphone activation and
-  last non-empty live transcription with relative and exact Eastern timestamps,
-  derived from the complete retained event stream with bounded memory (#459).
-- Fleet log install pages now offer exact latest-200/latest-500 JSONL downloads
-  and LLM-ready Markdown reports with plain-English event meanings, grouped
-  findings, bounded device context, and untrusted-telemetry guidance (#457).
-- The fleet diagnostics dashboard now leads with privacy-safe plain-English
-  health for microphone capture, shortcuts, dictation, updates, and transforms;
-  repeated warnings collapse into counted incidents, recovered fallback is
-  distinguished from failure, and raw technical evidence remains expandable
-  (#454).
 - Production microphone capture now runs behind a signed, killable helper with
   capture-scoped binary PCM framing, an allocation-free SPSC callback boundary,
   CPAL and direct AUHAL backends, exact-device pre-buffer failover, deterministic
@@ -75,6 +159,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   the signed/notarized TCC matrix (#407).
 - Update availability now stays visible without a backend or disruptive optional-update modal: Murmur performs due-gated checks on macOS wake and foreground activation, adds a native menu-bar check/update action, and keeps a versioned pill beside Record and Transcribe File until the release is installed or skipped.
 - Dictated prose can now include bounded inline slash-command references such as `slash command chat` → `/chat` without reformatting the surrounding sentence.
+
+### Fixed
+
+- macOS microphone startup now tries the direct AUHAL capture path before CPAL,
+  avoiding an unbounded CPAL stream-open stall observed with healthy USB default
+  inputs. Content-free phase timings distinguish helper launch, stream open,
+  first callback, first retained PCM, and stop-to-exit latency (#426).
+- Clipboard auto-paste bypasses the slow accessibility no-value fallback when
+  an application does not expose a writable accessibility target (#394).
 
 ## [0.23.9] - 2026-07-30
 
