@@ -423,6 +423,11 @@ mod macos_arm64 {
                     break;
                 }
                 output.push_str(&piece);
+                // PROTOCOL INVARIANT: every non-empty piece is emitted as its
+                // own chunk, untrimmed, and the final Result carries exactly
+                // the concatenation of the emitted pieces trimmed. The host
+                // rejects the Result as OutputInvalid otherwise — do not
+                // batch, coalesce, or trim here.
                 if !piece.is_empty() {
                     on_chunk(started.elapsed().as_millis() as u64, sequence, &piece)?;
                     sequence += 1;
