@@ -2,8 +2,13 @@
 
 use std::collections::VecDeque;
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
+
+const REFACTOR_TEST_IDENTIFIER: &str = "com.localdictation.refactor-test";
+const PRODUCTION_LOG_DIRECTORY: &str = "local-dictation";
+const REFACTOR_TEST_LOG_DIRECTORY: &str = "local-dictation-refactor-test";
 
 /// A structured event emitted to the frontend and stored in the ring buffer.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -20,11 +25,31 @@ pub struct AppEvent {
 // ---------------------------------------------------------------------------
 
 static EVENT_BUFFER: OnceLock<Arc<Mutex<VecDeque<AppEvent>>>> = OnceLock::new();
+static LOG_DIRECTORY: OnceLock<PathBuf> = OnceLock::new();
 
 fn get_event_buffer() -> Arc<Mutex<VecDeque<AppEvent>>> {
     EVENT_BUFFER
         .get_or_init(|| Arc::new(Mutex::new(VecDeque::with_capacity(500))))
         .clone()
+}
+
+fn log_directory_for(data_root: &Path, identifier: &str) -> PathBuf {
+    let directory = if identifier == REFACTOR_TEST_IDENTIFIER {
+        REFACTOR_TEST_LOG_DIRECTORY
+    } else {
+        PRODUCTION_LOG_DIRECTORY
+    };
+    data_root.join(directory).join("logs")
+}
+
+fn logs_dir() -> Option<PathBuf> {
+    LOG_DIRECTORY.get().cloned().or_else(|| {
+        dirs::data_dir().map(|root| log_directory_for(&root, "com.localdictation"))
+    })
+}
+
+pub(crate) fn is_refactor_test_bundle(app_handle: &tauri::AppHandle) -> bool {
+    app_handle.config().identifier == REFACTOR_TEST_IDENTIFIER
 }
 
 // ---------------------------------------------------------------------------
@@ -366,13 +391,12 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
 // ---------------------------------------------------------------------------
 
 fn jsonl_path() -> Option<std::path::PathBuf> {
-    let dir = dirs::data_dir()?.join("local-dictation").join("logs");
     let name = if cfg!(debug_assertions) {
         "events.dev.jsonl"
     } else {
         "events.jsonl"
     };
-    Some(dir.join(name))
+    Some(logs_dir()?.join(name))
 }
 
 /// Read the last `n` AppEvent entries from the JSONL file to seed the ring buffer.
@@ -414,9 +438,11 @@ fn rotate_jsonl_if_needed() {
 pub fn init(app_handle: tauri::AppHandle) {
     use tracing_subscriber::prelude::*;
 
+    let identifier = app_handle.config().identifier.clone();
     let log_dir = dirs::data_dir()
-        .map(|d| d.join("local-dictation").join("logs"))
+        .map(|root| log_directory_for(&root, &identifier))
         .expect("Could not determine log directory");
+    let _ = LOG_DIRECTORY.set(log_dir.clone());
     std::fs::create_dir_all(&log_dir).ok();
 
     let log_file_name = if cfg!(debug_assertions) {
@@ -465,6 +491,16 @@ pub fn init(app_handle: tauri::AppHandle) {
 
     tracing::subscriber::set_global_default(subscriber).expect("Failed to set tracing subscriber");
 
+    tracing::info!(
+        target: "system",
+        log_namespace = if identifier == REFACTOR_TEST_IDENTIFIER {
+            "refactor-test"
+        } else {
+            "production"
+        },
+        "telemetry initialized"
+    );
+
     // Leak guard to keep writer alive for app lifetime
     Box::leak(Box::new(pretty_guard));
 }
@@ -474,7 +510,7 @@ pub fn init(app_handle: tauri::AppHandle) {
 // ---------------------------------------------------------------------------
 
 pub fn read_pretty_log_tail(n: usize) -> String {
-    let dir = match dirs::data_dir().map(|d| d.join("local-dictation").join("logs")) {
+    let dir = match logs_dir() {
         Some(d) => d,
         None => return String::new(),
     };
@@ -494,7 +530,7 @@ pub fn read_pretty_log_tail(n: usize) -> String {
 }
 
 pub fn clear_all_logs() -> Result<(), String> {
-    let dir = match dirs::data_dir().map(|d| d.join("local-dictation").join("logs")) {
+    let dir = match logs_dir() {
         Some(d) => d,
         None => return Ok(()),
     };
@@ -554,6 +590,19 @@ pub fn clear_event_history() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refactor_test_logs_are_isolated_from_production() {
+        let root = Path::new("/tmp/application-support");
+        assert_eq!(
+            log_directory_for(root, "com.localdictation"),
+            root.join("local-dictation/logs")
+        );
+        assert_eq!(
+            log_directory_for(root, REFACTOR_TEST_IDENTIFIER),
+            root.join("local-dictation-refactor-test/logs")
+        );
+    }
 
     #[test]
     fn transform_event_sanitizer_keeps_only_stable_string_fields() {

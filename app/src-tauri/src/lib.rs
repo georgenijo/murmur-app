@@ -376,7 +376,7 @@ pub fn run() {
         })
         .setup(|app| {
             telemetry::init(app.handle().clone());
-            log_shipper::start();
+            log_shipper::start(app.handle());
 
             if let Some(main_window) = app.get_webview_window("main") {
                 commands::native_window::hide_titlebar_separator(&main_window);

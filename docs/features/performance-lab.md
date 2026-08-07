@@ -58,6 +58,12 @@ The recorder establishes the reusable input set; the existing benchmark runner
 still uses Murmur's bundled synthetic fixtures until personal-corpus replay and
 scoring are added explicitly.
 
+The separately identified **Murmur Refactor Test** bundle writes ordinary and
+structured logs under `local-dictation-refactor-test/logs`, never the production
+`local-dictation/logs` directory. Its central log shipper is disabled, keeping
+trial sessions locally attributable and preventing them from advancing or
+uploading the production shipper queue.
+
 ## Accuracy
 
 Each bundled 16 kHz mono WAV fixture has an adjacent reference transcript.
