@@ -206,6 +206,12 @@ Benchmark installed models against bundled fixtures on your own machine. Three a
 ### Evaluation harness — [features/evaluation-harness.md](features/evaluation-harness.md)
 Strict versioned fixtures, a deterministic no-hardware CI tier, an opt-in installed-model/audio tier, and machine-readable recognition/transformation/delivery reports via `murmur-eval`.
 
+### Internal performance harness — [features/internal-performance-harness.md](features/internal-performance-harness.md)
+Developer-only `Murmur Bench` build and Fleet Mac runner for replaying a private,
+SHA-256-verified 20-clip voice corpus against baseline and candidate commits.
+The compile-time feature, recorder IPC, separate bundle/data/log namespace,
+headless runner, and regression gate are excluded from normal distribution.
+
 ### Transform diagnostics
 Every transform-key hold is recorded as a content-free `TransformAttemptV1` with ordered enum-only phase outcomes — including refused, cancelled, and superseded passes. **Capture next transform** is an explicit, confirmed, in-memory arm that stores one pass's real content locally (`0700`/`0600`, max 3, 7-day expiry, no export) for cases where exact content must be inspected.
 

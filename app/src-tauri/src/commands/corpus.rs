@@ -22,6 +22,8 @@ const MAX_PROMPT_ID_BYTES: usize = 64;
 const MAX_LABEL_BYTES: usize = 120;
 const MAX_REFERENCE_BYTES: usize = 4_000;
 const MAX_DEVICE_LABEL_BYTES: usize = 256;
+const EXPECTED_PROMPT_COUNT: usize = 20;
+const MAX_BENCHMARK_WAV_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Clone)]
 struct ActiveCapture {
@@ -179,7 +181,21 @@ pub struct CorpusStopResponse {
     recording: CorpusRecordingEntry,
 }
 
+pub(crate) struct CorpusBenchmarkFixture {
+    pub id: String,
+    pub label: String,
+    pub reference: String,
+    pub wav: Vec<u8>,
+}
+
 fn corpus_root() -> Result<PathBuf, String> {
+    if let Some(root) = std::env::var_os("MURMUR_BENCH_CORPUS_DIR") {
+        let root = PathBuf::from(root);
+        if root.is_absolute() {
+            return Ok(root);
+        }
+        return Err("MURMUR_BENCH_CORPUS_DIR must be an absolute path".to_string());
+    }
     dirs::data_dir()
         .map(|root| root.join("Murmur Benchmark Corpus").join("v1"))
         .ok_or_else(|| "Could not locate the local Application Support directory".to_string())
@@ -233,6 +249,66 @@ fn read_manifest(root: &Path) -> Result<CorpusManifest, String> {
         return Err("The personal corpus manifest uses an unsupported format".to_string());
     }
     Ok(manifest)
+}
+
+pub(crate) fn load_benchmark_fixtures() -> Result<Vec<CorpusBenchmarkFixture>, String> {
+    let root = corpus_root()?;
+    let manifest = read_manifest(&root)?;
+    if !manifest.contains_real_user_data || manifest.source != "guided-local-recording" {
+        return Err("The personal corpus manifest has unexpected provenance".to_string());
+    }
+
+    let mut selected = manifest
+        .recordings
+        .into_iter()
+        .filter(|recording| recording.selected)
+        .collect::<Vec<_>>();
+    selected.sort_by_key(|recording| recording.prompt_index);
+    if selected.len() != EXPECTED_PROMPT_COUNT {
+        return Err(format!(
+            "Personal corpus is incomplete: expected {EXPECTED_PROMPT_COUNT} selected prompts, found {}",
+            selected.len()
+        ));
+    }
+    let unique_ids = selected
+        .iter()
+        .map(|recording| recording.prompt_id.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    if unique_ids.len() != EXPECTED_PROMPT_COUNT {
+        return Err("The personal corpus contains duplicate selected prompts".to_string());
+    }
+
+    let audio_dir = root.join("audio");
+    selected
+        .into_iter()
+        .map(|recording| {
+            let relative = Path::new(&recording.file_name);
+            if relative.components().count() != 1
+                || relative.file_name().and_then(|name| name.to_str())
+                    != Some(recording.file_name.as_str())
+            {
+                return Err("The personal corpus contains an invalid audio filename".to_string());
+            }
+            let path = audio_dir.join(relative);
+            let metadata = std::fs::metadata(&path)
+                .map_err(|_| "A selected personal corpus WAV is missing".to_string())?;
+            if !metadata.is_file() || metadata.len() > MAX_BENCHMARK_WAV_BYTES {
+                return Err("A selected personal corpus WAV is invalid or too large".to_string());
+            }
+            let wav = std::fs::read(&path)
+                .map_err(|_| "A selected personal corpus WAV could not be read".to_string())?;
+            let actual_sha256 = format!("{:x}", Sha256::digest(&wav));
+            if !actual_sha256.eq_ignore_ascii_case(&recording.sha256) {
+                return Err("A selected personal corpus WAV failed integrity validation".to_string());
+            }
+            Ok(CorpusBenchmarkFixture {
+                id: recording.prompt_id,
+                label: recording.label,
+                reference: recording.reference,
+                wav,
+            })
+        })
+        .collect()
 }
 
 fn audio_quality(samples: &[f32]) -> (f32, f32, f32, Vec<String>) {
@@ -581,4 +657,16 @@ pub fn open_corpus_folder(app_handle: tauri::AppHandle) -> Result<(), String> {
         .opener()
         .open_path(root.to_string_lossy().into_owned(), None::<&str>)
         .map_err(|error| format!("Could not open the personal corpus folder: {error}"))
+}
+
+pub(crate) fn plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    tauri::plugin::Builder::new("internal-benchmark")
+        .invoke_handler(tauri::generate_handler![
+            start_corpus_recording,
+            stop_corpus_recording,
+            cancel_corpus_recording,
+            get_corpus_summary,
+            open_corpus_folder,
+        ])
+        .build()
 }

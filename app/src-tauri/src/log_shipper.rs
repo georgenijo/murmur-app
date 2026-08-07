@@ -345,8 +345,8 @@ async fn tick(client: &reqwest::Client, endpoint: &str, device: &DeviceInfo) {
 }
 
 pub fn start(app_handle: &tauri::AppHandle) {
-    if crate::telemetry::is_refactor_test_bundle(app_handle) {
-        tracing::info!(target: "system", "log shipper disabled: refactor test bundle");
+    if crate::telemetry::is_internal_bundle(app_handle) {
+        tracing::info!(target: "system", "log shipper disabled: internal bundle");
         return;
     }
     if std::env::var("MURMUR_LOG_SHIPPER").is_ok_and(|v| v == "off") {

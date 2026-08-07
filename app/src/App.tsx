@@ -39,6 +39,7 @@ import { isOnboardingComplete, markOnboardingComplete, resetOnboarding } from '.
 import { checkAccessibilityPermission, checkMicrophonePermissionStatus, checkModelExists } from './lib/dictation';
 import { getModelRuntimeCatalog } from './lib/modelRuntime';
 import { open } from '@tauri-apps/plugin-dialog';
+import { INTERNAL_BENCHMARK_BUILD } from './lib/buildFlavor';
 
 function App() {
   // --- Diagnostic: track when main window becomes visible/focused ---
@@ -174,7 +175,7 @@ function App() {
     microphone: settings.microphone,
   });
   const { showAbout, setShowAbout } = useShowAboutListener();
-  const updater = useAutoUpdater();
+  const updater = useAutoUpdater({ automaticChecksEnabled: !INTERNAL_BENCHMARK_BUILD });
 
   // DEV ONLY: cycle through updater and post-update modal states for visual testing
   const devUpdateIndex = useRef(-1);
@@ -481,13 +482,13 @@ function App() {
         onOpenSettings={() => setIsSettingsOpen((open) => !open)}
         settingsOpen={isSettingsOpen}
         mode={isSettingsOpen ? 'settings' : 'main'}
-        updateIndicator={(
+        updateIndicator={!INTERNAL_BENCHMARK_BUILD ? (
           <UpdateIndicator
             status={updateStatus}
             onOpen={showAvailableUpdate}
             onRetryCheck={() => void checkForUpdate()}
           />
-        )}
+        ) : undefined}
       />
 
       <PermissionsBanner />

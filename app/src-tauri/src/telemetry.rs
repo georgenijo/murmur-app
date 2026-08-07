@@ -7,8 +7,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tauri::Emitter;
 
 const REFACTOR_TEST_IDENTIFIER: &str = "com.localdictation.refactor-test";
+const BENCH_IDENTIFIER: &str = "com.localdictation.bench";
 const PRODUCTION_LOG_DIRECTORY: &str = "local-dictation";
 const REFACTOR_TEST_LOG_DIRECTORY: &str = "local-dictation-refactor-test";
+const BENCH_LOG_DIRECTORY: &str = "local-dictation-bench";
 
 /// A structured event emitted to the frontend and stored in the ring buffer.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -34,10 +36,10 @@ fn get_event_buffer() -> Arc<Mutex<VecDeque<AppEvent>>> {
 }
 
 fn log_directory_for(data_root: &Path, identifier: &str) -> PathBuf {
-    let directory = if identifier == REFACTOR_TEST_IDENTIFIER {
-        REFACTOR_TEST_LOG_DIRECTORY
-    } else {
-        PRODUCTION_LOG_DIRECTORY
+    let directory = match identifier {
+        REFACTOR_TEST_IDENTIFIER => REFACTOR_TEST_LOG_DIRECTORY,
+        BENCH_IDENTIFIER => BENCH_LOG_DIRECTORY,
+        _ => PRODUCTION_LOG_DIRECTORY,
     };
     data_root.join(directory).join("logs")
 }
@@ -49,8 +51,11 @@ fn logs_dir() -> Option<PathBuf> {
         .or_else(|| dirs::data_dir().map(|root| log_directory_for(&root, "com.localdictation")))
 }
 
-pub(crate) fn is_refactor_test_bundle(app_handle: &tauri::AppHandle) -> bool {
-    app_handle.config().identifier == REFACTOR_TEST_IDENTIFIER
+pub(crate) fn is_internal_bundle(app_handle: &tauri::AppHandle) -> bool {
+    matches!(
+        app_handle.config().identifier.as_str(),
+        REFACTOR_TEST_IDENTIFIER | BENCH_IDENTIFIER
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -494,10 +499,10 @@ pub fn init(app_handle: tauri::AppHandle) {
 
     tracing::info!(
         target: "system",
-        log_namespace = if identifier == REFACTOR_TEST_IDENTIFIER {
-            "refactor-test"
-        } else {
-            "production"
+        log_namespace = match identifier.as_str() {
+            REFACTOR_TEST_IDENTIFIER => "refactor-test",
+            BENCH_IDENTIFIER => "bench",
+            _ => "production",
         },
         "telemetry initialized"
     );
@@ -602,6 +607,10 @@ mod tests {
         assert_eq!(
             log_directory_for(root, REFACTOR_TEST_IDENTIFIER),
             root.join("local-dictation-refactor-test/logs")
+        );
+        assert_eq!(
+            log_directory_for(root, BENCH_IDENTIFIER),
+            root.join("local-dictation-bench/logs")
         );
     }
 

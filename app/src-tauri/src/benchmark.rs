@@ -14,7 +14,7 @@ use std::time::Instant;
 use tauri::Emitter;
 
 const BALANCED_ACCURACY_WINDOW: f64 = 0.02;
-const BENCHMARK_REPORT_VERSION: u32 = 2;
+const BENCHMARK_REPORT_VERSION: u32 = 3;
 
 /// Whisper model names ordered smallest-to-largest. Used to pick the
 /// cheapest selected whisper model for the untimed shared-init warm-up.
@@ -32,8 +32,10 @@ struct Fixture {
     reference: &'static str,
 }
 
-struct PreparedFixture<'a> {
-    fixture: &'a Fixture,
+struct PreparedFixture {
+    id: String,
+    label: String,
+    reference: String,
     samples: Vec<f32>,
     audio_seconds: f64,
 }
@@ -139,12 +141,33 @@ pub enum BenchmarkPreset {
     Thorough,
 }
 
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum BenchmarkCorpusSource {
+    #[default]
+    Bundled,
+    #[cfg(feature = "internal-benchmark")]
+    Personal,
+}
+
 impl BenchmarkPreset {
-    fn iterations(self) -> usize {
+    fn iterations(self, source: BenchmarkCorpusSource) -> usize {
+        match (source, self) {
+            (BenchmarkCorpusSource::Bundled, Self::Quick) => 3,
+            (BenchmarkCorpusSource::Bundled, Self::Standard) => 5,
+            (BenchmarkCorpusSource::Bundled, Self::Thorough) => 10,
+            #[cfg(feature = "internal-benchmark")]
+            (BenchmarkCorpusSource::Personal, Self::Quick | Self::Standard) => 1,
+            #[cfg(feature = "internal-benchmark")]
+            (BenchmarkCorpusSource::Personal, Self::Thorough) => 3,
+        }
+    }
+
+    #[cfg(feature = "internal-benchmark")]
+    fn personal_fixture_limit(self) -> usize {
         match self {
-            Self::Quick => 3,
-            Self::Standard => 5,
-            Self::Thorough => 10,
+            Self::Quick => 5,
+            Self::Standard | Self::Thorough => 20,
         }
     }
 
@@ -169,6 +192,8 @@ impl BenchmarkPreset {
 pub struct BenchmarkRequest {
     pub model_names: Vec<String>,
     pub preset: BenchmarkPreset,
+    #[serde(default)]
+    pub corpus: BenchmarkCorpusSource,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -256,12 +281,13 @@ pub struct BenchmarkEnvironment {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BenchmarkCorpus {
-    pub language: &'static str,
+    pub source: BenchmarkCorpusSource,
+    pub language: String,
     pub fixture_ids: Vec<String>,
     pub fixture_count: usize,
     pub reference_words: usize,
-    pub provenance: &'static str,
-    pub limitation: &'static str,
+    pub provenance: String,
+    pub limitation: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -782,15 +808,32 @@ fn benchmark_environment() -> BenchmarkEnvironment {
     }
 }
 
-fn benchmark_corpus(preset: BenchmarkPreset) -> BenchmarkCorpus {
-    let fixtures = preset.fixtures();
+fn benchmark_corpus(
+    source: BenchmarkCorpusSource,
+    fixtures: &[PreparedFixture],
+) -> BenchmarkCorpus {
+    let (provenance, limitation) = match source {
+        BenchmarkCorpusSource::Bundled => (
+            "Bundled macOS Samantha TTS fixtures",
+            "Directional local comparison only; clean synthetic speech is not representative of natural speakers, accents, microphones, or environments.",
+        ),
+        #[cfg(feature = "internal-benchmark")]
+        BenchmarkCorpusSource::Personal => (
+            "Private guided recordings captured locally with Murmur",
+            "Results describe this speaker, microphone, room, prompt set, and machine; they are not a universal model ranking.",
+        ),
+    };
     BenchmarkCorpus {
-        language: "en",
-        fixture_ids: fixtures.iter().map(|fixture| fixture.id.to_string()).collect(),
+        source,
+        language: "en".to_string(),
+        fixture_ids: fixtures.iter().map(|fixture| fixture.id.clone()).collect(),
         fixture_count: fixtures.len(),
-        reference_words: fixtures.iter().map(|fixture| words(fixture.reference).len()).sum(),
-        provenance: "Bundled macOS Samantha TTS fixtures",
-        limitation: "Directional local comparison only; clean synthetic speech is not representative of natural speakers, accents, microphones, or environments.",
+        reference_words: fixtures
+            .iter()
+            .map(|fixture| words(&fixture.reference).len())
+            .sum(),
+        provenance: provenance.to_string(),
+        limitation: limitation.to_string(),
     }
 }
 
@@ -935,7 +978,7 @@ fn score_delivered(
 fn prepare_fixtures(
     fixtures: &[Fixture],
     vad_threshold: f32,
-) -> Result<Vec<PreparedFixture<'_>>, String> {
+) -> Result<Vec<PreparedFixture>, String> {
     let vad_path = crate::vad::vad_model_path()
         .filter(|path| path.exists())
         .ok_or_else(|| "Silero VAD model is not installed".to_string())?;
@@ -959,7 +1002,49 @@ fn prepare_fixtures(
             };
             let audio_seconds = samples.len() as f64 / WHISPER_SAMPLE_RATE as f64;
             Ok(PreparedFixture {
-                fixture,
+                id: fixture.id.to_string(),
+                label: fixture.label.to_string(),
+                reference: fixture.reference.to_string(),
+                samples,
+                audio_seconds,
+            })
+        })
+        .collect()
+}
+
+#[cfg(feature = "internal-benchmark")]
+fn prepare_personal_fixtures(
+    preset: BenchmarkPreset,
+    vad_threshold: f32,
+) -> Result<Vec<PreparedFixture>, String> {
+    let vad_path = crate::vad::vad_model_path()
+        .filter(|path| path.exists())
+        .ok_or_else(|| "Silero VAD model is not installed".to_string())?;
+    let vad_path = vad_path.to_string_lossy();
+    let fixtures = crate::commands::corpus::load_benchmark_fixtures()?;
+
+    fixtures
+        .into_iter()
+        .take(preset.personal_fixture_limit())
+        .map(|fixture| {
+            let samples = crate::transcriber::parse_wav_to_samples(&fixture.wav)
+                .map_err(|error| format!("Could not decode a personal corpus fixture: {error}"))?;
+            let samples = match crate::vad::filter_speech(&vad_path, &samples, vad_threshold)
+                .map_err(|error| format!("VAD failed for a personal corpus fixture: {error}"))?
+            {
+                crate::vad::VadResult::Speech(samples) => samples,
+                crate::vad::VadResult::NoSpeech => {
+                    return Err(format!(
+                        "VAD detected no speech in personal prompt {}",
+                        fixture.id
+                    ));
+                }
+            };
+            let audio_seconds = samples.len() as f64 / WHISPER_SAMPLE_RATE as f64;
+            Ok(PreparedFixture {
+                id: fixture.id,
+                label: fixture.label,
+                reference: fixture.reference,
                 samples,
                 audio_seconds,
             })
@@ -1138,8 +1223,12 @@ pub fn run<R: tauri::Runtime>(
         return Err(format!("{} is not installed on this machine", model.label));
     }
 
-    let fixtures = prepare_fixtures(request.preset.fixtures(), 0.5)?;
-    let iterations = request.preset.iterations();
+    let fixtures = match request.corpus {
+        BenchmarkCorpusSource::Bundled => prepare_fixtures(request.preset.fixtures(), 0.5)?,
+        #[cfg(feature = "internal-benchmark")]
+        BenchmarkCorpusSource::Personal => prepare_personal_fixtures(request.preset, 0.5)?,
+    };
+    let iterations = request.preset.iterations(request.corpus);
     let steps_per_model = 1 + fixtures.len() * (1 + iterations);
     let warmup_targets = warmup_plan(&selected);
     let model_run_order = selected
@@ -1226,7 +1315,7 @@ pub fn run<R: tauri::Runtime>(
         let prompt_ref = initial_prompt.as_deref();
 
         for prepared in &fixtures {
-            let fixture = prepared.fixture;
+            let fixture = prepared;
             if coordinator.is_cancelled() {
                 backend.reset();
                 return Err("Benchmark cancelled".to_string());
@@ -1238,7 +1327,7 @@ pub fn run<R: tauri::Runtime>(
                 completed,
                 total_steps,
                 &model,
-                Some(fixture.label),
+                Some(&fixture.label),
                 "warming",
             );
             let warmup_started = Instant::now();
@@ -1267,7 +1356,7 @@ pub fn run<R: tauri::Runtime>(
                     completed,
                     total_steps,
                     &model,
-                    Some(fixture.label),
+                    Some(&fixture.label),
                     "measuring",
                 );
                 let started = Instant::now();
@@ -1297,9 +1386,9 @@ pub fn run<R: tauri::Runtime>(
             let mut scored_transcripts = transcripts
                 .into_iter()
                 .map(|transcript| {
-                    let (errors, reference_words) = word_errors(fixture.reference, &transcript);
+                    let (errors, reference_words) = word_errors(&fixture.reference, &transcript);
                     let (normalized_errors, normalized_reference_words) =
-                        normalized_word_errors(fixture.reference, &transcript);
+                        normalized_word_errors(&fixture.reference, &transcript);
                     (
                         normalized_errors,
                         errors,
@@ -1329,7 +1418,7 @@ pub fn run<R: tauri::Runtime>(
             // transcript-transform pipeline and score the delivered text (what
             // reaches the clipboard). The transform is deterministic, so scoring
             // the median transcript is stable. See issue #271.
-            let delivered = score_delivered(fixture.reference, &transcript, |input| {
+            let delivered = score_delivered(&fixture.reference, &transcript, |input| {
                 transform_transcript(
                     input.to_string(),
                     &delivery_context,
@@ -1344,8 +1433,8 @@ pub fn run<R: tauri::Runtime>(
             total_delivered_errors += delivered.word_errors;
             total_delivered_normalized_errors += delivered.normalized_word_errors;
             fixture_results.push(FixtureResult {
-                fixture_id: fixture.id.to_string(),
-                label: fixture.label.to_string(),
+                fixture_id: fixture.id.clone(),
+                label: fixture.label.clone(),
                 audio_seconds,
                 warm_median_ms,
                 warm_p95_ms,
@@ -1428,7 +1517,7 @@ pub fn run<R: tauri::Runtime>(
         iterations,
         shared_init_ms,
         environment: benchmark_environment(),
-        corpus: benchmark_corpus(request.preset),
+        corpus: benchmark_corpus(request.corpus, &fixtures),
         configuration: benchmark_configuration(model_run_order, shared_init_order),
         results,
         recommendations,
@@ -1476,10 +1565,29 @@ mod tests {
 
     #[test]
     fn report_metadata_describes_the_exact_corpus_and_final_only_path() {
-        let quick = benchmark_corpus(BenchmarkPreset::Quick);
-        let standard = benchmark_corpus(BenchmarkPreset::Standard);
-        let thorough = benchmark_corpus(BenchmarkPreset::Thorough);
-        assert_eq!(BENCHMARK_REPORT_VERSION, 2);
+        let metadata = |preset: BenchmarkPreset| {
+            preset
+                .fixtures()
+                .iter()
+                .map(|fixture| PreparedFixture {
+                    id: fixture.id.to_string(),
+                    label: fixture.label.to_string(),
+                    reference: fixture.reference.to_string(),
+                    samples: Vec::new(),
+                    audio_seconds: 0.0,
+                })
+                .collect::<Vec<_>>()
+        };
+        let quick = benchmark_corpus(BenchmarkCorpusSource::Bundled, &metadata(BenchmarkPreset::Quick));
+        let standard = benchmark_corpus(
+            BenchmarkCorpusSource::Bundled,
+            &metadata(BenchmarkPreset::Standard),
+        );
+        let thorough = benchmark_corpus(
+            BenchmarkCorpusSource::Bundled,
+            &metadata(BenchmarkPreset::Thorough),
+        );
+        assert_eq!(BENCHMARK_REPORT_VERSION, 3);
         assert_eq!((quick.fixture_count, quick.reference_words), (2, 29));
         assert_eq!((standard.fixture_count, standard.reference_words), (7, 248));
         assert_eq!((thorough.fixture_count, thorough.reference_words), (9, 514));
@@ -1567,7 +1675,10 @@ mod tests {
         // four plus the jargon/numbers/disfluent stress clips; Thorough adds
         // xxlong + fast on top (issue #273).
         assert_eq!(BenchmarkPreset::Quick.fixtures().len(), 2);
-        assert_eq!(BenchmarkPreset::Quick.iterations(), 3);
+        assert_eq!(
+            BenchmarkPreset::Quick.iterations(BenchmarkCorpusSource::Bundled),
+            3
+        );
         assert_eq!(
             BenchmarkPreset::Standard.fixtures().len(),
             STANDARD_FIXTURE_COUNT
@@ -1575,7 +1686,24 @@ mod tests {
         assert_eq!(BenchmarkPreset::Standard.fixtures().len(), 7);
         assert_eq!(BenchmarkPreset::Thorough.fixtures().len(), FIXTURES.len());
         assert_eq!(BenchmarkPreset::Thorough.fixtures().len(), 9);
-        assert_eq!(BenchmarkPreset::Thorough.iterations(), 10);
+        assert_eq!(
+            BenchmarkPreset::Thorough.iterations(BenchmarkCorpusSource::Bundled),
+            10
+        );
+        #[cfg(feature = "internal-benchmark")]
+        assert_eq!(
+            BenchmarkPreset::Standard.iterations(BenchmarkCorpusSource::Personal),
+            1
+        );
+        #[cfg(feature = "internal-benchmark")]
+        assert_eq!(
+            BenchmarkPreset::Thorough.iterations(BenchmarkCorpusSource::Personal),
+            3
+        );
+        #[cfg(feature = "internal-benchmark")]
+        assert_eq!(BenchmarkPreset::Quick.personal_fixture_limit(), 5);
+        #[cfg(feature = "internal-benchmark")]
+        assert_eq!(BenchmarkPreset::Standard.personal_fixture_limit(), 20);
         // Presets select prefixes, so each tier must be a superset of the
         // previous one — otherwise a fixture would silently vanish at a tier.
         assert!(
@@ -1666,21 +1794,21 @@ mod tests {
             assert!(
                 fixture.audio_seconds > 0.0,
                 "{} produced no post-VAD audio",
-                fixture.fixture.id
+                fixture.id
             );
             let transcript = backend
                 .transcribe(&fixture.samples, "en", None, true)
                 .expect("transcribe new fixture");
             println!(
                 "[{:>9} {:>5.1}s] {}",
-                fixture.fixture.id,
+                fixture.id,
                 fixture.audio_seconds,
                 transcript.trim()
             );
             assert!(
                 !words(&transcript).is_empty(),
                 "{} decoded to empty text",
-                fixture.fixture.id
+                fixture.id
             );
         }
         backend.reset();
@@ -2016,7 +2144,7 @@ mod tests {
 
         let context = default_delivery_context();
         let matcher = default_delivery_correction_matcher();
-        let delivered = score_delivered(fixture.fixture.reference, &transcript, |input| {
+        let delivered = score_delivered(&fixture.reference, &transcript, |input| {
             transform_transcript(
                 input.to_string(),
                 &context,
@@ -2037,7 +2165,7 @@ mod tests {
             !delivered.transcript.trim().is_empty(),
             "delivered transcript should be populated"
         );
-        let (raw_errors, reference_words) = word_errors(fixture.fixture.reference, &transcript);
+        let (raw_errors, reference_words) = word_errors(&fixture.reference, &transcript);
         assert!(reference_words > 0);
 
         println!("--- delivered path smoke (tiny.en) ---");

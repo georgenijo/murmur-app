@@ -25,6 +25,9 @@ crate-type = ["lib", "cdylib", "staticlib"]
 # helper. Off by default so the injection path is not linkable in a release
 # binary (debug_assertions also enables it for the standard test build).
 llm-test-support = []
+# Private corpus capture/replay tools. Off by default: production builds do not
+# compile the corpus command module or register its IPC surface.
+internal-benchmark = []
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

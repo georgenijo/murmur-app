@@ -1,4 +1,5 @@
 pub mod benchmark;
+#[cfg(feature = "internal-benchmark")]
 pub mod corpus;
 pub mod correct_and_teach;
 pub mod export;

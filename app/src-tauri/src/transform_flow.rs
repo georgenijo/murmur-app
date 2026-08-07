@@ -231,6 +231,18 @@ fn capture_abort_was_cancelled(app_state: &AppState, transform_pass_id: u64) -> 
     app_state.is_transform_pass_cancelled(transform_pass_id)
 }
 
+fn corpus_recording_active(state: &crate::State) -> bool {
+    #[cfg(feature = "internal-benchmark")]
+    {
+        state.corpus.is_active()
+    }
+    #[cfg(not(feature = "internal-benchmark"))]
+    {
+        let _ = state;
+        false
+    }
+}
+
 fn append_transform_follow_up(
     state: &crate::State,
     transform_pass_id: u64,
@@ -1715,7 +1727,7 @@ pub(crate) async fn start_transform_capture(
         } else if state.benchmark.is_running() {
             tracing::info!(target: "transform", transform_pass_id, error_code = "benchmark_running", "start_transform_capture ignored");
             Err("benchmark_running")
-        } else if state.corpus.is_active() {
+        } else if corpus_recording_active(&state) {
             tracing::info!(target: "transform", transform_pass_id, error_code = "corpus_recording", "start_transform_capture ignored");
             Err("corpus_recording")
         } else if state

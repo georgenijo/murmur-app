@@ -11,7 +11,12 @@
 //!
 //! ```sh
 //! MURMUR_BENCH_OUT=/tmp/report.json MURMUR_BENCH_PRESET=quick MURMUR_BENCH_MODELS=tiny.en \
-//!     cargo test --test headless_benchmark -- --ignored --nocapture --test-threads=1
+//!     cargo test --release --test headless_benchmark -- --ignored --nocapture --test-threads=1
+//!
+//! # Private personal corpus (internal builds only)
+//! MURMUR_BENCH_CORPUS=personal MURMUR_BENCH_OUT=/tmp/personal.json \
+//!     cargo test --release --features internal-benchmark --test headless_benchmark \
+//!     headless_benchmark -- --ignored --nocapture --test-threads=1
 //! ```
 //!
 //! Env vars:
@@ -21,9 +26,29 @@
 //!   as installed on this machine.
 //! - `MURMUR_BENCH_PRESET` (optional): `quick` | `standard` | `thorough`.
 //!   Defaults to `standard`.
+//! - `MURMUR_BENCH_CORPUS` (optional): `bundled` | `personal`. Personal
+//!   requires `--features internal-benchmark`. Defaults to `bundled`.
+//! - `MURMUR_BENCH_CORPUS_DIR` (optional): absolute personal corpus v1 path.
 
 use std::path::PathBuf;
-use ui_lib::benchmark::{self, BenchmarkCoordinator, BenchmarkPreset, BenchmarkRequest};
+use ui_lib::benchmark::{
+    self, BenchmarkCoordinator, BenchmarkCorpusSource, BenchmarkPreset, BenchmarkRequest,
+};
+
+fn parse_corpus(value: Option<&str>) -> Result<BenchmarkCorpusSource, String> {
+    match value.map(str::to_lowercase).as_deref() {
+        None | Some("bundled") => Ok(BenchmarkCorpusSource::Bundled),
+        #[cfg(feature = "internal-benchmark")]
+        Some("personal") => Ok(BenchmarkCorpusSource::Personal),
+        #[cfg(not(feature = "internal-benchmark"))]
+        Some("personal") => Err(
+            "MURMUR_BENCH_CORPUS=personal requires --features internal-benchmark".to_string(),
+        ),
+        Some(other) => Err(format!(
+            "Unknown MURMUR_BENCH_CORPUS '{other}' (expected bundled|personal)"
+        )),
+    }
+}
 
 /// Parse `MURMUR_BENCH_PRESET`. Missing -> `Standard`; unrecognized -> error.
 fn parse_preset(value: Option<&str>) -> Result<BenchmarkPreset, String> {
@@ -123,6 +148,23 @@ fn out_path_is_required() {
     );
 }
 
+#[test]
+fn corpus_env_var_defaults_to_bundled() {
+    assert_eq!(parse_corpus(None), Ok(BenchmarkCorpusSource::Bundled));
+    assert_eq!(
+        parse_corpus(Some("bundled")),
+        Ok(BenchmarkCorpusSource::Bundled)
+    );
+    #[cfg(feature = "internal-benchmark")]
+    assert_eq!(
+        parse_corpus(Some("personal")),
+        Ok(BenchmarkCorpusSource::Personal)
+    );
+    #[cfg(not(feature = "internal-benchmark"))]
+    assert!(parse_corpus(Some("personal")).is_err());
+    assert!(parse_corpus(Some("bogus")).is_err());
+}
+
 /// Runs the full Performance Lab benchmark headlessly and writes the
 /// resulting `BenchmarkReport` JSON to `MURMUR_BENCH_OUT`. See module docs
 /// for the exact invocation and env vars.
@@ -133,6 +175,8 @@ fn headless_benchmark() {
         .expect("MURMUR_BENCH_OUT");
     let preset = parse_preset(std::env::var("MURMUR_BENCH_PRESET").ok().as_deref())
         .expect("MURMUR_BENCH_PRESET");
+    let corpus = parse_corpus(std::env::var("MURMUR_BENCH_CORPUS").ok().as_deref())
+        .expect("MURMUR_BENCH_CORPUS");
 
     let catalog = benchmark::benchmark_models();
     let installed = catalog
@@ -146,11 +190,14 @@ fn headless_benchmark() {
     )
     .expect("MURMUR_BENCH_MODELS");
 
-    println!("headless benchmark: preset={preset:?} models={model_names:?}");
+    println!(
+        "headless benchmark: corpus={corpus:?} preset={preset:?} models={model_names:?}"
+    );
 
     let request = BenchmarkRequest {
         model_names,
         preset,
+        corpus,
     };
 
     let app = tauri::test::mock_app();

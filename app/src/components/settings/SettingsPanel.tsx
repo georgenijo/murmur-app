@@ -43,6 +43,7 @@ import type { DictationStatus } from '../../lib/types';
 import type { UpdateStatus } from '../../lib/updater';
 import { isNotchPillInstalled } from '../../lib/dictation';
 import { Select } from '../ui/Select';
+import { INTERNAL_BENCHMARK_BUILD } from '../../lib/buildFlavor';
 import { AppOverridesEditor } from './AppOverridesEditor';
 import { AppearanceSettings } from './AppearanceSettings';
 import { PerformanceLab } from './PerformanceLab';
@@ -947,7 +948,7 @@ export function SettingsPanel({
           </SettingsSection>
 
           <SettingsSection pageId="app" activePage={activeCat} title="General" subtitle="Startup, support, updates, and app information">
-            <SettingToggle title="Launch at Login" description="Start Murmur automatically when you log in." checked={settings.launchAtLogin} onChange={() => onUpdateSettings({ launchAtLogin: !settings.launchAtLogin })} />
+            {!INTERNAL_BENCHMARK_BUILD && <SettingToggle title="Launch at Login" description="Start Murmur automatically when you log in." checked={settings.launchAtLogin} onChange={() => onUpdateSettings({ launchAtLogin: !settings.launchAtLogin })} />}
             <button type="button" onClick={onRerunSetup} className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs font-medium text-on-surface-variant transition-colors hover:bg-surface-container hover:text-primary">Run Setup Assistant</button>
             <p className="-mt-3 text-xs text-on-surface-variant">Re-check permissions and model setup after a permission is revoked or stops working.</p>
             <details className="group">
@@ -970,7 +971,7 @@ export function SettingsPanel({
                 <button type="button" aria-label={confirmReset ? 'Confirm reset statistics' : 'Reset statistics'} onClick={resetStats} className={`w-full rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${confirmReset ? 'border-error/40 bg-error/10 text-error' : 'border-outline-variant/30 bg-surface-container-lowest text-on-surface-variant hover:bg-surface-container hover:text-primary'}`}>{confirmReset ? 'Confirm Reset' : 'Reset Stats'}</button>
               </div>
             </details>
-            <div>
+            {!INTERNAL_BENCHMARK_BUILD && <div>
               <button type="button" onClick={() => void onCheckForUpdate()} disabled={updateStatus.phase === 'checking' || updateStatus.phase === 'preparing' || updateStatus.phase === 'downloading' || updateStatus.phase === 'ready'} className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs font-medium text-on-surface-variant transition-colors hover:bg-surface-container hover:text-primary disabled:cursor-not-allowed disabled:opacity-50">{updateStatus.phase === 'checking' ? 'Checking…' : 'Check for Updates'}</button>
               {updateStatus.phase === 'up-to-date' && <p className="mt-1.5 text-xs text-success">You’re up to date.</p>}
               {updateStatus.phase === 'available' && <p className="mt-1.5 text-xs text-primary">v{updateStatus.version} available</p>}
@@ -981,7 +982,12 @@ export function SettingsPanel({
                     : 'Update installation needs attention.'}
                 </p>
               )}
-            </div>
+            </div>}
+            {INTERNAL_BENCHMARK_BUILD && (
+              <p className="rounded-lg border border-primary/25 bg-primary/10 px-3 py-2 text-xs text-on-surface-variant">
+                Internal benchmark build. Automatic updates, launch at login, and diagnostic log shipping are disabled.
+              </p>
+            )}
             {version && <p className="text-center text-xs text-on-surface-variant">Murmur v{version}</p>}
           </SettingsSection>
         </div>
