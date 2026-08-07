@@ -661,8 +661,8 @@ pub fn open_corpus_folder(app_handle: tauri::AppHandle) -> Result<(), String> {
         .map_err(|error| format!("Could not open the personal corpus folder: {error}"))
 }
 
-pub(crate) fn plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
-    tauri::plugin::Builder::<R>::new("internal-benchmark")
+pub(crate) fn plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
+    tauri::plugin::Builder::new("internal-benchmark")
         .invoke_handler(tauri::generate_handler![
             start_corpus_recording,
             stop_corpus_recording,
