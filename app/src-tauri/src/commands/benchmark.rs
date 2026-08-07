@@ -72,6 +72,9 @@ pub async fn run_benchmark(
         if state.app_state.file_transcribing.load(Ordering::SeqCst) {
             return Err("Wait for the file transcription to finish".to_string());
         }
+        if state.corpus.is_active() {
+            return Err("Finish the corpus recording before benchmarking".to_string());
+        }
         if !coordinator.try_start() {
             return Err(if coordinator.is_running() {
                 "A benchmark is already running".to_string()

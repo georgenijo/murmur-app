@@ -169,6 +169,16 @@ frontend.
 | `save_benchmark_report` | `report_json`, `output_dir`, `file_name` | `Result<String, String>` | Writes a report as `benchmark-<version>-<machine>-<createdAt>.json`. |
 | `open_benchmark_output_folder` | `output_dir: String` | `Result<(), String>` | Reveals the report folder in Finder. |
 
+## Personal corpus recorder (`commands/corpus.rs`)
+
+| Command | Parameters | Returns | Description |
+|---------|-----------|---------|-------------|
+| `start_corpus_recording` | `request: CorpusStartRequest` | `Result<CorpusStartResponse, String>` | Claims the capture-only audio path for one fixed reference prompt and starts the signed microphone worker. |
+| `stop_corpus_recording` | — | `Result<CorpusStopResponse, String>` | Stops capture, saves a 16 kHz mono WAV, computes its hash and quality metrics, and atomically updates the private manifest. |
+| `cancel_corpus_recording` | — | `Result<bool, String>` | Cancels the active corpus capture without saving a recording. |
+| `get_corpus_summary` | — | `Result<CorpusSummary, String>` | Returns local manifest entries and the private corpus directory. |
+| `open_corpus_folder` | — | `Result<(), String>` | Reveals the private corpus directory in Finder. |
+
 ## Performance diagnostics (`commands/performance.rs`)
 
 | Command | Parameters | Returns | Description |

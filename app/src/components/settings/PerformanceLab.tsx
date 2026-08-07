@@ -27,6 +27,7 @@ import {
 } from '../../lib/modelDownload';
 import type { Settings } from '../../lib/settings';
 import type { DictationStatus } from '../../lib/types';
+import { CorpusRecorder } from './CorpusRecorder';
 
 const PRESETS: { id: BenchmarkPreset; label: string; detail: string }[] = [
   { id: 'quick', label: 'Quick', detail: '2 clips x 3 runs' },
@@ -153,6 +154,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings }: {
   const [downloading, setDownloading] = useState<string | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<ModelDownloadProgress | null>(null);
   const [fileTranscribing, setFileTranscribing] = useState(false);
+  const [corpusBusy, setCorpusBusy] = useState(false);
   const mounted = useRef(true);
   const runningRef = useRef(false);
 
@@ -225,7 +227,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings }: {
   const progressPercent = progress && progress.total > 0
     ? Math.round((progress.completed / progress.total) * 100)
     : 0;
-  const canRun = selected.length > 0 && !running && status === 'idle' && !fileTranscribing;
+  const canRun = selected.length > 0 && !running && status === 'idle' && !fileTranscribing && !corpusBusy;
 
   const selectedSet = useMemo(() => new Set(selected), [selected]);
   const toggleModel = (modelName: string) => {
@@ -341,6 +343,14 @@ export function PerformanceLab({ status, settings, onUpdateSettings }: {
         <p className="font-medium text-on-surface">Directional results, not a universal model ranking</p>
         <p className="mt-1">This lab compares installed models on this Mac with a small, clean synthetic English corpus. It does not represent your voice, microphone, accent, room, or every dictation workload.</p>
       </div>
+      <CorpusRecorder
+        status={status}
+        benchmarkRunning={running}
+        fileTranscribing={fileTranscribing}
+        settings={settings}
+        onUpdateSettings={onUpdateSettings}
+        onBusyChange={setCorpusBusy}
+      />
       <section>
         <div className="flex items-end justify-between gap-4 mb-3">
           <div>
@@ -352,7 +362,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings }: {
           {installedCount > 0 && (
             <button
               type="button"
-              disabled={running}
+              disabled={running || corpusBusy}
               onClick={() => setSelected(models.filter((model) => model.installed).map((model) => model.modelName))}
               className="text-xs text-on-surface hover:text-on-surface disabled:opacity-50"
             >
@@ -368,7 +378,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings }: {
                 type="checkbox"
                 aria-label={`Benchmark ${model.label}`}
                 checked={selectedSet.has(model.modelName)}
-                disabled={!model.installed || running}
+                disabled={!model.installed || running || corpusBusy}
                 onChange={() => toggleModel(model.modelName)}
                 className="h-4 w-4 accent-primary"
               />
@@ -384,7 +394,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings }: {
               {!model.installed && (
                 <button
                   type="button"
-                  disabled={downloading !== null || running}
+                  disabled={downloading !== null || running || corpusBusy}
                   onClick={() => handleDownload(model.modelName)}
                   className="shrink-0 px-2.5 py-1.5 text-xs font-medium border border-outline-variant/30 rounded-md text-on-surface hover:bg-surface-container-low disabled:opacity-50"
                 >
@@ -409,7 +419,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings }: {
             <button
               type="button"
               key={option.id}
-              disabled={running}
+              disabled={running || corpusBusy}
               onClick={() => setPreset(option.id)}
               className={`min-w-0 px-2 py-2 rounded-md transition-colors disabled:opacity-50 ${
                 preset === option.id
@@ -459,6 +469,9 @@ export function PerformanceLab({ status, settings, onUpdateSettings }: {
         )}
         {fileTranscribing && (
           <p className="mt-2 text-xs text-primary">Finish the file transcription first.</p>
+        )}
+        {corpusBusy && (
+          <p className="mt-2 text-xs text-primary">Finish or cancel the corpus recording first.</p>
         )}
         {error && (
           <p className="mt-2 text-xs text-error break-words">{error}</p>

@@ -1,5 +1,6 @@
 pub mod benchmark;
 pub mod correct_and_teach;
+pub mod corpus;
 pub mod export;
 pub mod integrations;
 pub mod keyboard;

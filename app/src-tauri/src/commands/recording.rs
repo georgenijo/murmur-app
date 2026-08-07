@@ -2540,6 +2540,13 @@ pub async fn start_native_recording(
                 "state": "idle"
             }));
         }
+        if state.corpus.is_active() {
+            tracing::warn!(target: "pipeline", "start_native_recording: blocked — corpus recording in progress");
+            return Ok(serde_json::json!({
+                "type": "busy_recording_corpus",
+                "state": "idle"
+            }));
+        }
         if state.benchmark.is_running() {
             tracing::warn!(target: "pipeline", "start_native_recording: blocked — benchmark in progress");
             return Ok(serde_json::json!({
@@ -3188,6 +3195,11 @@ pub async fn transcribe_file(
         if state.benchmark.is_running() {
             return Err("Wait for the benchmark to finish before transcribing a file.".to_string());
         }
+        if state.corpus.is_active() {
+            return Err(
+                "Finish the corpus recording before transcribing a file.".to_string(),
+            );
+        }
         // Transform's Thinking phase (issue #312) will share this same Whisper
         // backend, so it must be mutually exclusive with file transcription too.
         if state.app_state.transform_status().blocks_recording() {
@@ -3485,6 +3497,7 @@ mod tests {
             .manage(State {
                 app_state,
                 benchmark: Arc::new(crate::benchmark::BenchmarkCoordinator::new()),
+                corpus: crate::commands::corpus::CorpusRecorderState::default(),
                 knowledge: crate::knowledge_store::KnowledgeStore::default(),
                 correct_and_teach: crate::correct_and_teach::CorrectAndTeachState::default(),
                 performance: performance.clone(),
@@ -3572,6 +3585,7 @@ mod tests {
             .manage(State {
                 app_state,
                 benchmark: Arc::new(crate::benchmark::BenchmarkCoordinator::new()),
+                corpus: crate::commands::corpus::CorpusRecorderState::default(),
                 knowledge: crate::knowledge_store::KnowledgeStore::default(),
                 correct_and_teach: crate::correct_and_teach::CorrectAndTeachState::default(),
                 performance: crate::performance_metrics::PerformanceMetrics::default(),

@@ -27,6 +27,37 @@ state from the same model-runtime catalog used by onboarding and Settings. Its
 benchmark runner also creates backends through the catalog factory, so adding a
 model does not require a second backend-name classifier.
 
+## Personal corpus recorder
+
+The Performance page also includes a guided recorder for building a repeatable
+corpus from the user's own voice and microphone. It provides 20 fixed prompts
+covering short commands, ordinary prose, technical terms, numbers, natural
+disfluencies, long passages, pauses, faster delivery, and quieter delivery.
+
+This is a capture-only path. It uses the same signed microphone worker and mono
+16 kHz resampling as production dictation, but it does not load a transcription
+model, write transcript history, touch the clipboard, auto-paste, or run a text
+transform. Recording is mutually exclusive with dictation, file transcription,
+selected-text transforms, and Performance Lab runs.
+
+Recordings are stored outside the repository at:
+
+```text
+~/Library/Application Support/Murmur Benchmark Corpus/v1
+```
+
+The `audio/` directory contains sequential, prompt-labelled WAV files. A
+versioned `manifest.json` records the exact reference, selected take, SHA-256,
+duration, input-level measurements, microphone label, and quality warnings.
+Retakes are non-destructive: the newest take is selected while earlier WAVs stay
+available. The app warns about recordings that are very short, very quiet, or
+clipping. These files contain real user data, remain local, and must not be
+committed to Git.
+
+The recorder establishes the reusable input set; the existing benchmark runner
+still uses Murmur's bundled synthetic fixtures until personal-corpus replay and
+scoring are added explicitly.
+
 ## Accuracy
 
 Each bundled 16 kHz mono WAV fixture has an adjacent reference transcript.
@@ -106,11 +137,12 @@ catalog download size nor an isolated peak-memory measurement.
 
 ## Concurrency
 
-The benchmark uses isolated backend instances. Live recording and file
-transcription are blocked while a benchmark owns the benchmark coordinator, and
-a benchmark cannot start while either transcription path is active. Cancellation
-is checked between inference calls; an inference already inside a native backend
-finishes before cancellation returns.
+The benchmark uses isolated backend instances. Live recording, personal-corpus
+recording, and file transcription are blocked while a benchmark owns the
+benchmark coordinator, and a benchmark cannot start while any recording or
+transcription path is active. Cancellation is checked between inference calls;
+an inference already inside a native backend finishes before cancellation
+returns.
 
 These isolated benchmark instances do not replace the selected dictation model
 or publish shared-runtime lifecycle changes. There is no automatic fallback if

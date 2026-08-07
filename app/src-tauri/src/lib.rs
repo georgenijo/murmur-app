@@ -121,6 +121,7 @@ impl<T> MutexExt<T> for Mutex<T> {
 pub(crate) struct State {
     pub(crate) app_state: AppState,
     pub(crate) benchmark: std::sync::Arc<benchmark::BenchmarkCoordinator>,
+    pub(crate) corpus: commands::corpus::CorpusRecorderState,
     pub(crate) knowledge: knowledge_store::KnowledgeStore,
     pub(crate) correct_and_teach: correct_and_teach::CorrectAndTeachState,
     pub(crate) performance: performance_metrics::PerformanceMetrics,
@@ -233,6 +234,7 @@ pub fn run() {
         .manage(State {
             app_state: AppState::default(),
             benchmark: std::sync::Arc::new(benchmark::BenchmarkCoordinator::new()),
+            corpus: commands::corpus::CorpusRecorderState::default(),
             knowledge: knowledge_store::KnowledgeStore::default(),
             correct_and_teach: correct_and_teach::CorrectAndTeachState::default(),
             performance: performance_metrics::PerformanceMetrics::default(),
@@ -250,6 +252,11 @@ pub fn run() {
             commands::recording::configure_dictation,
             commands::recording::start_native_recording,
             commands::recording::stop_native_recording,
+            commands::corpus::start_corpus_recording,
+            commands::corpus::stop_corpus_recording,
+            commands::corpus::cancel_corpus_recording,
+            commands::corpus::get_corpus_summary,
+            commands::corpus::open_corpus_folder,
             commands::recording::cancel_native_recording,
             commands::recording::cancel_audio_initialization,
             commands::recording::count_vocab_tokens,

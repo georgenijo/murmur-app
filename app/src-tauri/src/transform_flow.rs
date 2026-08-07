@@ -1715,6 +1715,9 @@ pub(crate) async fn start_transform_capture(
         } else if state.benchmark.is_running() {
             tracing::info!(target: "transform", transform_pass_id, error_code = "benchmark_running", "start_transform_capture ignored");
             Err("benchmark_running")
+        } else if state.corpus.is_active() {
+            tracing::info!(target: "transform", transform_pass_id, error_code = "corpus_recording", "start_transform_capture ignored");
+            Err("corpus_recording")
         } else if state
             .app_state
             .file_transcribing
