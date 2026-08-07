@@ -988,6 +988,22 @@ async fn run_transcription_pipeline(
             }
             Ok(Ok(Ok(()))) => {}
         }
+        // Opt-in mirror to NotchPill: best-effort local file write. It runs
+        // *after* the clipboard write so disk I/O can never delay the primary
+        // output path, and off the pipeline thread so it stays out of paste_ms.
+        //
+        // Ownership is checked before scheduling, which narrows the stale-write
+        // window to the gap between this check and the write landing -- it does
+        // not close it. A cancel arriving inside that gap still publishes this
+        // caption. Deliberate: `app_state` is a borrow and cannot cross into
+        // `spawn_blocking`, and the alternative -- plumbing an owned handle
+        // through purely for a best-effort mirror -- costs more than the
+        // millisecond it would buy. The consequence is bounded: NotchPill shows
+        // a caption the user abandoned until the next one replaces it.
+        if delivery.mirror_to_notchpill && !app_state.is_cancelled(recording_id) {
+            let caption = text.clone();
+            tokio::task::spawn_blocking(move || injector::mirror_caption(&caption));
+        }
     }
     let paste_ms = t_inject.elapsed().as_millis() as u64;
     tracing::info!(target: "pipeline", "inject (clipboard + paste): {:?}", t_inject.elapsed());
@@ -1494,6 +1510,18 @@ pub async fn configure_dictation(
 
     if let Some(auto_paste) = options.get("autoPaste").and_then(|v| v.as_bool()) {
         dictation.auto_paste = auto_paste;
+    }
+    if let Some(mirror) = options.get("mirrorToNotchPill").and_then(|v| v.as_bool()) {
+        let was_enabled = dictation.mirror_to_notchpill;
+        dictation.mirror_to_notchpill = mirror;
+        // Turning the mirror off removes what it left behind. The file holds a
+        // verbatim record of the last thing the user said, so leaving it on
+        // disk after they switched the feature off would keep speech around
+        // past consent -- the same reasoning that makes it 0600 in the first
+        // place. Best-effort and errors swallowed, exactly like the write.
+        if was_enabled && !mirror {
+            injector::remove_mirrored_caption();
+        }
     }
 
     if let Some(delay) = options.get("autoPasteDelayMs").and_then(|v| v.as_u64()) {

@@ -74,6 +74,7 @@ export interface ConfigureOptions {
   smartPunctuation?: boolean;
   saveTranscript?: boolean;
   saveAudio?: boolean;
+  mirrorToNotchPill?: boolean;
   outputDir?: string;
   appProfiles?: AppProfile[];
   voiceCommandsEnabled?: boolean;
@@ -103,6 +104,7 @@ export function buildConfigureOptions(s: Settings): ConfigureOptions {
     language: s.language,
     autoPaste: s.autoPaste,
     autoPasteDelayMs: s.autoPasteDelayMs,
+    mirrorToNotchPill: s.mirrorToNotchPill,
     vadSensitivity: s.vadSensitivity,
     idleTimeoutMinutes: s.idleTimeoutMinutes,
     customVocabulary: s.customVocabulary,

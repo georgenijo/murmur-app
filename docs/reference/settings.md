@@ -59,6 +59,7 @@ interface Settings {
   autoPasteDelayMs: number;
   saveTranscript: boolean;
   saveAudio: boolean;
+  mirrorToNotchPill: boolean;
   outputDir: string;
 
   // Text intelligence
@@ -156,6 +157,7 @@ model-selection side effects.
 | `autoPasteDelayMs` | `number` | `0` | 0-500 ms, step 10 in UI | Delay in milliseconds before auto-paste fires, to allow window focus to settle. Zero uses the immediate native-paste fast path; increase it only for apps that move focus asynchronously. The backend clamps this value to the 0-500 range. The UI slider only appears when `autoPaste` is enabled. |
 | `saveTranscript` | `boolean` | `false` | `true` / `false` | When enabled, each live dictation's transcript is written to a sequentially numbered `.txt` (`murmur-0001`, `murmur-0002`, …) in the output folder. When `saveTranscript` or `saveAudio` is on, auto-paste is suppressed (clipboard copy still happens). |
 | `saveAudio` | `boolean` | `false` | `true` / `false` | When enabled, each live dictation's audio is written to a matching `.wav` (16kHz mono, 16-bit PCM) in the output folder. |
+| `mirrorToNotchPill` | `boolean` | `false` | `true` / `false` | When enabled, the final transcript of each dictation is mirrored to `~/Library/Application Support/local-dictation/latest-caption.json` as `{text, timestamp}`, so a notch-overlay app (NotchPill) can display what was just said. Off by default. The file is owner-only (`0600`), holds only the most recent caption — each write replaces the last — and is written after the clipboard, best-effort, so it can never delay or affect dictation output. Nothing leaves the device. Switching the setting off deletes the file. |
 | `outputDir` | `string` | `''` | Any absolute folder path, or `''` for default | Destination for saved transcript/audio files. Empty means the app default (`Documents/Murmur`, created on first write). Set via a folder picker (`dialog:allow-open`). |
 | `benchmarkOutputDir` | `string` | `''` | Any absolute folder path, or `''` for default | Destination for saved Performance Lab benchmark reports (`benchmark-<version>-<machine>-<createdAt>.json`). Empty means the app default (`Documents/Murmur`, created on first write). Kept separate from `outputDir` so benchmark JSON doesn't mix with dictation transcripts/audio. Set via a folder picker in the Performance Lab. |
 | `benchmarkAutoSave` | `boolean` | `false` | `true` / `false` | When enabled, each completed benchmark run is written to `benchmarkOutputDir` automatically (in addition to the 10-slot in-app history), so reports survive the localStorage cap. Best-effort: a write failure surfaces an error but does not fail the run. |
@@ -234,6 +236,7 @@ When settings change, `useSettings.updateSettings` pushes the following fields t
 | `vadSensitivity` | `vadSensitivity` | Yes |
 | `saveTranscript` | `saveTranscript` | Yes |
 | `saveAudio` | `saveAudio` | Yes |
+| `mirrorToNotchPill` | `mirrorToNotchPill` | Yes |
 | `outputDir` | `outputDir` | Yes |
 | `doubleTapKey` | _(sent via `update_keyboard_key`)_ | Via keyboard hooks |
 | `recordingMode` | _(controls which hook is active)_ | Frontend only |

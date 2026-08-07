@@ -220,6 +220,8 @@ export interface Settings {
   smartPunctuation: boolean;
   saveTranscript: boolean;
   saveAudio: boolean;
+  /** Mirror each final transcript to a local file NotchPill can show in the notch. */
+  mirrorToNotchPill: boolean;
   outputDir: string;
   /** Destination for saved Performance Lab benchmark reports. Empty = default
    * `Documents/Murmur`. Kept separate from `outputDir` so benchmark JSON doesn't
@@ -386,6 +388,7 @@ export const DEFAULT_SETTINGS: Settings = {
   smartPunctuation: true,
   saveTranscript: false,
   saveAudio: false,
+  mirrorToNotchPill: false,
   outputDir: '',
   benchmarkOutputDir: '',
   benchmarkAutoSave: false,

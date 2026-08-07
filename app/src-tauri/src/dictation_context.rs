@@ -97,6 +97,8 @@ pub struct DeliverySettings {
     pub paste_delay_ms: u64,
     pub save_transcript: bool,
     pub save_audio: bool,
+    /// Opt-in: mirror the final transcript to NotchPill's caption file.
+    pub mirror_to_notchpill: bool,
     pub output_dir: String,
 }
 
@@ -307,6 +309,7 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
             paste_delay_ms: global.auto_paste_delay_ms,
             save_transcript: global.save_transcript,
             save_audio: global.save_audio,
+            mirror_to_notchpill: global.mirror_to_notchpill,
             output_dir: global.output_dir.clone(),
         },
         vocabulary: VocabularyIdentity {
