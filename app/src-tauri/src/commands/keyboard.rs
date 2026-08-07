@@ -1,15 +1,25 @@
-use crate::{keyboard, injector};
+use crate::{injector, keyboard};
 use tauri::Emitter;
 
 #[tauri::command]
-pub fn start_keyboard_listener(app_handle: tauri::AppHandle, hotkey: String, mode: String) -> Result<(), String> {
+pub fn start_keyboard_listener(
+    app_handle: tauri::AppHandle,
+    hotkey: String,
+    mode: String,
+) -> Result<(), String> {
     const VALID_MODES: &[&str] = &["double_tap", "hold_down", "both"];
     if !VALID_MODES.contains(&mode.as_str()) {
         tracing::error!(target: "keyboard", "Invalid keyboard listener mode: {}", mode);
-        return Err(format!("Invalid mode '{}'. Expected one of: {}", mode, VALID_MODES.join(", ")));
+        return Err(format!(
+            "Invalid mode '{}'. Expected one of: {}",
+            mode,
+            VALID_MODES.join(", ")
+        ));
     }
     if !injector::is_accessibility_enabled() {
-        return Err("Accessibility permission is required. Please grant it in System Settings.".to_string());
+        return Err(
+            "Accessibility permission is required. Please grant it in System Settings.".to_string(),
+        );
     }
     keyboard::start_listener(app_handle, &hotkey, &mode);
     tracing::info!(target: "keyboard", "Keyboard listener started: mode={}, key={}, accessibility={}", mode, hotkey, injector::is_accessibility_enabled());
@@ -43,7 +53,9 @@ pub fn set_app_disabled(app_handle: tauri::AppHandle, disabled: bool) -> Result<
     keyboard::set_app_disabled(disabled);
     tracing::info!(target: "keyboard", "set_app_disabled: {}", disabled);
     sync_tray_disabled_item(disabled);
-    app_handle.emit("app-disabled-changed", disabled).map_err(|e| e.to_string())
+    app_handle
+        .emit("app-disabled-changed", disabled)
+        .map_err(|e| e.to_string())
 }
 
 static DISABLED_MENU_ITEM: std::sync::OnceLock<tauri::menu::CheckMenuItem<tauri::Wry>> =
@@ -74,7 +86,10 @@ pub fn get_app_disabled() -> bool {
 // transform hotkey is always hold-down.
 
 #[tauri::command]
-pub fn start_transform_listener(app_handle: tauri::AppHandle, hotkey: String) -> Result<(), String> {
+pub fn start_transform_listener(
+    app_handle: tauri::AppHandle,
+    hotkey: String,
+) -> Result<(), String> {
     if keyboard::is_dictation_key_id(&hotkey) {
         tracing::error!(target: "keyboard", "start_transform_listener: rejected dictation key '{}'", hotkey);
         return Err(format!(
@@ -83,7 +98,9 @@ pub fn start_transform_listener(app_handle: tauri::AppHandle, hotkey: String) ->
         ));
     }
     if !injector::is_accessibility_enabled() {
-        return Err("Accessibility permission is required. Please grant it in System Settings.".to_string());
+        return Err(
+            "Accessibility permission is required. Please grant it in System Settings.".to_string(),
+        );
     }
     keyboard::start_transform_listener(app_handle, &hotkey);
     tracing::info!(target: "keyboard", "Transform listener started: key={}", hotkey);

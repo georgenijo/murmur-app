@@ -155,19 +155,36 @@ function normalizedVersionIdentity(version: string): string | null {
 
 // --- min_version fetch ---
 
+export type MinVersionPolicy =
+  | { status: 'present'; minVersion: string }
+  | { status: 'absent' }
+  | { status: 'unavailable'; message: string };
+
 /**
  * Fetch the custom min_version field from the current update channel.
- * Returns null if absent, fetch fails, or JSON is invalid.
+ * Absence is an intentional optional-update policy; transport and schema
+ * failures stay distinct so callers cannot silently downgrade enforcement.
  */
-export async function fetchMinVersion(): Promise<string | null> {
+export async function fetchMinVersionPolicy(): Promise<MinVersionPolicy> {
   try {
     const response = await fetch(LATEST_JSON_URL, { cache: 'no-store' });
-    if (!response.ok) return null;
-    const data = await response.json();
-    if (typeof data.min_version === 'string') return data.min_version;
-    return null;
-  } catch {
-    return null;
+    if (!response.ok) {
+      return {
+        status: 'unavailable',
+        message: `Update policy request failed with status ${response.status}.`,
+      };
+    }
+    const data: unknown = await response.json();
+    if (typeof data !== 'object' || data === null) {
+      return { status: 'unavailable', message: 'Update policy response was not an object.' };
+    }
+    if (!('min_version' in data)) return { status: 'absent' };
+    if (typeof data.min_version !== 'string') {
+      return { status: 'unavailable', message: 'Update policy min_version was not a string.' };
+    }
+    return { status: 'present', minVersion: data.min_version };
+  } catch (error) {
+    return { status: 'unavailable', message: String(error) };
   }
 }
 
@@ -177,6 +194,7 @@ export type UpdateStatus =
   | { phase: 'idle' }
   | { phase: 'checking' }
   | { phase: 'available'; version: string; notes: string; isForced: boolean }
+  | { phase: 'preparing'; version: string }
   | { phase: 'downloading'; version: string; progress: number }
   | { phase: 'ready'; version: string }
   | {

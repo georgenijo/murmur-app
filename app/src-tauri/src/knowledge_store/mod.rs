@@ -677,7 +677,10 @@ mod tests {
 
         // A distinct name is unaffected.
         assert!(store
-            .upsert_manual(transform_draft("standup summary", "Summarize as a standup update."))
+            .upsert_manual(transform_draft(
+                "standup summary",
+                "Summarize as a standup update."
+            ))
             .is_ok());
     }
 
@@ -696,7 +699,10 @@ mod tests {
         let bundle: KnowledgeExport =
             serde_json::from_slice(&std::fs::read(&export).unwrap()).unwrap();
         assert_eq!(bundle.version, EXPORT_VERSION);
-        assert_eq!(bundle.version, 3, "store convention bumped for #312 round 2");
+        assert_eq!(
+            bundle.version, 3,
+            "store convention bumped for #312 round 2"
+        );
         assert!(bundle
             .entries
             .iter()

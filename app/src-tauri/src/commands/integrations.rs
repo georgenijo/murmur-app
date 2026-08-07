@@ -13,9 +13,9 @@ pub(crate) fn notchpill_installed() -> bool {
         use objc2_foundation::NSString;
 
         let bundle_id = NSString::from_str(NOTCHPILL_BUNDLE_ID);
-        return NSWorkspace::sharedWorkspace()
+        NSWorkspace::sharedWorkspace()
             .URLForApplicationWithBundleIdentifier(&bundle_id)
-            .is_some();
+            .is_some()
     }
 
     #[cfg(not(target_os = "macos"))]

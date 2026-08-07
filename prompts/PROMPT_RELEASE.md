@@ -7,6 +7,8 @@ You are starting a release session for the Murmur project. Work autonomously thr
 Read silently:
 - `app/src-tauri/tauri.conf.json` — current version
 - `app/src-tauri/Cargo.toml` — current version (must stay in sync)
+- `app/package.json` — current frontend package version (must stay in sync)
+- `app/package-lock.json` — current frontend lockfile version (must stay in sync)
 - `CHANGELOG.md` — version history
 
 ## 2. Assess Current State
@@ -29,16 +31,22 @@ Analyse the commits using these rules (in priority order):
 
 Determine the new version by applying the bump to the current version in `tauri.conf.json`.
 
-## 3b. Assess min_version
+## 3b. Set the Updater Policy
 
 Check if any commits since the last tag contain:
 - Security fixes
 - Breaking changes to the update mechanism itself
 - Data format changes that make old versions incompatible
 
-If any of the above apply, ask: **"Is this a critical update? Should min_version be set to this release?"**
-- Default: No (optional update — users can skip or defer)
-- If yes: after the release publishes, download `latest.json` from the GitHub release assets, add `"min_version": "{new_version}"` to the JSON, then re-upload with `gh release upload v{new_version} latest.json --clobber` to replace the asset. Users running versions older than min_version will see a non-dismissable forced update modal.
+Set `.github/updater-policy.json` before preparing the version bump:
+- Default/optional update: `"min_version": null` (users can skip or defer).
+- Critical update: `"min_version": "{new_version}"` (older versions receive a
+  non-dismissable forced-update modal).
+
+If the criticality is unclear, ask: **"Is this a critical update? Should
+min_version be set to this release?"** Never edit or replace the published
+`latest.json` afterward. Trusted promotion validates the source-controlled
+policy and emits the immutable updater manifest.
 
 Include the min_version decision in the release summary.
 
@@ -59,10 +67,15 @@ the version bump, main push, and automatic tag/publish after all gates pass.
 
 Run these steps in order:
 
-1. Bump `"version"` in `app/src-tauri/tauri.conf.json`
-2. Bump `version` (package field only) in `app/src-tauri/Cargo.toml`
-3. Update the `ui` package version in `app/src-tauri/Cargo.lock`
-4. Commit all three version files with: `chore: bump version to {new_version}`
+1. Set and review `.github/updater-policy.json` using the decision from Step 3b.
+2. Run `python3 scripts/release_version.py prepare {new_version}`. This updates
+   `tauri.conf.json`, `Cargo.toml`, `Cargo.lock`, `package.json`, and
+   `package-lock.json`, cuts the current `[Unreleased]` notes into a dated
+   `{new_version}` section, and opens a fresh empty `[Unreleased]` section.
+3. Review the version-file, CHANGELOG, and updater-policy diff, then run
+   `python3 scripts/release_version.py check {new_version}`.
+4. Commit the synchronized version files, CHANGELOG, and updater policy with:
+   `chore: bump version to {new_version}`.
 5. Push: `git push origin main`
 6. Wait for the `Release Build` workflow on that exact commit to succeed.
 7. Verify its `typecheck`, `release-macos`, and `release-linux` jobs, signed
@@ -102,9 +115,60 @@ Then update its notes:
    ```
    Write the notes yourself from the commit list in Step 3 — use clear, user-facing language (not raw commit messages). Omit any section that has no entries. Skip `chore:`, `docs:`, `test:` commits.
 
-## 7. Hand Off
+## 7. Validate Post-Release Production Latency
+
+For any release that changes capture, transcription, delivery, model runtime,
+or performance-sensitive dependencies, the release is published but its
+performance validation remains pending until natural production use exists.
+
+1. Ask the user to make at least three normal prompts in the updated production
+   app. Do not generate synthetic prompts, drive another Mac's UI, or run a
+   second app build for this check.
+2. With the user's authorization to read that machine, confirm the installed
+   app version and isolate the exact session beginning at
+   `app setup — Murmur v{new_version}` in:
+   - `~/Library/Application Support/local-dictation/logs/events.jsonl`
+   - `~/Library/Application Support/com.localdictation/diagnostics/performance.sqlite3`
+3. From content-free events, collect per recording:
+   - helper resolve/signature/spawn time;
+   - stream-open and first-callback phases;
+   - start-to-first-retained-PCM and total audio-readiness time;
+   - stop-to-worker-exit;
+   - fallback, capture failure, zero-sample, stale-worker, or overlapping-owner
+     evidence.
+4. From `completed_runs.payload_json`, collect the matching app-version's
+   successful dictation stages:
+   - capture finalization, VAD, model queue/load, inference/decode;
+   - transcript transform, clipboard/paste, and total post-stop processing;
+   - warm/cold state, audio/output-size bucket, and bounded resource summaries.
+5. Compare only compatible same-machine production cohorts. Match run kind,
+   model/backend/accelerator, warm state, microphone transport/selection class
+   where available, and input/output-size bucket. Do not compare dev with
+   production, simultaneous app runs, different machines, or incompatible
+   configurations as if they were a regression result.
+6. Report sample count and every raw value when fewer than 20 compatible runs
+   exist. A median is allowed for a small sample, but label it preliminary.
+   Never report or compare p95/p99 with fewer than 20 runs per cohort.
+7. Flag a preliminary median regression only when it is both greater than
+   20 ms absolute and 15% relative. With at least 20 compatible runs, flag a
+   p95 regression when it is both greater than 30 ms absolute and 20% relative.
+   Any new capture failure, fallback, zero-sample success, stale worker, or
+   overlapping helper is a regression regardless of sample count.
+8. Record the comparison in the release handoff and link it to
+   [#430](https://github.com/georgenijo/murmur-app/issues/430) until the in-app
+   production-version comparison is authoritative.
+
+The Diagnostics Reports tab is not a substitute for this check: it compares
+Performance Lab or evaluation reports, not retained production dictation runs.
+Follow `docs/features/performance-diagnostics.md` for the local run contract and
+privacy boundaries. Never inspect or report transcript, clipboard, or audio
+content while doing this comparison.
+
+## 8. Hand Off
 
 Tell the user:
 - Exact commit, build run, promotion run, tag, and release URLs
 - The signed build passed and GitHub automatically promoted its exact artifacts
 - The release is published at: `https://github.com/georgenijo/murmur-app/releases`
+- The production-latency comparison result, or clearly state that it is pending
+  natural prompts on an explicitly authorized updated machine

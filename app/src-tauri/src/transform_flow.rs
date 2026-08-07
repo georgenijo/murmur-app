@@ -855,6 +855,7 @@ pub(crate) fn enter_thinking(app_state: &AppState, fx: &dyn FlowEffects) -> bool
 /// frame and clears `busy` promptly. Terminal status writes use
 /// `try_transition(Thinking → ReviewPending)` so a cancel landing mid-flight
 /// cannot resurrect ReviewPending (which would wedge dictation).
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_transform(
     app_state: &AppState,
     fx: &dyn FlowEffects,
@@ -864,6 +865,7 @@ pub(crate) async fn run_transform(
     >,
     instruction: Result<String, ()>,
     original: String,
+    on_chunk: Option<crate::llm_sidecar::ChunkCallback>,
     deadline: Duration,
 ) -> TransformRunReport {
     let transform_pass_id = app_state.active_transform_pass_id().unwrap_or(0);
@@ -922,9 +924,25 @@ pub(crate) async fn run_transform(
                     diagnostics: crate::llm_sidecar::SidecarDiagnostics::default(),
                 }
             } else {
-                sidecar
-                    .transform_for_pass(transform_pass_id, &instr, &input, deadline, cancel)
-                    .await
+                match on_chunk {
+                    Some(callback) => {
+                        sidecar
+                            .transform_for_pass_streaming(
+                                transform_pass_id,
+                                &instr,
+                                &input,
+                                deadline,
+                                cancel,
+                                callback,
+                            )
+                            .await
+                    }
+                    None => {
+                        sidecar
+                            .transform_for_pass(transform_pass_id, &instr, &input, deadline, cancel)
+                            .await
+                    }
+                }
             }
         }
     });
@@ -1749,6 +1767,29 @@ pub(crate) async fn start_transform_capture(
     let model_ready = crate::commands::transform_model::transform_model_state()
         == crate::commands::transform_model::TransformModelState::Ready;
 
+    // Hide the cold helper/model load beneath selection capture and spoken
+    // instruction recording. The task mutates no transform/session state; the
+    // real request still owns the exact-pass checks and final proposal.
+    if model_ready {
+        let runtime = Arc::clone(&state.transform_runtime);
+        let cancel = crate::llm_sidecar::CancelToken::new();
+        *state.app_state.transform_prewarm.lock_or_recover() =
+            Some((transform_pass_id, cancel.clone()));
+        let prewarm_app = app_handle.clone();
+        tokio::spawn(async move {
+            let _ = runtime.prewarm_for_pass(transform_pass_id, cancel).await;
+            use tauri::Manager;
+            let live_state = prewarm_app.state::<crate::State>();
+            let mut slot = live_state.app_state.transform_prewarm.lock_or_recover();
+            if slot
+                .as_ref()
+                .is_some_and(|(pass_id, _)| *pass_id == transform_pass_id)
+            {
+                *slot = None;
+            }
+        });
+    }
+
     let fx = TauriFlowEffects {
         app: &app_handle,
         state: &state,
@@ -1771,6 +1812,7 @@ pub(crate) async fn start_transform_capture(
             device_name,
             transform_pass_id,
         ) {
+            cancel_transform_prewarm(&state.app_state, transform_pass_id);
             crate::transform_trace::audio(transform_pass_id, "armed", "error", 0, 0);
             crate::transform_trace::resolution(
                 transform_pass_id,
@@ -1890,6 +1932,7 @@ pub(crate) async fn start_transform_capture(
     .await;
 
     if outcome != StartOutcome::CaptureReady {
+        cancel_transform_prewarm(&state.app_state, transform_pass_id);
         // cancel_transform marks cancellation before tearing down the pass,
         // while a slow AX capture may still be unwinding. Use that monotonic
         // marker instead of inferring from Idle/active state: this command can
@@ -2153,6 +2196,34 @@ pub(crate) async fn finish_transform_instruction(
     if let Some(guard) = performance_guard.as_mut() {
         guard.enter(PerformanceStageV1::SidecarSpawnLoad);
     }
+    let streaming_app = app_handle.clone();
+    let on_chunk: crate::llm_sidecar::ChunkCallback = Arc::new(move |sequence, text| {
+        use tauri::{Emitter, Manager};
+        let live_state = streaming_app.state::<crate::State>();
+        if live_state.app_state.active_transform_pass_id() != Some(transform_pass_id)
+            || live_state.app_state.transform_status() != TransformStatus::Thinking
+        {
+            return;
+        }
+        if sequence == 0 {
+            let _ = crate::commands::transform_popover::set_expanded_internal(
+                &streaming_app,
+                live_state.inner(),
+                true,
+            );
+        }
+        // Sensitive proposal text is scoped to the review webview and never
+        // enters the broadcast state event or structured telemetry.
+        let _ = streaming_app.emit_to(
+            "transform-review",
+            "transform-proposal-chunk",
+            serde_json::json!({
+                "transformPassId": transform_pass_id,
+                "sequence": sequence,
+                "text": text,
+            }),
+        );
+    });
     let report = run_transform(
         &state.app_state,
         &fx,
@@ -2160,6 +2231,7 @@ pub(crate) async fn finish_transform_instruction(
         &state.app_state.transform_inflight,
         instruction,
         original,
+        Some(on_chunk),
         DEFAULT_TRANSFORM_DEADLINE,
     )
     .await;
@@ -2560,6 +2632,18 @@ fn resolve_transform_cancel_pass(
     }
 }
 
+fn cancel_transform_prewarm(app_state: &AppState, transform_pass_id: u64) {
+    let mut slot = app_state.transform_prewarm.lock_or_recover();
+    if slot
+        .as_ref()
+        .is_some_and(|(pass_id, _)| *pass_id == transform_pass_id)
+    {
+        if let Some((_, token)) = slot.take() {
+            token.cancel();
+        }
+    }
+}
+
 #[tauri::command]
 pub(crate) fn cancel_transform(
     app_handle: tauri::AppHandle,
@@ -2603,6 +2687,7 @@ pub(crate) fn cancel_transform(
     // BusyGuard when it finishes, so abort alone would leave busy held up to
     // the deadline. cancel_inflight_request makes run_request send Cancel.
     state.transform_runtime.cancel_inflight_request();
+    cancel_transform_prewarm(&state.app_state, transform_pass_id);
     if let Some((handle, token)) = state.app_state.transform_inflight.lock_or_recover().take() {
         // Direct token cancel closes the pre-registration window: even if the
         // request hasn't registered with the sidecar slot yet, its own token
@@ -3048,6 +3133,7 @@ pub async fn run_happy_path_for_test(
         &inflight,
         Ok(instruction.to_string()),
         original.to_string(),
+        None,
         DEFAULT_TRANSFORM_DEADLINE,
     )
     .await;
@@ -3657,6 +3743,7 @@ mod tests {
             &inflight,
             Err(()),
             "original".to_string(),
+            None,
             DEFAULT_TRANSFORM_DEADLINE,
         )
         .await;
@@ -3688,6 +3775,7 @@ mod tests {
             &inflight,
             Ok("make this shorter".to_string()),
             "original".to_string(),
+            None,
             DEFAULT_TRANSFORM_DEADLINE,
         )
         .await;
@@ -3719,6 +3807,7 @@ mod tests {
             &inflight,
             Err(()),
             "original".to_string(),
+            None,
             DEFAULT_TRANSFORM_DEADLINE,
         )
         .await;

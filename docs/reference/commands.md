@@ -200,6 +200,7 @@ frontend.
 | `show_overlay` | — | `Result<(), String>` | Positions and shows the overlay; re-enables mouse events (disabled by `focusable:false`). |
 | `hide_overlay` | — | `Result<(), String>` | Hides the overlay. |
 | `set_overlay_expanded` | `expanded: bool` | `Result<AppliedSurface, String>` | Resizes between collapsed and expanded frames (top-anchored) and returns the applied frame, so CSS never animates into a window that hasn't grown yet. |
+| `set_overlay_vertical_offset` | `offset: f64` | `Result<(), String>` | Clamps the persisted calibration to ±24 logical pixels, recomputes the authoritative geometry, moves the native overlay window, and emits `overlay-geometry-changed`. |
 | `show_main_window` | — | `Result<(), String>` | Shows and focuses the main window — used by the overlay's gear button instead of granting the overlay broad window permissions. |
 
 ## Frontmost apps (`frontmost.rs`)

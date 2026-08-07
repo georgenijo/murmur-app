@@ -89,9 +89,16 @@ Transcription processing is local. Network access occurs for model setup and may
   step with elapsed time since start and repeats the last step and transition
   in the attempt-budget-exceeded event. These events contain no device label,
   UID, raw backend error, or content.
+- Debug fault scenarios `hang_stream_build` and `hang_stream_build_once` run
+  inside the capture worker process. They exercise the same bounded
+  terminate/kill/reap boundary as a real blocked HAL call instead of parking an
+  unkillable thread in the app process.
 - A timed-out backend can advance only after its owned helper process group is
   positively confirmed empty. Unconfirmed termination leaves the lifecycle in
   exclusive recovery and suppresses fallback and new starts.
+- If a stop caller times out first, the helper remains exclusively owned until
+  it exits and is joined. That late completion publishes Idle to clear the
+  current dictation's Processing state before a new recording can start.
 - Capture-worker errors are reduced immediately to stable content-free kinds
   (`permission_denied`, `device_unavailable`, `stream_invalidated`,
   `invalid_input`, `resource_exhausted`, and bounded fallback kinds).

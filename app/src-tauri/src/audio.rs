@@ -2,8 +2,8 @@ use crate::managed_child::{bundled_sibling, ManagedChild};
 use crate::MutexExt;
 use murmur_capture_helper_protocol::{
     read_production_frame, write_production_control, CaptureBackend, CapturePhase,
-    CaptureSetupStep, FailureCode, ProductionFrame, ProductionHelperMessage,
-    ProductionHostMessage, SessionNonce, SetupTransition,
+    CaptureSetupStep, FailureCode, ProductionFrame, ProductionHelperMessage, ProductionHostMessage,
+    SessionNonce, SetupTransition,
 };
 use serde::Serialize;
 use std::fmt;
@@ -185,7 +185,6 @@ pub(crate) enum AudioCommand {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AudioInitPhase {
     DeviceEnumeration,
-    ConfigLookup,
     StreamBuild,
     FirstBufferWait,
     Runtime,
@@ -195,7 +194,6 @@ impl AudioInitPhase {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::DeviceEnumeration => "device_enumeration",
-            Self::ConfigLookup => "config_lookup",
             Self::StreamBuild => "stream_build",
             Self::FirstBufferWait => "first_buffer_wait",
             Self::Runtime => "runtime",
@@ -285,9 +283,41 @@ fn helper_path() -> Result<std::path::PathBuf, String> {
         .map_err(|_| "The signed capture worker is missing from the app bundle.".to_string())
 }
 
+#[cfg(debug_assertions)]
+fn capture_fault_for_scenario(
+    scenario: Option<&str>,
+    create_sentinel: impl FnOnce() -> bool,
+) -> Option<&'static str> {
+    match scenario {
+        Some("hang_stream_build") => Some("hang-stream-build"),
+        Some("hang_stream_build_once") if create_sentinel() => Some("hang-stream-build"),
+        _ => None,
+    }
+}
+
+#[cfg(debug_assertions)]
+fn requested_capture_fault() -> Option<&'static str> {
+    let scenario = std::env::var("MURMUR_AUDIO_TEST_SCENARIO").ok();
+    capture_fault_for_scenario(scenario.as_deref(), || {
+        std::env::var_os("MURMUR_AUDIO_TEST_SENTINEL").is_some_and(|path| {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+                .is_ok()
+        })
+    })
+}
+
+#[cfg(not(debug_assertions))]
+fn requested_capture_fault() -> Option<&'static str> {
+    None
+}
+
 fn spawn_helper(
     capture_id: u64,
     nonce_hex: &str,
+    fault: Option<&str>,
 ) -> Result<
     (
         ManagedChild,
@@ -317,13 +347,12 @@ fn spawn_helper(
     }
     let signature_ms = signature_started.elapsed().as_millis() as u64;
     let capture_id_text = capture_id.to_string();
+    let mut arguments = vec!["--production-v3", capture_id_text.as_str(), nonce_hex];
+    if let Some(fault) = fault {
+        arguments.extend(["--fault", fault]);
+    }
     let spawn_started = Instant::now();
-    let child = ManagedChild::spawn_with_arguments(
-        &path,
-        &["--production-v3", &capture_id_text, nonce_hex],
-        &[],
-    )
-    .map_err(|_| {
+    let child = ManagedChild::spawn_with_arguments(&path, &arguments, &[]).map_err(|_| {
         AudioFailure::new(
             AudioFailureKind::HostUnavailable,
             AudioInitPhase::StreamBuild,
@@ -397,10 +426,10 @@ fn hello(
     }
 }
 
-pub fn list_input_devices() -> Result<Vec<AudioDeviceDescriptor>, String> {
+fn enumerate_input_devices() -> Result<Vec<AudioDeviceDescriptor>, String> {
     let (capture_id, nonce, nonce_hex) = capture_identity();
     let (mut child, mut input, output) =
-        spawn_helper(capture_id, &nonce_hex).map_err(|failure| failure.to_string())?;
+        spawn_helper(capture_id, &nonce_hex, None).map_err(|failure| failure.to_string())?;
     let output = match hello(&mut input, output, capture_id, nonce) {
         Ok(output) => output,
         Err(failure) => {
@@ -444,6 +473,14 @@ pub fn list_input_devices() -> Result<Vec<AudioDeviceDescriptor>, String> {
         .wait_for_exit(Instant::now() + HELPER_STOP_DEADLINE)
         .or_else(|| child.hard_kill_confirmed(Instant::now() + HELPER_STOP_DEADLINE));
     Ok(devices)
+}
+
+pub fn list_input_devices() -> Result<Vec<AudioDeviceDescriptor>, String> {
+    let result = enumerate_input_devices();
+    crate::log_shipper::record_audio_input_enumeration(
+        result.as_ref().ok().map(|devices| devices.len()),
+    );
+    result
 }
 
 pub fn start_transform_capture_audio(
@@ -598,6 +635,9 @@ fn quarantine_unconfirmed_child(
     }
 }
 
+// These arguments mirror the authenticated helper shutdown frame plus the
+// ownership evidence needed when termination cannot be confirmed.
+#[allow(clippy::too_many_arguments)]
 fn terminate_or_quarantine(
     child: ManagedChild,
     input: Option<std::process::ChildStdin>,
@@ -759,6 +799,9 @@ fn stop_requested_between_attempts(command_receiver: &Receiver<AudioCommand>) ->
     )
 }
 
+// Keep the attempt's ownership, cancellation, buffer, application, and event
+// channels explicit; bundling them would obscure the capture lifecycle.
+#[allow(clippy::too_many_arguments)]
 fn run_backend(
     owner: crate::audio_lifecycle::AudioOwner,
     backend: CaptureBackend,
@@ -794,22 +837,23 @@ fn run_backend(
     }
 
     let (capture_id, nonce, nonce_hex) = capture_identity();
-    let (child, mut input, output) = match spawn_helper(capture_id, &nonce_hex) {
-        Ok(value) => value,
-        Err(failure) => {
-            end_permission_prompt_pause(
-                &mut permission_prompt_started,
-                &mut clock,
-                owner,
-                event_sender,
-                Instant::now(),
-            );
-            return AttemptResult::Failed {
-                failure,
-                retained_audio: false,
-            };
-        }
-    };
+    let (child, mut input, output) =
+        match spawn_helper(capture_id, &nonce_hex, requested_capture_fault()) {
+            Ok(value) => value,
+            Err(failure) => {
+                end_permission_prompt_pause(
+                    &mut permission_prompt_started,
+                    &mut clock,
+                    owner,
+                    event_sender,
+                    Instant::now(),
+                );
+                return AttemptResult::Failed {
+                    failure,
+                    retained_audio: false,
+                };
+            }
+        };
     let output = match hello(&mut input, output, capture_id, nonce) {
         Ok(output) => output,
         Err(failure) => {
@@ -1061,8 +1105,11 @@ fn run_backend(
         {
             // Halfway to the budget with no PCM: sample the worker now, while
             // the blocked native call is still on its stack.
-            hang_probe =
-                crate::hang_diagnostics::HangProbe::start(capture_id, backend_label(backend), worker_pid);
+            hang_probe = crate::hang_diagnostics::HangProbe::start(
+                capture_id,
+                backend_label(backend),
+                worker_pid,
+            );
         }
         if !retained_audio && clock.elapsed(now) >= attempt_budget {
             end_permission_prompt_pause(
@@ -1531,10 +1578,15 @@ pub fn resample(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
     // integer downsampling (48k -> 16k, 32k -> 16k), linear interpolation lands
     // on an original sample every time, so step_by is bit-for-bit equivalent
     // without per-sample floating-point position and interpolation work.
-    if from_rate > to_rate && from_rate % to_rate == 0 {
+    if from_rate > to_rate && from_rate.is_multiple_of(to_rate) {
         let step = (from_rate / to_rate) as usize;
         let new_len = samples.len() / step;
-        return samples.iter().step_by(step).take(new_len).copied().collect();
+        return samples
+            .iter()
+            .step_by(step)
+            .take(new_len)
+            .copied()
+            .collect();
     }
     let ratio = from_rate as f64 / to_rate as f64;
     let new_len = (samples.len() as f64 / ratio) as usize;
@@ -1562,7 +1614,10 @@ mod tests {
     fn integer_downsampling_uses_the_same_source_positions_as_linear_interpolation() {
         let samples = (0..10).map(|value| value as f32).collect::<Vec<_>>();
         assert_eq!(resample(&samples, 48_000, 16_000), vec![0.0, 3.0, 6.0]);
-        assert_eq!(resample(&samples, 32_000, 16_000), vec![0.0, 2.0, 4.0, 6.0, 8.0]);
+        assert_eq!(
+            resample(&samples, 32_000, 16_000),
+            vec![0.0, 2.0, 4.0, 6.0, 8.0]
+        );
     }
 
     #[test]
@@ -1747,6 +1802,39 @@ mod tests {
                 !AudioFailure::new(kind, AudioInitPhase::StreamBuild).permits_backend_fallback()
             );
         }
+    }
+
+    #[test]
+    fn stream_build_faults_run_inside_the_killable_capture_process() {
+        let mut sentinel_creations = 0;
+        assert_eq!(
+            capture_fault_for_scenario(Some("hang_stream_build"), || {
+                sentinel_creations += 1;
+                true
+            }),
+            Some("hang-stream-build")
+        );
+        assert_eq!(sentinel_creations, 0);
+
+        assert_eq!(
+            capture_fault_for_scenario(Some("hang_stream_build_once"), || {
+                sentinel_creations += 1;
+                true
+            }),
+            Some("hang-stream-build")
+        );
+        assert_eq!(
+            capture_fault_for_scenario(Some("hang_stream_build_once"), || {
+                sentinel_creations += 1;
+                false
+            }),
+            None
+        );
+        assert_eq!(sentinel_creations, 2);
+        assert_eq!(
+            capture_fault_for_scenario(Some("unrelated"), || panic!("must not create sentinel")),
+            None
+        );
     }
 
     #[test]

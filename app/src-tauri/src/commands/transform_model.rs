@@ -122,10 +122,11 @@ pub async fn download_transform_model(
     // Clean any residue from a previous interrupted attempt.
     let _ = tokio::fs::remove_file(&partial).await;
 
-    let (size, sha) = stream_verified_download(&app_handle, &partial).await.map_err(|e| {
-        let _ = std::fs::remove_file(&partial);
-        e
-    })?;
+    let (size, sha) = stream_verified_download(&app_handle, &partial)
+        .await
+        .inspect_err(|_e| {
+            let _ = std::fs::remove_file(&partial);
+        })?;
 
     if size != TRANSFORM_MODEL_SIZE_BYTES || sha != TRANSFORM_MODEL_SHA256 {
         let _ = tokio::fs::remove_file(&partial).await;
@@ -140,10 +141,12 @@ pub async fn download_transform_model(
         .map_err(|e| format!("Failed to create model version directory: {}", e))?;
     let final_path = final_dir.join(TRANSFORM_MODEL_FILENAME);
 
-    tokio::fs::rename(&partial, &final_path).await.map_err(|e| {
-        let _ = std::fs::remove_file(&partial);
-        format!("Failed to publish transform model: {}", e)
-    })?;
+    tokio::fs::rename(&partial, &final_path)
+        .await
+        .map_err(|e| {
+            let _ = std::fs::remove_file(&partial);
+            format!("Failed to publish transform model: {}", e)
+        })?;
 
     tracing::info!(
         target: "system",
@@ -181,7 +184,10 @@ async fn stream_verified_download(
         .await
         .map_err(|e| format!("Download request failed: {}", e))?;
     if !response.status().is_success() {
-        return Err(format!("Download failed with status: {}", response.status()));
+        return Err(format!(
+            "Download failed with status: {}",
+            response.status()
+        ));
     }
 
     // Report against the pinned size so progress is meaningful even without a
@@ -251,7 +257,8 @@ pub async fn remove_transform_model(state: tauri::State<'_, State>) -> Result<()
             .map_err(|e| format!("Failed to remove transform model: {}", e))?;
     }
     // Sweep any stray partial too.
-    let _ = tokio::fs::remove_file(root.join(format!("{}.partial", TRANSFORM_MODEL_FILENAME))).await;
+    let _ =
+        tokio::fs::remove_file(root.join(format!("{}.partial", TRANSFORM_MODEL_FILENAME))).await;
     tracing::info!(target: "system", "transform_model_removed");
     Ok(())
 }

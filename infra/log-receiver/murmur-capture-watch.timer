@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Murmur capture-startup regression watch hourly
+
+[Timer]
+OnBootSec=10m
+OnUnitActiveSec=1h
+RandomizedDelaySec=5m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

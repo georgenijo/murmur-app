@@ -48,7 +48,9 @@ pub fn remove_mirrored_caption() {
 /// a crashed write leaves one behind, and it holds the same speech.
 fn remove_caption_in(dir: &std::path::Path) {
     let _ = std::fs::remove_file(dir.join("latest-caption.json"));
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
@@ -196,9 +198,8 @@ pub fn inject_text(text: &str, auto_paste: bool, delay_ms: u64) -> Result<(), St
             Err(first_err) => {
                 tracing::warn!(target: "pipeline", "inject_text: first paste attempt failed: {}, retrying in 100ms", first_err);
                 thread::sleep(Duration::from_millis(100));
-                simulate_paste().map_err(|retry_err| {
-                    format!("Auto-paste failed after retry: {}", retry_err)
-                })
+                simulate_paste()
+                    .map_err(|retry_err| format!("Auto-paste failed after retry: {}", retry_err))
             }
         };
         tracing::info!(
@@ -237,10 +238,8 @@ pub(crate) fn simulate_paste() -> Result<(), String> {
 }
 
 #[cfg(target_os = "macos")]
-fn create_native_paste_events() -> Result<
-    (core_graphics::event::CGEvent, core_graphics::event::CGEvent),
-    String,
-> {
+fn create_native_paste_events(
+) -> Result<(core_graphics::event::CGEvent, core_graphics::event::CGEvent), String> {
     use core_graphics::event::{CGEvent, CGEventFlags, KeyCode};
     use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 
@@ -550,13 +549,15 @@ fn focused_role_native() -> Result<String, String> {
     let timeout_status = unsafe { AXUIElementSetMessagingTimeout(app, AX_QUERY_TIMEOUT_SECONDS) };
     if timeout_status != AX_SUCCESS {
         unsafe { CFRelease(app) };
-        return Err(format!("AX timeout configuration returned {timeout_status}"));
+        return Err(format!(
+            "AX timeout configuration returned {timeout_status}"
+        ));
     }
 
     let focused_attribute = unsafe {
         CFStringCreateWithCString(
             std::ptr::null(),
-            b"AXFocusedUIElement\0".as_ptr().cast(),
+            c"AXFocusedUIElement".as_ptr(),
             UTF8_ENCODING,
         )
     };
@@ -565,39 +566,36 @@ fn focused_role_native() -> Result<String, String> {
         return Err("could not create AX focused-element attribute".to_string());
     }
     let mut focused: CFTypeRef = std::ptr::null();
-    let focused_status = unsafe {
-        AXUIElementCopyAttributeValue(app, focused_attribute, &mut focused)
-    };
+    let focused_status =
+        unsafe { AXUIElementCopyAttributeValue(app, focused_attribute, &mut focused) };
     unsafe { CFRelease(focused_attribute) };
     unsafe { CFRelease(app) };
     if focused_status != AX_SUCCESS || focused.is_null() {
         if !focused.is_null() {
             unsafe { CFRelease(focused) };
         }
-        return Err(format!("AX focused-element query returned {}", focused_status));
+        return Err(format!(
+            "AX focused-element query returned {}",
+            focused_status
+        ));
     }
     let timeout_status =
         unsafe { AXUIElementSetMessagingTimeout(focused, AX_QUERY_TIMEOUT_SECONDS) };
     if timeout_status != AX_SUCCESS {
         unsafe { CFRelease(focused) };
-        return Err(format!("AX timeout configuration returned {timeout_status}"));
+        return Err(format!(
+            "AX timeout configuration returned {timeout_status}"
+        ));
     }
 
-    let role_attribute = unsafe {
-        CFStringCreateWithCString(
-            std::ptr::null(),
-            b"AXRole\0".as_ptr().cast(),
-            UTF8_ENCODING,
-        )
-    };
+    let role_attribute =
+        unsafe { CFStringCreateWithCString(std::ptr::null(), c"AXRole".as_ptr(), UTF8_ENCODING) };
     if role_attribute.is_null() {
         unsafe { CFRelease(focused) };
         return Err("could not create AX role attribute".to_string());
     }
     let mut role: CFTypeRef = std::ptr::null();
-    let role_status = unsafe {
-        AXUIElementCopyAttributeValue(focused, role_attribute, &mut role)
-    };
+    let role_status = unsafe { AXUIElementCopyAttributeValue(focused, role_attribute, &mut role) };
     unsafe { CFRelease(role_attribute) };
     unsafe { CFRelease(focused) };
     if role_status != AX_SUCCESS || role.is_null() {
@@ -820,9 +818,10 @@ mod tests {
     fn x11_uses_xdotool_ctrl_v() {
         let calls: RefCell<Vec<(String, Vec<String>)>> = RefCell::new(Vec::new());
         let result = simulate_paste_linux(empty_env(), |program, args| {
-            calls
-                .borrow_mut()
-                .push((program.to_string(), args.iter().map(|s| s.to_string()).collect()));
+            calls.borrow_mut().push((
+                program.to_string(),
+                args.iter().map(|s| s.to_string()).collect(),
+            ));
             ok_output()
         });
         assert!(result.is_ok());
@@ -847,23 +846,27 @@ mod tests {
 
     #[test]
     fn x11_xdotool_exit_failure_returns_err() {
-        let result = simulate_paste_linux(empty_env(), |_program, _args| {
-            fail_output("some error")
-        });
+        let result = simulate_paste_linux(empty_env(), |_program, _args| fail_output("some error"));
         assert!(result.is_err());
         let msg = result.unwrap_err();
-        assert!(msg.contains("xdotool failed"), "expected 'xdotool failed' in: {}", msg);
+        assert!(
+            msg.contains("xdotool failed"),
+            "expected 'xdotool failed' in: {}",
+            msg
+        );
     }
 
     #[test]
     fn wayland_prefers_wtype() {
         let calls: RefCell<Vec<(String, Vec<String>)>> = RefCell::new(Vec::new());
-        let result = simulate_paste_linux(env_with("WAYLAND_DISPLAY", "wayland-0"), |program, args| {
-            calls
-                .borrow_mut()
-                .push((program.to_string(), args.iter().map(|s| s.to_string()).collect()));
-            ok_output()
-        });
+        let result =
+            simulate_paste_linux(env_with("WAYLAND_DISPLAY", "wayland-0"), |program, args| {
+                calls.borrow_mut().push((
+                    program.to_string(),
+                    args.iter().map(|s| s.to_string()).collect(),
+                ));
+                ok_output()
+            });
         assert!(result.is_ok());
         let calls = calls.borrow();
         assert_eq!(calls.len(), 1);
@@ -874,16 +877,18 @@ mod tests {
     #[test]
     fn wayland_falls_back_to_xdotool_when_wtype_missing() {
         let calls: RefCell<Vec<(String, Vec<String>)>> = RefCell::new(Vec::new());
-        let result = simulate_paste_linux(env_with("WAYLAND_DISPLAY", "wayland-0"), |program, args| {
-            calls
-                .borrow_mut()
-                .push((program.to_string(), args.iter().map(|s| s.to_string()).collect()));
-            if program == "wtype" {
-                not_found_err()
-            } else {
-                ok_output()
-            }
-        });
+        let result =
+            simulate_paste_linux(env_with("WAYLAND_DISPLAY", "wayland-0"), |program, args| {
+                calls.borrow_mut().push((
+                    program.to_string(),
+                    args.iter().map(|s| s.to_string()).collect(),
+                ));
+                if program == "wtype" {
+                    not_found_err()
+                } else {
+                    ok_output()
+                }
+            });
         assert!(result.is_ok());
         let calls = calls.borrow();
         assert_eq!(calls.len(), 2);
@@ -895,10 +900,13 @@ mod tests {
     #[test]
     fn wayland_both_missing_is_graceful_ok() {
         let calls: RefCell<Vec<String>> = RefCell::new(Vec::new());
-        let result = simulate_paste_linux(env_with("WAYLAND_DISPLAY", "wayland-0"), |program, _args| {
-            calls.borrow_mut().push(program.to_string());
-            not_found_err()
-        });
+        let result = simulate_paste_linux(
+            env_with("WAYLAND_DISPLAY", "wayland-0"),
+            |program, _args| {
+                calls.borrow_mut().push(program.to_string());
+                not_found_err()
+            },
+        );
         assert!(result.is_ok());
         let calls = calls.borrow();
         assert_eq!(calls.len(), 2);
@@ -909,13 +917,20 @@ mod tests {
     #[test]
     fn wayland_wtype_exit_failure_does_not_fall_back() {
         let calls: RefCell<Vec<String>> = RefCell::new(Vec::new());
-        let result = simulate_paste_linux(env_with("WAYLAND_DISPLAY", "wayland-0"), |program, _args| {
-            calls.borrow_mut().push(program.to_string());
-            fail_output("boom")
-        });
+        let result = simulate_paste_linux(
+            env_with("WAYLAND_DISPLAY", "wayland-0"),
+            |program, _args| {
+                calls.borrow_mut().push(program.to_string());
+                fail_output("boom")
+            },
+        );
         assert!(result.is_err());
         let msg = result.unwrap_err();
-        assert!(msg.contains("wtype failed"), "expected 'wtype failed' in: {}", msg);
+        assert!(
+            msg.contains("wtype failed"),
+            "expected 'wtype failed' in: {}",
+            msg
+        );
         let calls = calls.borrow();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0], "wtype");
@@ -939,7 +954,11 @@ mod tests {
         let result = simulate_paste_linux(empty_env(), |_program, _args| other_err());
         assert!(result.is_err());
         let msg = result.unwrap_err();
-        assert!(msg.contains("Failed to run xdotool"), "expected 'Failed to run xdotool' in: {}", msg);
+        assert!(
+            msg.contains("Failed to run xdotool"),
+            "expected 'Failed to run xdotool' in: {}",
+            msg
+        );
     }
 }
 
@@ -978,7 +997,11 @@ mod focus_tests {
             "AXSlider",
             "AXTable",
         ] {
-            assert!(!is_editable_text_role(role), "{} should not be editable", role);
+            assert!(
+                !is_editable_text_role(role),
+                "{} should not be editable",
+                role
+            );
         }
     }
 
@@ -1008,14 +1031,26 @@ mod focus_tests {
     fn classify_empty_or_missing_is_unknown() {
         assert_eq!(classify_focused_role(""), FocusedFieldState::Unknown);
         assert_eq!(classify_focused_role("   "), FocusedFieldState::Unknown);
-        assert_eq!(classify_focused_role("missing value"), FocusedFieldState::Unknown);
+        assert_eq!(
+            classify_focused_role("missing value"),
+            FocusedFieldState::Unknown
+        );
     }
 
     #[test]
     fn classify_editable_role_is_editable() {
-        assert_eq!(classify_focused_role("AXTextField"), FocusedFieldState::Editable);
-        assert_eq!(classify_focused_role("AXTextArea\n"), FocusedFieldState::Editable);
-        assert_eq!(classify_focused_role("AXSearchField"), FocusedFieldState::Editable);
+        assert_eq!(
+            classify_focused_role("AXTextField"),
+            FocusedFieldState::Editable
+        );
+        assert_eq!(
+            classify_focused_role("AXTextArea\n"),
+            FocusedFieldState::Editable
+        );
+        assert_eq!(
+            classify_focused_role("AXSearchField"),
+            FocusedFieldState::Editable
+        );
     }
 
     #[test]
@@ -1091,7 +1126,12 @@ mod focus_tests {
     fn editable_roles_classify_as_editable_and_allow_paste() {
         // Representative editable controls take priority over the denylist and
         // permit the paste.
-        for role in ["AXTextField", "AXTextArea", "AXComboBox", "AXSecureTextField"] {
+        for role in [
+            "AXTextField",
+            "AXTextArea",
+            "AXComboBox",
+            "AXSecureTextField",
+        ] {
             assert_eq!(
                 classify_focused_role(role),
                 FocusedFieldState::Editable,
@@ -1104,8 +1144,8 @@ mod focus_tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn native_paste_events_can_be_constructed() {
-        let (key_down, key_up) = create_native_paste_events()
-            .expect("CoreGraphics should construct Cmd+V events");
+        let (key_down, key_up) =
+            create_native_paste_events().expect("CoreGraphics should construct Cmd+V events");
         assert_eq!(
             key_down.get_flags(),
             core_graphics::event::CGEventFlags::CGEventFlagCommand
@@ -1273,7 +1313,11 @@ mod caption_tests {
             .unwrap()
             .permissions()
             .mode();
-        assert_eq!(mode & 0o777, 0o600, "caption must not be group/world readable");
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "caption must not be group/world readable"
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

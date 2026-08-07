@@ -34,6 +34,16 @@ const HEALTH: PerformanceHealth = {
     lifecycleState: 'ready',
     failurePresent: false,
   },
+  capture: {
+    status: 'healthy',
+    sampleCount: 5,
+    requiredSamples: 5,
+    medianStartupMs: 240,
+    fallbackCount: 0,
+    chronicFallback: false,
+    slowStartup: false,
+    degradedBackend: null,
+  },
 };
 
 describe('PerformanceView', () => {
@@ -80,6 +90,69 @@ describe('PerformanceView', () => {
     expect(container.textContent).not.toMatch(/GPU utilization\s+\d/);
     expect(container.querySelectorAll('svg[role="img"]')).toHaveLength(2);
     expect(container.querySelector('[aria-label="Shared resource chart timeline cursor"]')).not.toBeNull();
+    expect(container.textContent).toContain('Microphone startup looks healthy');
+    expect(container.textContent).toContain('240 ms');
+  });
+
+  it('explains chronic fallback without restart advice', async () => {
+    await act(async () => {
+      root.render(
+        <PerformanceView
+          samples={[]}
+          loading={false}
+          error={null}
+          health={{
+            ...HEALTH,
+            capture: {
+              status: 'degraded',
+              sampleCount: 5,
+              requiredSamples: 5,
+              medianStartupMs: 8_400,
+              fallbackCount: 5,
+              chronicFallback: true,
+              slowStartup: true,
+              degradedBackend: 'auhal',
+            },
+          }}
+          onRetry={vi.fn()}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain('Microphone startup is degraded');
+    expect(container.textContent).toContain('AUHAL failed before first audio');
+    expect(container.textContent).toContain('Murmur recovered through fallback');
+    expect(container.textContent).toContain('8.4 s');
+    expect(container.textContent).not.toMatch(/restart/i);
+  });
+
+  it('shows how many recordings remain before making a judgment', async () => {
+    await act(async () => {
+      root.render(
+        <PerformanceView
+          samples={[]}
+          loading={false}
+          error={null}
+          health={{
+            ...HEALTH,
+            capture: {
+              status: 'insufficientData',
+              sampleCount: 3,
+              requiredSamples: 5,
+              medianStartupMs: 220,
+              fallbackCount: 0,
+              chronicFallback: false,
+              slowStartup: false,
+              degradedBackend: null,
+            },
+          }}
+          onRetry={vi.fn()}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain('Microphone startup health is collecting data');
+    expect(container.textContent).toContain('2 more successful recordings');
   });
 
   it('distinguishes loading, empty, and error states', async () => {

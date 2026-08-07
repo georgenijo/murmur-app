@@ -20,11 +20,7 @@ pub fn log_frontend(
     let event_code = event_code
         .as_deref()
         .and_then(crate::telemetry::canonical_event_code);
-    match (
-        level.to_uppercase().as_str(),
-        transform_pass_id,
-        event_code,
-    ) {
+    match (level.to_uppercase().as_str(), transform_pass_id, event_code) {
         ("WARN", Some(transform_pass_id), Some(event_code)) => {
             tracing::warn!(target: "system", source = "frontend", transform_pass_id, event_code, "{}", message)
         }

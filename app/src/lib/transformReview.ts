@@ -122,6 +122,29 @@ export interface TransformStateChangedEvent {
   errorCode?: ReviewErrorCode;
 }
 
+/** Sensitive, review-window-scoped cumulative generation preview. */
+export interface TransformProposalChunkEvent {
+  transformPassId: number;
+  sequence: number;
+  text: string;
+}
+
+export function isTransformProposalChunkEvent(v: unknown): v is TransformProposalChunkEvent {
+  if (typeof v !== 'object' || v === null) return false;
+  const o = v as Record<string, unknown>;
+  return (
+    typeof o.transformPassId === 'number'
+    && Number.isSafeInteger(o.transformPassId)
+    && o.transformPassId > 0
+    && typeof o.sequence === 'number'
+    && Number.isSafeInteger(o.sequence)
+    && o.sequence >= 0
+    && typeof o.text === 'string'
+    && o.text.length <= 16 * 1024
+    && !o.text.includes('\0')
+  );
+}
+
 /**
  * Only `state` gates whether this is a well-formed event. An unrecognized
  * `errorCode` (e.g. a newer error code this frontend build doesn't know

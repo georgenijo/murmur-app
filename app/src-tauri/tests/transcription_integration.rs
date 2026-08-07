@@ -6,9 +6,7 @@
 //!
 //! Run: cd app/src-tauri && cargo test --test transcription_integration -- --test-threads=1
 
-use ui_lib::transcriber::{
-    parse_wav_to_samples, TranscriptionBackend, WhisperBackend,
-};
+use ui_lib::transcriber::{parse_wav_to_samples, TranscriptionBackend, WhisperBackend};
 
 /// Generate a 2-second 16kHz mono 16-bit PCM WAV containing a 440Hz sine tone.
 fn make_sine_wav_bytes() -> Vec<u8> {
@@ -54,7 +52,10 @@ fn find_whisper_model() -> Option<String> {
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name = name.to_str()?;
-        if let Some(model) = name.strip_prefix("ggml-").and_then(|n| n.strip_suffix(".bin")) {
+        if let Some(model) = name
+            .strip_prefix("ggml-")
+            .and_then(|n| n.strip_suffix(".bin"))
+        {
             if model.starts_with("silero") {
                 continue;
             }

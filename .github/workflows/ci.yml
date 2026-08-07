@@ -49,8 +49,16 @@ jobs:
               - 'scripts/capture_agent_matrix.py'
               - 'scripts/smoke_test_capture_worker.py'
               - 'scripts/validate_capture_boundary.py'
+              - 'scripts/validate_reference_docs.py'
+              - 'scripts/release_version.py'
+              - 'CLAUDE.md'
+              - 'AGENTS.md'
+              - 'docs/ARCHITECTURE.md'
+              - 'docs/reference/**'
               - 'infra/log-receiver/**'
+              - 'tests/test_reference_docs.py'
               - 'tests/test_release_artifacts.py'
+              - 'tests/test_release_version.py'
               - 'tests/test_workflow_policy.py'
               - 'tests/test_capture_agent_matrix.py'
               - 'tests/test_capture_worker_smoke.py'
@@ -60,8 +68,11 @@ jobs:
         run: |
           python3 scripts/validate_workflow_policy.py
           python3 scripts/validate_capture_boundary.py
+          python3 scripts/validate_reference_docs.py
           python3 -m unittest \
+            tests/test_reference_docs.py \
             tests/test_release_artifacts.py \
+            tests/test_release_version.py \
             tests/test_workflow_policy.py \
             tests/test_capture_agent_matrix.py \
             tests/test_capture_worker_smoke.py \
@@ -119,7 +130,12 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          components: clippy, rustfmt
+
+      - name: Check Rust formatting
+        run: cd app/src-tauri && cargo fmt --all -- --check
 
       - name: Cache Rust dependencies
         uses: swatinem/rust-cache@v2
@@ -156,7 +172,17 @@ jobs:
           CMAKE_OSX_DEPLOYMENT_TARGET: "14.0"
           CMAKE_C_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
           CMAKE_CXX_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
-        run: cd app/src-tauri && cargo check
+        # --all-targets so `tests/` and `examples/` are type-checked too. Without
+        # it the integration suites below can rot without any signal.
+        run: cd app/src-tauri && cargo check --all-targets
+
+      - name: Lint Rust
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "14.0"
+          CMAKE_OSX_DEPLOYMENT_TARGET: "14.0"
+          CMAKE_C_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
+          CMAKE_CXX_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
+        run: cd app/src-tauri && cargo clippy --all-targets -- -D warnings
 
       - name: Run tests
         env:
@@ -165,6 +191,24 @@ jobs:
           CMAKE_C_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
           CMAKE_CXX_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
         run: cd app/src-tauri && cargo test --lib -- --test-threads=1
+
+      - name: Run capture worker unit tests
+        run: cd app/src-tauri && cargo test -p murmur-capture-helper
+
+      - name: Run hardware-free integration suites
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "14.0"
+          CMAKE_OSX_DEPLOYMENT_TARGET: "14.0"
+          CMAKE_C_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
+          CMAKE_CXX_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
+        # These two drive the real supervisors against mock helpers — no model,
+        # no microphone, no permissions. The remaining suites in `tests/` need
+        # hardware or downloaded models and stay out of CI deliberately.
+        run: >-
+          cd app/src-tauri &&
+          cargo build --example mock_llm_helper &&
+          cargo test --test llm_sidecar_integration --test transform_flow_integration
+          -- --test-threads=1
 
       - name: Run deterministic dictation evaluation
         env:
@@ -197,8 +241,36 @@ jobs:
           LD_LIBRARY_PATH="$CUDA_DRIVER_STUB_DIR:${LD_LIBRARY_PATH:-}" \
             cargo test --lib -- --test-threads=1
 
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.96.0
+
+      - name: Audit Rust dependencies (advisory)
+        continue-on-error: true
+        run: |
+          cargo install cargo-audit --locked --version 0.22.2
+          cd app/src-tauri
+          cargo audit
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: app/package-lock.json
+
+      - name: Audit npm dependencies (advisory)
+        continue-on-error: true
+        run: |
+          cd app
+          npm ci
+          npm audit --audit-level=high
+
   ci-pass:
-    needs: [changes, typecheck, rust-macos, linux]
+    needs: [changes, typecheck, visual-regression, rust-macos, linux]
     # Keep this guard aligned with `changes`; otherwise the sentinel would turn
     # an intentionally skipped release-bump run into a failure.
     if: "${{ always() && (github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'chore: bump version')) }}"
@@ -213,6 +285,7 @@ jobs:
 
           for result in \
             "${{ needs.typecheck.result }}" \
+            "${{ needs.visual-regression.result }}" \
             "${{ needs.rust-macos.result }}" \
             "${{ needs.linux.result }}"; do
             if [ "$result" != "success" ] && [ "$result" != "skipped" ]; then

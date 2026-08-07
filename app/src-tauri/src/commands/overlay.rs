@@ -225,8 +225,7 @@ pub(crate) fn register_screen_change_observer(app_handle: tauri::AppHandle) {
     let notification_name =
         NSNotificationName::from_str("NSApplicationDidChangeScreenParametersNotification");
 
-    const SCREEN_CHANGE_DEBOUNCE: std::time::Duration =
-        std::time::Duration::from_millis(125);
+    const SCREEN_CHANGE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(125);
     let (notification_sender, notification_receiver) = std::sync::mpsc::channel::<()>();
     let worker_handle = app_handle.clone();
     std::thread::Builder::new()
@@ -276,11 +275,9 @@ pub(crate) fn register_screen_change_observer(app_handle: tauri::AppHandle) {
         })
         .expect("screen change debounce worker must spawn");
 
-    let block = block2::RcBlock::new(
-        move |_notification: std::ptr::NonNull<NSNotification>| {
-            let _ = notification_sender.send(());
-        },
-    );
+    let block = block2::RcBlock::new(move |_notification: std::ptr::NonNull<NSNotification>| {
+        let _ = notification_sender.send(());
+    });
 
     unsafe {
         let center = NSNotificationCenter::defaultCenter();
@@ -317,6 +314,20 @@ fn raise_window_above_menubar(overlay: &tauri::WebviewWindow) {
         if let Ok(ptr) = overlay.ns_window() {
             let ns_window: &objc2_app_kit::NSWindow = unsafe { &*(ptr.cast()) };
             ns_window.setHasShadow(false);
+
+            // Tauri's `visibleOnAllWorkspaces` only adds CanJoinAllSpaces.
+            // Keep this status surface stationary across Mission Control,
+            // allow it into full-screen spaces, and let it join every Stage
+            // Manager application set. Without CanJoinAllApplications on
+            // macOS 26, WindowServer can leave the overlay attached to
+            // Murmur's previous set even though the window still exists.
+            let mut behavior = ns_window.collectionBehavior();
+            behavior |= objc2_app_kit::NSWindowCollectionBehavior::CanJoinAllSpaces;
+            behavior |= objc2_app_kit::NSWindowCollectionBehavior::CanJoinAllApplications;
+            behavior |= objc2_app_kit::NSWindowCollectionBehavior::Stationary;
+            behavior |= objc2_app_kit::NSWindowCollectionBehavior::IgnoresCycle;
+            behavior |= objc2_app_kit::NSWindowCollectionBehavior::FullScreenAuxiliary;
+            ns_window.setCollectionBehavior(behavior);
         }
     }) {
         tracing::warn!(target: "system", "raise_window_above_menubar: run_on_main_thread failed: {}", e);

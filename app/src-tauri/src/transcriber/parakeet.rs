@@ -56,7 +56,7 @@ impl ParakeetVariant {
             .iter()
             .all(|f| {
                 let p = dir.join(f);
-                p.is_file() && p.metadata().map_or(false, |m| m.len() > 0)
+                p.is_file() && p.metadata().is_ok_and(|m| m.len() > 0)
             })
     }
 }
@@ -122,6 +122,7 @@ pub fn download_spec(model_name: &str) -> Option<(String, String)> {
     Some((url, v.dir.to_string()))
 }
 
+#[derive(Default)]
 pub struct ParakeetBackend {
     recognizer: Option<OfflineRecognizer>,
     loaded_model_name: Option<String>,
@@ -130,15 +131,6 @@ pub struct ParakeetBackend {
 impl ParakeetBackend {
     pub fn new() -> Self {
         Self::default()
-    }
-}
-
-impl Default for ParakeetBackend {
-    fn default() -> Self {
-        Self {
-            recognizer: None,
-            loaded_model_name: None,
-        }
     }
 }
 
@@ -247,7 +239,7 @@ impl TranscriptionBackend for ParakeetBackend {
         };
         KNOWN_MODELS
             .iter()
-            .any(|m| variant_for(m).map_or(false, |v| v.is_complete(&models_dir)))
+            .any(|m| variant_for(m).is_some_and(|v| v.is_complete(&models_dir)))
     }
 
     fn models_dir(&self) -> Result<PathBuf, String> {
@@ -284,11 +276,10 @@ fn strip_punctuation(input: &str) -> String {
                     result.push(c);
                 }
             }
-            '.' | ',' | '!' | '?' | ';' | ':' | '"' | '\u{201C}' | '\u{201D}'
-            | '\u{2018}' | '\u{2014}' | '\u{2013}' | '\u{2026}'
-            | '\u{AB}' | '\u{BB}' | '\u{BF}' | '\u{A1}'
-            | '\u{3002}' | '\u{3001}' | '\u{FF01}' | '\u{FF1F}'
-            | '\u{30FB}' | '\u{300C}' | '\u{300D}' | '\u{300E}' | '\u{300F}' => result.push(' '),
+            '.' | ',' | '!' | '?' | ';' | ':' | '"' | '\u{201C}' | '\u{201D}' | '\u{2018}'
+            | '\u{2014}' | '\u{2013}' | '\u{2026}' | '\u{AB}' | '\u{BB}' | '\u{BF}' | '\u{A1}'
+            | '\u{3002}' | '\u{3001}' | '\u{FF01}' | '\u{FF1F}' | '\u{30FB}' | '\u{300C}'
+            | '\u{300D}' | '\u{300E}' | '\u{300F}' => result.push(' '),
             _ => result.push(c),
         }
     }
@@ -318,7 +309,7 @@ mod tests {
 
         assert!(variant_for("base.en").is_none());
         assert!(variant_for("parakeet-tdt-0.6b-v2-int8").is_none()); // trimmed
-        // KNOWN_MODELS and variant_for must stay in sync.
+                                                                     // KNOWN_MODELS and variant_for must stay in sync.
         assert!(KNOWN_MODELS.iter().all(|m| variant_for(m).is_some()));
     }
 
@@ -342,7 +333,10 @@ mod tests {
 
     #[test]
     fn strip_preserves_hyphen_in_compound() {
-        assert_eq!(strip_punctuation("It's state-of-the-art!"), "It's state-of-the-art");
+        assert_eq!(
+            strip_punctuation("It's state-of-the-art!"),
+            "It's state-of-the-art"
+        );
     }
 
     #[test]

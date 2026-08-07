@@ -65,8 +65,7 @@ fn apply_bounded_backtrack(input: &str) -> String {
     let replacement_raw = input[marker_end..]
         .trim_start_matches(|ch: char| ch.is_whitespace() || matches!(ch, ',' | ':' | '-' | '—'))
         .trim();
-    let replacement =
-        replacement_raw.trim_end_matches(|ch: char| matches!(ch, '.' | ',' | ';' | '!' | '?'));
+    let replacement = replacement_raw.trim_end_matches(['.', ',', ';', '!', '?']);
     let replacement_words = replacement.split_whitespace().count();
     if replacement.is_empty()
         || replacement.len() > MAX_BACKTRACK_REPLACEMENT_CHARS
@@ -199,7 +198,7 @@ fn format_spoken_enumeration(input: &str) -> String {
 
     let mut output = String::new();
     if !prefix.is_empty() {
-        output.push_str(prefix.trim_end_matches(|ch: char| matches!(ch, ':' | ',' | ';')));
+        output.push_str(prefix.trim_end_matches([':', ',', ';']));
         output.push(':');
         output.push('\n');
     }
@@ -219,7 +218,7 @@ fn valid_list_prefix(prefix: &str) -> bool {
         return true;
     }
     let normalized = prefix
-        .trim_end_matches(|ch: char| matches!(ch, ':' | ',' | ';'))
+        .trim_end_matches([':', ',', ';'])
         .to_ascii_lowercase();
     normalized.ends_with(" are")
         || normalized.ends_with(" include")
@@ -380,7 +379,7 @@ fn format_explicit_url(input: &str) -> String {
     } else {
         return input.to_string();
     };
-    let body = body.trim_end_matches(|ch: char| matches!(ch, '.' | ',' | ';' | '!' | '?'));
+    let body = body.trim_end_matches(['.', ',', ';', '!', '?']);
     let words = body
         .split_whitespace()
         .map(|word| word.to_ascii_lowercase())

@@ -569,6 +569,9 @@ fn validate_undo(
 /// scheduled on a background task rather than awaited here, so this future
 /// resolves promptly instead of blocking on the ~300ms paste-restore delay.
 #[cfg(target_os = "macos")]
+// The write contract keeps each security-sensitive input visible at the call
+// site instead of hiding selection ownership inside a loosely typed bundle.
+#[allow(clippy::too_many_arguments)]
 async fn run_apply(
     app_handle: &tauri::AppHandle,
     pid: i32,
@@ -1561,7 +1564,8 @@ mod tests {
     #[test]
     fn pre_write_guard_table() {
         // (frontmost, range_restore_ok, current_matches) -> expected
-        let cases: &[((bool, bool, bool), Result<(), ApplyError>)] = &[
+        type GuardCase = ((bool, bool, bool), Result<(), ApplyError>);
+        let cases: &[GuardCase] = &[
             ((false, false, false), Err(ApplyError::TargetGone)),
             ((false, true, true), Err(ApplyError::TargetGone)), // frontmost check wins even if everything else looks fine
             ((true, true, true), Ok(())),

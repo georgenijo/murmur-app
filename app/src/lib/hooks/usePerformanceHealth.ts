@@ -1,6 +1,8 @@
 import { invoke } from '@tauri-apps/api/core';
 import { useCallback, useEffect, useState } from 'react';
 import { getStatus } from '../dictation';
+import { deriveCaptureHealth, type CaptureHealth } from '../captureHealth';
+import type { AppEvent } from '../events';
 import {
   getModelRuntimeStatus,
   type ModelRuntimeSnapshot,
@@ -22,6 +24,7 @@ export interface PerformanceHealth {
   dictationStatus: DictationStatus | null;
   transformStatus: TransformPipelineStatus | null;
   runtime: ModelRuntimeSnapshot | null;
+  capture: CaptureHealth;
 }
 
 function isDictationStatus(value: unknown): value is DictationStatus {
@@ -45,15 +48,17 @@ export function usePerformanceHealth(enabled: boolean): PerformanceHealth & { re
     dictationStatus: null,
     transformStatus: null,
     runtime: null,
+    capture: deriveCaptureHealth([]),
   });
 
   const refresh = useCallback(() => {
     if (!enabled) return;
     void (async () => {
       try {
-        const [status, transformStatus] = await Promise.all([
+        const [status, transformStatus, events] = await Promise.all([
           getStatus(),
           invoke<unknown>('transform_status'),
+          invoke<AppEvent[]>('get_event_history'),
         ]);
         const modelName = typeof status.model === 'string' ? status.model : null;
         const runtime = modelName ? await getModelRuntimeStatus(modelName) : null;
@@ -64,6 +69,7 @@ export function usePerformanceHealth(enabled: boolean): PerformanceHealth & { re
           dictationStatus: isDictationStatus(status.state) ? status.state : null,
           transformStatus: isTransformStatus(transformStatus) ? transformStatus : null,
           runtime,
+          capture: deriveCaptureHealth(events),
         });
       } catch (reason) {
         setHealth(current => ({

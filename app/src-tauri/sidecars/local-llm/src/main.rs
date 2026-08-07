@@ -162,14 +162,28 @@ mod macos_arm64 {
                         &input,
                         max_output_tokens,
                         Duration::from_millis(deadline_ms),
-                        |first_token_ms| {
-                            emit_phase(
+                        |first_token_ms, sequence, text| {
+                            if sequence == 0 {
+                                emit_phase(
+                                    &mut stdout,
+                                    &session_nonce,
+                                    Some(&request_id),
+                                    DiagnosticPhase::FirstToken,
+                                    PhaseState::Completed,
+                                    Some(first_token_ms),
+                                )
+                                .map_err(|_| ErrorCode::Internal)?;
+                            }
+                            write_frame(
                                 &mut stdout,
-                                &session_nonce,
-                                Some(&request_id),
-                                DiagnosticPhase::FirstToken,
-                                PhaseState::Completed,
-                                Some(first_token_ms),
+                                &HelperMessage::OutputChunk {
+                                    protocol: PROTOCOL_NAME.to_string(),
+                                    version: PROTOCOL_VERSION,
+                                    session_nonce: session_nonce.clone(),
+                                    request_id: request_id.clone(),
+                                    sequence,
+                                    text: text.to_string(),
+                                },
                             )
                             .map_err(|_| ErrorCode::Internal)
                         },
@@ -350,7 +364,7 @@ mod macos_arm64 {
             input: &str,
             max_output_tokens: u32,
             deadline: Duration,
-            mut on_first_token: impl FnMut(u64) -> Result<(), ErrorCode>,
+            mut on_chunk: impl FnMut(u64, u32, &str) -> Result<(), ErrorCode>,
         ) -> Result<(String, FinishReason, u32), ErrorCode> {
             let prompt = format!(
                 "<|im_start|>system\n{FIXED_SYSTEM_PROMPT}<|im_end|>\n<|im_start|>user\nINSTRUCTION_BEGIN\n{instruction}\nINSTRUCTION_END\nINPUT_BEGIN\n{input}\nINPUT_END<|im_end|>\n<|im_start|>assistant\n"
@@ -387,6 +401,7 @@ mod macos_arm64 {
             let mut decoder = UTF_8.new_decoder();
             let mut output = String::new();
             let mut generated = 0_u32;
+            let mut sequence = 0_u32;
             let mut position = batch.n_tokens();
             let mut finish_reason = FinishReason::Length;
 
@@ -400,9 +415,6 @@ mod macos_arm64 {
                     finish_reason = FinishReason::Stop;
                     break;
                 }
-                if generated == 0 {
-                    on_first_token(started.elapsed().as_millis() as u64)?;
-                }
                 let piece = self
                     .model
                     .token_to_piece(token, &mut decoder, true, None)
@@ -411,6 +423,10 @@ mod macos_arm64 {
                     break;
                 }
                 output.push_str(&piece);
+                if !piece.is_empty() {
+                    on_chunk(started.elapsed().as_millis() as u64, sequence, &piece)?;
+                    sequence += 1;
+                }
                 generated += 1;
                 batch.clear();
                 batch

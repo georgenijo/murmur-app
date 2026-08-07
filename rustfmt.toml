@@ -1,0 +1,2 @@
+# Canonical formatting intentionally uses the defaults from the Rust toolchain
+# pinned in CI.

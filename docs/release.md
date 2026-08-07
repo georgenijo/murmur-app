@@ -48,13 +48,34 @@ run ID, platform/updater names, sizes, and SHA-256 hashes. Promotion accepts one
 unexpired macOS artifact and one unexpired Linux artifact from a successful
 `Release Build` on `main` for the exact source commit. Automatic promotion also
 requires a successful `push` event, the version-bump commit prefix, and matching
-semver values in `tauri.conf.json`, `Cargo.toml`, and `Cargo.lock`. Any tag, run,
-filename, version, hash, or updater-signature mismatch fails before publication.
+semver values in `tauri.conf.json`, `Cargo.toml`, `Cargo.lock`, `package.json`,
+and `package-lock.json`. The newest dated CHANGELOG section must match that same
+version. Any tag, run, filename, version, changelog, hash, or updater-signature
+mismatch fails before publication.
 
 The modern updater manifest is generated from the downloaded `.sig` files.
 After release-asset upload, the workflow downloads the remote `.sig` assets and
 compares them byte-for-byte, uploads the manifests, downloads them again, and
 checks that `latest-v2.json` contains those exact signatures before publishing.
+It also reads the source-controlled `.github/updater-policy.json`: `null` keeps
+the release optional, while a stable minimum version at or below the target
+release is emitted as `min_version` on the modern channel. Invalid or future
+minimum versions fail promotion.
+
+Set that file before the version-bump commit:
+
+```json
+{ "min_version": null }
+```
+
+Use a quoted stable version such as `"0.24.0"` only when every installed
+version below that threshold must update or quit. Policy changes receive the
+same code review and trusted-main provenance as the release itself.
+
+Immediately before publication, the workflow requires the draft release body
+to match the remotely downloaded updater manifest notes. Once published,
+updater assets are immutable; do not edit the release body independently. Ship
+a patch release when corrected notes must appear both on GitHub and in Murmur.
 
 ## Non-publishing rehearsal
 
@@ -105,10 +126,13 @@ SHA-named artifacts exist for the version-bump commit.
 ## Release authorization and recovery
 
 `prompts/PROMPT_RELEASE.md` requires explicit confirmation before pushing the
-version-bump commit. That push is the release action: after its exact trusted
-build succeeds, `Release` validates the run and three synchronized version files,
-downloads and verifies the immutable artifacts, creates `vX.Y.Z`, prepares the
-release, verifies remote updater integrity, and publishes.
+version-bump commit. `scripts/release_version.py prepare X.Y.Z` synchronizes the
+five version surfaces and cuts `[Unreleased]` into the dated release section;
+its `check` command enforces the same contract locally and during promotion.
+That push is the release action: after its exact trusted build succeeds,
+`Release` validates the run, synchronized versions, and CHANGELOG, downloads and
+verifies the immutable artifacts, creates `vX.Y.Z`, prepares the release,
+verifies remote updater integrity, and publishes.
 
 Manual `Release Build` dispatches remain non-publishing rehearsals, even when
 they succeed. The tag trigger remains an operator recovery path for an automatic

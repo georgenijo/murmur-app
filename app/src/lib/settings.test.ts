@@ -105,6 +105,45 @@ describe('loadSettings', () => {
     }
   });
 
+  it('migrates the exact legacy 50 ms paste delay to zero once', () => {
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      autoPasteDelayMs: 50,
+    }));
+
+    expect(loadSettings().autoPasteDelayMs).toBe(0);
+    expect(JSON.parse(localStorage.getItem('dictation-settings') ?? '{}')).toMatchObject({
+      autoPasteDelayMs: 0,
+      settingsVersion: 1,
+    });
+
+    saveSettings({ ...loadSettings(), autoPasteDelayMs: 50 });
+    expect(loadSettings().autoPasteDelayMs).toBe(50);
+  });
+
+  it('preserves a deliberate 50 ms paste delay after the migration version', () => {
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      autoPasteDelayMs: 50,
+      settingsVersion: 1,
+    }));
+
+    expect(loadSettings().autoPasteDelayMs).toBe(50);
+  });
+
+  it('versions legacy settings even when their paste delay does not change', () => {
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      autoPasteDelayMs: 23,
+    }));
+
+    expect(loadSettings().autoPasteDelayMs).toBe(23);
+    expect(JSON.parse(localStorage.getItem('dictation-settings') ?? '{}')).toMatchObject({
+      autoPasteDelayMs: 23,
+      settingsVersion: 1,
+    });
+  });
+
   it('migrates and validates per-app smart and CLI formatting overrides', () => {
     localStorage.setItem('dictation-settings', JSON.stringify({
       ...DEFAULT_SETTINGS,

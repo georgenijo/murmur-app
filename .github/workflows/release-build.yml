@@ -84,7 +84,10 @@ jobs:
       - name: Workflow and artifact policy tests
         run: |
           python3 scripts/validate_workflow_policy.py
-          python3 -m unittest tests/test_release_artifacts.py tests/test_workflow_policy.py
+          python3 -m unittest \
+            tests/test_release_artifacts.py \
+            tests/test_release_version.py \
+            tests/test_workflow_policy.py
 
   release-macos:
     needs: context
@@ -101,7 +104,7 @@ jobs:
           cache-dependency-path: app/package-lock.json
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.96.0
 
       - name: Restore release-profile Rust cache
         id: rust-cache

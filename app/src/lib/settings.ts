@@ -409,6 +409,22 @@ export const DEFAULT_SETTINGS: Settings = {
 };
 
 export const STORAGE_KEY = 'dictation-settings';
+const SETTINGS_VERSION = 1;
+const ZERO_DELAY_MIGRATION_VERSION = 1;
+
+type PersistedSettings = Partial<Settings> & {
+  settingsVersion?: unknown;
+  hotkey?: string;
+  liveTranscriptPreview?: unknown;
+  recordingMode?: string;
+};
+
+function writePersistedSettings(settings: Settings): void {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify({
+    ...settings,
+    settingsVersion: SETTINGS_VERSION,
+  }));
+}
 
 /**
  * Validate a persisted code-vocab scan summary. Returns a clean
@@ -479,11 +495,24 @@ export function loadSettings(): Settings {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored) {
-      const parsed = JSON.parse(stored) as Partial<Settings> & {
-        hotkey?: string;
-        liveTranscriptPreview?: unknown;
-        recordingMode?: string;
-      };
+      const parsed = JSON.parse(stored) as PersistedSettings;
+      const storedSettingsVersion =
+        typeof parsed.settingsVersion === 'number'
+        && Number.isInteger(parsed.settingsVersion)
+        && parsed.settingsVersion >= 0
+          ? parsed.settingsVersion
+          : 0;
+      delete parsed.settingsVersion;
+
+      // v1: installs that persisted the former 50 ms default should adopt the
+      // zero-delay fast path once. A user can set 50 ms again after migration,
+      // and saveSettings will retain it with the current settings version.
+      if (
+        storedSettingsVersion < ZERO_DELAY_MIGRATION_VERSION
+        && parsed.autoPasteDelayMs === 50
+      ) {
+        parsed.autoPasteDelayMs = DEFAULT_SETTINGS.autoPasteDelayMs;
+      }
 
       // Migrate: 'hotkey' mode no longer exists → default to 'hold_down'
       const validModes: RecordingMode[] = ['hold_down', 'double_tap', 'both'];
@@ -672,7 +701,15 @@ export function loadSettings(): Settings {
         parsed.correctionFuzzy = DEFAULT_SETTINGS.correctionFuzzy;
       }
 
-      return { ...DEFAULT_SETTINGS, ...parsed } as Settings;
+      const settings = { ...DEFAULT_SETTINGS, ...parsed } as Settings;
+      if (storedSettingsVersion < SETTINGS_VERSION) {
+        try {
+          writePersistedSettings(settings);
+        } catch (e) {
+          console.error('Failed to persist settings migration:', e);
+        }
+      }
+      return settings;
     }
   } catch (e) {
     console.error('Failed to load settings:', e);
@@ -682,7 +719,7 @@ export function loadSettings(): Settings {
 
 export function saveSettings(settings: Settings): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+    writePersistedSettings(settings);
   } catch (e) {
     console.error('Failed to save settings:', e);
   }

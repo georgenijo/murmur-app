@@ -194,6 +194,9 @@ impl Drop for ManagedChild {
     }
 }
 
+// Callers deliberately collapse every lookup failure to their own
+// content-free error; exposing filesystem detail here would weaken that seam.
+#[allow(clippy::result_unit_err)]
 pub fn bundled_sibling(name: &str) -> Result<PathBuf, ()> {
     let executable = std::env::current_exe().map_err(|_| ())?;
     let directory = executable.parent().ok_or(())?;

@@ -286,6 +286,12 @@ pub struct CaptureProbeSupervisor {
     ownership: Mutex<Option<ManagedChild>>,
 }
 
+impl Default for CaptureProbeSupervisor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CaptureProbeSupervisor {
     pub fn new() -> Self {
         Self::with_observe_for(DEFAULT_OBSERVE)

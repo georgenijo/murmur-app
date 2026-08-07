@@ -18,6 +18,69 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class WorkflowPolicyMutationTests(unittest.TestCase):
+    def test_ci_runs_reference_doc_drift_check(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        for marker in (
+            "python3 scripts/validate_reference_docs.py\n",
+            "            tests/test_reference_docs.py \\\n",
+        ):
+            with self.subTest(marker=marker.strip()):
+                mutated = workflow.replace(marker, "", 1)
+                self.assertNotEqual(workflow, mutated)
+                with self.assertRaises(AssertionError):
+                    validate_ci(mutated)
+
+    def test_ci_pins_and_enforces_clippy_and_rustfmt(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        for old in (
+            "        uses: dtolnay/rust-toolchain@1.96.0\n",
+            "          components: clippy, rustfmt\n",
+            "      - name: Check Rust formatting\n"
+            "        run: cd app/src-tauri && cargo fmt --all -- --check\n\n",
+            "        run: cd app/src-tauri && cargo clippy --all-targets -- -D warnings\n",
+        ):
+            with self.subTest(policy=old.strip()):
+                mutated = workflow.replace(old, "", 1)
+                self.assertNotEqual(workflow, mutated)
+                with self.assertRaises(AssertionError):
+                    validate_ci(mutated)
+
+    def test_dependency_audits_are_present_and_advisory(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        for old in (
+            "          cargo audit\n",
+            "          npm audit --audit-level=high\n",
+            "        continue-on-error: true\n",
+        ):
+            with self.subTest(policy=old.strip()):
+                mutated = workflow.replace(old, "", 1)
+                self.assertNotEqual(workflow, mutated)
+                with self.assertRaises(AssertionError):
+                    validate_ci(mutated)
+
+    def test_ci_runs_capture_worker_unit_tests(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        mutated = workflow.replace(
+            "      - name: Run capture worker unit tests\n"
+            "        run: cd app/src-tauri && cargo test -p murmur-capture-helper\n\n",
+            "",
+            1,
+        )
+        self.assertNotEqual(workflow, mutated)
+        with self.assertRaises(AssertionError):
+            validate_ci(mutated)
+
+    def test_ci_pass_requires_visual_regression_result(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        mutated = workflow.replace(
+            '            "${{ needs.visual-regression.result }}" \\\n',
+            "",
+            1,
+        )
+        self.assertNotEqual(workflow, mutated)
+        with self.assertRaises(AssertionError):
+            validate_ci(mutated)
+
     def test_macos_compile_check_builds_capture_worker(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         mutated = workflow.replace(
@@ -77,16 +140,30 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
 
     def test_release_versions_must_match(self) -> None:
         self.assertEqual(
-            release_tag_for_versions("0.18.0", "0.18.0", "0.18.0"), "v0.18.0"
+            release_tag_for_versions(*(["0.18.0"] * 6)), "v0.18.0"
         )
         for versions in (
-            ("0.18", "0.18", "0.18"),
-            ("0.18.0", "0.17.1", "0.18.0"),
-            ("0.18.0", "0.18.0", "0.17.1"),
+            ("0.18",) * 6,
+            ("0.18.0", "0.17.1", "0.18.0", "0.18.0", "0.18.0", "0.18.0"),
+            ("0.18.0", "0.18.0", "0.18.0", "0.17.1", "0.18.0", "0.18.0"),
+            ("0.18.0", "0.18.0", "0.18.0", "0.18.0", "0.17.1", "0.18.0"),
+            ("0.18.0", "0.18.0", "0.18.0", "0.18.0", "0.18.0", "0.17.1"),
         ):
             with self.subTest(versions=versions):
                 with self.assertRaises(AssertionError):
                     release_tag_for_versions(*versions)
+
+    def test_promotion_requires_release_version_and_changelog_gate(self) -> None:
+        workflow = (ROOT / ".github/workflows/release.yml").read_text()
+        for marker in (
+            "scripts/release_version.py check",
+            '--git-ref "$SOURCE_SHA"',
+        ):
+            with self.subTest(marker=marker):
+                mutated = workflow.replace(marker, "echo skipped", 1)
+                self.assertNotEqual(workflow, mutated)
+                with self.assertRaises(AssertionError):
+                    validate_promotion_policy(mutated)
 
     def test_existing_tag_must_match_source_commit(self) -> None:
         source = "a" * 40

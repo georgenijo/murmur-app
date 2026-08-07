@@ -254,7 +254,7 @@ fn dedupe_prompt_terms(prompt: &str) -> String {
 /// Entries are separated by commas or newlines (not spaces) so multi-word terms
 /// like "API Gateway" survive as one entry. Blank entries are dropped.
 fn parse_vocab_terms(s: &str) -> Vec<String> {
-    s.split(|c| c == ',' || c == '\n' || c == '\r')
+    s.split([',', '\n', '\r'])
         .map(|t| t.trim())
         .filter(|t| !t.is_empty())
         .map(String::from)
@@ -385,7 +385,7 @@ fn status_allows_model_preparation(status: DictationStatus) -> bool {
 /// short recording ends before preparation completes.
 fn spawn_model_preparation(app_handle: tauri::AppHandle, model_name: String, recording_id: u64) {
     let queued_at = std::time::Instant::now();
-    let _ = tauri::async_runtime::spawn_blocking(move || {
+    drop(tauri::async_runtime::spawn_blocking(move || {
         let queue_ms = queued_at.elapsed().as_millis() as u64;
         let state = app_handle.state::<State>();
         let is_active = {
@@ -475,7 +475,7 @@ fn spawn_model_preparation(app_handle: tauri::AppHandle, model_name: String, rec
                 "model_prepare_failed"
             ),
         }
-    });
+    }));
 }
 
 /// Warm an installed Core ML model after startup configuration. A newly linked
@@ -489,7 +489,7 @@ fn spawn_idle_model_preparation(
     change_guard: SharedBackendChangeGuard,
 ) {
     let queued_at = std::time::Instant::now();
-    let _ = tauri::async_runtime::spawn_blocking(move || {
+    drop(tauri::async_runtime::spawn_blocking(move || {
         let _change_guard = change_guard;
         let state = app_handle.state::<State>();
         let is_current = {
@@ -535,7 +535,7 @@ fn spawn_idle_model_preparation(
                 "model_prepare_skipped"
             ),
         }
-    });
+    }));
 }
 
 #[derive(Default)]
@@ -605,8 +605,7 @@ fn transcript_stage_timing(
 ) -> Option<StageTimingV1> {
     use crate::transcript_transform::{
         StageOutcome, CLEANUP_STAGE, CLI_COMMAND_STAGE, IDE_CONTEXT_STAGE, SMART_CORRECTION_STAGE,
-        SMART_FORMATTING_STAGE, SPOKEN_NUMBERS_STAGE, SPOKEN_STRUCTURE_STAGE,
-        VOICE_COMMANDS_STAGE,
+        SMART_FORMATTING_STAGE, SPOKEN_NUMBERS_STAGE, SPOKEN_STRUCTURE_STAGE, VOICE_COMMANDS_STAGE,
     };
 
     let stage = match report.stage {
@@ -739,7 +738,9 @@ async fn run_transcription_pipeline(
     // the authoritative full-buffer VAD + inference pass after recording stops.
     performance_guard.enter(PerformanceStageV1::Vad);
     let t_vad = std::time::Instant::now();
-    let (samples_for_transcription, vad_trimmed) = if !vad::is_enabled(transcription.vad_sensitivity) {
+    let (samples_for_transcription, vad_trimmed) = if !vad::is_enabled(
+        transcription.vad_sensitivity,
+    ) {
         tracing::info!(target: "pipeline", "VAD disabled for lowest-latency transcription");
         (samples.to_vec(), false)
     } else {
@@ -1127,11 +1128,10 @@ pub async fn process_audio(
             }
             format!("Failed to decode base64: {}", e)
         })?;
-    let samples = transcriber::parse_wav_to_samples(&wav_bytes).map_err(|e| {
+    let samples = transcriber::parse_wav_to_samples(&wav_bytes).inspect_err(|_e| {
         if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
             let _ = app_handle.emit("recording-status-changed", "idle");
         }
-        e
     })?;
     tracing::info!(target: "pipeline", "audio parse (base64 + WAV): {:?}", t_parse.elapsed());
     performance_guard.record(StageTimingV1::measured(
@@ -2222,19 +2222,24 @@ pub(crate) fn handle_audio_lifecycle(
     recording_id: u64,
     event: AudioLifecycleEvent,
 ) {
-    handle_audio_lifecycle_with(app_handle, recording_id, event, |app_handle, recording_id| {
-        tauri::async_runtime::spawn(async move {
-            let state = app_handle.state::<State>();
-            if let Err(error) = stop_native_recording(app_handle.clone(), state).await {
-                tracing::error!(
-                    target: "pipeline",
-                    recording_id,
-                    error = error.as_str(),
-                    "interrupted recording transcription failed"
-                );
-            }
-        });
-    });
+    handle_audio_lifecycle_with(
+        app_handle,
+        recording_id,
+        event,
+        |app_handle, recording_id| {
+            tauri::async_runtime::spawn(async move {
+                let state = app_handle.state::<State>();
+                if let Err(error) = stop_native_recording(app_handle.clone(), state).await {
+                    tracing::error!(
+                        target: "pipeline",
+                        recording_id,
+                        error = error.as_str(),
+                        "interrupted recording transcription failed"
+                    );
+                }
+            });
+        },
+    );
 }
 
 fn handle_audio_lifecycle_with<R: tauri::Runtime>(
@@ -2422,6 +2427,7 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                     dictation.status,
                     DictationStatus::Starting
                         | DictationStatus::Recording
+                        | DictationStatus::Processing
                         | DictationStatus::Recovering
                 )
             {
@@ -3540,6 +3546,58 @@ mod tests {
         );
     }
 
+    #[test]
+    fn idle_after_a_timed_out_stop_clears_processing_for_the_current_recording() {
+        let recording_id = 384;
+        let app_state = AppState::default();
+        app_state.recording_id.store(recording_id, Ordering::SeqCst);
+        app_state.dictation.lock_or_recover().status = DictationStatus::Processing;
+        keyboard::set_processing(true);
+
+        let app = tauri::test::mock_builder()
+            .manage(State {
+                app_state,
+                benchmark: Arc::new(crate::benchmark::BenchmarkCoordinator::new()),
+                knowledge: crate::knowledge_store::KnowledgeStore::default(),
+                correct_and_teach: crate::correct_and_teach::CorrectAndTeachState::default(),
+                performance: crate::performance_metrics::PerformanceMetrics::default(),
+                transform_diagnostics: crate::transform_diagnostics::TransformDiagnostics::default(
+                ),
+                notch_info: std::sync::Mutex::new(None),
+                display_snapshot: std::sync::Mutex::new(None),
+                transform_popover_anchor: std::sync::Mutex::new(None),
+                transform_main_was_visible: std::sync::Mutex::new(None),
+                transform_runtime: Arc::new(crate::llm_sidecar::LlmSidecar::new()),
+            })
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build mock Tauri app");
+        let app_handle = app.handle().clone();
+        let emitted_idle = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        {
+            let emitted_idle = Arc::clone(&emitted_idle);
+            app_handle.listen_any("recording-status-changed", move |event| {
+                if event.payload() == "\"idle\"" {
+                    emitted_idle.store(true, Ordering::SeqCst);
+                }
+            });
+        }
+
+        handle_audio_lifecycle_with(
+            app_handle.clone(),
+            recording_id,
+            AudioLifecycleEvent::Idle,
+            |_, _| {},
+        );
+
+        let state = app_handle.state::<State>();
+        assert_eq!(
+            state.app_state.dictation.lock_or_recover().status,
+            DictationStatus::Idle
+        );
+        assert!(!keyboard::is_processing());
+        assert!(emitted_idle.load(Ordering::SeqCst));
+    }
+
     struct RetryTestBackend {
         responses: VecDeque<String>,
         sample_counts: Vec<usize>,
@@ -3644,19 +3702,21 @@ mod tests {
 
     #[test]
     fn rejected_command_alias_conflict_leaves_prior_backend_state_unchanged() {
-        let mut dictation = crate::state::DictationState::default();
-        dictation.custom_vocabulary = "Tauri".to_string();
-        dictation.vocabulary_entries = vec![crate::state::VocabularyEntry {
-            id: "tauri".to_string(),
-            written: "Tauri".to_string(),
-            aliases: vec!["Tori".to_string()],
-            enabled: true,
-            scope: crate::state::VocabularyScope::Global,
-        }];
-        dictation.voice_command_pairs = vec![crate::state::VoiceCommand {
-            phrase: "ship it".to_string(),
-            replacement: "deploy".to_string(),
-        }];
+        let mut dictation = crate::state::DictationState {
+            custom_vocabulary: "Tauri".to_string(),
+            vocabulary_entries: vec![crate::state::VocabularyEntry {
+                id: "tauri".to_string(),
+                written: "Tauri".to_string(),
+                aliases: vec!["Tori".to_string()],
+                enabled: true,
+                scope: crate::state::VocabularyScope::Global,
+            }],
+            voice_command_pairs: vec![crate::state::VoiceCommand {
+                phrase: "ship it".to_string(),
+                replacement: "deploy".to_string(),
+            }],
+            ..Default::default()
+        };
         let before = dictation.clone();
         let options = serde_json::json!({
             "voiceCommands": [{ "phrase": "Tori", "replacement": "override" }],
@@ -3883,7 +3943,7 @@ mod tests {
         // The two budgets are intentionally distinct; Whisper's is the smaller.
         assert_eq!(WHISPER_PROMPT_TERMS, 96);
         assert_eq!(CORRECTION_TERMS, 500);
-        assert!(WHISPER_PROMPT_TERMS < CORRECTION_TERMS);
+        const { assert!(WHISPER_PROMPT_TERMS < CORRECTION_TERMS) };
     }
 
     #[test]

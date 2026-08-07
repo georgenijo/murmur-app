@@ -224,51 +224,7 @@ impl WorkerFactory for ProductionWorkerFactory {
         spec: AudioWorkerSpec,
         event_sender: AudioWorkerEventSender,
     ) -> Result<JoinHandle<()>, String> {
-        #[cfg(debug_assertions)]
-        if should_inject_hung_stream_build() {
-            let owner = spec.owner;
-            return std::thread::Builder::new()
-                .name("murmur-audio-fault".to_string())
-                .spawn(move || {
-                    for phase in [
-                        audio::AudioInitPhase::DeviceEnumeration,
-                        audio::AudioInitPhase::ConfigLookup,
-                    ] {
-                        let _ = event_sender.send(AudioWorkerEvent::PhaseEntered { owner, phase });
-                        let _ = event_sender.send(AudioWorkerEvent::PhaseExited {
-                            owner,
-                            phase,
-                            elapsed_ms: 0,
-                        });
-                    }
-                    let _ = event_sender.send(AudioWorkerEvent::PhaseEntered {
-                        owner,
-                        phase: audio::AudioInitPhase::StreamBuild,
-                    });
-                    // Model a synchronous Core Audio call that never returns.
-                    loop {
-                        std::thread::park();
-                    }
-                })
-                .map_err(|error| format!("Failed to spawn audio fault worker: {error}"));
-        }
         audio::spawn_capture_worker(spec, event_sender)
-    }
-}
-
-#[cfg(debug_assertions)]
-fn should_inject_hung_stream_build() -> bool {
-    match std::env::var("MURMUR_AUDIO_TEST_SCENARIO").ok().as_deref() {
-        Some("hang_stream_build") => true,
-        Some("hang_stream_build_once") => std::env::var_os("MURMUR_AUDIO_TEST_SENTINEL")
-            .is_some_and(|path| {
-                std::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(path)
-                    .is_ok()
-            }),
-        _ => false,
     }
 }
 
@@ -321,6 +277,9 @@ struct StartRequest {
     response: Sender<Result<(), AudioStartError>>,
 }
 
+// StartRequest is intentionally owned as one message so the supervisor can
+// accept or reject an immutable capture request without shared mutable state.
+#[allow(clippy::large_enum_variant)]
 enum SupervisorMessage {
     Start(StartRequest),
     Stop {
@@ -869,8 +828,16 @@ fn finish_attempt(attempt: &mut Option<Attempt>, sink: &dyn LifecycleSink, publi
     match finished.phase {
         AttemptPhase::Stopping => {
             let samples = take_samples(&mut finished);
-            if let Some(response) = finished.stop_response.take() {
-                let _ = response.send(Ok(samples));
+            let response_delivered = finished
+                .stop_response
+                .take()
+                .is_some_and(|response| response.send(Ok(samples)).is_ok());
+            if !response_delivered {
+                sink.notify(
+                    finished.app_handle.as_ref(),
+                    finished.owner,
+                    AudioLifecycleEvent::Idle,
+                );
             }
         }
         AttemptPhase::Starting => {
@@ -1422,7 +1389,6 @@ mod tests {
                 let owner = spec.owner;
                 for phase in [
                     AudioInitPhase::DeviceEnumeration,
-                    AudioInitPhase::ConfigLookup,
                     AudioInitPhase::StreamBuild,
                 ] {
                     let _ = event_sender.send(AudioWorkerEvent::PhaseEntered { owner, phase });
@@ -1509,8 +1475,10 @@ mod tests {
         }
     }
 
+    type CapturedSpecs = Arc<Mutex<Vec<(AudioOwner, Option<String>)>>>;
+
     struct SpecCaptureFactory {
-        specs: Arc<Mutex<Vec<(AudioOwner, Option<String>)>>>,
+        specs: CapturedSpecs,
     }
 
     impl WorkerFactory for SpecCaptureFactory {
@@ -1616,16 +1584,16 @@ mod tests {
         }
     }
 
-    fn harness(
-        phase: AudioInitPhase,
-        config: SupervisorConfig,
-    ) -> (
+    type ActiveFlags = Arc<Mutex<Vec<Arc<AtomicBool>>>>;
+    type Harness = (
         AudioSupervisor,
         Gate,
         Arc<AtomicUsize>,
         Arc<RecordingSink>,
-        Arc<Mutex<Vec<Arc<AtomicBool>>>>,
-    ) {
+        ActiveFlags,
+    );
+
+    fn harness(phase: AudioInitPhase, config: SupervisorConfig) -> Harness {
         let gate = Gate::closed();
         let spawn_count = Arc::new(AtomicUsize::new(0));
         let sink = Arc::new(RecordingSink::default());
@@ -1844,7 +1812,7 @@ mod tests {
                 retry_gate: Some(retry_gate.clone()),
                 spawn_count: Arc::clone(&spawn_count),
                 active_flags,
-                phase: AudioInitPhase::ConfigLookup,
+                phase: AudioInitPhase::StreamBuild,
                 phase_entered: Some(phase_sender),
             }),
             sink.clone(),
@@ -1979,7 +1947,7 @@ mod tests {
     #[test]
     fn stale_worker_generation_cannot_activate_current_attempt() {
         let (supervisor, gate, _, sink, active_flags) =
-            harness(AudioInitPhase::ConfigLookup, SupervisorConfig::default());
+            harness(AudioInitPhase::StreamBuild, SupervisorConfig::default());
         let owner = AudioOwner::Dictation(9);
         assert_eq!(start(&supervisor, owner).recv().unwrap(), Ok(()));
         supervisor
@@ -2488,6 +2456,73 @@ mod tests {
             Ok(vec![0.25])
         );
         wait_until("stopping worker was not joined", || {
+            !supervisor.public.is_active()
+        });
+        shutdown(&supervisor);
+    }
+
+    #[test]
+    fn completed_teardown_notifies_idle_when_the_stop_caller_timed_out() {
+        let gate = Gate::closed();
+        let sink = Arc::new(RecordingSink::default());
+        let supervisor = spawn_supervisor(
+            Arc::new(BlockingTeardownFactory { gate: gate.clone() }),
+            sink.clone(),
+            SupervisorConfig::default(),
+        );
+        let owner = AudioOwner::Dictation(99);
+        assert_eq!(start(&supervisor, owner).recv().unwrap(), Ok(()));
+        wait_until("worker never reached recording", || {
+            supervisor.public.is_recording_for(owner)
+        });
+
+        let (response_sender, response_receiver) = mpsc::channel();
+        supervisor
+            .sender
+            .send(SupervisorMessage::Stop {
+                owner: Some(owner),
+                response: response_sender,
+            })
+            .unwrap();
+        drop(response_receiver);
+
+        assert_eq!(
+            start(&supervisor, AudioOwner::Dictation(100))
+                .recv()
+                .unwrap(),
+            Err(AudioStartError::AudioRecovering),
+            "the blocked worker must retain exclusive ownership"
+        );
+
+        gate.open();
+        wait_until("joined teardown did not publish idle", || {
+            sink.events
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(event_owner, event)| {
+                    *event_owner == owner && *event == AudioLifecycleEvent::Idle
+                })
+        });
+        wait_until("stopping worker was not joined", || {
+            !supervisor.public.is_active()
+        });
+
+        let retry_owner = AudioOwner::Dictation(101);
+        assert_eq!(start(&supervisor, retry_owner).recv().unwrap(), Ok(()));
+        wait_until("fresh owner never reached recording", || {
+            supervisor.public.is_recording_for(retry_owner)
+        });
+        let (retry_stop_sender, retry_stop_receiver) = mpsc::channel();
+        supervisor
+            .sender
+            .send(SupervisorMessage::Stop {
+                owner: Some(retry_owner),
+                response: retry_stop_sender,
+            })
+            .unwrap();
+        assert_eq!(retry_stop_receiver.recv().unwrap(), Ok(vec![0.25]));
+        wait_until("retry worker was not joined", || {
             !supervisor.public.is_active()
         });
         shutdown(&supervisor);

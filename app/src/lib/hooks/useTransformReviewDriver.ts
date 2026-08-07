@@ -5,6 +5,7 @@ import { DEFAULT_SETTINGS, loadSettings } from '../settings';
 import { flog } from '../log';
 import {
   EMPTY_REVIEW_CONTENT,
+  isTransformProposalChunkEvent,
   isTransformReviewContent,
   isTransformStateChangedEvent,
   normalizeReviewErrorCode,
@@ -48,12 +49,16 @@ export function useTransformReviewDriver(enabled: boolean): ReviewDriverResult {
   const [content, setContent] = useState<TransformReviewContent>(EMPTY_REVIEW_CONTENT);
   const [thinkingElapsedMs, setThinkingElapsedMs] = useState(0);
   const [transformPassId, setTransformPassId] = useState<number | null>(null);
+  const activePassRef = useRef<number | null>(null);
+  const activeStateRef = useRef<ReviewState>('listening');
+  const previewSequenceRef = useRef(-1);
 
   useEffect(() => {
     if (!enabled) return;
     let cancelled = false;
     let unlisten: (() => void) | null = null;
     let unlistenHidden: (() => void) | null = null;
+    let unlistenChunk: (() => void) | null = null;
 
     // A backend-initiated hide (short-tap cancel, linger auto-hide, capture
     // aborts) emits this content-free signal so we drop any stale review
@@ -65,6 +70,9 @@ export function useTransformReviewDriver(enabled: boolean): ReviewDriverResult {
       setErrorCode(null);
       setState('listening');
       setTransformPassId(null);
+      activePassRef.current = null;
+      activeStateRef.current = 'listening';
+      previewSequenceRef.current = -1;
     })
       .then((fn) => {
         if (cancelled) fn();
@@ -80,15 +88,37 @@ export function useTransformReviewDriver(enabled: boolean): ReviewDriverResult {
         flog.warn('transform-review', 'transform-state-changed had invalid payload');
         return;
       }
-      setState(event.payload.state);
-      setErrorCode(normalizeReviewErrorCode(event.payload.errorCode));
-      setTransformPassId(event.payload.transformPassId);
+      const payload = event.payload;
+      setState(payload.state);
+      setErrorCode(normalizeReviewErrorCode(payload.errorCode));
+      setTransformPassId(payload.transformPassId);
+      activeStateRef.current = payload.state;
+      if (
+        activePassRef.current !== payload.transformPassId
+        || payload.state !== 'thinking'
+      ) {
+        previewSequenceRef.current = -1;
+      }
+      activePassRef.current = payload.transformPassId;
+      if (payload.state === 'thinking') {
+        setContent((current) => ({ ...current, proposed: '' }));
+      }
 
       invoke<unknown>('get_transform_review_content')
         .then((value) => {
           if (cancelled) return;
+          if (
+            activePassRef.current !== payload.transformPassId
+            || activeStateRef.current !== payload.state
+          ) {
+            return;
+          }
           if (isTransformReviewContent(value)) {
-            setContent(value);
+            setContent((current) => (
+              payload.state === 'thinking'
+                ? { ...value, proposed: current.proposed }
+                : value
+            ));
           } else {
             flog.warn('transform-review', 'get_transform_review_content returned invalid payload');
           }
@@ -107,10 +137,35 @@ export function useTransformReviewDriver(enabled: boolean): ReviewDriverResult {
         flog.error('transform-review', 'listen(transform-state-changed) failed', { error: String(e) });
       });
 
+    // Unlike the broadcast state event, proposal text is emitted only to this
+    // review webview. Payloads are cumulative and monotonically sequenced, so
+    // a dropped event cannot create a torn preview.
+    listen<unknown>('transform-proposal-chunk', (event) => {
+      if (cancelled || !isTransformProposalChunkEvent(event.payload)) return;
+      const payload = event.payload;
+      if (
+        activeStateRef.current !== 'thinking'
+        || activePassRef.current !== payload.transformPassId
+        || payload.sequence <= previewSequenceRef.current
+      ) {
+        return;
+      }
+      previewSequenceRef.current = payload.sequence;
+      setContent((current) => ({ ...current, proposed: payload.text }));
+    })
+      .then((fn) => {
+        if (cancelled) fn();
+        else unlistenChunk = fn;
+      })
+      .catch((e) => {
+        flog.error('transform-review', 'listen(transform-proposal-chunk) failed', { error: String(e) });
+      });
+
     return () => {
       cancelled = true;
       unlisten?.();
       unlistenHidden?.();
+      unlistenChunk?.();
     };
   }, [enabled]);
 

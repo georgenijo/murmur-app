@@ -20,7 +20,10 @@ pub struct CleanupOptions {
 
 impl Default for CleanupOptions {
     fn default() -> Self {
-        Self { remove_filler: true, capitalize: true }
+        Self {
+            remove_filler: true,
+            capitalize: true,
+        }
     }
 }
 
@@ -90,8 +93,8 @@ fn word_key(token: &str) -> String {
 ///   - "that" is excluded ("that that" is valid),
 ///   - "had"/"is"/"do"/"has" are excluded (valid as repeated auxiliaries).
 const COLLAPSIBLE_STUTTER_WORDS: &[&str] = &[
-    "i", "the", "a", "an", "and", "to", "of", "it", "in", "on",
-    "we", "you", "so", "but", "for", "with", "my", "he", "she", "they",
+    "i", "the", "a", "an", "and", "to", "of", "it", "in", "on", "we", "you", "so", "but", "for",
+    "with", "my", "he", "she", "they",
 ];
 
 /// Remove filler tokens that stand alone as whole words. A token is filler only
@@ -203,7 +206,10 @@ mod tests {
     use super::*;
 
     fn full() -> CleanupOptions {
-        CleanupOptions { remove_filler: true, capitalize: true }
+        CleanupOptions {
+            remove_filler: true,
+            capitalize: true,
+        }
     }
 
     #[test]
@@ -214,10 +220,7 @@ mod tests {
 
     #[test]
     fn removes_standalone_filler() {
-        assert_eq!(
-            clean_transcript("um hello uh world", full()),
-            "Hello world"
-        );
+        assert_eq!(clean_transcript("um hello uh world", full()), "Hello world");
     }
 
     #[test]
@@ -236,7 +239,10 @@ mod tests {
 
     #[test]
     fn filler_disabled_keeps_tokens() {
-        let opts = CleanupOptions { remove_filler: false, capitalize: false };
+        let opts = CleanupOptions {
+            remove_filler: false,
+            capitalize: false,
+        };
         assert_eq!(clean_transcript("um hello", opts), "um hello");
     }
 
@@ -258,15 +264,15 @@ mod tests {
             "had had no effect"
         );
         // Only *immediate* repeats collapse; "the cat the dog" stays intact.
-        assert_eq!(clean_transcript("the cat the dog", full()), "The cat the dog");
+        assert_eq!(
+            clean_transcript("the cat the dog", full()),
+            "The cat the dog"
+        );
     }
 
     #[test]
     fn normalizes_space_before_punctuation() {
-        assert_eq!(
-            clean_transcript("hello , world .", full()),
-            "Hello, world."
-        );
+        assert_eq!(clean_transcript("hello , world .", full()), "Hello, world.");
     }
 
     #[test]
@@ -287,7 +293,10 @@ mod tests {
 
     #[test]
     fn capitalize_disabled_leaves_case() {
-        let opts = CleanupOptions { remove_filler: false, capitalize: false };
+        let opts = CleanupOptions {
+            remove_filler: false,
+            capitalize: false,
+        };
         assert_eq!(clean_transcript("hello. world.", opts), "hello. world.");
     }
 
@@ -323,11 +332,17 @@ mod tests {
     #[test]
     fn independent_toggles() {
         // Filler removed, but capitalization left off.
-        let opts = CleanupOptions { remove_filler: true, capitalize: false };
+        let opts = CleanupOptions {
+            remove_filler: true,
+            capitalize: false,
+        };
         assert_eq!(clean_transcript("um hello", opts), "hello");
 
         // Capitalization on, filler left in.
-        let opts = CleanupOptions { remove_filler: false, capitalize: true };
+        let opts = CleanupOptions {
+            remove_filler: false,
+            capitalize: true,
+        };
         assert_eq!(clean_transcript("um hello", opts), "Um hello");
     }
 }

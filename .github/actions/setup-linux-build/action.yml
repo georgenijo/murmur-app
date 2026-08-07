@@ -33,7 +33,7 @@ runs:
       run: echo "CUDA_MM=$(echo '${{ inputs.cuda-version }}' | cut -d. -f1,2)" >> "$GITHUB_ENV"
 
     - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
+      uses: dtolnay/rust-toolchain@1.96.0
 
     - name: Install Linux system dependencies
       shell: bash

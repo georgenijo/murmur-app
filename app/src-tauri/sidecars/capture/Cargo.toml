@@ -12,3 +12,6 @@ murmur-capture-helper-protocol = { path = "../../crates/capture-helper-protocol"
 libc = "0.2"
 coreaudio-rs = "0.11.3"
 core-foundation-sys = "0.8"
+
+[dev-dependencies]
+loom = "0.7.2"

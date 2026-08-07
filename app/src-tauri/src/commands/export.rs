@@ -102,11 +102,8 @@ mod tests {
     use super::*;
 
     fn temp_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "murmur_export_test_{}_{}",
-            std::process::id(),
-            tag
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("murmur_export_test_{}_{}", std::process::id(), tag));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -143,7 +140,10 @@ mod tests {
         let dir = temp_dir("extensions");
         for name in ["a.md", "b.TXT", "c.Json"] {
             let path = dir.join(name);
-            assert!(write_text_export(&path, "x").is_ok(), "{name} should be allowed");
+            assert!(
+                write_text_export(&path, "x").is_ok(),
+                "{name} should be allowed"
+            );
         }
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -205,7 +205,10 @@ mod tests {
         let huge = "a".repeat(MAX_EXPORT_BYTES + 1);
         let error = write_text_export(&path, &huge).unwrap_err();
         assert!(error.contains("too large"), "{error}");
-        assert!(!path.exists(), "nothing should be written when the payload is refused");
+        assert!(
+            !path.exists(),
+            "nothing should be written when the payload is refused"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

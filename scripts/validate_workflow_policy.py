@@ -100,12 +100,26 @@ def should_auto_promote(
 
 
 def release_tag_for_versions(
-    tauri_version: str, cargo_version: str, lock_version: str
+    tauri_version: str,
+    cargo_version: str,
+    lock_version: str,
+    package_version: str,
+    package_lock_version: str,
+    changelog_version: str,
 ) -> str:
     if not SEMVER.fullmatch(tauri_version):
         raise AssertionError(f"invalid release version: {tauri_version}")
-    if cargo_version != tauri_version or lock_version != tauri_version:
-        raise AssertionError("tauri.conf.json, Cargo.toml, and Cargo.lock differ")
+    if any(
+        version != tauri_version
+        for version in (
+            cargo_version,
+            lock_version,
+            package_version,
+            package_lock_version,
+            changelog_version,
+        )
+    ):
+        raise AssertionError("release version surfaces differ")
     return f"v{tauri_version}"
 
 
@@ -121,21 +135,36 @@ def validate_ci(ci: str) -> int:
     assert "push:\n    branches: [main]" in ci
     assert "\n  pull_request:" in ci
     assert scalar(job_block(ci, "changes"), "if") == CI_GUARD
-    for job in ("typecheck", "rust-macos", "linux"):
+    for job in ("typecheck", "visual-regression", "rust-macos", "linux"):
         assert scalar(job_block(ci, job), "needs") == "changes"
     assert scalar(job_block(ci, "ci-pass"), "needs") == (
-        "[changes, typecheck, rust-macos, linux]"
+        "[changes, typecheck, visual-regression, rust-macos, linux]"
     )
     assert scalar(job_block(ci, "ci-pass"), "if") == CI_PASS_GUARD
+    ci_pass_step = named_step_block(ci, "Check CI result", 6)
+    assert "${{ needs.visual-regression.result }}" in ci_pass_step
     assert "scripts/validate_workflow_policy.py" in ci
+    assert "'scripts/validate_reference_docs.py'" in ci
+    assert "python3 scripts/validate_reference_docs.py" in ci
+    assert "'docs/reference/**'" in ci
     assert "scripts/release_artifacts.py" in ci
     assert "scripts/capture_agent_matrix.py" in ci
+    assert "'scripts/release_version.py'" in ci
     assert "tests/test_release_artifacts.py" in ci
+    assert ci.count("tests/test_reference_docs.py") >= 2
+    assert "tests/test_release_version.py" in ci
     assert "tests/test_workflow_policy.py" in ci
     assert "tests/test_capture_agent_matrix.py" in ci
     capture_build = named_step_block(
         ci, "Build capture isolation helpers and stub local-LLM externalBin", 6
     )
+    rust_install = named_step_block(ci, "Install Rust", 6)
+    assert "uses: dtolnay/rust-toolchain@1.96.0" in rust_install
+    assert "components: clippy, rustfmt" in rust_install
+    rust_format = named_step_block(ci, "Check Rust formatting", 6)
+    assert "cargo fmt --all -- --check" in rust_format
+    rust_lint = named_step_block(ci, "Lint Rust", 6)
+    assert "cargo clippy --all-targets -- -D warnings" in rust_lint
     assert "swiftc -warnings-as-errors" in capture_build
     assert "sidecars/capture-agent/main.swift" in capture_build
     assert "cargo build -p murmur-capture-helper" in capture_build
@@ -143,6 +172,16 @@ def validate_ci(ci: str) -> int:
     assert "CARGO_TARGET_DIR=target/capture-worker-build" in capture_build
     assert "target/capture-worker-build/debug/murmur-capture-helper" in capture_build
     assert "binaries/murmur-capture-worker-aarch64-apple-darwin" in capture_build
+    capture_tests = named_step_block(ci, "Run capture worker unit tests", 6)
+    assert "cargo test -p murmur-capture-helper" in capture_tests
+    job_block(ci, "dependency-audit")
+    rust_audit = named_step_block(ci, "Audit Rust dependencies (advisory)", 6)
+    assert "continue-on-error: true" in rust_audit
+    assert "cargo install cargo-audit --locked --version 0.22.2" in rust_audit
+    assert "cargo audit" in rust_audit
+    npm_audit = named_step_block(ci, "Audit npm dependencies (advisory)", 6)
+    assert "continue-on-error: true" in npm_audit
+    assert "npm audit --audit-level=high" in npm_audit
     llm_target = "binaries/murmur-llm-sidecar-aarch64-apple-darwin"
     assert capture_build.count(f": > {llm_target}") == 1
     assert capture_build.count(f"chmod +x {llm_target}") == 1
@@ -165,6 +204,7 @@ def validate_release_build(workflow: str) -> int:
     assert "pull_request" not in workflow
     assert "self-hosted" not in workflow
     assert "contents: write" not in workflow
+    assert "tests/test_release_version.py" in workflow
     assert scalar(job_block(workflow, "context"), "if") == RELEASE_BUILD_GUARD
     for job in ("typecheck", "release-macos", "release-linux"):
         assert scalar(job_block(workflow, job), "needs") == "context"
@@ -261,6 +301,7 @@ def validate_release_rehearsal(workflow: str) -> int:
     for forbidden_trigger in ("\n  push:", "\n  pull_request:", "\n  workflow_run:"):
         assert forbidden_trigger not in workflow
     assert "permissions:\n  contents: read" in workflow
+    assert "tests/test_release_version.py" in workflow
     for forbidden in (
         "secrets.",
         "GITHUB_TOKEN",
@@ -456,18 +497,22 @@ def validate_promotion_policy(workflow: str) -> int:
     assert 'split("@")[0]) == ".github/workflows/release-build.yml"' in workflow
     assert "expired == false" in workflow
     assert "scripts/release_artifacts.py validate" in workflow
+    assert "scripts/release_version.py check" in workflow
+    assert '--git-ref "$SOURCE_SHA"' in workflow
     assert "--require-macos-capture-helper" in workflow
     assert "--require-macos-capture-agent" in workflow
     assert "--require-macos-capture-worker" in workflow
-    assert 'at("app/src-tauri/tauri.conf.json")' in workflow
-    assert 'at("app/src-tauri/Cargo.toml")' in workflow
-    assert 'at("app/src-tauri/Cargo.lock")' in workflow
-    assert "release versions differ" in workflow
+    assert "release versions or CHANGELOG differ" in workflow
     assert "already_published=true" in workflow
     assert "contains unexpected asset" in workflow
     assert 'gh release view "$TAG"' in workflow
     assert "--json body --jq .body > release-notes.md" in workflow
     assert "--release-notes release-notes.md" in workflow
+    assert ".github/updater-policy.json" in workflow
+    assert "updater policy must contain exactly one null or string min_version" in workflow
+    assert '--min-version "$MIN_VERSION"' in workflow
+    assert "published updater policy differs from the trusted source policy" in workflow
+    assert "draft release notes differ from the updater manifest" in workflow
     assert workflow.index("scripts/release_artifacts.py validate") < workflow.index(
         "Create automatic release tag"
     )
@@ -479,11 +524,15 @@ def validate_promotion_policy(workflow: str) -> int:
         "Verify uploaded updater signatures",
         "Generate updater channel manifests from verified signatures",
         "Upload and verify updater manifests",
+        "Verify release metadata matches updater manifest",
         "Publish release",
     )
     for name in publish_steps:
         block = named_step_block(workflow, name, 6)
         assert "if: needs.resolve.outputs.publish == 'true'" in block
+    assert workflow.index("Verify release metadata matches updater manifest") < workflow.index(
+        "Publish release"
+    )
     rehearsal = named_step_block(
         workflow, "Report non-publishing promotion rehearsal", 6
     )
@@ -507,7 +556,7 @@ def validate_promotion_policy(workflow: str) -> int:
     expected = (True, False, False, False, False)
     for case, result in zip(auto_cases, expected):
         assert should_auto_promote(**case) is result
-    assert release_tag_for_versions("0.18.0", "0.18.0", "0.18.0") == "v0.18.0"
+    assert release_tag_for_versions(*(["0.18.0"] * 6)) == "v0.18.0"
     assert tag_action(None, "a" * 40) == "create"
     assert tag_action("a" * 40, "a" * 40) == "reuse"
     return len(publish_steps) + len(auto_cases)

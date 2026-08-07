@@ -15,9 +15,13 @@ fn open_system_preference_pane(pane: &str) -> Result<(), String> {
 #[tauri::command]
 pub fn open_system_preferences() -> Result<(), String> {
     #[cfg(target_os = "macos")]
-    { return open_system_preference_pane("Privacy_Microphone"); }
+    {
+        open_system_preference_pane("Privacy_Microphone")
+    }
     #[cfg(not(target_os = "macos"))]
-    { Err("System preferences shortcut not supported on this platform".to_string()) }
+    {
+        Err("System preferences shortcut not supported on this platform".to_string())
+    }
 }
 
 /// Check if accessibility permission is granted (macOS)
@@ -35,10 +39,12 @@ pub fn request_accessibility_permission() -> Result<(), String> {
         // Return value is the current trust status — we proceed to open System Settings
         // regardless, so the result is intentionally discarded here.
         let _ = injector::request_accessibility_prompt();
-        return open_system_preference_pane("Privacy_Accessibility");
+        open_system_preference_pane("Privacy_Accessibility")
     }
     #[cfg(not(target_os = "macos"))]
-    { Ok(()) }
+    {
+        Ok(())
+    }
 }
 
 /// Read the running process's bundle identifier (macOS).
@@ -107,7 +113,7 @@ pub fn reset_accessibility_permission() -> Result<(), String> {
             return Err(format!("tccutil reset failed: {}", stderr.trim()));
         }
 
-        return open_system_preference_pane("Privacy_Accessibility");
+        open_system_preference_pane("Privacy_Accessibility")
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -119,9 +125,13 @@ pub fn reset_accessibility_permission() -> Result<(), String> {
 #[tauri::command]
 pub fn request_microphone_permission() -> Result<(), String> {
     #[cfg(target_os = "macos")]
-    { return open_system_preference_pane("Privacy_Microphone"); }
+    {
+        open_system_preference_pane("Privacy_Microphone")
+    }
     #[cfg(not(target_os = "macos"))]
-    { Ok(()) }
+    {
+        Ok(())
+    }
 }
 
 /// Trigger the native macOS microphone permission prompt (TCC) in-flow.
@@ -208,7 +218,7 @@ pub fn reset_microphone_permission() -> Result<(), String> {
             return Err(format!("tccutil reset failed: {}", stderr.trim()));
         }
 
-        return open_system_preference_pane("Privacy_Microphone");
+        open_system_preference_pane("Privacy_Microphone")
     }
     #[cfg(not(target_os = "macos"))]
     {

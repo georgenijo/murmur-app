@@ -188,6 +188,7 @@ function App() {
     },
     { phase: 'available', version: '0.7.0', notes: '## What\'s New\n- OTA auto-updater\n- Bug fixes\n- Performance improvements', isForced: false },
     { phase: 'available', version: '0.7.0', notes: 'Critical security fix.', isForced: true },
+    { phase: 'preparing', version: '0.7.0' },
     { phase: 'downloading', version: '0.7.0', progress: 65 },
   ] : [];
   const [devUpdateStatus, setDevUpdateStatus] = useState<UpdateStatus | null>(null);

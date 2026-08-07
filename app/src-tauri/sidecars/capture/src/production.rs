@@ -21,11 +21,18 @@ use murmur_capture_helper_protocol::{
     CapturePhase, CaptureSetupStep, FailureCode, ProductionDevice, ProductionFrame,
     ProductionHelperMessage, ProductionHostMessage, SessionNonce, SetupTransition,
 };
-use std::cell::UnsafeCell;
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
+
+#[cfg(test)]
+use loom::cell::UnsafeCell;
+#[cfg(test)]
+use loom::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+#[cfg(not(test))]
+use std::cell::UnsafeCell;
+#[cfg(not(test))]
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 const RING_CAPACITY: usize = 48_000 * 8;
 const STOP_DEADLINE: Duration = Duration::from_secs(2);
@@ -42,8 +49,13 @@ unsafe impl Sync for SpscRing {}
 
 impl SpscRing {
     fn new() -> Self {
-        let mut slots = Vec::with_capacity(RING_CAPACITY);
-        slots.resize_with(RING_CAPACITY, || UnsafeCell::new(0.0));
+        Self::with_capacity(RING_CAPACITY)
+    }
+
+    fn with_capacity(capacity: usize) -> Self {
+        assert!(capacity >= 2);
+        let mut slots = Vec::with_capacity(capacity);
+        slots.resize_with(capacity, || UnsafeCell::new(0.0));
         Self {
             slots: slots.into_boxed_slice(),
             head: AtomicUsize::new(0),
@@ -59,7 +71,14 @@ impl SpscRing {
             self.overflowed.store(true, Ordering::Release);
             return;
         }
-        unsafe { *self.slots[head].get() = value };
+        #[cfg(not(test))]
+        {
+            unsafe { *self.slots[head].get() = value };
+        }
+        #[cfg(test)]
+        {
+            self.slots[head].with_mut(|slot| unsafe { *slot = value });
+        }
         self.head.store(next, Ordering::Release);
     }
 
@@ -68,7 +87,16 @@ impl SpscRing {
         let mut tail = self.tail.load(Ordering::Relaxed);
         let head = self.head.load(Ordering::Acquire);
         while tail != head && count < output.len() {
-            output[count] = unsafe { *self.slots[tail].get() };
+            #[cfg(not(test))]
+            {
+                output[count] = unsafe { *self.slots[tail].get() };
+            }
+            #[cfg(test)]
+            {
+                self.slots[tail].with(|slot| {
+                    output[count] = unsafe { *slot };
+                });
+            }
             count += 1;
             tail = (tail + 1) % self.slots.len();
         }
@@ -400,6 +428,152 @@ fn read_control(
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn spsc_ring_push_drain_wrap_and_overflow_are_bounded() {
+        loom::model(|| {
+            let ring = SpscRing::with_capacity(3);
+            ring.push(1.0);
+            ring.push(2.0);
+            assert_eq!(ring.producer_position(), 2);
+
+            ring.push(3.0);
+            assert!(ring.overflowed.load(Ordering::Acquire));
+
+            let mut first = [0.0];
+            assert_eq!(ring.drain(&mut first), 1);
+            assert_eq!(first, [1.0]);
+
+            ring.push(3.0);
+            let mut rest = [0.0; 2];
+            assert_eq!(ring.drain(&mut rest), 2);
+            assert_eq!(rest, [2.0, 3.0]);
+            assert_eq!(ring.producer_position(), 0);
+        });
+    }
+
+    #[test]
+    fn spsc_ring_publishes_samples_across_threads() {
+        loom::model(|| {
+            let ring = loom::sync::Arc::new(SpscRing::with_capacity(2));
+            let producer = loom::sync::Arc::clone(&ring);
+            let consumer = loom::sync::Arc::clone(&ring);
+
+            let push = loom::thread::spawn(move || producer.push(42.5));
+            let drain = loom::thread::spawn(move || {
+                let mut output = [0.0];
+                (consumer.drain(&mut output) == 1).then_some(output[0])
+            });
+
+            push.join().unwrap();
+            let concurrent = drain.join().unwrap();
+            let mut after_join = [0.0];
+            let remaining = ring.drain(&mut after_join);
+            match concurrent {
+                Some(value) => {
+                    assert_eq!(value, 42.5);
+                    assert_eq!(remaining, 0);
+                }
+                None => {
+                    assert_eq!(remaining, 1);
+                    assert_eq!(after_join, [42.5]);
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn spsc_ring_reuses_slots_across_threads() {
+        let mut model = loom::model::Builder::new();
+        model.preemption_bound = Some(3);
+        model.check(|| {
+            let ring = loom::sync::Arc::new(SpscRing::with_capacity(2));
+            let producer = loom::sync::Arc::clone(&ring);
+            let consumer = loom::sync::Arc::clone(&ring);
+
+            let push = loom::thread::spawn(move || {
+                for value in [1.0, 2.0, 3.0] {
+                    let prior_position = producer.producer_position();
+                    while producer.producer_position() == prior_position {
+                        producer.push(value);
+                        loom::thread::yield_now();
+                    }
+                }
+            });
+            let drain = loom::thread::spawn(move || {
+                let mut values = Vec::new();
+                while values.len() < 3 {
+                    let mut output = [0.0];
+                    if consumer.drain(&mut output) == 1 {
+                        values.push(output[0]);
+                    }
+                    loom::thread::yield_now();
+                }
+                values
+            });
+
+            push.join().unwrap();
+            assert_eq!(drain.join().unwrap(), vec![1.0, 2.0, 3.0]);
+        });
+    }
+
+    #[test]
+    fn parse_nonce_accepts_exact_hex_and_rejects_malformed_values() {
+        assert_eq!(
+            parse_nonce("00112233445566778899aAbBcCdDeEfF"),
+            Ok([
+                0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
+                0xee, 0xff,
+            ])
+        );
+        assert_eq!(parse_nonce("0011"), Err(()));
+        assert_eq!(parse_nonce("00112233445566778899aabbccddeefg"), Err(()));
+    }
+
+    #[test]
+    fn read_control_accepts_matching_control_frame() {
+        let capture_id = 42;
+        let nonce = [7; 16];
+        let mut bytes = Vec::new();
+        write_production_control(&mut bytes, capture_id, nonce, &ProductionHostMessage::Hello)
+            .unwrap();
+
+        assert_eq!(
+            read_control(&mut Cursor::new(bytes), capture_id, nonce),
+            Ok(ProductionHostMessage::Hello)
+        );
+    }
+
+    #[test]
+    fn read_control_rejects_pcm_and_mismatched_identity() {
+        let capture_id = 42;
+        let nonce = [7; 16];
+        let mut pcm = Vec::new();
+        write_production_pcm(&mut pcm, capture_id, nonce, 0, 48_000, &[0.25]).unwrap();
+        assert_eq!(
+            read_control(&mut Cursor::new(pcm), capture_id, nonce),
+            Err(())
+        );
+
+        let mut control = Vec::new();
+        write_production_control(
+            &mut control,
+            capture_id,
+            nonce,
+            &ProductionHostMessage::Stop,
+        )
+        .unwrap();
+        assert_eq!(
+            read_control(&mut Cursor::new(control), capture_id + 1, nonce),
+            Err(())
+        );
+    }
+}
+
 pub fn run(arguments: &[String]) -> Result<(), ()> {
     let capture_id = arguments
         .first()
@@ -447,6 +621,11 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
                 },
             )
             .map_err(|_| ())?;
+            if fault == Some("hang-stream-build") {
+                loop {
+                    std::thread::park();
+                }
+            }
             let ring = Arc::new(SpscRing::new());
             let failed = Arc::new(AtomicBool::new(false));
             let mut emit_setup = |step: CaptureSetupStep, transition: SetupTransition| {
