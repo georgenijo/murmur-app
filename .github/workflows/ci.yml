@@ -215,7 +215,7 @@ jobs:
             cargo test --lib -- --test-threads=1
 
   ci-pass:
-    needs: [changes, typecheck, rust-macos, linux]
+    needs: [changes, typecheck, visual-regression, rust-macos, linux]
     # Keep this guard aligned with `changes`; otherwise the sentinel would turn
     # an intentionally skipped release-bump run into a failure.
     if: "${{ always() && (github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'chore: bump version')) }}"
@@ -230,6 +230,7 @@ jobs:
 
           for result in \
             "${{ needs.typecheck.result }}" \
+            "${{ needs.visual-regression.result }}" \
             "${{ needs.rust-macos.result }}" \
             "${{ needs.linux.result }}"; do
             if [ "$result" != "success" ] && [ "$result" != "skipped" ]; then

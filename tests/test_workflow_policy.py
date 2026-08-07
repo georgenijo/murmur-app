@@ -18,6 +18,17 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class WorkflowPolicyMutationTests(unittest.TestCase):
+    def test_ci_pass_requires_visual_regression_result(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        mutated = workflow.replace(
+            '            "${{ needs.visual-regression.result }}" \\\n',
+            "",
+            1,
+        )
+        self.assertNotEqual(workflow, mutated)
+        with self.assertRaises(AssertionError):
+            validate_ci(mutated)
+
     def test_macos_compile_check_builds_capture_worker(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         mutated = workflow.replace(

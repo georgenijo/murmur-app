@@ -121,12 +121,14 @@ def validate_ci(ci: str) -> int:
     assert "push:\n    branches: [main]" in ci
     assert "\n  pull_request:" in ci
     assert scalar(job_block(ci, "changes"), "if") == CI_GUARD
-    for job in ("typecheck", "rust-macos", "linux"):
+    for job in ("typecheck", "visual-regression", "rust-macos", "linux"):
         assert scalar(job_block(ci, job), "needs") == "changes"
     assert scalar(job_block(ci, "ci-pass"), "needs") == (
-        "[changes, typecheck, rust-macos, linux]"
+        "[changes, typecheck, visual-regression, rust-macos, linux]"
     )
     assert scalar(job_block(ci, "ci-pass"), "if") == CI_PASS_GUARD
+    ci_pass_step = named_step_block(ci, "Check CI result", 6)
+    assert "${{ needs.visual-regression.result }}" in ci_pass_step
     assert "scripts/validate_workflow_policy.py" in ci
     assert "scripts/release_artifacts.py" in ci
     assert "scripts/capture_agent_matrix.py" in ci
