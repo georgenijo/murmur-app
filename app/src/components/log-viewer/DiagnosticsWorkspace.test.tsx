@@ -31,6 +31,16 @@ vi.mock('../../lib/hooks/usePerformanceHealth', () => ({
     dictationStatus: 'idle',
     transformStatus: 'idle',
     runtime: null,
+    capture: {
+      status: 'insufficientData',
+      sampleCount: 0,
+      requiredSamples: 5,
+      medianStartupMs: null,
+      fallbackCount: 0,
+      chronicFallback: false,
+      slowStartup: false,
+      degradedBackend: null,
+    },
     refresh: vi.fn(),
   }),
 }));

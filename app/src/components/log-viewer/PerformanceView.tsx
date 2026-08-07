@@ -59,6 +59,61 @@ function pipelineLabel(health: PerformanceHealth): string | null {
   return null;
 }
 
+function captureBackendLabel(backend: PerformanceHealth['capture']['degradedBackend']): string {
+  if (backend === 'auhal') return 'AUHAL';
+  if (backend === 'cpal') return 'CPAL';
+  return 'The primary capture backend';
+}
+
+function formatStartup(milliseconds: number | null): string {
+  if (milliseconds === null) return 'unavailable';
+  if (milliseconds < 1_000) return `${Math.round(milliseconds)} ms`;
+  return `${(milliseconds / 1_000).toFixed(1)} s`;
+}
+
+function CaptureHealthLine({ health }: { health: PerformanceHealth }) {
+  const capture = health.capture;
+  if (health.loading && capture.sampleCount === 0) {
+    return (
+      <div className="mb-3 rounded-xl border border-outline-variant/15 bg-surface-container-low px-3 py-2">
+        <div className="text-xs font-medium text-on-surface">Checking microphone startup health…</div>
+      </div>
+    );
+  }
+  if (capture.status === 'insufficientData') {
+    const remaining = capture.requiredSamples - capture.sampleCount;
+    return (
+      <div role="status" className="mb-3 rounded-xl border border-outline-variant/15 bg-surface-container-low px-3 py-2">
+        <div className="text-xs font-medium text-on-surface">Microphone startup health is collecting data</div>
+        <p className="mt-0.5 text-[11px] text-on-surface-variant">
+          {remaining} more successful {remaining === 1 ? 'recording' : 'recordings'} needed for a local five-recording signal.
+        </p>
+      </div>
+    );
+  }
+  if (capture.status === 'degraded') {
+    const startup = formatStartup(capture.medianStartupMs);
+    return (
+      <div role="alert" className="mb-3 rounded-xl border border-warning/20 bg-warning/10 px-3 py-2">
+        <div className="text-xs font-semibold text-warning">Microphone startup is degraded</div>
+        <p className="mt-0.5 text-[11px] text-on-surface-variant">
+          {capture.chronicFallback
+            ? `${captureBackendLabel(capture.degradedBackend)} failed before first audio in all five recent recordings. Murmur recovered through fallback; median startup was ${startup}.`
+            : `Median start-to-audio was ${startup} across the five most recent recordings.`}
+        </p>
+      </div>
+    );
+  }
+  return (
+    <div role="status" className="mb-3 rounded-xl border border-success/20 bg-success/10 px-3 py-2">
+      <div className="text-xs font-semibold text-success">Microphone startup looks healthy</div>
+      <p className="mt-0.5 text-[11px] text-on-surface-variant">
+        Median start-to-audio was {formatStartup(capture.medianStartupMs)} across five recent recordings; {capture.fallbackCount} required fallback.
+      </p>
+    </div>
+  );
+}
+
 function currentMeasurement(
   sample: ResourceSampleV1 | undefined,
   select: (value: ResourceSampleV1) => MeasurementV1<number>,
@@ -191,6 +246,7 @@ export function PerformanceView({
             Some live diagnostics could not be refreshed. Existing measured data remains visible.
           </div>
         )}
+        <CaptureHealthLine health={health} />
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
           {healthCards.map(card => <MetricCard key={card.label} {...card} />)}
         </div>
