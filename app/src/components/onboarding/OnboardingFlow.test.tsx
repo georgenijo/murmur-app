@@ -23,10 +23,21 @@ vi.mock('../../lib/modelRuntime', () => ({
 
 vi.mock('../ModelDownloader', () => ({
   DOWNLOAD_MODEL_KEYS: ['base.en'],
-  ModelDownloadPanel: ({ onComplete }: { onComplete: (model: 'base.en') => void }) => (
-    <button type="button" onClick={() => onComplete('base.en')}>
-      Continue with model
-    </button>
+  ModelDownloadPanel: ({
+    onComplete,
+    onDownloadingChange,
+  }: {
+    onComplete: (model: 'base.en') => void;
+    onDownloadingChange: (downloading: boolean) => void;
+  }) => (
+    <>
+      <button type="button" onClick={() => onDownloadingChange(true)}>
+        Start model download
+      </button>
+      <button type="button" onClick={() => onComplete('base.en')}>
+        Continue with model
+      </button>
+    </>
   ),
 }));
 
@@ -89,6 +100,12 @@ describe('OnboardingFlow', () => {
 
     await clickButton('Continue');
     expect(container.textContent).toContain('Transcription Model');
+
+    await clickButton('Start model download');
+    const backButton = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Go back to the previous setup step"]',
+    );
+    expect(backButton?.disabled).toBe(true);
 
     await clickButton('Continue with model');
     expect(container.textContent).toContain('Recording Shortcut');
