@@ -16,8 +16,9 @@ install the app (or receive an auto-update) and logs flow.
   the fleet dashboard can label streams ("George's MacBook Pro · macOS 26.0").
   Username and any content-bearing identifiers are never sent.
 - The separate `/state` snapshot reports only whether a default audio input is
-  available, a bounded input count, and whether enumeration succeeded. It
-  never reads or sends microphone display labels or backend UIDs.
+  available, a bounded input count, and whether enumeration succeeded. It is
+  refreshed from explicit device-list requests, never by the shipper's timer,
+  and never reads or sends microphone display labels or backend UIDs.
 - Kill switch: launch with `MURMUR_LOG_SHIPPER=off` in the environment.
 
 ## Server-armed hang diagnostics (`hang_diagnostics.rs`)
@@ -66,6 +67,9 @@ events.jsonl  ──(log_shipper.rs, every 60s)──▶  POST https://georgenij
   shorter than the saved offset, it drains the tail of `events.jsonl.1` from
   that offset, then restarts at 0 on the fresh file.
 - Batches are cut at line boundaries, max 1 MB per POST, max 8 POSTs per tick.
+- Audio `/state` delivery reads a privacy-safe cached aggregate. The cache is
+  updated when another app flow explicitly enumerates inputs (for example,
+  opening Settings); the shipper never spawns a capture helper to refresh it.
 - Auth is a static bearer token baked into the binary — spam control for the
   public URL, not a security boundary.
 - Normal dev builds do not ship. The receiver acknowledges and discards
