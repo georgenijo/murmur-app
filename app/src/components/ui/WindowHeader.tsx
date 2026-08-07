@@ -21,16 +21,18 @@ export function WindowHeader({
       className={`ui-window-header bg-background/95 backdrop-blur-xl ${className}`}
       {...props}
     >
-      <span data-tauri-drag-region className="ui-window-wordmark">Murmur</span>
-      {contextLabel && (
-        <span
-          data-tauri-drag-region
-          className="select-none text-xs font-medium text-on-surface-variant"
-        >
-          {contextLabel}
-        </span>
-      )}
-      {children}
+      <div data-tauri-drag-region className="ui-window-header-content">
+        <span data-tauri-drag-region className="ui-window-wordmark">Murmur</span>
+        {contextLabel && (
+          <span
+            data-tauri-drag-region
+            className="select-none text-xs font-medium text-on-surface-variant"
+          >
+            {contextLabel}
+          </span>
+        )}
+        {children}
+      </div>
     </header>
   );
 }
