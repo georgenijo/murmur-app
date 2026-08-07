@@ -369,6 +369,10 @@ pub fn run() {
             telemetry::init(app.handle().clone());
             log_shipper::start();
 
+            if let Some(main_window) = app.get_webview_window("main") {
+                commands::native_window::hide_titlebar_separator(&main_window);
+            }
+
             let performance_root = app.path().app_data_dir()?.join("diagnostics");
             if let Err(error) = app
                 .state::<State>()

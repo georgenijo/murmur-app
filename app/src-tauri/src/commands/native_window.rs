@@ -4,7 +4,43 @@
 //! popover (`commands/transform_popover.rs`) need a window that floats above
 //! the menu bar without ever activating the app (which would steal focus from
 //! whatever the user was typing into). This module holds that one shared
-//! NSWindow-level treatment so the two windows cannot drift apart.
+//! NSWindow-level treatment so the two windows cannot drift apart. It also
+//! owns native main-window chrome adjustments that AppKit renders outside the
+//! web view.
+
+/// Remove AppKit's automatic line between the overlay title bar and web
+/// content. Murmur's header and history toolbar are intentionally one
+/// continuous surface.
+#[cfg(target_os = "macos")]
+pub(crate) fn hide_titlebar_separator(window: &tauri::WebviewWindow) {
+    use tauri::Manager;
+    let window = window.clone();
+    let handle = window.app_handle().clone();
+    if let Err(error) = handle.run_on_main_thread(move || {
+        apply_hidden_titlebar_separator_on_main(&window);
+    }) {
+        tracing::warn!(
+            target: "system",
+            "hide_titlebar_separator: run_on_main_thread failed: {}",
+            error
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn apply_hidden_titlebar_separator_on_main(window: &tauri::WebviewWindow) {
+    debug_assert!(
+        objc2_foundation::MainThreadMarker::new().is_some(),
+        "NSWindow mutation must run on the main thread"
+    );
+    if let Ok(ptr) = window.ns_window() {
+        let ns_window: &objc2_app_kit::NSWindow = unsafe { &*(ptr.cast()) };
+        ns_window.setTitlebarSeparatorStyle(objc2_app_kit::NSTitlebarSeparatorStyle::None);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn hide_titlebar_separator(_window: &tauri::WebviewWindow) {}
 
 /// Raise `window` to `level` (an `NSWindow` level, e.g. `NSMainMenuWindowLevel
 /// + 1 = 25`) and mark it non-activating via the private `_setPreventsActivation:`

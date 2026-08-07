@@ -59,3 +59,12 @@ test('the transcript search placeholder fits beside its shortcut badge', async (
 
   expect(fit.textWidth).toBeLessThanOrEqual(fit.availableWidth);
 });
+
+test('the window header flows into the history toolbar without a divider', async ({ page }) => {
+  await page.goto('/visual-fixtures.html?state=idle&appearance=light');
+  const header = page.locator('.ui-window-header');
+  await expect(header).toBeVisible();
+  await expect.poll(() => header.evaluate((element) => (
+    getComputedStyle(element).borderBottomWidth
+  ))).toBe('0px');
+});

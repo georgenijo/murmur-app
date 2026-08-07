@@ -167,6 +167,7 @@ describe('Sonic Canvas component details', () => {
     for (const status of ['idle', 'recording', 'processing'] as const) {
       const elements = await renderHeader(status);
       expect(elements.header.classList).toContain('ui-window-header');
+      expect(elements.header.classList).not.toContain('border-b');
       expect(elements.statusChip.classList).toContain('ui-status-chip');
       expect(elements.record.classList).toContain('ui-record-pill');
       if (status === 'processing') {

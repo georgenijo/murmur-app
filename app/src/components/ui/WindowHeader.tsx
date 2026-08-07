@@ -18,7 +18,7 @@ export function WindowHeader({
   return (
     <header
       data-tauri-drag-region
-      className={`ui-window-header border-b border-outline-variant/15 bg-background/95 backdrop-blur-xl ${className}`}
+      className={`ui-window-header bg-background/95 backdrop-blur-xl ${className}`}
       {...props}
     >
       <span data-tauri-drag-region className="ui-window-wordmark">Murmur</span>
