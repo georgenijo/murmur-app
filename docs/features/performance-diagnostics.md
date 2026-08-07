@@ -143,3 +143,18 @@ bounded records directly, then uses `get_performance_run` for detail. Its phase
 waterfall preserves canonical stage order and availability but does not infer
 absolute offsets that V1 does not record. Correlated Events navigation matches
 the structured canonical correlation field rather than parsing event summaries.
+
+## Capture startup health
+
+The Performance tab also derives a read-only, on-device microphone startup
+signal from the existing bounded event history. It considers the five newest
+successful dictation `audio.capture_ready` events and correlates a preceding
+`audio.fallback_started` only for the same owner within the bounded capture
+contract. It reports degraded health when all five captures required fallback
+or their median `startup_ms` is at least two seconds.
+
+This judgment does not change backend order, retry budgets, or any capture-path
+behavior. It accepts only the stable `auhal` and `cpal` backend labels and exact
+event codes (plus exact historical summaries); it never reads device labels,
+UIDs, transcript content, or free-form errors. Fewer than five successful
+captures is reported as insufficient data rather than healthy or degraded.
