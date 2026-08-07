@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The 109 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
+The 112 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -44,6 +44,12 @@ For Rust → frontend events see [events.md](events.md). For the hooks that call
 | `reset_microphone_permission` | — | `Result<(), String>` | Clears a stale microphone TCC entry. |
 | `open_system_preferences` | — | `Result<(), String>` | Opens System Settings to the Microphone pane. |
 | `list_audio_devices` | — | `Result<Vec<AudioDeviceDescriptor>, String>` | CPAL input descriptors: backend-native stable `id` plus presentation-only `name`. |
+
+## Optional integrations (`commands/integrations.rs`)
+
+| Command | Parameters | Returns | Description |
+|---------|-----------|---------|-------------|
+| `is_notchpill_installed` | — | `bool` | Uses macOS Launch Services to find NotchPill by bundle identifier; always `false` on other platforms. |
 
 ## Keyboard (`commands/keyboard.rs`)
 
