@@ -6,12 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-08-07
+
+### Added
+
+- Diagnostics now surface capture-startup health and can schedule a
+  privacy-bounded regression watch for recurring capture problems.
+
+### Changed
+
+- Transform prewarming keeps the speech-recognition model warm through
+  instruction capture, reducing time to a visible rewrite.
+
 ### Fixed
 
 - Update checks and installs now have a single owner, preventing duplicate
   downloads and state replacement during install preparation. Release
   promotion can publish a validated source-controlled minimum-version policy
   and fails if release notes drift from the updater manifest (#439).
+- Capture processing now clears correctly after late helper teardown, while
+  blocked-recovery paths receive explicit coverage.
+- The notch overlay remains attached across Stage Manager sets and Spaces.
+- The log shipper no longer performs microphone enumeration while idle.
 
 ## [0.28.1] - 2026-08-07
 
