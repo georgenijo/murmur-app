@@ -242,6 +242,7 @@ export function SettingsPanel({
     requestTokenRef.current = pageRequest.token;
     setActiveCat(resolvePage(pageRequest.page));
     setDiagnosticsOpen(pageRequest.page === 'performance');
+    setEditorTab(null);
   }, [pageRequest]);
   const [version, setVersion] = useState('');
   const [confirmReset, setConfirmReset] = useState(false);
@@ -249,7 +250,10 @@ export function SettingsPanel({
   const confirmResetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => { void getVersion().then(setVersion); }, []);
-  useEffect(() => { contentRef.current?.scrollTo({ top: 0 }); }, [activeCat]);
+  useEffect(() => {
+    if (!isOpen) setEditorTab(null);
+  }, [isOpen]);
+  useEffect(() => { contentRef.current?.scrollTo({ top: 0 }); }, [activeCat, editorTab]);
   useEffect(() => () => {
     if (confirmResetTimeoutRef.current) clearTimeout(confirmResetTimeoutRef.current);
   }, []);
@@ -286,6 +290,12 @@ export function SettingsPanel({
     vocabScan.cancel();
     onUpdateSettings({ codeVocabFolder: '', codeVocabLastScan: null });
   };
+  const openEditor = useCallback((tab: SettingsEditorTab) => {
+    setActiveCat('text');
+    setSearchQuery('');
+    setEditorTab(tab);
+  }, []);
+  const closeEditor = useCallback(() => setEditorTab(null), []);
 
   const selectedRuntime = runtimeByName.get(settings.model);
   const modelAvailable = selectedRuntime ? selectedRuntime.installState === 'installed' : null;
@@ -489,7 +499,10 @@ export function SettingsPanel({
           <input
             type="search"
             value={searchQuery}
-            onChange={(event) => setSearchQuery(event.target.value)}
+            onChange={(event) => {
+              setEditorTab(null);
+              setSearchQuery(event.target.value);
+            }}
             placeholder="Search all settings"
             className="h-8 w-full rounded-lg border border-outline-variant bg-surface-container-lowest pl-9 pr-8 text-sm text-on-surface outline-none placeholder:text-on-surface-variant focus:border-primary"
           />
@@ -510,6 +523,7 @@ export function SettingsPanel({
                 onClick={() => {
                   setActiveCat(category.id);
                   setDiagnosticsOpen(false);
+                  setEditorTab(null);
                 }}
                 className="ui-filter-chip px-3.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
               >
@@ -526,7 +540,21 @@ export function SettingsPanel({
       >
         <div className="mx-auto w-full max-w-4xl px-5 pb-8 pt-1">
           {configureError && <p role="alert" className="mb-4 rounded-lg bg-error/10 px-3 py-2 text-xs text-error">{configureError}</p>}
-          {searchQuery ? (
+          {editorTab ? (
+            <SettingsEditorsWindow
+              initialTab={editorTab}
+              settings={settings}
+              onUpdateSettings={onUpdateSettings}
+              scanStatus={vocabScan.status}
+              scanWalker={vocabScan.walker}
+              scanStats={vocabScan.stats}
+              onChooseCodeFolder={() => void chooseCodeFolder()}
+              onClearCodeFolder={clearCodeFolder}
+              onScan={() => void runVocabScan(settings.codeVocabFolder)}
+              onCancelScan={vocabScan.cancel}
+              onBack={closeEditor}
+            />
+          ) : searchQuery ? (
             <section aria-label="Settings search results">
               <p className="mb-3 text-xs font-bold uppercase tracking-[0.12em] text-on-surface-variant">
                 {searchResults.length} {searchResults.length === 1 ? 'result' : 'results'}
@@ -743,7 +771,7 @@ export function SettingsPanel({
                   <h2 className="text-sm font-medium text-on-surface">Saved transforms</h2>
                   <p className="mt-1 text-xs text-on-surface-variant">Create reusable spoken rewrite instructions.</p>
                 </div>
-                <button type="button" onClick={() => setEditorTab('transforms')} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface hover:text-primary">Manage</button>
+                <button type="button" onClick={() => openEditor('transforms')} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface hover:text-primary">Manage</button>
               </div>
             </div>
           </SettingsSection>
@@ -801,7 +829,7 @@ export function SettingsPanel({
                 ['knowledge', 'Knowledge', 'Manage corrections, terms, snippets, and transforms.'],
                 ['commands', 'Voice Commands', 'Create exact spoken replacements and snippets.'],
               ] as const).map(([tab, title, detail]) => (
-                <button key={tab} type="button" onClick={() => setEditorTab(tab)} className="flex items-center gap-3 rounded-xl border border-outline-variant/20 bg-surface-container-low px-3 py-3 text-left hover:border-primary/35 hover:bg-surface-container">
+                <button key={tab} type="button" onClick={() => openEditor(tab)} className="flex items-center gap-3 rounded-xl border border-outline-variant/20 bg-surface-container-low px-3 py-3 text-left hover:border-primary/35 hover:bg-surface-container">
                   <span className="min-w-0 flex-1">
                     <span className="block text-sm font-semibold text-on-surface">{title}</span>
                     <span className="mt-0.5 block text-[11px] leading-relaxed text-on-surface-variant">{detail}</span>
@@ -820,7 +848,7 @@ export function SettingsPanel({
                 {settings.codeVocabEnabled && (
                   <div className="ml-3 space-y-2 border-l border-outline-variant/30 pl-3">
                     <p className="break-all rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface">{settings.codeVocabFolder || 'No folder — built-in developer terms only'}</p>
-                    <button type="button" onClick={() => setEditorTab('scan')} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface hover:text-primary">Manage Project Scan</button>
+                    <button type="button" onClick={() => openEditor('scan')} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface hover:text-primary">Manage Project Scan</button>
                     <p className="text-xs text-on-surface-variant">The selected folder is scanned locally; dependency and build folders are skipped. Unconfigured apps keep ordinary prose vocabulary.</p>
                   </div>
                 )}
@@ -933,21 +961,6 @@ export function SettingsPanel({
         )}
       </div>
       </div>
-      {editorTab && (
-        <SettingsEditorsWindow
-          initialTab={editorTab}
-          settings={settings}
-          onUpdateSettings={onUpdateSettings}
-          scanStatus={vocabScan.status}
-          scanWalker={vocabScan.walker}
-          scanStats={vocabScan.stats}
-          onChooseCodeFolder={() => void chooseCodeFolder()}
-          onClearCodeFolder={clearCodeFolder}
-          onScan={() => void runVocabScan(settings.codeVocabFolder)}
-          onCancelScan={vocabScan.cancel}
-          onClose={() => setEditorTab(null)}
-        />
-      )}
     </div>
   );
 }

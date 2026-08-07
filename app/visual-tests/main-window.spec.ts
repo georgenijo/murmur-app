@@ -97,3 +97,20 @@ test('update discovery cannot expand or wrap the recovering header', async ({ pa
   expect(recordBox?.height).toBeLessThanOrEqual(26);
   expect(headerBox?.height).toBe(42);
 });
+
+test('settings editors preserve the primary hierarchy and provide a real back action', async ({ page }) => {
+  await page.goto('/visual-fixtures.html?state=settings&appearance=light');
+  await page.getByRole('button', { name: 'Text' }).click();
+  await page.getByRole('button', { name: /^Aliases\b/ }).click();
+
+  const fixture = page.locator('[data-visual-ready="true"]');
+  await expect(page.getByRole('navigation', { name: 'Settings pages' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Text', exact: true })).toHaveAttribute('aria-current', 'page');
+  await expect(page.getByRole('navigation', { name: 'Settings editors' })).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Aliases', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Back to Text settings' })).toBeVisible();
+  await expect(fixture).toHaveScreenshot('light-settings-aliases.png');
+
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('heading', { name: 'Text & Vocabulary' })).toBeVisible();
+});

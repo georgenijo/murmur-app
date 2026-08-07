@@ -104,6 +104,51 @@ describe('SettingsPanel information architecture', () => {
     expect(scrollTo).toHaveBeenCalledWith({ top: 0 });
   });
 
+  it('opens editors as a Text settings drill-down with explicit back navigation', async () => {
+    const settingsPages = container.querySelector('nav[aria-label="Settings pages"]') as HTMLElement;
+    const textTab = Array.from(settingsPages.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Text',
+    ) as HTMLButtonElement;
+    await act(async () => textTab.click());
+
+    const aliases = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim().startsWith('Aliases'),
+    ) as HTMLButtonElement;
+    await act(async () => aliases.click());
+
+    expect(settingsPages.isConnected).toBe(true);
+    expect(settingsPages.querySelector('[aria-current="page"]')?.textContent).toBe('Text');
+    expect(container.querySelector('nav[aria-label="Settings editors"]')).toBeNull();
+    expect(container.querySelector('h1')?.textContent).toBe('Aliases');
+
+    const back = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent?.includes('Back to Text settings'),
+    ) as HTMLButtonElement;
+    expect(back).toBeDefined();
+    await act(async () => back.click());
+
+    expect(container.textContent).toContain('Text & Vocabulary');
+    expect(container.querySelector('[aria-labelledby="settings-editor-title"]')).toBeNull();
+    expect(settingsPages.querySelector('[aria-current="page"]')?.textContent).toBe('Text');
+  });
+
+  it('returns from an editor with Escape', async () => {
+    const settingsPages = container.querySelector('nav[aria-label="Settings pages"]') as HTMLElement;
+    const textTab = Array.from(settingsPages.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Text',
+    ) as HTMLButtonElement;
+    await act(async () => textTab.click());
+    const vocabulary = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim().startsWith('Vocabulary'),
+    ) as HTMLButtonElement;
+    await act(async () => vocabulary.click());
+
+    expect(container.querySelector('h1')?.textContent).toBe('Vocabulary');
+    await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })));
+    expect(container.querySelector('[aria-labelledby="settings-editor-title"]')).toBeNull();
+    expect(settingsPages.querySelector('[aria-current="page"]')?.textContent).toBe('Text');
+  });
+
   it('keeps advanced diagnostics behind a disclosure on the Model tab', async () => {
     const button = Array.from(container.querySelectorAll('nav button')).find((item) => item.textContent === 'Model') as HTMLButtonElement;
     await act(async () => button.click());
