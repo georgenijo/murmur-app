@@ -314,6 +314,19 @@ fn raise_window_above_menubar(overlay: &tauri::WebviewWindow) {
         if let Ok(ptr) = overlay.ns_window() {
             let ns_window: &objc2_app_kit::NSWindow = unsafe { &*(ptr.cast()) };
             ns_window.setHasShadow(false);
+
+            // Tauri's `visibleOnAllWorkspaces` only adds CanJoinAllSpaces.
+            // Keep this status-surface stationary across Mission Control /
+            // Stage Manager transitions and allow it into full-screen spaces.
+            // Without FullScreenAuxiliary, WindowServer can leave the overlay
+            // attached to Murmur's previous Space even though the window still
+            // exists and is visible there.
+            let mut behavior = ns_window.collectionBehavior();
+            behavior |= objc2_app_kit::NSWindowCollectionBehavior::CanJoinAllSpaces;
+            behavior |= objc2_app_kit::NSWindowCollectionBehavior::Stationary;
+            behavior |= objc2_app_kit::NSWindowCollectionBehavior::IgnoresCycle;
+            behavior |= objc2_app_kit::NSWindowCollectionBehavior::FullScreenAuxiliary;
+            ns_window.setCollectionBehavior(behavior);
         }
     }) {
         tracing::warn!(target: "system", "raise_window_above_menubar: run_on_main_thread failed: {}", e);
