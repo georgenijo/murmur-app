@@ -452,7 +452,7 @@ impl CorrectionMatcher {
                 continue;
             }
             let phonetic_ok = dist <= 1 || phrase_key == phonetic_key_phrase(&term.spoken);
-            if phonetic_ok && best.map_or(true, |(d, _)| dist < d) {
+            if phonetic_ok && best.is_none_or(|(d, _)| dist < d) {
                 best = Some((dist, term));
             }
         }

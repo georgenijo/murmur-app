@@ -18,6 +18,19 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class WorkflowPolicyMutationTests(unittest.TestCase):
+    def test_ci_pins_and_enforces_clippy(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        for old in (
+            "        uses: dtolnay/rust-toolchain@1.96.0\n",
+            "          components: clippy\n",
+            "        run: cd app/src-tauri && cargo clippy --all-targets -- -D warnings\n",
+        ):
+            with self.subTest(policy=old.strip()):
+                mutated = workflow.replace(old, "", 1)
+                self.assertNotEqual(workflow, mutated)
+                with self.assertRaises(AssertionError):
+                    validate_ci(mutated)
+
     def test_dependency_audits_are_present_and_advisory(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         for old in (

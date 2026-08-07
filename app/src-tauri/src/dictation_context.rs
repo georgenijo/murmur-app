@@ -997,8 +997,10 @@ mod tests {
         app.writing_style = Some(WritingStyle::Verbatim);
         app.smart_formatting_override = Some(true);
         app.cli_formatting_override = Some(true);
-        let mut global = DictationState::default();
-        global.app_profiles = vec![app];
+        let global = DictationState {
+            app_profiles: vec![app],
+            ..Default::default()
+        };
 
         let snapshot = resolve_test(
             &global,
@@ -1028,8 +1030,10 @@ mod tests {
     fn resolved_style_snapshot_is_immutable() {
         let mut app = profile("com.example.Editor", None, None);
         app.writing_style = Some(WritingStyle::Polished);
-        let mut global = DictationState::default();
-        global.app_profiles = vec![app];
+        let mut global = DictationState {
+            app_profiles: vec![app],
+            ..Default::default()
+        };
         let snapshot = resolve_test(
             &global,
             Some("com.example.Editor"),

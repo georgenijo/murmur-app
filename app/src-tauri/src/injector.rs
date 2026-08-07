@@ -556,7 +556,7 @@ fn focused_role_native() -> Result<String, String> {
     let focused_attribute = unsafe {
         CFStringCreateWithCString(
             std::ptr::null(),
-            b"AXFocusedUIElement\0".as_ptr().cast(),
+            c"AXFocusedUIElement".as_ptr(),
             UTF8_ENCODING,
         )
     };
@@ -586,7 +586,7 @@ fn focused_role_native() -> Result<String, String> {
     let role_attribute = unsafe {
         CFStringCreateWithCString(
             std::ptr::null(),
-            b"AXRole\0".as_ptr().cast(),
+            c"AXRole".as_ptr(),
             UTF8_ENCODING,
         )
     };

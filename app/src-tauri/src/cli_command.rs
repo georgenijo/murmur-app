@@ -136,7 +136,7 @@ impl CliLexicon {
             }
         }
 
-        aliases.sort_by(|a, b| b.spoken.len().cmp(&a.spoken.len()));
+        aliases.sort_by_key(|alias| std::cmp::Reverse(alias.spoken.len()));
         let mut seen = std::collections::HashSet::new();
         aliases.retain(|alias| seen.insert(alias.spoken.clone()));
         Self { aliases }

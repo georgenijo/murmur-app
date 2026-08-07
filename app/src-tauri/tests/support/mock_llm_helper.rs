@@ -12,12 +12,12 @@
 //! - `oversized_on_transform` — emit a length prefix over the 64 KiB frame cap
 //! - `slow_ack_cancel`     — never Result; reply Cancelled to a Cancel
 //! - `slow_honor_cancel`   — alias of `slow_ack_cancel` (cancel-honoring slow path
-//!                           for host-side cooperative-cancel tests)
+//!   for host-side cooperative-cancel tests)
 //! - `slow_ignore_cancel`  — never Result; ignore Cancel (forces a kill)
 //! - `slow_diagnostic_no_cancel_ack` — emit a diagnostic after Cancel, but no
-//!                           matching Cancelled acknowledgement
+//!   matching Cancelled acknowledgement
 //! - `diagnostic_before_cancel_ack_then_happy` — first request emits a
-//!                           diagnostic then Cancelled; later requests succeed
+//!   diagnostic then Cancelled; later requests succeed
 //! - `wrong_nonce_on_startup_phase` — a startup completion has a bad nonce
 //! - `wrong_version_on_startup_phase` — a later startup completion has a bad version
 //!

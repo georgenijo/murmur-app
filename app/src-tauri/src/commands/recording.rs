@@ -254,7 +254,7 @@ fn dedupe_prompt_terms(prompt: &str) -> String {
 /// Entries are separated by commas or newlines (not spaces) so multi-word terms
 /// like "API Gateway" survive as one entry. Blank entries are dropped.
 fn parse_vocab_terms(s: &str) -> Vec<String> {
-    s.split(|c| c == ',' || c == '\n' || c == '\r')
+    s.split([',', '\n', '\r'])
         .map(|t| t.trim())
         .filter(|t| !t.is_empty())
         .map(String::from)
@@ -385,7 +385,7 @@ fn status_allows_model_preparation(status: DictationStatus) -> bool {
 /// short recording ends before preparation completes.
 fn spawn_model_preparation(app_handle: tauri::AppHandle, model_name: String, recording_id: u64) {
     let queued_at = std::time::Instant::now();
-    let _ = tauri::async_runtime::spawn_blocking(move || {
+    drop(tauri::async_runtime::spawn_blocking(move || {
         let queue_ms = queued_at.elapsed().as_millis() as u64;
         let state = app_handle.state::<State>();
         let is_active = {
@@ -475,7 +475,7 @@ fn spawn_model_preparation(app_handle: tauri::AppHandle, model_name: String, rec
                 "model_prepare_failed"
             ),
         }
-    });
+    }));
 }
 
 /// Warm an installed Core ML model after startup configuration. A newly linked
@@ -489,7 +489,7 @@ fn spawn_idle_model_preparation(
     change_guard: SharedBackendChangeGuard,
 ) {
     let queued_at = std::time::Instant::now();
-    let _ = tauri::async_runtime::spawn_blocking(move || {
+    drop(tauri::async_runtime::spawn_blocking(move || {
         let _change_guard = change_guard;
         let state = app_handle.state::<State>();
         let is_current = {
@@ -535,7 +535,7 @@ fn spawn_idle_model_preparation(
                 "model_prepare_skipped"
             ),
         }
-    });
+    }));
 }
 
 #[derive(Default)]
@@ -1118,11 +1118,10 @@ pub async fn process_audio(
             }
             format!("Failed to decode base64: {}", e)
         })?;
-    let samples = transcriber::parse_wav_to_samples(&wav_bytes).map_err(|e| {
+    let samples = transcriber::parse_wav_to_samples(&wav_bytes).inspect_err(|_e| {
         if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
             let _ = app_handle.emit("recording-status-changed", "idle");
         }
-        e
     })?;
     tracing::info!(target: "pipeline", "audio parse (base64 + WAV): {:?}", t_parse.elapsed());
     performance_guard.record(StageTimingV1::measured(
@@ -3636,19 +3635,21 @@ mod tests {
 
     #[test]
     fn rejected_command_alias_conflict_leaves_prior_backend_state_unchanged() {
-        let mut dictation = crate::state::DictationState::default();
-        dictation.custom_vocabulary = "Tauri".to_string();
-        dictation.vocabulary_entries = vec![crate::state::VocabularyEntry {
-            id: "tauri".to_string(),
-            written: "Tauri".to_string(),
-            aliases: vec!["Tori".to_string()],
-            enabled: true,
-            scope: crate::state::VocabularyScope::Global,
-        }];
-        dictation.voice_command_pairs = vec![crate::state::VoiceCommand {
-            phrase: "ship it".to_string(),
-            replacement: "deploy".to_string(),
-        }];
+        let mut dictation = crate::state::DictationState {
+            custom_vocabulary: "Tauri".to_string(),
+            vocabulary_entries: vec![crate::state::VocabularyEntry {
+                id: "tauri".to_string(),
+                written: "Tauri".to_string(),
+                aliases: vec!["Tori".to_string()],
+                enabled: true,
+                scope: crate::state::VocabularyScope::Global,
+            }],
+            voice_command_pairs: vec![crate::state::VoiceCommand {
+                phrase: "ship it".to_string(),
+                replacement: "deploy".to_string(),
+            }],
+            ..Default::default()
+        };
         let before = dictation.clone();
         let options = serde_json::json!({
             "voiceCommands": [{ "phrase": "Tori", "replacement": "override" }],
@@ -3875,7 +3876,7 @@ mod tests {
         // The two budgets are intentionally distinct; Whisper's is the smaller.
         assert_eq!(WHISPER_PROMPT_TERMS, 96);
         assert_eq!(CORRECTION_TERMS, 500);
-        assert!(WHISPER_PROMPT_TERMS < CORRECTION_TERMS);
+        const { assert!(WHISPER_PROMPT_TERMS < CORRECTION_TERMS) };
     }
 
     #[test]

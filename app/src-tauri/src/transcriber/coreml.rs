@@ -28,7 +28,7 @@ fn model_dir() -> Option<PathBuf> {
 }
 
 fn nonempty_file(path: &Path) -> bool {
-    path.is_file() && path.metadata().map_or(false, |metadata| metadata.len() > 0)
+    path.is_file() && path.metadata().is_ok_and(|metadata| metadata.len() > 0)
 }
 
 fn model_exists_at(path: &Path) -> bool {
@@ -58,7 +58,7 @@ fn remove_incomplete_cache(path: &Path) -> Result<(), String> {
 pub fn specific_model_exists(model_name: &str) -> bool {
     is_coreml_model(model_name)
         && cfg!(target_arch = "aarch64")
-        && model_dir().as_deref().map_or(false, model_exists_at)
+        && model_dir().as_deref().is_some_and(model_exists_at)
 }
 
 fn new_engine() -> Result<FluidAudio, String> {
@@ -96,6 +96,7 @@ pub fn prepare_model(model_name: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Default)]
 pub struct CoreMlBackend {
     engine: Option<FluidAudio>,
     loaded_model_name: Option<String>,
@@ -104,15 +105,6 @@ pub struct CoreMlBackend {
 impl CoreMlBackend {
     pub fn new() -> Self {
         Self::default()
-    }
-}
-
-impl Default for CoreMlBackend {
-    fn default() -> Self {
-        Self {
-            engine: None,
-            loaded_model_name: None,
-        }
     }
 }
 

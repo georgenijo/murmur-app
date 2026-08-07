@@ -54,7 +54,7 @@ jobs:
           cache-dependency-path: app/package-lock.json
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.96.0
 
       - name: Install frontend dependencies
         run: cd app && npm ci

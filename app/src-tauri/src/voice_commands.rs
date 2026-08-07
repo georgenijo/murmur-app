@@ -730,7 +730,7 @@ mod tests {
         let missed = apply_voice_commands_with_resolved(
             "ordinary prose",
             true,
-            &[command.clone()],
+            std::slice::from_ref(&command),
             &runtime,
         );
         assert_eq!(missed.text, "ordinary prose");

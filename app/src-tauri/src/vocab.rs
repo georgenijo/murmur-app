@@ -902,9 +902,11 @@ mod tests {
     #[test]
     fn guard_constants_are_sane() {
         // Sanity-check the guard values so an accidental edit to 0 is caught.
-        assert!(MAX_FILE_BYTES > 0);
-        assert!(MAX_FILES > 0);
-        assert!(MAX_TOTAL_BYTES >= MAX_FILE_BYTES);
+        const {
+            assert!(MAX_FILE_BYTES > 0);
+            assert!(MAX_FILES > 0);
+            assert!(MAX_TOTAL_BYTES >= MAX_FILE_BYTES);
+        }
         assert!(!SOURCE_EXTENSIONS.is_empty());
         // Caps were raised to accommodate the decoupled correction budget (top
         // 500 terms) without scanning unbounded repos: 1000 files / 32MB total /

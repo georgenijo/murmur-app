@@ -321,6 +321,9 @@ struct StartRequest {
     response: Sender<Result<(), AudioStartError>>,
 }
 
+// StartRequest is intentionally owned as one message so the supervisor can
+// accept or reject an immutable capture request without shared mutable state.
+#[allow(clippy::large_enum_variant)]
 enum SupervisorMessage {
     Start(StartRequest),
     Stop {
@@ -1509,8 +1512,10 @@ mod tests {
         }
     }
 
+    type CapturedSpecs = Arc<Mutex<Vec<(AudioOwner, Option<String>)>>>;
+
     struct SpecCaptureFactory {
-        specs: Arc<Mutex<Vec<(AudioOwner, Option<String>)>>>,
+        specs: CapturedSpecs,
     }
 
     impl WorkerFactory for SpecCaptureFactory {
@@ -1616,16 +1621,19 @@ mod tests {
         }
     }
 
-    fn harness(
-        phase: AudioInitPhase,
-        config: SupervisorConfig,
-    ) -> (
+    type ActiveFlags = Arc<Mutex<Vec<Arc<AtomicBool>>>>;
+    type Harness = (
         AudioSupervisor,
         Gate,
         Arc<AtomicUsize>,
         Arc<RecordingSink>,
-        Arc<Mutex<Vec<Arc<AtomicBool>>>>,
-    ) {
+        ActiveFlags,
+    );
+
+    fn harness(
+        phase: AudioInitPhase,
+        config: SupervisorConfig,
+    ) -> Harness {
         let gate = Gate::closed();
         let spawn_count = Arc::new(AtomicUsize::new(0));
         let sink = Arc::new(RecordingSink::default());

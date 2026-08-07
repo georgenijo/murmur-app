@@ -1165,7 +1165,7 @@ fn read_import(path: &Path) -> Result<KnowledgeExport, String> {
         .map_err(|_| "Murmur could not read the selected knowledge import.".to_string())?;
     let bundle: KnowledgeExport = serde_json::from_slice(&bytes)
         .map_err(|_| "The selected file is not a valid Murmur knowledge export.".to_string())?;
-    if bundle.format != EXPORT_FORMAT || !matches!(bundle.version, 1 | 2 | 3) {
+    if bundle.format != EXPORT_FORMAT || !matches!(bundle.version, 1..=3) {
         return Err(
             "The selected knowledge export format is not supported by this Murmur build."
                 .to_string(),

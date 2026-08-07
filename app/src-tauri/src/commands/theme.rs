@@ -346,7 +346,7 @@ mod tests {
             |parent| {
                 sync_called = true;
                 assert_eq!(parent, temp.path());
-                Err(io::Error::new(io::ErrorKind::Other, "test"))
+                Err(io::Error::other("test"))
             },
         )
         .unwrap_err();

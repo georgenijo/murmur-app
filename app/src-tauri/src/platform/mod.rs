@@ -42,9 +42,7 @@ pub(super) fn update_cpu_percent(
     previous: &mut Option<CpuTicks>,
     current: Option<CpuTicks>,
 ) -> Option<f32> {
-    let Some(current) = current else {
-        return None;
-    };
+    let current = current?;
     let percent = previous.map(|sample| cpu_percent_between(sample, current));
     *previous = Some(current);
     percent

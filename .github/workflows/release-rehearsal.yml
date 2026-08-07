@@ -116,7 +116,7 @@ jobs:
           cache-dependency-path: app/package-lock.json
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.96.0
 
       - name: Restore isolated macOS release cache
         id: rust-cache

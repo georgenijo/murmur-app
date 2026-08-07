@@ -122,9 +122,8 @@ pub async fn download_transform_model(
     // Clean any residue from a previous interrupted attempt.
     let _ = tokio::fs::remove_file(&partial).await;
 
-    let (size, sha) = stream_verified_download(&app_handle, &partial).await.map_err(|e| {
+    let (size, sha) = stream_verified_download(&app_handle, &partial).await.inspect_err(|_e| {
         let _ = std::fs::remove_file(&partial);
-        e
     })?;
 
     if size != TRANSFORM_MODEL_SIZE_BYTES || sha != TRANSFORM_MODEL_SHA256 {
