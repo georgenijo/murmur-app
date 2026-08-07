@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-const states = ['idle', 'recording', 'processing', 'settings'] as const;
+const states = ['idle', 'recording', 'processing', 'update-recovering', 'settings'] as const;
 const appearances = ['light', 'dark'] as const;
 
 for (const appearance of appearances) {
@@ -67,4 +67,65 @@ test('the window header flows into the history toolbar without a divider', async
   await expect.poll(() => header.evaluate((element) => (
     getComputedStyle(element).borderBottomWidth
   ))).toBe('0px');
+  await expect.poll(() => page.locator('.ui-window-wordmark').evaluate((element) => (
+    element.getBoundingClientRect().left
+  ))).toBe(80);
+});
+
+test('update discovery cannot expand or wrap the recovering header', async ({ page }) => {
+  await page.goto('/visual-fixtures.html?state=update-recovering&appearance=light');
+
+  const header = page.locator('.ui-window-header');
+  const update = page.getByTestId('update-indicator');
+  const hotkey = page.getByTestId('hotkey-hint');
+  const record = page.getByTestId('record-pill');
+
+  await expect(header).toBeVisible();
+  await expect(update).toHaveAccessibleName('Murmur v0.27.1 is available. View update');
+  await expect(record).toHaveAccessibleName('Recovering');
+  await expect(record).toContainText('Wait');
+
+  const geometry = await Promise.all([
+    header.boundingBox(),
+    update.boundingBox(),
+    hotkey.boundingBox(),
+    record.boundingBox(),
+  ]);
+  const [headerBox, updateBox, hotkeyBox, recordBox] = geometry;
+
+  expect(updateBox?.width).toBeLessThanOrEqual(26);
+  expect(updateBox?.height).toBeLessThanOrEqual(26);
+  expect(hotkeyBox?.height).toBeLessThanOrEqual(18);
+  expect(recordBox?.width).toBe(72);
+  expect(recordBox?.height).toBeLessThanOrEqual(26);
+  expect(headerBox?.height).toBe(42);
+});
+
+test('settings editors preserve the primary hierarchy and provide a real back action', async ({ page }) => {
+  await page.goto('/visual-fixtures.html?state=settings&appearance=light');
+  await page.getByRole('button', { name: 'Text' }).click();
+  await page.getByRole('button', { name: /^Aliases\b/ }).click();
+
+  const fixture = page.locator('[data-visual-ready="true"]');
+  await expect(page.getByRole('navigation', { name: 'Settings pages' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Text', exact: true })).toHaveAttribute('aria-current', 'page');
+  await expect(page.getByRole('navigation', { name: 'Settings editors' })).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Aliases', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Back to Text settings' })).toBeVisible();
+  await expect(fixture).toHaveScreenshot('light-settings-aliases.png');
+
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('heading', { name: 'Text & Vocabulary' })).toBeVisible();
+});
+
+test('the main recording waveform reacts to audio without pulse animation', async ({ page }) => {
+  await page.goto('/visual-fixtures.html?state=recording&appearance=dark');
+  const waveform = page.getByTestId('main-recording-waveform');
+
+  await expect(waveform.locator('span')).toHaveCount(5);
+  await expect(waveform.locator('.animate-pulse')).toHaveCount(0);
+  const heights = await waveform.locator('span').evaluateAll((bars) => (
+    bars.map((bar) => getComputedStyle(bar).height)
+  ));
+  expect(new Set(heights).size).toBeGreaterThan(1);
 });

@@ -7,6 +7,7 @@ interface MainHeaderProps {
   status: DictationStatus;
   initialized: boolean;
   recordingDuration: number;
+  audioLevel?: number;
   triggerKey: DoubleTapKey;
   recordingMode: RecordingMode;
   onRecord: () => void;
@@ -48,6 +49,7 @@ export function MainHeader({
   status,
   initialized,
   recordingDuration,
+  audioLevel = 0,
   triggerKey,
   recordingMode,
   onRecord,
@@ -60,6 +62,8 @@ export function MainHeader({
   const isCapturing = status === 'recording' || status === 'starting';
   const busy = status === 'processing' || status === 'recovering';
   const label = statusLabel(status, initialized);
+  const normalizedAudioLevel = Math.min(1, Math.max(0, audioLevel) * 16);
+  const waveformEnvelope = [0.55, 0.8, 1, 0.8, 0.55];
 
   return (
     <WindowHeader contextLabel={mode === 'settings' ? 'Settings' : undefined}>
@@ -73,9 +77,20 @@ export function MainHeader({
         {status === 'processing' || status === 'starting' ? (
           <span className="h-2 w-2 animate-spin rounded-full border border-primary/25 border-t-primary" aria-hidden="true" />
         ) : status === 'recording' ? (
-          <span className="flex h-3 items-center gap-0.5" aria-hidden="true">
-            {[5, 9, 6].map((height, index) => (
-              <span key={index} className="w-0.5 animate-pulse rounded-full bg-error" style={{ height }} />
+          <span
+            data-testid="main-recording-waveform"
+            className="flex h-3 w-4 shrink-0 items-center justify-center gap-px"
+            aria-hidden="true"
+          >
+            {waveformEnvelope.map((envelope, index) => (
+              <span
+                key={index}
+                className="w-px rounded-full bg-error"
+                style={{
+                  height: `${Math.max(2, Math.round((0.12 + normalizedAudioLevel * envelope) * 12))}px`,
+                  transition: 'height 50ms ease-out',
+                }}
+              />
             ))}
           </span>
         ) : (
@@ -104,7 +119,8 @@ export function MainHeader({
           {updateIndicator}
 
           <p
-            className={`hidden select-none text-xs text-on-surface-variant transition-opacity sm:block ${
+            data-testid="hotkey-hint"
+            className={`hidden shrink-0 select-none whitespace-nowrap text-xs text-on-surface-variant transition-opacity sm:block ${
               isCapturing || busy ? 'pointer-events-none opacity-0' : 'opacity-100'
             }`}
           >
@@ -143,17 +159,8 @@ export function MainHeader({
                 : status === 'recording'
                   ? 'Stop'
                   : busy
-                    ? label
+                    ? 'Wait'
                     : 'Record'}
-            </span>
-            {' '}
-            <span
-              aria-hidden={status !== 'recording'}
-              className={`overflow-hidden font-mono text-xs ${
-                status === 'recording' ? 'visible w-auto' : 'invisible w-0'
-              }`}
-            >
-              {formatTimer(recordingDuration)}
             </span>
           </button>
 

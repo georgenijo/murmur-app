@@ -10,24 +10,26 @@ export function UpdateIndicator({ status, onOpen, onRetryCheck }: UpdateIndicato
   if (status.phase === 'checking') {
     return (
       <span
+        data-testid="update-indicator"
         role="status"
+        aria-label="Checking for updates"
         title="Checking for updates"
         className="ui-icon-button ml-auto bg-surface-container-low"
       >
         <span aria-hidden="true" className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
-        <span className="sr-only">Checking for updates…</span>
       </span>
     );
   }
 
   if (status.phase === 'up-to-date') {
-    return <span role="status" className="sr-only">Murmur is up to date</span>;
+    return <span role="status" className="ui-visually-hidden">Murmur is up to date</span>;
   }
 
   if (status.phase === 'error') {
     const installFailed = status.stage === 'install';
     return (
       <button
+        data-testid="update-indicator"
         type="button"
         onClick={installFailed ? onOpen : onRetryCheck}
         title={installFailed ? 'Update needs attention' : 'Update check failed — retry'}
@@ -35,9 +37,6 @@ export function UpdateIndicator({ status, onOpen, onRetryCheck }: UpdateIndicato
         aria-label={installFailed ? 'Update installation needs attention' : 'Update check failed. Retry'}
       >
         <span aria-hidden="true">!</span>
-        <span className="sr-only">
-          {installFailed ? 'Update needs attention' : 'Update check failed · Retry'}
-        </span>
       </button>
     );
   }
@@ -46,6 +45,7 @@ export function UpdateIndicator({ status, onOpen, onRetryCheck }: UpdateIndicato
 
   return (
     <button
+      data-testid="update-indicator"
       type="button"
       onClick={onOpen}
       title={`Murmur ${status.version} is available`}
@@ -53,7 +53,6 @@ export function UpdateIndicator({ status, onOpen, onRetryCheck }: UpdateIndicato
       aria-label={`Murmur ${status.version} is available. View update`}
     >
       <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-primary" />
-      <span className="sr-only">Update available · v{status.version.replace(/^v/, '')}</span>
     </button>
   );
 }

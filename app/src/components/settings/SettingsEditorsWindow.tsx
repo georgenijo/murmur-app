@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { VocabScanStats, VocabScanStatus, WalkerRow } from '../../lib/hooks/useVocabScan';
 import type { Settings } from '../../lib/settings';
 import { vocabularyPrompt } from '../../lib/settings';
@@ -7,7 +7,6 @@ import { TransformsManager } from './TransformsManager';
 import { VocabScanStrip } from './VocabScanStrip';
 import { VocabularyAliasesEditor } from './VocabularyAliasesEditor';
 import { VoiceCommandsManager } from './VoiceCommandsManager';
-import { WindowHeader } from '../ui/WindowHeader';
 
 export type SettingsEditorTab =
   | 'vocabulary'
@@ -17,14 +16,14 @@ export type SettingsEditorTab =
   | 'commands'
   | 'scan';
 
-const TABS: { id: SettingsEditorTab; label: string }[] = [
-  { id: 'vocabulary', label: 'Vocabulary' },
-  { id: 'aliases', label: 'Aliases' },
-  { id: 'knowledge', label: 'Knowledge' },
-  { id: 'transforms', label: 'Transforms' },
-  { id: 'commands', label: 'Voice Commands' },
-  { id: 'scan', label: 'Project Scan' },
-];
+const EDITOR_LABELS: Record<SettingsEditorTab, string> = {
+  vocabulary: 'Vocabulary',
+  aliases: 'Aliases',
+  knowledge: 'Knowledge',
+  transforms: 'Saved Transforms',
+  commands: 'Voice Commands',
+  scan: 'Project Scan',
+};
 
 interface SettingsEditorsWindowProps {
   initialTab: SettingsEditorTab;
@@ -37,7 +36,7 @@ interface SettingsEditorsWindowProps {
   onClearCodeFolder: () => void;
   onScan: () => void;
   onCancelScan: () => void;
-  onClose: () => void;
+  onBack: () => void;
 }
 
 function ScannedVocabulary({ settings }: { settings: Settings }) {
@@ -117,34 +116,41 @@ export function SettingsEditorsWindow({
   onClearCodeFolder,
   onScan,
   onCancelScan,
-  onClose,
+  onBack,
 }: SettingsEditorsWindowProps) {
-  const [activeTab, setActiveTab] = useState<SettingsEditorTab>(initialTab);
+  useEffect(() => {
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
+      event.preventDefault();
+      onBack();
+    };
+    document.addEventListener('keydown', handleEscape);
+    return () => document.removeEventListener('keydown', handleEscape);
+  }, [onBack]);
 
   return (
-    <div className="fixed inset-0 z-[70] flex flex-col overflow-hidden bg-background text-on-surface">
-      <WindowHeader contextLabel="Settings · Editors">
-        <span data-tauri-drag-region className="flex-1" />
-        <button type="button" onClick={onClose} className="rounded-md px-2 py-1 text-[11px] font-bold leading-none text-on-surface hover:bg-surface-container-low">Done</button>
-      </WindowHeader>
+    <section aria-labelledby="settings-editor-title" className="flex min-h-0 flex-1 flex-col">
+      <div className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-2">
+        <button
+          type="button"
+          onClick={onBack}
+          className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 text-xs font-semibold text-on-surface transition-colors hover:border-primary/40 hover:bg-surface-container focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+        >
+          <span aria-hidden="true">‹</span>
+          Back to Text settings
+        </button>
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-on-surface-variant">Text editor</p>
+          <h1 id="settings-editor-title" className="text-base font-semibold text-on-surface">
+            {EDITOR_LABELS[initialTab]}
+          </h1>
+        </div>
+      </div>
 
-      <nav aria-label="Settings editors" className="flex shrink-0 flex-nowrap justify-start gap-1 overflow-x-auto px-5 py-3 sm:justify-center">
-        {TABS.map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            aria-current={activeTab === tab.id ? 'page' : undefined}
-            onClick={() => setActiveTab(tab.id)}
-            className="ui-filter-chip shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-          >
-            {tab.label}
-          </button>
-        ))}
-      </nav>
-
-      <main className="mx-auto flex min-h-0 w-full max-w-5xl flex-1 flex-col overflow-y-auto px-5 pb-6">
-        {activeTab === 'vocabulary' && <ScannedVocabulary settings={settings} />}
-        {activeTab === 'aliases' && (
+      <div className="flex min-h-0 flex-1 flex-col">
+        {initialTab === 'vocabulary' && <ScannedVocabulary settings={settings} />}
+        {initialTab === 'aliases' && (
           <VocabularyAliasesEditor
             entries={settings.vocabularyEntries}
             voiceCommands={settings.voiceCommands}
@@ -154,16 +160,16 @@ export function SettingsEditorsWindow({
             })}
           />
         )}
-        {activeTab === 'knowledge' && <KnowledgeManager active profiles={settings.appProfiles} />}
-        {activeTab === 'transforms' && <TransformsManager active />}
-        {activeTab === 'commands' && (
+        {initialTab === 'knowledge' && <KnowledgeManager active profiles={settings.appProfiles} />}
+        {initialTab === 'transforms' && <TransformsManager active />}
+        {initialTab === 'commands' && (
           <VoiceCommandsManager
             active
             globallyEnabled={settings.voiceCommandsEnabled}
             profiles={settings.appProfiles}
           />
         )}
-        {activeTab === 'scan' && (
+        {initialTab === 'scan' && (
           <section>
             <h2 className="text-base font-semibold text-on-surface">Project Scan</h2>
             <p className="mt-1 text-xs text-on-surface-variant">Scan one local source folder for identifiers. Dependency and build directories remain excluded.</p>
@@ -186,7 +192,7 @@ export function SettingsEditorsWindow({
             </div>
           </section>
         )}
-      </main>
-    </div>
+      </div>
+    </section>
   );
 }
