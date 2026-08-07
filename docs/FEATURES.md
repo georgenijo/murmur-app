@@ -56,6 +56,7 @@ Current as of **v0.21.3**. This is the breadth-first inventory of what ships; ea
 - Native `CGEvent` Cmd+V with an `osascript` fallback; configurable 10–500ms delay; one retry; timeout-bounded.
 - Auto-paste failure emits a hint — the text is already on the clipboard.
 - **File output** — numbered `.txt` transcripts and/or 16kHz mono `.wav` audio to a chosen folder (default `Documents/Murmur`). While file output is on, auto-paste is suppressed without overwriting the user's stored preference.
+- **Mirror captions to NotchPill** — opt-in, off by default. Mirrors the final transcript to `~/Library/Application Support/local-dictation/latest-caption.json` (`{text, timestamp}`) so a notch-overlay app can show what was just said. Owner-only (`0600`), most-recent-caption-only, written after the clipboard on a blocking task so it can never delay delivery, and deleted when the setting is switched off. On-device; nothing is sent anywhere.
 
 ---
 

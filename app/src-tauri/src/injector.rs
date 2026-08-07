@@ -34,6 +34,30 @@ pub fn mirror_caption(text: &str) {
     let _ = write_caption_to(&dir, text);
 }
 
+/// Delete the mirrored caption. Called when the setting is switched off, so
+/// the last thing the user said does not outlive their consent to share it.
+pub fn remove_mirrored_caption() {
+    let Some(dir) = dirs::data_dir().map(|d| d.join("local-dictation")) else {
+        return;
+    };
+    remove_caption_in(&dir);
+}
+
+/// Separated for the same reason as `write_caption_to`: testable against a
+/// temp directory. Removes any orphaned temp alongside the caption itself --
+/// a crashed write leaves one behind, and it holds the same speech.
+fn remove_caption_in(dir: &std::path::Path) {
+    let _ = std::fs::remove_file(dir.join("latest-caption.json"));
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if name.starts_with("latest-caption.json.tmp.") {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 /// Atomic write (temp file + rename) of the caption JSON to
 /// `<dir>/latest-caption.json`. Returns false (no write) for empty/whitespace
 /// text. Separated from `mirror_caption` so it can be unit-tested against a temp
@@ -54,7 +78,17 @@ fn write_caption_to(dir: &std::path::Path, text: &str) -> bool {
         return false;
     };
     let target = dir.join("latest-caption.json");
-    let tmp = dir.join(format!("latest-caption.json.tmp.{}", std::process::id()));
+    // Pid *and* a per-write counter. Pid alone gave two overlapping writes from
+    // the same process one temp path, so they could interleave into a single
+    // file and rename a spliced caption into place. Best-effort or not, that is
+    // a wrong transcript rather than a missing one.
+    static WRITE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = WRITE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = dir.join(format!(
+        "latest-caption.json.tmp.{}.{}",
+        std::process::id(),
+        seq
+    ));
     // Owner-only, applied at create time rather than after the write. This file
     // holds a verbatim record of the last thing the user said out loud, and the
     // default 0666-minus-umask makes that readable by every account on the
@@ -1243,11 +1277,12 @@ mod caption_tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    /// Repeat writes must keep working. `create_new` makes the mode
-    /// authoritative but fails on an existing temp, so a leftover from a crashed
-    /// run at the same pid would otherwise wedge the feature permanently.
+    /// Repeat writes must keep working, and must not litter. Temp names carry
+    /// a per-write counter now, so a leftover from a crashed run no longer
+    /// collides -- but any temp that *is* left behind holds the same verbatim
+    /// speech as the caption, so none may survive a successful write.
     #[test]
-    fn write_caption_to_recovers_from_a_leftover_temp() {
+    fn write_caption_to_leaves_no_temp_behind() {
         let dir = std::env::temp_dir().join(format!("murmur-cap-stale-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -1255,10 +1290,47 @@ mod caption_tests {
         std::fs::write(&stale, b"junk").unwrap();
         assert!(write_caption_to(&dir, "first"));
         assert!(write_caption_to(&dir, "second"));
-        assert!(!stale.exists(), "temp file must not survive a successful write");
+        let temps: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                e.file_name()
+                    .to_str()
+                    .map(|n| n.starts_with("latest-caption.json.tmp."))
+                    .unwrap_or(false)
+            })
+            .collect();
+        // The pre-existing junk file is the only temp allowed to survive: it
+        // was never ours, and clearing it is `remove_mirrored_caption`'s job.
+        assert_eq!(temps.len(), 1);
+        assert_eq!(temps[0].path(), stale);
         let raw = std::fs::read_to_string(dir.join("latest-caption.json")).unwrap();
         let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(v["text"], "second");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Switching the setting off must not leave the last thing the user said
+    /// sitting on disk -- including any orphaned temp, which holds the same
+    /// speech as the caption itself.
+    #[test]
+    fn remove_caption_clears_the_file_and_any_temp() {
+        let dir = std::env::temp_dir().join(format!("murmur-cap-rm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(write_caption_to(&dir, "what I said"));
+        let orphan = dir.join("latest-caption.json.tmp.999.0");
+        std::fs::write(&orphan, b"leftover speech").unwrap();
+        remove_caption_in(&dir);
+        assert!(!dir.join("latest-caption.json").exists());
+        assert!(!orphan.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn remove_caption_on_a_missing_directory_is_harmless() {
+        let dir = std::env::temp_dir().join(format!("murmur-cap-none-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        remove_caption_in(&dir);
     }
 }
