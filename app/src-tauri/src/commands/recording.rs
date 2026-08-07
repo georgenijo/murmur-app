@@ -1002,7 +1002,16 @@ async fn run_transcription_pipeline(
         // a caption the user abandoned until the next one replaces it.
         if delivery.mirror_to_notchpill && !app_state.is_cancelled(recording_id) {
             let caption = text.clone();
-            tokio::task::spawn_blocking(move || injector::mirror_caption(&caption));
+            tokio::task::spawn_blocking(move || {
+                if super::integrations::notchpill_installed() {
+                    injector::mirror_caption(&caption);
+                } else {
+                    // The preference may survive an uninstall so it can resume
+                    // after a reinstall, but no speech should remain mirrored
+                    // while the companion app is absent.
+                    injector::remove_mirrored_caption();
+                }
+            });
         }
     }
     let paste_ms = t_inject.elapsed().as_millis() as u64;
@@ -1519,7 +1528,9 @@ pub async fn configure_dictation(
         // disk after they switched the feature off would keep speech around
         // past consent -- the same reasoning that makes it 0600 in the first
         // place. Best-effort and errors swallowed, exactly like the write.
-        if was_enabled && !mirror {
+        if (was_enabled && !mirror)
+            || (mirror && !super::integrations::notchpill_installed())
+        {
             injector::remove_mirrored_caption();
         }
     }

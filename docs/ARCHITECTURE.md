@@ -348,7 +348,7 @@ Two rules keep the multi-window state coherent:
 
 ## Tauri Commands
 
-109 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
+112 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
 
 ## Events
 

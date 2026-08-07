@@ -25,6 +25,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- The NotchPill caption-mirroring toggle now appears only when macOS finds the
+  companion app. Removing NotchPill makes mirroring dormant and deletes the
+  stale caption while preserving the preference for a later reinstall (#474).
 - Main-window chrome, transcript cards, and Settings now follow shared geometry
   tokens: native traffic lights align with the single header row, Record and
   status controls remain stable across recording states, and Copy no longer

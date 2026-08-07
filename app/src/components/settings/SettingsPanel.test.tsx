@@ -12,7 +12,14 @@ import {
 } from './SettingsPanel';
 
 vi.mock('@tauri-apps/api/app', () => ({ getVersion: vi.fn(async () => '0.18.0') }));
-vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(async (command: string) => command === 'list_audio_devices' ? [] : undefined) }));
+const coreMocks = vi.hoisted(() => ({ notchPillInstalled: false }));
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: vi.fn(async (command: string) => {
+    if (command === 'list_audio_devices') return [];
+    if (command === 'is_notchpill_installed') return coreMocks.notchPillInstalled;
+    return undefined;
+  }),
+}));
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async () => () => {}) }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }));
 vi.mock('../../lib/modelRuntime', () => ({ useModelRuntimeCatalog: () => ({ models: [], byName: new Map(), error: null }) }));
@@ -50,15 +57,10 @@ describe('SettingsPanel information architecture', () => {
   let root: Root;
   const scrollTo = vi.fn();
 
-  beforeEach(async () => {
-    scrollTo.mockReset();
-    Object.defineProperty(HTMLElement.prototype, 'scrollTo', { value: scrollTo, configurable: true });
-    container = document.createElement('div');
-    document.body.appendChild(container);
-    root = createRoot(container);
-    await act(async () => root.render(
+  function renderPanel(isOpen = true) {
+    return root.render(
       <SettingsPanel
-        isOpen
+        isOpen={isOpen}
         onClose={vi.fn()}
         settings={DEFAULT_SETTINGS}
         onUpdateSettings={vi.fn()}
@@ -70,7 +72,17 @@ describe('SettingsPanel information architecture', () => {
         updateStatus={{ phase: 'idle' }}
         configureError={null}
       />,
-    ));
+    );
+  }
+
+  beforeEach(async () => {
+    coreMocks.notchPillInstalled = false;
+    scrollTo.mockReset();
+    Object.defineProperty(HTMLElement.prototype, 'scrollTo', { value: scrollTo, configurable: true });
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => renderPanel());
   });
 
   afterEach(async () => {
@@ -88,6 +100,18 @@ describe('SettingsPanel information architecture', () => {
     expect(container.querySelector('h1')?.textContent).toBe('Microphone & Trigger');
     expect(container.textContent).toContain('Microphone');
     expect(container.textContent).toContain('Always copied to clipboard');
+  });
+
+  it('hides the NotchPill setting when the companion app is absent', () => {
+    expect(container.textContent).not.toContain('Mirror Captions to NotchPill');
+  });
+
+  it('shows the NotchPill setting when the companion app is installed', async () => {
+    coreMocks.notchPillInstalled = true;
+    await act(async () => renderPanel(false));
+    await act(async () => renderPanel(true));
+
+    expect(container.textContent).toContain('Mirror Captions to NotchPill');
   });
 
   it('groups the previous settings pages into Model, Text, and App', async () => {
