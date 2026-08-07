@@ -65,8 +65,7 @@ impl TranscriptStageConfig {
             voice_commands_enabled: false,
             smart_correction_enabled: false,
             smart_formatting_enabled: false,
-            spoken_structure_policy:
-                crate::spoken_structure::SpokenStructurePolicy::Off,
+            spoken_structure_policy: crate::spoken_structure::SpokenStructurePolicy::Off,
             spoken_numbers_enabled: false,
             ide_context_enabled: false,
             cli_command_enabled: false,
@@ -88,8 +87,7 @@ impl TranscriptStageConfig {
             voice_commands_enabled: false,
             smart_correction_enabled: false,
             smart_formatting_enabled: false,
-            spoken_structure_policy:
-                crate::spoken_structure::SpokenStructurePolicy::Off,
+            spoken_structure_policy: crate::spoken_structure::SpokenStructurePolicy::Off,
             spoken_numbers_enabled: false,
             ide_context_enabled: false,
             cli_command_enabled: false,
@@ -494,13 +492,15 @@ impl TranscriptTransform for VoiceCommandsStage {
     }
 
     fn transform(&self, text: &str, _context: &TranscriptContext) -> Result<String, StageError> {
-        Ok(crate::voice_commands::apply_custom_voice_commands_for_pipeline(
-            text,
-            true,
-            &self.voice_commands,
-            self.runtime.as_ref(),
+        Ok(
+            crate::voice_commands::apply_custom_voice_commands_for_pipeline(
+                text,
+                true,
+                &self.voice_commands,
+                self.runtime.as_ref(),
+            )
+            .text,
         )
-        .text)
     }
 }
 
@@ -687,12 +687,30 @@ mod tests {
         assert!(cfg.cleanup_enabled);
         assert!(cfg.cleanup_remove_filler);
         assert!(cfg.cleanup_capitalize);
-        assert!(!cfg.voice_commands_enabled, "voice-commands must be OFF for instructions");
-        assert!(!cfg.cli_command_enabled, "CLI formatting must be OFF for instructions");
-        assert!(!cfg.smart_formatting_enabled, "smart-formatting must be OFF for instructions");
-        assert!(!cfg.spoken_numbers_enabled, "spoken numbers must be OFF for instructions");
-        assert!(!cfg.smart_correction_enabled, "smart-correction must be OFF for instructions");
-        assert!(!cfg.ide_context_enabled, "IDE-context must be OFF for instructions");
+        assert!(
+            !cfg.voice_commands_enabled,
+            "voice-commands must be OFF for instructions"
+        );
+        assert!(
+            !cfg.cli_command_enabled,
+            "CLI formatting must be OFF for instructions"
+        );
+        assert!(
+            !cfg.smart_formatting_enabled,
+            "smart-formatting must be OFF for instructions"
+        );
+        assert!(
+            !cfg.spoken_numbers_enabled,
+            "spoken numbers must be OFF for instructions"
+        );
+        assert!(
+            !cfg.smart_correction_enabled,
+            "smart-correction must be OFF for instructions"
+        );
+        assert!(
+            !cfg.ide_context_enabled,
+            "IDE-context must be OFF for instructions"
+        );
     }
 
     fn live_context(stages: TranscriptStageConfig) -> TranscriptContext {
@@ -713,8 +731,7 @@ mod tests {
             voice_commands_enabled: true,
             smart_correction_enabled: true,
             smart_formatting_enabled: false,
-            spoken_structure_policy:
-                crate::spoken_structure::SpokenStructurePolicy::Basic,
+            spoken_structure_policy: crate::spoken_structure::SpokenStructurePolicy::Basic,
             spoken_numbers_enabled: true,
             ide_context_enabled: false,
             cli_command_enabled: true,
@@ -786,8 +803,7 @@ mod tests {
             },
             TranscriptStageConfig {
                 voice_commands_enabled: false,
-                spoken_structure_policy:
-                    crate::spoken_structure::SpokenStructurePolicy::Off,
+                spoken_structure_policy: crate::spoken_structure::SpokenStructurePolicy::Off,
                 ..all_stages()
             },
         ];
@@ -862,8 +878,8 @@ mod tests {
         )
         .unwrap();
         let ide_index = crate::ide_context::build_index(1, &[root.to_string_lossy().to_string()])
-        .unwrap()
-        .index;
+            .unwrap()
+            .index;
         let stages = TranscriptStageConfig {
             cleanup_enabled: false,
             cleanup_remove_filler: false,
@@ -871,8 +887,7 @@ mod tests {
             voice_commands_enabled: false,
             smart_correction_enabled: true,
             smart_formatting_enabled: false,
-            spoken_structure_policy:
-                crate::spoken_structure::SpokenStructurePolicy::Off,
+            spoken_structure_policy: crate::spoken_structure::SpokenStructurePolicy::Off,
             spoken_numbers_enabled: false,
             ide_context_enabled: true,
             cli_command_enabled: true,
@@ -910,8 +925,7 @@ mod tests {
             voice_commands_enabled: false,
             smart_correction_enabled: false,
             smart_formatting_enabled: false,
-            spoken_structure_policy:
-                crate::spoken_structure::SpokenStructurePolicy::Off,
+            spoken_structure_policy: crate::spoken_structure::SpokenStructurePolicy::Off,
             spoken_numbers_enabled: false,
             ide_context_enabled: false,
             cli_command_enabled: false,
@@ -934,8 +948,7 @@ mod tests {
             voice_commands_enabled: true,
             smart_correction_enabled: false,
             smart_formatting_enabled: false,
-            spoken_structure_policy:
-                crate::spoken_structure::SpokenStructurePolicy::Basic,
+            spoken_structure_policy: crate::spoken_structure::SpokenStructurePolicy::Basic,
             spoken_numbers_enabled: false,
             ide_context_enabled: false,
             cli_command_enabled: false,
@@ -1007,8 +1020,7 @@ mod tests {
     fn scratch_that_observes_boundaries_created_by_spoken_structure() {
         let stages = TranscriptStageConfig {
             voice_commands_enabled: true,
-            spoken_structure_policy:
-                crate::spoken_structure::SpokenStructurePolicy::Basic,
+            spoken_structure_policy: crate::spoken_structure::SpokenStructurePolicy::Basic,
             ..TranscriptStageConfig::verbatim()
         };
         for (input, expected) in [
@@ -1029,8 +1041,7 @@ mod tests {
     fn custom_command_output_is_literal_to_spoken_structure() {
         let stages = TranscriptStageConfig {
             voice_commands_enabled: true,
-            spoken_structure_policy:
-                crate::spoken_structure::SpokenStructurePolicy::Basic,
+            spoken_structure_policy: crate::spoken_structure::SpokenStructurePolicy::Basic,
             ..TranscriptStageConfig::verbatim()
         };
         let output = transform_transcript(
@@ -1051,10 +1062,7 @@ mod tests {
             "command echo insert literal".to_string(),
             &live_context(stages),
             TranscriptTransformResources {
-                custom_commands: vec![(
-                    "insert literal".to_string(),
-                    "literal period".to_string(),
-                )],
+                custom_commands: vec![("insert literal".to_string(), "literal period".to_string())],
                 ..TranscriptTransformResources::empty()
             },
         )
@@ -1082,8 +1090,7 @@ mod tests {
             voice_commands_enabled: false,
             smart_correction_enabled: true,
             smart_formatting_enabled: false,
-            spoken_structure_policy:
-                crate::spoken_structure::SpokenStructurePolicy::Off,
+            spoken_structure_policy: crate::spoken_structure::SpokenStructurePolicy::Off,
             spoken_numbers_enabled: false,
             ide_context_enabled: false,
             cli_command_enabled: false,
@@ -1126,8 +1133,7 @@ mod tests {
             voice_commands_enabled: false,
             smart_correction_enabled: true,
             smart_formatting_enabled: false,
-            spoken_structure_policy:
-                crate::spoken_structure::SpokenStructurePolicy::Off,
+            spoken_structure_policy: crate::spoken_structure::SpokenStructurePolicy::Off,
             spoken_numbers_enabled: false,
             ide_context_enabled: false,
             cli_command_enabled: true,
@@ -1158,8 +1164,7 @@ mod tests {
             voice_commands_enabled: false,
             smart_correction_enabled: false,
             smart_formatting_enabled: true,
-            spoken_structure_policy:
-                crate::spoken_structure::SpokenStructurePolicy::Extended,
+            spoken_structure_policy: crate::spoken_structure::SpokenStructurePolicy::Extended,
             spoken_numbers_enabled: false,
             ide_context_enabled: false,
             cli_command_enabled: true,
@@ -1189,8 +1194,7 @@ mod tests {
                 voice_commands_enabled: false,
                 smart_correction_enabled: true,
                 smart_formatting_enabled: false,
-                spoken_structure_policy:
-                    crate::spoken_structure::SpokenStructurePolicy::Off,
+                spoken_structure_policy: crate::spoken_structure::SpokenStructurePolicy::Off,
                 spoken_numbers_enabled: false,
                 ide_context_enabled: false,
                 cli_command_enabled: case.cli,
@@ -1226,8 +1230,7 @@ mod tests {
             voice_commands_enabled: false,
             smart_correction_enabled: false,
             smart_formatting_enabled: true,
-            spoken_structure_policy:
-                crate::spoken_structure::SpokenStructurePolicy::Extended,
+            spoken_structure_policy: crate::spoken_structure::SpokenStructurePolicy::Extended,
             spoken_numbers_enabled: false,
             ide_context_enabled: false,
             cli_command_enabled: true,
@@ -1315,8 +1318,7 @@ mod tests {
     fn spoken_slash_punctuation_and_number_labels_compose_in_pipeline_order() {
         let stages = TranscriptStageConfig {
             smart_formatting_enabled: true,
-            spoken_structure_policy:
-                crate::spoken_structure::SpokenStructurePolicy::Extended,
+            spoken_structure_policy: crate::spoken_structure::SpokenStructurePolicy::Extended,
             spoken_numbers_enabled: true,
             ..TranscriptStageConfig::verbatim()
         };

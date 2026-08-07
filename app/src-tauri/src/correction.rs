@@ -762,14 +762,20 @@ mod tests {
     fn tier1_respects_word_boundary() {
         let m = matcher(&["useEffect"]);
         // "use effect" inside a larger word must not fire.
-        assert_eq!(m.apply("abuse effective tactics"), "abuse effective tactics");
+        assert_eq!(
+            m.apply("abuse effective tactics"),
+            "abuse effective tactics"
+        );
     }
 
     #[test]
     fn tier1_longest_match_wins() {
         let m = matcher(&["stdin"]);
         // builtin "standard input" (2 words) beats "standard in" overlap.
-        assert_eq!(m.apply("read from standard input now"), "read from stdin now");
+        assert_eq!(
+            m.apply("read from standard input now"),
+            "read from stdin now"
+        );
     }
 
     // ---- Tier 2 (sounds-like) ----
@@ -778,7 +784,10 @@ mod tests {
     fn tier2_phonetic_mishear() {
         let m = matcher(&["rePivot"]);
         // ASR misheard "re pivot" as "red pivot"; phonetic + edit-distance recovers it.
-        assert_eq!(m.apply("then red pivot the layout"), "then rePivot the layout");
+        assert_eq!(
+            m.apply("then red pivot the layout"),
+            "then rePivot the layout"
+        );
     }
 
     #[test]
@@ -805,10 +814,13 @@ mod tests {
         let m = CorrectionMatcher::build(
             &["error_message".to_string(), "Errorf".to_string()],
             &[],
-            true,  // fuzzy on
+            true, // fuzzy on
             false,
         );
-        assert_eq!(m.apply("log the error message now"), "log the error_message now");
+        assert_eq!(
+            m.apply("log the error message now"),
+            "log the error_message now"
+        );
     }
 
     #[test]
@@ -841,16 +853,16 @@ mod tests {
 
     #[test]
     fn is_fuzzy_eligible_classifies_structure() {
-        assert!(is_fuzzy_eligible("rePivot"));        // camel boundary
-        assert!(is_fuzzy_eligible("variable_name"));  // underscore
-        assert!(is_fuzzy_eligible("large_v3"));       // digit
+        assert!(is_fuzzy_eligible("rePivot")); // camel boundary
+        assert!(is_fuzzy_eligible("variable_name")); // underscore
+        assert!(is_fuzzy_eligible("large_v3")); // digit
         assert!(is_fuzzy_eligible("XCTAssertEqual")); // camel boundary (t->E)
-        assert!(!is_fuzzy_eligible("Errorf"));        // leading cap only
-        assert!(!is_fuzzy_eligible("kubectl"));       // plain lowercase
-        assert!(!is_fuzzy_eligible("Record"));        // leading cap only
-        assert!(!is_fuzzy_eligible("noop"));          // plain
-        assert!(!is_fuzzy_eligible("NOOP"));          // all-caps acronym, no lower->upper
-        assert!(!is_fuzzy_eligible("HTTP"));          // all-caps acronym
+        assert!(!is_fuzzy_eligible("Errorf")); // leading cap only
+        assert!(!is_fuzzy_eligible("kubectl")); // plain lowercase
+        assert!(!is_fuzzy_eligible("Record")); // leading cap only
+        assert!(!is_fuzzy_eligible("noop")); // plain
+        assert!(!is_fuzzy_eligible("NOOP")); // all-caps acronym, no lower->upper
+        assert!(!is_fuzzy_eligible("HTTP")); // all-caps acronym
     }
 
     #[test]
@@ -900,7 +912,10 @@ mod tests {
             m.apply("std spoken then standard out"),
             "standard error then stdout"
         );
-        assert_eq!(m.apply("hook spoken then use effect"), "use effect then use effect");
+        assert_eq!(
+            m.apply("hook spoken then use effect"),
+            "use effect then use effect"
+        );
         assert_eq!(m.apply(&m.apply("std spoken")), "standard error");
     }
 
@@ -926,7 +941,10 @@ mod tests {
     fn builtins_gated_off_when_not_dev_context() {
         // Without include_builtins, "standard error" stays as prose.
         let m = CorrectionMatcher::build(&[], &[], true, false);
-        assert_eq!(m.apply("the standard error of the mean"), "the standard error of the mean");
+        assert_eq!(
+            m.apply("the standard error of the mean"),
+            "the standard error of the mean"
+        );
     }
 
     #[test]

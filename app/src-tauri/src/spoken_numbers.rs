@@ -263,12 +263,7 @@ fn adjacent_number(words: &[WordSpan], input: &str, start: usize, other: usize) 
         && is_number_token(&other_word.lower)
 }
 
-fn coordinated_number(
-    words: &[WordSpan],
-    input: &str,
-    start: usize,
-    look_forward: bool,
-) -> bool {
+fn coordinated_number(words: &[WordSpan], input: &str, start: usize, look_forward: bool) -> bool {
     let (connector_index, number_index) = if look_forward {
         (start + 1, start + 2)
     } else {
@@ -287,7 +282,12 @@ fn coordinated_number(
         return false;
     };
     matches!(connector.lower.as_str(), "and" | "or" | "to" | "through")
-        && connected(words, input, start.min(connector_index), start.max(connector_index))
+        && connected(
+            words,
+            input,
+            start.min(connector_index),
+            start.max(connector_index),
+        )
         && connected(
             words,
             input,
@@ -670,10 +670,7 @@ mod tests {
             normalize_spoken_numbers("1 thing, 1 idea, that 1, and 1 day"),
             "one thing, one idea, that one, and one day"
         );
-        assert_eq!(
-            normalize_spoken_numbers("one hundred things"),
-            "100 things"
-        );
+        assert_eq!(normalize_spoken_numbers("one hundred things"), "100 things");
     }
 
     #[test]
@@ -690,7 +687,10 @@ mod tests {
             "100, 1.5, -1"
         );
         assert_eq!(normalize_spoken_numbers("1,000 and 1.5"), "1,000 and 1.5");
-        assert_eq!(normalize_spoken_numbers("maybe like one/2"), "maybe like 1/2");
+        assert_eq!(
+            normalize_spoken_numbers("maybe like one/2"),
+            "maybe like 1/2"
+        );
     }
 
     #[test]

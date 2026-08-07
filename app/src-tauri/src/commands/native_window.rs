@@ -98,9 +98,8 @@ fn apply_window_level_and_activation_on_main(
         let sel = objc2::sel!(_setPreventsActivation:);
         let responds: bool = unsafe { objc2::msg_send![ns_window, respondsToSelector: sel] };
         if responds {
-            let _: () = unsafe {
-                objc2::msg_send![ns_window, _setPreventsActivation: prevents_activation]
-            };
+            let _: () =
+                unsafe { objc2::msg_send![ns_window, _setPreventsActivation: prevents_activation] };
         } else {
             tracing::warn!(target: "system", "_setPreventsActivation: not available on this macOS version");
         }

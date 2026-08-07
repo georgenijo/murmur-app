@@ -1630,10 +1630,7 @@ mod tests {
         ActiveFlags,
     );
 
-    fn harness(
-        phase: AudioInitPhase,
-        config: SupervisorConfig,
-    ) -> Harness {
+    fn harness(phase: AudioInitPhase, config: SupervisorConfig) -> Harness {
         let gate = Gate::closed();
         let spawn_count = Arc::new(AtomicUsize::new(0));
         let sink = Arc::new(RecordingSink::default());

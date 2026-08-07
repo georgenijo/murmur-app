@@ -605,8 +605,7 @@ fn transcript_stage_timing(
 ) -> Option<StageTimingV1> {
     use crate::transcript_transform::{
         StageOutcome, CLEANUP_STAGE, CLI_COMMAND_STAGE, IDE_CONTEXT_STAGE, SMART_CORRECTION_STAGE,
-        SMART_FORMATTING_STAGE, SPOKEN_NUMBERS_STAGE, SPOKEN_STRUCTURE_STAGE,
-        VOICE_COMMANDS_STAGE,
+        SMART_FORMATTING_STAGE, SPOKEN_NUMBERS_STAGE, SPOKEN_STRUCTURE_STAGE, VOICE_COMMANDS_STAGE,
     };
 
     let stage = match report.stage {
@@ -739,7 +738,9 @@ async fn run_transcription_pipeline(
     // the authoritative full-buffer VAD + inference pass after recording stops.
     performance_guard.enter(PerformanceStageV1::Vad);
     let t_vad = std::time::Instant::now();
-    let (samples_for_transcription, vad_trimmed) = if !vad::is_enabled(transcription.vad_sensitivity) {
+    let (samples_for_transcription, vad_trimmed) = if !vad::is_enabled(
+        transcription.vad_sensitivity,
+    ) {
         tracing::info!(target: "pipeline", "VAD disabled for lowest-latency transcription");
         (samples.to_vec(), false)
     } else {
@@ -2221,19 +2222,24 @@ pub(crate) fn handle_audio_lifecycle(
     recording_id: u64,
     event: AudioLifecycleEvent,
 ) {
-    handle_audio_lifecycle_with(app_handle, recording_id, event, |app_handle, recording_id| {
-        tauri::async_runtime::spawn(async move {
-            let state = app_handle.state::<State>();
-            if let Err(error) = stop_native_recording(app_handle.clone(), state).await {
-                tracing::error!(
-                    target: "pipeline",
-                    recording_id,
-                    error = error.as_str(),
-                    "interrupted recording transcription failed"
-                );
-            }
-        });
-    });
+    handle_audio_lifecycle_with(
+        app_handle,
+        recording_id,
+        event,
+        |app_handle, recording_id| {
+            tauri::async_runtime::spawn(async move {
+                let state = app_handle.state::<State>();
+                if let Err(error) = stop_native_recording(app_handle.clone(), state).await {
+                    tracing::error!(
+                        target: "pipeline",
+                        recording_id,
+                        error = error.as_str(),
+                        "interrupted recording transcription failed"
+                    );
+                }
+            });
+        },
+    );
 }
 
 fn handle_audio_lifecycle_with<R: tauri::Runtime>(

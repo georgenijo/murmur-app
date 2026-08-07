@@ -305,10 +305,7 @@ fn marker_at(
         SpokenStructurePolicy::Off => &[],
         SpokenStructurePolicy::Basic => &[(BASIC_MARKERS, false)],
         SpokenStructurePolicy::Extended => &[(EXTENDED_MARKERS, true)],
-        SpokenStructurePolicy::Union => &[
-            (EXTENDED_MARKERS, true),
-            (UNION_ONLY_MARKERS, false),
-        ],
+        SpokenStructurePolicy::Union => &[(EXTENDED_MARKERS, true), (UNION_ONLY_MARKERS, false)],
     };
 
     for (markers, extended_semantics) in tables {
@@ -414,8 +411,7 @@ fn auto_punctuation_suffix_len(suffix: &str, marker: Marker) -> usize {
     let Some(existing) = suffix.chars().next() else {
         return 0;
     };
-    if existing == spoken
-        || (is_terminal_punctuation(existing) && is_terminal_punctuation(spoken))
+    if existing == spoken || (is_terminal_punctuation(existing) && is_terminal_punctuation(spoken))
     {
         existing.len_utf8()
     } else {
@@ -570,10 +566,7 @@ mod tests {
     #[test]
     fn scratch_uses_boundaries_created_in_the_same_pass() {
         assert_eq!(
-            apply_spoken_structure(
-                "one period two scratch that",
-                SpokenStructurePolicy::Union,
-            ),
+            apply_spoken_structure("one period two scratch that", SpokenStructurePolicy::Union,),
             "one."
         );
         assert_eq!(
@@ -591,11 +584,11 @@ mod tests {
             ("I have one idea. period", "I have one idea."),
             ("Are we ready? question mark", "Are we ready?"),
             ("Are we ready. question mark.", "Are we ready?"),
-            ("Count one comma, two comma, three period.", "Count one, two, three."),
             (
-                "Really question mark exclamation mark",
-                "Really?!",
+                "Count one comma, two comma, three period.",
+                "Count one, two, three.",
             ),
+            ("Really question mark exclamation mark", "Really?!"),
         ] {
             assert_eq!(
                 apply_spoken_structure(input, SpokenStructurePolicy::Extended),
@@ -607,24 +600,15 @@ mod tests {
     #[test]
     fn arbitration_does_not_cross_newlines_or_consume_more_than_one_mark() {
         assert_eq!(
-            apply_spoken_structure(
-                "Ready?\nquestion mark",
-                SpokenStructurePolicy::Extended,
-            ),
+            apply_spoken_structure("Ready?\nquestion mark", SpokenStructurePolicy::Extended,),
             "Ready?\n?"
         );
         assert_eq!(
-            apply_spoken_structure(
-                "Ready?? question mark",
-                SpokenStructurePolicy::Extended,
-            ),
+            apply_spoken_structure("Ready?? question mark", SpokenStructurePolicy::Extended,),
             "Ready??"
         );
         assert_eq!(
-            apply_spoken_structure(
-                "Wait… question mark",
-                SpokenStructurePolicy::Extended,
-            ),
+            apply_spoken_structure("Wait… question mark", SpokenStructurePolicy::Extended,),
             "Wait…?"
         );
     }
@@ -632,10 +616,7 @@ mod tests {
     #[test]
     fn unicode_case_mapping_cannot_misalign_ascii_phrase_scanning() {
         assert_eq!(
-            apply_spoken_structure(
-                "İstanbul period",
-                SpokenStructurePolicy::Basic,
-            ),
+            apply_spoken_structure("İstanbul period", SpokenStructurePolicy::Basic,),
             "İstanbul."
         );
     }

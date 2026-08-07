@@ -83,8 +83,7 @@ unsafe impl GlobalAlloc for RustZoneAllocator {
         }
         // Over-aligned: malloc_zone_realloc may not preserve stricter alignment
         // if the block moves, so allocate aligned + copy + free.
-        let new_ptr =
-            unsafe { malloc_zone_memalign(zone, layout.align(), new_size) as *mut u8 };
+        let new_ptr = unsafe { malloc_zone_memalign(zone, layout.align(), new_size) as *mut u8 };
         if new_ptr.is_null() {
             return std::ptr::null_mut();
         }

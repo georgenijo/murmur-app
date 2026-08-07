@@ -375,9 +375,7 @@ fn validate_rule_candidate(source: &str, replacement: &str) -> Result<RuleCandid
     }
     if !source.chars().any(char::is_alphanumeric) || !replacement.chars().any(char::is_alphanumeric)
     {
-        return Err(
-            "Punctuation or whitespace-only edits cannot be learned.".to_string(),
-        );
+        return Err("Punctuation or whitespace-only edits cannot be learned.".to_string());
     }
     if collapse_whitespace(&source) == collapse_whitespace(&replacement) {
         return Err("Whitespace-only edits cannot be learned.".to_string());

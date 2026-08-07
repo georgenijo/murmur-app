@@ -52,7 +52,11 @@ impl PerformanceRunKindV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum RunCorrelationV1 {
     Dictation { recording_id: u64 },
     FileTranscription { file_run_id: u64 },
@@ -390,7 +394,11 @@ pub enum StableRunErrorV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "status", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum RunOutcomeV1 {
     Success,
     NoSpeech,

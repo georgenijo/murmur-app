@@ -88,9 +88,9 @@ fn backend(engine: &str) -> Result<(Box<dyn TranscriptionBackend>, &'static str)
         "parakeet" => Ok((Box::new(ParakeetBackend::new()), PARAKEET_MODEL)),
         "whisper" => Ok((Box::new(WhisperBackend::new()), WHISPER_MODEL)),
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-        "coreml" => Err(
-            "Core ML is available only on macOS 14 or newer with Apple Silicon".to_string(),
-        ),
+        "coreml" => {
+            Err("Core ML is available only on macOS 14 or newer with Apple Silicon".to_string())
+        }
         _ => Err(format!("unknown engine: {engine}")),
     }
 }

@@ -4,10 +4,7 @@ use std::path::PathBuf;
 
 pub(crate) fn refresh_correction_rules(state: &State) -> Result<(), String> {
     let entries = state.knowledge.enabled_replacement_rules()?;
-    *state
-        .app_state
-        .knowledge_replacements
-        .lock_or_recover() = std::sync::Arc::new(entries);
+    *state.app_state.knowledge_replacements.lock_or_recover() = std::sync::Arc::new(entries);
     let dictation = state.app_state.dictation.lock_or_recover();
     crate::commands::recording::rebuild_correction_matcher(&state.app_state, &dictation);
     state.app_state.bump_settings_revision();

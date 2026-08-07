@@ -16,7 +16,11 @@ const SPEECH_PAD_MS: i32 = 120;
 
 /// Expected path for the VAD model under the app's models directory.
 pub fn vad_model_path() -> Option<PathBuf> {
-    dirs::data_dir().map(|d| d.join("local-dictation").join("models").join(VAD_MODEL_FILENAME))
+    dirs::data_dir().map(|d| {
+        d.join("local-dictation")
+            .join("models")
+            .join(VAD_MODEL_FILENAME)
+    })
 }
 
 /// Check whether the VAD model file exists on disk.
@@ -41,7 +45,11 @@ pub fn is_enabled(sensitivity: u32) -> bool {
 /// `model_path` must point to a valid Silero VAD GGML model file.
 /// This function creates a `WhisperVadContext` which is `!Send`, so it must
 /// run entirely within a single thread (use `spawn_blocking`).
-pub fn filter_speech(model_path: &str, samples: &[f32], threshold: f32) -> Result<VadResult, String> {
+pub fn filter_speech(
+    model_path: &str,
+    samples: &[f32],
+    threshold: f32,
+) -> Result<VadResult, String> {
     VAD_CONTEXT.with(|cache| {
         let mut cached = cache.borrow_mut();
         if cached
@@ -69,7 +77,6 @@ fn filter_speech_with_context(
     samples: &[f32],
     threshold: f32,
 ) -> Result<VadResult, String> {
-
     let mut vad_params = WhisperVadParams::default();
     vad_params.set_threshold(threshold);
     // Preserve the initial consonant around VAD boundaries. The upstream
@@ -129,7 +136,10 @@ mod tests {
         assert!(result.is_err());
         VAD_CONTEXT.with(|cache| {
             assert!(
-                cache.borrow().as_ref().is_none_or(|(path, _)| path != &missing),
+                cache
+                    .borrow()
+                    .as_ref()
+                    .is_none_or(|(path, _)| path != &missing),
                 "a failed context must not be cached"
             );
         });
