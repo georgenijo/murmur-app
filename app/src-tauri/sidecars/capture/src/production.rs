@@ -447,6 +447,11 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
                 },
             )
             .map_err(|_| ())?;
+            if fault == Some("hang-stream-build") {
+                loop {
+                    std::thread::park();
+                }
+            }
             let ring = Arc::new(SpscRing::new());
             let failed = Arc::new(AtomicBool::new(false));
             let mut emit_setup = |step: CaptureSetupStep, transition: SetupTransition| {

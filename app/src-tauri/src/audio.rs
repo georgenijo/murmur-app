@@ -185,7 +185,6 @@ pub(crate) enum AudioCommand {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AudioInitPhase {
     DeviceEnumeration,
-    ConfigLookup,
     StreamBuild,
     FirstBufferWait,
     Runtime,
@@ -195,7 +194,6 @@ impl AudioInitPhase {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::DeviceEnumeration => "device_enumeration",
-            Self::ConfigLookup => "config_lookup",
             Self::StreamBuild => "stream_build",
             Self::FirstBufferWait => "first_buffer_wait",
             Self::Runtime => "runtime",
@@ -285,9 +283,41 @@ fn helper_path() -> Result<std::path::PathBuf, String> {
         .map_err(|_| "The signed capture worker is missing from the app bundle.".to_string())
 }
 
+#[cfg(debug_assertions)]
+fn capture_fault_for_scenario(
+    scenario: Option<&str>,
+    create_sentinel: impl FnOnce() -> bool,
+) -> Option<&'static str> {
+    match scenario {
+        Some("hang_stream_build") => Some("hang-stream-build"),
+        Some("hang_stream_build_once") if create_sentinel() => Some("hang-stream-build"),
+        _ => None,
+    }
+}
+
+#[cfg(debug_assertions)]
+fn requested_capture_fault() -> Option<&'static str> {
+    let scenario = std::env::var("MURMUR_AUDIO_TEST_SCENARIO").ok();
+    capture_fault_for_scenario(scenario.as_deref(), || {
+        std::env::var_os("MURMUR_AUDIO_TEST_SENTINEL").is_some_and(|path| {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+                .is_ok()
+        })
+    })
+}
+
+#[cfg(not(debug_assertions))]
+fn requested_capture_fault() -> Option<&'static str> {
+    None
+}
+
 fn spawn_helper(
     capture_id: u64,
     nonce_hex: &str,
+    fault: Option<&str>,
 ) -> Result<
     (
         ManagedChild,
@@ -317,13 +347,12 @@ fn spawn_helper(
     }
     let signature_ms = signature_started.elapsed().as_millis() as u64;
     let capture_id_text = capture_id.to_string();
+    let mut arguments = vec!["--production-v3", capture_id_text.as_str(), nonce_hex];
+    if let Some(fault) = fault {
+        arguments.extend(["--fault", fault]);
+    }
     let spawn_started = Instant::now();
-    let child = ManagedChild::spawn_with_arguments(
-        &path,
-        &["--production-v3", &capture_id_text, nonce_hex],
-        &[],
-    )
-    .map_err(|_| {
+    let child = ManagedChild::spawn_with_arguments(&path, &arguments, &[]).map_err(|_| {
         AudioFailure::new(
             AudioFailureKind::HostUnavailable,
             AudioInitPhase::StreamBuild,
@@ -400,7 +429,7 @@ fn hello(
 pub fn list_input_devices() -> Result<Vec<AudioDeviceDescriptor>, String> {
     let (capture_id, nonce, nonce_hex) = capture_identity();
     let (mut child, mut input, output) =
-        spawn_helper(capture_id, &nonce_hex).map_err(|failure| failure.to_string())?;
+        spawn_helper(capture_id, &nonce_hex, None).map_err(|failure| failure.to_string())?;
     let output = match hello(&mut input, output, capture_id, nonce) {
         Ok(output) => output,
         Err(failure) => {
@@ -794,7 +823,11 @@ fn run_backend(
     }
 
     let (capture_id, nonce, nonce_hex) = capture_identity();
-    let (child, mut input, output) = match spawn_helper(capture_id, &nonce_hex) {
+    let (child, mut input, output) = match spawn_helper(
+        capture_id,
+        &nonce_hex,
+        requested_capture_fault(),
+    ) {
         Ok(value) => value,
         Err(failure) => {
             end_permission_prompt_pause(
@@ -1747,6 +1780,39 @@ mod tests {
                 !AudioFailure::new(kind, AudioInitPhase::StreamBuild).permits_backend_fallback()
             );
         }
+    }
+
+    #[test]
+    fn stream_build_faults_run_inside_the_killable_capture_process() {
+        let mut sentinel_creations = 0;
+        assert_eq!(
+            capture_fault_for_scenario(Some("hang_stream_build"), || {
+                sentinel_creations += 1;
+                true
+            }),
+            Some("hang-stream-build")
+        );
+        assert_eq!(sentinel_creations, 0);
+
+        assert_eq!(
+            capture_fault_for_scenario(Some("hang_stream_build_once"), || {
+                sentinel_creations += 1;
+                true
+            }),
+            Some("hang-stream-build")
+        );
+        assert_eq!(
+            capture_fault_for_scenario(Some("hang_stream_build_once"), || {
+                sentinel_creations += 1;
+                false
+            }),
+            None
+        );
+        assert_eq!(sentinel_creations, 2);
+        assert_eq!(
+            capture_fault_for_scenario(Some("unrelated"), || panic!("must not create sentinel")),
+            None
+        );
     }
 
     #[test]
