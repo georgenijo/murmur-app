@@ -132,7 +132,10 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.96.0
         with:
-          components: clippy
+          components: clippy, rustfmt
+
+      - name: Check Rust formatting
+        run: cd app/src-tauri && cargo fmt --all -- --check
 
       - name: Cache Rust dependencies
         uses: swatinem/rust-cache@v2

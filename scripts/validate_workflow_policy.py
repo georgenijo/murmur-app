@@ -160,7 +160,9 @@ def validate_ci(ci: str) -> int:
     )
     rust_install = named_step_block(ci, "Install Rust", 6)
     assert "uses: dtolnay/rust-toolchain@1.96.0" in rust_install
-    assert "components: clippy" in rust_install
+    assert "components: clippy, rustfmt" in rust_install
+    rust_format = named_step_block(ci, "Check Rust formatting", 6)
+    assert "cargo fmt --all -- --check" in rust_format
     rust_lint = named_step_block(ci, "Lint Rust", 6)
     assert "cargo clippy --all-targets -- -D warnings" in rust_lint
     assert "swiftc -warnings-as-errors" in capture_build

@@ -30,11 +30,13 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     validate_ci(mutated)
 
-    def test_ci_pins_and_enforces_clippy(self) -> None:
+    def test_ci_pins_and_enforces_clippy_and_rustfmt(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         for old in (
             "        uses: dtolnay/rust-toolchain@1.96.0\n",
-            "          components: clippy\n",
+            "          components: clippy, rustfmt\n",
+            "      - name: Check Rust formatting\n"
+            "        run: cd app/src-tauri && cargo fmt --all -- --check\n\n",
             "        run: cd app/src-tauri && cargo clippy --all-targets -- -D warnings\n",
         ):
             with self.subTest(policy=old.strip()):
