@@ -138,6 +138,11 @@ def validate_ci(ci: str) -> int:
     capture_build = named_step_block(
         ci, "Build capture isolation helpers and stub local-LLM externalBin", 6
     )
+    rust_install = named_step_block(ci, "Install Rust", 6)
+    assert "uses: dtolnay/rust-toolchain@1.96.0" in rust_install
+    assert "components: clippy" in rust_install
+    rust_lint = named_step_block(ci, "Lint Rust", 6)
+    assert "cargo clippy --all-targets -- -D warnings" in rust_lint
     assert "swiftc -warnings-as-errors" in capture_build
     assert "sidecars/capture-agent/main.swift" in capture_build
     assert "cargo build -p murmur-capture-helper" in capture_build
