@@ -6,7 +6,7 @@ export default defineConfig({
   reporter: 'line',
   use: {
     baseURL: 'http://127.0.0.1:1420',
-    viewport: { width: 720, height: 560 },
+    viewport: { width: 880, height: 720 },
     deviceScaleFactor: 1,
   },
   expect: {

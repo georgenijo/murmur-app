@@ -105,7 +105,7 @@ describe('Sonic Canvas semantic color tokens', () => {
 
 describe('Murmur layout contracts', () => {
   it('locks the compact chrome and history geometry to shared tokens', () => {
-    expect(css).toContain('--ui-window-header-height: 1.625rem;');
+    expect(css).toContain('--ui-window-header-height: 2.625rem;');
     expect(css).toContain('--ui-record-width: 4.5rem;');
     expect(css).toContain('--ui-status-min-width: 4.5rem;');
     expect(css).toContain('--ui-history-gap: 0.3125rem;');

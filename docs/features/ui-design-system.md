@@ -57,7 +57,7 @@ Use these before creating a feature-local control or surface.
 
 ## Review and verification
 
-Every UI change should be checked at the canonical 720×560 main-window size in
+Every UI change should be checked at the canonical 880×720 main-window size in
 both appearance modes. Recording transitions must be checked in idle,
 recording, and processing states. Native title-bar work must be verified in a
 bundled Tauri app because a browser cannot reproduce the macOS traffic-light
@@ -67,7 +67,7 @@ Component tests enforce the stable header contracts and confirm that Copy is
 outside the transcript counts row. Native smoke testing covers Settings
 navigation, transcript-card actions, and the history overflow menu.
 
-`npm run test:visual` runs Playwright goldens at the canonical 720×560 size for
+`npm run test:visual` runs Playwright goldens at the canonical 880×720 size for
 light and dark appearances across idle, recording, processing, and Settings.
 Update those baselines only after comparing the rendered fixture with the Open
 Design source and repeating the bundled native smoke test.

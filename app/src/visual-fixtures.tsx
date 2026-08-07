@@ -58,7 +58,7 @@ function VisualFixture() {
     <div
       data-appearance={appearance}
       data-visual-ready="true"
-      className="flex h-[560px] w-[720px] flex-col overflow-hidden bg-background text-on-surface"
+      className="flex h-[720px] w-[880px] flex-col overflow-hidden bg-background text-on-surface"
     >
       <MainHeader
         status={status}

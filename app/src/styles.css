@@ -53,10 +53,11 @@
   --ui-radius-popover: 0.75rem;
   --ui-control-compact: 1.625rem;
   --ui-control-standard: 1.75rem;
-  /* The native overlay contributes ~20px above the web content on macOS.
-     A 26px web row produces the 46px single-line chrome in the specification. */
-  --ui-window-header-height: 1.625rem;
-  --ui-window-controls-inset: 5.125rem;
+  /* Tauri's overlay title bar starts the webview at y=0. The shared row must
+     therefore own the full mockup height and center itself on the native
+     traffic lights instead of assuming AppKit contributes a top inset. */
+  --ui-window-header-height: 2.625rem;
+  --ui-window-controls-inset: 4.5rem;
   --ui-record-width: 4.5rem;
   --ui-status-min-width: 4.5rem;
   --ui-history-gap: 0.3125rem;
@@ -140,7 +141,7 @@ textarea {
   flex-shrink: 0;
   align-items: center;
   gap: var(--ui-space-4);
-  padding: 0 var(--ui-space-5);
+  padding: var(--ui-space-4) var(--ui-space-5);
   padding-left: var(--ui-window-controls-inset);
 }
 

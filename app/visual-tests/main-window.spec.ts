@@ -5,7 +5,7 @@ const appearances = ['light', 'dark'] as const;
 
 for (const appearance of appearances) {
   for (const state of states) {
-    test(`${appearance} ${state} matches the canonical 720x560 surface`, async ({ page }) => {
+    test(`${appearance} ${state} matches the canonical 880x720 surface`, async ({ page }) => {
       const pageErrors: string[] = [];
       page.on('pageerror', (error) => pageErrors.push(error.message));
       await page.emulateMedia({ colorScheme: appearance });

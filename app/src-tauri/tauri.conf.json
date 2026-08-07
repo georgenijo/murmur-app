@@ -14,14 +14,14 @@
       {
         "label": "main",
         "title": "Murmur",
-        "width": 720,
-        "height": 560,
-        "minWidth": 520,
-        "minHeight": 400,
+        "width": 880,
+        "height": 720,
+        "minWidth": 720,
+        "minHeight": 560,
         "titleBarStyle": "Overlay",
         "trafficLightPosition": {
           "x": 10,
-          "y": 26
+          "y": 21
         },
         "hiddenTitle": true,
         "center": true
