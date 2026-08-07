@@ -3,6 +3,7 @@ use tauri::menu::MenuItem;
 
 static UPDATE_MENU_ITEM: OnceLock<MenuItem<tauri::Wry>> = OnceLock::new();
 
+#[cfg(not(feature = "internal-benchmark"))]
 pub(crate) fn register_tray_update_item(item: MenuItem<tauri::Wry>) {
     let _ = UPDATE_MENU_ITEM.set(item);
 }
@@ -32,7 +33,7 @@ pub fn set_tray_update_available(version: Option<String>) -> Result<(), String> 
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(feature = "internal-benchmark")))]
 pub(crate) fn register_update_wake_observer(app_handle: tauri::AppHandle) {
     use objc2_app_kit::{NSWorkspace, NSWorkspaceDidWakeNotification};
     use objc2_foundation::{NSNotification, NSOperationQueue};
@@ -53,7 +54,7 @@ pub(crate) fn register_update_wake_observer(app_handle: tauri::AppHandle) {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(not(target_os = "macos"), not(feature = "internal-benchmark")))]
 pub(crate) fn register_update_wake_observer(_app_handle: tauri::AppHandle) {}
 
 /// Generate 66×66 RGBA pixel data for an audio-bar tray icon (static white).
