@@ -40,6 +40,64 @@ def event(
 
 
 class LogReceiverHealthTests(unittest.TestCase):
+    def test_ingest_version_annotation_is_bounded_and_content_preserving(self) -> None:
+        item = event(
+            "audio readiness accepted",
+            timestamp="2026-08-05T00:00:00Z",
+            stream="audio",
+            data={"startup_ms": 240},
+        )
+
+        annotated = receiver.annotate_ingested_event(
+            item,
+            receiver.ingest_app_version("1.2.3"),
+        )
+
+        self.assertNotIn("ingest_app_version", item)
+        self.assertEqual(annotated["ingest_app_version"], "1.2.3")
+        self.assertEqual(annotated["data"], item["data"])
+        self.assertIsNone(receiver.ingest_app_version("unsafe/version\nprivate"))
+        self.assertEqual(
+            receiver.annotate_ingested_event(
+                {**item, "ingest_app_version": "forged"},
+                None,
+            ),
+            item,
+        )
+
+    def test_dashboard_surfaces_bounded_capture_watch_alerts(self) -> None:
+        report = {
+            "schema_version": 1,
+            "generated_at": "2026-08-05T00:00:00Z",
+            "status": "alert",
+            "alerts": [
+                {
+                    "kind": "startup_p50_regression",
+                    "install_id": "12345678-abcd",
+                    "baseline_version": "1.0.0",
+                    "candidate_version": "1.1.0",
+                    "baseline_p50_ms": 200,
+                    "candidate_p50_ms": 520,
+                    "ratio": 2.6,
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            original_root = receiver.ROOT
+            receiver.ROOT = directory
+            try:
+                (Path(directory) / receiver.CAPTURE_WATCH_REPORT).write_text(
+                    json.dumps(report),
+                    encoding="utf-8",
+                )
+                page = receiver.render_dashboard()
+            finally:
+                receiver.ROOT = original_root
+
+        self.assertIn("Capture regression watch · 1 alert", page)
+        self.assertIn("v1.0.0 → v1.1.0", page)
+        self.assertIn("p50 200 ms → 520 ms (2.6x)", page)
+
     def test_stable_event_code_takes_precedence_over_compatibility_summary(self) -> None:
         item = event(
             "listener heartbeat — no rdev callbacks observed",
@@ -754,6 +812,47 @@ class LogReceiverExportRouteTests(unittest.TestCase):
         status = response.status
         connection.close()
         return status, headers, body
+
+    def post(
+        self,
+        path: str,
+        body: bytes,
+        headers: dict[str, str],
+    ) -> tuple[int, bytes]:
+        connection = http.client.HTTPConnection(
+            "127.0.0.1", self.server.server_address[1], timeout=5
+        )
+        connection.request("POST", path, body=body, headers=headers)
+        response = connection.getresponse()
+        payload = response.read()
+        status = response.status
+        connection.close()
+        return status, payload
+
+    def test_ingest_stamps_receiver_observed_app_version_on_each_event(self) -> None:
+        item = event(
+            "audio readiness accepted",
+            timestamp="2026-08-05T00:00:00Z",
+            stream="audio",
+            data={"event_code": "audio.capture_ready", "startup_ms": 240},
+        )
+        status, body = self.post(
+            "/ingest",
+            (json.dumps(item) + "\n").encode("utf-8"),
+            {
+                "Authorization": "Bearer " + receiver.TOKEN,
+                "X-Install-Id": self.install_id,
+                "X-App-Version": "1.2.4",
+                "Content-Type": "application/x-ndjson",
+            },
+        )
+        path = Path(receiver.ROOT) / self.install_id / "events.jsonl"
+        saved = json.loads(path.read_text(encoding="utf-8").splitlines()[-1])
+
+        self.assertEqual(status, 204)
+        self.assertEqual(body, b"")
+        self.assertEqual(saved["ingest_app_version"], "1.2.4")
+        self.assertEqual(saved["data"]["startup_ms"], 240)
 
     def test_recent_raw_routes_return_exact_windows_and_safe_filenames(self) -> None:
         for limit, first_sequence in ((200, 400), (500, 100)):

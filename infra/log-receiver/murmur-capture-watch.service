@@ -1,0 +1,15 @@
+[Unit]
+Description=Murmur capture-startup regression watch
+After=murmur-logs.service
+
+[Service]
+Type=oneshot
+User=george
+ExecStart=/usr/bin/python3 /home/george/murmur-capture-watch.py --root /home/george/murmur-logs --output /home/george/murmur-logs/capture-watch.json --fail-on-alert
+Nice=10
+IOSchedulingClass=idle
+MemoryMax=256M
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/home/george/murmur-logs
+PrivateTmp=true
