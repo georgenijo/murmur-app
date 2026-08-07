@@ -1305,7 +1305,14 @@ fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                     || now.saturating_sub(last_warning_at) >= TAP_SILENCE_WARNING_MS;
                 if last_callback_at != 0 && silent_for_ms >= TAP_SILENCE_WARNING_MS && warning_due {
                     LAST_TAP_SILENCE_WARNING_AT_MS.store(now, Ordering::SeqCst);
-                    tracing::warn!(
+                    // Info, not warn: silence means "nobody touched the keyboard",
+                    // which is the normal state of an idle machine, not a fault. As
+                    // a warning this was 94% of all production warning volume and
+                    // buried the real ones (empty transcripts, AX focus failures, a
+                    // diagnostics-store failure). Info keeps the event in
+                    // events.jsonl — the subscriber filters at `info`, so debug
+                    // would drop it and orphan its `canonical_event_code` entry.
+                    tracing::info!(
                         target: "keyboard",
                         event_code = "keyboard.listener_silent",
                         silent_for_ms = silent_for_ms,

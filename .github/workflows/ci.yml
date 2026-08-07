@@ -156,7 +156,9 @@ jobs:
           CMAKE_OSX_DEPLOYMENT_TARGET: "14.0"
           CMAKE_C_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
           CMAKE_CXX_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
-        run: cd app/src-tauri && cargo check
+        # --all-targets so `tests/` and `examples/` are type-checked too. Without
+        # it the integration suites below can rot without any signal.
+        run: cd app/src-tauri && cargo check --all-targets
 
       - name: Run tests
         env:
@@ -165,6 +167,21 @@ jobs:
           CMAKE_C_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
           CMAKE_CXX_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
         run: cd app/src-tauri && cargo test --lib -- --test-threads=1
+
+      - name: Run hardware-free integration suites
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "14.0"
+          CMAKE_OSX_DEPLOYMENT_TARGET: "14.0"
+          CMAKE_C_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
+          CMAKE_CXX_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
+        # These two drive the real supervisors against mock helpers — no model,
+        # no microphone, no permissions. The remaining suites in `tests/` need
+        # hardware or downloaded models and stay out of CI deliberately.
+        run: >-
+          cd app/src-tauri &&
+          cargo build --example mock_llm_helper &&
+          cargo test --test llm_sidecar_integration --test transform_flow_integration
+          -- --test-threads=1
 
       - name: Run deterministic dictation evaluation
         env:
