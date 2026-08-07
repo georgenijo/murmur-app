@@ -147,6 +147,14 @@ def validate_ci(ci: str) -> int:
     assert "binaries/murmur-capture-worker-aarch64-apple-darwin" in capture_build
     capture_tests = named_step_block(ci, "Run capture worker unit tests", 6)
     assert "cargo test -p murmur-capture-helper" in capture_tests
+    job_block(ci, "dependency-audit")
+    rust_audit = named_step_block(ci, "Audit Rust dependencies (advisory)", 6)
+    assert "continue-on-error: true" in rust_audit
+    assert "cargo install cargo-audit --locked --version 0.22.2" in rust_audit
+    assert "cargo audit" in rust_audit
+    npm_audit = named_step_block(ci, "Audit npm dependencies (advisory)", 6)
+    assert "continue-on-error: true" in npm_audit
+    assert "npm audit --audit-level=high" in npm_audit
     llm_target = "binaries/murmur-llm-sidecar-aarch64-apple-darwin"
     assert capture_build.count(f": > {llm_target}") == 1
     assert capture_build.count(f"chmod +x {llm_target}") == 1

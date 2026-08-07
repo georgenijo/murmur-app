@@ -217,6 +217,34 @@ jobs:
           LD_LIBRARY_PATH="$CUDA_DRIVER_STUB_DIR:${LD_LIBRARY_PATH:-}" \
             cargo test --lib -- --test-threads=1
 
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Audit Rust dependencies (advisory)
+        continue-on-error: true
+        run: |
+          cargo install cargo-audit --locked --version 0.22.2
+          cd app/src-tauri
+          cargo audit
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: app/package-lock.json
+
+      - name: Audit npm dependencies (advisory)
+        continue-on-error: true
+        run: |
+          cd app
+          npm ci
+          npm audit --audit-level=high
+
   ci-pass:
     needs: [changes, typecheck, visual-regression, rust-macos, linux]
     # Keep this guard aligned with `changes`; otherwise the sentinel would turn

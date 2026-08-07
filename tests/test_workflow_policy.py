@@ -18,6 +18,19 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class WorkflowPolicyMutationTests(unittest.TestCase):
+    def test_dependency_audits_are_present_and_advisory(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        for old in (
+            "          cargo audit\n",
+            "          npm audit --audit-level=high\n",
+            "        continue-on-error: true\n",
+        ):
+            with self.subTest(policy=old.strip()):
+                mutated = workflow.replace(old, "", 1)
+                self.assertNotEqual(workflow, mutated)
+                with self.assertRaises(AssertionError):
+                    validate_ci(mutated)
+
     def test_ci_runs_capture_worker_unit_tests(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         mutated = workflow.replace(
