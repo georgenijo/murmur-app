@@ -11,6 +11,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - Advanced Diagnostics can pop out into a movable standalone window and now
   includes a local, content-free latency map for History, Settings pages, and
   diagnostics navigation.
+- Release validation now has an opt-in, local-only personal speech corpus and
+  repeatable Mac benchmark harness. The recorder, audio, and benchmark build
+  remain outside consumer builds and GitHub CI.
 
 ### Changed
 
@@ -19,6 +22,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   bounded window. Typical History-to-Settings latency fell from 112 ms to
   29 ms in release-build measurements, with overall P95 reduced from 197 ms
   to 59 ms.
+- Dictation delivery now validates bundled capture and model artifacts, keeps
+  private-history behavior isolated per recording, and verifies that automatic
+  paste still targets the application that owned the dictation.
 
 ## [0.29.0] - 2026-08-07
 
