@@ -90,8 +90,6 @@ function VisualFixture() {
       />
       {settingsOpen ? (
         <SettingsPanel
-          isOpen
-          onClose={() => {}}
           settings={DEFAULT_SETTINGS}
           onUpdateSettings={() => {}}
           status="idle"

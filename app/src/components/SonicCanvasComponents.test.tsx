@@ -50,6 +50,29 @@ describe('Sonic Canvas component details', () => {
     expect(container.textContent).toContain(`Hold ${label} to dictate`);
   });
 
+  it('shows an unmistakable label on named performance builds', async () => {
+    await act(async () => {
+      root.render(
+        <MainHeader
+          status="idle"
+          initialized
+          recordingDuration={0}
+          recordingMode="hold_down"
+          onRecord={vi.fn()}
+          onStop={vi.fn()}
+          onOpenSettings={vi.fn()}
+          settingsOpen={false}
+          triggerKey="shift_l"
+          buildBadge="Use this · Phase 2 Perf"
+        />,
+      );
+    });
+
+    const badge = container.querySelector('[data-testid="performance-build-badge"]');
+    expect(badge?.textContent).toContain('Use this · Phase 2 Perf');
+    expect(badge?.classList).toContain('text-success');
+  });
+
   it('shows a word-count badge on each history card', async () => {
     await act(async () => {
       root.render(
@@ -201,6 +224,7 @@ describe('Sonic Canvas component details', () => {
       expect(elements.header.classList).toContain('ui-window-header');
       expect(elements.header.classList).not.toContain('border-b');
       expect(elements.header.querySelector(':scope > .ui-window-header-content')).not.toBeNull();
+      expect(elements.header.querySelector('[data-tauri-drag-region]')).not.toBeNull();
       expect(elements.statusChip.classList).toContain('ui-status-chip');
       expect(elements.record.classList).toContain('ui-record-pill');
       if (status === 'processing') {

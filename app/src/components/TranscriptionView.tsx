@@ -1,5 +1,6 @@
 import { HistoryPanel } from './history';
 import { HistoryEntry } from '../lib/history';
+import { memo } from 'react';
 
 interface TranscriptionViewProps {
   historyEntries: HistoryEntry[];
@@ -9,7 +10,7 @@ interface TranscriptionViewProps {
   onTranscribeFile: () => void;
 }
 
-export function TranscriptionView({
+export const TranscriptionView = memo(function TranscriptionView({
   historyEntries,
   onClearHistory,
   onUpdateHistoryEntry,
@@ -27,4 +28,4 @@ export function TranscriptionView({
       />
     </div>
   );
-}
+});

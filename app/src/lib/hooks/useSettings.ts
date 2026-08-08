@@ -80,7 +80,7 @@ export function useSettings() {
     return () => { cancelled = true; unlisten?.(); };
   }, []);
 
-  const updateSettings = (updates: Partial<Settings>) => {
+  const updateSettings = useCallback((updates: Partial<Settings>) => {
     setConfigureError(null);
     const previousSettings = settingsRef.current;
     const newSettings = { ...previousSettings, ...updates };
@@ -163,7 +163,7 @@ export function useSettings() {
           }
         });
     }
-  };
+  }, []);
 
   // Ingest a settings change made by another window (the overlay's quick controls).
   // Diffs against the current value so a window applying its own emitted change is a

@@ -16,6 +16,7 @@ interface MainHeaderProps {
   settingsOpen: boolean;
   updateIndicator?: ReactNode;
   mode?: 'main' | 'settings';
+  buildBadge?: string;
 }
 
 const KEY_LABELS: Record<DoubleTapKey, string> = {
@@ -58,6 +59,7 @@ export function MainHeader({
   settingsOpen,
   updateIndicator,
   mode = 'main',
+  buildBadge,
 }: MainHeaderProps) {
   const isCapturing = status === 'recording' || status === 'starting';
   const busy = status === 'processing' || status === 'recovering';
@@ -103,6 +105,15 @@ export function MainHeader({
         )}
         <span>{label}</span>
       </div>
+
+      {buildBadge && (
+        <span
+          data-testid="performance-build-badge"
+          className="pointer-events-none shrink-0 select-none rounded-full border border-success/30 bg-success/10 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.1em] text-success"
+        >
+          ✓ {buildBadge}
+        </span>
+      )}
 
       <div data-tauri-drag-region className="min-w-4 flex-1" />
 

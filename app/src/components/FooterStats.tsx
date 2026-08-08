@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import { getCurrentStreak, getWPM, loadStats, type DictationStats } from '../lib/stats';
 import { UsageDashboard } from './UsageDashboard';
 
@@ -6,7 +6,7 @@ interface FooterStatsProps {
   statsVersion: number;
 }
 
-export function FooterStats({ statsVersion }: FooterStatsProps) {
+export const FooterStats = memo(function FooterStats({ statsVersion }: FooterStatsProps) {
   const [stats, setStats] = useState<DictationStats>(() => loadStats());
   const [open, setOpen] = useState(false);
   const shellRef = useRef<HTMLDivElement>(null);
@@ -65,4 +65,4 @@ export function FooterStats({ statsVersion }: FooterStatsProps) {
       </div>
     </footer>
   );
-}
+});

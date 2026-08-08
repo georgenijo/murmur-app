@@ -328,6 +328,7 @@ pub fn run() {
             commands::performance::get_performance_run,
             commands::performance::get_performance_resource_window,
             commands::performance::clear_performance_diagnostics,
+            commands::performance::show_diagnostics_window,
             commands::transform_diagnostics::arm_next_transform_diagnostic_capture,
             commands::transform_diagnostics::get_transform_diagnostic_capture_status,
             commands::transform_diagnostics::list_transform_attempts,
@@ -372,7 +373,7 @@ pub fn run() {
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // Hide instead of destroy for persistent windows
-                if window.label() == "main" {
+                if window.label() == "main" || window.label() == "diagnostics" {
                     api.prevent_close();
                     let _ = window.hide();
                     tracing::info!(target: "system", "{} window hidden on close request", window.label());
@@ -385,6 +386,9 @@ pub fn run() {
 
             if let Some(main_window) = app.get_webview_window("main") {
                 commands::native_window::hide_titlebar_separator(&main_window);
+            }
+            if let Some(diagnostics_window) = app.get_webview_window("diagnostics") {
+                commands::native_window::hide_titlebar_separator(&diagnostics_window);
             }
 
             let performance_root = app.path().app_data_dir()?.join("diagnostics");

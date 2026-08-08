@@ -405,6 +405,19 @@ textarea {
   width: 20rem;
 }
 
+/* History and Settings stay rasterized on separate compositor layers so
+   navigation is an opacity-only layer swap instead of a full-surface repaint. */
+.ui-persistent-surface {
+  contain: layout style paint;
+  will-change: transform, opacity;
+  transform: translateZ(0);
+}
+
+.diagnostic-event-row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 28px;
+}
+
 /* The notch overlay is a transparent window — the surface background above
    would paint the whole window frame as an opaque box around the island. */
 body.overlay-window {

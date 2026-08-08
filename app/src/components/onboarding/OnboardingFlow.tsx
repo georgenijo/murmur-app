@@ -220,20 +220,47 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
       <WindowHeader />
       <div className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto p-8">
       <div className="w-full max-w-lg">
-        {/* Progress dots */}
-        <div className="mb-10 flex items-center justify-center gap-2" aria-label={`Step ${stepIndex + 1} of ${STEP_ORDER.length}`}>
-          {STEP_ORDER.map((s, i) => (
-            <span
-              key={s}
-              className={`h-1.5 rounded-full transition-all duration-300 ${
-                i === stepIndex
-                  ? 'w-6 bg-primary'
-                  : i < stepIndex
-                  ? 'w-1.5 bg-primary/60'
-                  : 'w-1.5 bg-surface-container-highest '
-              }`}
-            />
-          ))}
+        {/* Persistent wizard navigation */}
+        <div className="relative mb-10 flex min-h-8 items-center justify-center">
+          {step !== 'welcome' && (
+            <button
+              type="button"
+              onClick={goBack}
+              disabled={modelDownloading}
+              aria-label="Go back to the previous setup step"
+              title={modelDownloading ? 'Please wait for the model download to finish' : undefined}
+              className="absolute left-0 inline-flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-sm font-medium text-on-surface-variant transition-colors hover:bg-surface-container-high hover:text-on-surface disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <svg
+                aria-hidden="true"
+                className="h-4 w-4"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={2}
+                viewBox="0 0 24 24"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" d="m15 18-6-6 6-6" />
+              </svg>
+              Back
+            </button>
+          )}
+          <div
+            className="flex items-center justify-center gap-2"
+            aria-label={`Step ${stepIndex + 1} of ${STEP_ORDER.length}`}
+          >
+            {STEP_ORDER.map((s, i) => (
+              <span
+                key={s}
+                className={`h-1.5 rounded-full transition-all duration-300 ${
+                  i === stepIndex
+                    ? 'w-6 bg-primary'
+                    : i < stepIndex
+                    ? 'w-1.5 bg-primary/60'
+                    : 'w-1.5 bg-surface-container-highest '
+                }`}
+              />
+            ))}
+          </div>
         </div>
 
         {step === 'welcome' && (
@@ -315,7 +342,6 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
             )}
 
             <WizardFooter
-              onBack={goBack}
               onNext={goNext}
               nextEnabled={micGranted}
               nextLabel="Continue"
@@ -369,7 +395,6 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
             )}
 
             <WizardFooter
-              onBack={goBack}
               onNext={goNext}
               nextEnabled={axGranted === true}
               nextLabel="Continue"
@@ -404,16 +429,6 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
                     goNext();
                   }}
                 />
-                {!modelDownloading && (
-                  <div className="mt-3 text-center">
-                    <button
-                      onClick={goBack}
-                      className="text-xs text-on-surface-variant hover:text-on-surface-variant transition-colors"
-                    >
-                      Back
-                    </button>
-                  </div>
-                )}
               </div>
             )}
           </div>
@@ -465,7 +480,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
               </div>
             </div>
 
-            <WizardFooter onBack={goBack} onNext={goNext} nextEnabled nextLabel="Continue" />
+            <WizardFooter onNext={goNext} nextEnabled nextLabel="Continue" />
           </div>
         )}
 
@@ -550,14 +565,12 @@ function SummaryRow({ ok, label, okText, missingText }: { ok: boolean; label: st
 }
 
 function WizardFooter({
-  onBack,
   onNext,
   nextEnabled,
   nextLabel,
   skippable = false,
   skipLabel = 'Skip',
 }: {
-  onBack: () => void;
   onNext: () => void;
   nextEnabled: boolean;
   nextLabel: string;
@@ -565,13 +578,7 @@ function WizardFooter({
   skipLabel?: string;
 }) {
   return (
-    <div className="flex items-center justify-between">
-      <button
-        onClick={onBack}
-        className="text-xs text-on-surface-variant hover:text-on-surface-variant transition-colors"
-      >
-        Back
-      </button>
+    <div className="flex items-center justify-end">
       <div className="flex items-center gap-3">
         {skippable && (
           <button

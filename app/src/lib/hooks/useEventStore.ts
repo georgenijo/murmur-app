@@ -5,7 +5,7 @@ import type { AppEvent, StreamName, LevelName } from '../events';
 
 const MAX_EVENTS = 500;
 
-export function useEventStore() {
+export function useEventStore(enabled = true) {
   const bufRef = useRef<AppEvent[]>([]);
   const [events, setEvents] = useState<AppEvent[]>([]);
   const rafRef = useRef<number | null>(null);
@@ -19,6 +19,7 @@ export function useEventStore() {
   }, []);
 
   useEffect(() => {
+    if (!enabled) return undefined;
     let cancelled = false;
 
     // Hydrate from backend
@@ -50,9 +51,10 @@ export function useEventStore() {
       unlisten?.();
       if (rafRef.current !== null) {
         cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
       }
     };
-  }, [scheduleUpdate]);
+  }, [enabled, scheduleUpdate]);
 
   const getByStream = useCallback((stream: StreamName) => {
     return bufRef.current.filter(e => e.stream === stream);

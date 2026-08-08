@@ -2,12 +2,29 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const hookMocks = vi.hoisted(() => ({
+  events: [] as Array<{
+    timestamp: string;
+    stream: 'system';
+    level: 'info';
+    summary: string;
+    data: Record<string, unknown>;
+  }>,
+  useEventStore: vi.fn(),
+  usePerformanceDiagnostics: vi.fn(),
+}));
+
 vi.mock('../../lib/hooks/useEventStore', () => ({
-  useEventStore: () => ({ events: [], clear: vi.fn() }),
+  useEventStore: (active: boolean) => {
+    hookMocks.useEventStore(active);
+    return { events: hookMocks.events, clear: vi.fn() };
+  },
 }));
 
 vi.mock('../../lib/hooks/usePerformanceDiagnostics', () => ({
-  usePerformanceDiagnostics: () => ({
+  usePerformanceDiagnostics: (active: boolean) => {
+    hookMocks.usePerformanceDiagnostics(active);
+    return ({
     runs: [],
     samples: [],
     runsLoading: false,
@@ -20,7 +37,8 @@ vi.mock('../../lib/hooks/usePerformanceDiagnostics', () => ({
     refreshRuns: vi.fn(),
     refreshResources: vi.fn(),
     clear: vi.fn(),
-  }),
+    });
+  },
 }));
 
 vi.mock('../../lib/hooks/usePerformanceHealth', () => ({
@@ -54,17 +72,24 @@ vi.mock('../../lib/transformDiagnostics', () => ({
   deleteTransformCapture: vi.fn(),
 }));
 
-import { DiagnosticsWorkspace } from './DiagnosticsWorkspace';
+import { DiagnosticsWorkspace, type DiagnosticsTab } from './DiagnosticsWorkspace';
 
 describe('DiagnosticsWorkspace shared diagnostics shell', () => {
   let container: HTMLDivElement;
   let root: Root;
+  let onPopOut: (tab: DiagnosticsTab) => void;
+  let popOutSpy: ReturnType<typeof vi.fn<(tab: DiagnosticsTab) => void>>;
 
   beforeEach(async () => {
+    hookMocks.events = [];
+    hookMocks.useEventStore.mockClear();
+    hookMocks.usePerformanceDiagnostics.mockClear();
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
-    await act(async () => root.render(<DiagnosticsWorkspace />));
+    popOutSpy = vi.fn<(tab: DiagnosticsTab) => void>();
+    onPopOut = popOutSpy;
+    await act(async () => root.render(<DiagnosticsWorkspace onPopOut={onPopOut} />));
   });
 
   afterEach(async () => {
@@ -72,12 +97,13 @@ describe('DiagnosticsWorkspace shared diagnostics shell', () => {
     container.remove();
   });
 
-  it('renders the five redesigned diagnostics tabs in their intended order', async () => {
+  it('renders the six diagnostics tabs in their intended order', async () => {
     const tabs = Array.from(container.querySelectorAll('[role="tab"]'));
     expect(tabs.map(tab => tab.textContent)).toEqual([
       'Events',
       'Runs',
       'Performance',
+      'Latency',
       'Compare',
       'Transform',
     ]);
@@ -92,13 +118,54 @@ describe('DiagnosticsWorkspace shared diagnostics shell', () => {
     expect(tabs[2].getAttribute('aria-selected')).toBe('true');
 
     await act(async () => (tabs[3] as HTMLButtonElement).click());
-    expect(container.querySelector('#diagnostics-panel-reports')).not.toBeNull();
+    expect(container.querySelector('#diagnostics-panel-latency')).not.toBeNull();
     expect(tabs[3].getAttribute('aria-selected')).toBe('true');
-    expect(container.textContent).toContain('Report comparison');
+    expect(container.textContent).toContain('UI latency map');
 
     await act(async () => (tabs[4] as HTMLButtonElement).click());
-    expect(container.querySelector('#diagnostics-panel-transforms')).not.toBeNull();
+    expect(container.querySelector('#diagnostics-panel-reports')).not.toBeNull();
     expect(tabs[4].getAttribute('aria-selected')).toBe('true');
+    expect(container.textContent).toContain('Report comparison');
+
+    await act(async () => (tabs[5] as HTMLButtonElement).click());
+    expect(container.querySelector('#diagnostics-panel-transforms')).not.toBeNull();
+    expect(tabs[5].getAttribute('aria-selected')).toBe('true');
     expect(container.textContent).toContain('Transform diagnostics');
+  });
+
+  it('pops out the currently selected diagnostics tab', async () => {
+    const tabs = Array.from(container.querySelectorAll('[role="tab"]'));
+    await act(async () => (tabs[3] as HTMLButtonElement).click());
+
+    const popOut = container.querySelector(
+      'button[aria-label="Open Diagnostics in a separate window"]',
+    ) as HTMLButtonElement;
+    await act(async () => popOut.click());
+
+    expect(popOutSpy).toHaveBeenCalledWith('latency');
+  });
+
+  it('gates live subscriptions when the workspace is inactive', async () => {
+    await act(async () => root.render(
+      <DiagnosticsWorkspace active={false} onPopOut={onPopOut} />,
+    ));
+    expect(hookMocks.useEventStore).toHaveBeenLastCalledWith(false);
+    expect(hookMocks.usePerformanceDiagnostics).toHaveBeenLastCalledWith(false);
+  });
+
+  it('renders only the newest 100 rows while retaining the full filtered count', async () => {
+    hookMocks.events = Array.from({ length: 150 }, (_, index) => ({
+      timestamp: `2026-08-07T12:00:${String(index).padStart(3, '0')}Z`,
+      stream: 'system' as const,
+      level: 'info' as const,
+      summary: `event ${index}`,
+      data: {},
+    }));
+    await act(async () => root.render(<DiagnosticsWorkspace onPopOut={onPopOut} />));
+    expect(container.querySelectorAll('.diagnostic-event-row')).toHaveLength(100);
+    expect(container.textContent).toContain('Showing the newest 100 of 150 events');
+    expect(container.textContent).not.toContain('event 49');
+    expect(container.textContent).toContain('event 50');
+    expect(container.textContent).toContain('event 149');
   });
 });

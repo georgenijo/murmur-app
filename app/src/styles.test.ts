@@ -127,4 +127,16 @@ describe('Murmur layout contracts', () => {
       '.ui-filter-chip:hover:not([aria-pressed="true"]):not([aria-current="page"])',
     );
   });
+
+  it('keeps persistent navigation surfaces isolated on compositor layers', () => {
+    expect(css).toMatch(
+      /\.ui-persistent-surface\s*\{[^}]*contain:\s*layout style paint;[^}]*will-change:\s*transform, opacity;[^}]*transform:\s*translateZ\(0\);/s,
+    );
+  });
+
+  it('lets WebKit skip offscreen diagnostics rows', () => {
+    expect(css).toMatch(
+      /\.diagnostic-event-row\s*\{[^}]*content-visibility:\s*auto;[^}]*contain-intrinsic-size:\s*auto 28px;/s,
+    );
+  });
 });

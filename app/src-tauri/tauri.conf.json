@@ -27,6 +27,23 @@
         "center": true
       },
       {
+        "label": "diagnostics",
+        "title": "Murmur Diagnostics",
+        "url": "diagnostics.html",
+        "width": 1040,
+        "height": 760,
+        "minWidth": 760,
+        "minHeight": 520,
+        "titleBarStyle": "Overlay",
+        "trafficLightPosition": {
+          "x": 10,
+          "y": 21
+        },
+        "hiddenTitle": true,
+        "center": true,
+        "visible": false
+      },
+      {
         "label": "overlay",
         "title": "",
         "url": "overlay.html",

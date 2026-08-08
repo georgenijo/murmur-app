@@ -64,10 +64,9 @@ describe('SettingsPanel information architecture', () => {
   const scrollTo = vi.fn();
 
   function renderPanel(isOpen = true) {
+    void isOpen;
     return root.render(
       <SettingsPanel
-        isOpen={isOpen}
-        onClose={vi.fn()}
         settings={DEFAULT_SETTINGS}
         onUpdateSettings={vi.fn()}
         status="idle"
@@ -115,21 +114,27 @@ describe('SettingsPanel information architecture', () => {
 
   it('shows the NotchPill setting when the companion app is installed', async () => {
     coreMocks.notchPillInstalled = true;
-    await act(async () => renderPanel(false));
-    await act(async () => renderPanel(true));
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+      await Promise.resolve();
+    });
 
     expect(container.textContent).toContain('Mirror Captions to NotchPill');
   });
 
   it('hides the NotchPill setting when detection fails', async () => {
     coreMocks.notchPillInstalled = true;
-    await act(async () => renderPanel(false));
-    await act(async () => renderPanel(true));
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+      await Promise.resolve();
+    });
     expect(container.textContent).toContain('Mirror Captions to NotchPill');
 
     coreMocks.notchPillDetectionError = true;
-    await act(async () => renderPanel(false));
-    await act(async () => renderPanel(true));
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+      await Promise.resolve();
+    });
 
     expect(container.textContent).not.toContain('Mirror Captions to NotchPill');
   });
@@ -197,9 +202,14 @@ describe('SettingsPanel information architecture', () => {
     const button = Array.from(container.querySelectorAll('nav button')).find((item) => item.textContent === 'Model') as HTMLButtonElement;
     await act(async () => button.click());
 
-    expect(container.textContent).toContain('Diagnostics workspace');
-    expect(Array.from(container.querySelectorAll('summary')).some((summary) => summary.textContent?.includes('Advanced'))).toBe(true);
+    expect(container.textContent).not.toContain('Diagnostics workspace');
+    const summary = Array.from(container.querySelectorAll('summary'))
+      .find((item) => item.textContent?.includes('Advanced')) as HTMLElement;
+    expect(summary).toBeTruthy();
     expect(Array.from(container.querySelectorAll('details')).every((details) => !details.hasAttribute('open'))).toBe(true);
+
+    await act(async () => summary.click());
+    expect(container.textContent).toContain('Diagnostics workspace');
   });
 
   it('searches across tabs and routes a result to its owning tab', async () => {
@@ -270,8 +280,6 @@ describe('SettingsPanel transform block (#312 D1 round-2 findings 6-8)', () => {
     root = createRoot(container);
     await act(async () => root.render(
       <SettingsPanel
-        isOpen
-        onClose={vi.fn()}
         settings={{ ...DEFAULT_SETTINGS, ...settingsOverrides }}
         onUpdateSettings={vi.fn()}
         status="idle"

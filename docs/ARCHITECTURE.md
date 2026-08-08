@@ -107,26 +107,28 @@ Dictation and transform are mutually exclusive in both directions (status guards
 
 ---
 
-## Three-Window Architecture
+## Four-Window Architecture
 
 Each window is a separate webview with its own Tauri capability set, following least privilege.
 
 | Window | Label | Entry Point | Size | Purpose |
 |--------|-------|-------------|------|---------|
 | Main | `main` | `index.html` | 720×560 | Settings, embedded diagnostics, recording controls, history, stats, onboarding, modals |
+| Diagnostics | `diagnostics` | `diagnostics.html` | 1040×760 | Persistent pop-out for events, runs, performance, UI latency, comparisons, and transform traces |
 | Overlay | `overlay` | `overlay.html` | 260×100 | Dynamic Island notch widget. Always-on-top, transparent, non-activating |
 | Transform Review | `transform-review` | popover entry | 320×76 (compact) | Transform proposal review. Non-focusable until `ready`/`failed` |
 
-Main hides on close instead of being destroyed. The overlay and transform popover both use the shared non-activating window treatment in `commands/native_window.rs`, and **all** of their raw `NSWindow` mutation is dispatched to the main thread via `run_on_main_thread` — macOS 26 hard-traps on off-main `NSWindow` mutation (#325).
+Main and Diagnostics hide on close instead of being destroyed. The overlay and transform popover both use the shared non-activating window treatment in `commands/native_window.rs`, and **all** of their raw `NSWindow` mutation is dispatched to the main thread via `run_on_main_thread` — macOS 26 hard-traps on off-main `NSWindow` mutation (#325).
 
 Rust is the sole author of every overlay and popover pixel: `geometry_for()` and `popover_geometry_for()` are pure functions asserted by checked-in fixtures on both sides (cargo test + vitest). The frontend never hardcodes dimensions.
 
-Main is the only themed webview. It resolves System mode to a concrete
-`data-appearance` and uses a parser-blocking, same-origin bootstrap plus a
-strictly validated resolved-token cache to avoid a wrong-theme first paint.
-Main owns appearance writes and application-level native `setTheme`. Overlay
-and transform-review remain unsynchronized transparent, always-dark glass
-surfaces.
+Main owns appearance writes and application-level native `setTheme`. Main and
+Diagnostics resolve System mode to a concrete `data-appearance` with a
+parser-blocking, same-origin bootstrap plus a strictly validated resolved-token
+cache to avoid a wrong-theme first paint. The Diagnostics pop-out observes the
+same local storage as Main so its latency table updates while the user
+navigates. Overlay and transform-review remain unsynchronized transparent,
+always-dark glass surfaces.
 
 ---
 
@@ -150,7 +152,7 @@ deliberately escaped process group. See the
 
 | Module | Purpose |
 |--------|---------|
-| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 112 registered commands, setup, tray, run loop |
+| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 113 registered commands, setup, tray, run loop |
 | `alloc.rs` | Custom macOS malloc zone ("RustHeapZone") so Rust heap is accounted separately from whisper.cpp's FFI heap |
 | `audio.rs` | CPAL 0.18 capture worker, stable device-ID selection, typed error/phase telemetry, first-buffer readiness, mono mix, 16kHz resample, `audio-level` emission |
 | `audio_lifecycle.rs` | App-lifetime single-owner supervisor; async start, generation cancellation, deadlines, generation-gated publication, and strict worker ownership through exit |
@@ -348,7 +350,7 @@ Two rules keep the multi-window state coherent:
 
 ## Tauri Commands
 
-112 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
+113 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
 
 ## Events
 
