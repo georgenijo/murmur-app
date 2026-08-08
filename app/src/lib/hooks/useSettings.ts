@@ -8,6 +8,7 @@ import {
   migrateLegacyMicrophoneId,
   type AudioDeviceDescriptor,
 } from '../audioDevices';
+import { INTERNAL_BENCHMARK_BUILD } from '../buildFlavor';
 
 let lastAutostartOp: Promise<void> = Promise.resolve();
 
@@ -46,6 +47,7 @@ export function useSettings() {
   // Sync launchAtLogin with OS state on mount.
   // Handles the case where a user removed the login item from System Settings.
   useEffect(() => {
+    if (INTERNAL_BENCHMARK_BUILD) return;
     const initialLaunch = settingsRef.current.launchAtLogin;
     isEnabled().then((osEnabled) => {
       if (settingsRef.current.launchAtLogin === initialLaunch && osEnabled !== initialLaunch) {
@@ -92,7 +94,7 @@ export function useSettings() {
       });
     }
 
-    if ('launchAtLogin' in updates) {
+    if ('launchAtLogin' in updates && !INTERNAL_BENCHMARK_BUILD) {
       const attemptedValue = newSettings.launchAtLogin;
       const action = attemptedValue ? enable : disable;
       lastAutostartOp = lastAutostartOp.then(() => action()).catch((err) => {

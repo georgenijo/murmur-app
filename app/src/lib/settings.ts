@@ -218,6 +218,8 @@ export interface Settings {
   vocabularyEntries: VocabularyEntry[];
   disabled: boolean;
   smartPunctuation: boolean;
+  /** Persist completed microphone and file transcripts in local history. */
+  retainHistory: boolean;
   saveTranscript: boolean;
   saveAudio: boolean;
   /** Mirror each final transcript to a local file NotchPill can show in the notch. */
@@ -386,6 +388,7 @@ export const DEFAULT_SETTINGS: Settings = {
   vocabularyEntries: [],
   disabled: false,
   smartPunctuation: true,
+  retainHistory: true,
   saveTranscript: false,
   saveAudio: false,
   mirrorToNotchPill: false,
@@ -660,6 +663,10 @@ export function loadSettings(): Settings {
 
       if (typeof parsed.hotkeyMissFeedback !== 'boolean') {
         parsed.hotkeyMissFeedback = DEFAULT_SETTINGS.hotkeyMissFeedback;
+      }
+
+      if (typeof parsed.retainHistory !== 'boolean') {
+        parsed.retainHistory = DEFAULT_SETTINGS.retainHistory;
       }
 
       // autoStopSilenceMs ends a recording on its own, so an unrecognised or

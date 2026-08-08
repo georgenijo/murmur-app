@@ -125,8 +125,15 @@ fn write_caption_to(dir: &std::path::Path, text: &str) -> bool {
 
 /// Copy text to clipboard and optionally simulate Cmd+V paste.
 /// `delay_ms` controls the pause before pasting (window focus settling).
-/// On paste failure, retries once after a 100ms backoff.
-pub fn inject_text(text: &str, auto_paste: bool, delay_ms: u64) -> Result<(), String> {
+/// On paste failure, retries once after a 100ms backoff. When
+/// `target_process_id` is known, auto-paste fails closed if focus moved to a
+/// different application after recording began; the clipboard copy remains.
+pub fn inject_text(
+    text: &str,
+    auto_paste: bool,
+    delay_ms: u64,
+    target_process_id: Option<i32>,
+) -> Result<(), String> {
     let inject_started = Instant::now();
     tracing::info!(target: "pipeline", "inject_text called with auto_paste={}, delay_ms={}, text_len={}", auto_paste, delay_ms, text.len());
 
@@ -167,6 +174,16 @@ pub fn inject_text(text: &str, auto_paste: bool, delay_ms: u64) -> Result<(), St
 
         // Wait for window focus to settle
         thread::sleep(Duration::from_millis(delay_ms));
+
+        if let Some(target_process_id) = target_process_id {
+            if !target_process_is_frontmost(target_process_id) {
+                tracing::warn!(
+                    target: "pipeline",
+                    "inject_text: recording target is no longer frontmost — skipping paste, text in clipboard only"
+                );
+                return Err("recording target is no longer frontmost".to_string());
+            }
+        }
 
         // Guard against pasting when nothing editable is focused (e.g. Finder
         // desktop). A synthetic Cmd+V there drops a stray .textClipping file
@@ -213,6 +230,20 @@ pub fn inject_text(text: &str, auto_paste: bool, delay_ms: u64) -> Result<(), St
         );
         result
     }
+}
+
+#[cfg(target_os = "macos")]
+fn target_process_is_frontmost(target_process_id: i32) -> bool {
+    use objc2_app_kit::NSWorkspace;
+
+    NSWorkspace::sharedWorkspace()
+        .frontmostApplication()
+        .is_some_and(|application| application.processIdentifier() == target_process_id)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn target_process_is_frontmost(_target_process_id: i32) -> bool {
+    false
 }
 
 /// Simulate Cmd+V using native CoreGraphics events. Event posting itself has no

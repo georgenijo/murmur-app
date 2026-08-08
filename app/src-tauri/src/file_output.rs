@@ -70,7 +70,7 @@ fn next_base_name(dir: &Path) -> String {
 }
 
 /// Write a 16-bit PCM mono WAV at the pipeline sample rate from f32 samples.
-fn write_wav(path: &Path, samples: &[f32]) -> Result<(), String> {
+pub(crate) fn write_wav(path: &Path, samples: &[f32]) -> Result<(), String> {
     let spec = hound::WavSpec {
         channels: 1,
         sample_rate: WHISPER_SAMPLE_RATE,

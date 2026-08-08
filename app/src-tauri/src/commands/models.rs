@@ -326,6 +326,14 @@ async fn download_whisper_model(
     let temp_path = models_dir.join(format!("{}.tmp", filename));
 
     let received = stream_download(app_handle, &url, &temp_path).await?;
+    if let Err(error) = crate::model_artifact::validate_binary_model(
+        &temp_path,
+        crate::model_artifact::MIN_WHISPER_MODEL_BYTES,
+        "Downloaded Whisper model",
+    ) {
+        let _ = tokio::fs::remove_file(&temp_path).await;
+        return Err(error);
+    }
 
     tokio::fs::rename(&temp_path, &dest_path)
         .await
@@ -562,6 +570,14 @@ pub(crate) async fn ensure_vad_model(app_handle: &tauri::AppHandle) -> Result<()
 
     let temp_path = models_dir.join(format!("{}.tmp", vad::VAD_MODEL_FILENAME));
     let received = stream_download(app_handle, vad::VAD_MODEL_URL, &temp_path).await?;
+    if let Err(error) = crate::model_artifact::validate_binary_model(
+        &temp_path,
+        crate::model_artifact::MIN_VAD_MODEL_BYTES,
+        "Downloaded VAD model",
+    ) {
+        let _ = tokio::fs::remove_file(&temp_path).await;
+        return Err(error);
+    }
 
     tokio::fs::rename(&temp_path, &model_path)
         .await

@@ -27,6 +27,48 @@ state from the same model-runtime catalog used by onboarding and Settings. Its
 benchmark runner also creates backends through the catalog factory, so adding a
 model does not require a second backend-name classifier.
 
+## Internal personal corpus recorder
+
+The private **Murmur Bench** flavor includes a guided recorder for building a repeatable
+corpus from the developer's own voice and microphone. This UI and its Rust IPC
+surface are compiled only with the `internal-benchmark` feature; neither is
+registered in a normal Murmur build. It provides 20 fixed prompts
+covering short commands, ordinary prose, technical terms, numbers, natural
+disfluencies, long passages, pauses, faster delivery, and quieter delivery.
+
+This is a capture-only path. It uses the same signed microphone worker and mono
+16 kHz resampling as production dictation, but it does not load a transcription
+model, write transcript history, touch the clipboard, auto-paste, or run a text
+transform. Recording is mutually exclusive with dictation, file transcription,
+selected-text transforms, and Performance Lab runs.
+
+Recordings are stored outside the repository at:
+
+```text
+~/Library/Application Support/Murmur Benchmark Corpus/v1
+```
+
+The `audio/` directory contains sequential, prompt-labelled WAV files. A
+versioned `manifest.json` records the exact reference, selected take, SHA-256,
+duration, input-level measurements, microphone label, and quality warnings.
+Retakes are non-destructive: the newest take is selected while earlier WAVs stay
+available. The app warns about recordings that are very short, very quiet, or
+clipping. These files contain real user data, remain local, and must not be
+committed to Git.
+
+The internal benchmark runner verifies all 20 selected WAV files against their
+manifest SHA-256 values before decoding them, then replays the fixed clips
+through the same VAD, model, transcript-transform, and scoring path on every
+run. Quick uses 5 clips once, Standard uses all 20 once, and Thorough uses all
+20 three times. See [Internal performance harness](internal-performance-harness.md)
+for Fleet automation and comparison gates.
+
+The separately identified **Murmur Refactor Test** bundle writes ordinary and
+structured logs under `local-dictation-refactor-test/logs`, never the production
+`local-dictation/logs` directory. Its central log shipper is disabled, keeping
+trial sessions locally attributable and preventing them from advancing or
+uploading the production shipper queue.
+
 ## Accuracy
 
 Each bundled 16 kHz mono WAV fixture has an adjacent reference transcript.
@@ -75,9 +117,9 @@ The report separates:
 - Process memory increase observed at benchmark checkpoints
 - Catalog download size, kept separate from observed process memory
 
-New reports use report schema version 2 and record the environment (OS/version,
+New reports use report schema version 3 and record the environment (OS/version,
 architecture, hardware model/chip, and RAM when available), corpus fixture IDs
-and reference-word count, fixed VAD threshold, full-buffer final-after-stop
+and source, reference-word count, fixed VAD threshold, full-buffer final-after-stop
 execution path, default delivery transform profile, nearest-rank percentile
 method, model run order, and shared-initialization order. The metadata excludes
 hostname, serial number, paths, window titles, and other user content. Reports
@@ -106,11 +148,12 @@ catalog download size nor an isolated peak-memory measurement.
 
 ## Concurrency
 
-The benchmark uses isolated backend instances. Live recording and file
-transcription are blocked while a benchmark owns the benchmark coordinator, and
-a benchmark cannot start while either transcription path is active. Cancellation
-is checked between inference calls; an inference already inside a native backend
-finishes before cancellation returns.
+The benchmark uses isolated backend instances. In the internal build, live
+recording, personal-corpus recording, and file transcription are blocked while a benchmark owns the
+benchmark coordinator, and a benchmark cannot start while any recording or
+transcription path is active. Cancellation is checked between inference calls;
+an inference already inside a native backend finishes before cancellation
+returns.
 
 These isolated benchmark instances do not replace the selected dictation model
 or publish shared-runtime lifecycle changes. There is no automatic fallback if

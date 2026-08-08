@@ -27,6 +27,7 @@ mod knowledge_store;
 pub mod llm_sidecar;
 mod log_shipper;
 pub mod managed_child;
+mod model_artifact;
 mod model_runtime;
 mod performance_metrics;
 mod platform;
@@ -120,6 +121,8 @@ impl<T> MutexExt<T> for Mutex<T> {
 pub(crate) struct State {
     pub(crate) app_state: AppState,
     pub(crate) benchmark: std::sync::Arc<benchmark::BenchmarkCoordinator>,
+    #[cfg(feature = "internal-benchmark")]
+    pub(crate) corpus: commands::corpus::CorpusRecorderState,
     pub(crate) knowledge: knowledge_store::KnowledgeStore,
     pub(crate) correct_and_teach: correct_and_teach::CorrectAndTeachState,
     pub(crate) performance: performance_metrics::PerformanceMetrics,
@@ -219,19 +222,29 @@ pub fn run() {
     #[cfg(target_os = "linux")]
     apply_linux_webkit_env_defaults(|k| std::env::var_os(k), |k, v| std::env::set_var(k, v));
 
-    let app = tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_dialog::init());
+
+    #[cfg(not(feature = "internal-benchmark"))]
+    let builder = builder
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
-        .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build());
+
+    #[cfg(feature = "internal-benchmark")]
+    let builder = builder.plugin(commands::corpus::plugin());
+
+    let app = builder
         .manage(State {
             app_state: AppState::default(),
             benchmark: std::sync::Arc::new(benchmark::BenchmarkCoordinator::new()),
+            #[cfg(feature = "internal-benchmark")]
+            corpus: commands::corpus::CorpusRecorderState::default(),
             knowledge: knowledge_store::KnowledgeStore::default(),
             correct_and_teach: correct_and_teach::CorrectAndTeachState::default(),
             performance: performance_metrics::PerformanceMetrics::default(),
@@ -369,7 +382,7 @@ pub fn run() {
         })
         .setup(|app| {
             telemetry::init(app.handle().clone());
-            log_shipper::start();
+            log_shipper::start(app.handle());
 
             if let Some(main_window) = app.get_webview_window("main") {
                 commands::native_window::hide_titlebar_separator(&main_window);
@@ -482,6 +495,7 @@ pub fn run() {
             // to re-detect notch info and reposition the overlay.
             commands::overlay::register_screen_change_observer(app.handle().clone());
             audio_lifecycle::register_sleep_wake_observer();
+            #[cfg(not(feature = "internal-benchmark"))]
             commands::tray::register_update_wake_observer(app.handle().clone());
 
             // Overwrite the transform-review window's initial size from Rust's
@@ -492,21 +506,25 @@ pub fn run() {
             // Restore tray icon (removed by PR #63 overlay work).
             let idle_icon_data = commands::tray::make_tray_icon_data();
             let show_item = MenuItemBuilder::with_id("show", "Show Murmur").build(app)?;
-            let update_item =
-                MenuItemBuilder::with_id("check_updates", "Check for Updates…").build(app)?;
             let disabled_item = tauri::menu::CheckMenuItemBuilder::with_id("toggle_disabled", "Disable Murmur")
                 .checked(false)
                 .build(app)?;
             let quit_item = MenuItemBuilder::with_id("quit", "Quit Murmur").build(app)?;
-            let tray_menu = MenuBuilder::new(app)
-                .item(&show_item)
-                .item(&update_item)
+            let tray_menu = MenuBuilder::new(app).item(&show_item);
+            #[cfg(not(feature = "internal-benchmark"))]
+            let (tray_menu, update_item) = {
+                let update_item =
+                    MenuItemBuilder::with_id("check_updates", "Check for Updates…").build(app)?;
+                (tray_menu.item(&update_item), update_item)
+            };
+            let tray_menu = tray_menu
                 .separator()
                 .item(&disabled_item)
                 .separator()
                 .item(&quit_item)
                 .build()?;
             commands::keyboard::register_tray_disabled_item(disabled_item.clone());
+            #[cfg(not(feature = "internal-benchmark"))]
             commands::tray::register_tray_update_item(update_item);
             let handle = app.handle().clone();
             TrayIconBuilder::with_id("main-tray")

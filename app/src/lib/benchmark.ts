@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { getModelRuntimeCatalog } from './modelRuntime';
 
 export type BenchmarkPreset = 'quick' | 'standard' | 'thorough';
+export type BenchmarkCorpusSource = 'bundled' | 'personal';
 
 export interface BenchmarkModel {
   modelName: string;
@@ -85,7 +86,7 @@ export interface BenchmarkModelResult {
 }
 
 export interface BenchmarkReport {
-  /** Version 2 adds explicit environment, corpus, and execution metadata. */
+  /** Version 2 adds metadata; version 3 identifies bundled vs personal audio. */
   reportVersion?: number;
   createdAt: string;
   appVersion: string;
@@ -106,6 +107,7 @@ export interface BenchmarkReport {
     memoryMb: number | null;
   };
   corpus?: {
+    source?: BenchmarkCorpusSource;
     language: string;
     fixtureIds: string[];
     fixtureCount: number;
@@ -205,8 +207,11 @@ function isEnvironment(value: unknown): boolean {
     && isNullableNumber(value.memoryMb);
 }
 
-function isCorpus(value: unknown): boolean {
+function isCorpus(value: unknown, sourceRequired = false): boolean {
   return isRecord(value)
+    && (sourceRequired
+      ? value.source === 'bundled' || value.source === 'personal'
+      : value.source === undefined || value.source === 'bundled' || value.source === 'personal')
     && typeof value.language === 'string'
     && Array.isArray(value.fixtureIds)
     && value.fixtureIds.every((fixture) => typeof fixture === 'string')
@@ -232,9 +237,9 @@ function isBenchmarkReport(value: unknown): value is BenchmarkReport {
   if (!isRecord(value) || !isRecord(value.recommendations)) return false;
   const metadataIsCompatible = value.reportVersion === undefined
     ? value.environment === undefined && value.corpus === undefined && value.configuration === undefined
-    : value.reportVersion === 2
+    : (value.reportVersion === 2 || value.reportVersion === 3)
       && isEnvironment(value.environment)
-      && isCorpus(value.corpus)
+      && isCorpus(value.corpus, value.reportVersion === 3)
       && isConfiguration(value.configuration);
   return typeof value.createdAt === 'string'
     && Number.isFinite(Date.parse(value.createdAt))
@@ -350,8 +355,12 @@ export function openBenchmarkOutputFolder(outputDir: string): Promise<void> {
   return invoke('open_benchmark_output_folder', { outputDir });
 }
 
-export function runBenchmark(modelNames: string[], preset: BenchmarkPreset): Promise<BenchmarkReport> {
-  return invoke('run_benchmark', { request: { modelNames, preset } });
+export function runBenchmark(
+  modelNames: string[],
+  preset: BenchmarkPreset,
+  corpus: BenchmarkCorpusSource,
+): Promise<BenchmarkReport> {
+  return invoke('run_benchmark', { request: { modelNames, preset, corpus } });
 }
 
 export function cancelBenchmark(): Promise<boolean> {

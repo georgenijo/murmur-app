@@ -20,6 +20,15 @@ pub struct RunningApplication {
     pub name: String,
 }
 
+/// Content-free identity frozen into a live recording. The process identifier
+/// never crosses the Tauri command boundary or enters history/telemetry; it is
+/// used only to keep a delayed auto-paste bound to its original application.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrontmostAppIdentity {
+    pub bundle_id: Option<String>,
+    pub process_id: Option<i32>,
+}
+
 #[derive(Debug)]
 struct RunningApplicationCandidate {
     bundle_id: Option<String>,
@@ -233,10 +242,41 @@ pub fn frontmost_bundle_id() -> Option<String> {
     result.bundle_id
 }
 
+/// Capture the frontmost bundle and PID as one privacy-bounded recording input.
+/// The bounded bundle detector retains its compatibility fallback. A PID is
+/// accepted only when a second native sample still reports the same bundle,
+/// preventing a focus transition from pairing identities from different apps.
+#[cfg(target_os = "macos")]
+pub fn frontmost_app_identity() -> FrontmostAppIdentity {
+    use objc2_app_kit::NSWorkspace;
+
+    let bundle_id = frontmost_bundle_id();
+    let process_id = NSWorkspace::sharedWorkspace()
+        .frontmostApplication()
+        .and_then(|application| {
+            let native_bundle = application
+                .bundleIdentifier()
+                .map(|value| value.to_string());
+            (native_bundle == bundle_id).then(|| application.processIdentifier())
+        });
+    FrontmostAppIdentity {
+        bundle_id,
+        process_id,
+    }
+}
+
 /// Non-macOS platforms have no frontmost-app concept here; profiles are a no-op.
 #[cfg(not(target_os = "macos"))]
 pub fn frontmost_bundle_id() -> Option<String> {
     None
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn frontmost_app_identity() -> FrontmostAppIdentity {
+    FrontmostAppIdentity {
+        bundle_id: None,
+        process_id: None,
+    }
 }
 
 #[cfg(test)]

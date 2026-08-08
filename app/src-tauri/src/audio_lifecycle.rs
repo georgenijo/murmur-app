@@ -21,12 +21,16 @@ const STOP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(12);
 pub(crate) enum AudioOwner {
     Dictation(u64),
     Transform(u64),
+    #[cfg(feature = "internal-benchmark")]
+    Corpus(u64),
 }
 
 impl AudioOwner {
     pub(crate) fn telemetry_id(self) -> u64 {
         match self {
             Self::Dictation(id) | Self::Transform(id) => id,
+            #[cfg(feature = "internal-benchmark")]
+            Self::Corpus(id) => id,
         }
     }
 
@@ -34,6 +38,8 @@ impl AudioOwner {
         match self {
             Self::Dictation(_) => "dictation",
             Self::Transform(_) => "transform",
+            #[cfg(feature = "internal-benchmark")]
+            Self::Corpus(_) => "corpus",
         }
     }
 }
@@ -261,6 +267,14 @@ impl LifecycleSink for ProductionLifecycleSink {
                 crate::transform_flow::handle_audio_lifecycle(
                     app_handle.clone(),
                     transform_pass_id,
+                    event,
+                );
+            }
+            #[cfg(feature = "internal-benchmark")]
+            AudioOwner::Corpus(capture_id) => {
+                crate::commands::corpus::handle_audio_lifecycle(
+                    app_handle.clone(),
+                    capture_id,
                     event,
                 );
             }
@@ -780,8 +794,12 @@ fn handle_worker_event(
                 // Dictation reports a retained prefix through Interrupted at
                 // worker exit. Transform audio has no partial-transcript path,
                 // so preserve its typed, content-free failure before recovery.
-                let report_failure =
-                    matches!(current.owner, AudioOwner::Transform(_)).then_some(failure);
+                let report_failure = match current.owner {
+                    AudioOwner::Transform(_) => Some(failure),
+                    #[cfg(feature = "internal-benchmark")]
+                    AudioOwner::Corpus(_) => Some(failure),
+                    AudioOwner::Dictation(_) => None,
+                };
                 begin_recovery(
                     attempt,
                     AudioCancelReason::RuntimeFailure,
@@ -1191,8 +1209,29 @@ pub(crate) fn start_transform_recording(
     .map_err(|error| error.to_string())
 }
 
+#[cfg(feature = "internal-benchmark")]
+pub(crate) fn start_corpus_recording(
+    app_handle: tauri::AppHandle,
+    device_id: Option<String>,
+    capture_id: u64,
+) -> Result<(), String> {
+    send_start(
+        AudioOwner::Corpus(capture_id),
+        Some(app_handle),
+        device_id,
+        "corpus",
+        true,
+    )
+    .map_err(|error| error.to_string())
+}
+
 pub(crate) fn stop_dictation_recording(recording_id: u64) -> Result<Vec<f32>, String> {
     stop(Some(AudioOwner::Dictation(recording_id)))
+}
+
+#[cfg(feature = "internal-benchmark")]
+pub(crate) fn stop_corpus_recording(capture_id: u64) -> Result<Vec<f32>, String> {
+    stop(Some(AudioOwner::Corpus(capture_id)))
 }
 
 pub(crate) fn stop_current_recording() -> Result<Vec<f32>, String> {
@@ -1226,6 +1265,14 @@ pub(crate) fn cancel_dictation_capture(
     reason: AudioCancelReason,
 ) -> Result<bool, String> {
     cancel(Some(AudioOwner::Dictation(recording_id)), reason, false)
+}
+
+#[cfg(feature = "internal-benchmark")]
+pub(crate) fn cancel_corpus_capture(
+    capture_id: u64,
+    reason: AudioCancelReason,
+) -> Result<bool, String> {
+    cancel(Some(AudioOwner::Corpus(capture_id)), reason, false)
 }
 
 pub(crate) fn cancel_current(reason: AudioCancelReason) -> Result<(), String> {

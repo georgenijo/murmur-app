@@ -43,6 +43,7 @@ import { isOnboardingComplete, markOnboardingComplete, resetOnboarding } from '.
 import { checkAccessibilityPermission, checkMicrophonePermissionStatus, checkModelExists } from './lib/dictation';
 import { getModelRuntimeCatalog } from './lib/modelRuntime';
 import { open } from '@tauri-apps/plugin-dialog';
+import { INTERNAL_BENCHMARK_BUILD } from './lib/buildFlavor';
 import {
   beginCurrentUiTransition,
   useUiLatencyDestination,
@@ -150,7 +151,7 @@ function App() {
     window.addEventListener('focus', check);
     return () => window.removeEventListener('focus', check);
   }, []);
-  const { historyEntries, addEntry, updateEntry, clearHistory } = useHistoryManagement();
+  const { historyEntries, addEntry, updateEntry, clearHistory } = useHistoryManagement(settings.retainHistory);
   const {
     status, recordingDuration, error: recordingError,
     handleStart, handleHoldStart, handleStop, toggleRecording, audioLevel, statsVersion,
@@ -190,7 +191,7 @@ function App() {
     microphone: settings.microphone,
   });
   const { showAbout, setShowAbout } = useShowAboutListener();
-  const updater = useAutoUpdater();
+  const updater = useAutoUpdater({ automaticChecksEnabled: !INTERNAL_BENCHMARK_BUILD });
 
   // DEV ONLY: cycle through updater and post-update modal states for visual testing
   const devUpdateIndex = useRef(-1);
@@ -533,13 +534,13 @@ function App() {
         settingsOpen={isSettingsOpen}
         mode={isSettingsOpen ? 'settings' : 'main'}
         buildBadge={PERFORMANCE_BUILD_BADGE}
-        updateIndicator={(
+        updateIndicator={!INTERNAL_BENCHMARK_BUILD ? (
           <UpdateIndicator
             status={updateStatus}
             onOpen={showAvailableUpdate}
             onRetryCheck={() => void checkForUpdate()}
           />
-        )}
+        ) : undefined}
       />
 
       <PermissionsBanner />

@@ -122,12 +122,13 @@ The main app controls are gated on `initialized` (which requires a model to exis
 - Uses `reqwest` with 30s connect timeout and 15-minute overall timeout
 - Writes chunks to a temp file (`.tmp` suffix)
 - Emits `download-progress` events with `{ received, total, phase }` payload
+- Rejects undersized artifacts and HTML, JSON, Git LFS pointer, or access-error payloads before publication
 - On success: atomic rename from `.tmp` to final path
 - On failure: temp file cleaned up
 
 ### Whisper Downloads
 
-Single `.bin` file downloaded directly from HuggingFace. Atomic rename on completion.
+Single `.bin` file downloaded directly from HuggingFace. The same binary-artifact validation is applied both before atomic publication and whenever installed Whisper search paths are inspected, so a stale proxy response cannot be reported as an installed model merely because a file exists.
 
 ### Parakeet Downloads
 
@@ -139,7 +140,7 @@ The model bundle ships as a `.tar.bz2` from the sherpa-onnx `asr-models` GitHub 
 
 ### VAD Co-Download
 
-Every transcription model download also triggers a co-download of the Silero VAD model (`ggml-silero-v5.1.2.bin`, ~1.8MB) if it is not already present. VAD download failure is non-fatal. See [vad.md](vad.md) for details on the VAD fallback download mechanism.
+Every transcription model download also triggers a co-download of the Silero VAD model (`ggml-silero-v5.1.2.bin`, ~1.8MB) if it is not already present. VAD cache and download checks use the same minimum-size and response-document validation as Whisper. VAD download failure is non-fatal. See [vad.md](vad.md) for details on the VAD fallback download mechanism.
 
 ## Allowed Models
 

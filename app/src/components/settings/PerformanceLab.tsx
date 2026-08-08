@@ -4,6 +4,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import {
   BenchmarkModel,
   BenchmarkModelResult,
+  BenchmarkCorpusSource,
   BenchmarkPreset,
   BenchmarkProgress,
   BenchmarkReport,
@@ -27,12 +28,21 @@ import {
 } from '../../lib/modelDownload';
 import type { Settings } from '../../lib/settings';
 import type { DictationStatus } from '../../lib/types';
+import { CorpusRecorder } from './CorpusRecorder';
+import { INTERNAL_BENCHMARK_BUILD } from '../../lib/buildFlavor';
 
 const PRESETS: { id: BenchmarkPreset; label: string; detail: string }[] = [
   { id: 'quick', label: 'Quick', detail: '2 clips x 3 runs' },
   { id: 'standard', label: 'Standard', detail: '7 clips x 5 runs' },
   { id: 'thorough', label: 'Thorough', detail: '9 clips x 10 runs' },
 ];
+
+function presetDetail(source: BenchmarkCorpusSource, preset: BenchmarkPreset): string {
+  if (source === 'bundled') return PRESETS.find((option) => option.id === preset)?.detail ?? '';
+  if (preset === 'quick') return '5 clips x 1 run';
+  if (preset === 'standard') return '20 clips x 1 run';
+  return '20 clips x 3 runs';
+}
 
 function milliseconds(value: number | null): string {
   return value === null ? '-' : `${Math.round(value)} ms`;
@@ -138,6 +148,9 @@ export function PerformanceLab({ status, settings, onUpdateSettings }: {
   const [models, setModels] = useState<BenchmarkModel[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
   const [preset, setPreset] = useState<BenchmarkPreset>('standard');
+  const [corpusSource, setCorpusSource] = useState<BenchmarkCorpusSource>(
+    INTERNAL_BENCHMARK_BUILD ? 'personal' : 'bundled',
+  );
   const [progress, setProgress] = useState<BenchmarkProgress | null>(null);
   const [dashboard, setDashboard] = useState<{
     reports: BenchmarkReport[];
@@ -153,6 +166,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings }: {
   const [downloading, setDownloading] = useState<string | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<ModelDownloadProgress | null>(null);
   const [fileTranscribing, setFileTranscribing] = useState(false);
+  const [corpusBusy, setCorpusBusy] = useState(false);
   const mounted = useRef(true);
   const runningRef = useRef(false);
 
@@ -225,7 +239,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings }: {
   const progressPercent = progress && progress.total > 0
     ? Math.round((progress.completed / progress.total) * 100)
     : 0;
-  const canRun = selected.length > 0 && !running && status === 'idle' && !fileTranscribing;
+  const canRun = selected.length > 0 && !running && status === 'idle' && !fileTranscribing && !corpusBusy;
 
   const selectedSet = useMemo(() => new Set(selected), [selected]);
   const toggleModel = (modelName: string) => {
@@ -241,7 +255,11 @@ export function PerformanceLab({ status, settings, onUpdateSettings }: {
     runningRef.current = true;
     setRunning(true);
     try {
-      const next = await runBenchmark(selected, preset);
+      const next = await runBenchmark(
+        selected,
+        preset,
+        INTERNAL_BENCHMARK_BUILD ? corpusSource : 'bundled',
+      );
       if (!mounted.current) return;
       setDashboard((current) => {
         const reports = saveBenchmarkReports(addBenchmarkReport(current.reports, next));
@@ -339,8 +357,50 @@ export function PerformanceLab({ status, settings, onUpdateSettings }: {
     <div className="space-y-6">
       <div className="rounded-xl border border-primary/30 bg-primary/10 p-3 text-xs text-on-surface">
         <p className="font-medium text-on-surface">Directional results, not a universal model ranking</p>
-        <p className="mt-1">This lab compares installed models on this Mac with a small, clean synthetic English corpus. It does not represent your voice, microphone, accent, room, or every dictation workload.</p>
+        <p className="mt-1">
+          {INTERNAL_BENCHMARK_BUILD && corpusSource === 'personal'
+            ? 'This mode replays your fixed, private recordings so every model and future build receives the same voice, microphone, room, and words.'
+            : 'This mode compares installed models with a small, clean synthetic English corpus. It does not represent your voice, microphone, accent, room, or every dictation workload.'}
+        </p>
       </div>
+      {INTERNAL_BENCHMARK_BUILD && <CorpusRecorder
+        status={status}
+        benchmarkRunning={running}
+        fileTranscribing={fileTranscribing}
+        settings={settings}
+        onUpdateSettings={onUpdateSettings}
+        onBusyChange={setCorpusBusy}
+      />}
+      {INTERNAL_BENCHMARK_BUILD && <section>
+        <h3 className="mb-2 text-sm font-semibold text-on-surface">Benchmark Audio</h3>
+        <div className="grid grid-cols-2 gap-1 rounded-lg bg-surface-container-low p-1">
+          {([
+            ['personal', 'Your Voice', '20 verified recordings'],
+            ['bundled', 'Synthetic', 'Built-in reference clips'],
+          ] as const).map(([source, label, detail]) => (
+            <button
+              type="button"
+              key={source}
+              disabled={running || corpusBusy}
+              onClick={() => {
+                setCorpusSource(source);
+                if (source === 'personal') {
+                  const currentModel = models.find((model) => model.installed && model.modelName === settings.model);
+                  if (currentModel) setSelected([currentModel.modelName]);
+                }
+              }}
+              className={`rounded-md px-3 py-2 text-left transition-colors disabled:opacity-50 ${
+                corpusSource === source
+                  ? 'bg-surface-container-lowest shadow-sm text-on-surface'
+                  : 'text-on-surface-variant hover:text-on-surface'
+              }`}
+            >
+              <span className="block text-xs font-semibold">{label}</span>
+              <span className="mt-0.5 block text-[10px]">{detail}</span>
+            </button>
+          ))}
+        </div>
+      </section>}
       <section>
         <div className="flex items-end justify-between gap-4 mb-3">
           <div>
@@ -352,7 +412,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings }: {
           {installedCount > 0 && (
             <button
               type="button"
-              disabled={running}
+              disabled={running || corpusBusy}
               onClick={() => setSelected(models.filter((model) => model.installed).map((model) => model.modelName))}
               className="text-xs text-on-surface hover:text-on-surface disabled:opacity-50"
             >
@@ -368,7 +428,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings }: {
                 type="checkbox"
                 aria-label={`Benchmark ${model.label}`}
                 checked={selectedSet.has(model.modelName)}
-                disabled={!model.installed || running}
+                disabled={!model.installed || running || corpusBusy}
                 onChange={() => toggleModel(model.modelName)}
                 className="h-4 w-4 accent-primary"
               />
@@ -384,7 +444,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings }: {
               {!model.installed && (
                 <button
                   type="button"
-                  disabled={downloading !== null || running}
+                  disabled={downloading !== null || running || corpusBusy}
                   onClick={() => handleDownload(model.modelName)}
                   className="shrink-0 px-2.5 py-1.5 text-xs font-medium border border-outline-variant/30 rounded-md text-on-surface hover:bg-surface-container-low disabled:opacity-50"
                 >
@@ -409,7 +469,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings }: {
             <button
               type="button"
               key={option.id}
-              disabled={running}
+              disabled={running || corpusBusy}
               onClick={() => setPreset(option.id)}
               className={`min-w-0 px-2 py-2 rounded-md transition-colors disabled:opacity-50 ${
                 preset === option.id
@@ -418,7 +478,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings }: {
               }`}
             >
               <span className="block text-xs font-semibold">{option.label}</span>
-              <span className="block mt-0.5 text-[10px] whitespace-normal leading-tight">{option.detail}</span>
+              <span className="block mt-0.5 text-[10px] whitespace-normal leading-tight">{presetDetail(INTERNAL_BENCHMARK_BUILD ? corpusSource : 'bundled', option.id)}</span>
             </button>
           ))}
         </div>
@@ -451,7 +511,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings }: {
             disabled={!canRun}
             className="w-full px-4 py-2.5 text-sm font-semibold rounded-lg bg-primary text-on-primary hover:bg-primary-dim disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            Run Benchmark
+            {INTERNAL_BENCHMARK_BUILD && corpusSource === 'personal' ? 'Run Personal Benchmark' : 'Run Benchmark'}
           </button>
         )}
         {status !== 'idle' && (
@@ -459,6 +519,9 @@ export function PerformanceLab({ status, settings, onUpdateSettings }: {
         )}
         {fileTranscribing && (
           <p className="mt-2 text-xs text-primary">Finish the file transcription first.</p>
+        )}
+        {corpusBusy && (
+          <p className="mt-2 text-xs text-primary">Finish or cancel the corpus recording first.</p>
         )}
         {error && (
           <p className="mt-2 text-xs text-error break-words">{error}</p>
@@ -533,7 +596,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings }: {
             <p className="font-medium text-on-surface">What this run measured</p>
             <p className="mt-1">
               {report.corpus
-                ? `${report.corpus.fixtureCount} ${report.corpus.language.toUpperCase()} synthetic clips / ${report.corpus.referenceWords} reference words / ${report.iterations} measured runs per clip.`
+                ? `${report.corpus.fixtureCount} ${report.corpus.language.toUpperCase()} ${report.corpus.source === 'personal' ? 'personal voice' : 'synthetic'} clips / ${report.corpus.referenceWords} reference words / ${report.iterations} measured runs per clip.`
                 : `${report.results.find((result) => !result.error)?.fixtures.length ?? 0} synthetic clips / ${report.iterations} measured runs per clip (legacy saved report).`}
             </p>
             <p className="mt-1">{report.configuration?.executionPath ?? 'Full-buffer final transcription after recording stops'}; VAD threshold {report.configuration?.vadThreshold ?? 0.5}; {report.configuration?.transcriptTransformProfile ?? 'default local delivery pipeline'}.</p>

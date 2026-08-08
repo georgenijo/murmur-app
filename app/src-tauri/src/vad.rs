@@ -25,7 +25,12 @@ pub fn vad_model_path() -> Option<PathBuf> {
 
 /// Check whether the VAD model file exists on disk.
 pub fn vad_model_exists() -> bool {
-    vad_model_path().is_some_and(|p| p.exists())
+    vad_model_path().is_some_and(|path| {
+        crate::model_artifact::binary_model_is_valid(
+            &path,
+            crate::model_artifact::MIN_VAD_MODEL_BYTES,
+        )
+    })
 }
 
 pub enum VadResult {
