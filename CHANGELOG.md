@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-08-07
+
 ### Added
 
 - Advanced Diagnostics can pop out into a movable standalone window and now
