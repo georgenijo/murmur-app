@@ -234,7 +234,7 @@ export function CorpusRecorder({
         <div>
           <div className="flex items-center gap-2">
             <h3 className="text-sm font-semibold text-on-surface">Personal Corpus Recorder</h3>
-            <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">Private · local</span>
+            <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-on-surface">Private · local</span>
           </div>
           <p className="mt-1 text-xs leading-relaxed text-on-surface-variant">
             Record a reusable benchmark for your voice. Capture uses Murmur&apos;s signed worker, but does not transcribe, paste, transform, or add history.
@@ -264,7 +264,7 @@ export function CorpusRecorder({
             setDeviceId(microphone);
             onUpdateSettings({ microphone });
           }}
-          className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-low px-3 py-2 text-xs text-on-surface outline-none focus:border-primary disabled:opacity-50"
+          className="w-full rounded-lg border border-outline-variant bg-surface-container-low px-3 py-2 text-xs text-on-surface outline-none focus:border-primary disabled:opacity-50"
         >
           <option value="system_default">System Default</option>
           {deviceOptions.map((device) => <option key={device.value} value={device.value}>{device.label}</option>)}
@@ -328,7 +328,7 @@ export function CorpusRecorder({
       </div>
 
       {lastRecording && phase === 'idle' && (
-        <div className={`rounded-lg border p-3 text-xs ${lastRecording.qualityWarnings.length > 0 ? 'border-primary/35 bg-primary/10' : 'border-success/30 bg-success/10'}`}>
+        <div className={`rounded-lg border p-3 text-xs ${lastRecording.qualityWarnings.length > 0 ? 'border-primary/35 bg-surface-container-high' : 'border-success/30 bg-success/10'}`}>
           <div className="flex items-center justify-between gap-3">
             <p className="font-semibold text-on-surface">
               {lastRecording.qualityWarnings.length > 0 ? 'Saved with a quality note' : 'Saved and ready'}

@@ -1085,7 +1085,7 @@ export const SettingsPanel = memo(function SettingsPanel({
               )}
             </div>}
             {INTERNAL_BENCHMARK_BUILD && (
-              <p className="rounded-lg border border-primary/25 bg-primary/10 px-3 py-2 text-xs text-on-surface-variant">
+              <p className="rounded-lg border border-primary/25 bg-primary/10 px-3 py-2 text-xs text-on-surface">
                 Internal benchmark build. Automatic updates, launch at login, and diagnostic log shipping are disabled.
               </p>
             )}
