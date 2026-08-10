@@ -1,3 +1,5 @@
+import { invoke, isTauri } from '@tauri-apps/api/core';
+
 export type RecordingMode = 'hold_down' | 'double_tap' | 'both';
 
 export type DoubleTapKey = 'shift_l' | 'alt_l' | 'ctrl_r';
@@ -422,11 +424,57 @@ type PersistedSettings = Partial<Settings> & {
   recordingMode?: string;
 };
 
+/**
+ * Mirror a serialized blob to the Rust-owned `settings.json`. Fire-and-forget:
+ * localStorage is the synchronous contract every caller depends on, and disk is
+ * the durable copy read back at the next window boot — a failed or unavailable
+ * bridge (plain browser, tests) must never surface as a settings-save failure.
+ */
+function mirrorToDisk(blob: string): void {
+  try {
+    if (!isTauri()) return;
+    void invoke('save_settings_blob', { blob }).catch(console.error);
+  } catch (e) {
+    console.error('Failed to persist settings to disk:', e);
+  }
+}
+
 function writePersistedSettings(settings: Settings): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify({
+  const blob = JSON.stringify({
     ...settings,
     settingsVersion: SETTINGS_VERSION,
-  }));
+  });
+  localStorage.setItem(STORAGE_KEY, blob);
+  mirrorToDisk(blob);
+}
+
+/**
+ * Seed localStorage from the durable `settings.json` before any window renders.
+ * Disk wins: localStorage is a write-through cache that a reinstall or a WebKit
+ * eviction can silently drop. Idempotent, so every window entry can await it
+ * regardless of creation order.
+ */
+export async function hydrateSettingsFromDisk(): Promise<void> {
+  try {
+    if (!isTauri()) return;
+    const blob = await invoke<string | null>('load_settings_blob');
+    if (typeof blob === 'string') {
+      // `loadSettings()` re-runs the full validation gauntlet over whatever is
+      // in here, so no schema work belongs on this path.
+      localStorage.setItem(STORAGE_KEY, blob);
+      return;
+    }
+    // No durable copy: either a first run, or an existing install whose
+    // settings only ever lived in localStorage. Repair it once.
+    const cached = localStorage.getItem(STORAGE_KEY);
+    if (cached !== null) {
+      await invoke('save_settings_blob', { blob: cached });
+    }
+  } catch (e) {
+    // Boot must never block on the settings store; localStorage stays the
+    // fallback for this session.
+    console.error('Failed to hydrate settings from disk:', e);
+  }
 }
 
 /**
