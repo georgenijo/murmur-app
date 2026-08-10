@@ -137,6 +137,7 @@ describe('useAutoUpdater presentation state', () => {
       message: 'Error: offline',
     });
     expect(current.isUpdateDialogOpen).toBe(false);
+    expect(mocks.check).toHaveBeenCalledTimes(2);
     expect(mocks.flogError).toHaveBeenCalledWith(
       'updater',
       'check failed',
@@ -145,6 +146,34 @@ describe('useAutoUpdater presentation state', () => {
         error: 'Error: offline',
       },
     );
+  });
+
+  it('recovers from a transient updater-feed failure before showing an error', async () => {
+    mocks.check
+      .mockRejectedValueOnce(new Error('temporary feed failure'))
+      .mockResolvedValueOnce({
+        available: true,
+        version: '0.23.0',
+        body: 'Release notes',
+        downloadAndInstall: vi.fn(),
+      });
+
+    await act(async () => current.checkForUpdate());
+
+    expect(mocks.check).toHaveBeenCalledTimes(2);
+    expect(current.updateStatus).toMatchObject({
+      phase: 'available',
+      version: '0.23.0',
+    });
+    expect(mocks.flogWarn).toHaveBeenCalledWith(
+      'updater',
+      'check failed; retrying',
+      {
+        attempt: 1,
+        error: 'Error: temporary feed failure',
+      },
+    );
+    expect(mocks.flogError).not.toHaveBeenCalled();
   });
 
   it('fails closed when update availability is known but policy cannot be verified', async () => {
@@ -164,6 +193,36 @@ describe('useAutoUpdater presentation state', () => {
       message: expect.stringContaining('verify the update policy'),
     });
     expect(localStorage.getItem('updater-last-check')).toBeNull();
+  });
+
+  it('recovers from a transient update-policy fetch failure', async () => {
+    mocks.check.mockResolvedValue({
+      available: true,
+      version: '0.24.2',
+      body: 'Release notes',
+      downloadAndInstall: vi.fn(),
+    });
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(new Error('temporary policy failure'))
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({}),
+      });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await act(async () => current.checkForUpdate());
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(current.updateStatus).toMatchObject({
+      phase: 'available',
+      version: '0.24.2',
+      isForced: false,
+    });
+    expect(mocks.flogWarn).toHaveBeenCalledWith(
+      'updater',
+      'policy check failed; retrying',
+      { error: 'Error: temporary policy failure' },
+    );
   });
 
   it('opens a required update when the verified policy is above the installed version', async () => {

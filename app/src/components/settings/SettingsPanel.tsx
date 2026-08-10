@@ -1079,7 +1079,7 @@ export const SettingsPanel = memo(function SettingsPanel({
               {updateStatus.phase === 'error' && (
                 <p className="mt-1.5 text-xs text-error">
                   {updateStatus.stage === 'check'
-                    ? 'Update check failed.'
+                    ? 'Couldn\u2019t check for updates. Check your connection and try again.'
                     : 'Update installation needs attention.'}
                 </p>
               )}
