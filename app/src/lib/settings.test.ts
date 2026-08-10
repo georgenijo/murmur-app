@@ -1,5 +1,17 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+
+const mocks = vi.hoisted(() => ({
+  invoke: vi.fn(),
+  isTauri: vi.fn(() => false),
+}));
+
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: (...args: unknown[]) => mocks.invoke(...args),
+  isTauri: () => mocks.isTauri(),
+}));
+
 import {
+  hydrateSettingsFromDisk,
   loadSettings,
   saveSettings,
   AUTO_STOP_SILENCE_OPTIONS,
@@ -10,6 +22,11 @@ import {
 
 beforeEach(() => {
   localStorage.clear();
+  mocks.invoke.mockReset();
+  mocks.invoke.mockResolvedValue(undefined);
+  // Default to "not running under Tauri" so the existing localStorage-only
+  // expectations below are unaffected by the durable store.
+  mocks.isTauri.mockReturnValue(false);
 });
 
 describe('loadSettings', () => {
@@ -736,5 +753,91 @@ describe('loadSettings', () => {
     }));
     const settings = loadSettings();
     expect(settings.codeVocabLastScan!.whisperCount).toBe(1);
+  });
+});
+
+describe('durable settings store', () => {
+  const STORAGE_KEY = 'dictation-settings';
+
+  beforeEach(() => {
+    mocks.isTauri.mockReturnValue(true);
+  });
+
+  it('seeds localStorage from the blob the backend returns', async () => {
+    const blob = JSON.stringify({ ...DEFAULT_SETTINGS, language: 'es', settingsVersion: 1 });
+    mocks.invoke.mockResolvedValue(blob);
+
+    await hydrateSettingsFromDisk();
+
+    expect(mocks.invoke).toHaveBeenCalledWith('load_settings_blob');
+    expect(localStorage.getItem(STORAGE_KEY)).toBe(blob);
+    expect(loadSettings().language).toBe('es');
+  });
+
+  it('overwrites a stale localStorage cache — disk is authoritative', async () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...DEFAULT_SETTINGS, language: 'fr' }));
+    mocks.invoke.mockResolvedValue(JSON.stringify({ ...DEFAULT_SETTINGS, language: 'de' }));
+
+    await hydrateSettingsFromDisk();
+
+    expect(loadSettings().language).toBe('de');
+  });
+
+  it('migrates an existing localStorage blob to disk when nothing is stored yet', async () => {
+    const cached = JSON.stringify({ ...DEFAULT_SETTINGS, language: 'it', settingsVersion: 1 });
+    localStorage.setItem(STORAGE_KEY, cached);
+    mocks.invoke.mockImplementation(async (command: string) =>
+      command === 'load_settings_blob' ? null : undefined);
+
+    await hydrateSettingsFromDisk();
+
+    expect(mocks.invoke).toHaveBeenCalledWith('save_settings_blob', { blob: cached });
+    expect(localStorage.getItem(STORAGE_KEY)).toBe(cached);
+  });
+
+  it('writes nothing on a first run with no cached settings', async () => {
+    mocks.invoke.mockResolvedValue(null);
+
+    await hydrateSettingsFromDisk();
+
+    expect(mocks.invoke).toHaveBeenCalledTimes(1);
+    expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
+  });
+
+  it('leaves localStorage untouched when the backend rejects', async () => {
+    const cached = JSON.stringify({ ...DEFAULT_SETTINGS, language: 'ja' });
+    localStorage.setItem(STORAGE_KEY, cached);
+    mocks.invoke.mockRejectedValue(new Error('store unavailable'));
+
+    await expect(hydrateSettingsFromDisk()).resolves.toBeUndefined();
+
+    expect(localStorage.getItem(STORAGE_KEY)).toBe(cached);
+  });
+
+  it('does not touch the backend outside Tauri', async () => {
+    mocks.isTauri.mockReturnValue(false);
+
+    await hydrateSettingsFromDisk();
+    saveSettings(DEFAULT_SETTINGS);
+
+    expect(mocks.invoke).not.toHaveBeenCalled();
+    expect(localStorage.getItem(STORAGE_KEY)).not.toBeNull();
+  });
+
+  it('writes localStorage synchronously and mirrors the same blob to disk', () => {
+    saveSettings({ ...DEFAULT_SETTINGS, language: 'ko' });
+
+    const written = localStorage.getItem(STORAGE_KEY);
+    expect(written).not.toBeNull();
+    expect(JSON.parse(written ?? '{}')).toMatchObject({ language: 'ko', settingsVersion: 1 });
+    expect(mocks.invoke).toHaveBeenCalledWith('save_settings_blob', { blob: written });
+  });
+
+  it('still persists to localStorage when the disk mirror fails', () => {
+    mocks.invoke.mockRejectedValue(new Error('disk full'));
+
+    saveSettings({ ...DEFAULT_SETTINGS, language: 'ru' });
+
+    expect(loadSettings().language).toBe('ru');
   });
 });
