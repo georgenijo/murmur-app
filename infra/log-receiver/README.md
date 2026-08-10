@@ -1,8 +1,20 @@
-# Log receiver deployment (whoop-vm)
+# Log receiver deployment (opti)
 
 Server side of [docs/features/log-shipping.md](../../docs/features/log-shipping.md).
-Everything here is a snapshot of what runs on whoop-vm — treat this directory as
-the source of truth and redeploy from it.
+Everything here is a snapshot of what runs on `opti` (a Dell Optiplex on the
+tailnet, Linux Mint 22.3, user `george`) — treat this directory as the source
+of truth and redeploy from it.
+
+`opti` has no public IP, so it is reached via a Cloudflare Tunnel
+(`cloudflared`) rather than a direct nginx+certbot listener. See
+[Tunnel and DNS](#tunnel-and-dns) below.
+
+> **Previous home:** this receiver ran on `whoop-vm` (Oracle Cloud, public IP)
+> until 2026-08-09. That VM is deprecated and currently offline. Historical
+> log data for `2026-08-09` and earlier still sits on `whoop-vm` at
+> `/home/george/murmur-logs/` and has **not** been migrated — that's a pending
+> manual `rsync` once the VM is reachable again. See
+> [Pending: historical data migration](#pending-historical-data-migration).
 
 ## Components
 
@@ -13,30 +25,66 @@ the source of truth and redeploy from it.
 | `murmur-capture-watch.py` | `/home/george/murmur-capture-watch.py` | bounded stdlib aggregation of shipped capture-startup metrics |
 | `murmur-capture-watch.service` | `/etc/systemd/system/` | one-shot capture regression analysis |
 | `murmur-capture-watch.timer` | `/etc/systemd/system/` | runs the watch hourly with a randomized delay |
-| `nginx-murmur-site.conf` | `/etc/nginx/sites-available/murmur` (+ symlink in sites-enabled) | `murmur.georgenijo.com` → dashboard (own LE cert) |
-| `nginx-georgenijo-locations.snippet` | inside the `georgenijo.com` 443 server block | public `/murmur/ingest`, `/murmur/state`, `/murmur/healthz` |
+| `nginx-murmur-ingest-opti.conf` | `/etc/nginx/sites-available/murmur-ingest` (+ symlink in sites-enabled; default site removed) | local-only proxy on `127.0.0.1:8601` for `/murmur/ingest`, `/murmur/state`, `/murmur/healthz` |
+| `cloudflared-config.yml` | `/etc/cloudflared/config.yml` | tunnel `opti-murmur`: routes `murmur.georgenijo.com` → `:8600` (dashboard) and `georgenijo.com` → `:8601` (nginx path rewrites) |
 
-## Also required (not files)
+## Tunnel and DNS
 
-- **DNS**: `murmur.georgenijo.com` A → VM, Cloudflare-proxied. `georgenijo.com` stays DNS-only.
-- **Cloudflare Access** app "Murmur Fleet Logs" gating host `murmur.georgenijo.com`,
-  allow policy for george.nijo8@gmail.com. (CF API token: keychain `cloudflare-api-token-whoop`.)
-- **TLS**: `certbot --nginx -d murmur.georgenijo.com` (issue while the DNS record is
-  un-proxied, then flip to proxied). Auto-renews.
-- **Ingest token**: baked into the receiver and `app/src-tauri/src/log_shipper.rs`;
-  reference copy in fleet secrets: `fleet secret get murmur-log-ingest-token`.
+`opti` has no public IP, so nothing listens on a public port directly.
+Instead:
+
+- **cloudflared** is installed from the official `.deb` and runs as a
+  systemd service via `cloudflared service install` (not one of the units
+  above — that command generates its own unit from the installed binary).
+- Tunnel name: **`opti-murmur`**. Its config is `cloudflared-config.yml` in
+  this directory, deployed to `/etc/cloudflared/config.yml`:
+  - `murmur.georgenijo.com` → `http://127.0.0.1:8600` (dashboard, direct to
+    the receiver — still gated by Cloudflare Access, see below)
+  - `georgenijo.com` → `http://127.0.0.1:8601` (local nginx, which does the
+    `/murmur/*` path rewrites onto the receiver)
+  - catch-all → `http_status:404`
+- **DNS**: both `murmur.georgenijo.com` and `georgenijo.com` are proxied
+  CNAMEs to `dac9359e-51bd-4ad9-8389-dd510127c04e.cfargotunnel.com`, created with
+  `cloudflared tunnel route dns --overwrite-dns opti-murmur <hostname>`.
+- **Caveat:** `georgenijo.com`'s apex now routes entirely to `opti`, and
+  `opti` only serves `/murmur/*` (everything else 404s from the nginx
+  `location / { return 404; }` block). Anything else the old VM served on
+  the bare apex is gone until it is separately migrated onto `opti` (or
+  elsewhere) and added to the ingress/nginx config.
+- **Cloudflare Access** app "Murmur Fleet Logs" still gates host
+  `murmur.georgenijo.com`, allow policy for george.nijo8@gmail.com. (CF API
+  token for Access/DNS management: macbook keychain
+  `cloudflare-api-token-whoop` — name unchanged even though the VM it
+  originally targeted is gone.)
+- **TLS** is handled entirely by the tunnel (Cloudflare terminates it) — no
+  certbot, no local certs, nothing to renew on `opti`.
+- **Ingest token**: baked into the receiver and `app/src-tauri/src/log_shipper.rs`,
+  unchanged by this move; reference copy in fleet secrets:
+  `fleet secret get murmur-log-ingest-token`.
 
 ## Redeploy after editing the receiver
 
 ```bash
-cat infra/log-receiver/murmur-logs-receiver.py | tailscale ssh george@whoop-vm "cat > /home/george/murmur-logs-receiver.py"
-cat infra/log-receiver/murmur-capture-watch.py | tailscale ssh george@whoop-vm "cat > /home/george/murmur-capture-watch.py"
-cat infra/log-receiver/murmur-capture-watch.service | tailscale ssh george@whoop-vm "cat > /tmp/murmur-capture-watch.service"
-cat infra/log-receiver/murmur-capture-watch.timer | tailscale ssh george@whoop-vm "cat > /tmp/murmur-capture-watch.timer"
-tailscale ssh ubuntu@whoop-vm "sudo install -m 0644 /tmp/murmur-capture-watch.service /etc/systemd/system/ && sudo install -m 0644 /tmp/murmur-capture-watch.timer /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now murmur-capture-watch.timer"
-tailscale ssh ubuntu@whoop-vm "sudo systemctl restart murmur-logs && systemctl is-active murmur-logs"
-tailscale ssh ubuntu@whoop-vm "sudo systemctl start murmur-capture-watch.service || true; systemctl status --no-pager murmur-capture-watch.service; systemctl list-timers --no-pager murmur-capture-watch.timer"
+cat infra/log-receiver/murmur-logs-receiver.py | tailscale ssh george@opti "cat > /home/george/murmur-logs-receiver.py"
+cat infra/log-receiver/murmur-capture-watch.py | tailscale ssh george@opti "cat > /home/george/murmur-capture-watch.py"
+cat infra/log-receiver/murmur-capture-watch.service | tailscale ssh george@opti "cat > /tmp/murmur-capture-watch.service"
+cat infra/log-receiver/murmur-capture-watch.timer | tailscale ssh george@opti "cat > /tmp/murmur-capture-watch.timer"
+tailscale ssh george@opti "sudo install -m 0644 /tmp/murmur-capture-watch.service /etc/systemd/system/ && sudo install -m 0644 /tmp/murmur-capture-watch.timer /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now murmur-capture-watch.timer"
+tailscale ssh george@opti "sudo systemctl restart murmur-logs && systemctl is-active murmur-logs"
+tailscale ssh george@opti "sudo systemctl start murmur-capture-watch.service || true; systemctl status --no-pager murmur-capture-watch.service; systemctl list-timers --no-pager murmur-capture-watch.timer"
 curl -s https://georgenijo.com/murmur/healthz   # expect: ok
+```
+
+george has passwordless sudo on `opti`, so the commands above run
+non-interactively. Equivalently, any of these can run via
+`fleet exec opti "..."` instead of `tailscale ssh george@opti "..."`.
+
+Redeploying the nginx or cloudflared config after editing it in this
+directory:
+
+```bash
+cat infra/log-receiver/nginx-murmur-ingest-opti.conf | tailscale ssh george@opti "sudo tee /etc/nginx/sites-available/murmur-ingest >/dev/null && sudo nginx -t && sudo systemctl reload nginx"
+cat infra/log-receiver/cloudflared-config.yml | tailscale ssh george@opti "sudo tee /etc/cloudflared/config.yml >/dev/null && sudo systemctl restart cloudflared"
 ```
 
 The one-shot exits `2` after atomically writing its report when it finds an
@@ -48,6 +96,22 @@ failed state and replaces the report.
 Rollback stops/disables the timer, removes its two units and script, reloads
 systemd, and redeploys the preceding receiver. Retained `events.jsonl` remains
 valid: `ingest_app_version` is an additive receiver annotation.
+
+## Pending: historical data migration
+
+`whoop-vm` is currently offline (decommissioned Oracle Cloud VM). Its
+`/home/george/murmur-logs/` still holds all fleet log history up to
+2026-08-09. Once that VM is reachable again (or its disk is otherwise
+recoverable), migrate it onto `opti` with something like:
+
+```bash
+tailscale ssh george@whoop-vm "tar -C /home/george -czf - murmur-logs" | tailscale ssh george@opti "tar -C /home/george -xzf -"
+```
+
+then reconcile any per-install directories that exist on both sides (`opti`
+started fresh, so most installs will simply be new directories; only
+overlapping install UUIDs need care) before decommissioning `whoop-vm` for
+good. This is a manual, one-time step — not automated by anything here.
 
 ## Data layout
 

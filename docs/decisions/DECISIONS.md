@@ -6,6 +6,39 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 ---
 
+## 2026-08-09: Log receiver and fleet-logs dashboard hosting moved from whoop-vm to opti
+
+**Decision:** Move the murmur log receiver and fleet-logs dashboard from
+`whoop-vm` (an Oracle Cloud VM with a public IP, now deprecated and currently
+offline) to `opti` (a fleet node on the home network/tailnet, no public IP).
+Because `opti` has no public IP, the previous nginx+certbot direct listener is
+replaced by a Cloudflare Tunnel (`opti-murmur`): the tunnel forwards
+`murmur.georgenijo.com` straight to the receiver's dashboard and forwards
+`georgenijo.com` to a local nginx site that does the `/murmur/*` path
+rewrites, same as before. The receiver process, its systemd units, data
+layout, and the app's ingest URL (`https://georgenijo.com/murmur/ingest`,
+hardcoded in `log_shipper.rs`) are all unchanged. Historical log data on
+`whoop-vm` has not been migrated yet — that's a pending manual step once the
+VM is reachable again. `georgenijo.com`'s apex now routes entirely to `opti`,
+which only serves `/murmur/*`; anything else the old VM served on the apex
+404s until separately migrated.
+
+**Rationale:** `whoop-vm` was being decommissioned, and `opti` (already part
+of the fleet) is a free, always-on replacement — but it sits behind a home
+router with no public IP, so the old direct nginx+certbot model can't work
+unchanged. A Cloudflare Tunnel avoids router port-forwarding and gets TLS
+termination for free from Cloudflare, at the cost of routing all apex traffic
+through a single ingress that currently only knows about `/murmur/*`.
+
+**Status:** active
+
+**References:** `infra/log-receiver/README.md`,
+`infra/log-receiver/cloudflared-config.yml`,
+`infra/log-receiver/nginx-murmur-ingest-opti.conf`,
+`docs/features/log-shipping.md`
+
+---
+
 ## 2026-08-05: Spoken Structure is the single owner for dictated punctuation and layout
 
 **Decision:** Replace the overlapping Voice Commands and Smart Formatting
