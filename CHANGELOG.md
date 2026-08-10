@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.30.1] - 2026-08-09
+
+### Fixed
+
+- Update checks now retry transient release-feed and minimum-version policy
+  failures before showing actionable connection guidance.
+
 ## [0.30.0] - 2026-08-07
 
 ### Added
