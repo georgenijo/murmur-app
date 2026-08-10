@@ -1,0 +1,11 @@
+# Deploys to /etc/cloudflared/config.yml on opti. Tunnel "opti-murmur",
+# installed as a systemd service via `cloudflared service install`.
+tunnel: dac9359e-51bd-4ad9-8389-dd510127c04e
+credentials-file: /home/george/.cloudflared/dac9359e-51bd-4ad9-8389-dd510127c04e.json
+
+ingress:
+  - hostname: murmur.georgenijo.com
+    service: http://127.0.0.1:8600
+  - hostname: georgenijo.com
+    service: http://127.0.0.1:8601
+  - service: http_status:404

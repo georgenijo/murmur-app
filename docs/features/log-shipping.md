@@ -49,7 +49,7 @@ a re-collection on the next app launch.
 
 ```
 events.jsonl  ──(log_shipper.rs, every 60s)──▶  POST https://georgenijo.com/murmur/ingest
-                                                   │  nginx (georgenijo.com site, whoop-vm)
+                                                   │  Cloudflare Tunnel → nginx (127.0.0.1:8601, opti)
                                                    ▼
                                     murmur-logs.service (127.0.0.1:8600)
                                                    │
@@ -81,18 +81,24 @@ events.jsonl  ──(log_shipper.rs, every 60s)──▶  POST https://georgenij
   without adding development noise to the fleet.
 - `MURMUR_LOG_ENDPOINT=<url>` overrides the endpoint for testing.
 
-### Receiver (whoop-vm)
+### Receiver (opti)
 
 - `/home/george/murmur-logs-receiver.py` — stdlib-only Python HTTP server on
-  `127.0.0.1:8600`, run by systemd unit `murmur-logs.service` (user `george`).
+  `127.0.0.1:8600`, run by systemd unit `murmur-logs.service` (user `george`),
+  on the fleet node `opti` (a Dell Optiplex on the tailnet with no public
+  IP).
 - Validates the bearer token, the `X-Install-Id` shape, and that every line
   parses as JSON before appending. 8 MB request cap, 200 MB per-install cap.
 - Adds a bounded `ingest_app_version` annotation from the app-version request
   header to each accepted production event. This is receiver-side attribution
   from an existing header, not a new client-collected field. Historical lines
   remain untouched and are treated as an `unknown` non-comparable cohort.
-- Exposed at `https://georgenijo.com/murmur/ingest` via a `location` block in
-  `/etc/nginx/sites-enabled/georgenijo.com`. Health: `/murmur/healthz`.
+- Exposed at `https://georgenijo.com/murmur/ingest` via a Cloudflare Tunnel
+  (`opti-murmur`) that forwards `georgenijo.com` to a local nginx site on
+  `127.0.0.1:8601`, which proxies the `/murmur/*` paths to the receiver.
+  There is no direct public listener — `opti` has no public IP. Health:
+  `/murmur/healthz`. See [infra/log-receiver/README.md](../../infra/log-receiver/README.md)
+  for the full tunnel/nginx setup.
 - The ingest token is in fleet secrets: `fleet secret get murmur-log-ingest-token`.
 
 ## Fleet dashboard
@@ -180,9 +186,9 @@ produces no global keyboard callbacks.
 ## Reading the logs
 
 ```bash
-tailscale ssh george@whoop-vm "ls /home/george/murmur-logs/"          # installs
-tailscale ssh george@whoop-vm \
-  "tail -20 /home/george/murmur-logs/<uuid>/events.jsonl"             # tail one
+tailscale ssh george@opti "ls /home/george/murmur-logs/"          # installs
+tailscale ssh george@opti \
+  "tail -20 /home/george/murmur-logs/<uuid>/events.jsonl"        # tail one
 ```
 
 `meta.json` in each install dir records the last seen app version.
@@ -191,6 +197,6 @@ tailscale ssh george@whoop-vm \
 
 | Failure | Behavior |
 |---|---|
-| whoop-vm down / offline | POSTs fail silently; offset holds; retry every 60s. Data older than the ~10 MB rotation window (current + `.jsonl.1`) is lost if the outage outlives it. |
+| opti / tunnel down / offline | POSTs fail silently; offset holds; retry every 60s. Data older than the ~10 MB rotation window (current + `.jsonl.1`) is lost if the outage outlives it. |
 | Endpoint URL changes | Old binaries go dark until auto-update delivers the new constant. |
 | Install exceeds 200 MB on server | Receiver returns 507; shipper keeps retrying but nothing is appended (effectively paused for that install). |
