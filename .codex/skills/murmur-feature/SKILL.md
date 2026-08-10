@@ -160,18 +160,24 @@ and performance-sensitive Rust dependencies.
 Run the normal gate from the worktree with all installed models:
 
 ```bash
+PR_HEAD_SHA="$(gh pr view --json headRefOid --jq .headRefOid)"
 python3 scripts/murmur_bench_fleet.py \
   --baseline origin/main \
-  --candidate origin/<branch-name> \
+  --candidate "$PR_HEAD_SHA" \
   --preset quick
 ```
+
+Before running, fetch `origin` on the trusted benchmark Mac and verify that it
+resolves `PR_HEAD_SHA`; do not substitute the local worktree branch or a moving
+branch name. Record this same candidate SHA in the benchmark receipt.
 
 Use `standard` for shared cross-model or pipeline changes. Do not pass
 `--no-fail`. If the comparison fails, rerun once with `--candidate-first`; a
 repeated regression blocks merge, while mixed results are inconclusive and
 require investigation or explicit user acceptance. Never upload raw reports or
 personal transcript content from the trusted Mac. Add only a content-free
-metric/pass-fail receipt and the tested candidate commit SHA to the PR. Any
+receipt containing the exact refs, candidate SHA, preset, model names,
+thresholds, aggregate deltas, and pass/fail to the PR. Any
 later push, rebase, merge from main, or conflict resolution invalidates the
 result and requires a rerun.
 

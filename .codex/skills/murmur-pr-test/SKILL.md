@@ -82,23 +82,29 @@ All checks must pass before merging. Fix only issues required to make the PR mer
 ## Murmur Bench Performance Gate
 
 When the PR can change recognition latency, accuracy, delivered-text output, or
-memory, run the private benchmark from the PR worktree against the exact pushed
-candidate ref:
+memory, resolve the immutable pushed PR-head commit and run the private
+benchmark from the PR worktree against that SHA:
 
 ```bash
+PR_HEAD_SHA="$(gh pr view --json headRefOid --jq .headRefOid)"
 python3 scripts/murmur_bench_fleet.py \
   --baseline origin/main \
-  --candidate origin/<headRefName> \
+  --candidate "$PR_HEAD_SHA" \
   --preset quick
 ```
+
+Before running, fetch `origin` on the trusted benchmark Mac and verify that it
+resolves `PR_HEAD_SHA`; do not substitute a moving branch name. Record this
+same candidate SHA in the validation receipt.
 
 Use `standard` for shared cross-model or pipeline changes. Do not use
 `--no-fail`. If the comparison fails, rerun once with `--candidate-first`; a
 repeated regression blocks merge, while mixed results are inconclusive and
 require investigation or explicit user acceptance. Raw reports can contain
 personal transcript text and must remain on the trusted benchmark Mac. Put only
-a content-free aggregate result and the tested candidate commit SHA in the PR
-validation receipt. Any later push, rebase, merge from main, or conflict
+a content-free receipt containing the exact refs, candidate SHA, preset, model
+names, thresholds, aggregate deltas, and pass/fail in the PR. Any later push,
+rebase, merge from main, or conflict
 resolution invalidates the result and requires a rerun.
 
 For an unrelated PR, record `Murmur Bench: N/A — <reason>` rather than silently

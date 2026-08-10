@@ -121,14 +121,20 @@ bias.
 ## Required PR and release gates
 
 For a PR that can change recognition latency, accuracy, delivered-text output,
-or memory, run the Fleet wrapper after pushing the exact candidate branch:
+or memory, resolve the immutable PR-head SHA after pushing the exact candidate
+branch, then run the Fleet wrapper against that SHA:
 
 ```bash
+PR_HEAD_SHA="$(gh pr view --json headRefOid --jq .headRefOid)"
 python3 scripts/murmur_bench_fleet.py \
   --baseline origin/main \
-  --candidate origin/<branch> \
+  --candidate "$PR_HEAD_SHA" \
   --preset quick
 ```
+
+Fetch `origin` on the trusted benchmark Mac first and verify that it resolves
+`PR_HEAD_SHA`; do not substitute a moving branch name. The same SHA must appear
+in the validation receipt.
 
 The gate applies to VAD, transcription backends, model runtime, transcript
 transforms, benchmarked execution paths, and performance-sensitive Rust
@@ -138,7 +144,7 @@ receipt instead of running an irrelevant benchmark.
 
 Record the tested candidate commit SHA in the receipt. Any later push, rebase,
 merge from main, or conflict resolution invalidates the result and requires a
-rerun against the new exact candidate ref before merge.
+rerun against the new immutable candidate SHA before merge.
 
 Before every release, compare the previous release tag with the exact
 `origin/main` release candidate using Standard. Use Thorough when any commit
@@ -155,8 +161,9 @@ Do not use `--no-fail` for either gate. On a failed comparison, repeat once
 with `--candidate-first`. A repeated regression blocks merge or release. Mixed
 results are inconclusive rather than a pass and require investigation or the
 user's explicit acceptance of the measured risk. Keep raw reports and personal
-transcript content on the trusted Mac; report only model names, aggregate
-deltas, thresholds, and pass/fail in GitHub.
+transcript content on the trusted Mac. GitHub receipts may contain only
+content-free provenance and results: exact refs, candidate SHA where applicable,
+preset, model names, thresholds, aggregate deltas, and pass/fail.
 
 This replay gate does not exercise live Core Audio startup, device switching,
 first PCM, or real clipboard/paste delivery. Native smoke tests and the

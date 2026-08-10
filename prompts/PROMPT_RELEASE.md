@@ -75,8 +75,9 @@ user. If the trusted Mac, corpus, or comparable baseline is unavailable, stop
 and report the missing prerequisite rather than silently skipping the gate.
 
 Raw reports can contain personal reference and recognized transcript text.
-Leave them on the trusted benchmark Mac and include only model names, aggregate
-metric deltas, configured thresholds, and pass/fail in the release summary.
+Leave them on the trusted benchmark Mac. The release summary may contain only
+content-free provenance and results: exact refs, candidate SHA where applicable,
+preset, model names, configured thresholds, aggregate deltas, and pass/fail.
 Murmur Bench replays saved WAV files, so it does not replace the post-release
 production check for live Core Audio startup, first PCM, device behavior,
 clipboard, or paste.
