@@ -33,6 +33,8 @@ const UPDATE_POLICY_UNAVAILABLE_MESSAGE =
 
 type UpdaterOperation = 'idle' | 'checking' | 'installing';
 
+const UPDATE_CHECK_ATTEMPTS = 2;
+
 interface UseAutoUpdaterOptions {
   automaticChecksEnabled?: boolean;
 }
@@ -112,7 +114,25 @@ export function useAutoUpdater(
       !opts.isBackground || manualPresentationRequestedRef.current;
 
     try {
-      const update = await check();
+      let update: Update | null = null;
+      let lastCheckError: unknown;
+      let checkSucceeded = false;
+      for (let attempt = 1; attempt <= UPDATE_CHECK_ATTEMPTS; attempt += 1) {
+        try {
+          update = await check();
+          checkSucceeded = true;
+          break;
+        } catch (error) {
+          lastCheckError = error;
+          if (attempt < UPDATE_CHECK_ATTEMPTS) {
+            flog.warn('updater', 'check failed; retrying', {
+              attempt,
+              error: String(error),
+            });
+          }
+        }
+      }
+      if (!checkSucceeded) throw lastCheckError;
 
       if (!update?.available || !update.version) {
         setLastCheckTimestamp(Date.now());
@@ -132,7 +152,13 @@ export function useAutoUpdater(
 
       // Check min_version (custom field not exposed by Tauri updater)
       const currentVersion = await getVersion();
-      const policy = await fetchMinVersionPolicy();
+      let policy = await fetchMinVersionPolicy();
+      if (policy.status === 'unavailable') {
+        flog.warn('updater', 'policy check failed; retrying', {
+          error: policy.message,
+        });
+        policy = await fetchMinVersionPolicy();
+      }
       if (policy.status === 'unavailable') {
         flog.warn('updater', 'could not verify update policy', {
           error: policy.message,
