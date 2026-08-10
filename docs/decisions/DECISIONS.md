@@ -6,6 +6,34 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 ---
 
+## 2026-08-09: Rust-owned settings.json is the source of truth; localStorage is a cache
+
+**Decision:** Frontend settings persist durably to `settings.json` in the
+per-bundle app data directory via two new commands (`load_settings_blob`,
+`save_settings_blob` in `commands/settings_store.rs`). Every window entry
+hydrates localStorage from the file before first render; every save writes
+localStorage synchronously and mirrors the same blob to disk. Rust validates
+only the container (≤1 MiB, JSON object) and never a field — the whole
+schema and every migration rule stay in `lib/settings.ts`. Corrupt files are
+quarantined to `settings.json.corrupt-<unix-seconds>`, never deleted.
+
+**Rationale:** localStorage lives in WKWebView's website-data store, which a
+manual reinstall or WebKit eviction can silently drop — this happened in
+practice (2026-08). The app data directory (knowledge store, diagnostics)
+survived the same reinstall. The opaque-blob split keeps settings changes
+frontend-only while gaining Rust's durability, and the boot-hydration design
+preserves the synchronous `loadSettings()` contract that overlay hooks
+depend on. Full source-of-truth migration was chosen over a backup/restore
+stopgap because the file format is identical either way and the flip cost
+was contained to entry-point gating.
+
+**Status:** active
+
+**References:** `commands/settings_store.rs`, `lib/settings.ts`,
+`docs/reference/settings.md` ("Persistence and Migration")
+
+---
+
 ## 2026-08-09: Log receiver and fleet-logs dashboard hosting moved from whoop-vm to opti
 
 **Decision:** Move the murmur log receiver and fleet-logs dashboard from

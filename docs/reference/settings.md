@@ -1,6 +1,6 @@
 # User Settings Reference
 
-This document describes Murmur's user-configurable settings. Settings are managed on the frontend by the `useSettings` hook and persisted to `localStorage`. Relevant settings are pushed to the Rust backend via the `configure_dictation` command.
+This document describes Murmur's user-configurable settings. Settings are managed on the frontend by the `useSettings` hook, persisted durably to a Rust-owned `settings.json`, and cached in `localStorage` for synchronous reads. Relevant settings are pushed to the Rust backend via the `configure_dictation` command.
 
 For the hook that manages settings, see [hooks.md](hooks.md). For the backend command that receives configuration, see [commands.md](commands.md).
 
@@ -8,8 +8,8 @@ For the hook that manages settings, see [hooks.md](hooks.md). For the backend co
 
 ## Settings Overview
 
-Dictation settings are stored in `localStorage` under the key
-`dictation-settings` as a single JSON object. Appearance is an independent
+Dictation settings are one JSON object, stored durably in `settings.json` and
+cached in `localStorage` under the key `dictation-settings`. Appearance is an independent
 versioned document under `murmur-appearance`; it is never merged into this
 interface or emitted through `dictation-settings`.
 
@@ -209,14 +209,35 @@ New text replacements and snippets are Rust-owned knowledge records rather than 
 
 ### Storage
 
-- **Key:** `dictation-settings`
-- **Method:** `localStorage.setItem` / `localStorage.getItem`
-- **Format:** Full `Settings` object serialized as JSON
+- **Durable copy:** `settings.json` in the per-bundle app data directory, owned by `commands/settings_store.rs`. This is the source of truth: it survives a manual reinstall and WebKit storage eviction, which `localStorage` does not.
+- **Cache:** `localStorage` under the key `dictation-settings`, written through on every save so `loadSettings()` stays synchronous — its callers (overlay hooks in particular) read settings during render.
+- **Format:** Full `Settings` object serialized as JSON, plus `settingsVersion`. The same string is written to both places.
+
+The blob is opaque to Rust. The host validates only the container — at most 1 MiB, and it must parse as a JSON object — so every schema, default, and migration rule stays in `lib/settings.ts` and a settings change never requires a Rust change.
+
+### Boot Hydration
+
+Each window entry (`main.tsx`, `overlay.tsx`, `transform-review.tsx`, `diagnostics.tsx`) awaits `hydrateSettingsFromDisk()` before its first render:
+
+1. Outside Tauri (plain browser, tests) it is a no-op and `localStorage` remains the only store.
+2. `load_settings_blob` returns a blob → it is written into `localStorage` verbatim. Disk wins; the cache may be stale or evicted.
+3. `load_settings_blob` returns `null` → first run, or an existing install whose settings only ever lived in `localStorage`. A non-null cached blob is migrated to disk once via `save_settings_blob`.
+4. Any failure is logged and swallowed. Boot never blocks on the settings store, and `localStorage` stays the fallback for the session.
+
+Hydration is idempotent, so every window can run it regardless of creation order; concurrent first-run writes are serialized in Rust and write identical content.
+
+### Saving
+
+`saveSettings()` (and the migration re-persist inside `loadSettings()`) serializes once, writes `localStorage` synchronously, then fires `save_settings_blob` without awaiting it. A rejected or unavailable backend is logged and never fails the save — the cache is already written and the next boot repairs the durable copy.
+
+### Corruption
+
+A `settings.json` that is oversized, not UTF-8, not valid JSON, or not a JSON object is renamed to `settings.json.corrupt-<unix-seconds>` and reported as "no settings on disk", so the window falls back to its `localStorage` cache. Corrupt files are never deleted.
 
 ### Loading Behavior
 
 `loadSettings()` performs the following:
-1. Reads from `localStorage` under `dictation-settings`.
+1. Reads from `localStorage` under `dictation-settings` (seeded from disk at boot).
 2. If found, parses as JSON and merges with `DEFAULT_SETTINGS` (stored values override defaults). Legacy comma/newline-separated `customVocabulary` values migrate to enabled global `vocabularyEntries` with no aliases.
 3. Applies migration: if `recordingMode` is missing or invalid (including the legacy `'hotkey'` value), resets to `'hold_down'`.
 4. Strips the legacy `hotkey` field if present.

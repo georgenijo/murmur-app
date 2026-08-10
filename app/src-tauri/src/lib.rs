@@ -319,6 +319,8 @@ pub fn run() {
             commands::knowledge::import_knowledge_from_file,
             commands::knowledge::delete_all_knowledge,
             commands::export::save_text_export,
+            commands::settings_store::load_settings_blob,
+            commands::settings_store::save_settings_blob,
             commands::theme::read_theme_file,
             commands::theme::write_theme_file,
             commands::logging::get_log_contents,

@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The 113 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
+The 115 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -192,6 +192,18 @@ frontend.
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
 | `save_text_export` | `path: String`, `contents: String` | `Result<u64, String>` | Writes a user-authored text export (transcript history today) to a path chosen in the native save dialog, returning bytes written. Refuses relative paths, directories, dotfiles, missing parents, extensions outside `.json`/`.md`/`.txt`, and payloads over 8 MB. The write is atomic (temp sibling, then rename). |
+
+## Settings store (`commands/settings_store.rs`)
+
+The durable home for the frontend's settings object, in `settings.json` under
+the per-bundle app data directory. The blob is opaque to Rust: only the
+container is checked (bounded, parses as a JSON object), so schema and
+migration rules stay entirely in `lib/settings.ts`.
+
+| Command | Parameters | Returns | Description |
+|---------|-----------|---------|-------------|
+| `load_settings_blob` | — | `Result<Option<String>, String>` | Reads `settings.json`, creating the directory if needed. `None` when the file is absent, or when it was over 1 MiB, not UTF-8, not valid JSON, or not a JSON object — those are renamed to `settings.json.corrupt-<unix-seconds>` and never deleted, so the caller falls back to its localStorage cache. `Err` is reserved for filesystem failures. |
+| `save_settings_blob` | `blob: String` | `Result<(), String>` | Refuses anything over 1 MiB or not a JSON object, then publishes atomically (temp sibling, then rename). Concurrent writers (main and overlay windows) are serialized; a failed write removes the temp file and preserves the previous settings. |
 
 ## Overlay (`commands/overlay.rs`)
 

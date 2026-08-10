@@ -11,6 +11,8 @@ cd app && npm run tauri build      # Production .app and .dmg
 cd app/src-tauri && cargo test -- --test-threads=1  # Rust unit tests
 cd app && npx tsc --noEmit         # TypeScript check
 cd app && npm test                 # Frontend vitest — CI runs this too; tsc alone is not enough
+PR_HEAD_SHA="$(gh pr view --json headRefOid --jq .headRefOid)"
+python3 scripts/murmur_bench_fleet.py --baseline origin/main --candidate "$PR_HEAD_SHA" --preset quick  # Trusted-Mac PR performance gate
 ```
 
 > **macOS note:** `tauri.macos.conf.json` declares the local-LLM and capture helpers as externalBin, so
@@ -19,13 +21,45 @@ cd app && npm test                 # Frontend vitest — CI runs this too; tsc a
 > `python3 scripts/build_local_llm_sidecar.py` once first (it is a no-op on non-arm64-macOS).
 > The binaries are gitignored; release CI builds them before bundling.
 
+## Murmur Bench Gate
+
+Murmur Bench is the private, repeatable personal-corpus harness documented in
+`docs/features/internal-performance-harness.md`. Raw reports can contain
+reference and recognized transcript text: keep them on the trusted benchmark
+Mac and put only a content-free metric summary in GitHub.
+
+- Before merging a PR that can change recognition latency, accuracy,
+  delivered-text output, or memory, resolve the pushed PR head with
+  `gh pr view --json headRefOid --jq .headRefOid`, verify the trusted benchmark
+  Mac can resolve that commit after fetching `origin`, and run
+  `scripts/murmur_bench_fleet.py` against `origin/main` and that immutable SHA.
+  This includes changes to
+  VAD, transcription backends, model runtime, transcript transforms, benchmarked
+  execution paths, or performance-sensitive Rust dependencies.
+- Use `quick` for the normal PR gate and `standard` for shared cross-model or
+  pipeline changes. Record an explicit `Murmur Bench: N/A — <reason>` for PRs
+  that cannot affect benchmarked behavior.
+- Record the exact baseline ref, candidate SHA, preset, models, thresholds,
+  aggregate deltas, and pass/fail. Any later push, rebase, merge from
+  main, or conflict resolution invalidates the result and requires a rerun.
+- Before every release, compare the previous release tag with `origin/main` on
+  `standard`. Use `thorough` when the release contains any benchmark-sensitive
+  change.
+- Never use `--no-fail` to satisfy a merge or release gate. If a comparison
+  fails, rerun once with `--candidate-first` to expose order/thermal bias. A
+  repeated regression blocks the operation; mixed results are inconclusive and
+  also require investigation or explicit user acceptance before continuing.
+- Murmur Bench replays saved WAV files. It does not replace native capture
+  smoke tests or the post-release production check for Core Audio startup,
+  device switching, first PCM, clipboard, or paste behavior.
+
 ## Docs
 
 Start here for orientation:
 
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — System structure: module map, data flows, windows, threads, design decisions
 - **[docs/FEATURES.md](docs/FEATURES.md)** — What ships, breadth-first, with links into each feature doc
-- **[docs/reference/](docs/reference/)** — `commands.md` (113 Tauri commands), `events.md`, `hooks.md`, `settings.md`
+- **[docs/reference/](docs/reference/)** — `commands.md` (115 Tauri commands), `events.md`, `hooks.md`, `settings.md`
 
 Read these before working on a feature:
 
@@ -52,6 +86,7 @@ Read these before working on a feature:
 - **[docs/features/correct-and-teach.md](docs/features/correct-and-teach.md)** — Bounded learned corrections, exact-term teaching, scope and fail-closed rules
 - **[docs/features/personal-knowledge-store.md](docs/features/personal-knowledge-store.md)** — Local SQLite store, migrations, backup/recovery, export/import
 - **[docs/features/performance-lab.md](docs/features/performance-lab.md)** — Benchmarking, WER tiers, recommendation contract
+- **[docs/features/internal-performance-harness.md](docs/features/internal-performance-harness.md)** — Private personal-corpus build, Fleet runner, and mandatory PR/release performance gates
 - **[docs/features/diagnostic-report-comparison.md](docs/features/diagnostic-report-comparison.md)** — Session-only Reports workspace and comparison
 - **[docs/features/selected-text-transform.md](docs/features/selected-text-transform.md)** — Local selected-text rewrite (hold key, sidecar LLM, review popover, approve/undo)
 - **[docs/features/evaluation-harness.md](docs/features/evaluation-harness.md)** — Versioned local fixtures, deterministic CI, opt-in hardware evaluation, reports, and deletion
@@ -64,13 +99,14 @@ Read these before working on a feature:
 
 | File | Purpose |
 |------|---------|
-| `lib.rs` | App wiring: mod declarations, `State`, `MutexExt`, 113 registered commands, setup, tray, `run()` |
+| `lib.rs` | App wiring: mod declarations, `State`, `MutexExt`, 115 registered commands, setup, tray, `run()` |
 | `commands/mod.rs` | Re-exports command sub-modules |
 | `commands/integrations.rs` | Local availability probes for optional companion apps |
 | `commands/recording.rs` | `IdleGuard`, dictation pipeline, file transcription, vocab scan, IDE context commands |
 | `commands/permissions.rs` | Permission check/request/reset and audio device commands (incl. in-app mic TCC prompt) |
 | `commands/keyboard.rs` | Dictation + transform listener commands, global disable |
 | `commands/export.rs` | `save_text_export` — validated, atomic user-chosen text export sink |
+| `commands/settings_store.rs` | Durable `settings.json` in the app data dir: opaque bounded JSON-object blob, atomic write, corrupt-file quarantine |
 | `commands/logging.rs` | Log commands, delegates to telemetry.rs |
 | `commands/models.rs` | Model catalog/status queries and the download pipeline |
 | `commands/knowledge.rs` | Personal knowledge store CRUD, resolve, preview, export/import |
