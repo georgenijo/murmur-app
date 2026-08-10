@@ -6,7 +6,6 @@ description: >-
   smoke test via Computer Use, PR creation, validation, and merge when green.
   Use when the user invokes /feature, ships a feature from an issue number,
   or wants plan + build + review + test + merge in one workflow.
-disable-model-invocation: true
 ---
 
 # Murmur Feature — Plan → Ship → Merge
@@ -139,6 +138,7 @@ gh pr create \
 ## Test plan
 - [ ] cargo check / test / tsc
 - [ ] native app smoke (if applicable)
+- [ ] Murmur Bench gate (quick/standard, or N/A with reason)
 - [ ] <issue-specific steps>
 
 Closes #<issue-number>
@@ -149,6 +149,36 @@ EOF
 
 Note the PR number and URL.
 
+### Phase 6.5 — Murmur Bench gate
+
+After the exact candidate branch is pushed, inspect the changed files and run
+the private Fleet benchmark when the PR can change recognition latency,
+accuracy, delivered-text output, or memory. This includes VAD, transcription
+backends, model runtime, transcript transforms, benchmarked execution paths,
+and performance-sensitive Rust dependencies.
+
+Run the normal gate from the worktree with all installed models:
+
+```bash
+python3 scripts/murmur_bench_fleet.py \
+  --baseline origin/main \
+  --candidate origin/<branch-name> \
+  --preset quick
+```
+
+Use `standard` for shared cross-model or pipeline changes. Do not pass
+`--no-fail`. If the comparison fails, rerun once with `--candidate-first`; a
+repeated regression blocks merge, while mixed results are inconclusive and
+require investigation or explicit user acceptance. Never upload raw reports or
+personal transcript content from the trusted Mac. Add only a content-free
+metric/pass-fail receipt and the tested candidate commit SHA to the PR. Any
+later push, rebase, merge from main, or conflict resolution invalidates the
+result and requires a rerun.
+
+For an unrelated PR, record `Murmur Bench: N/A — <reason>` in the PR instead of
+silently skipping the gate. This replay benchmark does not replace native smoke
+testing for live capture, device, clipboard, or paste behavior.
+
 ---
 
 ## Phase 7 — PR validation & merge (murmur-pr-test)
@@ -156,13 +186,19 @@ Note the PR number and URL.
 Treat your PR like any other Murmur PR:
 
 1. `gh pr view <number> --repo georgenijo/murmur-app`
-2. If not mergeable, merge `origin/main` into the worktree, resolve conflicts, re-run Phase 5 checks, push.
-3. Re-read CI / checks on GitHub if present.
+2. If not mergeable, merge `origin/main` into the worktree, resolve conflicts,
+   re-run Phase 5 checks, and push the resolved candidate.
+3. After any candidate push, rerun the Phase 6.5 gate when applicable so the
+   receipt names the exact pushed commit.
+4. Re-read CI / checks on GitHub if present.
 
 **Merge only when:**
 
 - Phase 5 checks passed (re-run after any merge-from-main).
 - Native smoke passed when the feature touched user-visible behavior.
+- Murmur Bench passed when applicable, or the PR records a justified N/A.
+- No unresolved/inconclusive benchmark regression remains unless the user
+  explicitly accepted the measured risk.
 - No known blockers in the PR or issue.
 - User has not said "stop before merge" — default for `/feature` is to **merge when green**.
 
@@ -183,6 +219,7 @@ Keep it short:
 - Plan summary (one line)
 - Checks run (pass/fail)
 - Native smoke (what was tested, or N/A)
+- Murmur Bench result (preset and aggregate result, or N/A with reason)
 - PR URL
 - Merge result (commit SHA or "not merged" + why)
 

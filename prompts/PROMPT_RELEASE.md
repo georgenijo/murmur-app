@@ -50,11 +50,43 @@ policy and emits the immutable updater manifest.
 
 Include the min_version decision in the release summary.
 
-## 4. Summarise the Build Plan
+## 4. Run the Pre-Release Murmur Bench Gate
+
+Before asking for release authorization, compare the previous release tag with
+the exact `origin/main` release candidate on the trusted benchmark Mac:
+
+```bash
+python3 scripts/murmur_bench_fleet.py \
+  --baseline v{previous_version} \
+  --candidate origin/main \
+  --preset standard
+```
+
+Use `thorough` instead of `standard` when any commit since the tag can change
+recognition latency, accuracy, delivered-text output, or memory. This includes
+VAD, transcription backends, model runtime, transcript transforms, benchmarked
+execution paths, and performance-sensitive Rust dependencies.
+
+This gate is mandatory for every release. Do not use `--no-fail`. If the
+comparison fails, rerun once with `--candidate-first` to expose order/thermal
+bias. A repeated regression blocks the release. Mixed results are inconclusive
+and also block the release until investigated or explicitly accepted by the
+user. If the trusted Mac, corpus, or comparable baseline is unavailable, stop
+and report the missing prerequisite rather than silently skipping the gate.
+
+Raw reports can contain personal reference and recognized transcript text.
+Leave them on the trusted benchmark Mac and include only model names, aggregate
+metric deltas, configured thresholds, and pass/fail in the release summary.
+Murmur Bench replays saved WAV files, so it does not replace the post-release
+production check for live Core Audio startup, first PCM, device behavior,
+clipboard, or paste.
+
+## 5. Summarise the Build Plan
 
 Present a concise release summary:
 - Current version → New version (and why: major/minor/patch)
 - Bullet list of what's included (one line per meaningful commit, skip chores/docs)
+- Murmur Bench preset, compared refs, and aggregate pass/fail result
 - Explain that pushing the version-bump commit starts the signed `Release Build`
   and that a successful build automatically creates `v{new_version}` and publishes
   its exact artifacts. A failed build never creates a tag or release.
@@ -63,7 +95,7 @@ Present a concise release summary:
 Stop and wait for confirmation. This is the release confirmation: it authorizes
 the version bump, main push, and automatic tag/publish after all gates pass.
 
-## 5. Build Trusted Artifacts
+## 6. Build Trusted Artifacts
 
 Run these steps in order:
 
@@ -85,7 +117,7 @@ Run these steps in order:
 If the build fails, use the cold fallback in `docs/release.md`. Automation will
 not create a tag or release for a failed build.
 
-## 6. Verify Automatic Promotion
+## 7. Verify Automatic Promotion
 
 Wait for the `Release` workflow started by the completed `Release Build`. Verify
 that it used the exact build run ID and commit SHA, created `v{new_version}` at
@@ -115,7 +147,7 @@ Then update its notes:
    ```
    Write the notes yourself from the commit list in Step 3 — use clear, user-facing language (not raw commit messages). Omit any section that has no entries. Skip `chore:`, `docs:`, `test:` commits.
 
-## 7. Validate Post-Release Production Latency
+## 8. Validate Post-Release Production Latency
 
 For any release that changes capture, transcription, delivery, model runtime,
 or performance-sensitive dependencies, the release is published but its
@@ -164,11 +196,12 @@ Follow `docs/features/performance-diagnostics.md` for the local run contract and
 privacy boundaries. Never inspect or report transcript, clipboard, or audio
 content while doing this comparison.
 
-## 8. Hand Off
+## 9. Hand Off
 
 Tell the user:
 - Exact commit, build run, promotion run, tag, and release URLs
 - The signed build passed and GitHub automatically promoted its exact artifacts
 - The release is published at: `https://github.com/georgenijo/murmur-app/releases`
+- The pre-release Murmur Bench refs, preset, and aggregate result
 - The production-latency comparison result, or clearly state that it is pending
   natural prompts on an explicitly authorized updated machine

@@ -11,6 +11,7 @@ cd app && npm run tauri build      # Production .app and .dmg
 cd app/src-tauri && cargo test -- --test-threads=1  # Rust unit tests
 cd app && npx tsc --noEmit         # TypeScript check
 cd app && npm test                 # Frontend vitest — CI runs this too; tsc alone is not enough
+python3 scripts/murmur_bench_fleet.py --baseline origin/main --candidate origin/<branch> --preset quick  # Trusted-Mac PR performance gate
 ```
 
 > **macOS note:** `tauri.macos.conf.json` declares the local-LLM and capture helpers as externalBin, so
@@ -18,6 +19,34 @@ cd app && npm test                 # Frontend vitest — CI runs this too; tsc a
 > `app/src-tauri/binaries/murmur-llm-sidecar-aarch64-apple-darwin`. Run
 > `python3 scripts/build_local_llm_sidecar.py` once first (it is a no-op on non-arm64-macOS).
 > The binaries are gitignored; release CI builds them before bundling.
+
+## Murmur Bench Gate
+
+Murmur Bench is the private, repeatable personal-corpus harness documented in
+`docs/features/internal-performance-harness.md`. Raw reports can contain
+reference and recognized transcript text: keep them on the trusted benchmark
+Mac and put only a content-free metric summary in GitHub.
+
+- Before merging a PR that can change recognition latency, accuracy,
+  delivered-text output, or memory, run `scripts/murmur_bench_fleet.py` against
+  `origin/main` and the exact pushed candidate ref. This includes changes to
+  VAD, transcription backends, model runtime, transcript transforms, benchmarked
+  execution paths, or performance-sensitive Rust dependencies.
+- Use `quick` for the normal PR gate and `standard` for shared cross-model or
+  pipeline changes. Record an explicit `Murmur Bench: N/A — <reason>` for PRs
+  that cannot affect benchmarked behavior.
+- Record the tested candidate commit SHA. Any later push, rebase, merge from
+  main, or conflict resolution invalidates the result and requires a rerun.
+- Before every release, compare the previous release tag with `origin/main` on
+  `standard`. Use `thorough` when the release contains any benchmark-sensitive
+  change.
+- Never use `--no-fail` to satisfy a merge or release gate. If a comparison
+  fails, rerun once with `--candidate-first` to expose order/thermal bias. A
+  repeated regression blocks the operation; mixed results are inconclusive and
+  also require investigation or explicit user acceptance before continuing.
+- Murmur Bench replays saved WAV files. It does not replace native capture
+  smoke tests or the post-release production check for Core Audio startup,
+  device switching, first PCM, clipboard, or paste behavior.
 
 ## Docs
 
@@ -48,6 +77,7 @@ Read these before working on a feature:
 - **[docs/features/correct-and-teach.md](docs/features/correct-and-teach.md)** — Bounded learned corrections, exact-term teaching, scope and fail-closed rules
 - **[docs/features/personal-knowledge-store.md](docs/features/personal-knowledge-store.md)** — Local SQLite store, migrations, backup/recovery, export/import
 - **[docs/features/performance-lab.md](docs/features/performance-lab.md)** — Benchmarking, WER tiers, recommendation contract
+- **[docs/features/internal-performance-harness.md](docs/features/internal-performance-harness.md)** — Private personal-corpus build, Fleet runner, and mandatory PR/release performance gates
 - **[docs/features/diagnostic-report-comparison.md](docs/features/diagnostic-report-comparison.md)** — Session-only Reports workspace and comparison
 - **[docs/features/selected-text-transform.md](docs/features/selected-text-transform.md)** — Local selected-text rewrite (hold key, sidecar LLM, review popover, approve/undo)
 - **[docs/features/evaluation-harness.md](docs/features/evaluation-harness.md)** — Versioned local fixtures, deterministic CI, opt-in hardware evaluation, reports, and deletion
