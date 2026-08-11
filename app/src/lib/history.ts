@@ -1,5 +1,6 @@
 /** Where a history entry's text came from. */
 import type { TeachingContext } from './correctAndTeach';
+import { clearDurableBlob, HISTORY_STORE, saveDurableBlob } from './durableUserData';
 
 export type HistorySource = 'recording' | 'file';
 
@@ -25,8 +26,6 @@ export interface HistoryEntry {
   interruption?: HistoryInterruption;
 }
 
-const STORAGE_KEY = 'dictation-history';
-
 /** Rolling cap on stored entries. */
 const MAX_ENTRIES = 200;
 
@@ -41,10 +40,10 @@ export function trimHistory(entries: HistoryEntry[]): HistoryEntry[] {
 
 export function loadHistory(): HistoryEntry[] {
   try {
-    const stored = localStorage.getItem(STORAGE_KEY);
+    const stored = localStorage.getItem(HISTORY_STORE.storageKey);
     if (stored) {
       const parsed = JSON.parse(stored);
-      if (Array.isArray(parsed)) return parsed as HistoryEntry[];
+      if (Array.isArray(parsed)) return trimHistory(parsed as HistoryEntry[]);
     }
   } catch (e) {
     console.error('Failed to load history:', e);
@@ -54,7 +53,8 @@ export function loadHistory(): HistoryEntry[] {
 
 export function saveHistory(entries: HistoryEntry[]): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(trimHistory(entries)));
+    const blob = JSON.stringify(trimHistory(entries));
+    saveDurableBlob(HISTORY_STORE, blob);
   } catch (e) {
     console.error('Failed to save history:', e);
   }
@@ -101,7 +101,7 @@ export function updateHistoryEntry(
 }
 
 export function clearHistory(): void {
-  localStorage.removeItem(STORAGE_KEY);
+  clearDurableBlob(HISTORY_STORE);
 }
 
 // ---------------------------------------------------------------------------

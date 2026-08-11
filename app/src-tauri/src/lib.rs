@@ -8,6 +8,7 @@ mod audio_lifecycle;
 // stable external API.
 pub mod benchmark;
 pub mod capture_agent_probe;
+mod capture_health;
 pub mod capture_helper_probe;
 mod cleanup;
 mod cli_command;
@@ -127,6 +128,7 @@ pub(crate) struct State {
     pub(crate) corpus: commands::corpus::CorpusRecorderState,
     pub(crate) knowledge: knowledge_store::KnowledgeStore,
     pub(crate) correct_and_teach: correct_and_teach::CorrectAndTeachState,
+    pub(crate) capture_health: capture_health::CaptureHealthDiagnostics,
     pub(crate) performance: performance_metrics::PerformanceMetrics,
     pub(crate) transform_diagnostics: transform_diagnostics::TransformDiagnostics,
     /// Cached overlay screen geometry
@@ -251,6 +253,7 @@ pub fn run() {
             corpus: commands::corpus::CorpusRecorderState::default(),
             knowledge: knowledge_store::KnowledgeStore::default(),
             correct_and_teach: correct_and_teach::CorrectAndTeachState::default(),
+            capture_health: capture_health::CaptureHealthDiagnostics::default(),
             performance: performance_metrics::PerformanceMetrics::default(),
             transform_diagnostics: transform_diagnostics::TransformDiagnostics::default(),
             notch_info: Mutex::new(None),
@@ -337,11 +340,18 @@ pub fn run() {
             commands::export::save_text_export,
             commands::settings_store::load_settings_blob,
             commands::settings_store::save_settings_blob,
+            commands::settings_store::load_history_blob,
+            commands::settings_store::save_history_blob,
+            commands::settings_store::clear_history_blob,
+            commands::settings_store::load_stats_blob,
+            commands::settings_store::save_stats_blob,
+            commands::settings_store::clear_stats_blob,
             commands::theme::read_theme_file,
             commands::theme::write_theme_file,
             commands::logging::get_log_contents,
             commands::logging::clear_logs,
             commands::logging::log_frontend,
+            capture_health::get_capture_health_history,
             commands::performance::list_performance_runs,
             commands::performance::get_performance_run,
             commands::performance::get_performance_resource_window,
@@ -416,6 +426,18 @@ pub fn run() {
             commands::query_popover::apply_initial_size(app.handle());
 
             let performance_root = app.path().app_data_dir()?.join("diagnostics");
+            if let Err(error) = app
+                .state::<State>()
+                .capture_health
+                .initialize(performance_root.clone(), &telemetry::event_jsonl_paths())
+            {
+                tracing::warn!(
+                    target: "system",
+                    diagnostics_available = false,
+                    "capture-health diagnostics store unavailable: {}",
+                    error
+                );
+            }
             if let Err(error) = app
                 .state::<State>()
                 .performance

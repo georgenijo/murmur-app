@@ -59,7 +59,7 @@ Start here for orientation:
 
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — System structure: module map, data flows, windows, threads, design decisions
 - **[docs/FEATURES.md](docs/FEATURES.md)** — What ships, breadth-first, with links into each feature doc
-- **[docs/reference/](docs/reference/)** — `commands.md` (126 Tauri commands), `events.md`, `hooks.md`, `settings.md`
+- **[docs/reference/](docs/reference/)** — `commands.md` (133 Tauri commands), `events.md`, `hooks.md`, `settings.md`
 
 Read these before working on a feature:
 
@@ -100,7 +100,7 @@ Read these before working on a feature:
 
 | File | Purpose |
 |------|---------|
-| `lib.rs` | App wiring: mod declarations, `State`, `MutexExt`, 126 registered commands, setup, tray, `run()` |
+| `lib.rs` | App wiring: mod declarations, `State`, `MutexExt`, 133 registered commands, setup, tray, `run()` |
 | `commands/mod.rs` | Re-exports command sub-modules |
 | `commands/integrations.rs` | Local availability probes for optional companion apps |
 | `commands/recording.rs` | `IdleGuard`, dictation pipeline, file transcription, vocab scan, IDE context commands |
@@ -108,7 +108,7 @@ Read these before working on a feature:
 | `commands/microphone_preview.rs` | Main-window microphone test commands, lifecycle bridge, exact-owner teardown |
 | `commands/keyboard.rs` | Dictation + transform listener commands, global disable |
 | `commands/export.rs` | `save_text_export` — validated, atomic user-chosen text export sink |
-| `commands/settings_store.rs` | Durable `settings.json` in the app data dir: opaque bounded JSON-object blob, atomic write, corrupt-file quarantine |
+| `commands/settings_store.rs` | Durable `settings.json`, `history.json`, and `stats.json`: bounded opaque blobs, atomic write, clear, corrupt-file quarantine |
 | `commands/logging.rs` | Log commands, delegates to telemetry.rs |
 | `commands/models.rs` | Model catalog/status queries and the download pipeline |
 | `commands/knowledge.rs` | Personal knowledge store CRUD, resolve, preview, export/import |
@@ -169,10 +169,11 @@ Read these before working on a feature:
 | File | Purpose |
 |------|---------|
 | `App.tsx` | Main orchestrator, wires hooks together |
-| `lib/settings.ts` | Settings types, defaults, localStorage persistence |
+| `lib/settings.ts` | Settings types, defaults, durable-source/localStorage-cache persistence |
 | `lib/onboarding.ts` | First-launch setup-assistant completion flag |
 | `lib/events.ts` | Event types, stream/level definitions, color constants |
 | `lib/history.ts` | History entries, rolling trim, search + match segmentation, export rendering |
+| `lib/durableUserData.ts` | History/stats disk hydration, localStorage migration, write-through and clear |
 | `lib/historyExport.ts` | Clipboard and save-dialog wrappers for history exports |
 | `lib/commandPalette.ts` | Palette command type, tiered scoring, filtering, selection movement |
 | `lib/keyboardShortcuts.ts` | Pure main-window keydown → action mapping (⌘K/⌘F/⌘,/⌘L) |
@@ -187,7 +188,7 @@ Read these before working on a feature:
 | `lib/hooks/useCombinedToggle.ts` | Both mode (hold-down + double-tap simultaneous) |
 | `lib/hooks/useRecordingState.ts` | Recording status, transcription, toggle logic |
 | `lib/hooks/useAutoUpdater.ts` | OTA updates, min-version enforcement |
-| `lib/hooks/useHistoryManagement.ts` | Transcription history: add/update/clear with localStorage persistence |
+| `lib/hooks/useHistoryManagement.ts` | Transcription history: add/update/clear with durable write-through persistence |
 | `lib/hooks/useSilenceAutoStop.ts` | Ends a hands-free (not hold-started) recording after trailing silence |
 | `lib/hooks/useRecordingOrigin.ts` | Tracks whether the in-flight recording is hold- or toggle-started |
 | `lib/hooks/useInitialization.ts` | One-time init sequence (initDictation + configure) |

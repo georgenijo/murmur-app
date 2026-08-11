@@ -3524,6 +3524,7 @@ mod tests {
                 corpus: crate::commands::corpus::CorpusRecorderState::default(),
                 knowledge: crate::knowledge_store::KnowledgeStore::default(),
                 correct_and_teach: crate::correct_and_teach::CorrectAndTeachState::default(),
+                capture_health: crate::capture_health::CaptureHealthDiagnostics::default(),
                 performance: performance.clone(),
                 transform_diagnostics: crate::transform_diagnostics::TransformDiagnostics::default(
                 ),
@@ -3614,6 +3615,7 @@ mod tests {
                 corpus: crate::commands::corpus::CorpusRecorderState::default(),
                 knowledge: crate::knowledge_store::KnowledgeStore::default(),
                 correct_and_teach: crate::correct_and_teach::CorrectAndTeachState::default(),
+                capture_health: crate::capture_health::CaptureHealthDiagnostics::default(),
                 performance: crate::performance_metrics::PerformanceMetrics::default(),
                 transform_diagnostics: crate::transform_diagnostics::TransformDiagnostics::default(
                 ),

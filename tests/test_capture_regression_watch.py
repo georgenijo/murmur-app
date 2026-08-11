@@ -58,7 +58,11 @@ class CaptureRegressionWatchTests(unittest.TestCase):
                 "audio readiness accepted",
                 f"2026-08-{prefix}T00:00:{index:02d}Z",
                 version=version,
-                data={"event_code": "audio.capture_ready", "startup_ms": value},
+                data={
+                    "event_code": "audio.capture_ready",
+                    "owner_kind": "dictation",
+                    "startup_ms": value,
+                },
             )
             for index, value in enumerate(startup_values)
         ]
@@ -122,6 +126,20 @@ class CaptureRegressionWatchTests(unittest.TestCase):
         self.assertEqual(alert["baseline_p50_ms"], 200)
         self.assertEqual(alert["candidate_p50_ms"], 540)
 
+    def test_persistent_p50_regression_uses_best_retained_earlier_baseline(self) -> None:
+        events = self.ready_events("1.0.0", "01", [200] * 5)
+        events += self.ready_events("1.1.0", "02", [500] * 5)
+        events += self.ready_events("1.2.0", "03", [520] * 5)
+        with tempfile.TemporaryDirectory() as root:
+            self.write_install(root, "12345678-abcd", events)
+            report = watch.build_report(root)
+
+        alert = report["alerts"][0]
+        self.assertEqual(alert["kind"], "startup_p50_regression")
+        self.assertEqual(alert["baseline_version"], "1.0.0")
+        self.assertEqual(alert["candidate_version"], "1.2.0")
+        self.assertEqual(alert["ratio"], 2.6)
+
     def test_small_or_cross_install_cohorts_never_form_a_regression(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             self.write_install(
@@ -150,6 +168,7 @@ class CaptureRegressionWatchTests(unittest.TestCase):
                         "audio initialization accepted",
                         f"2026-08-{day}T00:00:01Z",
                         version=version,
+                        data={"owner_kind": "dictation"},
                     ),
                 ]
             )
@@ -162,9 +181,106 @@ class CaptureRegressionWatchTests(unittest.TestCase):
         self.assertEqual(cohort["zero_ready_sessions"], 2)
         self.assertEqual(
             cohort["ready_recordings_per_session"],
-            [{"ready_recordings": 0, "sessions": 2}],
+            [
+                {
+                    "ready_recordings": 0,
+                    "ready_recordings_capped": False,
+                    "sessions": 2,
+                }
+            ],
         )
         self.assertEqual(report["alerts"][0]["kind"], "repeated_zero_ready_sessions")
+
+    def test_recent_healthy_sessions_clear_zero_ready_alert(self) -> None:
+        version = "1.2.3"
+        events = []
+        for day in range(1, 8):
+            events.append(
+                event(
+                    "startup_baseline",
+                    f"2026-08-{day:02d}T00:00:00Z",
+                    version=version,
+                )
+            )
+            events.append(
+                event(
+                    "audio initialization accepted",
+                    f"2026-08-{day:02d}T00:00:01Z",
+                    version=version,
+                    data={"owner_kind": "dictation"},
+                )
+            )
+            if day >= 3:
+                events.append(
+                    event(
+                        "audio readiness accepted",
+                        f"2026-08-{day:02d}T00:00:02Z",
+                        version=version,
+                        data={
+                            "event_code": "audio.capture_ready",
+                            "owner_kind": "dictation",
+                            "startup_ms": 200,
+                        },
+                    )
+                )
+        events.append(
+            event("startup_baseline", "2026-08-08T00:00:00Z", version=version)
+        )
+        with tempfile.TemporaryDirectory() as root:
+            self.write_install(root, "12345678-abcd", events)
+            report = watch.build_report(root)
+
+        cohort = report["cohorts"][0]
+        self.assertEqual(cohort["attempted_sessions"], 7)
+        self.assertEqual(cohort["evaluated_attempted_sessions"], 5)
+        self.assertTrue(cohort["attempted_sessions_truncated"])
+        self.assertEqual(cohort["zero_ready_sessions"], 0)
+        self.assertEqual(report["alerts"], [])
+        self.assertEqual(report["status"], "healthy")
+
+    def test_healthy_attempt_on_new_version_supersedes_stale_zero_ready_cohort(self) -> None:
+        events = [
+            event("startup_baseline", "2026-08-01T00:00:00Z", version="1.0.0"),
+            event(
+                "audio initialization accepted",
+                "2026-08-01T00:00:01Z",
+                version="1.0.0",
+                data={"owner_kind": "dictation"},
+            ),
+            event("startup_baseline", "2026-08-02T00:00:00Z", version="1.0.0"),
+            event(
+                "audio initialization accepted",
+                "2026-08-02T00:00:01Z",
+                version="1.0.0",
+                data={"owner_kind": "dictation"},
+            ),
+            event("startup_baseline", "2026-08-03T00:00:00Z", version="1.1.0"),
+            event(
+                "audio initialization accepted",
+                "2026-08-03T00:00:01Z",
+                version="1.1.0",
+                data={"owner_kind": "dictation"},
+            ),
+            event(
+                "audio readiness accepted",
+                "2026-08-03T00:00:02Z",
+                version="1.1.0",
+                data={
+                    "event_code": "audio.capture_ready",
+                    "owner_kind": "dictation",
+                    "startup_ms": 200,
+                },
+            ),
+            event("startup_baseline", "2026-08-04T00:00:00Z", version="1.1.0"),
+        ]
+        with tempfile.TemporaryDirectory() as root:
+            self.write_install(root, "12345678-abcd", events)
+            report = watch.build_report(root)
+
+        cohorts = {row["app_version"]: row for row in report["cohorts"]}
+        self.assertEqual(cohorts["1.0.0"]["zero_ready_sessions"], 2)
+        self.assertEqual(cohorts["1.1.0"]["zero_ready_sessions"], 0)
+        self.assertEqual(report["alerts"], [])
 
     def test_idle_and_still_open_sessions_are_not_zero_ready(self) -> None:
         version = "1.2.3"
@@ -176,6 +292,7 @@ class CaptureRegressionWatchTests(unittest.TestCase):
                 "audio initialization accepted",
                 "2026-08-02T00:00:01Z",
                 version=version,
+                data={"owner_kind": "dictation"},
             ),
         ]
         with tempfile.TemporaryDirectory() as root:
@@ -194,7 +311,7 @@ class CaptureRegressionWatchTests(unittest.TestCase):
             event(
                 "audio readiness accepted",
                 f"2026-08-01T00:00:0{index}Z",
-                data={"startup_ms": 100},
+                data={"owner_kind": "dictation", "startup_ms": 100},
             )
             for index in range(5)
         ]
@@ -209,26 +326,119 @@ class CaptureRegressionWatchTests(unittest.TestCase):
         self.assertEqual(report["alerts"], [])
 
     def test_untrusted_labels_are_collapsed_and_malformed_lines_are_counted(self) -> None:
-        item = event(
-            "capture backend exceeded its active initialization budget",
-            "2026-08-01T00:00:00Z",
-            version="1.2.3",
-            data={
-                "backend": "private-device-name",
-                "last_setup_step": "unsafe\nstep",
-            },
-        )
+        items = [
+            event(
+                "capture backend exceeded its active initialization budget",
+                "2026-08-01T00:00:00Z",
+                version="1.2.3",
+                data={
+                    "backend": "private-device-name",
+                    "last_setup_step": "unsafe\nstep",
+                },
+            ),
+            event(
+                "capture backend exceeded its active initialization budget",
+                "2026-08-01T00:00:01Z",
+                version="1.2.3",
+                data={"backend": "cpal", "last_setup_step": "none"},
+            ),
+        ]
         with tempfile.TemporaryDirectory() as root:
-            self.write_install(root, "12345678-abcd", [item])
+            self.write_install(root, "12345678-abcd", items)
             path = Path(root) / "12345678-abcd" / "events.jsonl"
             with path.open("a", encoding="utf-8") as handle:
                 handle.write("{broken\n")
             report = watch.build_report(root)
 
         self.assertEqual(report["malformed_lines"], 1)
-        timeout = report["cohorts"][0]["capture_backend_timeouts"][0]
-        self.assertEqual(timeout["backend"], "unknown")
-        self.assertEqual(timeout["last_setup_step"], "unknown")
+        timeouts = report["cohorts"][0]["capture_backend_timeouts"]
+        self.assertIn(
+            {"backend": "unknown", "last_setup_step": "unknown", "count": 1},
+            timeouts,
+        )
+        self.assertIn(
+            {"backend": "cpal", "last_setup_step": "none", "count": 1},
+            timeouts,
+        )
+
+    def test_transform_capture_events_do_not_enter_dictation_health_cohorts(self) -> None:
+        events = self.ready_events("1.0.0", "01", [200] * 5)
+        events += [
+            event("startup_baseline", "2026-08-02T00:00:00Z", version="1.1.0"),
+            event(
+                "audio initialization accepted",
+                "2026-08-02T00:00:01Z",
+                version="1.1.0",
+                data={"owner_kind": "transform"},
+            ),
+        ]
+        events += [
+            event(
+                "audio readiness accepted",
+                f"2026-08-02T00:00:{index + 2:02d}Z",
+                version="1.1.0",
+                data={
+                    "event_code": "audio.capture_ready",
+                    "owner_kind": "transform",
+                    "startup_ms": 10_000,
+                },
+            )
+            for index in range(5)
+        ]
+        events.append(
+            event("startup_baseline", "2026-08-03T00:00:00Z", version="1.1.0")
+        )
+        with tempfile.TemporaryDirectory() as root:
+            self.write_install(root, "12345678-abcd", events)
+            report = watch.build_report(root)
+
+        cohorts = {row["app_version"]: row for row in report["cohorts"]}
+        self.assertEqual(cohorts["1.0.0"]["startup_sample_count"], 5)
+        self.assertEqual(cohorts["1.1.0"]["startup_sample_count"], 0)
+        self.assertEqual(cohorts["1.1.0"]["attempted_sessions"], 0)
+        self.assertEqual(report["alerts"], [])
+
+    def test_ready_recording_histogram_has_a_bounded_tail_bucket(self) -> None:
+        version = "1.2.3"
+        events = [
+            event("startup_baseline", "2026-08-01T00:00:00Z", version=version),
+            event(
+                "audio initialization accepted",
+                "2026-08-01T00:00:01Z",
+                version=version,
+                data={"owner_kind": "dictation"},
+            ),
+        ]
+        events += [
+            event(
+                "audio readiness accepted",
+                f"2026-08-01T00:{index // 60:02d}:{index % 60:02d}Z",
+                version=version,
+                data={
+                    "event_code": "audio.capture_ready",
+                    "owner_kind": "dictation",
+                    "startup_ms": 100,
+                },
+            )
+            for index in range(100)
+        ]
+        events.append(
+            event("startup_baseline", "2026-08-02T00:00:00Z", version=version)
+        )
+        with tempfile.TemporaryDirectory() as root:
+            self.write_install(root, "12345678-abcd", events)
+            report = watch.build_report(root)
+
+        self.assertEqual(
+            report["cohorts"][0]["ready_recordings_per_session"],
+            [
+                {
+                    "ready_recordings": watch.MAX_READY_RECORDINGS_PER_SESSION,
+                    "ready_recordings_capped": True,
+                    "sessions": 1,
+                }
+            ],
+        )
 
     def test_version_cohort_cardinality_is_bounded(self) -> None:
         events = [
@@ -236,7 +446,7 @@ class CaptureRegressionWatchTests(unittest.TestCase):
                 "audio readiness accepted",
                 f"2026-08-01T00:{index:02d}:00Z",
                 version=f"1.0.{index}",
-                data={"startup_ms": index},
+                data={"owner_kind": "dictation", "startup_ms": index},
             )
             for index in range(watch.MAX_VERSIONS_PER_INSTALL + 3)
         ]

@@ -42,6 +42,7 @@ jobs:
               - 'app/src-tauri/Cargo.lock'
               - 'Cargo.toml'
               - 'Cargo.lock'
+              - 'rustfmt.toml'
             github:
               - '.github/**'
               - 'scripts/validate_workflow_policy.py'
@@ -242,6 +243,7 @@ jobs:
             cargo test --lib -- --test-threads=1
 
   dependency-audit:
+    if: "${{ github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'chore: bump version') }}"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
