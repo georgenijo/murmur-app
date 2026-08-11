@@ -1,14 +1,18 @@
-import type { AppEvent } from './events';
-
 export const CAPTURE_HEALTH_WINDOW = 5;
 export const SLOW_CAPTURE_STARTUP_MS = 2_000;
 
-const FALLBACK_CORRELATION_WINDOW_MS = 35_000;
-const READY_SUMMARY = 'audio readiness accepted';
-const FALLBACK_SUMMARY = 'capture backend failed before retained audio; trying bounded fallback';
-const START_SUMMARY = 'audio initialization accepted';
-
 export type CaptureBackendName = 'auhal' | 'cpal';
+
+export interface CaptureHealthObservationV1 {
+  startupMs: number;
+  usedFallback: boolean;
+  fallbackFromBackend: CaptureBackendName | null;
+}
+
+export interface CaptureHealthHistoryV1 {
+  schemaVersion: 1;
+  observations: CaptureHealthObservationV1[];
+}
 
 export interface CaptureHealth {
   status: 'insufficientData' | 'healthy' | 'degraded';
@@ -21,45 +25,43 @@ export interface CaptureHealth {
   degradedBackend: CaptureBackendName | null;
 }
 
-interface PendingFallback {
-  atMs: number;
-  fromBackend: CaptureBackendName | null;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-interface CaptureObservation {
-  startupMs: number;
-  fallback: PendingFallback | null;
+function hasOwn(value: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
 }
 
-function eventCode(event: AppEvent): string | null {
-  return typeof event.data.event_code === 'string' ? event.data.event_code : null;
+function isCaptureBackend(value: unknown): value is CaptureBackendName {
+  return value === 'auhal' || value === 'cpal';
 }
 
-function numericField(event: AppEvent, key: string): number | null {
-  const value = event.data[key];
-  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+function isObservation(value: unknown): value is CaptureHealthObservationV1 {
+  return isRecord(value)
+    && Object.keys(value).length === 3
+    && hasOwn(value, 'startupMs')
+    && hasOwn(value, 'usedFallback')
+    && hasOwn(value, 'fallbackFromBackend')
+    && typeof value.startupMs === 'number'
+    && Number.isFinite(value.startupMs)
+    && value.startupMs >= 0
+    && typeof value.usedFallback === 'boolean'
+    && (value.usedFallback || value.fallbackFromBackend === null)
+    && (value.fallbackFromBackend === null || isCaptureBackend(value.fallbackFromBackend));
 }
 
-function backendField(event: AppEvent, key: string): CaptureBackendName | null {
-  const value = event.data[key];
-  return value === 'auhal' || value === 'cpal' ? value : null;
-}
-
-function observedAtMs(event: AppEvent): number | null {
-  const value = Date.parse(event.timestamp);
-  return Number.isFinite(value) ? value : null;
-}
-
-function isReady(event: AppEvent): boolean {
-  return eventCode(event) === 'audio.capture_ready' || event.summary === READY_SUMMARY;
-}
-
-function isFallback(event: AppEvent): boolean {
-  return eventCode(event) === 'audio.fallback_started' || event.summary === FALLBACK_SUMMARY;
-}
-
-function isCaptureFailed(event: AppEvent): boolean {
-  return eventCode(event) === 'audio.capture_failed';
+export function parseCaptureHealthHistory(value: unknown): CaptureHealthHistoryV1 {
+  if (!isRecord(value)
+    || Object.keys(value).length !== 2
+    || !hasOwn(value, 'schemaVersion')
+    || !hasOwn(value, 'observations')
+    || value.schemaVersion !== 1
+    || !Array.isArray(value.observations)
+    || !value.observations.every(isObservation)) {
+    throw new Error('Murmur returned an unsupported capture-health schema.');
+  }
+  return value as unknown as CaptureHealthHistoryV1;
 }
 
 function median(values: number[]): number {
@@ -70,61 +72,20 @@ function median(values: number[]): number {
     : (sorted[midpoint - 1] + sorted[midpoint]) / 2;
 }
 
-export function deriveCaptureHealth(events: AppEvent[]): CaptureHealth {
-  const pendingFallbacks = new Map<number, PendingFallback>();
-  const observations: CaptureObservation[] = [];
-
-  for (const event of events) {
-    const owner = numericField(event, 'owner');
-    if (owner === null) continue;
-
-    if (event.summary === START_SUMMARY) {
-      pendingFallbacks.delete(owner);
-      continue;
-    }
-    if (isFallback(event)) {
-      const atMs = observedAtMs(event);
-      if (atMs !== null) {
-        pendingFallbacks.set(owner, {
-          atMs,
-          fromBackend: backendField(event, 'from_backend'),
-        });
-      }
-      continue;
-    }
-    if (isCaptureFailed(event)) {
-      pendingFallbacks.delete(owner);
-      continue;
-    }
-    if (!isReady(event) || event.data.owner_kind !== 'dictation') continue;
-
-    const startupMs = numericField(event, 'startup_ms');
-    const readyAtMs = observedAtMs(event);
-    if (startupMs === null || startupMs < 0 || readyAtMs === null) continue;
-
-    const pending = pendingFallbacks.get(owner) ?? null;
-    const fallback = pending
-      && readyAtMs >= pending.atMs
-      && readyAtMs - pending.atMs <= FALLBACK_CORRELATION_WINDOW_MS
-      ? pending
-      : null;
-    observations.push({ startupMs, fallback });
-    pendingFallbacks.delete(owner);
-  }
-
+export function deriveCaptureHealth(observations: CaptureHealthObservationV1[]): CaptureHealth {
   const recent = observations.slice(-CAPTURE_HEALTH_WINDOW);
   const sampleCount = recent.length;
   const medianStartupMs = sampleCount > 0
     ? median(recent.map(observation => observation.startupMs))
     : null;
-  const fallbacks = recent.filter(observation => observation.fallback !== null);
+  const fallbacks = recent.filter(observation => observation.usedFallback);
   const fallbackCount = fallbacks.length;
   const enoughData = sampleCount === CAPTURE_HEALTH_WINDOW;
   const chronicFallback = enoughData && fallbackCount === CAPTURE_HEALTH_WINDOW;
   const slowStartup = enoughData
     && medianStartupMs !== null
     && medianStartupMs >= SLOW_CAPTURE_STARTUP_MS;
-  const degradedBackends = fallbacks.map(observation => observation.fallback?.fromBackend ?? null);
+  const degradedBackends = fallbacks.map(observation => observation.fallbackFromBackend);
   const degradedBackend = chronicFallback
     && degradedBackends[0] !== null
     && degradedBackends.every(backend => backend === degradedBackends[0])

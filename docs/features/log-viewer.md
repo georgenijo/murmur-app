@@ -135,6 +135,12 @@ backend, and accelerator identity. Accelerator identity is not utilization.
 `Accelerator utilization` is explicitly unavailable because Murmur has no
 production whole-device GPU or ANE percentage.
 
+Microphone startup health reads a separate versioned history containing at most
+20 finalized dictation observations. Each record has only startup duration, a
+fallback boolean, and an optional allowlisted backend enum. It survives app restarts and is
+not evicted by the general event ring; the five-recording verdict remains
+insufficient until five successful captures exist.
+
 **Scoped resources** keep each measurement in its typed scope:
 
 - Host CPU is whole-host utilization normalized to 0–100%.
@@ -232,7 +238,8 @@ The frontend event buffer is managed by the `useEventStore` hook:
 | `list_performance_runs` | Returns at most 200 newest typed performance runs |
 | `get_performance_run` | Returns one typed run by opaque `run_id` |
 | `get_performance_resource_window` | Returns the bounded typed resource window |
-| `clear_performance_diagnostics` | Clears only local Performance runs and samples |
+| `get_capture_health_history` | Returns the bounded, content-free V1 capture-startup observation history |
+| `clear_performance_diagnostics` | Clears local Performance runs, samples, and capture-startup observations |
 | `list_transform_attempts` | Lists bounded, content-free transform attempts |
 | `arm_next_transform_diagnostic_capture` | Arms one local exact-content capture for up to 10 minutes |
 | `get_transform_diagnostic_capture_status` | Reads the in-memory one-shot arm state |

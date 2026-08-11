@@ -19,6 +19,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   deterministic whitespace normalization, avoiding formatting-only failures
   while still rejecting edited content (#512).
 
+- Microphone startup health now retains a bounded, content-free local history
+  independently of general event traffic, so idle system telemetry no longer
+  resets the five-recording signal and the Performance tab no longer polls the
+  full event history every two seconds (#514).
+
 ## [0.30.1] - 2026-08-09
 
 ### Fixed
