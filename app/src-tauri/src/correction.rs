@@ -262,12 +262,12 @@ impl CorrectionMatcher {
         }
     }
 
-    /// True when this matcher has no patterns and no fuzzy terms — the pipeline can
-    /// skip the stage entirely.
+    /// The built-in contextual homophone rule makes every matcher actionable,
+    /// even when no user vocabulary or fuzzy terms are configured.
     pub fn is_empty(&self) -> bool {
-        self.explicit_aliases.is_empty()
-            && self.ac.is_none()
-            && (!self.fuzzy || self.terms.is_empty())
+        // The matcher always carries the bounded contextual main/Maine/me
+        // disambiguation below, even when the user has no vocabulary entries.
+        false
     }
 
     /// Apply Tier 1 then (if enabled) Tier 2 to `text`, returning the corrected
@@ -278,7 +278,8 @@ impl CorrectionMatcher {
             match segment {
                 CorrectionSegment::Protected(written) => output.push_str(&written),
                 CorrectionSegment::Mutable(text) => {
-                    let exact = self.apply_tier1(&text);
+                    let contextual = apply_contextual_main_branch_homophones(&text);
+                    let exact = self.apply_tier1(&contextual);
                     if self.fuzzy {
                         output.push_str(&self.apply_tier2(&exact));
                     } else {
@@ -458,6 +459,112 @@ impl CorrectionMatcher {
         }
         best.map(|(_, t)| t.written.clone())
     }
+}
+
+/// Correct the recognizer's `Maine`/`me` homophones only when a compact local
+/// window establishes a version-control meaning. Bare "go to Maine", travel,
+/// and geographic uses remain untouched; this is intentionally narrower than
+/// a generic homophone or capitalization rule.
+fn apply_contextual_main_branch_homophones(text: &str) -> String {
+    let tokens = tokenize(text);
+    if tokens.is_empty() {
+        return text.to_string();
+    }
+    let normalized = tokens
+        .iter()
+        .map(|(token, _, _)| token.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    let geography_words = [
+        "augusta",
+        "born",
+        "city",
+        "climate",
+        "coast",
+        "country",
+        "government",
+        "legislature",
+        "live",
+        "lived",
+        "office",
+        "portland",
+        "state",
+        "tourism",
+        "travel",
+        "trip",
+        "vacation",
+        "visit",
+        "visited",
+        "visiting",
+        "weather",
+    ];
+    let version_control_actions = [
+        "check", "checkout", "fetch", "latest", "merge", "pull", "rebase", "switch", "sync",
+    ];
+
+    let mut replacements = Vec::new();
+    for (index, candidate) in normalized.iter().enumerate() {
+        if candidate != "maine" && candidate != "me" {
+            continue;
+        }
+
+        let nearby_start = index.saturating_sub(4);
+        let nearby_end = (index + 5).min(normalized.len());
+        if normalized[nearby_start..nearby_end]
+            .iter()
+            .any(|word| geography_words.contains(&word.as_str()))
+        {
+            continue;
+        }
+
+        let adjacent_branch = index
+            .checked_sub(1)
+            .and_then(|position| normalized.get(position))
+            .is_some_and(|word| word == "branch")
+            || normalized
+                .get(index + 1)
+                .is_some_and(|word| word == "branch");
+
+        let context_start = index.saturating_sub(7);
+        let preceding = &normalized[context_start..index];
+        let preposition = index
+            .checked_sub(1)
+            .and_then(|position| normalized.get(position))
+            .map(String::as_str)
+            .filter(|word| matches!(*word, "from" | "into" | "on" | "onto" | "to"));
+        let has_action = preceding
+            .iter()
+            .any(|word| version_control_actions.contains(&word.as_str()));
+        let has_changes = preceding
+            .iter()
+            .any(|word| matches!(word.as_str(), "change" | "changes"));
+        let changes_context = preposition.is_some() && has_action && has_changes;
+        // `me` is far more common in ordinary prose than the proper noun
+        // `Maine`, so recover it only for the exact observed technical shape:
+        // "check [out] ... changes on me". Broader cases such as "the latest
+        // changes from me" must remain untouched.
+        let me_context = candidate == "me"
+            && preposition == Some("on")
+            && has_changes
+            && preceding.iter().any(|word| word == "check");
+        let maine_context = candidate == "maine" && changes_context;
+
+        if adjacent_branch || me_context || maine_context {
+            replacements.push((tokens[index].1, tokens[index].2));
+        }
+    }
+
+    if replacements.is_empty() {
+        return text.to_string();
+    }
+    let mut output = String::with_capacity(text.len());
+    let mut copied = 0usize;
+    for (start, end) in replacements {
+        output.push_str(&text[copied..start]);
+        output.push_str("main");
+        copied = end;
+    }
+    output.push_str(&text[copied..]);
+    output
 }
 
 /// Phonetic key for a (possibly multi-word) phrase: per-token keys joined by
@@ -930,11 +1037,60 @@ mod tests {
     }
 
     #[test]
-    fn empty_matcher_is_noop() {
-        // No terms, no pairs, no builtins -> genuinely empty.
+    fn matcher_without_vocabulary_keeps_unrelated_prose_unchanged() {
         let m = CorrectionMatcher::build(&[], &[], true, false);
-        assert!(m.is_empty());
+        assert!(!m.is_empty());
         assert_eq!(m.apply("nothing to do here"), "nothing to do here");
+    }
+
+    #[test]
+    fn contextual_main_branch_homophones_recover_live_repro_phrases() {
+        let m = CorrectionMatcher::build(&[], &[], true, false);
+        assert_eq!(
+            m.apply("Make sure you get the latest change from Maine."),
+            "Make sure you get the latest change from main."
+        );
+        assert_eq!(
+            m.apply("Make sure you get the latest changes from Maine."),
+            "Make sure you get the latest changes from main."
+        );
+        assert_eq!(
+            m.apply("Can you go check out the changes on me?"),
+            "Can you go check out the changes on main?"
+        );
+        assert_eq!(
+            m.apply("Can you go and check out the changes on Maine?"),
+            "Can you go and check out the changes on main?"
+        );
+        assert_eq!(m.apply("Use the Maine branch."), "Use the main branch.");
+    }
+
+    #[test]
+    fn contextual_main_branch_homophones_preserve_geography_and_ambiguity() {
+        let m = CorrectionMatcher::build(&[], &[], true, false);
+        for text in [
+            "Have you ever been to Maine?",
+            "Do you want to go to Maine?",
+            "What about visiting the state of Maine?",
+            "The latest climate changes in Maine are concerning.",
+            "Check out the changes from Maine's legislature.",
+            "Please get the latest changes from me.",
+            "Switch to me when you are finished.",
+            "Switch the destination to Maine.",
+            "Visit the Maine branch office.",
+        ] {
+            assert_eq!(m.apply(text), text);
+        }
+    }
+
+    #[test]
+    fn explicit_aliases_override_contextual_main_branch_homophones() {
+        let aliases = vec![("Maine".to_string(), "Maine".to_string())];
+        let m = CorrectionMatcher::build(&[], &aliases, true, false);
+        assert_eq!(
+            m.apply("Check out the latest changes from Maine."),
+            "Check out the latest changes from Maine."
+        );
     }
 
     #[test]
