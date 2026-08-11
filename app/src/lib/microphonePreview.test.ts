@@ -3,6 +3,7 @@ import {
   microphoneClassificationLabel,
   microphoneLevelPercent,
   microphonePeakPercent,
+  smoothMicrophoneMeterValue,
 } from './microphonePreview';
 
 describe('microphone preview presentation', () => {
@@ -20,5 +21,21 @@ describe('microphone preview presentation', () => {
     expect(microphoneClassificationLabel('too_quiet')).toBe('Too quiet');
     expect(microphoneClassificationLabel('signal_detected')).toBe('Signal detected');
     expect(microphoneClassificationLabel('clipping')).toBe('Clipping');
+  });
+
+  it('smooths meter movement with a faster attack than release', () => {
+    const attack = smoothMicrophoneMeterValue(0, 80, 16);
+    const release = smoothMicrophoneMeterValue(80, 0, 16);
+
+    expect(attack).toBeGreaterThan(0);
+    expect(attack).toBeLessThan(80);
+    expect(80 - release).toBeLessThan(attack);
+    expect(smoothMicrophoneMeterValue(20, 20, 16)).toBe(20);
+  });
+
+  it('bounds malformed meter animation inputs', () => {
+    expect(smoothMicrophoneMeterValue(Number.NaN, 200, 16)).toBeGreaterThan(0);
+    expect(smoothMicrophoneMeterValue(50, Number.NaN, Number.NaN)).toBe(50);
+    expect(smoothMicrophoneMeterValue(-20, 0, 16)).toBe(0);
   });
 });

@@ -97,6 +97,7 @@ describe('SettingsPanel information architecture', () => {
       <SettingsPanel
         settings={DEFAULT_SETTINGS}
         onUpdateSettings={vi.fn()}
+        initialized
         status="idle"
         onResetStats={vi.fn()}
         onRerunSetup={vi.fn()}
@@ -320,6 +321,7 @@ describe('SettingsPanel transform block (#312 D1 round-2 findings 6-8)', () => {
       <SettingsPanel
         settings={{ ...DEFAULT_SETTINGS, ...settingsOverrides }}
         onUpdateSettings={vi.fn()}
+        initialized
         status="idle"
         onResetStats={vi.fn()}
         onRerunSetup={vi.fn()}

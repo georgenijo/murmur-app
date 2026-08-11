@@ -58,6 +58,29 @@ export function microphonePeakPercent(peak: number): number {
   return Math.round(Math.min(1, Math.max(0, peak)) * 100);
 }
 
+/**
+ * Move a displayed meter value toward the latest audio sample without exposing
+ * every callback-sized jump. The exponential response is independent of the
+ * display refresh rate and uses a faster attack than release so speech still
+ * feels responsive while the bar settles smoothly.
+ */
+export function smoothMicrophoneMeterValue(
+  current: number,
+  target: number,
+  elapsedMs: number,
+  attackMs = 75,
+  releaseMs = 300,
+): number {
+  const safeCurrent = Number.isFinite(current) ? Math.min(100, Math.max(0, current)) : 0;
+  const safeTarget = Number.isFinite(target) ? Math.min(100, Math.max(0, target)) : 0;
+  const safeElapsed = Number.isFinite(elapsedMs) ? Math.min(100, Math.max(0, elapsedMs)) : 0;
+  if (safeElapsed === 0 || safeCurrent === safeTarget) return safeCurrent;
+
+  const responseMs = safeTarget > safeCurrent ? attackMs : releaseMs;
+  const alpha = 1 - Math.exp(-safeElapsed / Math.max(1, responseMs));
+  return safeCurrent + ((safeTarget - safeCurrent) * alpha);
+}
+
 export function microphoneClassificationLabel(
   classification: MicrophoneSignalClassification,
 ): string {

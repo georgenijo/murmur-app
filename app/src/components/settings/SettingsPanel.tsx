@@ -155,6 +155,7 @@ function sameAudioDevices(left: AudioDeviceDescriptor[], right: AudioDeviceDescr
 interface SettingsPanelProps {
   settings: Settings;
   onUpdateSettings: (updates: Partial<Settings>) => void;
+  initialized: boolean;
   status: DictationStatus;
   onResetStats: () => void;
   onRerunSetup: () => void;
@@ -237,6 +238,7 @@ export function fileOutputDeliveryDescription(settings: Pick<Settings, 'autoPast
 export const SettingsPanel = memo(function SettingsPanel({
   settings,
   onUpdateSettings,
+  initialized,
   status,
   onResetStats,
   onRerunSetup,
@@ -743,6 +745,7 @@ export const SettingsPanel = memo(function SettingsPanel({
               microphone={settings.microphone}
               devices={audioDevices}
               active={activeRef?.current !== false && activeCat === 'dictation'}
+              ready={initialized}
               dictationBusy={isRecording}
               missingDevice={missingDevice}
               onChange={(microphone) => onUpdateSettings({ microphone })}

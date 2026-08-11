@@ -617,6 +617,7 @@ function App() {
           <SettingsPanel
             settings={settings}
             onUpdateSettings={updateSettings}
+            initialized={initialized}
             status={status}
             onResetStats={handleResetStats}
             onRerunSetup={rerunSetup}

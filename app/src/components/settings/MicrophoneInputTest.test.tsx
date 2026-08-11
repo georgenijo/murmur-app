@@ -49,6 +49,7 @@ describe('MicrophoneInputTest', () => {
   let root: Root;
   let selected = 'system_default';
   let activePage = true;
+  let appReady = true;
   let dictationBusy = false;
   let frames: Map<number, FrameRequestCallback>;
   let nextFrame: number;
@@ -63,6 +64,7 @@ describe('MicrophoneInputTest', () => {
             { id: 'usb', name: 'USB Microphone' },
           ]}
           active={activePage}
+          ready={appReady}
           dictationBusy={dictationBusy}
           missingDevice={false}
           onChange={(microphone) => {
@@ -86,6 +88,7 @@ describe('MicrophoneInputTest', () => {
     mocks.listeners.clear();
     selected = 'system_default';
     activePage = true;
+    appReady = true;
     dictationBusy = false;
     frames = new Map();
     nextFrame = 1;
@@ -132,7 +135,9 @@ describe('MicrophoneInputTest', () => {
     });
 
     const meter = container.querySelector('[role="meter"]') as HTMLElement;
-    expect(meter.getAttribute('aria-valuenow')).toBe('20');
+    const paintedLevel = Number(meter.getAttribute('aria-valuenow'));
+    expect(paintedLevel).toBeGreaterThan(0);
+    expect(paintedLevel).toBeLessThan(20);
     expect(meter.getAttribute('aria-valuetext')).toContain('Signal detected');
     expect(container.textContent).toContain('Signal detected');
   });
@@ -240,5 +245,18 @@ describe('MicrophoneInputTest', () => {
     activePage = false;
     await render();
     expect(mocks.invoke).not.toHaveBeenCalledWith('start_microphone_preview', expect.anything());
+  });
+
+  it('waits for fresh-launch initialization and starts as soon as Murmur is ready', async () => {
+    appReady = false;
+    await render();
+    expect(mocks.invoke).not.toHaveBeenCalledWith('start_microphone_preview', expect.anything());
+    expect(container.textContent).toContain('Preparing microphone monitoring');
+
+    appReady = true;
+    await render();
+    expect(mocks.invoke).toHaveBeenCalledWith('start_microphone_preview', {
+      deviceId: 'system_default',
+    });
   });
 });

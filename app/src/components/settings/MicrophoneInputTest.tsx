@@ -9,6 +9,7 @@ import {
   microphoneClassificationLabel,
   microphoneLevelPercent,
   microphonePeakPercent,
+  smoothMicrophoneMeterValue,
   startMicrophonePreview,
   stopMicrophonePreview,
   type MicrophonePreviewLevel,
@@ -21,6 +22,7 @@ interface MicrophoneInputTestProps {
   microphone: string;
   devices: AudioDeviceDescriptor[];
   active: boolean;
+  ready: boolean;
   dictationBusy: boolean;
   missingDevice: boolean;
   onChange: (microphone: string) => void;
@@ -37,6 +39,7 @@ export function MicrophoneInputTest({
   microphone,
   devices,
   active,
+  ready,
   dictationBusy,
   missingDevice,
   onChange,
@@ -55,6 +58,10 @@ export function MicrophoneInputTest({
   const peakRef = useRef<HTMLDivElement>(null);
   const classificationRef = useRef<HTMLSpanElement>(null);
   const paintedClassificationRef = useRef<MicrophoneSignalClassification>('no_signal');
+  const displayedLevelRef = useRef(0);
+  const displayedPeakRef = useRef(0);
+  const lastPaintAtRef = useRef<number | null>(null);
+  const lastAccessiblePaintAtRef = useRef<number | null>(null);
 
   const applyStatus = useCallback((next: MicrophonePreviewStatus) => {
     if (!mountedRef.current) return;
@@ -110,21 +117,45 @@ export function MicrophoneInputTest({
 
   useEffect(() => {
     let frame = 0;
-    const paint = () => {
+    const paint = (now: number) => {
       const level = latestLevelRef.current;
       if (level && level.previewId === statusRef.current.previewId) {
-        const levelPercent = microphoneLevelPercent(level.rms);
-        const peakPercent = microphonePeakPercent(level.peak);
+        const elapsedMs = lastPaintAtRef.current === null
+          ? 1000 / 60
+          : now - lastPaintAtRef.current;
+        lastPaintAtRef.current = now;
+        displayedLevelRef.current = smoothMicrophoneMeterValue(
+          displayedLevelRef.current,
+          microphoneLevelPercent(level.rms),
+          elapsedMs,
+        );
+        displayedPeakRef.current = smoothMicrophoneMeterValue(
+          displayedPeakRef.current,
+          microphonePeakPercent(level.peak),
+          elapsedMs,
+          45,
+          450,
+        );
+        const levelPercent = displayedLevelRef.current;
+        const peakPercent = displayedPeakRef.current;
         if (fillRef.current) {
-          fillRef.current.style.width = `${levelPercent}%`;
+          fillRef.current.style.width = `${levelPercent.toFixed(1)}%`;
           fillRef.current.className = `h-full rounded-full transition-colors ${levelColor(level.classification)}`;
         }
-        if (peakRef.current) peakRef.current.style.left = `calc(${peakPercent}% - 1px)`;
-        meterRef.current?.setAttribute('aria-valuenow', String(levelPercent));
-        meterRef.current?.setAttribute(
-          'aria-valuetext',
-          `${microphoneClassificationLabel(level.classification)}, level ${levelPercent} percent, peak ${peakPercent} percent`,
-        );
+        if (peakRef.current) peakRef.current.style.left = `calc(${peakPercent.toFixed(1)}% - 1px)`;
+        if (
+          lastAccessiblePaintAtRef.current === null
+          || now - lastAccessiblePaintAtRef.current >= 200
+        ) {
+          lastAccessiblePaintAtRef.current = now;
+          const accessibleLevel = Math.round(levelPercent);
+          const accessiblePeak = Math.round(peakPercent);
+          meterRef.current?.setAttribute('aria-valuenow', String(accessibleLevel));
+          meterRef.current?.setAttribute(
+            'aria-valuetext',
+            `${microphoneClassificationLabel(level.classification)}, level ${accessibleLevel} percent, peak ${accessiblePeak} percent`,
+          );
+        }
         if (paintedClassificationRef.current !== level.classification) {
           paintedClassificationRef.current = level.classification;
           if (classificationRef.current) {
@@ -141,6 +172,10 @@ export function MicrophoneInputTest({
   useEffect(() => {
     if (status.previewId !== null) return;
     latestLevelRef.current = null;
+    displayedLevelRef.current = 0;
+    displayedPeakRef.current = 0;
+    lastPaintAtRef.current = null;
+    lastAccessiblePaintAtRef.current = null;
     if (fillRef.current) fillRef.current.style.width = '0%';
     if (peakRef.current) peakRef.current.style.left = '0%';
     meterRef.current?.setAttribute('aria-valuenow', '0');
@@ -176,13 +211,13 @@ export function MicrophoneInputTest({
 
   useEffect(() => {
     if (!subscriptionsReady) return;
-    if (!active || dictationBusy || missingDevice) {
+    if (!active || !ready || dictationBusy || missingDevice) {
       const previewId = statusRef.current.previewId;
       if (previewId !== null) void cancelMicrophonePreview(previewId).catch(() => {});
       return;
     }
     if (statusRef.current.previewId === null) void start();
-  }, [active, dictationBusy, missingDevice, microphone, start, subscriptionsReady]);
+  }, [active, dictationBusy, microphone, missingDevice, ready, start, subscriptionsReady]);
 
   const switchDevice = useCallback((nextMicrophone: string) => {
     void runExclusive(async () => {
@@ -213,6 +248,8 @@ export function MicrophoneInputTest({
   const helperText = actionError ?? status.message ?? (
     dictationBusy
       ? 'Level monitoring pauses while Murmur records and resumes automatically.'
+      : !ready
+        ? 'Preparing microphone monitoring…'
       : !active
         ? 'Level monitoring starts automatically when this page is open.'
         : status.state === 'connecting'

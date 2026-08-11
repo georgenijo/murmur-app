@@ -120,6 +120,7 @@ function VisualFixture() {
         <SettingsPanel
           settings={DEFAULT_SETTINGS}
           onUpdateSettings={() => {}}
+          initialized
           status="idle"
           onResetStats={() => {}}
           onRerunSetup={() => {}}
