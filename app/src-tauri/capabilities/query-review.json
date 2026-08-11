@@ -1,0 +1,10 @@
+{
+  "$schema": "https://schemas.tauri.app/config/2/capability",
+  "identifier": "query-review",
+  "description": "Capability for the voice-query answer popover window",
+  "windows": ["query-review"],
+  "permissions": [
+    "core:event:default",
+    "core:default"
+  ]
+}

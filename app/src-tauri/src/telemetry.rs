@@ -214,6 +214,7 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "pipeline.dictation_completed" => Some("pipeline.dictation_completed"),
         "pipeline.dictation_failed" => Some("pipeline.dictation_failed"),
         "transform.pass_outcome" => Some("transform.pass_outcome"),
+        "query.pass_state" => Some("query.pass_state"),
         "updater.check_current" => Some("updater.check_current"),
         "updater.check_failed" => Some("updater.check_failed"),
         "updater.install_blocked" => Some("updater.install_blocked"),
@@ -339,6 +340,7 @@ fn is_safe_transform_string(key: &str, value: &str) -> bool {
                 | "file_transcribing"
                 | "runtime_busy"
                 | "transform_busy"
+                | "query_busy"
                 | "audio_start_failed"
                 | "no_instruction"
                 | "show_failed"
@@ -370,6 +372,59 @@ fn is_safe_transform_string(key: &str, value: &str) -> bool {
     }
 }
 
+fn is_safe_query_string(key: &str, value: &str) -> bool {
+    match key {
+        "event_code" => value == "query.pass_state",
+        "state" => matches!(
+            value,
+            "idle" | "connecting" | "listening" | "transcribing" | "running" | "ready" | "failed"
+        ),
+        "error_code" => matches!(
+            value,
+            "not_configured"
+                | "invalid_executable"
+                | "invalid_arguments"
+                | "invalid_timeout"
+                | "busy"
+                | "audio_start_failed"
+                | "audio_not_ready"
+                | "audio_stalled"
+                | "audio_recovering"
+                | "audio_recovery_stalled"
+                | "no_speech"
+                | "transcription_failed"
+                | "empty_query"
+                | "query_too_large"
+                | "spawn_failed"
+                | "timed_out"
+                | "exit_nonzero"
+                | "empty_answer"
+                | "clipboard_unavailable"
+                | "output_too_large"
+                | "process_failed"
+                | "termination_unconfirmed"
+                | "cancelled"
+        ),
+        _ => false,
+    }
+}
+
+fn is_safe_query_field(key: &str, value: &serde_json::Value) -> bool {
+    match key {
+        "event_code" | "state" => value
+            .as_str()
+            .is_some_and(|value| is_safe_query_string(key, value)),
+        "error_code" => {
+            value.is_null()
+                || value
+                    .as_str()
+                    .is_some_and(|value| is_safe_query_string(key, value))
+        }
+        "query_pass_id" => value.as_u64().is_some(),
+        _ => false,
+    }
+}
+
 fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: bool) {
     let Some(obj) = data.as_object_mut() else {
         return;
@@ -389,6 +444,11 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
             Some(value) => is_safe_transform_string(key, value),
             None => true,
         });
+    } else if stream == "query" {
+        // Query content may contain anything the user can say or an agent can
+        // return. Use an exact key-and-type allowlist, including for structured
+        // values, so future instrumentation cannot accidentally retain it.
+        obj.retain(|key, value| is_safe_query_field(key, value));
     }
 }
 
@@ -707,6 +767,45 @@ mod tests {
         assert!(!encoded.contains("SENTINEL"));
         assert!(!encoded.contains("/Users/private"));
         assert_eq!(data.as_object().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn query_event_sanitizer_rejects_question_answer_command_and_paths() {
+        let mut data = serde_json::json!({
+            "event_code": "query.pass_state",
+            "query_pass_id": 8,
+            "state": "running",
+            "error_code": "spawn_failed",
+            "question": "SENTINEL_QUESTION ; rm -rf",
+            "answer": "SENTINEL_ANSWER",
+            "command": "/Users/private/bin/agent",
+            "arguments": ["SENTINEL_ARGUMENTS"],
+            "structured_answer": { "content": "SENTINEL_OBJECT" },
+            "unknown_numeric": 42
+        });
+        sanitize_event_data("query", &mut data, true);
+        let encoded = serde_json::to_string(&data).unwrap();
+        assert_eq!(data["event_code"], "query.pass_state");
+        assert_eq!(data["query_pass_id"], 8);
+        assert_eq!(data["state"], "running");
+        assert_eq!(data["error_code"], "spawn_failed");
+        assert!(!encoded.contains("SENTINEL"));
+        assert!(!encoded.contains("/Users/private"));
+        assert!(!encoded.contains("rm -rf"));
+        assert_eq!(data.as_object().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn query_event_sanitizer_allows_a_null_error_code() {
+        let mut data = serde_json::json!({
+            "event_code": "query.pass_state",
+            "query_pass_id": 9,
+            "state": "ready",
+            "error_code": null
+        });
+        sanitize_event_data("query", &mut data, true);
+        assert_eq!(data["error_code"], serde_json::Value::Null);
+        assert_eq!(data.as_object().unwrap().len(), 4);
     }
 
     #[test]
