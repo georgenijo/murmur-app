@@ -159,6 +159,18 @@ impl PublicState {
         self.phase.load(Ordering::SeqCst) != PublicPhase::Idle as u8
     }
 
+    #[cfg(test)]
+    fn phase(&self) -> PublicPhase {
+        match self.phase.load(Ordering::SeqCst) {
+            value if value == PublicPhase::Idle as u8 => PublicPhase::Idle,
+            value if value == PublicPhase::Starting as u8 => PublicPhase::Starting,
+            value if value == PublicPhase::Recording as u8 => PublicPhase::Recording,
+            value if value == PublicPhase::Recovering as u8 => PublicPhase::Recovering,
+            value if value == PublicPhase::Stopping as u8 => PublicPhase::Stopping,
+            _ => PublicPhase::Recovering,
+        }
+    }
+
     fn set_owner(&self, owner: AudioOwner) {
         *self
             .owner
@@ -360,6 +372,11 @@ struct AudioSupervisor {
 }
 
 static SUPERVISOR: OnceLock<AudioSupervisor> = OnceLock::new();
+static HAL_BOUNDARY: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn hal_boundary() -> &'static Mutex<()> {
+    HAL_BOUNDARY.get_or_init(|| Mutex::new(()))
+}
 
 fn supervisor() -> &'static AudioSupervisor {
     SUPERVISOR.get_or_init(|| {
@@ -583,9 +600,24 @@ fn handle_start(
         app_handle: request.app_handle.clone(),
         device_id: request.device_id,
     };
+    // Serialize the transition into capture ownership with any idle-only
+    // diagnostic enumeration. Once Starting is published below, the
+    // diagnostic side will refuse the boundary until this attempt is joined.
+    let _hal_boundary = hal_boundary()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // Publish ownership before the worker can spawn its capture helper. Any
+    // diagnostic/state-only enumeration racing this start must see Starting
+    // and defer until the supervisor returns to Idle.
+    public.still_connecting.store(false, Ordering::SeqCst);
+    public.set_owner(request.owner);
+    public.set_phase(PublicPhase::Starting);
     let thread_handle = match factory.spawn(spec, worker_event_sender.clone()) {
         Ok(handle) => handle,
         Err(error) => {
+            public.clear_owner(request.owner);
+            public.set_phase(PublicPhase::Idle);
+            crate::log_shipper::audio_lifecycle_became_idle();
             let _ = request
                 .response
                 .send(Err(AudioStartError::SpawnFailed(error)));
@@ -630,9 +662,6 @@ fn handle_start(
         start_response,
         stop_response: None,
     });
-    public.still_connecting.store(false, Ordering::SeqCst);
-    public.set_owner(request.owner);
-    public.set_phase(PublicPhase::Starting);
 }
 
 fn handle_worker_event(
@@ -930,6 +959,7 @@ fn finish_attempt(attempt: &mut Option<Attempt>, sink: &dyn LifecycleSink, publi
     public.still_connecting.store(false, Ordering::SeqCst);
     public.clear_owner(finished.owner);
     public.set_phase(PublicPhase::Idle);
+    crate::log_shipper::audio_lifecycle_became_idle();
 }
 
 fn take_samples(attempt: &mut Attempt) -> Vec<f32> {
@@ -1313,6 +1343,19 @@ pub(crate) fn is_audio_active() -> bool {
     supervisor().public.is_active()
 }
 
+/// Run a diagnostic-only HAL operation only when capture does not own the
+/// boundary. Capture start takes the same mutex before publishing Starting,
+/// closing the check-to-enumeration race in both directions.
+pub(crate) fn with_idle_hal_boundary<T>(operation: impl FnOnce() -> T) -> Option<T> {
+    let _hal_boundary = hal_boundary()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if is_audio_active() {
+        return None;
+    }
+    Some(operation())
+}
+
 pub(crate) fn is_dictation_recording(recording_id: u64) -> bool {
     supervisor()
         .public
@@ -1421,8 +1464,20 @@ mod tests {
         gate: Gate,
     }
 
+    struct FailingFactory;
+
     struct NoCallbackFactory {
         first_buffer_wait_entered: Sender<()>,
+    }
+
+    impl WorkerFactory for FailingFactory {
+        fn spawn(
+            &self,
+            _spec: AudioWorkerSpec,
+            _event_sender: AudioWorkerEventSender,
+        ) -> Result<JoinHandle<()>, String> {
+            Err("test spawn failure".to_string())
+        }
     }
 
     impl WorkerFactory for NoCallbackFactory {
@@ -1778,6 +1833,25 @@ mod tests {
     }
 
     #[test]
+    fn failed_worker_spawn_releases_prepublished_ownership() {
+        let supervisor = spawn_supervisor(
+            Arc::new(FailingFactory),
+            Arc::new(RecordingSink::default()),
+            SupervisorConfig::default(),
+        );
+
+        assert_eq!(
+            start(&supervisor, AudioOwner::Dictation(2)).recv().unwrap(),
+            Err(AudioStartError::SpawnFailed(
+                "test spawn failure".to_string()
+            ))
+        );
+        assert_eq!(supervisor.public.phase(), PublicPhase::Idle);
+        assert!(!supervisor.public.is_active());
+        shutdown(&supervisor);
+    }
+
+    #[test]
     fn cancel_retains_owner_until_exit_and_late_buffer_never_becomes_recording() {
         for phase in [
             AudioInitPhase::DeviceEnumeration,
@@ -2068,6 +2142,11 @@ mod tests {
         first_buffer_receiver
             .recv_timeout(Duration::from_secs(1))
             .expect("worker did not append and enqueue its first buffer");
+        assert_eq!(
+            supervisor.public.phase(),
+            PublicPhase::Starting,
+            "capture ownership must publish before worker spawn returns"
+        );
 
         let (stop_sender, stop_receiver) = mpsc::channel();
         supervisor

@@ -475,6 +475,12 @@ fn enumerate_input_devices() -> Result<Vec<AudioDeviceDescriptor>, String> {
     Ok(devices)
 }
 
+/// Refresh the shipper's aggregate without allowing presentation labels or
+/// backend UIDs to cross the audio-module boundary.
+pub(crate) fn count_input_devices_for_state() -> Result<usize, String> {
+    enumerate_input_devices().map(|devices| devices.len())
+}
+
 pub fn list_input_devices() -> Result<Vec<AudioDeviceDescriptor>, String> {
     let result = enumerate_input_devices();
     crate::log_shipper::record_audio_input_enumeration(

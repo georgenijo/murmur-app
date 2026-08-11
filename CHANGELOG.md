@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Diagnostic microphone-state refreshes now wait until dictation or transform
+  capture releases lifecycle ownership, then coalesce into one idle refresh.
+
 ## [0.30.1] - 2026-08-09
 
 ### Fixed
