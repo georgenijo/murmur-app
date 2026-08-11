@@ -25,11 +25,15 @@ MAX_VERSIONS_PER_INSTALL = 64
 MIN_COMPARISON_SAMPLES = 5
 STARTUP_REGRESSION_RATIO = 2.0
 REPEATED_ZERO_READY_SESSIONS = 2
+RECENT_ATTEMPTED_SESSION_WINDOW = 5
+MAX_READY_RECORDINGS_PER_SESSION = 20
+CAPTURE_HEALTH_OWNER_KIND = "dictation"
 
 VERSION_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+-]{0,39}$")
 INSTALL_RE = re.compile(r"^[0-9a-fA-F-]{8,64}$")
 BACKENDS = {"auhal", "cpal"}
 SETUP_STEPS = {
+    "none",
     "device_resolution",
     "audio_unit_creation",
     "audio_unit_new",
@@ -117,8 +121,8 @@ def new_cohort(install_id, version):
         "fallback_count": 0,
         "both_backends_failed_count": 0,
         "attempted_sessions": 0,
-        "zero_ready_sessions": 0,
-        "session_ready_histogram": Counter(),
+        "recent_session_ready_counts": deque(maxlen=RECENT_ATTEMPTED_SESSION_WINDOW),
+        "last_attempted_session_at": "",
         "first_event_at": "",
         "last_event_at": "",
     }
@@ -150,14 +154,14 @@ def touch_cohort(cohort, timestamp):
         cohort["last_event_at"] = timestamp
 
 
-def finish_session(session, cohorts, install_id):
+def finish_session(session, cohorts, install_id, finished_at):
     if not session or not session["attempted"]:
         return
     cohort = cohort_for(cohorts, install_id, session["version"])
     cohort["attempted_sessions"] += 1
-    cohort["session_ready_histogram"][session["ready_count"]] += 1
-    if session["ready_count"] == 0:
-        cohort["zero_ready_sessions"] += 1
+    cohort["recent_session_ready_counts"].append(session["ready_count"])
+    if finished_at and finished_at > cohort["last_attempted_session_at"]:
+        cohort["last_attempted_session_at"] = finished_at
 
 
 def scan_install(path, install_id, cohorts):
@@ -180,7 +184,7 @@ def scan_install(path, install_id, cohorts):
             touch_cohort(cohort, timestamp)
 
             if event.get("summary") == "startup_baseline":
-                finish_session(session, cohorts, install_id)
+                finish_session(session, cohorts, install_id, timestamp)
                 session = {
                     "version": version,
                     "attempted": False,
@@ -191,16 +195,25 @@ def scan_install(path, install_id, cohorts):
             code = event_code(event)
             data = event_data(event)
             if code == "audio.capture_started":
-                if session is not None and session["version"] == version:
+                if (
+                    data.get("owner_kind") == CAPTURE_HEALTH_OWNER_KIND
+                    and session is not None
+                    and session["version"] == version
+                ):
                     session["attempted"] = True
                 continue
             if code == "audio.capture_ready":
+                if data.get("owner_kind") != CAPTURE_HEALTH_OWNER_KIND:
+                    continue
                 startup_ms = numeric_startup(event)
                 if startup_ms is not None:
                     cohort["startup_samples"].append(startup_ms)
                     cohort["startup_sample_total"] += 1
                 if session is not None and session["version"] == version:
-                    session["ready_count"] += 1
+                    session["ready_count"] = min(
+                        session["ready_count"] + 1,
+                        MAX_READY_RECORDINGS_PER_SESSION,
+                    )
                 continue
             if code == "audio.capture_backend_timeout":
                 key = (
@@ -223,6 +236,8 @@ def scan_install(path, install_id, cohorts):
 
 def serialize_cohort(cohort):
     samples = list(cohort["startup_samples"])
+    recent_session_ready_counts = list(cohort["recent_session_ready_counts"])
+    session_ready_histogram = Counter(recent_session_ready_counts)
     timeout_rows = [
         {
             "backend": backend,
@@ -248,11 +263,24 @@ def serialize_cohort(cohort):
         "fallback_count": cohort["fallback_count"],
         "both_backends_failed_count": cohort["both_backends_failed_count"],
         "attempted_sessions": cohort["attempted_sessions"],
-        "zero_ready_sessions": cohort["zero_ready_sessions"],
+        "evaluated_attempted_sessions": len(recent_session_ready_counts),
+        "attempted_sessions_truncated": (
+            cohort["attempted_sessions"] > len(recent_session_ready_counts)
+        ),
+        "last_attempted_session_at": cohort["last_attempted_session_at"],
+        "zero_ready_sessions": sum(
+            ready_count == 0 for ready_count in recent_session_ready_counts
+        ),
         "ready_recordings_per_session": [
-            {"ready_recordings": ready_count, "sessions": session_count}
+            {
+                "ready_recordings": ready_count,
+                "ready_recordings_capped": (
+                    ready_count == MAX_READY_RECORDINGS_PER_SESSION
+                ),
+                "sessions": session_count,
+            }
             for ready_count, session_count in sorted(
-                cohort["session_ready_histogram"].items()
+                session_ready_histogram.items()
             )
         ],
     }
@@ -266,18 +294,42 @@ def regression_alerts(cohort_rows):
             continue
         by_install.setdefault(row["install_id"], []).append(row)
 
-        if row["zero_ready_sessions"] >= REPEATED_ZERO_READY_SESSIONS:
+    for install_id, rows in by_install.items():
+        attempted_rows = [
+            row
+            for row in rows
+            if row["evaluated_attempted_sessions"] > 0
+            and row["last_attempted_session_at"]
+        ]
+        if attempted_rows:
+            latest_attempted = max(
+                attempted_rows,
+                key=lambda row: (
+                    row["last_attempted_session_at"],
+                    row["last_event_at"],
+                    row["app_version"],
+                ),
+            )
+        else:
+            latest_attempted = None
+        if (
+            latest_attempted is not None
+            and latest_attempted["zero_ready_sessions"]
+            >= REPEATED_ZERO_READY_SESSIONS
+        ):
             alerts.append(
                 {
                     "kind": "repeated_zero_ready_sessions",
-                    "install_id": row["install_id"],
-                    "app_version": row["app_version"],
-                    "zero_ready_sessions": row["zero_ready_sessions"],
-                    "attempted_sessions": row["attempted_sessions"],
+                    "install_id": latest_attempted["install_id"],
+                    "app_version": latest_attempted["app_version"],
+                    "zero_ready_sessions": latest_attempted["zero_ready_sessions"],
+                    "evaluated_attempted_sessions": latest_attempted[
+                        "evaluated_attempted_sessions"
+                    ],
+                    "attempted_sessions": latest_attempted["attempted_sessions"],
                 }
             )
 
-    for install_id, rows in by_install.items():
         eligible = [
             row
             for row in rows
@@ -287,7 +339,11 @@ def regression_alerts(cohort_rows):
         eligible.sort(key=lambda row: row["last_event_at"])
         if len(eligible) < 2:
             continue
-        baseline, candidate = eligible[-2:]
+        candidate = eligible[-1]
+        baseline = min(
+            eligible[:-1],
+            key=lambda row: (row["startup_p50_ms"], row["last_event_at"]),
+        )
         baseline_p50 = baseline["startup_p50_ms"]
         candidate_p50 = candidate["startup_p50_ms"]
         if baseline_p50 > 0 and candidate_p50 > baseline_p50 * STARTUP_REGRESSION_RATIO:
@@ -346,6 +402,11 @@ def build_report(root):
             "minimum_comparison_samples": MIN_COMPARISON_SAMPLES,
             "startup_p50_regression_ratio": STARTUP_REGRESSION_RATIO,
             "repeated_zero_ready_sessions": REPEATED_ZERO_READY_SESSIONS,
+            "recent_attempted_session_window": RECENT_ATTEMPTED_SESSION_WINDOW,
+            "maximum_ready_recordings_per_session": (
+                MAX_READY_RECORDINGS_PER_SESSION
+            ),
+            "capture_health_owner_kind": CAPTURE_HEALTH_OWNER_KIND,
             "maximum_startup_samples_per_cohort": MAX_STARTUP_SAMPLES,
             "maximum_versions_per_install": MAX_VERSIONS_PER_INSTALL,
         },
