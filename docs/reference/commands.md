@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The 122 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
+The 129 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -64,6 +64,18 @@ For Rust → frontend events see [events.md](events.md). For the hooks that call
 | `start_transform_listener` | `hotkey: String` | `Result<(), String>` | Arms the independent transform hold key. Rejects the active dictation key. |
 | `stop_transform_listener` | — | `()` | Disarms the transform key. |
 | `set_transform_key` | `hotkey: String` | `Result<(), String>` | Changes the transform key at runtime. |
+| `start_query_listener` | `hotkey: String` | `Result<(), String>` | Arms the independent Voice Query double-tap key on the shared rdev thread. Rejects dictation and transform conflicts. |
+| `stop_query_listener` | — | `()` | Disarms the query key without stopping the shared listener thread. |
+
+## Voice Query (`query_flow.rs`)
+
+| Command | Parameters | Returns | Description |
+|---------|-----------|---------|-------------|
+| `start_query_capture` | `device_name: Option<String>`, `query_pass_id: u64`, `command: QueryCommandConfig` | `Result<(), String>` | Validates the configured executable/fixed argv, freezes local ASR context, and starts query capture for the exact pass. |
+| `finish_query_capture` | `query_pass_id: u64` | `Result<(), String>` | Stops capture, transcribes locally, appends the transcript as one final argv element, and streams bounded stdout to the query popover. |
+| `cancel_query` | `query_pass_id: u64` | `Result<(), String>` | Cancels the exact pass, confirms capture/owned process-group teardown, and hides the popover. Stale IDs no-op. |
+| `copy_query_answer` | `query_pass_id: u64` | `Result<(), String>` | Copies a completed answer. It never pastes into another app. |
+| `get_query_review_content` | — | `QueryReviewContent` | Returns `{queryPassId, answer}` only when invoked by the `query-review` webview; every other window receives empty content. |
 
 ## Selected-text transform (`transform_flow.rs`, `transform_apply.rs`)
 

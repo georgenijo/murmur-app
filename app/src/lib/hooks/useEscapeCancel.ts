@@ -11,17 +11,19 @@ interface UseEscapeCancelProps {
 
 interface EscapeCancelPayload {
   transformPassId: number | null;
+  queryPassId?: number | null;
 }
 
 function isEscapeCancelPayload(value: unknown): value is EscapeCancelPayload {
   if (!value || typeof value !== 'object') return false;
   const transformPassId = (value as Record<string, unknown>).transformPassId;
-  return transformPassId === null
-    || (
-      typeof transformPassId === 'number'
-      && Number.isSafeInteger(transformPassId)
-      && transformPassId > 0
+  const queryPassId = (value as Record<string, unknown>).queryPassId;
+  const validPassId = (passId: unknown) => passId === null || (
+      typeof passId === 'number'
+      && Number.isSafeInteger(passId)
+      && passId > 0
     );
+  return validPassId(transformPassId) && (queryPassId === undefined || validPassId(queryPassId));
 }
 
 const MAX_IN_FLIGHT_ESCAPE_TARGETS = 8;
@@ -36,20 +38,29 @@ export function useEscapeCancel({ status, enabled }: UseEscapeCancelProps) {
 
     let cancelled = false;
     let unlisten: (() => void) | null = null;
-    const cancellingTargets = new Set<number | typeof DICTATION_ESCAPE_TARGET>();
+    const cancellingTargets = new Set<string>();
 
     listen<unknown>('escape-cancel', async (event) => {
       if (cancelled) return;
       if (!isEscapeCancelPayload(event.payload)) return;
 
       const transformPassId = event.payload.transformPassId;
-      const target = transformPassId ?? DICTATION_ESCAPE_TARGET;
+      const queryPassId = event.payload.queryPassId ?? null;
+      const target = transformPassId !== null
+        ? `transform:${transformPassId}`
+        : queryPassId !== null
+          ? `query:${queryPassId}`
+          : DICTATION_ESCAPE_TARGET;
       if (cancellingTargets.has(target)) return;
       if (cancellingTargets.size >= MAX_IN_FLIGHT_ESCAPE_TARGETS) return;
       cancellingTargets.add(target);
       try {
         if (transformPassId !== null) {
           await invoke('cancel_transform', { transformPassId });
+          return;
+        }
+        if (queryPassId !== null) {
+          await invoke('cancel_query', { queryPassId });
           return;
         }
 

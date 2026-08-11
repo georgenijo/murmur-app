@@ -18,6 +18,7 @@ import {
   DEFAULT_SETTINGS,
   defaultModelForPlatform,
   modelOptionsForPlatform,
+  STORAGE_KEY,
 } from './settings';
 
 beforeEach(() => {
@@ -839,5 +840,44 @@ describe('durable settings store', () => {
     saveSettings({ ...DEFAULT_SETTINGS, language: 'ru' });
 
     expect(loadSettings().language).toBe('ru');
+  });
+});
+
+describe('Voice Query settings', () => {
+  it('is fully opt-in with no default executable', () => {
+    expect(DEFAULT_SETTINGS.queryHotkey).toBeNull();
+    expect(DEFAULT_SETTINGS.queryExecutable).toBe('');
+    expect(DEFAULT_SETTINGS.queryArguments).toEqual([]);
+    expect(DEFAULT_SETTINGS.queryTimeoutSeconds).toBe(60);
+  });
+
+  it('fails closed when a persisted query key conflicts with transform', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      transformHoldKey: 'alt_r',
+      queryHotkey: 'alt_r',
+      queryExecutable: '/usr/bin/printf',
+    }));
+
+    const settings = loadSettings();
+
+    expect(settings.transformHoldKey).toBe('alt_r');
+    expect(settings.queryHotkey).toBeNull();
+  });
+
+  it('bounds malformed CLI configuration before IPC', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      queryHotkey: 'unexpected_key',
+      queryExecutable: 42,
+      queryArguments: [...Array.from({ length: 40 }, (_, index) => `arg-${index}`), 7],
+      queryTimeoutSeconds: 999,
+    }));
+
+    const settings = loadSettings();
+
+    expect(settings.queryHotkey).toBeNull();
+    expect(settings.queryExecutable).toBe('');
+    expect(settings.queryArguments).toHaveLength(32);
+    expect(settings.queryArguments.every((argument) => typeof argument === 'string')).toBe(true);
+    expect(settings.queryTimeoutSeconds).toBe(60);
   });
 });

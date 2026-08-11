@@ -41,6 +41,7 @@ For commands see [commands.md](commands.md). For the hooks that consume these ev
 | `hotkey-tap-rejected` | `{reason: "second_tap_expired", mode: "double_tap" \| "both"}` | `keyboard.rs` | An idle first tap is not followed by a second within 400ms. Never for holds, combos, processing skips, or valid double-taps. | Overlay — amber timing-miss flash, only when `hotkeyMissFeedback` is on. |
 | `keyboard-listener-error` | `string` | `keyboard.rs` | The rdev listener thread errors. | All three recording hooks; they wait 2s and restart the listener. |
 | `app-disabled-changed` | `boolean` | `commands/keyboard.rs` | Global disable toggled from the tray or the overlay's power button. | Main window, overlay (`useOverlayRuntime`). |
+| `query-toggle` | `{queryPassId, action: "start" \| "stop"}` | `keyboard.rs` | A dedicated query-key double-tap starts a pass, or its next single tap stops capture. There is no spoken-keyword trigger. | Main window (`useQueryFlow`). |
 
 **Dead listener:** `useCombinedToggle` registers `hold-down-cancel`, which nothing emits. In Both mode an unpromoted tap emits nothing at all, because no recording was ever started.
 
@@ -58,7 +59,18 @@ All transform events carry a `transformPassId` where a pass exists, so a delayed
 | `transform-secure-field` | `()` | `transform_flow.rs` | Capture refused because the focused element is (or cannot be proven not to be) a secure field. No content is shown. | Overlay flash only. |
 | `transform-capture-failed` | `()` | `transform_flow.rs` | The isolated audio worker interrupted a selected-text transform. The backend clears the active transform pass and returns to idle before emitting. | No current frontend listener; retained as a backend failure notification contract. |
 | `transform-apply-failed` | `string` (stable error code) | `transform_apply.rs` | Apply or undo write-back failed. | Popover — surfaces the failure inline while keeping Undo available. |
-| `escape-cancel` | `{transformPassId}` | `keyboard.rs` | Escape pressed during Capturing / Connecting / Listening / Thinking, or the brief ReviewPending window before the popover is focusable. Snapshots the pass ID at press time. | Main window (`useEscapeCancel`) → scoped `cancel_transform`. |
+| `escape-cancel` | `{transformPassId, queryPassId}` | `keyboard.rs` | Escape snapshots the active transform first, otherwise the active query, otherwise dictation. Exact pass IDs prevent delayed cancellation from reaching a newer flow. | Main window (`useEscapeCancel`) routes to scoped cancellation. |
+
+## Voice Query
+
+Query content never appears in broadcast events. Only the dedicated review webview receives answer chunks.
+
+| Event | Payload | Source | When it fires | Listeners |
+|-------|---------|--------|---------------|-----------|
+| `query-state-changed` | `{queryPassId, state, errorCode}` | `query_flow.rs` | Every content-free state transition: connecting, listening, transcribing, running, ready, or failed. | Query popover (`useQueryReviewDriver`). |
+| `query-answer-chunk` | `{queryPassId, sequence, text}` | `query_flow.rs` | A contiguous decoded stdout chunk is accepted within the 256 KiB cap. Targeted with `emit_to("query-review", …)`, never broadcast. | Query popover only. |
+| `query-review-hidden` | `()` | `query_flow.rs` | Exact-pass cancellation/close completes and the popover is hidden. | Main window and query popover. |
+| `query-busy` | `()` | `keyboard.rs`, `query_flow.rs` | A query press is refused because another pass or pipeline owner is active. | Reserved for UI feedback. |
 
 ## Overlay
 
@@ -123,7 +135,7 @@ interface AppEvent {
                                   // high-value outcomes may include allowlisted event_code
 }
 
-type StreamName = 'pipeline' | 'audio' | 'keyboard' | 'transform' | 'system';
+type StreamName = 'pipeline' | 'audio' | 'keyboard' | 'transform' | 'query' | 'system';
 type LevelName  = 'trace' | 'debug' | 'info' | 'warn' | 'error';
 ```
 
