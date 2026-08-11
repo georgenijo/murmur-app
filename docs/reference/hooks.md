@@ -30,7 +30,11 @@ All three are always called (Rules of Hooks) and switched by the `enabled` prop 
 Imported-file transcription: file selection, `transcribe_file`, and the `file-transcription-status-changed` busy state. Adds the result to history through the same `addEntry` path as live dictation.
 
 ### `useHistoryManagement`
-Transcription history with localStorage persistence (`dictation-history`, rolling 200-entry cap). Owns add / update / clear. Search, filtering, and export live in `lib/history.ts`; see [features/history-workspace.md](../features/history-workspace.md).
+Transcription history with a Rust-owned `history.json` source of truth and a
+synchronous `dictation-history` localStorage cache (rolling 200-entry cap).
+Owns add / update / clear; `retainHistory=false` rejects new content before
+either store. Search, filtering, and export live in `lib/history.ts`; see
+[features/history-workspace.md](../features/history-workspace.md).
 
 ### `useSilenceAutoStop`
 Ends a hands-free recording after a run of trailing silence — any recording **not started by holding the trigger key**. Folds the existing `audio-level` samples through the pure `reduceSilenceSample` detector, resets per recording, ignores samples while the origin is `'hold'`, and calls `onAutoStop` at most once. Inert unless `enabled` and `silenceMs > 0`. See [features/silence-auto-stop.md](../features/silence-auto-stop.md).

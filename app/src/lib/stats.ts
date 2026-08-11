@@ -1,3 +1,5 @@
+import { clearDurableBlob, saveDurableBlob, STATS_STORE } from './durableUserData';
+
 // Per-day usage bucket, keyed by 'YYYY-MM-DD' (local time) in `dailyBuckets`.
 export interface DayBucket {
   words: number;
@@ -55,12 +57,11 @@ function sanitizeBuckets(raw: unknown): DailyBuckets {
   return out;
 }
 
-const STORAGE_KEY = 'dictation-stats';
 const MAX_WPM_SAMPLES = 100;
 
 export function loadStats(): DictationStats {
   try {
-    const stored = localStorage.getItem(STORAGE_KEY);
+    const stored = localStorage.getItem(STATS_STORE.storageKey);
     if (stored) {
       const parsed = JSON.parse(stored) as Partial<DictationStats>;
       if (
@@ -82,7 +83,8 @@ export function loadStats(): DictationStats {
 
 export function saveStats(stats: DictationStats): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(stats));
+    const blob = JSON.stringify(stats);
+    saveDurableBlob(STATS_STORE, blob);
   } catch (e) {
     console.error('Failed to save stats:', e);
   }
@@ -127,11 +129,7 @@ export function updateStats(text: string, durationSeconds: number): void {
 }
 
 export function resetStats(): void {
-  try {
-    localStorage.removeItem(STORAGE_KEY);
-  } catch (e) {
-    console.error('Failed to reset stats:', e);
-  }
+  clearDurableBlob(STATS_STORE);
 }
 
 export function getWPM(stats: DictationStats): number {

@@ -6,6 +6,33 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 ---
 
+## 2026-08-11: Bounded history and stats use durable JSON with localStorage caches
+
+**Decision:** Keep transcript history and usage statistics in their existing
+frontend-owned JSON shapes, but make Rust-owned `history.json` and `stats.json`
+the durable sources of truth. The main window hydrates localStorage before
+render, migrates an existing cache once when the corresponding file is absent,
+and mirrors every mutation back to disk. History remains capped at 200 entries;
+`retainHistory=false` still rejects new transcript content at `addEntry` before
+either store. Rust checks only bounded top-level containers, publishes
+atomically with owner-only permissions, and quarantines invalid files without
+logging content.
+
+**Rationale:** History is larger than settings but it is deliberately bounded,
+loaded in full, and searched in memory. SQLite would introduce a second schema
+and query boundary without changing current product behavior. Reusing the
+opaque-blob contract closes the observed WKWebView durability gap while
+preserving synchronous frontend reads, privacy, rolling trim, and existing
+clear/reset behavior. Statistics are preserved because they power cumulative
+Insights and are cheap to store as one bounded aggregate object.
+
+**Status:** active
+
+**References:** `commands/settings_store.rs`, `lib/durableUserData.ts`,
+`lib/history.ts`, `lib/stats.ts`, `docs/features/history-workspace.md`
+
+---
+
 ## 2026-08-09: Rust-owned settings.json is the source of truth; localStorage is a cache
 
 **Decision:** Frontend settings persist durably to `settings.json` in the
