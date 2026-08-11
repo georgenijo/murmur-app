@@ -14,11 +14,11 @@ use objc2_core_audio::{
     kAudioAggregateDeviceTapListKey, kAudioAggregateDeviceUIDKey, kAudioDevicePermissionsError,
     kAudioDevicePropertyNominalSampleRate, kAudioObjectPropertyElementMain,
     kAudioObjectPropertyScopeGlobal, kAudioSubTapDriftCompensationKey, kAudioSubTapUIDKey,
-    AudioDeviceCreateIOProcID, AudioDeviceDestroyIOProcID, AudioDeviceIOProcID, AudioDeviceStart,
-    AudioDeviceStop, AudioHardwareCreateAggregateDevice, AudioHardwareCreateProcessTap,
-    AudioHardwareDestroyAggregateDevice, AudioHardwareDestroyProcessTap,
-    AudioObjectGetPropertyData, AudioObjectID, AudioObjectPropertyAddress, CATapDescription,
-    CATapMuteBehavior,
+    AudioDeviceCreateIOProcIDWithBlock, AudioDeviceDestroyIOProcID, AudioDeviceIOProcID,
+    AudioDeviceStart, AudioDeviceStop, AudioHardwareCreateAggregateDevice,
+    AudioHardwareCreateProcessTap, AudioHardwareDestroyAggregateDevice,
+    AudioHardwareDestroyProcessTap, AudioObjectGetPropertyData, AudioObjectID,
+    AudioObjectPropertyAddress, CATapDescription, CATapMuteBehavior,
 };
 use objc2_core_audio_types::{AudioBufferList, AudioTimeStamp};
 use objc2_core_foundation::{
@@ -160,39 +160,45 @@ fn aggregate_properties(tap_uid: &NSString, aggregate_uid: &str) -> CFRetained<C
     }
 }
 
-unsafe extern "C-unwind" fn io_proc(
-    _device: AudioObjectID,
-    _now: NonNull<AudioTimeStamp>,
-    input_data: NonNull<AudioBufferList>,
-    _input_time: NonNull<AudioTimeStamp>,
-    _output_data: NonNull<AudioBufferList>,
-    _output_time: NonNull<AudioTimeStamp>,
-    client_data: *mut c_void,
-) -> i32 {
-    if client_data.is_null() {
-        return 0;
-    }
-    let ring = unsafe { &*(client_data as *const Arc<SpscRing>) };
+fn capture_input_data(ring: &SpscRing, input_data: NonNull<AudioBufferList>) {
     let list = unsafe { input_data.as_ref() };
     let buffers =
         unsafe { std::slice::from_raw_parts(list.mBuffers.as_ptr(), list.mNumberBuffers as usize) };
-    // The CATap is configured as a mono mixdown. Accept every returned buffer
-    // defensively, but never allocate, lock, or log on this callback.
+    // The stable CATap path is stereo. Downmix every returned channel without
+    // allocating, locking, or logging on this callback.
+    let mut frame_count = usize::MAX;
+    let mut channel_count = 0_usize;
     for buffer in buffers {
-        if buffer.mData.is_null() || buffer.mDataByteSize == 0 {
+        let channels = buffer.mNumberChannels as usize;
+        if buffer.mData.is_null() || buffer.mDataByteSize == 0 || channels == 0 {
             continue;
         }
-        let samples = unsafe {
-            std::slice::from_raw_parts(
-                buffer.mData.cast::<f32>(),
-                buffer.mDataByteSize as usize / std::mem::size_of::<f32>(),
-            )
-        };
-        for sample in samples {
-            ring.push(*sample);
-        }
+        let samples = buffer.mDataByteSize as usize / std::mem::size_of::<f32>();
+        frame_count = frame_count.min(samples / channels);
+        channel_count += channels;
     }
-    0
+    if frame_count == usize::MAX || frame_count == 0 || channel_count == 0 {
+        return;
+    }
+    for frame in 0..frame_count {
+        let mut sum = 0_f32;
+        for buffer in buffers {
+            let channels = buffer.mNumberChannels as usize;
+            if buffer.mData.is_null() || buffer.mDataByteSize == 0 || channels == 0 {
+                continue;
+            }
+            let samples = unsafe {
+                std::slice::from_raw_parts(
+                    buffer.mData.cast::<f32>(),
+                    buffer.mDataByteSize as usize / std::mem::size_of::<f32>(),
+                )
+            };
+            for channel in 0..channels {
+                sum += samples[frame * channels + channel];
+            }
+        }
+        ring.push(sum / channel_count as f32);
+    }
 }
 
 fn failure_for_status(status: i32) -> FailureCode {
@@ -207,7 +213,6 @@ pub(super) struct SystemAudioStream {
     tap_id: AudioObjectID,
     aggregate_id: AudioObjectID,
     io_proc_id: AudioDeviceIOProcID,
-    callback_ring: *const Arc<SpscRing>,
     started: bool,
     sample_rate: u32,
 }
@@ -223,7 +228,7 @@ impl SystemAudioStream {
 
         let excluded = NSArray::<NSNumber>::new();
         let description = unsafe {
-            CATapDescription::initMonoGlobalTapButExcludeProcesses(
+            CATapDescription::initStereoGlobalTapButExcludeProcesses(
                 CATapDescription::alloc(),
                 &excluded,
             )
@@ -275,20 +280,28 @@ impl SystemAudioStream {
             SetupTransition::Completed,
         );
 
-        let callback_ring = Arc::into_raw(Arc::new(ring));
+        let callback_ring = Arc::clone(&ring);
+        let io_block = block2::RcBlock::new(
+            move |_now: NonNull<AudioTimeStamp>,
+                  input_data: NonNull<AudioBufferList>,
+                  _input_time: NonNull<AudioTimeStamp>,
+                  _output_data: NonNull<AudioBufferList>,
+                  _output_time: NonNull<AudioTimeStamp>| {
+                capture_input_data(&callback_ring, input_data);
+            },
+        );
         let mut io_proc_id: AudioDeviceIOProcID = None;
         observe(CaptureSetupStep::IoProcCreate, SetupTransition::Entered);
         let status = unsafe {
-            AudioDeviceCreateIOProcID(
-                aggregate_id,
-                Some(io_proc),
-                callback_ring as *mut c_void,
+            AudioDeviceCreateIOProcIDWithBlock(
                 NonNull::from(&mut io_proc_id),
+                aggregate_id,
+                None,
+                block2::RcBlock::as_ptr(&io_block),
             )
         };
         if status != 0 || io_proc_id.is_none() {
             unsafe {
-                drop(Arc::from_raw(callback_ring));
                 let _ = AudioHardwareDestroyAggregateDevice(aggregate_id);
                 let _ = AudioHardwareDestroyProcessTap(tap_id);
             }
@@ -323,13 +336,7 @@ impl SystemAudioStream {
         let status = unsafe { AudioDeviceStart(aggregate_id, io_proc_id) };
         if status != 0 {
             unsafe {
-                let io_proc_destroyed = AudioDeviceDestroyIOProcID(aggregate_id, io_proc_id) == 0;
-                // If Core Audio refuses to detach the callback, leak its tiny
-                // context until this short-lived worker exits. Freeing it
-                // while an IOProc may still call back would be a use-after-free.
-                if io_proc_destroyed {
-                    drop(Arc::from_raw(callback_ring));
-                }
+                let _ = AudioDeviceDestroyIOProcID(aggregate_id, io_proc_id);
                 let _ = AudioHardwareDestroyAggregateDevice(aggregate_id);
                 let _ = AudioHardwareDestroyProcessTap(tap_id);
             }
@@ -341,7 +348,6 @@ impl SystemAudioStream {
             tap_id,
             aggregate_id,
             io_proc_id,
-            callback_ring,
             started: true,
             sample_rate,
         })
@@ -365,13 +371,9 @@ impl Drop for SystemAudioStream {
     fn drop(&mut self) {
         self.stop();
         unsafe {
-            let io_proc_destroyed =
-                AudioDeviceDestroyIOProcID(self.aggregate_id, self.io_proc_id) == 0;
+            let _ = AudioDeviceDestroyIOProcID(self.aggregate_id, self.io_proc_id);
             let _ = AudioHardwareDestroyAggregateDevice(self.aggregate_id);
             let _ = AudioHardwareDestroyProcessTap(self.tap_id);
-            if io_proc_destroyed {
-                drop(Arc::from_raw(self.callback_ring));
-            }
         }
     }
 }

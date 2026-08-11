@@ -23,7 +23,8 @@ stores an ordered transcript in SQLite.
 
 `murmur-capture-worker --production-v4` owns both native streams:
 
-1. A private, unmuted mono `CATap` captures global system output.
+1. A private, unmuted stereo `CATap` captures global system output and the
+   realtime callback downmixes it to mono without allocation.
 2. A private aggregate device binds the tap to an IOProc callback.
 3. The existing AUHAL microphone path captures the selected input.
 4. Each callback writes only to its own preallocated eight-second SPSC ring.
