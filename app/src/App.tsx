@@ -26,6 +26,7 @@ import { useRecordingState } from './lib/hooks/useRecordingState';
 import { useHoldDownToggle } from './lib/hooks/useHoldDownToggle';
 import { useDoubleTapToggle } from './lib/hooks/useDoubleTapToggle';
 import { useTransformFlow } from './lib/hooks/useTransformFlow';
+import { useQueryFlow } from './lib/hooks/useQueryFlow';
 import { useCombinedToggle } from './lib/hooks/useCombinedToggle';
 import { useShowAboutListener } from './lib/hooks/useShowAboutListener';
 import { useOverlaySettingsSync } from './lib/hooks/useOverlaySettingsSync';
@@ -191,6 +192,20 @@ function App() {
     accessibilityGranted,
     transformHoldKey: settings.transformHoldKey,
     microphone: settings.microphone,
+  });
+  useQueryFlow({
+    enabled: hotkeysArmed
+      && settings.queryHotkey !== null
+      && settings.queryExecutable.trim().length > 0,
+    initialized,
+    accessibilityGranted,
+    queryHotkey: settings.queryHotkey,
+    microphone: settings.microphone,
+    command: {
+      executable: settings.queryExecutable,
+      arguments: settings.queryArguments,
+      timeoutSeconds: settings.queryTimeoutSeconds,
+    },
   });
   const { showAbout, setShowAbout } = useShowAboutListener();
   const updater = useAutoUpdater({ automaticChecksEnabled: !INTERNAL_BENCHMARK_BUILD });

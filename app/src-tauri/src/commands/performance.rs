@@ -58,7 +58,8 @@ pub fn get_performance_resource_window(
 
 #[tauri::command]
 pub fn clear_performance_diagnostics(state: tauri::State<'_, State>) -> Result<(), String> {
-    state.performance.clear()
+    state.performance.clear()?;
+    state.capture_health.clear()
 }
 
 #[cfg(test)]

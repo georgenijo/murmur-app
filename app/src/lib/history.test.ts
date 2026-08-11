@@ -64,6 +64,13 @@ describe('persistence', () => {
     expect(loadHistory()).toHaveLength(200);
   });
 
+  it('reapplies the rolling cap when loading a migrated or tampered cache', () => {
+    const entries = Array.from({ length: 205 }, (_, i) => entry({ id: `e${i}` }));
+    localStorage.setItem('dictation-history', JSON.stringify(entries));
+    expect(loadHistory()).toHaveLength(200);
+    expect(loadHistory()[0].id).toBe('e5');
+  });
+
   it('returns an empty list when the stored blob is not an array', () => {
     localStorage.setItem('dictation-history', JSON.stringify({ nope: true }));
     expect(loadHistory()).toEqual([]);

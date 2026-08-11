@@ -150,7 +150,7 @@ fn cached_code_vocab_prompt(
 /// Resolve one immutable context from a consistent settings/vocabulary
 /// generation. A concurrent settings change causes a retry rather than a mixed
 /// snapshot.
-fn resolve_live_context(
+pub(crate) fn resolve_live_context(
     app_state: &AppState,
     knowledge: &crate::knowledge_store::KnowledgeStore,
     app_identity: &crate::frontmost::FrontmostAppIdentity,
@@ -662,7 +662,7 @@ fn pipeline_stages(timings: &PipelineTimings, total_ms: u64) -> Vec<StageTimingV
 }
 
 #[allow(clippy::too_many_arguments)]
-fn transcribe_with_coreml_vad_retry(
+pub(crate) fn transcribe_with_coreml_vad_retry(
     backend: &mut dyn transcriber::TranscriptionBackend,
     model_name: &str,
     samples_for_transcription: &[f32],
@@ -1097,6 +1097,10 @@ pub async fn process_audio(
         if state.app_state.transform_status().blocks_recording() {
             tracing::warn!(target: "pipeline", "process_audio: blocked — transform in progress");
             return Err("Cannot process audio while a transform is in progress.".to_string());
+        }
+        if state.query.status().blocks_pipeline() {
+            tracing::warn!(target: "pipeline", "process_audio: blocked — voice query in progress");
+            return Err("Cannot process audio while a voice query is in progress.".to_string());
         }
         // Mutual exclusion with the local-LLM transform runtime: only one heavy
         // inference runtime may be resident. Refuse while a transform is active.
@@ -2577,6 +2581,13 @@ pub async fn start_native_recording(
                 "state": "idle"
             }));
         }
+        if state.query.status().blocks_pipeline() {
+            tracing::warn!(target: "pipeline", "start_native_recording: blocked — voice query in progress");
+            return Ok(serde_json::json!({
+                "type": "busy_querying",
+                "state": "idle"
+            }));
+        }
         // Only one heavy inference runtime may be resident: refuse to record
         // while a local-LLM transform is in flight (supervisor busy).
         if state.transform_runtime.is_transform_busy() {
@@ -3224,6 +3235,11 @@ pub async fn transcribe_file(
         if state.app_state.transform_status().blocks_recording() {
             return Err("Wait for the transform to finish before transcribing a file.".to_string());
         }
+        if state.query.status().blocks_pipeline() {
+            return Err(
+                "Wait for the voice query to finish before transcribing a file.".to_string(),
+            );
+        }
         if dictation.status != DictationStatus::Idle {
             return Err(
                 "Can't transcribe a file while recording or processing live audio. \
@@ -3522,6 +3538,7 @@ mod tests {
                 meeting_store: crate::meeting_store::MeetingStore::default(),
                 meetings: crate::meeting_capture::MeetingCoordinator::default(),
                 correct_and_teach: crate::correct_and_teach::CorrectAndTeachState::default(),
+                capture_health: crate::capture_health::CaptureHealthDiagnostics::default(),
                 performance: performance.clone(),
                 transform_diagnostics: crate::transform_diagnostics::TransformDiagnostics::default(
                 ),
@@ -3530,6 +3547,7 @@ mod tests {
                 transform_popover_anchor: std::sync::Mutex::new(None),
                 transform_main_was_visible: std::sync::Mutex::new(None),
                 transform_runtime: Arc::new(crate::llm_sidecar::LlmSidecar::new()),
+                query: crate::query_flow::QueryCoordinator::default(),
             })
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build mock Tauri app");
@@ -3613,6 +3631,7 @@ mod tests {
                 meeting_store: crate::meeting_store::MeetingStore::default(),
                 meetings: crate::meeting_capture::MeetingCoordinator::default(),
                 correct_and_teach: crate::correct_and_teach::CorrectAndTeachState::default(),
+                capture_health: crate::capture_health::CaptureHealthDiagnostics::default(),
                 performance: crate::performance_metrics::PerformanceMetrics::default(),
                 transform_diagnostics: crate::transform_diagnostics::TransformDiagnostics::default(
                 ),
@@ -3621,6 +3640,7 @@ mod tests {
                 transform_popover_anchor: std::sync::Mutex::new(None),
                 transform_main_was_visible: std::sync::Mutex::new(None),
                 transform_runtime: Arc::new(crate::llm_sidecar::LlmSidecar::new()),
+                query: crate::query_flow::QueryCoordinator::default(),
             })
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build mock Tauri app");

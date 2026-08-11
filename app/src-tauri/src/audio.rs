@@ -493,6 +493,14 @@ pub fn start_transform_capture_audio(
     crate::audio_lifecycle::start_transform_recording(app_handle, device_id, transform_pass_id)
 }
 
+pub fn start_query_capture_audio(
+    app_handle: Option<tauri::AppHandle>,
+    device_id: Option<String>,
+    query_pass_id: u64,
+) -> Result<(), String> {
+    crate::audio_lifecycle::start_query_recording(app_handle, device_id, query_pass_id)
+}
+
 enum HelperRead {
     Frame(ProductionFrame<ProductionHelperMessage>),
     Invalid,

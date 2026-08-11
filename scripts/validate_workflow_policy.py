@@ -36,9 +36,9 @@ SEMVER = re.compile(
 
 def job_block(workflow: str, job: str) -> str:
     match = re.search(
-        rf"^  {re.escape(job)}:\n(?P<body>(?:^(?:    .*|\s*)\n?)*)",
+        rf"^  {re.escape(job)}:\n(?P<body>.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)",
         workflow,
-        re.MULTILINE,
+        re.MULTILINE | re.DOTALL,
     )
     if not match:
         raise AssertionError(f"missing job: {job}")
@@ -134,15 +134,27 @@ def tag_action(existing_sha: Optional[str], source_sha: str) -> str:
 def validate_ci(ci: str) -> int:
     assert "push:\n    branches: [main]" in ci
     assert "\n  pull_request:" in ci
-    assert scalar(job_block(ci, "changes"), "if") == CI_GUARD
+    changes = job_block(ci, "changes")
+    rust_macos = job_block(ci, "rust-macos")
+    dependency_audit = job_block(ci, "dependency-audit")
+    ci_pass = job_block(ci, "ci-pass")
+    assert scalar(changes, "if") == CI_GUARD
     for job in ("typecheck", "visual-regression", "rust-macos", "linux"):
         assert scalar(job_block(ci, job), "needs") == "changes"
-    assert scalar(job_block(ci, "ci-pass"), "needs") == (
+    assert scalar(dependency_audit, "if") == CI_GUARD
+    assert scalar(ci_pass, "needs") == (
         "[changes, typecheck, visual-regression, rust-macos, linux]"
     )
-    assert scalar(job_block(ci, "ci-pass"), "if") == CI_PASS_GUARD
-    ci_pass_step = named_step_block(ci, "Check CI result", 6)
+    assert scalar(ci_pass, "if") == CI_PASS_GUARD
+    ci_pass_step = named_step_block(ci_pass, "Check CI result", 6)
     assert "${{ needs.visual-regression.result }}" in ci_pass_step
+    rust_filter = re.search(
+        r"^            rust:\n(?P<paths>(?:^              - .+\n)+)",
+        changes,
+        re.MULTILINE,
+    )
+    assert rust_filter, "missing rust paths filter"
+    assert "'rustfmt.toml'" in rust_filter.group("paths")
     assert "scripts/validate_workflow_policy.py" in ci
     assert "'scripts/validate_reference_docs.py'" in ci
     assert "python3 scripts/validate_reference_docs.py" in ci
@@ -156,14 +168,14 @@ def validate_ci(ci: str) -> int:
     assert "tests/test_workflow_policy.py" in ci
     assert "tests/test_capture_agent_matrix.py" in ci
     capture_build = named_step_block(
-        ci, "Build capture isolation helpers and stub local-LLM externalBin", 6
+        rust_macos, "Build capture isolation helpers and stub local-LLM externalBin", 6
     )
-    rust_install = named_step_block(ci, "Install Rust", 6)
+    rust_install = named_step_block(rust_macos, "Install Rust", 6)
     assert "uses: dtolnay/rust-toolchain@1.96.0" in rust_install
     assert "components: clippy, rustfmt" in rust_install
-    rust_format = named_step_block(ci, "Check Rust formatting", 6)
+    rust_format = named_step_block(rust_macos, "Check Rust formatting", 6)
     assert "cargo fmt --all -- --check" in rust_format
-    rust_lint = named_step_block(ci, "Lint Rust", 6)
+    rust_lint = named_step_block(rust_macos, "Lint Rust", 6)
     assert "cargo clippy --all-targets -- -D warnings" in rust_lint
     assert "swiftc -warnings-as-errors" in capture_build
     assert "sidecars/capture-agent/main.swift" in capture_build
@@ -172,14 +184,17 @@ def validate_ci(ci: str) -> int:
     assert "CARGO_TARGET_DIR=target/capture-worker-build" in capture_build
     assert "target/capture-worker-build/debug/murmur-capture-helper" in capture_build
     assert "binaries/murmur-capture-worker-aarch64-apple-darwin" in capture_build
-    capture_tests = named_step_block(ci, "Run capture worker unit tests", 6)
+    capture_tests = named_step_block(rust_macos, "Run capture worker unit tests", 6)
     assert "cargo test -p murmur-capture-helper" in capture_tests
-    job_block(ci, "dependency-audit")
-    rust_audit = named_step_block(ci, "Audit Rust dependencies (advisory)", 6)
+    rust_audit = named_step_block(
+        dependency_audit, "Audit Rust dependencies (advisory)", 6
+    )
     assert "continue-on-error: true" in rust_audit
     assert "cargo install cargo-audit --locked --version 0.22.2" in rust_audit
     assert "cargo audit" in rust_audit
-    npm_audit = named_step_block(ci, "Audit npm dependencies (advisory)", 6)
+    npm_audit = named_step_block(
+        dependency_audit, "Audit npm dependencies (advisory)", 6
+    )
     assert "continue-on-error: true" in npm_audit
     assert "npm audit --audit-level=high" in npm_audit
     llm_target = "binaries/murmur-llm-sidecar-aarch64-apple-darwin"
@@ -512,7 +527,6 @@ def validate_promotion_policy(workflow: str) -> int:
     assert "updater policy must contain exactly one null or string min_version" in workflow
     assert '--min-version "$MIN_VERSION"' in workflow
     assert "published updater policy differs from the trusted source policy" in workflow
-    assert "draft release notes differ from the updater manifest" in workflow
     assert workflow.index("scripts/release_artifacts.py validate") < workflow.index(
         "Create automatic release tag"
     )
@@ -533,6 +547,15 @@ def validate_promotion_policy(workflow: str) -> int:
     assert workflow.index("Verify release metadata matches updater manifest") < workflow.index(
         "Publish release"
     )
+    metadata_check = named_step_block(
+        workflow, "Verify release metadata matches updater manifest", 6
+    )
+    assert "scripts/release_artifacts.py verify-notes" in metadata_check
+    assert "--json body --jq .body > draft-release-notes.md" in metadata_check
+    assert "--manifest remote-manifests/latest-v2.json" in metadata_check
+    assert "--release-notes draft-release-notes.md" in metadata_check
+    assert "RELEASE_NOTES=$(" not in metadata_check
+    assert ".notes == $notes" not in metadata_check
     rehearsal = named_step_block(
         workflow, "Report non-publishing promotion rehearsal", 6
     )

@@ -531,6 +531,9 @@ pub async fn start_corpus_recording(
         if state.benchmark.is_running() {
             return Err("Finish the current benchmark first".to_string());
         }
+        if state.query.status().blocks_pipeline() {
+            return Err("Finish the current voice query first".to_string());
+        }
         if state.app_state.transform_status().blocks_recording()
             || state.transform_runtime.is_transform_busy()
         {

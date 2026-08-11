@@ -14,6 +14,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   access is explicit and optional; meeting audio is discarded after each
   durable transcript commit unless retention is enabled (#539).
 
+- Opt-in Voice Query dispatches a locally transcribed spoken question to one
+  explicitly configured CLI argument without a shell, streams its bounded
+  answer in a popover, and never auto-pastes or records query content in
+  telemetry, history, stats, or file output (#538).
+
+### Changed
+
+- Transcript history and usage statistics now survive WebKit storage eviction
+  and manual reinstalls through Rust-owned, local-only durable files. Existing
+  localStorage data migrates automatically, the 200-entry history cap remains,
+  and disabling history retention still discards new transcript content (#521).
+
+### Fixed
+
+- Release promotion now compares draft and updater-manifest notes with the same
+  deterministic whitespace normalization, avoiding formatting-only failures
+  while still rejecting edited content (#512).
+
+- Microphone startup health now retains a bounded, content-free local history
+  independently of general event traffic, so idle system telemetry no longer
+  resets the five-recording signal and the Performance tab no longer polls the
+  full event history every two seconds (#514).
+
 ## [0.30.1] - 2026-08-09
 
 ### Fixed

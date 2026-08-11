@@ -30,7 +30,11 @@ All three are always called (Rules of Hooks) and switched by the `enabled` prop 
 Imported-file transcription: file selection, `transcribe_file`, and the `file-transcription-status-changed` busy state. Adds the result to history through the same `addEntry` path as live dictation.
 
 ### `useHistoryManagement`
-Transcription history with localStorage persistence (`dictation-history`, rolling 200-entry cap). Owns add / update / clear. Search, filtering, and export live in `lib/history.ts`; see [features/history-workspace.md](../features/history-workspace.md).
+Transcription history with a Rust-owned `history.json` source of truth and a
+synchronous `dictation-history` localStorage cache (rolling 200-entry cap).
+Owns add / update / clear; `retainHistory=false` rejects new content before
+either store. Search, filtering, and export live in `lib/history.ts`; see
+[features/history-workspace.md](../features/history-workspace.md).
 
 ### `useMeetings`
 Owns the durable Meetings tab: hydrates runtime/permission/store state, listens
@@ -149,7 +153,9 @@ The structured event buffer: hydrates from `get_event_history`, streams live `ap
 Run history and resource samples. Hydrates from `list_performance_runs` / `get_performance_resource_window`, then merges live `performance-run-completed` and `performance-resource-sample` events (the exported `mergeRuns` / `mergeResourceSamples` are pure and unit-tested), and resets on `performance-diagnostics-cleared`. Gated by an `enabled` flag so a hidden tab does no work.
 
 ### `usePerformanceHealth`
-Summary health of the diagnostics store (availability, counts) with an explicit `refresh`.
+Live pipeline/model state plus capture-startup health with an explicit `refresh`.
+Its two-second refresh reads the dedicated bounded `get_capture_health_history`
+payload rather than polling the general event history.
 
 ### `useResourceMonitor`
 CPU/memory polling with a rolling 60-reading buffer. Only polls while the panel is expanded.

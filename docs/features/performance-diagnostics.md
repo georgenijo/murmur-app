@@ -154,17 +154,26 @@ start.
 ## Capture startup health
 
 The Performance tab also derives a read-only, on-device microphone startup
-signal from the existing bounded event history. It considers the five newest
-successful dictation `audio.capture_ready` events and correlates a preceding
-`audio.fallback_started` only for the same owner within the bounded capture
-contract. It reports degraded health when all five captures required fallback
-or their median `startup_ms` is at least two seconds.
+signal from a dedicated rolling history of the 20 newest successful dictation
+captures. Rust correlates `audio.fallback_started` with `audio.capture_ready`
+only for the same owner within the bounded capture contract, then persists only
+the finalized startup duration, whether fallback occurred, and an optional
+stable backend enum. Persistence runs off the capture-ready path. The frontend
+polls this small typed history instead of the general 500-event telemetry ring.
+Idle heartbeats and system chatter therefore cannot evict capture health
+evidence. On first upgrade, Murmur reconstructs safe finalized observations
+once from the current and rotated structured event logs.
+
+The signal considers the five newest observations. It reports degraded health
+when all five captures required fallback or their median `startup_ms` is at
+least two seconds.
 
 This judgment does not change backend order, retry budgets, or any capture-path
-behavior. It accepts only the stable `auhal` and `cpal` backend labels and exact
-event codes (plus exact historical summaries); it never reads device labels,
-UIDs, transcript content, or free-form errors. Fewer than five successful
+behavior. The persistent record accepts only the stable `auhal` and `cpal`
+backend enums; it contains no timestamps, capture-owner IDs, device labels,
+device UIDs, transcript content, or free-form errors. Fewer than five successful
 captures is reported as insufficient data rather than healthy or degraded.
+Clearing Performance diagnostics also clears these retained observations.
 
 ## UI navigation latency
 

@@ -70,6 +70,9 @@ pub async fn run_benchmark(
         if state.app_state.transform_status().blocks_recording() {
             return Err("Wait for the transform to finish before benchmarking".to_string());
         }
+        if state.query.status().blocks_pipeline() {
+            return Err("Wait for the voice query to finish before benchmarking".to_string());
+        }
         if dictation.status != DictationStatus::Idle {
             return Err("Stop recording before running a benchmark".to_string());
         }

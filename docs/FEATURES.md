@@ -15,7 +15,7 @@ Current as of **v0.30.1**. This is the breadth-first inventory of what ships; ea
 **[docs/features/transcription.md](features/transcription.md)**
 
 - Hold a key, speak, release — text lands on the clipboard and (optionally) pastes into the focused app.
-- Fully offline. No cloud calls, no API keys, no telemetry leaving the machine.
+- Murmur's dictation pipeline is fully offline: no cloud calls or API keys. Release builds send only privacy-stripped diagnostic metadata—never audio or text.
 - Seven models across three local engines, all from one catalog (see [Models](#3-models-and-runtime)).
 - One final-after-stop transcription path for every backend. Delivery happens exactly once.
 - Recordings under 0.3s are discarded as phantom triggers.
@@ -151,7 +151,20 @@ Hold a dedicated key with text selected in any app, speak an instruction, review
 
 ---
 
-## 6. Interface
+## 6. Voice query
+
+**[docs/features/voice-query.md](features/voice-query.md)**
+
+Double-tap a dedicated key, ask a question, and stream an answer from an explicitly configured CLI into a popover.
+
+- Opt-in with no default executable and explicit warning that the chosen CLI may use cloud services.
+- Local ASR; the transcript is one literal final argv element passed through direct process spawn with no shell or interpolation.
+- Owned process group with confirmed termination on cancel, timeout, Escape, and app exit.
+- Question and answer content stay out of telemetry, history, stats, and file output. The completed answer is copied but never auto-pasted.
+
+---
+
+## 7. Interface
 
 ### Main window
 A single-line header combines app status, the configured hotkey hint, recording
@@ -203,7 +216,7 @@ Static white waveform icon. Menu: Show Murmur, Disable Murmur (check item), Quit
 
 ---
 
-## 7. Diagnostics and evaluation
+## 8. Diagnostics and evaluation
 
 ### Performance workspace — [features/log-viewer.md](features/log-viewer.md)
 Embedded under Settings → Model → Advanced with **Events**, **Runs**,
@@ -234,7 +247,7 @@ Every transform-key hold is recorded as a content-free `TransformAttemptV1` with
 
 ---
 
-## 8. Platform, privacy, distribution
+## 9. Platform, privacy, distribution
 
 - macOS 14+ on Apple Silicon (Core ML/ANE); Whisper and CPU Parakeet also build for Linux.
 - Developer ID signed and notarized; hardened runtime; sidecar ships with split entitlements; release finalization fails closed on any unexpected bundle executable.
@@ -245,11 +258,11 @@ Every transform-key hold is recorded as a content-free `TransformAttemptV1` with
 
 ---
 
-## 9. Development surface
+## 10. Development surface
 
 | Area | Location |
 |------|----------|
-| Rust backend | `app/src-tauri/src/` — 128 Tauri commands |
+| Rust backend | `app/src-tauri/src/` — 142 Tauri commands |
 | Frontend | `app/src/` — React 18 + TypeScript + Tailwind 4 |
 | LLM sidecar | `app/src-tauri/sidecars/local-llm/`, protocol in `crates/local-llm-protocol` |
 | Capture worker | `app/src-tauri/sidecars/capture/`, protocol in `crates/capture-helper-protocol` |

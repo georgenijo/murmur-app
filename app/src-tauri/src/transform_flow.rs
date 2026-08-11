@@ -1743,6 +1743,9 @@ pub(crate) async fn start_transform_capture(
         } else if state.transform_runtime.is_transform_busy() {
             tracing::info!(target: "transform", transform_pass_id, error_code = "runtime_busy", "start_transform_capture ignored");
             Err("runtime_busy")
+        } else if state.query.status().blocks_pipeline() {
+            tracing::info!(target: "transform", transform_pass_id, error_code = "query_busy", "start_transform_capture ignored");
+            Err("query_busy")
         } else {
             // Atomic Idle -> Capturing under the dictation lock.
             claim_transform_start_status(&state.app_state, transform_pass_id)

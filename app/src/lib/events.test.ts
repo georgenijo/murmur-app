@@ -35,6 +35,11 @@ describe('event semantic colors', () => {
         text: 'text-on-surface',
         dot: 'bg-error',
       },
+      query: {
+        bg: 'bg-primary/10',
+        text: 'text-primary',
+        dot: 'bg-primary',
+      },
       system: {
         bg: 'bg-success/10',
         text: 'text-success',
