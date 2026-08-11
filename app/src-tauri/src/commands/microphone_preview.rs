@@ -85,6 +85,7 @@ pub async fn start_microphone_preview(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, State>,
     device_id: String,
+    vad_sensitivity: u32,
 ) -> Result<MicrophonePreviewStatus, String> {
     require_main_window(&window)?;
     let device_id = normalized_device_id(device_id)?;
@@ -124,7 +125,7 @@ pub async fn start_microphone_preview(
             );
         }
     }
-    let preview_id = state.app_state.microphone_preview.claim()?;
+    let preview_id = state.app_state.microphone_preview.claim(vad_sensitivity)?;
     tracing::info!(
         target: "audio",
         event_code = "audio.preview_started",
@@ -175,6 +176,20 @@ pub async fn start_microphone_preview(
         }
     });
     Ok(state.app_state.microphone_preview.status())
+}
+
+#[tauri::command]
+pub fn update_microphone_preview_vad_sensitivity(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, State>,
+    preview_id: u64,
+    vad_sensitivity: u32,
+) -> Result<bool, String> {
+    require_main_window(&window)?;
+    Ok(state
+        .app_state
+        .microphone_preview
+        .update_vad_sensitivity_if(preview_id, vad_sensitivity))
 }
 
 #[tauri::command]

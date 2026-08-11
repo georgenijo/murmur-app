@@ -58,6 +58,7 @@ describe('MicrophoneInputTest', () => {
   let activePage = true;
   let surfaceActive = true;
   let appReady = true;
+  let vadSensitivity = 60;
   let dictationBusy = false;
   let frames: Map<number, FrameRequestCallback>;
   let nextFrame: number;
@@ -75,6 +76,7 @@ describe('MicrophoneInputTest', () => {
             devices={devices}
             active={activePage}
             ready={appReady}
+            vadSensitivity={vadSensitivity}
             dictationBusy={dictationBusy}
             missingDevice={false}
             onChange={handleMicrophoneChange}
@@ -99,6 +101,7 @@ describe('MicrophoneInputTest', () => {
     activePage = true;
     surfaceActive = true;
     appReady = true;
+    vadSensitivity = 60;
     dictationBusy = false;
     frames = new Map();
     nextFrame = 1;
@@ -115,6 +118,7 @@ describe('MicrophoneInputTest', () => {
     mocks.invoke.mockImplementation(async (command: string) => {
       if (command === 'get_microphone_preview_status') return idle;
       if (command === 'start_microphone_preview') return active;
+      if (command === 'update_microphone_preview_vad_sensitivity') return true;
       if (command === 'stop_microphone_preview') return idle;
       if (command === 'cancel_microphone_preview') return true;
       throw new Error(`unexpected command: ${command}`);
@@ -134,6 +138,7 @@ describe('MicrophoneInputTest', () => {
     await render();
     expect(mocks.invoke).toHaveBeenCalledWith('start_microphone_preview', {
       deviceId: 'system_default',
+      vadSensitivity: 60,
     });
     await emitStatus(active);
     await act(async () => {
@@ -156,6 +161,7 @@ describe('MicrophoneInputTest', () => {
     mocks.invoke.mockImplementation(async (command: string) => {
       if (command === 'get_microphone_preview_status') return idle;
       if (command === 'start_microphone_preview') return connecting;
+      if (command === 'update_microphone_preview_vad_sensitivity') return true;
       if (command === 'stop_microphone_preview') return idle;
       if (command === 'cancel_microphone_preview') return true;
       throw new Error(`unexpected command: ${command}`);
@@ -205,6 +211,7 @@ describe('MicrophoneInputTest', () => {
       if (command === 'stop_microphone_preview') throw new Error('cleanup timed out');
       if (command === 'cancel_microphone_preview') return true;
       if (command === 'start_microphone_preview') return active;
+      if (command === 'update_microphone_preview_vad_sensitivity') return true;
       throw new Error(`unexpected command: ${command}`);
     });
     const combobox = container.querySelector('[role="combobox"]') as HTMLButtonElement;
@@ -260,6 +267,7 @@ describe('MicrophoneInputTest', () => {
     await render();
     expect(mocks.invoke).toHaveBeenCalledWith('start_microphone_preview', {
       deviceId: 'system_default',
+      vadSensitivity: 60,
     });
   });
 
@@ -279,6 +287,76 @@ describe('MicrophoneInputTest', () => {
     await render();
     expect(mocks.invoke).toHaveBeenCalledWith('start_microphone_preview', {
       deviceId: 'system_default',
+      vadSensitivity: 60,
     });
+  });
+
+  it('shows live VAD decisions and drops results from an older slider value', async () => {
+    await render();
+    await emitStatus(active);
+    await act(async () => {
+      mocks.listeners.get('microphone-preview-vad')?.({
+        payload: { previewId: 7, sensitivity: 60, decision: 'no_speech' },
+      });
+    });
+    expect(container.textContent).toContain('No speech · filtered');
+
+    vadSensitivity = 20;
+    await render();
+    expect(mocks.invoke).toHaveBeenCalledWith(
+      'update_microphone_preview_vad_sensitivity',
+      { previewId: 7, vadSensitivity: 20 },
+    );
+    await act(async () => {
+      mocks.listeners.get('microphone-preview-vad')?.({
+        payload: { previewId: 7, sensitivity: 60, decision: 'speech_detected' },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain('Listening');
+    expect(mocks.invoke).toHaveBeenLastCalledWith(
+      'update_microphone_preview_vad_sensitivity',
+      { previewId: 7, vadSensitivity: 20 },
+    );
+
+    await act(async () => {
+      mocks.listeners.get('microphone-preview-vad')?.({
+        payload: { previewId: 7, sensitivity: 20, decision: 'speech_detected' },
+      });
+    });
+    expect(container.textContent).toContain('Speech detected · kept');
+  });
+
+  it('ignores a VAD decision from another preview generation and resets after stop', async () => {
+    await render();
+    await emitStatus(active);
+    await act(async () => {
+      mocks.listeners.get('microphone-preview-vad')?.({
+        payload: { previewId: 8, sensitivity: 60, decision: 'speech_detected' },
+      });
+    });
+    expect(container.textContent).toContain('Listening');
+
+    await act(async () => {
+      mocks.listeners.get('microphone-preview-vad')?.({
+        payload: { previewId: 7, sensitivity: 60, decision: 'speech_detected' },
+      });
+    });
+    expect(container.textContent).toContain('Speech detected · kept');
+
+    await emitStatus(idle);
+    expect(container.textContent).toContain('Listening');
+  });
+
+  it('shows explicit Off and recording-paused VAD states', async () => {
+    vadSensitivity = 0;
+    await render();
+    expect(container.textContent).toContain('Off · all audio kept');
+
+    vadSensitivity = 60;
+    dictationBusy = true;
+    await render();
+    expect(container.textContent).toContain('Paused while recording');
   });
 });

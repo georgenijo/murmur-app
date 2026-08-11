@@ -1,6 +1,7 @@
 use crate::managed_child::{bundled_sibling, ManagedChild};
 use crate::microphone_preview::{
-    classify_level, MicrophonePreviewLevel, PreviewLevelAccumulator, PreviewLevelTracker,
+    can_schedule_vad_analysis, classify_level, schedule_vad_analysis, MicrophonePreviewLevel,
+    PreviewLevelAccumulator, PreviewLevelTracker, PreviewVadWindow,
 };
 use crate::MutexExt;
 use murmur_capture_helper_protocol::{
@@ -965,6 +966,7 @@ fn run_backend(
     let mut last_level_emit = Instant::now() - Duration::from_secs(1);
     let mut preview_levels = PreviewLevelAccumulator::default();
     let mut preview_classification = PreviewLevelTracker::default();
+    let mut preview_vad_window = PreviewVadWindow::default();
     let mut last_permission_check = Instant::now() - PERMISSION_POLL_INTERVAL;
     let mut current_phase = AudioInitPhase::StreamBuild;
     let mut last_setup_step: Option<(CaptureSetupStep, SetupTransition)> = None;
@@ -1234,10 +1236,32 @@ fn run_backend(
                         .unwrap_or_else(|poisoned| poisoned.into_inner())
                         .extend_from_slice(&pcm.samples);
                 }
-                if owner.preview_id().is_some() {
+                if let Some(preview_id) = owner.preview_id() {
                     // Accumulate every callback between paint-rate emissions;
                     // otherwise a short peak could disappear in the throttle.
                     preview_levels.observe(&pcm.samples);
+                    // Keep only a bounded rolling window in memory. The
+                    // analyzer runs off-thread and never writes preview PCM to
+                    // the retained recording buffer, disk, or telemetry.
+                    preview_vad_window.observe(&pcm.samples, pcm.sample_rate);
+                    let vad_now = Instant::now();
+                    if preview_vad_window.is_due(vad_now) {
+                        let mut scheduled = false;
+                        if let Some(handle) = app_handle.as_ref()
+                            && can_schedule_vad_analysis(handle, preview_id)
+                            && let Some((samples, sample_rate)) =
+                                preview_vad_window.snapshot_if_due(vad_now)
+                        {
+                            schedule_vad_analysis(handle.clone(), preview_id, samples, sample_rate);
+                            scheduled = true;
+                        }
+                        if !scheduled {
+                            // Sensitivity can be Off, an inference can already
+                            // be running, or teardown can have started. Advance
+                            // the cadence without copying the rolling window.
+                            preview_vad_window.defer_due_snapshot(vad_now);
+                        }
+                    }
                 }
                 if !retained_audio {
                     retained_audio = true;

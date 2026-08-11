@@ -747,7 +747,7 @@ async fn run_transcription_pipeline(
         tracing::info!(target: "pipeline", "VAD disabled for lowest-latency transcription");
         (samples.to_vec(), false)
     } else {
-        let vad_threshold = 1.0 - (transcription.vad_sensitivity as f32 / 100.0);
+        let vad_threshold = vad::threshold_for_sensitivity(transcription.vad_sensitivity);
         match vad::vad_model_path() {
             Some(vad_path) if vad_path.exists() => {
                 let vad_path_str = vad_path.to_string_lossy().to_string();
@@ -3305,7 +3305,7 @@ pub async fn transcribe_file(
         tracing::info!(target: "pipeline", "transcribe_file: VAD disabled for lowest-latency transcription");
         (samples.clone(), false)
     } else {
-        let vad_threshold = 1.0 - (vad_sensitivity as f32 / 100.0);
+        let vad_threshold = vad::threshold_for_sensitivity(vad_sensitivity);
         match vad::vad_model_path() {
             Some(vad_path) if vad_path.exists() => {
                 let vad_path_str = vad_path.to_string_lossy().to_string();

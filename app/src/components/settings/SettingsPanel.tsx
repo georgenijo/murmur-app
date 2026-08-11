@@ -121,7 +121,15 @@ function PasteDelaySlider({ value, onCommit }: { value: number; onCommit: (value
   );
 }
 
-function VadSensitivitySlider({ value, onCommit }: { value: number; onCommit: (value: number) => void }) {
+function VadSensitivitySlider({
+  value,
+  onPreview,
+  onCommit,
+}: {
+  value: number;
+  onPreview: (value: number) => void;
+  onCommit: (value: number) => void;
+}) {
   const [draft, setDraft] = useState(value);
   useEffect(() => setDraft(value), [value]);
   return (
@@ -136,8 +144,13 @@ function VadSensitivitySlider({ value, onCommit }: { value: number; onCommit: (v
         max={100}
         step={5}
         value={draft}
-        onChange={(event) => setDraft(Number(event.target.value))}
-        onPointerUp={() => onCommit(draft)}
+        onChange={(event) => {
+          const next = Number(event.target.value);
+          setDraft(next);
+          onPreview(next);
+        }}
+        onPointerUp={(event) => onCommit(Number(event.currentTarget.value))}
+        onKeyUp={(event) => onCommit(Number(event.currentTarget.value))}
         className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-surface-container-highest accent-primary"
       />
       <p className="mt-1 text-xs text-on-surface-variant">Off skips silence filtering for the lowest latency. Otherwise, higher keeps more audio.</p>
@@ -384,6 +397,8 @@ export const SettingsPanel = memo(function SettingsPanel({
   }, [settings.model]);
 
   const [audioDevices, setAudioDevices] = useState<AudioDeviceDescriptor[]>([]);
+  const [previewVadSensitivity, setPreviewVadSensitivity] = useState(settings.vadSensitivity);
+  useEffect(() => setPreviewVadSensitivity(settings.vadSensitivity), [settings.vadSensitivity]);
   useEffect(() => {
     let cancelled = false;
     const refresh = () => {
@@ -746,13 +761,18 @@ export const SettingsPanel = memo(function SettingsPanel({
               devices={audioDevices}
               active={activeCat === 'dictation'}
               ready={initialized}
+              vadSensitivity={previewVadSensitivity}
               dictationBusy={isRecording}
               missingDevice={missingDevice}
               onChange={(microphone) => onUpdateSettings({ microphone })}
             />
             <div>
               <p className="mb-2 text-sm font-medium text-on-surface">Voice Detection</p>
-              <VadSensitivitySlider value={settings.vadSensitivity} onCommit={(vadSensitivity) => onUpdateSettings({ vadSensitivity })} />
+              <VadSensitivitySlider
+                value={settings.vadSensitivity}
+                onPreview={setPreviewVadSensitivity}
+                onCommit={(vadSensitivity) => onUpdateSettings({ vadSensitivity })}
+              />
             </div>
             <div>
               <p className="mb-2 text-sm font-medium text-on-surface">Recording Trigger</p>

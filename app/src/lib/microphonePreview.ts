@@ -22,6 +22,14 @@ export interface MicrophonePreviewLevel {
   classification: MicrophoneSignalClassification;
 }
 
+export type MicrophonePreviewVadDecision = 'speech_detected' | 'no_speech' | 'unavailable';
+
+export interface MicrophonePreviewVad {
+  previewId: number;
+  sensitivity: number;
+  decision: MicrophonePreviewVadDecision;
+}
+
 export const IDLE_MICROPHONE_PREVIEW: MicrophonePreviewStatus = {
   previewId: null,
   state: 'idle',
@@ -34,8 +42,18 @@ export function getMicrophonePreviewStatus(): Promise<MicrophonePreviewStatus> {
   return invoke('get_microphone_preview_status');
 }
 
-export function startMicrophonePreview(deviceId: string): Promise<MicrophonePreviewStatus> {
-  return invoke('start_microphone_preview', { deviceId });
+export function startMicrophonePreview(
+  deviceId: string,
+  vadSensitivity: number,
+): Promise<MicrophonePreviewStatus> {
+  return invoke('start_microphone_preview', { deviceId, vadSensitivity });
+}
+
+export function updateMicrophonePreviewVadSensitivity(
+  previewId: number,
+  vadSensitivity: number,
+): Promise<boolean> {
+  return invoke('update_microphone_preview_vad_sensitivity', { previewId, vadSensitivity });
 }
 
 export function stopMicrophonePreview(previewId: number): Promise<MicrophonePreviewStatus> {

@@ -12,8 +12,11 @@ import {
   smoothMicrophoneMeterValue,
   startMicrophonePreview,
   stopMicrophonePreview,
+  updateMicrophonePreviewVadSensitivity,
   type MicrophonePreviewLevel,
   type MicrophonePreviewStatus,
+  type MicrophonePreviewVad,
+  type MicrophonePreviewVadDecision,
   type MicrophoneSignalClassification,
 } from '../../lib/microphonePreview';
 import { Select } from '../ui/Select';
@@ -24,6 +27,7 @@ interface MicrophoneInputTestProps {
   devices: AudioDeviceDescriptor[];
   active: boolean;
   ready: boolean;
+  vadSensitivity: number;
   dictationBusy: boolean;
   missingDevice: boolean;
   onChange: (microphone: string) => void;
@@ -41,6 +45,7 @@ export function MicrophoneInputTest({
   devices,
   active,
   ready,
+  vadSensitivity,
   dictationBusy,
   missingDevice,
   onChange,
@@ -51,11 +56,15 @@ export function MicrophoneInputTest({
   const [operation, setOperation] = useState<'idle' | 'starting' | 'switching'>('idle');
   const [subscriptionsReady, setSubscriptionsReady] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [vadDecision, setVadDecision] = useState<MicrophonePreviewVadDecision | 'listening'>('listening');
   const statusRef = useRef(status);
   const mountedRef = useRef(true);
   const operationRef = useRef<Promise<void> | null>(null);
+  const vadUpdateRef = useRef<Promise<void>>(Promise.resolve());
   const eventVersionRef = useRef(0);
   const latestLevelRef = useRef<MicrophonePreviewLevel | null>(null);
+  const vadSensitivityRef = useRef(vadSensitivity);
+  vadSensitivityRef.current = vadSensitivity;
   const meterRef = useRef<HTMLDivElement>(null);
   const fillRef = useRef<HTMLDivElement>(null);
   const peakRef = useRef<HTMLDivElement>(null);
@@ -74,11 +83,36 @@ export function MicrophoneInputTest({
     setStatus(next);
   }, []);
 
+  const syncVadSensitivity = useCallback((previewId: number, sensitivity: number) => {
+    const update = async () => {
+      if (
+        !mountedRef.current
+        || statusRef.current.previewId !== previewId
+        || vadSensitivityRef.current !== sensitivity
+      ) {
+        return;
+      }
+      try {
+        await updateMicrophonePreviewVadSensitivity(previewId, sensitivity);
+      } catch {
+        if (
+          mountedRef.current
+          && statusRef.current.previewId === previewId
+          && vadSensitivityRef.current === sensitivity
+        ) {
+          setVadDecision('unavailable');
+        }
+      }
+    };
+    vadUpdateRef.current = vadUpdateRef.current.then(update, update);
+  }, []);
+
   useEffect(() => {
     mountedRef.current = true;
     let disposed = false;
     let unlistenStatus: (() => void) | null = null;
     let unlistenLevel: (() => void) | null = null;
+    let unlistenVad: (() => void) | null = null;
 
     void (async () => {
       unlistenStatus = await listen<MicrophonePreviewStatus>(
@@ -97,6 +131,19 @@ export function MicrophoneInputTest({
           }
         },
       );
+      unlistenVad = await listen<MicrophonePreviewVad>(
+        'microphone-preview-vad',
+        (event) => {
+          if (disposed || event.payload.previewId !== statusRef.current.previewId) return;
+          if (event.payload.sensitivity !== vadSensitivityRef.current) {
+            // A rapid drag can race IPC command delivery. Reassert the latest
+            // value so a stale backend decision cannot strand the UI.
+            syncVadSensitivity(event.payload.previewId, vadSensitivityRef.current);
+            return;
+          }
+          setVadDecision(event.payload.decision);
+        },
+      );
       const versionBeforeSnapshot = eventVersionRef.current;
       try {
         const snapshot = await getMicrophonePreviewStatus();
@@ -113,10 +160,11 @@ export function MicrophoneInputTest({
       mountedRef.current = false;
       unlistenStatus?.();
       unlistenLevel?.();
+      unlistenVad?.();
       const previewId = statusRef.current.previewId;
       if (previewId !== null) void cancelMicrophonePreview(previewId).catch(() => {});
     };
-  }, [applyStatus]);
+  }, [applyStatus, syncVadSensitivity]);
 
   useEffect(() => {
     let frame = 0;
@@ -173,6 +221,11 @@ export function MicrophoneInputTest({
   }, []);
 
   useEffect(() => {
+    setVadDecision('listening');
+    if (status.previewId !== null) syncVadSensitivity(status.previewId, vadSensitivity);
+  }, [status.previewId, syncVadSensitivity, vadSensitivity]);
+
+  useEffect(() => {
     if (status.previewId !== null) return;
     latestLevelRef.current = null;
     displayedLevelRef.current = 0;
@@ -185,6 +238,7 @@ export function MicrophoneInputTest({
     meterRef.current?.setAttribute('aria-valuetext', 'Microphone test inactive');
     paintedClassificationRef.current = 'no_signal';
     if (classificationRef.current) classificationRef.current.textContent = 'No signal';
+    setVadDecision('listening');
   }, [status.previewId]);
 
   const runExclusive = useCallback(async (task: () => Promise<void>) => {
@@ -201,7 +255,7 @@ export function MicrophoneInputTest({
     setOperation('starting');
     setActionError(null);
     try {
-      const next = await startMicrophonePreview(microphone);
+      const next = await startMicrophonePreview(microphone, vadSensitivity);
       if (!mountedRef.current) {
         if (next.previewId !== null) void cancelMicrophonePreview(next.previewId).catch(() => {});
         return;
@@ -210,7 +264,7 @@ export function MicrophoneInputTest({
     } catch (error) {
       if (mountedRef.current) setActionError(String(error));
     }
-  }), [applyStatus, microphone, runExclusive]);
+  }), [applyStatus, microphone, runExclusive, vadSensitivity]);
 
   useEffect(() => {
     if (!subscriptionsReady) return;
@@ -248,6 +302,34 @@ export function MicrophoneInputTest({
 
   const ownsPreview = status.previewId !== null;
   const busy = operation !== 'idle';
+  const vadLabel = dictationBusy
+    ? 'Paused while recording'
+    : vadSensitivity === 0
+      ? 'Off · all audio kept'
+      : status.state === 'connecting'
+        ? 'Starting…'
+        : vadDecision === 'speech_detected'
+          ? 'Speech detected · kept'
+          : vadDecision === 'no_speech'
+            ? 'No speech · filtered'
+            : vadDecision === 'unavailable'
+              ? 'Voice detection unavailable'
+              : 'Listening…';
+  const showVadDecision = !dictationBusy && vadSensitivity > 0 && status.state === 'active';
+  const vadDotClass = showVadDecision && vadDecision === 'speech_detected'
+    ? 'bg-success'
+    : showVadDecision && vadDecision === 'no_speech'
+      ? 'bg-warning'
+      : showVadDecision && vadDecision === 'unavailable'
+        ? 'bg-error'
+        : 'bg-on-surface-variant/45';
+  const vadTextClass = showVadDecision && vadDecision === 'speech_detected'
+    ? 'text-success'
+    : showVadDecision && vadDecision === 'no_speech'
+      ? 'text-warning'
+      : showVadDecision && vadDecision === 'unavailable'
+        ? 'text-error'
+        : 'text-on-surface-variant';
   const helperText = actionError ?? status.message ?? (
     dictationBusy
       ? 'Level monitoring pauses while Murmur records and resumes automatically.'
@@ -301,6 +383,15 @@ export function MicrophoneInputTest({
         <p className={`mt-2 text-xs ${actionError || status.message ? 'text-error' : 'text-on-surface-variant'}`} role={actionError || status.message ? 'alert' : undefined}>
           {helperText}
         </p>
+        <div className="mt-2 flex items-center justify-between gap-3 border-t border-outline-variant/15 pt-2 text-xs">
+          <span className="text-on-surface-variant">
+            Voice detection · {vadSensitivity === 0 ? 'Off' : `${vadSensitivity}%`}
+          </span>
+          <span className="inline-flex items-center gap-1.5 font-medium" aria-live="polite" aria-atomic="true">
+            <span className={`h-1.5 w-1.5 rounded-full ${vadDotClass}`} aria-hidden="true" />
+            <span className={vadTextClass}>{vadLabel}</span>
+          </span>
+        </div>
       </div>
     </div>
   );

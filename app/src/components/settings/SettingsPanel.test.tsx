@@ -90,13 +90,14 @@ describe('SettingsPanel information architecture', () => {
   let container: HTMLDivElement;
   let root: Root;
   const scrollTo = vi.fn();
+  const onUpdateSettings = vi.fn();
 
   function renderPanel(isOpen = true) {
     void isOpen;
     return root.render(
       <SettingsPanel
         settings={DEFAULT_SETTINGS}
-        onUpdateSettings={vi.fn()}
+        onUpdateSettings={onUpdateSettings}
         initialized
         status="idle"
         onResetStats={vi.fn()}
@@ -113,6 +114,7 @@ describe('SettingsPanel information architecture', () => {
     coreMocks.notchPillInstalled = false;
     coreMocks.notchPillDetectionError = false;
     scrollTo.mockReset();
+    onUpdateSettings.mockReset();
     Object.defineProperty(HTMLElement.prototype, 'scrollTo', { value: scrollTo, configurable: true });
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -135,6 +137,20 @@ describe('SettingsPanel information architecture', () => {
     expect(container.querySelector('h1')?.textContent).toBe('Microphone & Trigger');
     expect(container.textContent).toContain('Microphone');
     expect(container.textContent).toContain('Always copied to clipboard');
+  });
+
+  it('commits keyboard changes to voice-detection sensitivity', async () => {
+    const heading = Array.from(container.querySelectorAll('p')).find(
+      (item) => item.textContent === 'Voice Detection',
+    ) as HTMLParagraphElement;
+    const slider = heading.parentElement?.querySelector('input[type="range"]') as HTMLInputElement;
+    await act(async () => {
+      slider.value = '75';
+      slider.dispatchEvent(new Event('input', { bubbles: true }));
+      slider.dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowRight', bubbles: true }));
+    });
+
+    expect(onUpdateSettings).toHaveBeenCalledWith({ vadSensitivity: 75 });
   });
 
   it('hides the NotchPill setting when the companion app is absent', () => {
