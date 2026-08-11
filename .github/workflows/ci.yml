@@ -121,7 +121,15 @@ jobs:
         run: cd app && npx playwright install chromium
 
       - name: Visual golden tests
-        run: cd app && npm run test:visual
+        run: cd app && npm run test:visual -- --update-snapshots
+
+      - name: Upload refreshed Settings goldens
+        uses: actions/upload-artifact@v4
+        with:
+          name: refreshed-settings-goldens
+          path: |
+            app/visual-tests/main-window.spec.ts-snapshots/light-settings-darwin.png
+            app/visual-tests/main-window.spec.ts-snapshots/dark-settings-darwin.png
 
   rust-macos:
     needs: changes
