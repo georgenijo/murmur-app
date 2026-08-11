@@ -772,10 +772,10 @@ fn handle_worker_event(
             AttemptPhase::Starting => {
                 if current.owner.retains_samples()
                     && current
-                    .shared
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .is_empty()
+                        .shared
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .is_empty()
                 {
                     tracing::error!(
                         target: "audio",
@@ -2185,13 +2185,17 @@ mod tests {
                 sample_rate: WHISPER_SAMPLE_RATE,
             }))
             .unwrap();
-        assert_eq!(cancel_any_phase(&supervisor, owner).recv().unwrap(), Ok(true));
+        assert_eq!(
+            cancel_any_phase(&supervisor, owner).recv().unwrap(),
+            Ok(true)
+        );
         assert!(sink
             .events
             .lock()
             .unwrap()
             .iter()
-            .any(|(event_owner, event)| *event_owner == owner && *event == AudioLifecycleEvent::Ready));
+            .any(|(event_owner, event)| *event_owner == owner
+                && *event == AudioLifecycleEvent::Ready));
         gate.open();
         wait_until("preview worker did not finish teardown", || {
             !supervisor.public.is_active()
@@ -2220,7 +2224,9 @@ mod tests {
             .lock()
             .unwrap()
             .iter()
-            .any(|(event_owner, event)| *event_owner == owner && *event == AudioLifecycleEvent::Idle));
+            .any(
+                |(event_owner, event)| *event_owner == owner && *event == AudioLifecycleEvent::Idle
+            ));
         gate.open();
         wait_until("stopped preview worker did not exit", || {
             !supervisor.public.is_active()
@@ -2230,7 +2236,9 @@ mod tests {
             .lock()
             .unwrap()
             .iter()
-            .any(|(event_owner, event)| *event_owner == owner && *event == AudioLifecycleEvent::Idle));
+            .any(
+                |(event_owner, event)| *event_owner == owner && *event == AudioLifecycleEvent::Idle
+            ));
         shutdown(&supervisor);
     }
 
@@ -2476,18 +2484,25 @@ mod tests {
         );
         let owner = AudioOwner::Preview(82);
         assert_eq!(start(&supervisor, owner).recv().unwrap(), Ok(()));
-        wait_until("preview runtime failure did not reach lifecycle sink", || {
-            sink.events.lock().unwrap().iter().any(|(event_owner, event)| {
-                *event_owner == owner
-                    && matches!(
-                        event,
-                        AudioLifecycleEvent::InitializationFailed {
-                            kind: AudioFailureKind::StreamInvalidated,
-                            ..
-                        }
-                    )
-            })
-        });
+        wait_until(
+            "preview runtime failure did not reach lifecycle sink",
+            || {
+                sink.events
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|(event_owner, event)| {
+                        *event_owner == owner
+                            && matches!(
+                                event,
+                                AudioLifecycleEvent::InitializationFailed {
+                                    kind: AudioFailureKind::StreamInvalidated,
+                                    ..
+                                }
+                            )
+                    })
+            },
+        );
         wait_until("runtime-failed preview worker did not exit", || {
             !supervisor.public.is_active()
         });

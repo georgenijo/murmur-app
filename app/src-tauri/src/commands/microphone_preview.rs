@@ -188,10 +188,9 @@ pub async fn stop_microphone_preview(
     // Like dictation stop, release the short transition lock before any
     // supervisor wait. The active preview claim keeps racing starts blocked.
     drop(transition);
-    let stop_result = tokio::task::spawn_blocking(move || {
-        audio_lifecycle::stop_preview_recording(preview_id)
-    })
-    .await;
+    let stop_result =
+        tokio::task::spawn_blocking(move || audio_lifecycle::stop_preview_recording(preview_id))
+            .await;
     if let Err(error) = stop_result {
         state.app_state.microphone_preview.set_error_if(
             preview_id,

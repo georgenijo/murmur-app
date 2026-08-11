@@ -240,11 +240,7 @@ impl MicrophonePreviewState {
         }
     }
 
-    pub(crate) async fn wait_until_inactive(
-        &self,
-        preview_id: u64,
-        timeout: Duration,
-    ) -> bool {
+    pub(crate) async fn wait_until_inactive(&self, preview_id: u64, timeout: Duration) -> bool {
         tokio::time::timeout(timeout, async {
             loop {
                 let changed = self.changed.notified();
@@ -383,11 +379,10 @@ impl PreviewLevelTracker {
                     current
                 }
                 Some(current) => {
-                    let promote = self
-                        .candidate
-                        .is_some_and(|(candidate, since)| {
-                            candidate == raw && now.saturating_duration_since(since) >= CLASSIFICATION_HOLD
-                        });
+                    let promote = self.candidate.is_some_and(|(candidate, since)| {
+                        candidate == raw
+                            && now.saturating_duration_since(since) >= CLASSIFICATION_HOLD
+                    });
                     if promote {
                         self.current = Some(raw);
                         self.candidate = None;
