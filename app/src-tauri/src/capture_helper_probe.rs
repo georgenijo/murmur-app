@@ -84,7 +84,7 @@ impl SpawnPlan {
         }
     }
 
-    fn microphone_permission_status(&self, test_index: &mut usize) -> String {
+    fn microphone_permission_status(&self, _test_index: &mut usize) -> String {
         match self {
             Self::Production { .. } => {
                 crate::commands::permissions::check_microphone_permission_status()
@@ -93,11 +93,11 @@ impl SpawnPlan {
             Self::Test(config) => {
                 let status = config
                     .permission_status_sequence
-                    .get(*test_index)
+                    .get(*_test_index)
                     .cloned()
                     .or_else(|| config.permission_status_sequence.last().cloned())
                     .unwrap_or_else(|| "granted".to_string());
-                *test_index = test_index.saturating_add(1);
+                *_test_index = _test_index.saturating_add(1);
                 status
             }
         }
