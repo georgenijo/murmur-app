@@ -4,9 +4,24 @@
 
 Transcription history is where a dictated line goes to be found again. The workspace turns the plain reverse-chronological list into something you can work in: search it, narrow it, and take a set of entries out of the app as Markdown, plain text, or JSON.
 
-Everything here is local. History lives in `localStorage` under `dictation-history` with a rolling 200-entry cap (`trimHistory` drops the oldest beyond it, by index so same-millisecond ids can't confuse it), and the only thing that leaves the app is an export the user explicitly asks for. An entry worth keeping past the cap belongs in an export or the knowledge store, not in a special history state.
+Everything here is local. The durable source of truth is `history.json` in the
+per-bundle app data directory; `localStorage` under `dictation-history` is a
+synchronous cache. The main window hydrates that cache before React renders,
+and upgrades migrate an existing cache to disk once when no durable file
+exists. History keeps its rolling 200-entry cap (`trimHistory` drops the oldest
+beyond it, by index so same-millisecond ids cannot confuse it), and the only
+thing that leaves the app is an export the user explicitly asks for. An entry
+worth keeping past the cap belongs in an export or the knowledge store, not in
+a special history state.
 
-Settings → Model & Output → Output includes **Save Transcription History**. Turning it off makes the single `addEntry` boundary discard new microphone and imported-file transcripts before they reach React state or localStorage. Current transcription delivery and content-free usage statistics continue normally. Previously saved entries remain visible until the user explicitly clears them, so changing a preference never silently deletes data.
+Settings → Model & Output → Output includes **Save Transcription History**. Turning it off makes the single `addEntry` boundary discard new microphone and imported-file transcripts before they reach React state, localStorage, or `history.json`. Current transcription delivery and content-free usage statistics continue normally. Previously saved entries remain visible until the user explicitly clears them, so changing a preference never silently deletes data.
+
+Writes publish atomically through Rust with owner-only file permissions and
+never log transcript content. A
+history file that is oversized, invalid UTF-8, invalid JSON, or not an array is
+quarantined beside the original path instead of deleted. The frontend then
+falls back to its cache and repairs the durable copy during the same startup
+when one exists. Clear History removes both the cache and durable file.
 
 ## Search
 
@@ -71,7 +86,9 @@ Correct-and-Teach still targets **the newest entry in the whole history**, not t
 |------|------|
 | `app/src/lib/history.ts` | Entry shape, trim/filter/sort, match segmentation, export rendering |
 | `app/src/lib/historyExport.ts` | Clipboard and save-dialog wrappers around the pure renderer |
-| `app/src/lib/hooks/useHistoryManagement.ts` | State + persistence: add, update, clear |
+| `app/src/lib/hooks/useHistoryManagement.ts` | State + retention boundary: add, update, clear |
+| `app/src/lib/durableUserData.ts` | Boot hydration, localStorage migration, write-through and clear bridge |
+| `app/src-tauri/src/commands/settings_store.rs` | Bounded atomic durable blobs and corruption quarantine |
 | `app/src/components/history/HistoryPanel.tsx` | Search, chips, cards, export menu, clear actions |
 | `app/src-tauri/src/commands/export.rs` | `save_text_export` — validation and atomic write |
 
@@ -80,3 +97,9 @@ Correct-and-Teach still targets **the newest entry in the whole history**, not t
 - `app/src/lib/history.test.ts` — the 200-entry trim, duplicate ids, filters, sorting, match segmentation (including regex metacharacters and reassembly), all three export formats, and the teaching-context exclusion.
 - `app/src/components/history/HistoryPanel.test.tsx` — search/filter interaction, export scope, dialog cancellation, and the two-step clear.
 - `app/src-tauri/src/commands/export.rs` — the full validation matrix plus atomic overwrite and temp-file placement.
+- `app/src-tauri/src/commands/settings_store.rs` — history/stats/settings shape
+  bounds, atomic overwrite, quarantine, and idempotent clear.
+- `app/src/lib/durableUserData.test.ts` — disk-authoritative hydration,
+  one-time localStorage migration, isolated failure, write-through, and clear.
+- `app/src/lib/hooks/useHistoryManagement.test.tsx` — disabled retention keeps
+  existing entries while rejecting new transcript content.

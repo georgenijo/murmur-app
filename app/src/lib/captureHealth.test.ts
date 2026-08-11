@@ -1,50 +1,30 @@
 import { describe, expect, it } from 'vitest';
-import type { AppEvent } from './events';
 import {
   CAPTURE_HEALTH_WINDOW,
   deriveCaptureHealth,
+  parseCaptureHealthHistory,
   SLOW_CAPTURE_STARTUP_MS,
+  type CaptureHealthObservationV1,
 } from './captureHealth';
 
-function event(
-  seconds: number,
-  summary: string,
-  data: Record<string, unknown>,
-): AppEvent {
+function observation(
+  startupMs: number,
+  fallbackFromBackend: CaptureHealthObservationV1['fallbackFromBackend'] = null,
+): CaptureHealthObservationV1 {
   return {
-    timestamp: new Date(Date.UTC(2026, 7, 7, 12, 0, seconds)).toISOString(),
-    stream: 'audio',
-    level: 'info',
-    summary,
-    data,
+    startupMs,
+    usedFallback: fallbackFromBackend !== null,
+    fallbackFromBackend,
   };
-}
-
-function ready(seconds: number, owner: number, startupMs: number): AppEvent {
-  return event(seconds, 'audio readiness accepted', {
-    event_code: 'audio.capture_ready',
-    owner,
-    owner_kind: 'dictation',
-    startup_ms: startupMs,
-  });
-}
-
-function fallback(seconds: number, owner: number, fromBackend = 'auhal'): AppEvent {
-  return event(seconds, 'capture backend failed before retained audio; trying bounded fallback', {
-    event_code: 'audio.fallback_started',
-    owner,
-    from_backend: fromBackend,
-    to_backend: 'cpal',
-  });
 }
 
 describe('deriveCaptureHealth', () => {
   it('requires five successful dictation captures before judging health', () => {
     const health = deriveCaptureHealth([
-      ready(1, 1, 180),
-      ready(2, 2, 220),
-      ready(3, 3, 240),
-      ready(4, 4, 260),
+      observation(180),
+      observation(220),
+      observation(240),
+      observation(260),
     ]);
 
     expect(health.status).toBe('insufficientData');
@@ -54,12 +34,11 @@ describe('deriveCaptureHealth', () => {
 
   it('reports a healthy rolling median and occasional fallback honestly', () => {
     const health = deriveCaptureHealth([
-      ready(1, 1, 180),
-      ready(2, 2, 220),
-      fallback(3, 3),
-      ready(4, 3, 320),
-      ready(5, 4, 240),
-      ready(6, 5, 260),
+      observation(180),
+      observation(220),
+      observation(320, 'auhal'),
+      observation(240),
+      observation(260),
     ]);
 
     expect(health.status).toBe('healthy');
@@ -68,27 +47,38 @@ describe('deriveCaptureHealth', () => {
     expect(health.chronicFallback).toBe(false);
   });
 
-  it('flags five consecutive recovered fallbacks and names the failed backend', () => {
-    const events: AppEvent[] = [];
-    for (let owner = 1; owner <= CAPTURE_HEALTH_WINDOW; owner += 1) {
-      events.push(fallback(owner * 2, owner));
-      events.push(ready(owner * 2 + 1, owner, 700 + owner));
-    }
+  it('preserves the verified five-of-five recovered-fallback threshold', () => {
+    const health = deriveCaptureHealth(
+      Array.from({ length: CAPTURE_HEALTH_WINDOW }, (_, index) => observation(700 + index, 'auhal')),
+    );
 
-    const health = deriveCaptureHealth(events);
     expect(health.status).toBe('degraded');
     expect(health.chronicFallback).toBe(true);
     expect(health.slowStartup).toBe(false);
     expect(health.degradedBackend).toBe('auhal');
   });
 
+  it('does not call four of five fallbacks chronic', () => {
+    const health = deriveCaptureHealth([
+      observation(700, 'auhal'),
+      observation(701, 'auhal'),
+      observation(702, 'auhal'),
+      observation(703, 'auhal'),
+      observation(200),
+    ]);
+
+    expect(health.status).toBe('healthy');
+    expect(health.fallbackCount).toBe(4);
+    expect(health.chronicFallback).toBe(false);
+  });
+
   it('flags a slow rolling median without inventing a degraded backend', () => {
     const health = deriveCaptureHealth([
-      ready(1, 1, SLOW_CAPTURE_STARTUP_MS - 1),
-      ready(2, 2, SLOW_CAPTURE_STARTUP_MS),
-      ready(3, 3, 2_500),
-      ready(4, 4, 2_800),
-      ready(5, 5, 3_100),
+      observation(SLOW_CAPTURE_STARTUP_MS - 1),
+      observation(SLOW_CAPTURE_STARTUP_MS),
+      observation(2_500),
+      observation(2_800),
+      observation(3_100),
     ]);
 
     expect(health.status).toBe('degraded');
@@ -96,36 +86,32 @@ describe('deriveCaptureHealth', () => {
     expect(health.chronicFallback).toBe(false);
     expect(health.degradedBackend).toBeNull();
   });
+});
 
-  it('does not correlate a stale fallback across a fresh owner start', () => {
-    const health = deriveCaptureHealth([
-      fallback(1, 1),
-      event(2, 'audio initialization accepted', { owner: 1 }),
-      ready(3, 1, 200),
-      ready(4, 2, 210),
-      ready(5, 3, 220),
-      ready(6, 4, 230),
-      ready(7, 5, 240),
-    ]);
+describe('parseCaptureHealthHistory', () => {
+  it('accepts only the versioned content-free observation shape', () => {
+    expect(parseCaptureHealthHistory({
+      schemaVersion: 1,
+      observations: [{ startupMs: 240, usedFallback: true, fallbackFromBackend: 'cpal' }],
+    }).observations).toHaveLength(1);
 
-    expect(health.status).toBe('healthy');
-    expect(health.fallbackCount).toBe(0);
-  });
+    expect(() => parseCaptureHealthHistory({
+      schemaVersion: 1,
+      observations: [{ startupMs: 240, usedFallback: true, fallbackFromBackend: 'device label' }],
+    })).toThrow(/unsupported capture-health schema/i);
+    expect(() => parseCaptureHealthHistory({
+      schemaVersion: 1,
+      observations: [{
+        startupMs: 240,
+        usedFallback: false,
+        fallbackFromBackend: null,
+        deviceUid: 'private',
+      }],
+    })).toThrow(/unsupported capture-health schema/i);
 
-  it('accepts exact historical summaries when stable event codes are absent', () => {
-    const events: AppEvent[] = [];
-    for (let owner = 1; owner <= CAPTURE_HEALTH_WINDOW; owner += 1) {
-      events.push(event(owner * 2, 'capture backend failed before retained audio; trying bounded fallback', {
-        owner,
-        from_backend: 'auhal',
-      }));
-      events.push(event(owner * 2 + 1, 'audio readiness accepted', {
-        owner,
-        owner_kind: 'dictation',
-        startup_ms: 650,
-      }));
-    }
-
-    expect(deriveCaptureHealth(events).chronicFallback).toBe(true);
+    expect(() => parseCaptureHealthHistory({
+      schemaVersion: 1,
+      observations: [{ startupMs: 240, usedFallback: false, fallbackFromBackend: 'auhal' }],
+    })).toThrow(/unsupported capture-health schema/i);
   });
 });

@@ -600,6 +600,7 @@ fn handle_start(
 
     tracing::info!(
         target: "audio",
+        event_code = "audio.capture_started",
         owner = request.owner.telemetry_id(),
         owner_kind = request.owner.kind(),
         origin = request.origin.as_str(),

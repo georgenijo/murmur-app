@@ -18,6 +18,23 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class WorkflowPolicyMutationTests(unittest.TestCase):
+    def test_ci_rust_filter_includes_root_rustfmt_config(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        without_rust_path = workflow.replace("              - 'rustfmt.toml'\n", "", 1)
+        moved_to_github = without_rust_path.replace(
+            "            github:\n",
+            "            github:\n              - 'rustfmt.toml'\n",
+            1,
+        )
+        for name, mutated in (
+            ("removed", without_rust_path),
+            ("moved to another filter", moved_to_github),
+        ):
+            with self.subTest(mutation=name):
+                self.assertNotEqual(workflow, mutated)
+                with self.assertRaises(AssertionError):
+                    validate_ci(mutated)
+
     def test_ci_runs_reference_doc_drift_check(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         for marker in (
@@ -57,6 +74,31 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
                 self.assertNotEqual(workflow, mutated)
                 with self.assertRaises(AssertionError):
                     validate_ci(mutated)
+
+    def test_dependency_audit_skips_release_bump_pushes(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        guard = (
+            "  dependency-audit:\n"
+            "    if: \"${{ github.event_name != 'push' || "
+            "!startsWith(github.event.head_commit.message, "
+            "'chore: bump version') }}\"\n"
+        )
+        mutated = workflow.replace(guard, "  dependency-audit:\n", 1)
+        self.assertNotEqual(workflow, mutated)
+        with self.assertRaises(AssertionError):
+            validate_ci(mutated)
+
+    def test_ci_step_policy_is_independent_of_job_order(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        dependency_start = workflow.index("  dependency-audit:\n")
+        dependency_end = workflow.index("  ci-pass:\n")
+        dependency_block = workflow[dependency_start:dependency_end]
+        reordered = workflow[:dependency_start] + workflow[dependency_end:]
+        reordered = reordered.replace(
+            "  rust-macos:\n", dependency_block + "  rust-macos:\n", 1
+        )
+
+        validate_ci(reordered)
 
     def test_ci_runs_capture_worker_unit_tests(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
@@ -171,6 +213,20 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
         self.assertEqual(tag_action(source, source), "reuse")
         with self.assertRaises(AssertionError):
             tag_action("b" * 40, source)
+
+    def test_publish_check_requires_shared_release_note_normalization(self) -> None:
+        workflow = (ROOT / ".github/workflows/release.yml").read_text()
+        for marker in (
+            "scripts/release_artifacts.py verify-notes",
+            "--json body --jq .body > draft-release-notes.md",
+            "--manifest remote-manifests/latest-v2.json",
+            "--release-notes draft-release-notes.md",
+        ):
+            with self.subTest(marker=marker):
+                mutated = workflow.replace(marker, "echo skipped", 1)
+                self.assertNotEqual(workflow, mutated)
+                with self.assertRaises(AssertionError):
+                    validate_promotion_policy(mutated)
 
     def test_tag_workflow_rejects_cuda_cache_save_action(self) -> None:
         workflow = (ROOT / ".github/workflows/release.yml").read_text()

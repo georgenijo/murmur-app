@@ -133,8 +133,9 @@ requests into **New Features** (`enhancement`), **Bug Fixes** (`bug`), and
 **Other Changes** categories.
 
 Immediately before publication, promotion compares the draft release body with
-the remotely downloaded updater manifest and fails if they differ. Published
-updater assets are immutable: do not edit a published release body
+the remotely downloaded updater manifest after symmetrically normalizing line
+endings and outer whitespace, and fails if any remaining content differs.
+Published updater assets are immutable: do not edit a published release body
 independently. A correction that must reach both the public release and the
 in-app dialogs requires a patch release.
 
