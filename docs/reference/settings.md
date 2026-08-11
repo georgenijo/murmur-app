@@ -274,15 +274,22 @@ When settings change, `useSettings.updateSettings` pushes the following fields t
 
 ---
 
-## Related localStorage Keys
+## Related Durable User Data
 
-Other data persisted to localStorage by the application (not part of the `Settings` object):
+History and usage statistics are not part of the `Settings` object, but use the
+same durable-source/localStorage-cache contract. On main-window boot,
+`hydrateUserDataFromDisk()` loads `history.json` and `stats.json` before React
+renders. Disk wins over stale caches; when a durable file is absent, the
+corresponding existing localStorage blob migrates to disk once. Failures are
+isolated per file and never block boot.
+
+Other localStorage caches and browser-scoped state:
 
 | Key | Purpose | Used By |
 |-----|---------|---------|
-| `dictation-history` | Transcription history entries (rolling max 200) | `useHistoryManagement` |
+| `dictation-history` | Synchronous cache for durable `history.json` entries (rolling max 200) | `useHistoryManagement` |
 | `murmur-appearance` | Versioned appearance mode/theme configuration plus a strictly validated derived light/dark token cache. Independent from `Settings`; imports discard and regenerate revision/cache data. | Main appearance controller (writer/native theme) |
-| `dictation-stats` | Cumulative transcription statistics | `lib/stats.ts` |
+| `dictation-stats` | Synchronous cache for durable `stats.json` usage aggregates | `lib/stats.ts` |
 | `skipped-update-version` | Version string the user chose to skip | `useAutoUpdater` |
 | `updater-last-check` | Timestamp of last update check | `useAutoUpdater` |
 | `resource-monitor-collapsed` | Whether the resource monitor panel is collapsed | ResourceMonitor component |

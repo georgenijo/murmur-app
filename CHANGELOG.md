@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+
+- Transcript history and usage statistics now survive WebKit storage eviction
+  and manual reinstalls through Rust-owned, local-only durable files. Existing
+  localStorage data migrates automatically, the 200-entry history cap remains,
+  and disabling history retention still discards new transcript content (#521).
+
 ## [0.30.1] - 2026-08-09
 
 ### Fixed

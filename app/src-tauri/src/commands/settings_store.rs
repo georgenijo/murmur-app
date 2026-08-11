@@ -1,11 +1,10 @@
-//! Durable, host-owned home for the frontend's settings blob.
+//! Durable, host-owned home for frontend persistence blobs.
 //!
-//! The frontend owns the entire settings schema and every migration rule, so
-//! this module treats the payload as an opaque JSON object: it checks the
-//! container (bounded, parses as an object) and never inspects a field. That
-//! keeps a settings change from ever needing a Rust change, while moving the
-//! durable copy out of WKWebView localStorage — which a reinstall or a WebKit
-//! storage eviction can drop — into the per-bundle app data directory.
+//! The frontend owns the settings, history, and statistics schemas and their
+//! migration rules. This module validates only each bounded JSON container,
+//! then publishes it atomically in the per-bundle app data directory. The
+//! durable files survive WKWebView storage eviction and a manual reinstall;
+//! localStorage remains a synchronous frontend cache.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -14,149 +13,229 @@ use tauri::Manager;
 
 use crate::MutexExt;
 
-const SETTINGS_FILE_NAME: &str = "settings.json";
-
-/// Hard ceiling on one settings blob. The real object is a few KiB; the bound
-/// exists so a tampered or runaway writer cannot park an unbounded file in the
-/// app data directory, and so a load never reads an arbitrarily large file.
-const MAX_SETTINGS_BYTES: usize = 1024 * 1024;
-
-/// Serializes writers. The main and overlay windows can both persist settings,
-/// and two concurrent publishes share one temp sibling — without this, one
-/// writer's rename can consume the other's half-written temp file.
-static WRITE_LOCK: Mutex<()> = Mutex::new(());
-
-fn settings_path(dir: &Path) -> PathBuf {
-    dir.join(SETTINGS_FILE_NAME)
+#[derive(Clone, Copy)]
+enum JsonShape {
+    Object,
+    Array,
 }
 
-/// Temp sibling used for the atomic publish. Kept in the settings directory so
-/// the rename stays on one filesystem.
+#[derive(Clone, Copy)]
+struct BlobSpec {
+    label: &'static str,
+    file_name: &'static str,
+    max_bytes: usize,
+    shape: JsonShape,
+}
+
+const SETTINGS: BlobSpec = BlobSpec {
+    label: "Settings",
+    file_name: "settings.json",
+    max_bytes: 1024 * 1024,
+    shape: JsonShape::Object,
+};
+
+// History is capped at 200 entries in the frontend, but imported-file
+// transcripts can be substantially larger than the settings object.
+const HISTORY: BlobSpec = BlobSpec {
+    label: "History",
+    file_name: "history.json",
+    max_bytes: 8 * 1024 * 1024,
+    shape: JsonShape::Array,
+};
+
+const STATS: BlobSpec = BlobSpec {
+    label: "Statistics",
+    file_name: "stats.json",
+    max_bytes: 1024 * 1024,
+    shape: JsonShape::Object,
+};
+
+/// Serializes writers across every window and blob. Each file has its own temp
+/// sibling, while one lock keeps publish/delete ordering deterministic.
+static WRITE_LOCK: Mutex<()> = Mutex::new(());
+
+fn blob_path(dir: &Path, spec: BlobSpec) -> PathBuf {
+    dir.join(spec.file_name)
+}
+
+/// Temp sibling used for atomic publish. It stays in the destination directory
+/// so the rename cannot cross filesystems.
 fn temp_path_for(path: &Path) -> PathBuf {
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
-        .unwrap_or(SETTINGS_FILE_NAME);
+        .unwrap_or("data.json");
     path.with_file_name(format!(".{name}.murmur-tmp"))
 }
 
-/// The only shape check the host makes: a bounded JSON object. Refused on save
-/// and treated as corruption on load.
-fn validate_blob(blob: &str) -> Result<(), String> {
-    if blob.len() > MAX_SETTINGS_BYTES {
+fn validate_blob(spec: BlobSpec, blob: &str) -> Result<(), String> {
+    if blob.len() > spec.max_bytes {
         return Err(format!(
-            "Settings blob is too large ({} bytes, limit {MAX_SETTINGS_BYTES})",
-            blob.len()
+            "{} blob is too large ({} bytes, limit {})",
+            spec.label,
+            blob.len(),
+            spec.max_bytes
         ));
     }
-    match serde_json::from_str::<serde_json::Value>(blob) {
-        Ok(serde_json::Value::Object(_)) => Ok(()),
-        Ok(_) => Err("Settings blob must be a JSON object".to_string()),
-        Err(e) => Err(format!("Settings blob is not valid JSON: {e}")),
+    let value = serde_json::from_str::<serde_json::Value>(blob)
+        .map_err(|e| format!("{} blob is not valid JSON: {e}", spec.label))?;
+    let valid_shape = matches!(
+        (spec.shape, value),
+        (JsonShape::Object, serde_json::Value::Object(_))
+            | (JsonShape::Array, serde_json::Value::Array(_))
+    );
+    if valid_shape {
+        Ok(())
+    } else {
+        let expected = match spec.shape {
+            JsonShape::Object => "object",
+            JsonShape::Array => "array",
+        };
+        Err(format!("{} blob must be a JSON {expected}", spec.label))
     }
 }
 
-/// Rename a file we cannot trust aside instead of deleting it — settings a user
-/// spent time on are unrecoverable, so corruption becomes evidence, never loss.
-/// Best-effort: if the rename fails the load still falls back to localStorage.
-fn quarantine(path: &Path, reason: &str) {
+/// Preserve rejected content as local evidence rather than deleting it. Log
+/// only the file kind and rejection reason, never any user content.
+fn quarantine(path: &Path, spec: BlobSpec, reason: &str) {
     let seconds = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs())
         .unwrap_or(0);
-    let name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or(SETTINGS_FILE_NAME);
-    let target = path.with_file_name(format!("{name}.corrupt-{seconds}"));
+    let target = path.with_file_name(format!("{}.corrupt-{seconds}", spec.file_name));
     match std::fs::rename(path, &target) {
-        // Content-free: why it was rejected, never what it contained.
-        Ok(()) => tracing::warn!(target: "system", reason, "settings file quarantined"),
-        Err(e) => {
-            tracing::warn!(target: "system", reason, "failed to quarantine settings file: {e}")
-        }
+        Ok(()) => tracing::warn!(
+            target: "system",
+            store = spec.label,
+            reason,
+            "durable data file quarantined"
+        ),
+        Err(e) => tracing::warn!(
+            target: "system",
+            store = spec.label,
+            reason,
+            "failed to quarantine durable data file: {e}"
+        ),
     }
 }
 
-/// Read the stored blob from `dir`. `Ok(None)` means "no usable settings on
-/// disk" — either the file has never been written or it was just quarantined —
-/// so the caller falls back to its localStorage cache. `Err` is reserved for
-/// filesystem failures, where retrying later may succeed.
-pub(crate) fn read_settings_blob(dir: &Path) -> Result<Option<String>, String> {
-    let path = settings_path(dir);
+/// `Ok(None)` means no usable durable copy exists, so the frontend may migrate
+/// its localStorage cache. `Err` is reserved for filesystem failures.
+fn read_blob(dir: &Path, spec: BlobSpec) -> Result<Option<String>, String> {
+    let path = blob_path(dir, spec);
     let metadata = match std::fs::metadata(&path) {
         Ok(metadata) => metadata,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(format!("Failed to read settings: {e}")),
+        Err(e) => return Err(format!("Failed to read {}: {e}", spec.label)),
     };
-    // Bound before reading, so an oversized file is never pulled into memory.
-    if metadata.len() > MAX_SETTINGS_BYTES as u64 {
-        quarantine(&path, "over the size ceiling");
+    if metadata.len() > spec.max_bytes as u64 {
+        quarantine(&path, spec, "over the size ceiling");
         return Ok(None);
     }
 
     let bytes = match std::fs::read(&path) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(format!("Failed to read settings: {e}")),
+        Err(e) => return Err(format!("Failed to read {}: {e}", spec.label)),
     };
     let contents = match String::from_utf8(bytes) {
         Ok(contents) => contents,
         Err(_) => {
-            quarantine(&path, "not valid UTF-8");
+            quarantine(&path, spec, "not valid UTF-8");
             return Ok(None);
         }
     };
-    if let Err(reason) = validate_blob(&contents) {
-        quarantine(&path, &reason);
+    if let Err(reason) = validate_blob(spec, &contents) {
+        quarantine(&path, spec, &reason);
         return Ok(None);
     }
     Ok(Some(contents))
 }
 
-/// Validate, then publish `blob` into `dir` atomically.
-pub(crate) fn write_settings_blob(dir: &Path, blob: &str) -> Result<(), String> {
-    validate_blob(blob)?;
+fn write_blob(dir: &Path, spec: BlobSpec, blob: &str) -> Result<(), String> {
+    validate_blob(spec, blob)?;
     std::fs::create_dir_all(dir)
-        .map_err(|e| format!("Failed to create settings directory: {e}"))?;
+        .map_err(|e| format!("Failed to create durable data directory: {e}"))?;
 
-    let path = settings_path(dir);
+    let path = blob_path(dir, spec);
     let temp = temp_path_for(&path);
     let _guard = WRITE_LOCK.lock_or_recover();
     if let Err(e) = std::fs::write(&temp, blob) {
-        // A partial write (ENOSPC, permissions) must not leave a temp sibling
-        // behind, and must never replace the last good settings file.
         let _ = std::fs::remove_file(&temp);
-        return Err(format!("Failed to write settings: {e}"));
+        return Err(format!("Failed to write {}: {e}", spec.label));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(e) = std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600)) {
+            let _ = std::fs::remove_file(&temp);
+            return Err(format!("Failed to protect {}: {e}", spec.label));
+        }
     }
     if let Err(e) = std::fs::rename(&temp, &path) {
         let _ = std::fs::remove_file(&temp);
-        return Err(format!("Failed to publish settings: {e}"));
+        return Err(format!("Failed to publish {}: {e}", spec.label));
     }
     Ok(())
 }
 
-fn settings_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+fn delete_blob(dir: &Path, spec: BlobSpec) -> Result<(), String> {
+    let _guard = WRITE_LOCK.lock_or_recover();
+    match std::fs::remove_file(blob_path(dir, spec)) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("Failed to clear {}: {e}", spec.label)),
+    }
+}
+
+fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()
         .app_data_dir()
-        .map_err(|e| format!("Settings directory unavailable: {e}"))?;
+        .map_err(|e| format!("Durable data directory unavailable: {e}"))?;
     std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("Failed to create settings directory: {e}"))?;
+        .map_err(|e| format!("Failed to create durable data directory: {e}"))?;
     Ok(dir)
 }
 
-/// Load the durable settings blob, or `None` when there is nothing usable on
-/// disk. The frontend re-runs its own validation over whatever comes back.
 #[tauri::command]
 pub fn load_settings_blob(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    read_settings_blob(&settings_dir(&app)?)
+    read_blob(&data_dir(&app)?, SETTINGS)
 }
 
-/// Persist the frontend's serialized settings object.
 #[tauri::command]
 pub fn save_settings_blob(app: tauri::AppHandle, blob: String) -> Result<(), String> {
-    write_settings_blob(&settings_dir(&app)?, &blob)
+    write_blob(&data_dir(&app)?, SETTINGS, &blob)
+}
+
+#[tauri::command]
+pub fn load_history_blob(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    read_blob(&data_dir(&app)?, HISTORY)
+}
+
+#[tauri::command]
+pub fn save_history_blob(app: tauri::AppHandle, blob: String) -> Result<(), String> {
+    write_blob(&data_dir(&app)?, HISTORY, &blob)
+}
+
+#[tauri::command]
+pub fn clear_history_blob(app: tauri::AppHandle) -> Result<(), String> {
+    delete_blob(&data_dir(&app)?, HISTORY)
+}
+
+#[tauri::command]
+pub fn load_stats_blob(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    read_blob(&data_dir(&app)?, STATS)
+}
+
+#[tauri::command]
+pub fn save_stats_blob(app: tauri::AppHandle, blob: String) -> Result<(), String> {
+    write_blob(&data_dir(&app)?, STATS, &blob)
+}
+
+#[tauri::command]
+pub fn clear_stats_blob(app: tauri::AppHandle) -> Result<(), String> {
+    delete_blob(&data_dir(&app)?, STATS)
 }
 
 #[cfg(test)]
@@ -165,7 +244,7 @@ mod tests {
 
     fn temp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "murmur_settings_store_test_{}_{}",
+            "murmur_durable_store_test_{}_{}",
             std::process::id(),
             tag
         ));
@@ -185,124 +264,161 @@ mod tests {
     }
 
     #[test]
-    fn round_trips_a_settings_blob() {
+    fn round_trips_each_blob_with_its_required_shape() {
         let dir = temp_dir("round_trip");
-        let blob = r#"{"model":"tiny.en","settingsVersion":1}"#;
-        write_settings_blob(&dir, blob).unwrap();
-        assert_eq!(read_settings_blob(&dir).unwrap().as_deref(), Some(blob));
+        for (spec, blob) in [
+            (SETTINGS, r#"{"model":"tiny.en","settingsVersion":1}"#),
+            (HISTORY, r#"[{"id":"one","text":"private transcript"}]"#),
+            (STATS, r#"{"totalWords":42,"totalRecordings":2}"#),
+        ] {
+            write_blob(&dir, spec, blob).unwrap();
+            assert_eq!(read_blob(&dir, spec).unwrap().as_deref(), Some(blob));
+        }
+        assert_eq!(
+            entries(&dir),
+            vec!["history.json", "settings.json", "stats.json"]
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn reports_no_settings_when_the_file_is_missing() {
+    fn reports_none_for_missing_files() {
         let dir = temp_dir("missing");
-        assert_eq!(read_settings_blob(&dir).unwrap(), None);
+        assert_eq!(read_blob(&dir, SETTINGS).unwrap(), None);
+        assert_eq!(read_blob(&dir, HISTORY).unwrap(), None);
+        assert_eq!(read_blob(&dir, STATS).unwrap(), None);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn creates_the_settings_directory_on_first_write() {
+    fn creates_the_data_directory_on_first_write() {
         let dir = temp_dir("create_dir").join("nested");
-        write_settings_blob(&dir, "{}").unwrap();
-        assert_eq!(read_settings_blob(&dir).unwrap().as_deref(), Some("{}"));
+        write_blob(&dir, HISTORY, "[]").unwrap();
+        assert_eq!(read_blob(&dir, HISTORY).unwrap().as_deref(), Some("[]"));
         std::fs::remove_dir_all(dir.parent().unwrap()).unwrap();
     }
 
     #[test]
     fn overwrites_atomically_and_leaves_no_temp_file() {
         let dir = temp_dir("overwrite");
-        write_settings_blob(&dir, r#"{"autoPaste":false,"stale":"padding"}"#).unwrap();
-        write_settings_blob(&dir, r#"{"autoPaste":true}"#).unwrap();
+        write_blob(&dir, STATS, r#"{"totalWords":1,"padding":"old"}"#).unwrap();
+        write_blob(&dir, STATS, r#"{"totalWords":2}"#).unwrap();
         assert_eq!(
-            read_settings_blob(&dir).unwrap().as_deref(),
-            Some(r#"{"autoPaste":true}"#)
+            read_blob(&dir, STATS).unwrap().as_deref(),
+            Some(r#"{"totalWords":2}"#)
         );
-        assert_eq!(entries(&dir), vec![SETTINGS_FILE_NAME.to_string()]);
+        assert_eq!(entries(&dir), vec![STATS.file_name.to_string()]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn durable_files_are_owner_read_write_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = temp_dir("permissions");
+        write_blob(&dir, HISTORY, r#"[{"id":"private"}]"#).unwrap();
+        let mode = std::fs::metadata(blob_path(&dir, HISTORY))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn quarantines_a_file_that_is_not_json() {
+    fn quarantines_invalid_json_without_logging_content() {
         let dir = temp_dir("not_json");
-        std::fs::write(settings_path(&dir), "not json{{{").unwrap();
-        assert_eq!(read_settings_blob(&dir).unwrap(), None);
+        std::fs::write(blob_path(&dir, HISTORY), "private transcript{{{").unwrap();
+        assert_eq!(read_blob(&dir, HISTORY).unwrap(), None);
         let names = entries(&dir);
         assert_eq!(names.len(), 1, "unexpected entries: {names:?}");
-        assert!(names[0].starts_with("settings.json.corrupt-"), "{names:?}");
+        assert!(names[0].starts_with("history.json.corrupt-"), "{names:?}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn quarantines_json_that_is_not_an_object() {
-        let dir = temp_dir("not_object");
-        std::fs::write(settings_path(&dir), "[1, 2, 3]").unwrap();
-        assert_eq!(read_settings_blob(&dir).unwrap(), None);
+    fn quarantines_invalid_utf8() {
+        let dir = temp_dir("invalid_utf8");
+        std::fs::write(blob_path(&dir, STATS), [0xff, 0xfe]).unwrap();
+        assert_eq!(read_blob(&dir, STATS).unwrap(), None);
         let names = entries(&dir);
         assert_eq!(names.len(), 1, "unexpected entries: {names:?}");
-        assert!(names[0].starts_with("settings.json.corrupt-"), "{names:?}");
+        assert!(names[0].starts_with("stats.json.corrupt-"), "{names:?}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn enforces_each_container_shape() {
+        let dir = temp_dir("shape");
+        assert!(write_blob(&dir, SETTINGS, "[]").is_err());
+        assert!(write_blob(&dir, HISTORY, "{}").is_err());
+        assert!(write_blob(&dir, STATS, "[]").is_err());
+        assert!(entries(&dir).is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn quarantines_an_oversized_file() {
         let dir = temp_dir("oversized");
-        let padding = "a".repeat(MAX_SETTINGS_BYTES);
-        std::fs::write(settings_path(&dir), format!(r#"{{"pad":"{padding}"}}"#)).unwrap();
-        assert_eq!(read_settings_blob(&dir).unwrap(), None);
+        let padding = "a".repeat(STATS.max_bytes);
+        std::fs::write(blob_path(&dir, STATS), format!(r#"{{"pad":"{padding}"}}"#)).unwrap();
+        assert_eq!(read_blob(&dir, STATS).unwrap(), None);
         let names = entries(&dir);
         assert_eq!(names.len(), 1, "unexpected entries: {names:?}");
-        assert!(names[0].starts_with("settings.json.corrupt-"), "{names:?}");
+        assert!(names[0].starts_with("stats.json.corrupt-"), "{names:?}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn rejects_a_save_that_is_not_a_json_object() {
-        let dir = temp_dir("reject_shape");
-        for blob in ["[1,2,3]", "\"text\"", "17", "not json{{{"] {
-            assert!(write_settings_blob(&dir, blob).is_err(), "{blob}");
-        }
-        assert!(entries(&dir).is_empty(), "nothing should be written");
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn rejects_a_save_over_the_size_ceiling() {
-        let dir = temp_dir("reject_size");
-        let padding = "a".repeat(MAX_SETTINGS_BYTES);
-        let error = write_settings_blob(&dir, &format!(r#"{{"pad":"{padding}"}}"#)).unwrap_err();
+    fn rejects_an_oversized_save_without_touching_disk() {
+        let dir = temp_dir("reject_oversized");
+        let padding = "a".repeat(SETTINGS.max_bytes);
+        let error = write_blob(&dir, SETTINGS, &format!(r#"{{"pad":"{padding}"}}"#)).unwrap_err();
         assert!(error.contains("too large"), "{error}");
-        assert!(entries(&dir).is_empty(), "nothing should be written");
+        assert!(entries(&dir).is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn a_rejected_save_leaves_the_previous_settings_intact() {
+    fn rejected_save_leaves_the_previous_blob_intact() {
         let dir = temp_dir("reject_keeps_previous");
-        write_settings_blob(&dir, r#"{"autoPaste":true}"#).unwrap();
-        assert!(write_settings_blob(&dir, "[]").is_err());
+        write_blob(&dir, HISTORY, r#"[{"id":"kept"}]"#).unwrap();
+        assert!(write_blob(&dir, HISTORY, "{}").is_err());
         assert_eq!(
-            read_settings_blob(&dir).unwrap().as_deref(),
-            Some(r#"{"autoPaste":true}"#)
+            read_blob(&dir, HISTORY).unwrap().as_deref(),
+            Some(r#"[{"id":"kept"}]"#)
         );
-        assert_eq!(entries(&dir), vec![SETTINGS_FILE_NAME.to_string()]);
+        assert_eq!(entries(&dir), vec![HISTORY.file_name.to_string()]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn a_failed_write_leaves_no_temp_file_behind() {
-        // The temp sibling path is occupied by a directory, so `fs::write`
-        // itself fails rather than the rename.
+    fn clear_is_idempotent_and_affects_only_the_selected_blob() {
+        let dir = temp_dir("clear");
+        write_blob(&dir, HISTORY, "[]").unwrap();
+        write_blob(&dir, STATS, "{}").unwrap();
+        delete_blob(&dir, HISTORY).unwrap();
+        delete_blob(&dir, HISTORY).unwrap();
+        assert_eq!(read_blob(&dir, HISTORY).unwrap(), None);
+        assert_eq!(read_blob(&dir, STATS).unwrap().as_deref(), Some("{}"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn failed_write_leaves_no_temp_file_behind() {
         let dir = temp_dir("write_failure");
-        std::fs::create_dir_all(temp_path_for(&settings_path(&dir))).unwrap();
-        assert!(write_settings_blob(&dir, "{}").is_err());
-        assert!(!settings_path(&dir).exists());
+        std::fs::create_dir_all(temp_path_for(&blob_path(&dir, SETTINGS))).unwrap();
+        assert!(write_blob(&dir, SETTINGS, "{}").is_err());
+        assert!(!blob_path(&dir, SETTINGS).exists());
         assert_eq!(entries(&dir).len(), 1, "unexpected leftovers");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn temp_path_stays_in_the_settings_directory() {
-        let path = settings_path(Path::new("/tmp/murmur"));
+    fn temp_path_stays_in_the_data_directory() {
+        let path = blob_path(Path::new("/tmp/murmur"), HISTORY);
         let temp = temp_path_for(&path);
         assert_eq!(temp.parent(), path.parent());
         assert_ne!(temp.file_name(), path.file_name());
