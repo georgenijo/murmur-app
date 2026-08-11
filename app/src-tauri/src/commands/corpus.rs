@@ -6,6 +6,9 @@
 //! fixed local Application Support directory and are never logged.
 
 use crate::audio_lifecycle::{self, AudioCancelReason, AudioLifecycleEvent};
+use crate::microphone_preview::{
+    CLIPPING_SAMPLE_THRESHOLD, QUIET_PEAK_THRESHOLD, QUIET_RMS_THRESHOLD,
+};
 use crate::state::DictationStatus;
 use crate::{MutexExt, State};
 use chrono::Utc;
@@ -331,7 +334,11 @@ fn audio_quality(samples: &[f32]) -> (f32, f32, f32, Vec<String>) {
     let clipping_percent = if samples.is_empty() {
         0.0
     } else {
-        samples.iter().filter(|sample| sample.abs() >= 0.99).count() as f32 / samples.len() as f32
+        samples
+            .iter()
+            .filter(|sample| sample.abs() >= CLIPPING_SAMPLE_THRESHOLD)
+            .count() as f32
+            / samples.len() as f32
             * 100.0
     };
     let duration_ms = samples.len() as u64 / 16;
@@ -339,7 +346,7 @@ fn audio_quality(samples: &[f32]) -> (f32, f32, f32, Vec<String>) {
     if duration_ms < 1_000 {
         warnings.push("Recording is shorter than one second".to_string());
     }
-    if rms < 0.01 || peak < 0.05 {
+    if rms < QUIET_RMS_THRESHOLD || peak < QUIET_PEAK_THRESHOLD {
         warnings.push("Input is very quiet; move closer or raise microphone gain".to_string());
     }
     if clipping_percent > 0.1 {
@@ -527,6 +534,9 @@ pub async fn start_corpus_recording(
         }
         if state.benchmark.is_running() {
             return Err("Finish the current benchmark first".to_string());
+        }
+        if state.app_state.microphone_preview.is_active() {
+            return Err("Stop the microphone test first".to_string());
         }
         if state.query.status().blocks_pipeline() {
             return Err("Finish the current voice query first".to_string());

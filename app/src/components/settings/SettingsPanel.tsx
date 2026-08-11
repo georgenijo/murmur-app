@@ -2,7 +2,6 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
 import {
-  audioDeviceSelectOptions,
   selectedDeviceExists,
   type AudioDeviceDescriptor,
 } from '../../lib/audioDevices';
@@ -50,6 +49,7 @@ import { INTERNAL_BENCHMARK_BUILD } from '../../lib/buildFlavor';
 import { AppOverridesEditor } from './AppOverridesEditor';
 import { AppearanceSettings } from './AppearanceSettings';
 import { PerformanceLab } from './PerformanceLab';
+import { MicrophoneInputTest } from './MicrophoneInputTest';
 import { SettingsSection } from './SettingsSection';
 import { SettingsEditorsWindow, type SettingsEditorTab } from './SettingsEditorsWindow';
 import {
@@ -194,7 +194,7 @@ export function settingsLatencyView(page: string | undefined): string {
 }
 
 const SETTINGS_SEARCH_ITEMS = [
-  { tab: 'dictation', title: 'Input Device', detail: 'Choose the microphone used while recording.', keywords: 'microphone audio device' },
+  { tab: 'dictation', title: 'Input Device', detail: 'Choose a microphone and check its live input level.', keywords: 'microphone audio device test level gain' },
   { tab: 'dictation', title: 'Recording Trigger', detail: 'Hold, double-tap, or use both.', keywords: 'hotkey shortcut key' },
   { tab: 'dictation', title: 'Stop on Silence', detail: 'Finish hands-free recordings after quiet.', keywords: 'automatic stop vad' },
   { tab: 'dictation', title: 'Auto-Paste', detail: 'Paste clipboard results into the active app.', keywords: 'delivery clipboard' },
@@ -739,11 +739,13 @@ export const SettingsPanel = memo(function SettingsPanel({
           ) : (
           <div className="settings-page">
           <SettingsSection pageId="dictation" activePage={activeCat} title="Microphone & Trigger" subtitle="Recording input, shortcuts, silence, and delivery">
-            <div>
-              <label className="mb-2 block text-sm font-medium text-on-surface">Microphone</label>
-              <Select value={settings.microphone} onChange={(microphone) => onUpdateSettings({ microphone })} disabled={isRecording} items={[{ value: 'system_default', label: 'System Default' }, ...audioDeviceSelectOptions(audioDevices)]} />
-              {missingDevice && <p className="mt-2 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-on-surface">Selected device not found — choose an available microphone or System Default.</p>}
-            </div>
+            <MicrophoneInputTest
+              microphone={settings.microphone}
+              devices={audioDevices}
+              dictationBusy={isRecording}
+              missingDevice={missingDevice}
+              onChange={(microphone) => onUpdateSettings({ microphone })}
+            />
             <div>
               <p className="mb-2 text-sm font-medium text-on-surface">Voice Detection</p>
               <VadSensitivitySlider value={settings.vadSensitivity} onCommit={(vadSensitivity) => onUpdateSettings({ vadSensitivity })} />

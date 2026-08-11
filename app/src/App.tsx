@@ -45,6 +45,7 @@ import { checkAccessibilityPermission, checkMicrophonePermissionStatus, checkMod
 import { getModelRuntimeCatalog } from './lib/modelRuntime';
 import { open } from '@tauri-apps/plugin-dialog';
 import { INTERNAL_BENCHMARK_BUILD } from './lib/buildFlavor';
+import { cancelMicrophonePreview } from './lib/microphonePreview';
 import {
   beginCurrentUiTransition,
   useUiLatencyDestination,
@@ -321,6 +322,16 @@ function App() {
   const settingsViewRef = useRef('settings.dictation');
   const settingsActiveRef = useRef(isSettingsOpen);
   settingsActiveRef.current = isSettingsOpen;
+  useEffect(() => {
+    if (isSettingsOpen) return;
+    // Settings is warm-mounted behind the main surface. Explicitly cancel its
+    // capture-only preview whenever that surface is hidden.
+    void cancelMicrophonePreview().catch((error: unknown) => {
+      flog.warn('audio', 'could not cancel hidden microphone preview', {
+        error: String(error),
+      });
+    });
+  }, [isSettingsOpen]);
   const trackSettingsView = useCallback((view: string) => {
     settingsViewRef.current = view;
   }, []);

@@ -1724,6 +1724,9 @@ pub(crate) async fn start_transform_capture(
         } else if dictation.status != DictationStatus::Idle {
             tracing::info!(target: "transform", transform_pass_id, error_code = "dictation_active", "start_transform_capture ignored");
             Err("dictation_active")
+        } else if state.app_state.microphone_preview.is_active() {
+            tracing::info!(target: "transform", transform_pass_id, error_code = "microphone_preview", "start_transform_capture ignored");
+            Err("microphone_preview")
         } else if state.benchmark.is_running() {
             tracing::info!(target: "transform", transform_pass_id, error_code = "benchmark_running", "start_transform_capture ignored");
             Err("benchmark_running")
@@ -2451,6 +2454,10 @@ pub(crate) async fn retry_transform_instruction(
     device_name: Option<String>,
 ) -> Result<(), String> {
     let _transition = state.app_state.recording_transition.lock().await;
+
+    if state.app_state.microphone_preview.is_active() {
+        return Err("Stop the microphone test before retrying the transform".to_string());
+    }
 
     let fx = TauriFlowEffects {
         app: &app_handle,

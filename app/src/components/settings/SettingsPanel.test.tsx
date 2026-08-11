@@ -19,6 +19,16 @@ const coreMocks = vi.hoisted(() => ({
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(async (command: string) => {
     if (command === 'list_audio_devices') return [];
+    if (command === 'get_microphone_preview_status') {
+      return {
+        previewId: null,
+        state: 'idle',
+        stillConnecting: false,
+        errorKind: null,
+        message: null,
+      };
+    }
+    if (command === 'cancel_microphone_preview') return false;
     if (command === 'is_notchpill_installed') {
       if (coreMocks.notchPillDetectionError) throw new Error('detector unavailable');
       return coreMocks.notchPillInstalled;

@@ -58,6 +58,9 @@ pub async fn run_benchmark(
             "Wait for the transform to finish before benchmarking",
         )?;
     }
+    // Serialize the benchmark claim with every live microphone owner. This
+    // closes the check/claim race in both directions with preview startup.
+    let transition = state.app_state.recording_transition.lock().await;
     {
         let dictation = state.app_state.dictation.lock_or_recover();
         // An ACTIVE transform (Capturing/Listening/Thinking/Applying) holds
@@ -68,6 +71,9 @@ pub async fn run_benchmark(
         }
         if state.query.status().blocks_pipeline() {
             return Err("Wait for the voice query to finish before benchmarking".to_string());
+        }
+        if state.app_state.microphone_preview.is_active() {
+            return Err("Stop the microphone test before benchmarking".to_string());
         }
         if dictation.status != DictationStatus::Idle {
             return Err("Stop recording before running a benchmark".to_string());
@@ -87,6 +93,7 @@ pub async fn run_benchmark(
             });
         }
     }
+    drop(transition);
     // Only one heavy inference runtime may be resident: stop any local-LLM
     // helper before benchmarking (fail-fast no-op while a transform is in
     // flight). The benchmark slot is already claimed above.

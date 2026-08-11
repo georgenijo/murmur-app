@@ -7,7 +7,10 @@ Microphone enumeration and streaming execute only in the signed
 frame to a capture ID and nonce and rejects stale, malformed, oversized,
 out-of-sequence, or sample-rate-changing input. The worker callback writes mono
 samples into a preallocated SPSC ring; the parent retains PCM before declaring
-readiness and calculates waveform levels locally.
+readiness and calculates waveform levels locally. The Settings microphone
+preview is the deliberate exception to PCM retention: it reaches readiness on
+valid first PCM, aggregates only content-free RMS/peak values, and immediately
+discards the samples.
 
 Direct AUHAL is the primary backend and CPAL is the independent fallback. A
 single fallback is allowed only before any audio is retained and must target the
@@ -56,6 +59,11 @@ Transcription processing is local. Network access occurs for model setup and may
   that generation's publication gate and requests stop, but ownership remains
   in `Recovering` until the worker exits and is joined. Rapid retries therefore
   cannot create overlapping in-process CoreAudio owners.
+- The Settings test uses a first-class `Preview(preview_id)` owner. It is
+  mutually exclusive with dictation, transform/query/corpus capture, and
+  benchmarks, clears only after joined-worker `Idle`, and emits only targeted
+  `microphone-preview-*` events. It never emits the global dictation
+  `audio-level` stream. See [Microphone Input Test](microphone-input-test.md).
 - Dictation start returns after ownership is accepted, without waiting for
   Core Audio. The helper reports device enumeration, stream construction,
   first-buffer wait, active capture, stop, runtime failure, and exit events back

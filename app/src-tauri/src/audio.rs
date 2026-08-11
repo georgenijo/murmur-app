@@ -1,4 +1,7 @@
 use crate::managed_child::{bundled_sibling, ManagedChild};
+use crate::microphone_preview::{
+    classify_level, MicrophonePreviewLevel, PreviewLevelAccumulator, PreviewLevelTracker,
+};
 use crate::MutexExt;
 use murmur_capture_helper_protocol::{
     read_production_frame, write_production_control, CaptureBackend, CapturePhase,
@@ -960,6 +963,8 @@ fn run_backend(
     let mut retained_audio = false;
     let mut first_callback_wait_started = None;
     let mut last_level_emit = Instant::now() - Duration::from_secs(1);
+    let mut preview_levels = PreviewLevelAccumulator::default();
+    let mut preview_classification = PreviewLevelTracker::default();
     let mut last_permission_check = Instant::now() - PERMISSION_POLL_INTERVAL;
     let mut current_phase = AudioInitPhase::StreamBuild;
     let mut last_setup_step: Option<(CaptureSetupStep, SetupTransition)> = None;
@@ -1223,13 +1228,22 @@ fn run_backend(
                 }
                 expected_sequence += 1;
                 sample_rate = Some(pcm.sample_rate);
-                shared
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .extend_from_slice(&pcm.samples);
+                if owner.retains_samples() {
+                    shared
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .extend_from_slice(&pcm.samples);
+                }
+                if owner.preview_id().is_some() {
+                    // Accumulate every callback between paint-rate emissions;
+                    // otherwise a short peak could disappear in the throttle.
+                    preview_levels.observe(&pcm.samples);
+                }
                 if !retained_audio {
                     retained_audio = true;
                     current_phase = AudioInitPhase::Runtime;
+                    // A successful preview is real device-readiness evidence,
+                    // so it intentionally trains the per-device backend memo.
                     note_first_pcm(device_id, backend, ctx.is_primary, start_sent_at.elapsed());
                     end_permission_prompt_pause(
                         &mut permission_prompt_started,
@@ -1242,7 +1256,7 @@ fn run_backend(
                         target: "audio",
                         capture_id,
                         start_to_first_pcm_ms = start_sent_at.elapsed().as_millis() as u64,
-                        "capture helper first PCM retained"
+                        "capture helper first PCM accepted"
                     );
                     let _ = event_sender.send(AudioWorkerEvent::PhaseExited {
                         owner,
@@ -1261,7 +1275,33 @@ fn run_backend(
                     && last_level_emit.elapsed() >= Duration::from_millis(AUDIO_LEVEL_THROTTLE_MS)
                 {
                     if let Some(handle) = app_handle {
-                        let _ = handle.emit("audio-level", compute_rms(&pcm.samples));
+                        if let Some(preview_id) = owner.preview_id() {
+                            let (rms, peak) = preview_levels.take();
+                            let raw = classify_level(rms, peak);
+                            let (classification, first_observation) =
+                                preview_classification.stabilize(raw, Instant::now());
+                            if first_observation {
+                                tracing::info!(
+                                    target: "audio",
+                                    event_code = "audio.preview_level_classified",
+                                    preview_id,
+                                    classification = classification.as_str(),
+                                    "microphone preview observed a signal classification"
+                                );
+                            }
+                            let _ = handle.emit_to(
+                                "main",
+                                "microphone-preview-level",
+                                MicrophonePreviewLevel {
+                                    preview_id,
+                                    rms,
+                                    peak,
+                                    classification,
+                                },
+                            );
+                        } else {
+                            let _ = handle.emit("audio-level", compute_rms(&pcm.samples));
+                        }
                     }
                     last_level_emit = Instant::now();
                 }

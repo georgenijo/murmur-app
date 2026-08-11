@@ -391,6 +391,7 @@ pub(crate) async fn start_query_capture(
         dictation.status == crate::state::DictationStatus::Idle
             && !state.app_state.file_transcribing.load(Ordering::SeqCst)
             && !state.benchmark.is_running()
+            && !state.app_state.microphone_preview.is_active()
             && !state.app_state.transform_status().blocks_recording()
             && !state.transform_runtime.is_transform_busy()
             && corpus_idle
