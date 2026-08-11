@@ -20,7 +20,7 @@ describe('log viewer event semantics', () => {
     container.remove();
   });
 
-  it('renders five distinct active stream treatments with semantic markers', async () => {
+  it('renders every distinct active stream treatment with semantic markers', async () => {
     await act(async () => {
       root.render(
         <StreamChips active={new Set(STREAMS)} onToggle={vi.fn()} />,

@@ -52,7 +52,7 @@ export function DiagnosticsWorkspace({
   const performance = usePerformanceDiagnostics(active);
   const health = usePerformanceHealth(active && tab === 'performance');
   const [activeStreams, setActiveStreams] = useState<Set<StreamName>>(
-    () => new Set(['pipeline', 'audio', 'transform', 'system'])
+    () => new Set(['pipeline', 'audio', 'transform', 'query', 'system'])
   );
   const [correlation, setCorrelation] = useState<CorrelationFilter>({
     field: 'transform_pass_id',

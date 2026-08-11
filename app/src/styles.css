@@ -472,7 +472,8 @@ body.overlay-window {
 
   .overlay-island,
   .overlay-dropdown,
-  .transform-review-surface {
+  .transform-review-surface,
+  .query-review-surface {
     transition-duration: 0ms !important;
     transition-delay: 0ms !important;
   }
