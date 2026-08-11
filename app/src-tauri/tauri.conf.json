@@ -72,6 +72,21 @@
         "visible": false,
         "focus": false,
         "shadow": true
+      },
+      {
+        "label": "query-review",
+        "title": "",
+        "url": "query-review.html",
+        "width": 440,
+        "height": 92,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "visible": false,
+        "focus": false,
+        "shadow": true
       }
     ],
     "macOSPrivateApi": true,

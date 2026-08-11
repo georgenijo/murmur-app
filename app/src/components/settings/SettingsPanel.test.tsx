@@ -153,6 +153,16 @@ describe('SettingsPanel information architecture', () => {
     expect(scrollTo).toHaveBeenCalledWith({ top: 0 });
   });
 
+  it('shows the Voice Query egress and no-shell contracts on the Text tab', async () => {
+    const button = Array.from(container.querySelectorAll('nav button')).find((item) => item.textContent === 'Text') as HTMLButtonElement;
+    await act(async () => button.click());
+
+    expect(container.textContent).toContain('Voice Query');
+    expect(container.textContent).toContain('may send the question or answer to cloud services');
+    expect(container.textContent).toContain('No shell is ever invoked');
+    expect(container.textContent).toContain('never auto-pasted');
+  });
+
   it('opens editors as a Text settings drill-down with explicit back navigation', async () => {
     const settingsPages = container.querySelector('nav[aria-label="Settings pages"]') as HTMLElement;
     const textTab = Array.from(settingsPages.querySelectorAll('button')).find(
@@ -335,7 +345,9 @@ describe('SettingsPanel transform block (#312 D1 round-2 findings 6-8)', () => {
     transformMocks.setTransformKey.mockRejectedValue(new Error('shortcut already in use'));
     await renderAndOpenTransform({ transformHoldKey: 'alt_r' });
 
-    const combobox = container.querySelector('button[role="combobox"]') as HTMLButtonElement;
+    const combobox = Array.from(container.querySelectorAll('button[role="combobox"]')).find(
+      (button) => button.textContent === 'Right Option',
+    ) as HTMLButtonElement;
     await act(async () => combobox.click());
     const option = Array.from(container.querySelectorAll('li[role="option"]')).find(
       (li) => li.textContent === 'Left Control',

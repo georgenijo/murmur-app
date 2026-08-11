@@ -97,6 +97,9 @@ pub fn start_transform_listener(
             hotkey
         ));
     }
+    if keyboard::transform_key_conflicts_with_query(&hotkey) {
+        return Err("That key is already assigned to Voice Query.".to_string());
+    }
     if !injector::is_accessibility_enabled() {
         return Err(
             "Accessibility permission is required. Please grant it in System Settings.".to_string(),
@@ -122,6 +125,9 @@ pub fn set_transform_key(app_handle: tauri::AppHandle, hotkey: String) -> Result
             hotkey
         ));
     }
+    if keyboard::transform_key_conflicts_with_query(&hotkey) {
+        return Err("That key is already assigned to Voice Query.".to_string());
+    }
     let should_release = keyboard::set_transform_key(&hotkey);
     if should_release {
         if let Some((pass_id, elapsed_ms)) = keyboard::take_transform_hold_context() {
@@ -136,4 +142,30 @@ pub fn set_transform_key(app_handle: tauri::AppHandle, hotkey: String) -> Result
         tracing::info!(target: "keyboard", "Transform key updated to: {}", hotkey);
     }
     Ok(())
+}
+
+// -- Voice-query hotkey (#538) --
+
+#[tauri::command]
+pub fn start_query_listener(app_handle: tauri::AppHandle, hotkey: String) -> Result<(), String> {
+    if keyboard::is_dictation_key_id(&hotkey) {
+        return Err("That key is reserved for dictation.".to_string());
+    }
+    if keyboard::query_key_conflicts_with_transform(&hotkey) {
+        return Err("That key is already assigned to Selected-text Transform.".to_string());
+    }
+    if !injector::is_accessibility_enabled() {
+        return Err(
+            "Accessibility permission is required. Please grant it in System Settings.".to_string(),
+        );
+    }
+    keyboard::start_query_listener(app_handle, &hotkey);
+    tracing::info!(target: "keyboard", "Voice-query listener started");
+    Ok(())
+}
+
+#[tauri::command]
+pub fn stop_query_listener() {
+    keyboard::stop_query_listener();
+    tracing::info!(target: "keyboard", "Voice-query listener stopped");
 }

@@ -21,6 +21,7 @@ const STOP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(12);
 pub(crate) enum AudioOwner {
     Dictation(u64),
     Transform(u64),
+    Query(u64),
     #[cfg(feature = "internal-benchmark")]
     Corpus(u64),
 }
@@ -28,7 +29,7 @@ pub(crate) enum AudioOwner {
 impl AudioOwner {
     pub(crate) fn telemetry_id(self) -> u64 {
         match self {
-            Self::Dictation(id) | Self::Transform(id) => id,
+            Self::Dictation(id) | Self::Transform(id) | Self::Query(id) => id,
             #[cfg(feature = "internal-benchmark")]
             Self::Corpus(id) => id,
         }
@@ -38,6 +39,7 @@ impl AudioOwner {
         match self {
             Self::Dictation(_) => "dictation",
             Self::Transform(_) => "transform",
+            Self::Query(_) => "query",
             #[cfg(feature = "internal-benchmark")]
             Self::Corpus(_) => "corpus",
         }
@@ -269,6 +271,9 @@ impl LifecycleSink for ProductionLifecycleSink {
                     transform_pass_id,
                     event,
                 );
+            }
+            AudioOwner::Query(query_pass_id) => {
+                crate::query_flow::handle_audio_lifecycle(app_handle.clone(), query_pass_id, event);
             }
             #[cfg(feature = "internal-benchmark")]
             AudioOwner::Corpus(capture_id) => {
@@ -795,7 +800,7 @@ fn handle_worker_event(
                 // worker exit. Transform audio has no partial-transcript path,
                 // so preserve its typed, content-free failure before recovery.
                 let report_failure = match current.owner {
-                    AudioOwner::Transform(_) => Some(failure),
+                    AudioOwner::Transform(_) | AudioOwner::Query(_) => Some(failure),
                     #[cfg(feature = "internal-benchmark")]
                     AudioOwner::Corpus(_) => Some(failure),
                     AudioOwner::Dictation(_) => None,
@@ -1209,6 +1214,21 @@ pub(crate) fn start_transform_recording(
     .map_err(|error| error.to_string())
 }
 
+pub(crate) fn start_query_recording(
+    app_handle: Option<tauri::AppHandle>,
+    device_id: Option<String>,
+    query_pass_id: u64,
+) -> Result<(), String> {
+    send_start(
+        AudioOwner::Query(query_pass_id),
+        app_handle,
+        device_id,
+        "query",
+        false,
+    )
+    .map_err(|error| error.to_string())
+}
+
 #[cfg(feature = "internal-benchmark")]
 pub(crate) fn start_corpus_recording(
     app_handle: tauri::AppHandle,
@@ -1227,6 +1247,10 @@ pub(crate) fn start_corpus_recording(
 
 pub(crate) fn stop_dictation_recording(recording_id: u64) -> Result<Vec<f32>, String> {
     stop(Some(AudioOwner::Dictation(recording_id)))
+}
+
+pub(crate) fn stop_query_recording(query_pass_id: u64) -> Result<Vec<f32>, String> {
+    stop(Some(AudioOwner::Query(query_pass_id)))
 }
 
 #[cfg(feature = "internal-benchmark")]
@@ -1265,6 +1289,13 @@ pub(crate) fn cancel_dictation_capture(
     reason: AudioCancelReason,
 ) -> Result<bool, String> {
     cancel(Some(AudioOwner::Dictation(recording_id)), reason, false)
+}
+
+pub(crate) fn cancel_query_capture(
+    query_pass_id: u64,
+    reason: AudioCancelReason,
+) -> Result<bool, String> {
+    cancel(Some(AudioOwner::Query(query_pass_id)), reason, false)
 }
 
 #[cfg(feature = "internal-benchmark")]

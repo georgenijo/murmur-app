@@ -84,6 +84,19 @@ describe('useEscapeCancel', () => {
     expect(mocks.cancelRecording).not.toHaveBeenCalled();
   });
 
+  it('routes a correlated Escape to only that exact query pass', async () => {
+    mocks.invoke.mockResolvedValue(undefined);
+    await renderHook('idle');
+
+    await pressEscape({ transformPassId: null, queryPassId: 42 });
+
+    expect(mocks.invoke).toHaveBeenCalledOnce();
+    expect(mocks.invoke).toHaveBeenCalledWith('cancel_query', {
+      queryPassId: 42,
+    });
+    expect(mocks.cancelRecording).not.toHaveBeenCalled();
+  });
+
   it.each(['recording', 'processing'] as const)(
     'retains dictation cancellation for a null transform target while dictation is %s',
     async (status) => {

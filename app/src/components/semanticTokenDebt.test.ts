@@ -15,6 +15,7 @@ const sources = productionSources("./src");
 const alwaysDarkPrefixes = [
   "components/overlay/",
   "components/transform-review/",
+  "components/query-review/",
 ] as const;
 const alwaysDarkFiles = new Set(["components/OverlayWidget.tsx"]);
 const scrimAllowlist = new Set([
@@ -515,6 +516,7 @@ describe("semantic theme token debt gate", () => {
     const css = readFileSync("./src/styles.css", "utf8");
     const overlayHtml = readFileSync("./overlay.html", "utf8");
     const transformHtml = readFileSync("./transform-review.html", "utf8");
+    const queryHtml = readFileSync("./query-review.html", "utf8");
     const overlay = readFileSync("./src/components/OverlayWidget.tsx", "utf8");
     const transform = readFileSync(
       "./src/components/transform-review/TransformReviewApp.tsx",
@@ -536,10 +538,14 @@ describe("semantic theme token debt gate", () => {
     );
     expect(overlayHtml).toContain('<body class="overlay-window">');
     expect(transformHtml).toContain('<body class="overlay-window">');
+    expect(queryHtml).toContain('<body class="overlay-window">');
     expect(overlayHtml).toMatch(
       /html, body, #root[\s\S]*background:\s*transparent/,
     );
     expect(transformHtml).toMatch(
+      /html, body, #root[\s\S]*background:\s*transparent/,
+    );
+    expect(queryHtml).toMatch(
       /html, body, #root[\s\S]*background:\s*transparent/,
     );
     expect(overlay).toContain("background: 'rgba(20, 20, 20, 0.92)'");

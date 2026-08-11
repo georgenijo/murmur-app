@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in Voice Query dispatches a locally transcribed spoken question to one
+  explicitly configured CLI argument without a shell, streams its bounded
+  answer in a popover, and never auto-pastes or records query content in
+  telemetry, history, stats, or file output (#538).
+
 ## [0.30.1] - 2026-08-09
 
 ### Fixed

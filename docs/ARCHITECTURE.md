@@ -7,7 +7,7 @@
 
 ## Overview
 
-Murmur is a privacy-first, local-only voice dictation app for macOS. You speak, it transcribes — no cloud, no API keys, no internet. All inference runs on-device: transcription on the Apple Neural Engine (Core ML), the GPU (Metal/whisper.cpp), or CPU (sherpa-onnx), and selected-text rewriting through a signed local-LLM helper process.
+Murmur is a privacy-first, local voice dictation app for macOS. Its speech transcription and selected-text rewriting run on-device: transcription on the Apple Neural Engine (Core ML), the GPU (Metal/whisper.cpp), or CPU (sherpa-onnx), and rewriting through a signed local-LLM helper process. The optional Voice Query bridge can invoke a user-configured third-party CLI whose own network behavior remains outside Murmur's trust boundary.
 
 Built with **Tauri 2** (Rust backend + React frontend). Two shipped inference stacks:
 
@@ -152,7 +152,7 @@ deliberately escaped process group. See the
 
 | Module | Purpose |
 |--------|---------|
-| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 115 registered commands, setup, tray, run loop |
+| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 122 registered commands, setup, tray, run loop |
 | `alloc.rs` | Custom macOS malloc zone ("RustHeapZone") so Rust heap is accounted separately from whisper.cpp's FFI heap |
 | `audio.rs` | CPAL 0.18 capture worker, stable device-ID selection, typed error/phase telemetry, first-buffer readiness, mono mix, 16kHz resample, `audio-level` emission |
 | `audio_lifecycle.rs` | App-lifetime single-owner supervisor; async start, generation cancellation, deadlines, generation-gated publication, and strict worker ownership through exit |
@@ -169,6 +169,7 @@ deliberately escaped process group. See the
 | `evaluation.rs` | Versioned fixture evaluation harness (`murmur-eval`) |
 | `file_output.rs` | Numbered `.txt` / `.wav` output |
 | `frontmost.rs` | Native frontmost-app query + running-application list |
+| `query_flow.rs` | Voice Query capture, local ASR, literal argv dispatch, bounded stdout streaming, and exact-pass cancellation |
 | `ide_context.rs` | Memory-only bounded IDE symbol / root-relative file index |
 | `injector.rs` | Clipboard write, CGEvent paste (osascript fallback), focused-field AX role checks |
 | `keyboard.rs` | Hold-down, double-tap, and transform-hold detectors on one shared rdev thread |
@@ -350,7 +351,7 @@ Two rules keep the multi-window state coherent:
 
 ## Tauri Commands
 
-115 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
+122 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
 
 ## Events
 

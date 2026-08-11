@@ -12,6 +12,7 @@ export type DoubleTapKey = 'shift_l' | 'alt_l' | 'ctrl_r';
  * options live on the opposite side of the keyboard.
  */
 export type TransformKey = 'alt_r' | 'ctrl_l' | 'shift_r';
+export type QueryKey = TransformKey;
 
 export type WritingStyle =
   | 'conversational'
@@ -200,6 +201,13 @@ export interface Settings {
   /** Independent transform-shortcut hotkey (issue #312). `null` = disabled;
    * no settings UI exposes this yet. */
   transformHoldKey: TransformKey | null;
+  /** Independent double-tap voice-query shortcut. `null` keeps the integration off. */
+  queryHotkey: QueryKey | null;
+  /** Absolute path to the exact user-selected CLI executable. */
+  queryExecutable: string;
+  /** Fixed argv elements placed before the one-element spoken question. */
+  queryArguments: string[];
+  queryTimeoutSeconds: number;
   language: string;
   autoPaste: boolean;
   autoPasteDelayMs: number;
@@ -325,6 +333,8 @@ export const TRANSFORM_KEY_OPTIONS: { value: TransformKey; label: string }[] = [
   { value: 'shift_r', label: 'Right Shift' },
 ];
 
+export const QUERY_KEY_OPTIONS: { value: QueryKey; label: string }[] = TRANSFORM_KEY_OPTIONS;
+
 export const RECORDING_MODE_OPTIONS: { value: RecordingMode; label: string }[] = [
   { value: 'hold_down', label: 'Hold Down' },
   { value: 'double_tap', label: 'Double-Tap' },
@@ -371,6 +381,10 @@ export const DEFAULT_SETTINGS: Settings = {
   doubleTapKey: 'shift_l',
   // Disabled by default — no settings UI to configure it yet (Phase D).
   transformHoldKey: null,
+  queryHotkey: null,
+  queryExecutable: '',
+  queryArguments: [],
+  queryTimeoutSeconds: 60,
   // 'auto' lets Whisper auto-detect the spoken language ("just works"); the
   // non-Whisper models may auto-detect or ignore this value.
   language: 'auto',
@@ -608,6 +622,46 @@ export function loadSettings(): Settings {
         ) {
           parsed.transformHoldKey = DEFAULT_SETTINGS.transformHoldKey;
         }
+      }
+
+      // Voice Query is disabled by default. Persisted/tampered values must
+      // stay inside the same explicit opposite-side modifier allow-list as
+      // Transform, and command configuration is bounded before it reaches IPC.
+      {
+        const validQueryKeys = new Set<string>(QUERY_KEY_OPTIONS.map((o) => o.value));
+        if (
+          parsed.queryHotkey !== null
+          && (typeof parsed.queryHotkey !== 'string' || !validQueryKeys.has(parsed.queryHotkey))
+        ) {
+          parsed.queryHotkey = DEFAULT_SETTINGS.queryHotkey;
+        }
+      }
+      if (typeof parsed.queryExecutable !== 'string') {
+        parsed.queryExecutable = DEFAULT_SETTINGS.queryExecutable;
+      } else {
+        parsed.queryExecutable = parsed.queryExecutable.slice(0, 4096);
+      }
+      if (!Array.isArray(parsed.queryArguments)) {
+        parsed.queryArguments = DEFAULT_SETTINGS.queryArguments;
+      } else {
+        parsed.queryArguments = parsed.queryArguments
+          .filter((argument): argument is string => typeof argument === 'string')
+          .map((argument) => argument.slice(0, 4096))
+          .slice(0, 32);
+      }
+      if (
+        typeof parsed.queryTimeoutSeconds !== 'number'
+        || !Number.isInteger(parsed.queryTimeoutSeconds)
+        || parsed.queryTimeoutSeconds < 5
+        || parsed.queryTimeoutSeconds > 300
+      ) {
+        parsed.queryTimeoutSeconds = DEFAULT_SETTINGS.queryTimeoutSeconds;
+      }
+      if (
+        parsed.queryHotkey !== null
+        && parsed.queryHotkey === parsed.transformHoldKey
+      ) {
+        parsed.queryHotkey = null;
       }
 
       // outputDir feeds a filesystem path on the Rust side — coerce anything
