@@ -143,7 +143,9 @@ The structured event buffer: hydrates from `get_event_history`, streams live `ap
 Run history and resource samples. Hydrates from `list_performance_runs` / `get_performance_resource_window`, then merges live `performance-run-completed` and `performance-resource-sample` events (the exported `mergeRuns` / `mergeResourceSamples` are pure and unit-tested), and resets on `performance-diagnostics-cleared`. Gated by an `enabled` flag so a hidden tab does no work.
 
 ### `usePerformanceHealth`
-Summary health of the diagnostics store (availability, counts) with an explicit `refresh`.
+Live pipeline/model state plus capture-startup health with an explicit `refresh`.
+Its two-second refresh reads the dedicated bounded `get_capture_health_history`
+payload rather than polling the general event history.
 
 ### `useResourceMonitor`
 CPU/memory polling with a rolling 60-reading buffer. Only polls while the panel is expanded.

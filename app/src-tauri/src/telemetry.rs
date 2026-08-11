@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 const REFACTOR_TEST_IDENTIFIER: &str = "com.localdictation.refactor-test";
 const BENCH_IDENTIFIER: &str = "com.localdictation.bench";
@@ -175,6 +175,11 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for TauriEmitterLayer 
             data,
         };
 
+        self.app_handle
+            .state::<crate::State>()
+            .capture_health
+            .observe(&app_event);
+
         // Push to ring buffer
         {
             let mut buf = self.buffer.lock().unwrap_or_else(|p| p.into_inner());
@@ -207,6 +212,7 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "keyboard.listener_silent" => Some("keyboard.listener_silent"),
         "keyboard.listener_failed" => Some("keyboard.listener_failed"),
         "audio.capture_backend_timeout" => Some("audio.capture_backend_timeout"),
+        "audio.capture_started" => Some("audio.capture_started"),
         "audio.fallback_started" => Some("audio.fallback_started"),
         "audio.capture_ready" => Some("audio.capture_ready"),
         "audio.capture_failed" => Some("audio.capture_failed"),
@@ -403,6 +409,13 @@ fn jsonl_path() -> Option<std::path::PathBuf> {
         "events.jsonl"
     };
     Some(logs_dir()?.join(name))
+}
+
+pub(crate) fn event_jsonl_paths() -> Vec<PathBuf> {
+    let Some(current) = jsonl_path() else {
+        return Vec::new();
+    };
+    vec![current.with_extension("jsonl.1"), current]
 }
 
 /// Read the last `n` AppEvent entries from the JSONL file to seed the ring buffer.
