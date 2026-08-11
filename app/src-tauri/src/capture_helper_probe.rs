@@ -131,6 +131,8 @@ impl CaptureProbeError {
             Self::HelperFailed(FailureCode::StreamError) => "stream_error",
             Self::HelperFailed(FailureCode::CallbackStalled) => "callback_stalled",
             Self::HelperFailed(FailureCode::InvalidMessage) => "invalid_message",
+            Self::HelperFailed(FailureCode::UnsupportedOs) => "unsupported_os",
+            Self::HelperFailed(FailureCode::SystemAudioUnavailable) => "system_audio_unavailable",
             Self::HelperFailed(FailureCode::Internal) => "internal",
         }
     }

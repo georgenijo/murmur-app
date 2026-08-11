@@ -335,6 +335,15 @@ pub struct AppState {
     /// separate from `recording_id` so diagnostics and structured events can
     /// correlate file work without pretending it is a microphone recording.
     pub file_run_id: AtomicU64,
+    /// Monotonic owner for long-running dual-channel meeting sessions.
+    pub meeting_generation: AtomicU64,
+    /// True from accepted meeting start until the capture helper, segmenter,
+    /// and inference queue have all settled.
+    pub meeting_active: AtomicBool,
+    /// Covers both a live meeting's serialized ASR queue and startup recovery
+    /// of crash-durable pending chunks. Other ASR entry points fail fast while
+    /// this is set instead of waiting behind an invisible model lock.
+    pub meeting_inference_active: AtomicBool,
     /// Monotonic revision for settings and vocabulary inputs captured by each
     /// immutable dictation context snapshot.
     pub settings_revision: AtomicU64,
@@ -408,6 +417,14 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Whether meeting capture or crash recovery currently owns the shared ASR
+    /// runtime. Callers still serialize ownership claims with
+    /// `recording_transition`; this helper keeps the fail-fast policy uniform.
+    pub fn meeting_blocks_asr(&self) -> bool {
+        self.meeting_active.load(Ordering::SeqCst)
+            || self.meeting_inference_active.load(Ordering::SeqCst)
+    }
+
     /// Increment and return the next recording ID.
     pub fn next_recording_id(&self) -> u64 {
         self.recording_id.fetch_add(1, Ordering::SeqCst) + 1
@@ -419,6 +436,10 @@ impl AppState {
 
     pub fn next_file_run_id(&self) -> u64 {
         self.file_run_id.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    pub fn next_meeting_generation(&self) -> u64 {
+        self.meeting_generation.fetch_add(1, Ordering::SeqCst) + 1
     }
 
     pub fn bump_settings_revision(&self) -> u64 {
@@ -595,6 +616,9 @@ impl Default for AppState {
             recording_id: AtomicU64::new(0),
             transcript_session_id: AtomicU64::new(0),
             file_run_id: AtomicU64::new(0),
+            meeting_generation: AtomicU64::new(0),
+            meeting_active: AtomicBool::new(false),
+            meeting_inference_active: AtomicBool::new(false),
             settings_revision: AtomicU64::new(0),
             active_context: Mutex::new(None),
             cancelled_id: AtomicU64::new(0),

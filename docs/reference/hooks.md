@@ -32,6 +32,12 @@ Imported-file transcription: file selection, `transcribe_file`, and the `file-tr
 ### `useHistoryManagement`
 Transcription history with localStorage persistence (`dictation-history`, rolling 200-entry cap). Owns add / update / clear. Search, filtering, and export live in `lib/history.ts`; see [features/history-workspace.md](../features/history-workspace.md).
 
+### `useMeetings`
+Owns the durable Meetings tab: hydrates runtime/permission/store state, listens
+for content-free status and finalized-segment events, keeps at most 200 live
+segments, and invokes start/stop/search/detail/copy/export/delete operations.
+Meeting history comes from SQLite and never enters transcript localStorage.
+
 ### `useSilenceAutoStop`
 Ends a hands-free recording after a run of trailing silence — any recording **not started by holding the trigger key**. Folds the existing `audio-level` samples through the pure `reduceSilenceSample` detector, resets per recording, ignores samples while the origin is `'hold'`, and calls `onAutoStop` at most once. Inert unless `enabled` and `silenceMs > 0`. See [features/silence-auto-stop.md](../features/silence-auto-stop.md).
 

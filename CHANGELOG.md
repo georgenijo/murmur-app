@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- Meeting Capture records the selected microphone and Mac playback as separate
+  Me/Them channels, transcribes VAD-sized chunks incrementally with the local
+  model, and keeps crash-safe searchable sessions in SQLite. System Audio
+  access is explicit and optional; meeting audio is discarded after each
+  durable transcript commit unless retention is enabled (#539).
+
 ## [0.30.1] - 2026-08-09
 
 ### Fixed

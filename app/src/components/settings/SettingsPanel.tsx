@@ -197,6 +197,7 @@ const SETTINGS_SEARCH_ITEMS = [
   { tab: 'dictation', title: 'Stop on Silence', detail: 'Finish hands-free recordings after quiet.', keywords: 'automatic stop vad' },
   { tab: 'dictation', title: 'Auto-Paste', detail: 'Paste clipboard results into the active app.', keywords: 'delivery clipboard' },
   { tab: 'dictation', title: 'Save to File', detail: 'Save transcript or audio files locally.', keywords: 'delivery output folder wav txt' },
+  { tab: 'dictation', title: 'Meeting Capture', detail: 'Choose local transcript retention and optional audio retention.', keywords: 'system audio me them history sqlite' },
   { tab: 'model', title: 'Transcription Model', detail: 'Select and manage the local speech model.', keywords: 'whisper parakeet core ml download' },
   { tab: 'model', title: 'Language', detail: 'Choose a fixed language or automatic detection.', keywords: 'multilingual' },
   { tab: 'model', title: 'Benchmark', detail: 'Compare installed models on this Mac.', keywords: 'performance lab speed accuracy' },
@@ -986,6 +987,46 @@ export const SettingsPanel = memo(function SettingsPanel({
               checked={settings.retainHistory}
               onChange={() => onUpdateSettings({ retainHistory: !settings.retainHistory })}
             />
+            <div className="space-y-3 rounded-xl border border-outline-variant/20 bg-surface-container-low p-3">
+              <div>
+                <h2 className="text-sm font-medium text-on-surface">Meeting Capture</h2>
+                <p className="mt-0.5 text-xs leading-relaxed text-on-surface-variant">
+                  Meeting transcripts always use the crash-safe local SQLite store and never dictation history.
+                </p>
+              </div>
+              <SettingToggle
+                title="Keep Meeting Audio"
+                description="Off by default. When off, each private chunk WAV is deleted only after its transcript commits."
+                checked={settings.meetingRetainAudio}
+                onChange={() => onUpdateSettings({ meetingRetainAudio: !settings.meetingRetainAudio })}
+              />
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="text-xs text-on-surface-variant">
+                  Keep by age
+                  <select
+                    value={settings.meetingRetentionDays}
+                    onChange={(event) => onUpdateSettings({ meetingRetentionDays: Number(event.target.value) })}
+                    className="mt-1 h-9 w-full rounded-lg border border-outline-variant bg-surface-container-lowest px-2 text-sm text-on-surface"
+                  >
+                    <option value={0}>No age limit</option>
+                    <option value={30}>30 days</option>
+                    <option value={90}>90 days</option>
+                    <option value={365}>1 year</option>
+                  </select>
+                </label>
+                <label className="text-xs text-on-surface-variant">
+                  Session limit
+                  <input
+                    type="number"
+                    min={1}
+                    max={10000}
+                    value={settings.meetingMaxSessions}
+                    onChange={(event) => onUpdateSettings({ meetingMaxSessions: Math.max(1, Math.min(10000, Number(event.target.value) || 1)) })}
+                    className="mt-1 h-9 w-full rounded-lg border border-outline-variant bg-surface-container-lowest px-2 text-sm text-on-surface"
+                  />
+                </label>
+              </div>
+            </div>
             {notchPillInstalled && <SettingToggle title="Mirror Captions to NotchPill" description="Show your latest dictation in the NotchPill notch overlay. Stays on this Mac — only the final text is written locally." checked={settings.mirrorToNotchPill} onChange={() => onUpdateSettings({ mirrorToNotchPill: !settings.mirrorToNotchPill })} />}
             {saveToFile && (
               <div>

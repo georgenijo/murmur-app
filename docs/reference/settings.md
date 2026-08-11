@@ -58,6 +58,9 @@ interface Settings {
   autoPaste: boolean;
   autoPasteDelayMs: number;
   retainHistory: boolean;
+  meetingRetainAudio: boolean;
+  meetingRetentionDays: number;            // 0 = no age limit
+  meetingMaxSessions: number;
   saveTranscript: boolean;
   saveAudio: boolean;
   mirrorToNotchPill: boolean;
@@ -133,6 +136,9 @@ model-selection side effects.
 | `vadSensitivity` | `number` | `50` | 0 (Off), 5-100; step 5 in UI | Voice Activity Detection sensitivity. Off skips VAD for the lowest post-release latency but gives up no-speech rejection. For non-zero values, higher values keep more audio and lower values trim silence more aggressively; the backend threshold is `1.0 - (sensitivity / 100.0)`. Clamped to 0-100 by the backend. |
 | `disabled` | `boolean` | `false` | `true` / `false` | Global disable. Mirrors the tray "Disable Murmur" check item and the overlay's power button; the hover quick-settings card stays reachable while disabled so the overlay can turn Murmur back on. |
 | `idleTimeoutMinutes` | `number` | `5` | `5`, `15`, `0` (Never) | How long an idle loaded model stays resident before the runtime releases it. `0` keeps it loaded indefinitely. |
+| `meetingRetainAudio` | `boolean` | `false` | `true` / `false` | Keeps each meeting chunk WAV after its transcript commits. Off deletes the WAV only after the corresponding SQLite transaction succeeds. |
+| `meetingRetentionDays` | `number` | `0` | `0` or 1–3650 days | Age cap applied before starting a meeting; `0` preserves completed sessions by age. |
+| `meetingMaxSessions` | `number` | `100` | 1–10,000 | Maximum completed/interrupted sessions retained when pruning before a new meeting. |
 
 ### Transform Settings
 

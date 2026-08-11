@@ -1,11 +1,12 @@
 # Murmur — Feature Map
 
-Production microphone capture is isolated in a signed, killable helper. Strict
-capture-scoped framing, bounded CPAL-to-AUHAL fallback, and interrupted-prefix
+Production audio capture is isolated in a signed, killable helper. Strict
+capture-scoped framing, bounded callback rings, and interrupted-prefix
 transcription keep the app responsive without discarding already-delivered
-speech. See [Transcription](features/transcription.md).
+speech. See [Transcription](features/transcription.md) and
+[Meeting Capture](features/meeting-capture.md).
 
-Current as of **v0.21.3**. This is the breadth-first inventory of what ships; each area links to its detailed feature doc. For system structure see [ARCHITECTURE.md](ARCHITECTURE.md).
+Current as of **v0.30.1**. This is the breadth-first inventory of what ships; each area links to its detailed feature doc. For system structure see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ---
 
@@ -45,6 +46,19 @@ Current as of **v0.21.3**. This is the breadth-first inventory of what ships; ea
 - Opt-in hands-free finish for toggle-started recordings: 1.5s / 2.5s / 4s of trailing quiet ends the recording.
 - Applies to any recording **not started by holding the trigger key** — double-tap, the main-window button, the overlay click, and locked mode, in every recording mode. While the key is physically held, the release owns the stop.
 - Arms only after it has heard speech, and its threshold only ever rises above an absolute floor — on a quiet mic it does nothing rather than cutting you off. Stopping manually always still works.
+
+### Meeting Capture — [features/meeting-capture.md](features/meeting-capture.md)
+
+- Explicit long-form sessions capture microphone as **Me** and Mac playback as
+  **Them** on separate native channels; no diarization or cloud processing.
+- VAD-sized chunks transcribe incrementally through the selected shared model,
+  with a distinct meeting overlay and mutual exclusion from dictation,
+  transforms, imported files, corpus capture, and benchmarks.
+- Searchable sessions and segments are durable in SQLite. Chunk WAVs are
+  fsynced before pending rows and deleted only after transcript commit unless
+  audio retention is enabled.
+- Requires macOS 14.2+ and optional System Audio permission. The tap exists only
+  during an explicit permission check or active meeting.
 
 ---
 
@@ -148,7 +162,10 @@ drag-and-drop, the command palette, and the history overflow menu; queued jobs
 appear as cancelable bottom-right toasts.
 
 ### History workspace — [features/history-workspace.md](features/history-workspace.md)
-Search with match highlighting (tokens are ANDed) and Mic/File filters over a rolling 200-entry history. Export exactly what is on screen as Markdown, plain text, or JSON — to the clipboard or, through a validated extension-allow-listed atomic write, to a file. Teaching context is never exported.
+The Transcripts tab provides match highlighting and Mic/File filters over a
+rolling 200-entry history. The Meetings tab lists and searches durable Me/Them
+sessions, supports copy/text export, and deletes one or all sessions locally.
+Teaching context is never exported.
 
 ### Command palette — [features/command-palette.md](features/command-palette.md)
 `⌘K` opens a keyboard-first launcher for every settings page and the common main-window actions, with deterministic tiered ranking. `⌘F` focuses transcript search, `⌘,` opens Settings, `⌘L` opens Settings → Performance.
@@ -173,9 +190,9 @@ tokens, compact control primitives, and transcript-card invariants keep the
 eight redesigned surfaces visually consistent as features evolve.
 
 ### Onboarding — [features/onboarding-flow.md](features/onboarding-flow.md)
-First-launch wizard: Welcome → Microphone → Accessibility → Model download →
-Hotkey → Done. The mic step fires the native macOS prompt in-app; both permission
-steps poll live so a grant made in System Settings flips the step on return;
+First-launch wizard: Welcome → Microphone → Accessibility → optional System
+Audio → Model download → Hotkey → Done. The mic step fires the native macOS
+prompt in-app; permission steps update when the user returns from System Settings;
 denied/stale-TCC states get inline reset-and-retry. Already-downloaded models are
 detected and badged. The chosen recording mode and trigger key are saved at
 completion. Existing installs with permissions and a model are grandfathered.
@@ -223,7 +240,7 @@ Every transform-key hold is recorded as a content-free `TransformAttemptV1` with
 - Developer ID signed and notarized; hardened runtime; sidecar ships with split entitlements; release finalization fails closed on any unexpected bundle executable.
 - Release builds use `opt-level = "s"`, LTO off, 16 parallel codegen units, and panic abort; stripping remains disabled so Tauri can patch the updater bundle-type marker.
 - **Auto-updater** — [features/auto-updater.md](features/auto-updater.md). Due-gated checks on launch, every six hours, foreground activation, and macOS wake against `latest-v2.json`; passive homepage/menu-bar availability indicators; ed25519 signatures; required-version enforcement; progress and auto-relaunch.
-- **Privacy boundaries**: release `pipeline` events drop all strings; `transform` events are restricted to an explicit stable vocabulary in *all* builds; knowledge content and selected paths are excluded from logs; instructions never enter history or stats; audio and transcripts are written to disk only when the user turns file output on.
+- **Privacy boundaries**: release `pipeline` events drop all strings; `transform` and `meeting` events are restricted to explicit stable vocabularies in *all* builds; the remote log shipper excludes the entire meeting stream; knowledge content and selected paths are excluded from logs; instructions never enter history or stats. Meeting transcripts always persist locally in SQLite; meeting audio persists only when explicitly retained.
 - All local data is inspectable and deletable from within the app.
 
 ---
@@ -232,9 +249,10 @@ Every transform-key hold is recorded as a content-free `TransformAttemptV1` with
 
 | Area | Location |
 |------|----------|
-| Rust backend | `app/src-tauri/src/` — 110 Tauri commands |
+| Rust backend | `app/src-tauri/src/` — 128 Tauri commands |
 | Frontend | `app/src/` — React 18 + TypeScript + Tailwind 4 |
 | LLM sidecar | `app/src-tauri/sidecars/local-llm/`, protocol in `crates/local-llm-protocol` |
+| Capture worker | `app/src-tauri/sidecars/capture/`, protocol in `crates/capture-helper-protocol` |
 | Diagnostics MCP tool | `tools/murmur-diag/` |
 | Benchmark fixtures | `bench/` |
 | Release/packaging scripts | `scripts/` |

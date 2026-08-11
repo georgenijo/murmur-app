@@ -18,8 +18,9 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample, Stream};
 use murmur_capture_helper_protocol::{
     read_production_frame, write_production_control, write_production_pcm, CaptureBackend,
-    CapturePhase, CaptureSetupStep, FailureCode, ProductionDevice, ProductionFrame,
-    ProductionHelperMessage, ProductionHostMessage, SessionNonce, SetupTransition,
+    CaptureChannel, CapturePhase, CaptureSetupStep, FailureCode, ProductionDevice, ProductionFrame,
+    ProductionHelperMessage, ProductionHostMessage, ProductionPcmMetadata, SessionNonce,
+    SetupTransition, SystemAudioPermissionStatus,
 };
 use std::io::{Read, Write};
 use std::sync::{mpsc, Arc};
@@ -37,7 +38,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 const RING_CAPACITY: usize = 48_000 * 8;
 const STOP_DEADLINE: Duration = Duration::from_secs(2);
 
-struct SpscRing {
+pub(super) struct SpscRing {
     slots: Box<[UnsafeCell<f32>]>,
     head: AtomicUsize,
     tail: AtomicUsize,
@@ -48,7 +49,7 @@ unsafe impl Send for SpscRing {}
 unsafe impl Sync for SpscRing {}
 
 impl SpscRing {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self::with_capacity(RING_CAPACITY)
     }
 
@@ -64,7 +65,7 @@ impl SpscRing {
         }
     }
 
-    fn push(&self, value: f32) {
+    pub(super) fn push(&self, value: f32) {
         let head = self.head.load(Ordering::Relaxed);
         let next = (head + 1) % self.slots.len();
         if next == self.tail.load(Ordering::Acquire) {
@@ -82,7 +83,7 @@ impl SpscRing {
         self.head.store(next, Ordering::Release);
     }
 
-    fn drain(&self, output: &mut [f32]) -> usize {
+    pub(super) fn drain(&self, output: &mut [f32]) -> usize {
         let mut count = 0;
         let mut tail = self.tail.load(Ordering::Relaxed);
         let head = self.head.load(Ordering::Acquire);
@@ -104,7 +105,7 @@ impl SpscRing {
         count
     }
 
-    fn producer_position(&self) -> usize {
+    pub(super) fn producer_position(&self) -> usize {
         self.head.load(Ordering::Acquire)
     }
 }
@@ -204,12 +205,12 @@ fn cpal_device(requested: Option<&str>) -> Result<cpal::Device, FailureCode> {
             let id_matches = device
                 .id()
                 .ok()
-                .map(|id| id.id().to_string() == requested)
+                .map(|id| id.id() == requested)
                 .unwrap_or(false);
             let name_matches = device
                 .description()
                 .ok()
-                .map(|description| description.name().to_string() == requested)
+                .map(|description| description.name() == requested)
                 .unwrap_or(false);
             if id_matches {
                 exact_match = Some(device);
@@ -398,11 +399,10 @@ fn start_auhal(
         SetupTransition::Entered,
     )?;
     unit.set_input_callback(move |args: Args| {
-        for channel in args.data.channels() {
+        if let Some(channel) = args.data.channels().next() {
             for sample in channel.iter().take(args.num_frames) {
                 ring.push(*sample);
             }
-            break;
         }
         Ok(())
     })
@@ -428,7 +428,457 @@ fn read_control(
     }
 }
 
+fn write_meeting_failure(
+    stdout: &mut impl Write,
+    capture_id: u64,
+    nonce: SessionNonce,
+    code: FailureCode,
+    channel: Option<CaptureChannel>,
+    microphone_samples: u64,
+    system_samples: u64,
+) -> Result<(), ()> {
+    write_production_control(
+        stdout,
+        capture_id,
+        nonce,
+        &ProductionHelperMessage::MeetingFailure {
+            code,
+            channel,
+            microphone_samples,
+            system_samples,
+        },
+    )
+    .map_err(|_| ())
+}
+
+fn probe_system_audio(
+    stdout: &mut impl Write,
+    capture_id: u64,
+    nonce: SessionNonce,
+) -> Result<(), ()> {
+    let ring = Arc::new(SpscRing::new());
+    let started = {
+        let mut emit_setup = |step: CaptureSetupStep, transition: SetupTransition| {
+            let _ = write_production_control(
+                stdout,
+                capture_id,
+                nonce,
+                &ProductionHelperMessage::MeetingSetupStep {
+                    channel: CaptureChannel::System,
+                    step,
+                    transition,
+                },
+            );
+        };
+        crate::system_audio::SystemAudioStream::start_observed(Arc::clone(&ring), &mut emit_setup)
+    };
+    let status = match started {
+        Ok(mut stream) => {
+            let deadline = Instant::now() + STOP_DEADLINE;
+            while ring.producer_position() == 0 && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            stream.stop();
+            drop(stream);
+            if ring.producer_position() == 0 {
+                return write_meeting_failure(
+                    stdout,
+                    capture_id,
+                    nonce,
+                    FailureCode::CallbackStalled,
+                    Some(CaptureChannel::System),
+                    0,
+                    0,
+                );
+            }
+            SystemAudioPermissionStatus::Granted
+        }
+        Err(FailureCode::PermissionDenied) => SystemAudioPermissionStatus::Denied,
+        Err(FailureCode::UnsupportedOs) => SystemAudioPermissionStatus::Unsupported,
+        Err(code) => {
+            return write_meeting_failure(
+                stdout,
+                capture_id,
+                nonce,
+                code,
+                Some(CaptureChannel::System),
+                0,
+                0,
+            )
+        }
+    };
+    write_production_control(
+        stdout,
+        capture_id,
+        nonce,
+        &ProductionHelperMessage::SystemAudioPermission { status },
+    )
+    .map_err(|_| ())
+}
+
+fn parent_is_gone(original_parent: u32, current_parent: u32) -> bool {
+    current_parent <= 1 || current_parent != original_parent
+}
+
+#[cfg(target_os = "macos")]
+fn spawn_parent_watchdog() -> Result<(), ()> {
+    let original_parent = unsafe { libc::getppid() as u32 };
+    std::thread::Builder::new()
+        .name("murmur-capture-parent-watchdog".to_string())
+        .spawn(move || loop {
+            std::thread::sleep(Duration::from_millis(100));
+            let current_parent = unsafe { libc::getppid() as u32 };
+            if parent_is_gone(original_parent, current_parent) {
+                // A Core Audio entry point can block forever, so normal Rust
+                // unwinding is not dependable after the host disappears.
+                unsafe { libc::_exit(0) }
+            }
+        })
+        .map(|_| ())
+        .map_err(|_| ())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn spawn_parent_watchdog() -> Result<(), ()> {
+    Ok(())
+}
+
+fn run_meeting(
+    stdout: &mut impl Write,
+    capture_id: u64,
+    nonce: SessionNonce,
+    device_id: Option<String>,
+    backend: CaptureBackend,
+    fault: Option<&str>,
+) -> Result<(), ()> {
+    if !crate::system_audio::supported() {
+        return write_meeting_failure(
+            stdout,
+            capture_id,
+            nonce,
+            FailureCode::UnsupportedOs,
+            Some(CaptureChannel::System),
+            0,
+            0,
+        );
+    }
+
+    let meeting_started_at = Instant::now();
+    let system_ring = Arc::new(SpscRing::new());
+    write_production_control(
+        stdout,
+        capture_id,
+        nonce,
+        &ProductionHelperMessage::MeetingPhase {
+            phase: CapturePhase::StreamOpen,
+            channel: CaptureChannel::System,
+        },
+    )
+    .map_err(|_| ())?;
+    let system_started = {
+        let mut emit_system_setup = |step: CaptureSetupStep, transition: SetupTransition| {
+            let _ = write_production_control(
+                stdout,
+                capture_id,
+                nonce,
+                &ProductionHelperMessage::MeetingSetupStep {
+                    channel: CaptureChannel::System,
+                    step,
+                    transition,
+                },
+            );
+        };
+        crate::system_audio::SystemAudioStream::start_observed(
+            Arc::clone(&system_ring),
+            &mut emit_system_setup,
+        )
+    };
+    let mut system_stream = match system_started {
+        Ok(stream) => stream,
+        Err(code) => {
+            return write_meeting_failure(
+                stdout,
+                capture_id,
+                nonce,
+                code,
+                Some(CaptureChannel::System),
+                0,
+                0,
+            )
+        }
+    };
+    let microphone_ring = Arc::new(SpscRing::new());
+    let microphone_failed = Arc::new(AtomicBool::new(false));
+    write_production_control(
+        stdout,
+        capture_id,
+        nonce,
+        &ProductionHelperMessage::MeetingPhase {
+            phase: CapturePhase::StreamOpen,
+            channel: CaptureChannel::Microphone,
+        },
+    )
+    .map_err(|_| ())?;
+    let microphone_started = {
+        let mut emit_microphone_setup = |step: CaptureSetupStep, transition: SetupTransition| {
+            write_production_control(
+                stdout,
+                capture_id,
+                nonce,
+                &ProductionHelperMessage::MeetingSetupStep {
+                    channel: CaptureChannel::Microphone,
+                    step,
+                    transition,
+                },
+            )
+            .map_err(|_| FailureCode::Internal)
+        };
+        match backend {
+            CaptureBackend::Cpal => start_cpal(
+                device_id.as_deref(),
+                Arc::clone(&microphone_ring),
+                Arc::clone(&microphone_failed),
+                &mut emit_microphone_setup,
+            ),
+            CaptureBackend::Auhal => start_auhal(
+                device_id.as_deref(),
+                Arc::clone(&microphone_ring),
+                &mut emit_microphone_setup,
+            ),
+        }
+    };
+    let (mut microphone_stream, microphone_rate) = match microphone_started {
+        Ok(value) => value,
+        Err(code) => {
+            system_stream.stop();
+            drop(system_stream);
+            return write_meeting_failure(
+                stdout,
+                capture_id,
+                nonce,
+                code,
+                Some(CaptureChannel::Microphone),
+                0,
+                0,
+            );
+        }
+    };
+    let system_rate = system_stream.sample_rate();
+    for channel in [CaptureChannel::System, CaptureChannel::Microphone] {
+        write_production_control(
+            stdout,
+            capture_id,
+            nonce,
+            &ProductionHelperMessage::MeetingPhase {
+                phase: CapturePhase::AwaitingFirstCallback,
+                channel,
+            },
+        )
+        .map_err(|_| ())?;
+    }
+
+    let (control_tx, control_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut input = std::io::stdin().lock();
+        if let Ok(message) = read_control(&mut input, capture_id, nonce) {
+            let _ = control_tx.send(message);
+        }
+    });
+
+    let mut microphone_sequence = 0_u64;
+    let mut system_sequence = 0_u64;
+    let mut microphone_samples = 0_u64;
+    let mut system_samples = 0_u64;
+    let mut microphone_scratch = [0_f32; 4096];
+    let mut system_scratch = [0_f32; 4096];
+    let mut microphone_active = false;
+    let mut system_active = false;
+    let mut last_microphone_position = microphone_ring.producer_position();
+    let mut last_system_position = system_ring.producer_position();
+    let mut last_microphone_progress = Instant::now();
+    let mut last_system_progress = Instant::now();
+
+    loop {
+        if microphone_failed.load(Ordering::Acquire) {
+            return write_meeting_failure(
+                stdout,
+                capture_id,
+                nonce,
+                FailureCode::StreamError,
+                Some(CaptureChannel::Microphone),
+                microphone_samples,
+                system_samples,
+            );
+        }
+        for (channel, ring) in [
+            (CaptureChannel::Microphone, &microphone_ring),
+            (CaptureChannel::System, &system_ring),
+        ] {
+            if ring.overflowed.load(Ordering::Acquire) {
+                return write_meeting_failure(
+                    stdout,
+                    capture_id,
+                    nonce,
+                    FailureCode::Internal,
+                    Some(channel),
+                    microphone_samples,
+                    system_samples,
+                );
+            }
+        }
+
+        let now = Instant::now();
+        let microphone_position = microphone_ring.producer_position();
+        if microphone_position != last_microphone_position {
+            last_microphone_position = microphone_position;
+            last_microphone_progress = now;
+        }
+        let system_position = system_ring.producer_position();
+        if system_position != last_system_position {
+            last_system_position = system_position;
+            last_system_progress = now;
+        }
+
+        for (channel, active, last_progress) in [
+            (
+                CaptureChannel::Microphone,
+                microphone_active,
+                last_microphone_progress,
+            ),
+            (CaptureChannel::System, system_active, last_system_progress),
+        ] {
+            let deadline = if active {
+                Duration::from_secs(2)
+            } else {
+                STOP_DEADLINE
+            };
+            if last_progress.elapsed() >= deadline {
+                return write_meeting_failure(
+                    stdout,
+                    capture_id,
+                    nonce,
+                    FailureCode::CallbackStalled,
+                    Some(channel),
+                    microphone_samples,
+                    system_samples,
+                );
+            }
+        }
+
+        let microphone_count = microphone_ring.drain(&mut microphone_scratch);
+        if microphone_count > 0 {
+            if !microphone_active {
+                microphone_active = true;
+                write_production_control(
+                    stdout,
+                    capture_id,
+                    nonce,
+                    &ProductionHelperMessage::MeetingPhase {
+                        phase: CapturePhase::Active,
+                        channel: CaptureChannel::Microphone,
+                    },
+                )
+                .map_err(|_| ())?;
+            }
+            write_production_pcm(
+                stdout,
+                capture_id,
+                nonce,
+                ProductionPcmMetadata {
+                    channel: CaptureChannel::Microphone,
+                    sequence: microphone_sequence,
+                    sample_rate: microphone_rate,
+                    captured_at_ns: meeting_started_at
+                        .elapsed()
+                        .as_nanos()
+                        .min(u64::MAX as u128) as u64,
+                    sample_offset: microphone_samples,
+                },
+                &microphone_scratch[..microphone_count],
+            )
+            .map_err(|_| ())?;
+            microphone_sequence += 1;
+            microphone_samples += microphone_count as u64;
+        }
+
+        let system_count = system_ring.drain(&mut system_scratch);
+        if system_count > 0 {
+            if !system_active {
+                system_active = true;
+                write_production_control(
+                    stdout,
+                    capture_id,
+                    nonce,
+                    &ProductionHelperMessage::MeetingPhase {
+                        phase: CapturePhase::Active,
+                        channel: CaptureChannel::System,
+                    },
+                )
+                .map_err(|_| ())?;
+            }
+            write_production_pcm(
+                stdout,
+                capture_id,
+                nonce,
+                ProductionPcmMetadata {
+                    channel: CaptureChannel::System,
+                    sequence: system_sequence,
+                    sample_rate: system_rate,
+                    captured_at_ns: meeting_started_at
+                        .elapsed()
+                        .as_nanos()
+                        .min(u64::MAX as u128) as u64,
+                    sample_offset: system_samples,
+                },
+                &system_scratch[..system_count],
+            )
+            .map_err(|_| ())?;
+            system_sequence += 1;
+            system_samples += system_count as u64;
+        }
+
+        match control_rx.try_recv() {
+            Ok(ProductionHostMessage::Stop | ProductionHostMessage::Cancel) => {
+                write_production_control(
+                    stdout,
+                    capture_id,
+                    nonce,
+                    &ProductionHelperMessage::MeetingPhase {
+                        phase: CapturePhase::Stopping,
+                        channel: CaptureChannel::Microphone,
+                    },
+                )
+                .map_err(|_| ())?;
+                microphone_stream.stop();
+                system_stream.stop();
+                drop(microphone_stream);
+                drop(system_stream);
+                write_production_control(
+                    stdout,
+                    capture_id,
+                    nonce,
+                    &ProductionHelperMessage::MeetingStopped {
+                        microphone_samples,
+                        system_samples,
+                    },
+                )
+                .map_err(|_| ())?;
+                return Ok(());
+            }
+            Ok(_) => return Err(()),
+            Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
+            Err(mpsc::TryRecvError::Empty) => {}
+        }
+
+        if fault == Some("ring-overflow") {
+            system_ring.overflowed.store(true, Ordering::Release);
+        }
+        std::thread::sleep(Duration::from_millis(4));
+    }
+}
+
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
     use std::io::Cursor;
@@ -522,6 +972,35 @@ mod tests {
     }
 
     #[test]
+    fn independent_channel_rings_do_not_cross_contaminate() {
+        let mut model = loom::model::Builder::new();
+        model.preemption_bound = Some(2);
+        model.check(|| {
+            let microphone = loom::sync::Arc::new(SpscRing::with_capacity(4));
+            let system = loom::sync::Arc::new(SpscRing::with_capacity(4));
+            let microphone_writer = loom::sync::Arc::clone(&microphone);
+            let system_writer = loom::sync::Arc::clone(&system);
+            let mic = loom::thread::spawn(move || {
+                microphone_writer.push(1.0);
+                microphone_writer.push(2.0);
+            });
+            let sys = loom::thread::spawn(move || {
+                system_writer.push(10.0);
+                system_writer.push(20.0);
+            });
+            mic.join().unwrap();
+            sys.join().unwrap();
+
+            let mut microphone_output = [0.0; 2];
+            let mut system_output = [0.0; 2];
+            assert_eq!(microphone.drain(&mut microphone_output), 2);
+            assert_eq!(system.drain(&mut system_output), 2);
+            assert_eq!(microphone_output, [1.0, 2.0]);
+            assert_eq!(system_output, [10.0, 20.0]);
+        });
+    }
+
+    #[test]
     fn parse_nonce_accepts_exact_hex_and_rejects_malformed_values() {
         assert_eq!(
             parse_nonce("00112233445566778899aAbBcCdDeEfF"),
@@ -532,6 +1011,13 @@ mod tests {
         );
         assert_eq!(parse_nonce("0011"), Err(()));
         assert_eq!(parse_nonce("00112233445566778899aabbccddeefg"), Err(()));
+    }
+
+    #[test]
+    fn parent_watchdog_only_fires_after_reparenting() {
+        assert!(!parent_is_gone(42, 42));
+        assert!(parent_is_gone(42, 1));
+        assert!(parent_is_gone(42, 43));
     }
 
     #[test]
@@ -553,7 +1039,20 @@ mod tests {
         let capture_id = 42;
         let nonce = [7; 16];
         let mut pcm = Vec::new();
-        write_production_pcm(&mut pcm, capture_id, nonce, 0, 48_000, &[0.25]).unwrap();
+        write_production_pcm(
+            &mut pcm,
+            capture_id,
+            nonce,
+            ProductionPcmMetadata {
+                channel: CaptureChannel::Microphone,
+                sequence: 0,
+                sample_rate: 48_000,
+                captured_at_ns: 0,
+                sample_offset: 0,
+            },
+            &[0.25],
+        )
+        .unwrap();
         assert_eq!(
             read_control(&mut Cursor::new(pcm), capture_id, nonce),
             Err(())
@@ -575,6 +1074,7 @@ mod tests {
 }
 
 pub fn run(arguments: &[String]) -> Result<(), ()> {
+    spawn_parent_watchdog()?;
     let capture_id = arguments
         .first()
         .ok_or(())?
@@ -607,7 +1107,15 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
                 &ProductionHelperMessage::Devices { devices },
             )
             .map_err(|_| ())?;
-            return Ok(());
+            Ok(())
+        }
+        ProductionHostMessage::ProbeSystemAudio => {
+            drop(stdin);
+            probe_system_audio(&mut stdout, capture_id, nonce)
+        }
+        ProductionHostMessage::StartMeeting { device_id, backend } => {
+            drop(stdin);
+            run_meeting(&mut stdout, capture_id, nonce, device_id, backend, fault)
         }
         ProductionHostMessage::Start { device_id, backend } => {
             drop(stdin);
@@ -628,31 +1136,32 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
             }
             let ring = Arc::new(SpscRing::new());
             let failed = Arc::new(AtomicBool::new(false));
-            let mut emit_setup = |step: CaptureSetupStep, transition: SetupTransition| {
-                write_production_control(
-                    &mut stdout,
-                    capture_id,
-                    nonce,
-                    &ProductionHelperMessage::SetupStep {
-                        backend,
-                        step,
-                        transition,
-                    },
-                )
-                .map_err(|_| FailureCode::Internal)
-            };
-            let started = match backend {
-                CaptureBackend::Cpal => start_cpal(
-                    device_id.as_deref(),
-                    Arc::clone(&ring),
-                    Arc::clone(&failed),
-                    &mut emit_setup,
-                ),
-                CaptureBackend::Auhal => {
-                    start_auhal(device_id.as_deref(), Arc::clone(&ring), &mut emit_setup)
+            let started = {
+                let mut emit_setup = |step: CaptureSetupStep, transition: SetupTransition| {
+                    write_production_control(
+                        &mut stdout,
+                        capture_id,
+                        nonce,
+                        &ProductionHelperMessage::SetupStep {
+                            backend,
+                            step,
+                            transition,
+                        },
+                    )
+                    .map_err(|_| FailureCode::Internal)
+                };
+                match backend {
+                    CaptureBackend::Cpal => start_cpal(
+                        device_id.as_deref(),
+                        Arc::clone(&ring),
+                        Arc::clone(&failed),
+                        &mut emit_setup,
+                    ),
+                    CaptureBackend::Auhal => {
+                        start_auhal(device_id.as_deref(), Arc::clone(&ring), &mut emit_setup)
+                    }
                 }
             };
-            drop(emit_setup);
             let (mut stream, sample_rate) = match started {
                 Ok(value) => value,
                 Err(code) => {
@@ -792,8 +1301,14 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
                             capture_id
                         },
                         nonce,
-                        sequence,
-                        sample_rate,
+                        ProductionPcmMetadata {
+                            channel: CaptureChannel::Microphone,
+                            sequence,
+                            sample_rate,
+                            captured_at_ns: started_at.elapsed().as_nanos().min(u64::MAX as u128)
+                                as u64,
+                            sample_offset: retained,
+                        },
                         &scratch[..count],
                     )
                     .map_err(|_| ())?;

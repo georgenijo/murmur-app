@@ -23,6 +23,19 @@ For commands see [commands.md](commands.md). For the hooks that consume these ev
 | `file-output-failed` | `string` (hint) | `commands/recording.rs` | Saving the transcript/audio file failed; clipboard delivery still happened. | Main window. |
 | `file-transcription-status-changed` | `boolean` | `commands/recording.rs` | `true` when an imported-file transcription starts, `false` when it finishes or aborts. Gates dictation and transform. | Main window (`useFileTranscription`). |
 
+## Meeting capture
+
+Meeting transcript text is carried only by the targeted finalized-segment UI
+event and local SQLite reads. Structured meeting logs are independently
+sanitized, and the fleet log shipper drops the entire `meeting` stream.
+
+| Event | Payload | Source | When it fires | Listeners |
+|-------|---------|--------|---------------|-----------|
+| `meeting-status-changed` | `MeetingRuntimeStatus {generation, sessionId, phase, elapsedMs, microphoneActive, systemAudioActive, errorCode}` | `meeting_capture.rs` | On start/setup/channel-ready/stop/processing/failure transitions. Contains no transcript or path. | Main (`useMeetings`), overlay (distinct meeting state). |
+| `meeting-segment-finalized` | `MeetingSegment` | `meeting_capture.rs` | After a pending chunk transcribes and its final segment transaction commits. | Main (`useMeetings` bounded live transcript). |
+| `meeting-segment-failed` | `{sessionId, segmentId, errorCode}` | `meeting_capture.rs` | A durable pending chunk could not be read or transcribed and transitioned to failed. Contains no text/path. | Main (`useMeetings` actionable warning). |
+| `system-audio-permission-changed` | `"unknown" \| "granted" \| "denied" \| "unsupported"` | `commands/meeting.rs` | After the user explicitly runs the short-lived permission probe. | Main permission banner and `useMeetings`. |
+
 ## Models
 
 | Event | Payload | Source | When it fires | Listeners |
@@ -81,7 +94,7 @@ All transform events carry a `transformPassId` where a pass exists, so a delayed
 
 | Event | Payload | Source | When it fires | Listeners |
 |-------|---------|--------|---------------|-----------|
-| `app-event` | `AppEvent` | `telemetry.rs` (`TauriEmitterLayer`) | For **every** `tracing` event in the Rust backend. | Log viewer (`useEventStore`). Release `pipeline` strings are stripped; `transform` strings are restricted by key **and** value to an explicit stable vocabulary in all builds. |
+| `app-event` | `AppEvent` | `telemetry.rs` (`TauriEmitterLayer`) | For **every** `tracing` event in the Rust backend. | Log viewer (`useEventStore`). Release `pipeline` strings are stripped; `transform` and `meeting` strings are restricted by key **and** value to explicit stable vocabularies in all builds. |
 
 Transcript stage telemetry uses the versioned stage vocabulary from
 `PerformanceStageV1`, including `spokenStructure`. It carries only stage
@@ -123,7 +136,7 @@ interface AppEvent {
                                   // high-value outcomes may include allowlisted event_code
 }
 
-type StreamName = 'pipeline' | 'audio' | 'keyboard' | 'transform' | 'system';
+type StreamName = 'pipeline' | 'audio' | 'keyboard' | 'transform' | 'meeting' | 'system';
 type LevelName  = 'trace' | 'debug' | 'info' | 'warn' | 'error';
 ```
 

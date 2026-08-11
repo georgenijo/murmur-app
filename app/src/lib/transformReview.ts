@@ -39,6 +39,7 @@ export type ReviewErrorCode =
   | 'model_load_failed'
   | 'disabled'
   | 'busy'
+  | 'meeting_active'
   | 'audio_stalled'
   | 'audio_recovery_stalled'
   | 'audio_not_ready'
@@ -63,7 +64,7 @@ const REVIEW_ERROR_CODES: readonly ReviewErrorCode[] = [
   'generation_timeout', 'helper_spawn_failed', 'handshake_protocol_failed',
   'process_exit', 'model_verification_failed',
   'model_load_failed',
-  'disabled', 'busy', 'audio_stalled', 'audio_recovery_stalled', 'audio_not_ready',
+  'disabled', 'busy', 'meeting_active', 'audio_stalled', 'audio_recovery_stalled', 'audio_not_ready',
   'no_instruction', 'no_selection', 'too_large', 'ax_unavailable',
   'accessibility_denied', 'target_gone', 'selection_changed',
   'clipboard_unavailable', 'paste_failed', 'not_applied',
@@ -95,6 +96,7 @@ export const REVIEW_ERROR_COPY: Record<ReviewErrorCode, string> = {
   model_load_failed: 'Local model or Metal backend failed to load',
   disabled: 'Transform temporarily disabled — try again shortly',
   busy: 'Busy — try again in a moment',
+  meeting_active: 'Stop the meeting capture before transforming text',
   audio_stalled: 'Still connecting to the microphone…',
   audio_recovery_stalled: 'Still waiting for macOS audio to recover…',
   audio_not_ready: "The microphone wasn't ready — try again",

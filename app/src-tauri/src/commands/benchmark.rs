@@ -42,6 +42,10 @@ pub async fn run_benchmark(
     request: BenchmarkRequest,
 ) -> Result<BenchmarkReport, String> {
     let coordinator = state.benchmark.clone();
+    let transition = state.app_state.recording_transition.lock().await;
+    if state.app_state.meeting_blocks_asr() {
+        return Err("Wait for the meeting transcript to finish before benchmarking".to_string());
+    }
     // Auto-dismiss a parked transform review, refuse on an active transform
     // (issue #338 — this path previously ignored the transform status
     // entirely and would run a benchmark right over a parked review). The
@@ -84,6 +88,7 @@ pub async fn run_benchmark(
             });
         }
     }
+    drop(transition);
     // Only one heavy inference runtime may be resident: stop any local-LLM
     // helper before benchmarking (fail-fast no-op while a transform is in
     // flight). The benchmark slot is already claimed above.

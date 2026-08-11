@@ -4,6 +4,8 @@
 <dict>
     <key>NSMicrophoneUsageDescription</key>
     <string>Local Dictation needs microphone access to record your voice for transcription.</string>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>Murmur needs system audio access to create local Me/Them meeting transcripts.</string>
     <key>NSAppleEventsUsageDescription</key>
     <string>Local Dictation needs accessibility access for global hotkeys.</string>
 </dict>

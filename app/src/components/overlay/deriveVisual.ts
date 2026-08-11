@@ -1,4 +1,5 @@
 import type { DictationStatus } from '../../lib/types';
+import type { MeetingRuntimePhase } from '../../lib/meetings';
 
 /**
  * Which indicator the top-bar left slot shows. Mirrors the priority chain that
@@ -18,6 +19,7 @@ export type OverlayIndicator =
   | { kind: 'processing' }
   | { kind: 'transforming' }
   | { kind: 'calibrating' }
+  | { kind: 'meeting'; processing: boolean }
   | { kind: 'idle'; dimmed: boolean };
 
 export interface OverlayVisual {
@@ -60,6 +62,7 @@ export function deriveVisual(
   showMicrophoneFailure: boolean = false,
   stillConnecting: boolean = false,
   calibrating: boolean = false,
+  meetingPhase: MeetingRuntimePhase = 'idle',
 ): OverlayVisual {
   let indicator: OverlayIndicator;
   if (calibrating) {
@@ -74,6 +77,8 @@ export function deriveVisual(
     indicator = { kind: 'transformBusy' };
   } else if (showHotkeyMiss) {
     indicator = { kind: 'hotkeyMiss' };
+  } else if (meetingPhase !== 'idle' && meetingPhase !== 'failed') {
+    indicator = { kind: 'meeting', processing: meetingPhase === 'processing' };
   } else if (status === 'starting') {
     indicator = { kind: 'starting', slow: stillConnecting };
   } else if (status === 'recording') {

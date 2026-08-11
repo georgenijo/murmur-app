@@ -6,6 +6,27 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 ---
 
+## 2026-08-11: Meeting capture uses explicit-session CATap in the signed capture worker
+
+**Decision:** Phase-one meeting capture creates a private, unmuted Core Audio
+process tap inside the existing signed capture worker and carries microphone
+and system output as separate protocol channels. The app keeps its macOS 14.0
+minimum, but meeting capture is gated to macOS 14.2 or newer with a typed
+unsupported result. There is no passive permission probe: the unknown state is
+cached until an explicit user action creates one short-lived tap or starts a
+meeting. Both the host app and worker embed `NSAudioCaptureUsageDescription`;
+the signed native smoke determines the TCC attribution actually shown by macOS.
+
+**Rationale:** The existing CATap RMS proof captures system output without
+cloud access or a virtual driver. Avoiding focus-time and polling taps addresses
+the historical `coreaudiod` churn failure mode. Keeping the broader 14.0 app
+minimum avoids removing otherwise-supported Macs for one opt-in feature.
+
+**Status:** active
+
+**References:** #539; `sidecars/capture/src/system_audio.rs`,
+`crates/capture-helper-protocol`
+
 ## 2026-08-09: Rust-owned settings.json is the source of truth; localStorage is a cache
 
 **Decision:** Frontend settings persist durably to `settings.json` in the

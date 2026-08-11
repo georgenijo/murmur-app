@@ -30,6 +30,11 @@ describe('event semantic colors', () => {
         text: 'text-warning',
         dot: 'bg-warning',
       },
+      meeting: {
+        bg: 'bg-surface-container-low',
+        text: 'text-on-surface',
+        dot: 'bg-error',
+      },
       system: {
         bg: 'bg-success/10',
         text: 'text-success',

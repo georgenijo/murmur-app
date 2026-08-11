@@ -15,6 +15,7 @@ import { deriveVisual } from './overlay/deriveVisual';
 import { OverlayPill } from './overlay/OverlayPill';
 import { OverlayDropdown } from './overlay/OverlayDropdown';
 import { NotchCalibrationBand } from './overlay/NotchCalibrationBand';
+import { IDLE_MEETING_STATUS, type MeetingRuntimePhase, type MeetingRuntimeStatus } from '../lib/meetings';
 
 export function OverlayWidget() {
   const geometry = useOverlayGeometry();
@@ -37,6 +38,7 @@ export function OverlayWidget() {
   // by the broadcast `transform-state-changed` event; the overlay is a
   // separate webview so it listens directly.
   const [transforming, setTransforming] = useState(false);
+  const [meetingPhase, setMeetingPhase] = useState<MeetingRuntimePhase>('idle');
   const [stillConnecting, setStillConnecting] = useState(false);
   const hotkeyMissFeedbackRef = useRef(false);
   const statusRef = useRef<DictationStatus>('idle');
@@ -70,7 +72,24 @@ export function OverlayWidget() {
     runtime.showMicrophoneFailure,
     stillConnecting,
     calibrating,
+    meetingPhase,
   );
+
+  useEffect(() => {
+    void invoke<MeetingRuntimeStatus>('get_meeting_status')
+      .then((meeting) => setMeetingPhase(meeting.phase))
+      .catch(() => setMeetingPhase(IDLE_MEETING_STATUS.phase));
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    listen<MeetingRuntimeStatus>('meeting-status-changed', (event) => {
+      setMeetingPhase(event.payload.phase);
+    }).then((fn) => {
+      if (cancelled) fn(); else unlisten = fn;
+    }).catch(() => {
+      // Non-Tauri previews do not expose the native event bridge.
+    });
+    return () => { cancelled = true; unlisten?.(); };
+  }, []);
 
   useEffect(() => {
     if (!geometry) return;
@@ -172,7 +191,8 @@ export function OverlayWidget() {
   // Only the genuinely off/idle surface tucks the empty right wing beneath the
   // notch. Recording and processing keep the full top bar even without hover so
   // their right-side indicators never disappear.
-  const compactIdle = status === 'idle' && !expanded && !calibrating;
+  const meetingBusy = meetingPhase !== 'idle' && meetingPhase !== 'failed';
+  const compactIdle = status === 'idle' && !meetingBusy && !expanded && !calibrating;
   const pillW = compactIdle ? geometry.pillIdleW : geometry.pillActiveW;
   const pillMargin = compactIdle ? geometry.pillMarginIdle : geometry.pillMarginActive;
 
@@ -180,9 +200,9 @@ export function OverlayWidget() {
     <div
       className="relative flex h-full w-full"
       style={{ background: 'transparent' }}
-      onMouseDown={calibrating ? undefined : recordingControls.handleMouseDown}
-      onDoubleClick={calibrating ? undefined : recordingControls.handleDoubleClick}
-      onClick={calibrating ? undefined : recordingControls.handleClick}
+      onMouseDown={calibrating || meetingBusy ? undefined : recordingControls.handleMouseDown}
+      onDoubleClick={calibrating || meetingBusy ? undefined : recordingControls.handleDoubleClick}
+      onClick={calibrating || meetingBusy ? undefined : recordingControls.handleClick}
       onMouseEnter={calibrating ? undefined : onHoverStart}
       onMouseMove={calibrating ? undefined : onHoverStart}
     >
