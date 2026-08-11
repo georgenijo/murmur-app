@@ -512,7 +512,6 @@ def validate_promotion_policy(workflow: str) -> int:
     assert "updater policy must contain exactly one null or string min_version" in workflow
     assert '--min-version "$MIN_VERSION"' in workflow
     assert "published updater policy differs from the trusted source policy" in workflow
-    assert "draft release notes differ from the updater manifest" in workflow
     assert workflow.index("scripts/release_artifacts.py validate") < workflow.index(
         "Create automatic release tag"
     )
@@ -533,6 +532,15 @@ def validate_promotion_policy(workflow: str) -> int:
     assert workflow.index("Verify release metadata matches updater manifest") < workflow.index(
         "Publish release"
     )
+    metadata_check = named_step_block(
+        workflow, "Verify release metadata matches updater manifest", 6
+    )
+    assert "scripts/release_artifacts.py verify-notes" in metadata_check
+    assert "--json body --jq .body > draft-release-notes.md" in metadata_check
+    assert "--manifest remote-manifests/latest-v2.json" in metadata_check
+    assert "--release-notes draft-release-notes.md" in metadata_check
+    assert "RELEASE_NOTES=$(" not in metadata_check
+    assert ".notes == $notes" not in metadata_check
     rehearsal = named_step_block(
         workflow, "Report non-publishing promotion rehearsal", 6
     )

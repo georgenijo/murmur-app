@@ -172,6 +172,20 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             tag_action("b" * 40, source)
 
+    def test_publish_check_requires_shared_release_note_normalization(self) -> None:
+        workflow = (ROOT / ".github/workflows/release.yml").read_text()
+        for marker in (
+            "scripts/release_artifacts.py verify-notes",
+            "--json body --jq .body > draft-release-notes.md",
+            "--manifest remote-manifests/latest-v2.json",
+            "--release-notes draft-release-notes.md",
+        ):
+            with self.subTest(marker=marker):
+                mutated = workflow.replace(marker, "echo skipped", 1)
+                self.assertNotEqual(workflow, mutated)
+                with self.assertRaises(AssertionError):
+                    validate_promotion_policy(mutated)
+
     def test_tag_workflow_rejects_cuda_cache_save_action(self) -> None:
         workflow = (ROOT / ".github/workflows/release.yml").read_text()
         mutated = workflow.replace(

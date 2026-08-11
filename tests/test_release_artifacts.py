@@ -25,6 +25,7 @@ from scripts.release_artifacts import (
     ArtifactError,
     create_provenance,
     validate_release,
+    verify_release_notes_match,
     write_updater_manifests,
 )
 
@@ -111,6 +112,44 @@ class ReleaseArtifactTests(unittest.TestCase):
                 release_notes_path,
                 self.root / "manifests",
             )
+
+    def test_publish_check_normalizes_crlf_and_outer_whitespace_symmetrically(self) -> None:
+        manifest_path = self.root / "latest-v2.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "notes": (
+                        "## New Features\n\n"
+                        "- Added post-update release notes."
+                    )
+                }
+            ),
+            encoding="utf-8",
+        )
+        draft_path = self.root / "draft-release-notes.md"
+        draft_path.write_bytes(
+            b" \r\n## New Features\r\n\r\n"
+            b"- Added post-update release notes.   \r\n\t"
+        )
+
+        verify_release_notes_match(manifest_path, draft_path)
+
+    def test_publish_check_rejects_release_note_content_changes(self) -> None:
+        manifest_path = self.root / "latest-v2.json"
+        manifest_path.write_text(
+            json.dumps({"notes": "## Bug Fixes\n\n- Fixed the release gate."}),
+            encoding="utf-8",
+        )
+        draft_path = self.root / "draft-release-notes.md"
+        draft_path.write_text(
+            "## Bug Fixes\n\n- Edited after manifest generation.\n",
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(
+            ArtifactError, "draft release notes differ from the updater manifest"
+        ):
+            verify_release_notes_match(manifest_path, draft_path)
 
     def test_manifest_generation_includes_valid_minimum_version_on_modern_channel(self) -> None:
         validated_path = self.root / "validated.json"

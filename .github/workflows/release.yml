@@ -488,13 +488,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.resolve.outputs.tag }}
         run: |
-          RELEASE_NOTES=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
-            --json body --jq .body)
-          jq -e --arg notes "$RELEASE_NOTES" '.notes == $notes' \
-            remote-manifests/latest-v2.json >/dev/null || {
-            echo "ERROR: draft release notes differ from the updater manifest"
-            exit 1
-          }
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json body --jq .body > draft-release-notes.md
+          python3 scripts/release_artifacts.py verify-notes \
+            --manifest remote-manifests/latest-v2.json \
+            --release-notes draft-release-notes.md
 
       - name: Publish release
         if: needs.resolve.outputs.publish == 'true'
