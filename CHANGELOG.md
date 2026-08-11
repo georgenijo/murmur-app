@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Release promotion now compares draft and updater-manifest notes with the same
+  deterministic whitespace normalization, avoiding formatting-only failures
+  while still rejecting edited content (#512).
+
 ## [0.30.1] - 2026-08-09
 
 ### Fixed

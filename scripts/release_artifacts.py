@@ -409,6 +409,10 @@ def validate_release(
     return result
 
 
+def _normalize_release_notes(value: str) -> str:
+    return value.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
 def write_updater_manifests(
     validated_path: Path,
     tag: str,
@@ -428,7 +432,9 @@ def write_updater_manifests(
         raise ArtifactError("bridge updater URL and signature are required")
     if not release_notes_path.is_file():
         raise ArtifactError("release notes file is required")
-    release_notes = release_notes_path.read_text(encoding="utf-8").strip()
+    release_notes = _normalize_release_notes(
+        release_notes_path.read_text(encoding="utf-8")
+    )
     if not release_notes:
         raise ArtifactError("release notes must not be empty")
 
@@ -497,6 +503,30 @@ def write_updater_manifests(
     return modern_path, legacy_path
 
 
+def verify_release_notes_match(
+    manifest_path: Path, release_notes_path: Path
+) -> None:
+    if not manifest_path.is_file():
+        raise ArtifactError("updater manifest is required")
+    if not release_notes_path.is_file():
+        raise ArtifactError("release notes file is required")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ArtifactError("updater manifest is not valid JSON") from exc
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("notes"), str):
+        raise ArtifactError("updater manifest notes must be a string")
+
+    manifest_notes = _normalize_release_notes(manifest["notes"])
+    release_notes = _normalize_release_notes(
+        release_notes_path.read_text(encoding="utf-8")
+    )
+    if not manifest_notes or not release_notes:
+        raise ArtifactError("release notes must not be empty")
+    if manifest_notes != release_notes:
+        raise ArtifactError("draft release notes differ from the updater manifest")
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -563,6 +593,10 @@ def _parser() -> argparse.ArgumentParser:
     manifests.add_argument("--release-notes", type=Path, required=True)
     manifests.add_argument("--min-version")
     manifests.add_argument("--output-dir", type=Path, required=True)
+
+    verify_notes = subparsers.add_parser("verify-notes")
+    verify_notes.add_argument("--manifest", type=Path, required=True)
+    verify_notes.add_argument("--release-notes", type=Path, required=True)
     return parser
 
 
@@ -678,7 +712,7 @@ def main() -> None:
                 f"validated immutable release artifacts for {payload['commit_sha']} "
                 f"(run {payload['workflow_run_id']})"
             )
-        else:
+        elif args.command == "manifests":
             modern, legacy = write_updater_manifests(
                 args.validated,
                 args.tag,
@@ -690,6 +724,9 @@ def main() -> None:
                 args.min_version,
             )
             print(f"wrote updater manifests: {modern}, {legacy}")
+        else:
+            verify_release_notes_match(args.manifest, args.release_notes)
+            print("verified draft release notes match the updater manifest")
     except ArtifactError as exc:
         raise SystemExit(f"ERROR: {exc}") from exc
 
