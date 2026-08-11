@@ -1246,16 +1246,17 @@ fn run_backend(
                     preview_vad_window.observe(&pcm.samples, pcm.sample_rate);
                     let vad_now = Instant::now();
                     if preview_vad_window.is_due(vad_now) {
-                        let mut scheduled = false;
-                        if let Some(handle) = app_handle.as_ref()
-                            && can_schedule_vad_analysis(handle, preview_id)
-                            && let Some((samples, sample_rate)) =
-                                preview_vad_window.snapshot_if_due(vad_now)
-                        {
-                            schedule_vad_analysis(handle.clone(), preview_id, samples, sample_rate);
-                            scheduled = true;
-                        }
-                        if !scheduled {
+                        let analysis = app_handle
+                            .as_ref()
+                            .filter(|handle| can_schedule_vad_analysis(handle, preview_id))
+                            .and_then(|handle| {
+                                preview_vad_window
+                                    .snapshot_if_due(vad_now)
+                                    .map(|snapshot| (handle.clone(), snapshot))
+                            });
+                        if let Some((handle, (samples, sample_rate))) = analysis {
+                            schedule_vad_analysis(handle, preview_id, samples, sample_rate);
+                        } else {
                             // Sensitivity can be Off, an inference can already
                             // be running, or teardown can have started. Advance
                             // the cadence without copying the rolling window.
