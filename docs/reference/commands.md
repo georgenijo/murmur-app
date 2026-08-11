@@ -53,7 +53,7 @@ supervisor but retains no PCM and never enters transcription or delivery.
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
 | `get_microphone_preview_status` | — | `MicrophonePreviewStatus` | Returns the current generation-aware lifecycle snapshot or retained terminal error. |
-| `start_microphone_preview` | `device_id: String` | `Result<MicrophonePreviewStatus, String>` | Claims a monotonic Preview owner and starts the selected stable device ID. `system_default` is the only value normalized to the live default. Refuses competing capture and benchmark owners. |
+| `start_microphone_preview` | `device_id: String` | `Result<MicrophonePreviewStatus, String>` | Claims a monotonic Preview owner, returns its Connecting status immediately, and starts the selected stable device ID asynchronously so startup can be cancelled. `system_default` is the only value normalized to the live default. Refuses competing capture and benchmark owners. |
 | `stop_microphone_preview` | `preview_id: u64` | `Result<MicrophonePreviewStatus, String>` | Stops only the exact generation and waits for joined-worker `Idle`; a timeout blocks device reopening. |
 | `cancel_microphone_preview` | `preview_id?: u64` | `Result<bool, String>` | Best-effort exact-owner cleanup for page/window teardown. An omitted ID resolves the active preview before cancellation and is a no-op when none exists. |
 

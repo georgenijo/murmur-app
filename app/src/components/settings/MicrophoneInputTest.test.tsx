@@ -36,6 +36,14 @@ const active: MicrophonePreviewStatus = {
   message: null,
 };
 
+const connecting: MicrophonePreviewStatus = {
+  previewId: 7,
+  state: 'connecting',
+  stillConnecting: false,
+  errorKind: null,
+  message: null,
+};
+
 describe('MicrophoneInputTest', () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -126,6 +134,26 @@ describe('MicrophoneInputTest', () => {
     expect(meter.getAttribute('aria-valuenow')).toBe('20');
     expect(meter.getAttribute('aria-valuetext')).toContain('Signal detected');
     expect(container.textContent).toContain('Signal detected');
+  });
+
+  it('can stop an exact preview while its device is still connecting', async () => {
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === 'get_microphone_preview_status') return idle;
+      if (command === 'start_microphone_preview') return connecting;
+      if (command === 'stop_microphone_preview') return idle;
+      if (command === 'cancel_microphone_preview') return true;
+      throw new Error(`unexpected command: ${command}`);
+    });
+    const testButton = Array.from(container.querySelectorAll('button'))
+      .find((button) => button.textContent === 'Test input') as HTMLButtonElement;
+    await act(async () => testButton.click());
+
+    const cancelButton = Array.from(container.querySelectorAll('button'))
+      .find((button) => button.textContent === 'Cancel') as HTMLButtonElement;
+    expect(cancelButton.disabled).toBe(false);
+    await act(async () => cancelButton.click());
+
+    expect(mocks.invoke).toHaveBeenCalledWith('stop_microphone_preview', { previewId: 7 });
   });
 
   it('confirms teardown before persisting and reopening a switched device', async () => {

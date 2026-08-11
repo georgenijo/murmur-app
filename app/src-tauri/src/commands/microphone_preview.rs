@@ -137,33 +137,33 @@ pub async fn start_microphone_preview(
     // The preview claim blocks competing starts. Do not hold the transition
     // mutex while waiting for the supervisor's acceptance channel.
     drop(transition);
-    let start_handle = app_handle.clone();
-    let start_result = match tokio::task::spawn_blocking(move || {
-        audio_lifecycle::start_preview_recording(start_handle, device_id, preview_id)
-    })
-    .await
-    {
-        Ok(result) => result,
-        Err(error) => {
-            let message = format!("Microphone test task failed: {error}");
-            state.app_state.microphone_preview.fail_and_clear(
+    // Return the claimed generation immediately. Some Core Audio devices can
+    // spend a long time inside stream setup (notably unavailable Continuity
+    // inputs); keeping the command pending would leave Settings unable to send
+    // an exact stop for that Connecting generation.
+    let task_app_handle = app_handle.clone();
+    tauri::async_runtime::spawn(async move {
+        let start_handle = task_app_handle.clone();
+        let start_result = tokio::task::spawn_blocking(move || {
+            audio_lifecycle::start_preview_recording(start_handle, device_id, preview_id)
+        })
+        .await;
+        let state = task_app_handle.state::<State>();
+        let failure = match start_result {
+            Ok(Ok(())) => None,
+            Ok(Err(error)) => Some(error.to_string()),
+            Err(error) => Some(format!("Microphone test task failed: {error}")),
+        };
+        if let Some(message) = failure {
+            if state.app_state.microphone_preview.fail_and_clear(
                 preview_id,
                 "start_failed",
-                message.clone(),
-            );
-            emit_status(&app_handle);
-            return Err(message);
+                message,
+            ) {
+                emit_status(&task_app_handle);
+            }
         }
-    };
-    if let Err(error) = start_result {
-        state.app_state.microphone_preview.fail_and_clear(
-            preview_id,
-            "start_failed",
-            error.to_string(),
-        );
-        emit_status(&app_handle);
-        return Err(error.to_string());
-    }
+    });
     Ok(state.app_state.microphone_preview.status())
 }
 

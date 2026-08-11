@@ -222,8 +222,10 @@ export function MicrophoneInputTest({
     ? 'Switching…'
     : operation === 'stopping' || status.state === 'stopping'
       ? 'Stopping…'
-      : operation === 'starting' || status.state === 'connecting'
+      : operation === 'starting'
         ? 'Connecting…'
+        : status.state === 'connecting'
+          ? 'Cancel'
         : ownsPreview
           ? 'Stop test'
           : status.state === 'error'
