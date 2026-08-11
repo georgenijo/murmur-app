@@ -92,6 +92,41 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             validate_ci(mutated)
 
+    def test_native_capture_smoke_requires_labeled_runner_and_device_uid(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        for old, new in (
+            (
+                "runs-on: [self-hosted, macOS, ARM64, murmur-audio]",
+                "runs-on: macos-latest",
+            ),
+            (
+                "MURMUR_CAPTURE_DEVICE_UID: ${{ vars.MURMUR_CAPTURE_DEVICE_UID }}",
+                "MURMUR_CAPTURE_DEVICE_UID: ''",
+            ),
+            ('--device-id "$MURMUR_CAPTURE_DEVICE_UID"', "--device-id default"),
+            ("--first-pcm-seconds 2", "--first-pcm-seconds 20"),
+        ):
+            with self.subTest(policy=old):
+                mutated = workflow.replace(old, new, 1)
+                self.assertNotEqual(workflow, mutated)
+                with self.assertRaises(AssertionError):
+                    validate_ci(mutated)
+
+    def test_native_capture_smoke_covers_capture_paths_and_ci_sentinel(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        for marker in (
+            "      capture: ${{ steps.filter.outputs.capture }}\n",
+            "              - 'app/src-tauri/sidecars/capture/**'\n",
+            "              - 'app/src-tauri/crates/capture-helper-protocol/**'\n",
+            "              - 'app/src-tauri/src/audio*.rs'\n",
+            '            "${{ needs.capture-worker-smoke.result }}"; do\n',
+        ):
+            with self.subTest(marker=marker.strip()):
+                mutated = workflow.replace(marker, "", 1)
+                self.assertNotEqual(workflow, mutated)
+                with self.assertRaises(AssertionError):
+                    validate_ci(mutated)
+
     def test_automatic_promotion_requires_workflow_run_trigger(self) -> None:
         workflow = (ROOT / ".github/workflows/release.yml").read_text()
         mutated = workflow.replace(

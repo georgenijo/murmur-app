@@ -17,6 +17,7 @@ jobs:
       frontend: ${{ steps.filter.outputs.frontend }}
       rust: ${{ steps.filter.outputs.rust }}
       github: ${{ steps.filter.outputs.github }}
+      capture: ${{ steps.filter.outputs.capture }}
     steps:
       - uses: actions/checkout@v4
 
@@ -63,6 +64,13 @@ jobs:
               - 'tests/test_capture_agent_matrix.py'
               - 'tests/test_capture_worker_smoke.py'
               - 'tests/test_log_receiver.py'
+            capture:
+              - 'app/src-tauri/sidecars/capture/**'
+              - 'app/src-tauri/crates/capture-helper-protocol/**'
+              - 'app/src-tauri/src/audio*.rs'
+              - 'scripts/smoke_test_capture_worker.py'
+              - 'tests/test_capture_worker_smoke.py'
+              - '.github/workflows/ci.yml'
 
       - name: Validate workflow policy
         run: |
@@ -241,6 +249,38 @@ jobs:
           LD_LIBRARY_PATH="$CUDA_DRIVER_STUB_DIR:${LD_LIBRARY_PATH:-}" \
             cargo test --lib -- --test-threads=1
 
+  capture-worker-smoke:
+    needs: changes
+    if: "${{ needs.changes.outputs.capture == 'true' && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) }}"
+    runs-on: [self-hosted, macOS, ARM64, murmur-audio]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.96.0
+
+      - name: Build capture worker
+        run: >-
+          cd app/src-tauri &&
+          MURMUR_CAPTURE_ROLE=worker
+          CARGO_TARGET_DIR=target/capture-worker-smoke
+          cargo build -p murmur-capture-helper
+
+      - name: Run native capture worker to first PCM
+        env:
+          MURMUR_CAPTURE_DEVICE_UID: ${{ vars.MURMUR_CAPTURE_DEVICE_UID }}
+        run: |
+          if [ -z "$MURMUR_CAPTURE_DEVICE_UID" ]; then
+            echo "ERROR: configure repository variable MURMUR_CAPTURE_DEVICE_UID with the stable runner input UID"
+            exit 1
+          fi
+          python3 scripts/smoke_test_capture_worker.py \
+            --worker app/src-tauri/target/capture-worker-smoke/debug/murmur-capture-helper \
+            --device-id "$MURMUR_CAPTURE_DEVICE_UID" \
+            --first-pcm-seconds 2 \
+            --timeout-seconds 8
+
   dependency-audit:
     runs-on: ubuntu-latest
     steps:
@@ -270,7 +310,7 @@ jobs:
           npm audit --audit-level=high
 
   ci-pass:
-    needs: [changes, typecheck, visual-regression, rust-macos, linux]
+    needs: [changes, typecheck, visual-regression, rust-macos, linux, capture-worker-smoke]
     # Keep this guard aligned with `changes`; otherwise the sentinel would turn
     # an intentionally skipped release-bump run into a failure.
     if: "${{ always() && (github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'chore: bump version')) }}"
@@ -287,7 +327,8 @@ jobs:
             "${{ needs.typecheck.result }}" \
             "${{ needs.visual-regression.result }}" \
             "${{ needs.rust-macos.result }}" \
-            "${{ needs.linux.result }}"; do
+            "${{ needs.linux.result }}" \
+            "${{ needs.capture-worker-smoke.result }}"; do
             if [ "$result" != "success" ] && [ "$result" != "skipped" ]; then
               echo "required CI job failed or was cancelled: $result"
               exit 1

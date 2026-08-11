@@ -135,10 +135,17 @@ def validate_ci(ci: str) -> int:
     assert "push:\n    branches: [main]" in ci
     assert "\n  pull_request:" in ci
     assert scalar(job_block(ci, "changes"), "if") == CI_GUARD
-    for job in ("typecheck", "visual-regression", "rust-macos", "linux"):
+    for job in (
+        "typecheck",
+        "visual-regression",
+        "rust-macos",
+        "linux",
+        "capture-worker-smoke",
+    ):
         assert scalar(job_block(ci, job), "needs") == "changes"
     assert scalar(job_block(ci, "ci-pass"), "needs") == (
-        "[changes, typecheck, visual-regression, rust-macos, linux]"
+        "[changes, typecheck, visual-regression, rust-macos, linux, "
+        "capture-worker-smoke]"
     )
     assert scalar(job_block(ci, "ci-pass"), "if") == CI_PASS_GUARD
     ci_pass_step = named_step_block(ci, "Check CI result", 6)
@@ -155,6 +162,13 @@ def validate_ci(ci: str) -> int:
     assert "tests/test_release_version.py" in ci
     assert "tests/test_workflow_policy.py" in ci
     assert "tests/test_capture_agent_matrix.py" in ci
+    assert "capture: ${{ steps.filter.outputs.capture }}" in ci
+    for capture_path in (
+        "'app/src-tauri/sidecars/capture/**'",
+        "'app/src-tauri/crates/capture-helper-protocol/**'",
+        "'app/src-tauri/src/audio*.rs'",
+    ):
+        assert capture_path in ci
     capture_build = named_step_block(
         ci, "Build capture isolation helpers and stub local-LLM externalBin", 6
     )
@@ -174,6 +188,26 @@ def validate_ci(ci: str) -> int:
     assert "binaries/murmur-capture-worker-aarch64-apple-darwin" in capture_build
     capture_tests = named_step_block(ci, "Run capture worker unit tests", 6)
     assert "cargo test -p murmur-capture-helper" in capture_tests
+    capture_smoke = job_block(ci, "capture-worker-smoke")
+    assert scalar(capture_smoke, "runs-on") == (
+        "[self-hosted, macOS, ARM64, murmur-audio]"
+    )
+    assert "github.event.pull_request.head.repo.full_name == github.repository" in scalar(
+        capture_smoke, "if"
+    )
+    assert "timeout-minutes: 10" in capture_smoke
+    capture_worker_build = named_step_block(ci, "Build capture worker", 6)
+    assert "MURMUR_CAPTURE_ROLE=worker" in capture_worker_build
+    native_capture_smoke = named_step_block(
+        ci, "Run native capture worker to first PCM", 6
+    )
+    assert "scripts/smoke_test_capture_worker.py" in native_capture_smoke
+    assert "MURMUR_CAPTURE_DEVICE_UID: ${{ vars.MURMUR_CAPTURE_DEVICE_UID }}" in (
+        native_capture_smoke
+    )
+    assert '--device-id "$MURMUR_CAPTURE_DEVICE_UID"' in native_capture_smoke
+    assert "--first-pcm-seconds 2 \\" in native_capture_smoke
+    assert "${{ needs.capture-worker-smoke.result }}" in ci_pass_step
     job_block(ci, "dependency-audit")
     rust_audit = named_step_block(ci, "Audit Rust dependencies (advisory)", 6)
     assert "continue-on-error: true" in rust_audit
