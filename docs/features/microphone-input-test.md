@@ -7,29 +7,32 @@ the input is too quiet or clipping.
 
 ## User contract
 
-- **Test input** opens the currently selected stable device ID (or the live
-  system default), then shows RMS level, peak level, and a stabilized
-  `No signal` / `Too quiet` / `Signal detected` / `Clipping` classification.
+- Opening Dictation Settings automatically opens the currently selected stable
+  device ID (or the live system default), then shows RMS level, peak level, and
+  a stabilized `No signal` / `Too quiet` / `Signal detected` / `Clipping`
+  classification.
 - Changing devices during a test first stops the exact preview generation and
   waits for its worker to exit and join. Murmur persists the new selection,
   then opens it only after teardown is confirmed. A teardown timeout preserves
   the selection but does not risk a second Core Audio owner.
-- The test stops when the user presses **Stop test**, leaves the Dictation
-  settings page, closes or hides Settings, or the Mac sleeps. Startup,
-  permission, missing-device, runtime-unplug, and slow-teardown failures stay
-  actionable in the row.
+- Monitoring yields automatically when dictation starts and resumes when the
+  recording/transcription cycle returns to Idle. It also stops when the user
+  leaves Dictation Settings, closes or hides Settings, or the Mac sleeps.
+  Startup, permission, missing-device, runtime-unplug, and slow-teardown
+  failures stay actionable in the row.
 - An explicit device ID is never replaced by System Default. If the saved ID
-  disappears, the existing missing-device warning remains and Test input is
-  disabled until the user chooses an available input.
+  disappears, the existing missing-device warning remains and monitoring stays
+  idle until the user chooses an available input.
 
 ## Capture ownership
 
 `AudioOwner::Preview(preview_id)` is a first-class owner of the production
 capture supervisor. Preview IDs are monotonic and every lifecycle event is
-generation-checked. Dictation, transform instruction capture, Voice Query,
-personal-corpus capture, and Performance Lab benchmark claims all refuse while
-a preview owns audio; preview startup performs the symmetric checks under the
-same short `recording_transition` lock.
+generation-checked. Preview is lower priority than real pipeline work:
+dictation, Transform, Voice Query, corpus capture, and benchmark startup stop
+the exact Preview owner, wait for confirmed worker teardown, and claim their
+work under the same short `recording_transition` lock. Preview startup still
+refuses while any real pipeline owns audio.
 
 Stop acknowledgement is not teardown authority. The preview remains claimed
 through Starting, Recording, Stopping, and Recovering, and clears only after the

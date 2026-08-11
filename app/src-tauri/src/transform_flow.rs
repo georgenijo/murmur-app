@@ -1711,7 +1711,11 @@ pub(crate) async fn start_transform_capture(
     // same order (`recording_transition` then `dictation`) as
     // `start_native_recording`, so the two audio paths can't tear each other's
     // recorder down.
-    let _transition = state.app_state.recording_transition.lock().await;
+    let _transition = crate::commands::microphone_preview::transition_after_stopping_preview(
+        &app_handle,
+        state.inner(),
+    )
+    .await?;
 
     let claim_result: Result<(), &'static str> = {
         let dictation = state.app_state.dictation.lock_or_recover();
@@ -1724,9 +1728,6 @@ pub(crate) async fn start_transform_capture(
         } else if dictation.status != DictationStatus::Idle {
             tracing::info!(target: "transform", transform_pass_id, error_code = "dictation_active", "start_transform_capture ignored");
             Err("dictation_active")
-        } else if state.app_state.microphone_preview.is_active() {
-            tracing::info!(target: "transform", transform_pass_id, error_code = "microphone_preview", "start_transform_capture ignored");
-            Err("microphone_preview")
         } else if state.benchmark.is_running() {
             tracing::info!(target: "transform", transform_pass_id, error_code = "benchmark_running", "start_transform_capture ignored");
             Err("benchmark_running")
@@ -2453,11 +2454,11 @@ pub(crate) async fn retry_transform_instruction(
     state: tauri::State<'_, crate::State>,
     device_name: Option<String>,
 ) -> Result<(), String> {
-    let _transition = state.app_state.recording_transition.lock().await;
-
-    if state.app_state.microphone_preview.is_active() {
-        return Err("Stop the microphone test before retrying the transform".to_string());
-    }
+    let _transition = crate::commands::microphone_preview::transition_after_stopping_preview(
+        &app_handle,
+        state.inner(),
+    )
+    .await?;
 
     let fx = TauriFlowEffects {
         app: &app_handle,

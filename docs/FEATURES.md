@@ -179,7 +179,8 @@ project scan share one six-tab editor window.
 
 Dictation Settings also includes a local-only
 [live microphone input test](features/microphone-input-test.md) with RMS/peak
-metering, quiet/clipping guidance, exact device switching, and no retained PCM.
+metering, quiet/clipping guidance, automatic pause/resume around dictation,
+exact device switching, and no retained PCM.
 
 ### Appearance — [features/appearance.md](features/appearance.md)
 Local System/Light/Dark appearance with accessible custom accent, background, foreground, and contrast controls. The main window owns the revisioned local document and native title-bar appearance; the transparent overlay and transform review remain unsynchronized always-dark glass. Import/export is bounded, atomic, UTF-8 JSON and never touches the clipboard.

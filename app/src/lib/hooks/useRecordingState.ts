@@ -230,7 +230,6 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
         if (res.type !== 'recording_starting') {
           if (res.type === 'error') setError(res.error || 'Unknown error');
           else if (res.type === 'busy_benchmarking') setError('Wait for the benchmark to finish.');
-          else if (res.type === 'busy_microphone_preview') setError('Stop the microphone test in Settings before dictating.');
           else if (res.type === 'busy_transcribing_file') setError('Wait for the file transcription to finish.');
           else if (res.type === 'audio_recovering') {
             setError('Microphone cleanup is still in progress. Try again when Murmur is ready.');

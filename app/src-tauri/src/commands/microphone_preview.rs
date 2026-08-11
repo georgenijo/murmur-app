@@ -143,12 +143,22 @@ pub async fn start_microphone_preview(
     // an exact stop for that Connecting generation.
     let task_app_handle = app_handle.clone();
     tauri::async_runtime::spawn(async move {
+        let state = task_app_handle.state::<State>();
+        let transition = state.app_state.recording_transition.lock().await;
+        if !state.app_state.microphone_preview.is_connecting(preview_id) {
+            if state.app_state.microphone_preview.clear_if(preview_id) {
+                emit_status(&task_app_handle);
+            }
+            return;
+        }
         let start_handle = task_app_handle.clone();
         let start_result = tokio::task::spawn_blocking(move || {
             audio_lifecycle::start_preview_recording(start_handle, device_id, preview_id)
         })
         .await;
-        let state = task_app_handle.state::<State>();
+        // Serialize acceptance with a competing stop. Once the supervisor has
+        // accepted Preview ownership, exact teardown is authoritative.
+        drop(transition);
         let failure = match start_result {
             Ok(Ok(())) => None,
             Ok(Err(error)) => Some(error.to_string()),
@@ -175,6 +185,14 @@ pub async fn stop_microphone_preview(
     preview_id: u64,
 ) -> Result<MicrophonePreviewStatus, String> {
     require_main_window(&window)?;
+    stop_exact_preview(&app_handle, state.inner(), preview_id).await
+}
+
+async fn stop_exact_preview(
+    app_handle: &tauri::AppHandle,
+    state: &State,
+    preview_id: u64,
+) -> Result<MicrophonePreviewStatus, String> {
     let transition = state.app_state.recording_transition.lock().await;
     if !state.app_state.microphone_preview.is_current(preview_id) {
         return Ok(state.app_state.microphone_preview.status());
@@ -183,7 +201,7 @@ pub async fn stop_microphone_preview(
         .app_state
         .microphone_preview
         .set_phase_if(preview_id, PreviewPhase::Stopping);
-    emit_status(&app_handle);
+    emit_status(app_handle);
 
     // Like dictation stop, release the short transition lock before any
     // supervisor wait. The active preview claim keeps racing starts blocked.
@@ -197,7 +215,7 @@ pub async fn stop_microphone_preview(
             "stop_failed",
             format!("Microphone test stop task failed: {error}"),
         );
-        emit_status(&app_handle);
+        emit_status(app_handle);
         return Err("The microphone test could not be stopped safely".to_string());
     }
 
@@ -215,7 +233,7 @@ pub async fn stop_microphone_preview(
             "stop_timeout",
             "Microphone cleanup is taking longer than expected. Wait for it to finish before trying again.",
         );
-        emit_status(&app_handle);
+        emit_status(app_handle);
         return Err(
             "Microphone cleanup is still in progress; a new input was not opened".to_string(),
         );
@@ -227,6 +245,24 @@ pub async fn stop_microphone_preview(
         "microphone preview stopped with confirmed worker teardown"
     );
     Ok(state.app_state.microphone_preview.status())
+}
+
+/// Acquire the shared pipeline transition after yielding any passive Settings
+/// monitor. The loop closes both race directions: a preview that claims first
+/// is stopped, while a real pipeline that receives the returned guard can
+/// claim its state before another preview is allowed to start.
+pub(crate) async fn transition_after_stopping_preview<'a>(
+    app_handle: &tauri::AppHandle,
+    state: &'a State,
+) -> Result<tokio::sync::MutexGuard<'a, ()>, String> {
+    loop {
+        let transition = state.app_state.recording_transition.lock().await;
+        let Some(preview_id) = state.app_state.microphone_preview.current_id() else {
+            return Ok(transition);
+        };
+        drop(transition);
+        stop_exact_preview(app_handle, state, preview_id).await?;
+    }
 }
 
 fn resolve_cancel_id(current: Option<u64>, requested: Option<u64>) -> Option<u64> {

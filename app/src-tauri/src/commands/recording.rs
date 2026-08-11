@@ -2492,7 +2492,11 @@ pub async fn start_native_recording(
 ) -> Result<serde_json::Value, String> {
     // This lock covers only the synchronous ownership transition. Core Audio
     // initialization happens on the supervisor and never waits under it.
-    let _transition = state.app_state.recording_transition.lock().await;
+    let _transition = crate::commands::microphone_preview::transition_after_stopping_preview(
+        &app_handle,
+        state.inner(),
+    )
+    .await?;
     if keyboard::is_app_disabled() {
         tracing::info!(target: "pipeline", "start_native_recording: app disabled — ignoring");
         return Ok(serde_json::json!({ "type": "app_disabled", "state": "idle" }));
@@ -2534,13 +2538,6 @@ pub async fn start_native_recording(
     // critical section so no concurrent cancel/start can slip between them.
     let rid = {
         let mut dictation = state.app_state.dictation.lock_or_recover();
-        if state.app_state.microphone_preview.is_active() {
-            tracing::warn!(target: "pipeline", "start_native_recording: blocked — microphone preview in progress");
-            return Ok(serde_json::json!({
-                "type": "busy_microphone_preview",
-                "state": "idle"
-            }));
-        }
         // Refuse if a file transcription holds the shared Whisper backend.
         // Checked under the dictation lock (which `transcribe_file` takes only
         // after claiming the flag) so the two paths can't both start.

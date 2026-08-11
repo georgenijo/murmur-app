@@ -60,7 +60,11 @@ pub async fn run_benchmark(
     }
     // Serialize the benchmark claim with every live microphone owner. This
     // closes the check/claim race in both directions with preview startup.
-    let transition = state.app_state.recording_transition.lock().await;
+    let transition = crate::commands::microphone_preview::transition_after_stopping_preview(
+        &app_handle,
+        state.inner(),
+    )
+    .await?;
     {
         let dictation = state.app_state.dictation.lock_or_recover();
         // An ACTIVE transform (Capturing/Listening/Thinking/Applying) holds
@@ -71,9 +75,6 @@ pub async fn run_benchmark(
         }
         if state.query.status().blocks_pipeline() {
             return Err("Wait for the voice query to finish before benchmarking".to_string());
-        }
-        if state.app_state.microphone_preview.is_active() {
-            return Err("Stop the microphone test before benchmarking".to_string());
         }
         if dictation.status != DictationStatus::Idle {
             return Err("Stop recording before running a benchmark".to_string());

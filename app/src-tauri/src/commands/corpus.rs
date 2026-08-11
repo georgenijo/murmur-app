@@ -524,7 +524,11 @@ pub async fn start_corpus_recording(
     let capture_id = {
         // Serialize the ownership claim with dictation and transform starts.
         // Core Audio startup itself happens after this short transition lock.
-        let _transition = state.app_state.recording_transition.lock().await;
+        let _transition = crate::commands::microphone_preview::transition_after_stopping_preview(
+            &app_handle,
+            state.inner(),
+        )
+        .await?;
         let dictation = state.app_state.dictation.lock_or_recover();
         if dictation.status != DictationStatus::Idle {
             return Err("Finish the current dictation before recording corpus audio".to_string());
@@ -534,9 +538,6 @@ pub async fn start_corpus_recording(
         }
         if state.benchmark.is_running() {
             return Err("Finish the current benchmark first".to_string());
-        }
-        if state.app_state.microphone_preview.is_active() {
-            return Err("Stop the microphone test first".to_string());
         }
         if state.query.status().blocks_pipeline() {
             return Err("Finish the current voice query first".to_string());

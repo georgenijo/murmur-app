@@ -8,9 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
-- Settings → Dictation now has a live, local-only microphone input test with
-  RMS/peak metering, quiet and clipping guidance, safe device switching, and no
-  transcription, history, telemetry content, or retained audio (#524).
+- Settings → Dictation now has an automatic, local-only microphone input meter
+  with RMS/peak guidance, safe device switching, and transparent pause/resume
+  around real dictation, with no transcription, history, telemetry content, or
+  retained audio (#524).
 - Opt-in Voice Query dispatches a locally transcribed spoken question to one
   explicitly configured CLI argument without a shell, streams its bounded
   answer in a popover, and never auto-pastes or records query content in

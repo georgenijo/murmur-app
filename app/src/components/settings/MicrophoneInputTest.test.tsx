@@ -48,6 +48,8 @@ describe('MicrophoneInputTest', () => {
   let container: HTMLDivElement;
   let root: Root;
   let selected = 'system_default';
+  let activePage = true;
+  let dictationBusy = false;
   let frames: Map<number, FrameRequestCallback>;
   let nextFrame: number;
 
@@ -60,7 +62,8 @@ describe('MicrophoneInputTest', () => {
             { id: 'built-in', name: 'Built-in Microphone' },
             { id: 'usb', name: 'USB Microphone' },
           ]}
-          dictationBusy={false}
+          active={activePage}
+          dictationBusy={dictationBusy}
           missingDevice={false}
           onChange={(microphone) => {
             selected = microphone;
@@ -82,6 +85,8 @@ describe('MicrophoneInputTest', () => {
     vi.clearAllMocks();
     mocks.listeners.clear();
     selected = 'system_default';
+    activePage = true;
+    dictationBusy = false;
     frames = new Map();
     nextFrame = 1;
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
@@ -104,7 +109,6 @@ describe('MicrophoneInputTest', () => {
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
-    await render();
   });
 
   afterEach(async () => {
@@ -113,11 +117,8 @@ describe('MicrophoneInputTest', () => {
     container.remove();
   });
 
-  it('starts an exact preview and paints level events through animation frames', async () => {
-    const testButton = Array.from(container.querySelectorAll('button'))
-      .find((button) => button.textContent === 'Test input') as HTMLButtonElement;
-    await act(async () => testButton.click());
-
+  it('starts an exact preview automatically and paints level events through animation frames', async () => {
+    await render();
     expect(mocks.invoke).toHaveBeenCalledWith('start_microphone_preview', {
       deviceId: 'system_default',
     });
@@ -136,7 +137,7 @@ describe('MicrophoneInputTest', () => {
     expect(container.textContent).toContain('Signal detected');
   });
 
-  it('can stop an exact preview while its device is still connecting', async () => {
+  it('pauses for dictation while connecting and resumes automatically afterward', async () => {
     mocks.invoke.mockImplementation(async (command: string) => {
       if (command === 'get_microphone_preview_status') return idle;
       if (command === 'start_microphone_preview') return connecting;
@@ -144,19 +145,21 @@ describe('MicrophoneInputTest', () => {
       if (command === 'cancel_microphone_preview') return true;
       throw new Error(`unexpected command: ${command}`);
     });
-    const testButton = Array.from(container.querySelectorAll('button'))
-      .find((button) => button.textContent === 'Test input') as HTMLButtonElement;
-    await act(async () => testButton.click());
+    await render();
 
-    const cancelButton = Array.from(container.querySelectorAll('button'))
-      .find((button) => button.textContent === 'Cancel') as HTMLButtonElement;
-    expect(cancelButton.disabled).toBe(false);
-    await act(async () => cancelButton.click());
+    dictationBusy = true;
+    await render();
+    expect(mocks.invoke).toHaveBeenCalledWith('cancel_microphone_preview', { previewId: 7 });
+    expect(container.textContent).toContain('resumes automatically');
 
-    expect(mocks.invoke).toHaveBeenCalledWith('stop_microphone_preview', { previewId: 7 });
+    await emitStatus(idle);
+    dictationBusy = false;
+    await render();
+    expect(mocks.invoke.mock.calls.filter(([command]) => command === 'start_microphone_preview')).toHaveLength(2);
   });
 
   it('confirms teardown before persisting and reopening a switched device', async () => {
+    await render();
     await emitStatus(active);
     const combobox = container.querySelector('[role="combobox"]') as HTMLButtonElement;
     await act(async () => combobox.click());
@@ -167,6 +170,7 @@ describe('MicrophoneInputTest', () => {
       await Promise.resolve();
       await Promise.resolve();
     });
+    await render();
 
     const calls = mocks.invoke.mock.calls.map(([command, args]) => [command, args]);
     const stopIndex = calls.findIndex(([command]) => command === 'stop_microphone_preview');
@@ -179,6 +183,7 @@ describe('MicrophoneInputTest', () => {
   });
 
   it('keeps a new selection but does not reopen audio when teardown fails', async () => {
+    await render();
     await emitStatus(active);
     mocks.invoke.mockImplementation(async (command: string) => {
       if (command === 'get_microphone_preview_status') return idle;
@@ -203,6 +208,7 @@ describe('MicrophoneInputTest', () => {
   });
 
   it('cancels only its exact preview generation when unmounted', async () => {
+    await render();
     await emitStatus(active);
     await act(async () => root.render(null));
     expect(mocks.invoke).toHaveBeenCalledWith('cancel_microphone_preview', { previewId: 7 });
@@ -219,9 +225,7 @@ describe('MicrophoneInputTest', () => {
       if (command === 'stop_microphone_preview') return idle;
       throw new Error(`unexpected command: ${command}`);
     });
-    const testButton = Array.from(container.querySelectorAll('button'))
-      .find((button) => button.textContent === 'Test input') as HTMLButtonElement;
-    await act(async () => testButton.click());
+    await render();
     await act(async () => root.render(null));
     await act(async () => {
       resolveStart(active);
@@ -230,5 +234,11 @@ describe('MicrophoneInputTest', () => {
     });
 
     expect(mocks.invoke).toHaveBeenCalledWith('cancel_microphone_preview', { previewId: 7 });
+  });
+
+  it('does not monitor while the Settings page is hidden', async () => {
+    activePage = false;
+    await render();
+    expect(mocks.invoke).not.toHaveBeenCalledWith('start_microphone_preview', expect.anything());
   });
 });

@@ -112,6 +112,14 @@ impl MicrophonePreviewState {
         self.current_id() == Some(preview_id)
     }
 
+    pub(crate) fn is_connecting(&self, preview_id: u64) -> bool {
+        self.inner().active.as_ref().is_some_and(|active| {
+            active.id == preview_id
+                && active.phase == PreviewPhase::Connecting
+                && active.error.is_none()
+        })
+    }
+
     pub(crate) fn set_phase_if(&self, preview_id: u64, phase: PreviewPhase) -> bool {
         let mut inner = self.inner();
         let Some(active) = inner
@@ -485,7 +493,9 @@ mod tests {
         let state = MicrophonePreviewState::default();
         let first = state.claim().unwrap();
         assert_eq!(first, 1);
+        assert!(state.is_connecting(first));
         assert!(state.set_phase_if(first, PreviewPhase::Active));
+        assert!(!state.is_connecting(first));
         assert!(!state.set_phase_if(first + 1, PreviewPhase::Stopping));
         assert!(state.clear_if(first));
         assert!(

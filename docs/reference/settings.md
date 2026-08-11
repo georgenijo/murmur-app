@@ -33,9 +33,11 @@ IDE roots.
 
 **Source file:** `app/src/lib/settings.ts`
 
-The live microphone test is operational state, not a setting. It uses the
-persisted `microphone` ID, keeps no audio, and stops when Dictation Settings is
-left or hidden. See [Microphone Input Test](../features/microphone-input-test.md).
+The live microphone monitor is operational state, not a setting. It starts
+automatically on Dictation Settings, uses the persisted `microphone` ID, keeps
+no audio, yields to real dictation, resumes afterward, and stops when Dictation
+Settings is left or hidden. See
+[Microphone Input Test](../features/microphone-input-test.md).
 
 **TypeScript interface** (full current shape — see `settings.ts` for the per-field comments):
 

@@ -377,7 +377,11 @@ pub(crate) async fn start_query_capture(
             return Ok(());
         }
     };
-    let _transition = state.app_state.recording_transition.lock().await;
+    let _transition = crate::commands::microphone_preview::transition_after_stopping_preview(
+        &app_handle,
+        state.inner(),
+    )
+    .await?;
     if !state.query.is_active(query_pass_id) {
         return Ok(());
     }
@@ -391,7 +395,6 @@ pub(crate) async fn start_query_capture(
         dictation.status == crate::state::DictationStatus::Idle
             && !state.app_state.file_transcribing.load(Ordering::SeqCst)
             && !state.benchmark.is_running()
-            && !state.app_state.microphone_preview.is_active()
             && !state.app_state.transform_status().blocks_recording()
             && !state.transform_runtime.is_transform_busy()
             && corpus_idle

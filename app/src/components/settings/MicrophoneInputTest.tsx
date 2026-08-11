@@ -20,6 +20,7 @@ import { Select } from '../ui/Select';
 interface MicrophoneInputTestProps {
   microphone: string;
   devices: AudioDeviceDescriptor[];
+  active: boolean;
   dictationBusy: boolean;
   missingDevice: boolean;
   onChange: (microphone: string) => void;
@@ -35,12 +36,14 @@ function levelColor(classification: MicrophoneSignalClassification): string {
 export function MicrophoneInputTest({
   microphone,
   devices,
+  active,
   dictationBusy,
   missingDevice,
   onChange,
 }: MicrophoneInputTestProps) {
   const [status, setStatus] = useState<MicrophonePreviewStatus>(IDLE_MICROPHONE_PREVIEW);
-  const [operation, setOperation] = useState<'idle' | 'starting' | 'stopping' | 'switching'>('idle');
+  const [operation, setOperation] = useState<'idle' | 'starting' | 'switching'>('idle');
+  const [subscriptionsReady, setSubscriptionsReady] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const statusRef = useRef(status);
   const mountedRef = useRef(true);
@@ -90,6 +93,8 @@ export function MicrophoneInputTest({
         if (!disposed && eventVersionRef.current === versionBeforeSnapshot) applyStatus(snapshot);
       } catch (error) {
         if (!disposed) setActionError(String(error));
+      } finally {
+        if (!disposed) setSubscriptionsReady(true);
       }
     })();
 
@@ -169,18 +174,15 @@ export function MicrophoneInputTest({
     }
   }), [applyStatus, microphone, runExclusive]);
 
-  const stop = useCallback(() => runExclusive(async () => {
-    const previewId = statusRef.current.previewId;
-    if (previewId === null) return;
-    setOperation('stopping');
-    setActionError(null);
-    try {
-      const next = await stopMicrophonePreview(previewId);
-      if (mountedRef.current) applyStatus(next);
-    } catch (error) {
-      if (mountedRef.current) setActionError(String(error));
+  useEffect(() => {
+    if (!subscriptionsReady) return;
+    if (!active || dictationBusy || missingDevice) {
+      const previewId = statusRef.current.previewId;
+      if (previewId !== null) void cancelMicrophonePreview(previewId).catch(() => {});
+      return;
     }
-  }), [applyStatus, runExclusive]);
+    if (statusRef.current.previewId === null) void start();
+  }, [active, dictationBusy, missingDevice, microphone, start, subscriptionsReady]);
 
   const switchDevice = useCallback((nextMicrophone: string) => {
     void runExclusive(async () => {
@@ -203,36 +205,17 @@ export function MicrophoneInputTest({
         return;
       }
       onChange(nextMicrophone);
-      try {
-        const next = await startMicrophonePreview(nextMicrophone);
-        if (!mountedRef.current) {
-          if (next.previewId !== null) void cancelMicrophonePreview(next.previewId).catch(() => {});
-          return;
-        }
-        applyStatus(next);
-      } catch (error) {
-        if (mountedRef.current) setActionError(String(error));
-      }
     });
   }, [applyStatus, onChange, runExclusive]);
 
   const ownsPreview = status.previewId !== null;
   const busy = operation !== 'idle';
-  const primaryLabel = operation === 'switching'
-    ? 'Switching…'
-    : operation === 'stopping' || status.state === 'stopping'
-      ? 'Stopping…'
-      : operation === 'starting'
-        ? 'Connecting…'
-        : status.state === 'connecting'
-          ? 'Cancel'
-        : ownsPreview
-          ? 'Stop test'
-          : status.state === 'error'
-            ? 'Try again'
-            : 'Test input';
   const helperText = actionError ?? status.message ?? (
-    status.state === 'connecting'
+    dictationBusy
+      ? 'Level monitoring pauses while Murmur records and resumes automatically.'
+      : !active
+        ? 'Level monitoring starts automatically when this page is open.'
+        : status.state === 'connecting'
       ? status.stillConnecting ? 'Still connecting. Check macOS microphone access if this continues.' : 'Connecting to the selected microphone…'
       : status.state === 'stopping'
         ? 'Waiting for the microphone worker to close…'
@@ -243,21 +226,11 @@ export function MicrophoneInputTest({
 
   return (
     <div>
-      <div className="mb-2 flex items-center justify-between gap-3">
-        <label className="text-sm font-medium text-on-surface">Microphone</label>
-        <button
-          type="button"
-          onClick={() => void (ownsPreview ? stop() : start())}
-          disabled={busy || dictationBusy || missingDevice || status.state === 'stopping'}
-          className="shrink-0 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-on-primary transition-colors hover:bg-primary-dim disabled:cursor-not-allowed disabled:opacity-45"
-        >
-          {primaryLabel}
-        </button>
-      </div>
+      <label className="mb-2 block text-sm font-medium text-on-surface">Microphone</label>
       <Select
         value={microphone}
         onChange={switchDevice}
-        disabled={busy || dictationBusy}
+        disabled={busy}
         aria-label="Microphone input"
         items={[{ value: 'system_default', label: 'System Default' }, ...audioDeviceSelectOptions(devices)]}
       />

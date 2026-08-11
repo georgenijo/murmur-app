@@ -28,6 +28,24 @@ vi.mock('@tauri-apps/api/core', () => ({
         message: null,
       };
     }
+    if (command === 'start_microphone_preview') {
+      return {
+        previewId: 1,
+        state: 'active',
+        stillConnecting: false,
+        errorKind: null,
+        message: null,
+      };
+    }
+    if (command === 'stop_microphone_preview') {
+      return {
+        previewId: null,
+        state: 'idle',
+        stillConnecting: false,
+        errorKind: null,
+        message: null,
+      };
+    }
     if (command === 'cancel_microphone_preview') return false;
     if (command === 'is_notchpill_installed') {
       if (coreMocks.notchPillDetectionError) throw new Error('detector unavailable');
