@@ -17,6 +17,7 @@ import {
   type MicrophoneSignalClassification,
 } from '../../lib/microphonePreview';
 import { Select } from '../ui/Select';
+import { useSettingsSurfaceActive } from './SettingsSurfaceContext';
 
 interface MicrophoneInputTestProps {
   microphone: string;
@@ -44,6 +45,8 @@ export function MicrophoneInputTest({
   missingDevice,
   onChange,
 }: MicrophoneInputTestProps) {
+  const surfaceActive = useSettingsSurfaceActive();
+  const monitoringActive = active && surfaceActive;
   const [status, setStatus] = useState<MicrophonePreviewStatus>(IDLE_MICROPHONE_PREVIEW);
   const [operation, setOperation] = useState<'idle' | 'starting' | 'switching'>('idle');
   const [subscriptionsReady, setSubscriptionsReady] = useState(false);
@@ -211,13 +214,13 @@ export function MicrophoneInputTest({
 
   useEffect(() => {
     if (!subscriptionsReady) return;
-    if (!active || !ready || dictationBusy || missingDevice) {
+    if (!monitoringActive || !ready || dictationBusy || missingDevice) {
       const previewId = statusRef.current.previewId;
       if (previewId !== null) void cancelMicrophonePreview(previewId).catch(() => {});
       return;
     }
     if (statusRef.current.previewId === null) void start();
-  }, [active, dictationBusy, microphone, missingDevice, ready, start, subscriptionsReady]);
+  }, [dictationBusy, microphone, missingDevice, monitoringActive, ready, start, subscriptionsReady]);
 
   const switchDevice = useCallback((nextMicrophone: string) => {
     void runExclusive(async () => {
@@ -250,7 +253,7 @@ export function MicrophoneInputTest({
       ? 'Level monitoring pauses while Murmur records and resumes automatically.'
       : !ready
         ? 'Preparing microphone monitoring…'
-      : !active
+      : !monitoringActive
         ? 'Level monitoring starts automatically when this page is open.'
         : status.state === 'connecting'
       ? status.stillConnecting ? 'Still connecting. Check macOS microphone access if this continues.' : 'Connecting to the selected microphone…'

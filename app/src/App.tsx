@@ -4,6 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { flog } from './lib/log';
 import {
   SettingsPanel,
+  SettingsSurfaceActiveContext,
   SETTINGS_CATEGORIES,
   settingsLatencyView,
 } from './components/settings';
@@ -614,21 +615,23 @@ function App() {
           {...(!isSettingsOpen ? { inert: '' } : {})}
           className={`ui-persistent-surface absolute inset-0 flex min-h-0 overflow-hidden ${isSettingsOpen ? 'opacity-100' : 'pointer-events-none opacity-0'}`}
         >
-          <SettingsPanel
-            settings={settings}
-            onUpdateSettings={updateSettings}
-            initialized={initialized}
-            status={status}
-            onResetStats={handleResetStats}
-            onRerunSetup={rerunSetup}
-            accessibilityGranted={accessibilityGranted}
-            onCheckForUpdate={checkForUpdate}
-            updateStatus={updateStatus}
-            configureError={configureError}
-            pageRequest={settingsPageRequest}
-            onLatencyViewChange={trackSettingsView}
-            activeRef={settingsActiveRef}
-          />
+          <SettingsSurfaceActiveContext.Provider value={isSettingsOpen}>
+            <SettingsPanel
+              settings={settings}
+              onUpdateSettings={updateSettings}
+              initialized={initialized}
+              status={status}
+              onResetStats={handleResetStats}
+              onRerunSetup={rerunSetup}
+              accessibilityGranted={accessibilityGranted}
+              onCheckForUpdate={checkForUpdate}
+              updateStatus={updateStatus}
+              configureError={configureError}
+              pageRequest={settingsPageRequest}
+              onLatencyViewChange={trackSettingsView}
+              activeRef={settingsActiveRef}
+            />
+          </SettingsSurfaceActiveContext.Provider>
         </section>
       </div>
 

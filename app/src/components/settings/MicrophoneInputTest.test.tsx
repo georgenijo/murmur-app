@@ -1,4 +1,4 @@
-import { act } from 'react';
+import { act, memo } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MicrophonePreviewStatus } from '../../lib/microphonePreview';
@@ -19,6 +19,13 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: mocks.listen }));
 
 import { MicrophoneInputTest } from './MicrophoneInputTest';
+import { SettingsSurfaceActiveContext } from './SettingsSurfaceContext';
+
+const MemoizedMicrophoneInputTest = memo(MicrophoneInputTest);
+const devices = [
+  { id: 'built-in', name: 'Built-in Microphone' },
+  { id: 'usb', name: 'USB Microphone' },
+];
 
 const idle: MicrophonePreviewStatus = {
   previewId: null,
@@ -49,28 +56,30 @@ describe('MicrophoneInputTest', () => {
   let root: Root;
   let selected = 'system_default';
   let activePage = true;
+  let surfaceActive = true;
   let appReady = true;
   let dictationBusy = false;
   let frames: Map<number, FrameRequestCallback>;
   let nextFrame: number;
 
+  function handleMicrophoneChange(microphone: string) {
+    selected = microphone;
+  }
+
   async function render() {
     await act(async () => {
       root.render(
-        <MicrophoneInputTest
-          microphone={selected}
-          devices={[
-            { id: 'built-in', name: 'Built-in Microphone' },
-            { id: 'usb', name: 'USB Microphone' },
-          ]}
-          active={activePage}
-          ready={appReady}
-          dictationBusy={dictationBusy}
-          missingDevice={false}
-          onChange={(microphone) => {
-            selected = microphone;
-          }}
-        />,
+        <SettingsSurfaceActiveContext.Provider value={surfaceActive}>
+          <MemoizedMicrophoneInputTest
+            microphone={selected}
+            devices={devices}
+            active={activePage}
+            ready={appReady}
+            dictationBusy={dictationBusy}
+            missingDevice={false}
+            onChange={handleMicrophoneChange}
+          />
+        </SettingsSurfaceActiveContext.Provider>,
       );
       await Promise.resolve();
       await Promise.resolve();
@@ -88,6 +97,7 @@ describe('MicrophoneInputTest', () => {
     mocks.listeners.clear();
     selected = 'system_default';
     activePage = true;
+    surfaceActive = true;
     appReady = true;
     dictationBusy = false;
     frames = new Map();
@@ -241,7 +251,19 @@ describe('MicrophoneInputTest', () => {
     expect(mocks.invoke).toHaveBeenCalledWith('cancel_microphone_preview', { previewId: 7 });
   });
 
-  it('does not monitor while the Settings page is hidden', async () => {
+  it('starts when the warm-mounted Settings surface becomes visible', async () => {
+    surfaceActive = false;
+    await render();
+    expect(mocks.invoke).not.toHaveBeenCalledWith('start_microphone_preview', expect.anything());
+
+    surfaceActive = true;
+    await render();
+    expect(mocks.invoke).toHaveBeenCalledWith('start_microphone_preview', {
+      deviceId: 'system_default',
+    });
+  });
+
+  it('does not monitor when another Settings category is selected', async () => {
     activePage = false;
     await render();
     expect(mocks.invoke).not.toHaveBeenCalledWith('start_microphone_preview', expect.anything());

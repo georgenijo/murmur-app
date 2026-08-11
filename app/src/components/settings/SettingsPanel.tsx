@@ -744,7 +744,7 @@ export const SettingsPanel = memo(function SettingsPanel({
             <MicrophoneInputTest
               microphone={settings.microphone}
               devices={audioDevices}
-              active={activeRef?.current !== false && activeCat === 'dictation'}
+              active={activeCat === 'dictation'}
               ready={initialized}
               dictationBusy={isRecording}
               missingDevice={missingDevice}
