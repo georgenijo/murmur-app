@@ -19,6 +19,7 @@ describe('buildConfigureOptions', () => {
           writingStyle: 'code_technical',
           ideContextEnabled: false,
           ideProjectRoots: [],
+          queryContextExcluded: true,
         },
       ],
     });
@@ -27,5 +28,6 @@ describe('buildConfigureOptions', () => {
     expect(options.smartPunctuation).toBe(false);
     expect(options.appProfiles?.[0].smartFormattingOverride).toBe(false);
     expect(options.appProfiles?.[0].writingStyle).toBe('code_technical');
+    expect(options.appProfiles?.[0].queryContextExcluded).toBe(true);
   });
 });

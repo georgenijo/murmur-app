@@ -211,6 +211,8 @@ describe('SettingsPanel information architecture', () => {
     expect(container.textContent).toContain('Voice Query');
     expect(container.textContent).toContain('may send the question or answer to cloud services');
     expect(container.textContent).toContain('No shell is ever invoked');
+    expect(container.textContent).toContain('Context shared with the CLI');
+    expect(container.textContent).toContain('Off by default');
     expect(container.textContent).toContain('never auto-pasted');
   });
 

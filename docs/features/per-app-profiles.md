@@ -63,13 +63,15 @@ The first successful sample wins and is resolved into the immutable snapshot exa
 
 ## Privacy boundary
 
-Context capture is deny-by-default. A profile may explicitly grant only its bounded local project index. The snapshot never grants reading:
+Dictation context capture is deny-by-default. A profile may explicitly grant only its bounded local project index. The dictation snapshot never grants reading:
 
 - Selected text
 - Nearby or surrounding screen text
 - Clipboard contents as general transcription context. A matched snippet may read it only when that exact Voice Command carries explicit clipboard permission.
 
 This policy is separate from delivery. Murmur remains clipboard-first: the completed transcript is still written to the clipboard, and existing auto-paste behavior is unchanged. IDE project context does not change those denials: it reads only user-selected roots through the bounded local index described in [Local IDE Symbols and `@file` Context](ide-context.md). Unmatched profiles and app names that merely look like IDEs remain no-ops.
+
+Voice Query has a separate, visible opt-in context level documented in [Voice Query](voice-query.md). A profile's `queryContextExcluded` flag is deny-only: for a matching bundle ID it forces that pass to attach no app name, window title, or selected text, regardless of the global/preset level. It does not weaken the dictation denials above and cannot enable query context.
 
 Writing styles do not change the ASR model, language, file-saving behavior, clipboard write, auto-paste timing, or destination. The explicit Code / technical style activates the globally enabled developer-vocabulary pool for that matching app; Local IDE project context is the other activation signal. Other styles and unmatched apps never receive scanned or built-in developer terms. Preferred spellings retain their own global/app/project scopes. Style telemetry contains only the stable resolved enum plus the existing matched-profile boolean; bundle identifiers, labels, setting values, and transcript content are never logged.
 

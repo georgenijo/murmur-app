@@ -1077,6 +1077,7 @@ mod tests {
             writing_style: None,
             ide_context_enabled: enabled,
             ide_project_roots: roots,
+            query_context_excluded: false,
         }
     }
 

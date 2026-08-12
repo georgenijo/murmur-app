@@ -63,6 +63,7 @@ describe('loadSettings', () => {
         writingStyle: 'code_technical' as const,
         ideContextEnabled: true,
         ideProjectRoots: ['/tmp/project'],
+        queryContextExcluded: true,
       }],
       voiceCommandsEnabled: true,
       voiceCommands: [{ phrase: 'standup', replacement: 'Yesterday:\nToday:' }],
@@ -850,6 +851,7 @@ describe('Voice Query settings', () => {
     expect(DEFAULT_SETTINGS.queryExecutable).toBe('');
     expect(DEFAULT_SETTINGS.queryArguments).toEqual([]);
     expect(DEFAULT_SETTINGS.queryTimeoutSeconds).toBe(60);
+    expect(DEFAULT_SETTINGS.queryContextLevel).toBe('none');
   });
 
   it('fails closed when a persisted query key conflicts with transform', () => {
@@ -872,6 +874,7 @@ describe('Voice Query settings', () => {
       queryExecutable: 42,
       queryArguments: [...Array.from({ length: 40 }, (_, index) => `arg-${index}`), 7],
       queryTimeoutSeconds: 999,
+      queryContextLevel: 'desktop_screenshot',
     }));
 
     const settings = loadSettings();
@@ -882,5 +885,26 @@ describe('Voice Query settings', () => {
     expect(settings.queryArguments).toHaveLength(32);
     expect(settings.queryArguments.every((argument) => typeof argument === 'string')).toBe(true);
     expect(settings.queryTimeoutSeconds).toBe(60);
+    expect(settings.queryContextLevel).toBe('none');
+  });
+
+  it('keeps valid context levels and fails closed for per-app exclusions', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      queryContextLevel: 'selection',
+      appProfiles: [
+        { bundleId: 'com.example.Private', queryContextExcluded: true },
+        { bundleId: 'com.example.Legacy' },
+        { bundleId: 'com.example.Tampered', queryContextExcluded: 'yes' },
+      ],
+    }));
+
+    const settings = loadSettings();
+    expect(settings.queryContextLevel).toBe('selection');
+    expect(settings.appProfiles.map((profile) => profile.queryContextExcluded)).toEqual([
+      true,
+      false,
+      false,
+    ]);
   });
 });

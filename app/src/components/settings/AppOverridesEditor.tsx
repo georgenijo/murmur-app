@@ -83,6 +83,7 @@ function newProfile(bundleId: string, label: string): AppProfile {
     writingStyle: null,
     ideContextEnabled: false,
     ideProjectRoots: [],
+    queryContextExcluded: false,
   };
 }
 
@@ -331,6 +332,25 @@ export function AppOverridesEditor({ profiles, onChange }: {
                   <OverrideSelect label="Transcript cleanup" appLabel={appLabel} value={profile.cleanupOverride} onChange={(value) => updateProfile(profile.bundleId, { cleanupOverride: value })} />
                   <OverrideSelect label="Structured writing" appLabel={appLabel} value={profile.smartFormattingOverride} onChange={(value) => updateProfile(profile.bundleId, { smartFormattingOverride: value })} />
                   <OverrideSelect label="Command formatting" appLabel={appLabel} value={profile.cliFormattingOverride} onChange={(value) => updateProfile(profile.bundleId, { cliFormattingOverride: value })} />
+                </div>
+
+                <div className="rounded-lg border border-outline-variant/30 bg-surface-container-low p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <h4 className="text-xs font-medium text-on-surface">Exclude Voice Query context</h4>
+                      <p className="mt-1 text-xs text-on-surface-variant">Never send this app's name, window title, or selection to the configured query CLI. This deny rule overrides the global context level.</p>
+                    </div>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={profile.queryContextExcluded}
+                      aria-label={`Exclude Voice Query context for ${appLabel}`}
+                      onClick={() => updateProfile(profile.bundleId, { queryContextExcluded: !profile.queryContextExcluded })}
+                      className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary ${profile.queryContextExcluded ? 'bg-primary' : 'bg-surface-container-highest'}`}
+                    >
+                      <span className={`inline-block h-4 w-4 rounded-full shadow transition-transform ${profile.queryContextExcluded ? 'translate-x-6 bg-on-primary' : 'translate-x-1 bg-on-surface-variant'}`} />
+                    </button>
+                  </div>
                 </div>
 
                 <div className="rounded-lg border border-outline-variant/30 bg-surface-container-low p-3">

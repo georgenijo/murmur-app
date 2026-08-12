@@ -15,6 +15,7 @@ import {
   IDLE_TIMEOUT_OPTIONS,
   LANGUAGE_OPTIONS,
   RECORDING_MODE_OPTIONS,
+  QUERY_CONTEXT_LEVEL_OPTIONS,
   QUERY_KEY_OPTIONS,
   TRANSFORM_KEY_OPTIONS,
   type QueryKey,
@@ -1106,7 +1107,7 @@ export const SettingsPanel = memo(function SettingsPanel({
               <p className="text-sm font-medium text-on-surface">You control where the question goes</p>
               <p className="mt-1 text-xs leading-relaxed text-on-surface">
                 Murmur transcribes your question locally, then gives it to the exact CLI executable below.
-                That CLI may send the question or answer to cloud services according to its own configuration.
+                That CLI may send the question or answer to cloud services according to its own configuration, and may also send any optional app context you enable.
                 Murmur cannot verify or prevent that network egress.
               </p>
             </div>
@@ -1326,6 +1327,21 @@ export const SettingsPanel = memo(function SettingsPanel({
                 </div>
               )}
 
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-on-surface">Context shared with the CLI</label>
+                <Select
+                  value={settings.queryContextLevel}
+                  onChange={(queryContextLevel) => {
+                    invalidateQueryRequests();
+                    onUpdateSettings({ queryContextLevel });
+                  }}
+                  items={QUERY_CONTEXT_LEVEL_OPTIONS}
+                />
+                <p className="mt-1 text-xs text-on-surface-variant">
+                  Off by default. App &amp; window adds the frontmost app name and window title. Selection also adds up to 8 KiB of selected text after secure-field checks. The popover always shows what kind of context was included, and per-app exclusions take precedence.
+                </p>
+              </div>
+
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="mb-1.5 block text-sm font-medium text-on-surface">Query shortcut</label>
@@ -1373,7 +1389,7 @@ export const SettingsPanel = memo(function SettingsPanel({
 
             <div className="border-t border-outline-variant/20 pt-4 text-xs leading-relaxed text-on-surface-variant">
               Answers stream into a popover and are copied to the clipboard when complete. They are never
-              auto-pasted. Murmur does not add question or answer text to history, saved files, usage stats, or telemetry.
+              auto-pasted. Murmur does not add question, answer, or context content to history, saved files, usage stats, or telemetry.
             </div>
           </SettingsSection>
 

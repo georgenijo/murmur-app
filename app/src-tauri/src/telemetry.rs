@@ -918,7 +918,7 @@ mod tests {
     }
 
     #[test]
-    fn query_event_sanitizer_rejects_question_answer_command_and_paths() {
+    fn query_event_sanitizer_rejects_question_answer_context_command_and_paths() {
         let mut data = serde_json::json!({
             "event_code": "query.pass_state",
             "query_pass_id": 8,
@@ -926,6 +926,9 @@ mod tests {
             "error_code": "provider_not_authenticated",
             "question": "SENTINEL_QUESTION ; rm -rf",
             "answer": "SENTINEL_ANSWER",
+            "context": "SENTINEL_CONTEXT",
+            "window_title": "SENTINEL_WINDOW",
+            "selection": "SENTINEL_SELECTION",
             "command": "/Users/private/bin/agent",
             "arguments": ["SENTINEL_ARGUMENTS"],
             "structured_answer": { "content": "SENTINEL_OBJECT" },

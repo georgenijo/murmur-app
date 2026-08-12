@@ -213,6 +213,7 @@ function App() {
       executable: settings.queryExecutable,
       arguments: settings.queryArguments,
       timeoutSeconds: settings.queryTimeoutSeconds,
+      contextLevel: settings.queryContextLevel,
     },
     onQueryCompleted: handleQueryCompleted,
   });

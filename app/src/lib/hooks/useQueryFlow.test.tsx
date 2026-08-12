@@ -50,6 +50,7 @@ describe('useQueryFlow', () => {
           executable: '/usr/bin/printf',
           arguments: ['%s'],
           timeoutSeconds: 60,
+          contextLevel: 'selection',
         },
         onQueryCompleted,
       });
@@ -86,6 +87,7 @@ describe('useQueryFlow', () => {
         executable: '/usr/bin/printf',
         arguments: ['%s'],
         timeoutSeconds: 60,
+        contextLevel: 'selection',
       },
     });
 

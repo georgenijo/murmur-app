@@ -6,7 +6,6 @@ import { validateQueryCommand, type QueryCommandConfig } from '../queryProviders
 import { isQueryUsage } from '../queryUsage';
 import type { QueryCompletion } from '../stats';
 import { flog } from '../log';
-
 interface QueryTogglePayload {
   queryPassId: number;
   action: 'start' | 'stop';
@@ -170,5 +169,6 @@ export function useQueryFlow({
     command.executable,
     command.arguments,
     command.timeoutSeconds,
+    command.contextLevel,
   ]);
 }

@@ -113,6 +113,11 @@ export function QueryReviewApp() {
           <p aria-live="polite" className="mt-0.5 truncate text-[13px] font-medium text-white/90">
             {statusLabel(driver.state, driver.errorCode)}
           </p>
+          {driver.contextSummary && (
+            <p aria-label="Query context" className="mt-0.5 truncate text-[10px] font-medium text-violet-200/70">
+              {driver.contextSummary}
+            </p>
+          )}
         </div>
         {!terminal && (
           <button type="button" onClick={driver.cancel} className="rounded-lg px-2.5 py-1.5 text-xs font-medium text-white/60 hover:bg-white/10 hover:text-white">

@@ -28,9 +28,10 @@ type Driver = ReturnType<typeof useQueryReviewDriver>;
 function content(
   queryPassId: number,
   answer: string,
-  detail: string,
-  fix: string,
+  detail = '',
+  fix = '',
   usage: unknown = null,
+  contextSummary: string | null = null,
 ) {
   return {
     queryPassId,
@@ -39,6 +40,7 @@ function content(
     provider: 'claude',
     usage,
     signInFix: fix,
+    contextSummary,
   };
 }
 
@@ -63,6 +65,7 @@ describe('useQueryReviewDriver ownership', () => {
     vi.clearAllMocks();
     mocks.invoke.mockReset();
     mocks.listeners = {};
+    mocks.unlisten.mockReset();
     current = null;
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -91,7 +94,9 @@ describe('useQueryReviewDriver ownership', () => {
     let resolvePrior!: (value: ReturnType<typeof content>) => void;
     const prior = new Promise<ReturnType<typeof content>>((resolve) => { resolvePrior = resolve; });
     mocks.invoke
+      .mockResolvedValueOnce(content(61, '', '', '', null, 'Context: Prior app'))
       .mockImplementationOnce(() => prior)
+      .mockResolvedValueOnce(content(62, '', '', '', null, 'Context: Current app'))
       .mockResolvedValueOnce(content(
         62,
         'current answer',
@@ -116,6 +121,7 @@ describe('useQueryReviewDriver ownership', () => {
     expect(current!.errorDetail).toBe('current detail');
     expect(current!.signInFix).toBe('current fix');
     expect(current!.usage?.inputTokens).toBe(62);
+    expect(current!.contextSummary).toBe('Context: Current app');
 
     await act(async () => {
       resolvePrior(content(61, 'stale answer', 'stale detail', 'stale fix', usage(61)));
@@ -126,6 +132,7 @@ describe('useQueryReviewDriver ownership', () => {
     expect(current!.errorDetail).toBe('current detail');
     expect(current!.signInFix).toBe('current fix');
     expect(current!.usage?.inputTokens).toBe(62);
+    expect(current!.contextSummary).toBe('Context: Current app');
   });
 
   it('keeps only the newest same-pass recovery snapshot across a replace gap race', async () => {
@@ -133,12 +140,16 @@ describe('useQueryReviewDriver ownership', () => {
     let resolveNewer!: (value: ReturnType<typeof content>) => void;
     const older = new Promise<ReturnType<typeof content>>((resolve) => { resolveOlder = resolve; });
     const newer = new Promise<ReturnType<typeof content>>((resolve) => { resolveNewer = resolve; });
-    mocks.invoke.mockImplementationOnce(() => older).mockImplementationOnce(() => newer);
+    mocks.invoke
+      .mockResolvedValueOnce(content(71, ''))
+      .mockImplementationOnce(() => older)
+      .mockImplementationOnce(() => newer);
     await mount();
     await act(async () => {
       mocks.listeners['query-state-changed']?.({
         payload: { queryPassId: 71, state: 'running', errorCode: null },
       });
+      await Promise.resolve();
       mocks.listeners['query-answer-chunk']?.({
         payload: { queryPassId: 71, sequence: 1, text: 'gap', replace: false },
       });
@@ -166,7 +177,9 @@ describe('useQueryReviewDriver ownership', () => {
   it('keeps the terminal snapshot authoritative over a concurrent replace event', async () => {
     let resolveTerminal!: (value: ReturnType<typeof content>) => void;
     const terminal = new Promise<ReturnType<typeof content>>((resolve) => { resolveTerminal = resolve; });
-    mocks.invoke.mockImplementationOnce(() => terminal);
+    mocks.invoke
+      .mockResolvedValueOnce(content(81, ''))
+      .mockImplementationOnce(() => terminal);
     await mount();
     await act(async () => {
       mocks.listeners['query-state-changed']?.({
@@ -180,7 +193,7 @@ describe('useQueryReviewDriver ownership', () => {
     });
     expect(current!.answer).toBe('raw fallback');
     await act(async () => {
-      resolveTerminal(content(81, 'streamed prefix plus tail', '', ''));
+      resolveTerminal(content(81, 'streamed prefix plus tail'));
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -372,7 +385,7 @@ describe('useQueryReviewDriver ownership', () => {
 
   it('accepts only typed numeric usage from the exact terminal pass', async () => {
     await mount();
-    mocks.invoke.mockResolvedValueOnce({
+    mocks.invoke.mockResolvedValue({
       queryPassId: 23,
       answer: 'done',
       errorDetail: null,
@@ -386,6 +399,7 @@ describe('useQueryReviewDriver ownership', () => {
         costUsd: 0.012,
       },
       signInFix: null,
+      contextSummary: null,
     });
 
     await act(async () => {
@@ -404,5 +418,69 @@ describe('useQueryReviewDriver ownership', () => {
       cacheCreationInputTokens: 2,
       costUsd: 0.012,
     });
+  });
+
+  it('pulls the visible context summary through the gated content command', async () => {
+    mocks.invoke.mockResolvedValue(content(
+      41,
+      '',
+      '',
+      '',
+      null,
+      'Context: Safari — 1.2 KB selection',
+    ));
+    await mount();
+
+    await act(async () => {
+      mocks.listeners['query-state-changed']?.({
+        payload: { queryPassId: 41, state: 'connecting', errorCode: null },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(current!.contextSummary).toBe('Context: Safari — 1.2 KB selection');
+
+    mocks.invoke.mockClear();
+    await act(async () => {
+      mocks.listeners['query-context-resolved']?.({ payload: { queryPassId: 41 } });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(mocks.invoke).toHaveBeenCalledWith('get_query_review_content');
+  });
+
+  it('ignores stale context notifications and clears summary when hidden', async () => {
+    mocks.invoke.mockResolvedValue(content(
+      52,
+      'answer',
+      '',
+      '',
+      null,
+      'Context: Editor — window title',
+    ));
+    await mount();
+    await act(async () => {
+      mocks.listeners['query-state-changed']?.({
+        payload: { queryPassId: 52, state: 'ready', errorCode: null },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(current!.contextSummary).toBe('Context: Editor — window title');
+
+    mocks.invoke.mockClear();
+    await act(async () => {
+      mocks.listeners['query-context-resolved']?.({ payload: { queryPassId: 51 } });
+      await Promise.resolve();
+    });
+    expect(mocks.invoke).not.toHaveBeenCalled();
+
+    await act(async () => {
+      mocks.listeners['query-review-hidden']?.({ payload: null });
+      await Promise.resolve();
+    });
+    expect(current!.state).toBe('idle');
+    expect(current!.answer).toBe('');
+    expect(current!.contextSummary).toBeNull();
   });
 });

@@ -14,6 +14,7 @@ export type DoubleTapKey = 'shift_l' | 'alt_l' | 'ctrl_r';
 export type TransformKey = 'alt_r' | 'ctrl_l' | 'shift_r';
 export type QueryKey = TransformKey;
 export type QueryProviderId = 'claude' | 'codex' | 'grok' | 'cursor' | 'custom';
+export type QueryContextLevel = 'none' | 'application' | 'selection';
 
 export type WritingStyle =
   | 'conversational'
@@ -51,6 +52,8 @@ export interface AppProfile {
   ideContextEnabled: boolean;
   /** User-selected local roots. Index contents are never persisted. */
   ideProjectRoots: string[];
+  /** Privacy deny override; can never enable Voice Query context by itself. */
+  queryContextExcluded: boolean;
 }
 
 const MAX_IDE_PROJECT_ROOT_BYTES = 4096;
@@ -211,6 +214,8 @@ export interface Settings {
   /** Fixed argv elements placed before the one-element spoken question. */
   queryArguments: string[];
   queryTimeoutSeconds: number;
+  /** Optional context appended inside the one literal query argv element. */
+  queryContextLevel: QueryContextLevel;
   language: string;
   autoPaste: boolean;
   autoPasteDelayMs: number;
@@ -344,6 +349,12 @@ export const TRANSFORM_KEY_OPTIONS: { value: TransformKey; label: string }[] = [
 
 export const QUERY_KEY_OPTIONS: { value: QueryKey; label: string }[] = TRANSFORM_KEY_OPTIONS;
 
+export const QUERY_CONTEXT_LEVEL_OPTIONS: { value: QueryContextLevel; label: string }[] = [
+  { value: 'none', label: 'None' },
+  { value: 'application', label: 'App & window' },
+  { value: 'selection', label: 'App, window & selection' },
+];
+
 export const RECORDING_MODE_OPTIONS: { value: RecordingMode; label: string }[] = [
   { value: 'hold_down', label: 'Hold Down' },
   { value: 'double_tap', label: 'Double-Tap' },
@@ -395,6 +406,7 @@ export const DEFAULT_SETTINGS: Settings = {
   queryExecutable: '',
   queryArguments: [],
   queryTimeoutSeconds: 60,
+  queryContextLevel: 'none',
   // 'auto' lets Whisper auto-detect the spoken language ("just works"); the
   // non-Whisper models may auto-detect or ignore this value.
   language: 'auto',
@@ -677,6 +689,12 @@ export function loadSettings(): Settings {
         parsed.queryTimeoutSeconds = DEFAULT_SETTINGS.queryTimeoutSeconds;
       }
       if (
+        typeof parsed.queryContextLevel !== 'string'
+        || !QUERY_CONTEXT_LEVEL_OPTIONS.some((option) => option.value === parsed.queryContextLevel)
+      ) {
+        parsed.queryContextLevel = DEFAULT_SETTINGS.queryContextLevel;
+      }
+      if (
         parsed.queryHotkey !== null
         && parsed.queryHotkey === parsed.transformHoldKey
       ) {
@@ -739,6 +757,8 @@ export function loadSettings(): Settings {
                   .filter((root, index, roots) => roots.indexOf(root) === index)
                   .slice(0, 4)
               : [],
+            queryContextExcluded:
+              typeof p.queryContextExcluded === 'boolean' ? p.queryContextExcluded : false,
           }));
       }
 

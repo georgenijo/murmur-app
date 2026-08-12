@@ -66,6 +66,7 @@ interface Settings {
   queryExecutable: string;                 // absolute executable path
   queryArguments: string[];                // fixed argv before question
   queryTimeoutSeconds: number;             // 5–300, default 60
+  queryContextLevel: QueryContextLevel;     // none | application | selection
 
   // Delivery
   autoPaste: boolean;
@@ -166,12 +167,13 @@ model-selection side effects.
 | `queryHotkey` | `QueryKey \| null` | `null` | `'alt_r'`, `'ctrl_l'`, `'shift_r'`, or `null` | Dedicated double-tap-to-start / single-tap-to-stop shortcut. It may not equal `transformHoldKey`; a persisted conflict disables Voice Query. |
 | `queryProvider` | `QueryProviderId` | `'custom'` | `'claude'`, `'codex'`, `'grok'`, `'cursor'`, or `'custom'` | Chooses discovery/auth metadata, recommended argv, and the post-spawn output adapter. Claude recommends `--print --verbose --output-format stream-json --include-partial-messages` and Codex recommends `exec --json`; every provider still uses the generic direct-spawn bridge. Unknown persisted values fail closed to Custom. |
 | `queryExecutable` | `string` | `''` | Absolute executable path, at most 4096 bytes | Exact CLI program to spawn. Murmur never provides a default and never invokes a shell. |
-| `queryArguments` | `string[]` | `[]` | At most 32 fixed arguments, 4096 bytes each and 32 KiB total | Passed literally before the locally transcribed question, which is one final argv element. |
+| `queryArguments` | `string[]` | `[]` | At most 32 fixed arguments, 4096 bytes each and 32 KiB total | Passed literally before the locally transcribed question and any opted-in context, which together remain one final argv element. |
 | `queryTimeoutSeconds` | `number` | `60` | Integer 5–300 | Deadline after which the owned CLI process group is terminated and confirmed empty. |
+| `queryContextLevel` | `QueryContextLevel` | `'none'` | `'none'`, `'application'`, `'selection'` | Opt-in immutable per-pass context. Application adds the native app name and AX window title; Selection additionally includes selected text bounded to 8 KiB on a UTF-8 boundary after secure-field-aware capture. All context stays inside the one final prompt argv element and is summarized visibly in the popover. |
 
 Declared provider environment values are not settings fields. Rust stores only `CLAUDE_CONFIG_DIR` and/or `CODEX_HOME` under owner-only app data; `HOME`, base allowlist overrides, API keys, tokens, and arbitrary names are rejected. Webviews can stage a replacement value for Save, but saved values are never returned to the frontend or copied into localStorage. Settings receives configured names only.
 
-The Settings disclosure explicitly states that the configured CLI may send the question or answer to cloud services and that Murmur cannot control its network behavior. Enabling validates the configuration immediately; Test runs a bounded preset auth probe and keeps its stdout/stderr within Settings. Provider-reported numeric usage is shown per Ready pass and aggregated into the local Stats store by provider and stable failure code; Reset Stats clears those counters. No query content is stored there. See [Voice Query](../features/voice-query.md).
+The Settings disclosure explicitly states that the configured CLI may send the question, enabled context, or answer to cloud services and that Murmur cannot control its network behavior. Enabling validates the configuration immediately; Test runs a bounded preset auth probe and keeps its stdout/stderr within Settings. Provider-reported numeric usage is shown per Ready pass and aggregated into the local Stats store by provider and stable failure code; Reset Stats clears those counters. No query content is stored there. See [Voice Query](../features/voice-query.md).
 
 ### Recording Mode Details
 
@@ -211,9 +213,11 @@ The store reports recovered, reinitialized, and unavailable states visibly. Enab
 
 ## Per-App Profiles
 
-`appProfiles` is an array of `{ bundleId, label, writingStyle, autoPasteOverride, cleanupOverride, smartFormattingOverride, cliFormattingOverride, ideContextEnabled, ideProjectRoots }`. `writingStyle` is `null` (Inherit), `conversational`, `polished`, `code_technical`, `verbatim`, or `notes`. It is an explicit user choice; bundle identifiers and labels never classify apps automatically. Boolean overrides fine-tune the resolved style/global value for a matching frontmost bundle identifier; `null` means "inherit." Existing, missing, and malformed persisted style/override fields migrate to `null`.
+`appProfiles` is an array of `{ bundleId, label, writingStyle, autoPasteOverride, cleanupOverride, smartFormattingOverride, cliFormattingOverride, ideContextEnabled, ideProjectRoots, queryContextExcluded }`. `writingStyle` is `null` (Inherit), `conversational`, `polished`, `code_technical`, `verbatim`, or `notes`. It is an explicit user choice; bundle identifiers and labels never classify apps automatically. Boolean overrides fine-tune the resolved style/global value for a matching frontmost bundle identifier; `null` means "inherit." Existing, missing, and malformed persisted style/override fields migrate to `null`.
 
 `ideContextEnabled` defaults to `false` and must be enabled on the exact matching profile. `ideProjectRoots` persists only the explicit user-selected root strings, trimmed, deduplicated, and capped at four. Filenames, symbols, source snippets, and scan results are memory-only and are not settings fields. The roots therefore remain visible in Settings and in any direct inspection or backup of the existing settings JSON; there is no hidden export path.
+
+`queryContextExcluded` defaults to `false`. When true on the first matching profile, it forces Voice Query context off for that app even when the global or provider-preset level requests app/window or selection context. It is deny-only and cannot opt an app into context.
 
 `smartFormattingEnabled` is a separate boolean setting, off by default. It enables deterministic list, email/URL, extended Spoken Structure, and bounded same-utterance correction rules for live prose. Missing or malformed persisted values migrate safely to `false`; it is independent of `smartPunctuation`. `smartFormattingOverride` gives profiles the same Default/On/Off choice.
 

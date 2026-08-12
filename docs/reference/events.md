@@ -79,11 +79,12 @@ All transform events carry a `transformPassId` where a pass exists, so a delayed
 
 ## Voice Query
 
-Query content never appears in broadcast events. Only the dedicated review webview receives answer chunks.
+Question and context content never appears in events. Only the dedicated review webview receives answer chunks; it pulls the context summary through the gated review-content command.
 
 | Event | Payload | Source | When it fires | Listeners |
 |-------|---------|--------|---------------|-----------|
 | `query-state-changed` | `{queryPassId, state, errorCode, usage}` | `query_flow.rs` | Every content-free state transition: connecting, listening, transcribing, running, ready, or failed. `usage` is null until a structured provider reports numeric token/cache/reasoning counts and optional cost; it never contains content. Typed provider failures use `provider_error`; known authentication failures use the repairable `provider_not_authenticated`. Stderr and provider detail are never included. | Query popover (`useQueryReviewDriver`) and main-window content-free stats aggregation (`useQueryFlow`). |
+| `query-context-resolved` | `{queryPassId}` | `query_flow.rs` | The immutable context snapshot is ready. Targeted to `query-review`; carries no app, window, selection, or summary content and only triggers a gated refresh. | Query popover only. |
 | `query-answer-chunk` | `{queryPassId, sequence, text, replace}` | `query_flow.rs` | A decoded raw chunk or structured Claude/Codex answer chunk accepted within the 256 KiB cap. `replace: true` atomically resets optimistic structured text to the complete raw stream when JSONL parsing falls back, including incomplete EOF without a typed terminal event; otherwise text appends. Targeted with `emit_to("query-review", …)`, never broadcast. | Query popover only. |
 | `query-review-hidden` | `()` | `query_flow.rs` | Exact-pass cancellation/close completes and the popover is hidden. | Main window and query popover. |
 | `query-busy` | `()` | `keyboard.rs`, `query_flow.rs` | A query press is refused because another pass or pipeline owner is active. | Reserved for UI feedback. |

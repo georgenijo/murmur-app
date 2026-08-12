@@ -33,6 +33,7 @@ interface QueryContent {
   provider: 'claude' | 'codex' | 'grok' | 'cursor' | 'custom' | null;
   usage: QueryUsage | null;
   signInFix: string | null;
+  contextSummary: string | null;
 }
 
 function validPassId(value: unknown): value is number {
@@ -68,12 +69,14 @@ export function useQueryReviewDriver() {
   const [signInFix, setSignInFix] = useState<string | null>(null);
   const [signInStatus, setSignInStatus] = useState<string | null>(null);
   const [signInBusy, setSignInBusy] = useState(false);
+  const [contextSummary, setContextSummary] = useState<string | null>(null);
   const passIdRef = useRef<number | null>(null);
   const nextSequenceRef = useRef(0);
   const contentRefreshTicketRef = useRef(0);
+  const contextRefreshTicketRef = useRef(0);
   const answerRecoveryRef = useRef(false);
   const terminalPassIdRef = useRef<number | null>(null);
-  const terminalContentSnapshotRef = useRef(false);
+  const terminalAnswerSnapshotRef = useRef(false);
   const signInAttemptRef = useRef(0);
   const copyAttemptRef = useRef(0);
 
@@ -81,9 +84,28 @@ export function useQueryReviewDriver() {
     let disposed = false;
     let unlistenState: (() => void) | null = null;
     let unlistenChunk: (() => void) | null = null;
+    let unlistenContext: (() => void) | null = null;
     let unlistenHidden: (() => void) | null = null;
 
-    const refresh = async (expectedPassId: number, terminal = false) => {
+    const refreshContext = async (expectedPassId: number) => {
+      const ticket = contextRefreshTicketRef.current + 1;
+      contextRefreshTicketRef.current = ticket;
+      try {
+        const content = await invoke<QueryContent>('get_query_review_content');
+        if (
+          !disposed
+          && passIdRef.current === expectedPassId
+          && content.queryPassId === expectedPassId
+          && contextRefreshTicketRef.current === ticket
+        ) {
+          setContextSummary(typeof content.contextSummary === 'string' ? content.contextSummary : null);
+        }
+      } catch {
+        flog.warn('query-review', 'could not refresh query context');
+      }
+    };
+
+    const refreshAnswer = async (expectedPassId: number, terminal = false) => {
       const ticket = contentRefreshTicketRef.current + 1;
       contentRefreshTicketRef.current = ticket;
       try {
@@ -100,7 +122,7 @@ export function useQueryReviewDriver() {
           setUsage(isQueryUsage(content.usage) ? content.usage : null);
           setSignInFix(typeof content.signInFix === 'string' ? content.signInFix : null);
           if (terminal || terminalPassIdRef.current === expectedPassId) {
-            terminalContentSnapshotRef.current = true;
+            terminalAnswerSnapshotRef.current = true;
           }
         }
       } catch {
@@ -116,9 +138,10 @@ export function useQueryReviewDriver() {
           passIdRef.current = payload.queryPassId;
           nextSequenceRef.current = 0;
           contentRefreshTicketRef.current += 1;
+          contextRefreshTicketRef.current += 1;
           answerRecoveryRef.current = false;
           terminalPassIdRef.current = null;
-          terminalContentSnapshotRef.current = false;
+          terminalAnswerSnapshotRef.current = false;
           setAnswer('');
           setErrorDetail(null);
           setUsage(null);
@@ -127,12 +150,17 @@ export function useQueryReviewDriver() {
           setSignInBusy(false);
           signInAttemptRef.current += 1;
           copyAttemptRef.current += 1;
+          setContextSummary(null);
         }
         setState(payload.state);
         setErrorCode(payload.errorCode);
+        // Context and answer refreshes have independent ownership. Nonterminal
+        // state changes can recover a missed context notification without an
+        // older snapshot ever replacing streamed answer text.
+        void refreshContext(payload.queryPassId);
         if (payload.state === 'ready' || payload.state === 'failed') {
           terminalPassIdRef.current = payload.queryPassId;
-          void refresh(payload.queryPassId, true);
+          void refreshAnswer(payload.queryPassId, true);
         }
       });
       if (disposed) { unlistenState(); return; }
@@ -141,10 +169,10 @@ export function useQueryReviewDriver() {
         if (disposed || !isChunkPayload(event.payload)) return;
         const payload = event.payload;
         if (payload.queryPassId !== passIdRef.current) return;
-        if (terminalContentSnapshotRef.current) return;
+        if (terminalAnswerSnapshotRef.current) return;
         if (answerRecoveryRef.current) {
           nextSequenceRef.current = Math.max(nextSequenceRef.current, payload.sequence + 1);
-          void refresh(
+          void refreshAnswer(
             payload.queryPassId,
             terminalPassIdRef.current === payload.queryPassId,
           );
@@ -153,7 +181,7 @@ export function useQueryReviewDriver() {
         if (payload.sequence !== nextSequenceRef.current) {
           answerRecoveryRef.current = true;
           nextSequenceRef.current = payload.sequence + 1;
-          void refresh(
+          void refreshAnswer(
             payload.queryPassId,
             terminalPassIdRef.current === payload.queryPassId,
           );
@@ -167,13 +195,22 @@ export function useQueryReviewDriver() {
       });
       if (disposed) { unlistenState(); unlistenChunk(); return; }
 
+      unlistenContext = await listen<unknown>('query-context-resolved', (event) => {
+        if (disposed || !event.payload || typeof event.payload !== 'object') return;
+        const queryPassId = (event.payload as Record<string, unknown>).queryPassId;
+        if (!validPassId(queryPassId) || queryPassId !== passIdRef.current) return;
+        void refreshContext(queryPassId);
+      });
+      if (disposed) { unlistenState(); unlistenChunk(); unlistenContext(); return; }
+
       unlistenHidden = await listen('query-review-hidden', () => {
         passIdRef.current = null;
         nextSequenceRef.current = 0;
         contentRefreshTicketRef.current += 1;
+        contextRefreshTicketRef.current += 1;
         answerRecoveryRef.current = false;
         terminalPassIdRef.current = null;
-        terminalContentSnapshotRef.current = false;
+        terminalAnswerSnapshotRef.current = false;
         setState('idle');
         setErrorCode(null);
         setAnswer('');
@@ -184,8 +221,9 @@ export function useQueryReviewDriver() {
         setSignInBusy(false);
         signInAttemptRef.current += 1;
         copyAttemptRef.current += 1;
+        setContextSummary(null);
       });
-      if (disposed) { unlistenState(); unlistenChunk(); unlistenHidden(); }
+      if (disposed) { unlistenState(); unlistenChunk(); unlistenContext(); unlistenHidden(); }
     };
     void setup();
     return () => {
@@ -194,6 +232,7 @@ export function useQueryReviewDriver() {
       copyAttemptRef.current += 1;
       unlistenState?.();
       unlistenChunk?.();
+      unlistenContext?.();
       unlistenHidden?.();
     };
   }, []);
@@ -272,6 +311,7 @@ export function useQueryReviewDriver() {
     signInFix,
     signInStatus,
     signInBusy,
+    contextSummary,
     cancel,
     copy,
     signIn,

@@ -1,17 +1,29 @@
 # Voice query
 
-Issues [#538](https://github.com/georgenijo/murmur-app/issues/538), [#550](https://github.com/georgenijo/murmur-app/issues/550), [#551](https://github.com/georgenijo/murmur-app/issues/551), and [#552](https://github.com/georgenijo/murmur-app/issues/552). Voice Query is an opt-in bridge from Murmur's local speech recognition to one user-configured CLI executable. Double-tap its dedicated shortcut, ask a question, tap once to finish, and read the CLI's streaming answer in a separate popover.
+Issues [#538](https://github.com/georgenijo/murmur-app/issues/538), [#550](https://github.com/georgenijo/murmur-app/issues/550), [#551](https://github.com/georgenijo/murmur-app/issues/551), [#552](https://github.com/georgenijo/murmur-app/issues/552), and [#554](https://github.com/georgenijo/murmur-app/issues/554). Voice Query is an opt-in bridge from Murmur's local speech recognition to one user-configured CLI executable. Double-tap its dedicated shortcut, ask a question, tap once to finish, and read the CLI's streaming answer in a separate popover.
 
 ## Privacy and trust boundary
 
 - Microphone capture and transcription stay in Murmur's existing local ASR runtime.
 - Murmur starts the exact absolute executable path directly. It never invokes a shell, builds a command string, expands variables, or interprets the transcript.
-- Fixed arguments remain separate argv elements. The recognized question is appended as exactly one final argv element.
+- Fixed arguments remain separate argv elements. The recognized question and any opted-in context are appended together as exactly one final argv element.
 - The child receives a cleared environment with only `HOME`, `PATH`, `TMPDIR`, `LANG`, `LC_ALL`, `LC_CTYPE`, `USER`, and `LOGNAME` forwarded when present. Arbitrary parent secrets are not inherited. `USER` is required on macOS: Claude Code derives its Keychain credential account name from it and reports "Not logged in" without it.
 - A provider may add only its declared config-directory selector: `CLAUDE_CONFIG_DIR` for Claude and `CODEX_HOME` for Codex (Custom may use either). Base allowlist keys, undeclared names, API keys, and tokens are rejected. Values are owner-only Rust app data, never localStorage; Settings receives only the configured variable names after saving and never reads saved values back. Explicit **Clear saved values** also repairs a malformed or future-version store by replacing the untrusted file with an empty current-version store.
-- The configured CLI is outside Murmur's local-only trust boundary. It may send the question or answer to cloud services according to its own configuration; Settings states this before the user opts in. Murmur cannot verify or prevent that egress.
+- The configured CLI is outside Murmur's local-only trust boundary. It may send the question, enabled context, or answer to cloud services according to its own configuration; Settings states this before the user opts in. Murmur cannot verify or prevent that egress.
 - No executable is selected by default and the shortcut is disabled by default.
-- Question and answer content never enters structured telemetry, dictation history, usage statistics, transcript/audio file output, or broadcast state events. Usage statistics accept only content-free counters. Answer chunks are targeted only to the `query-review` webview and full answer retrieval is requester-gated to that window; numeric usage may also reach the main window for local aggregation.
+- Question, answer, and context content never enters structured telemetry, logs, dictation history, usage statistics, transcript/audio file output, or broadcast state events. Usage statistics accept only content-free counters. Answer chunks are targeted only to the `query-review` webview; full answer and context-summary retrieval is requester-gated to that window, while numeric usage may also reach the main window for local aggregation.
+
+## Opt-in app context
+
+Context is off by default. Each pass freezes one level at query start; focus or Settings changes after that point apply only to the next pass:
+
+- **None:** preserves the original question argument byte-for-byte.
+- **App & window:** adds the native frontmost application name and Accessibility focused-window title.
+- **App, window & selection:** also adds selected text through the same secure-field-aware AX capture policy as Selected-text Transform. The included selection is truncated on a valid UTF-8 boundary at 8 KiB.
+
+The app identity is sampled first and later metadata/selection reads are accepted only for that same PID or bundle ID, so a focus change cannot combine two applications. Secure fields, ambiguous secure-field checks, unavailable Accessibility data, and selection failures fail closed: no selection is included, while the query can continue with whatever lower-level app metadata was safely captured. There is no screenshot, OCR, Screen Recording permission, or other phase-2 visual capture path.
+
+The final literal prompt argument contains the question followed by a labeled, explicitly untrusted context block. The popover shows a requester-gated summary such as `Context: Safari — window title · 1.2 KB selection`; it never silently attaches context. Settings → App Overrides can deny Voice Query context for a specific bundle ID. That deny rule overrides every global or preset context level and never enables context on its own.
 
 ## Lifecycle
 
@@ -41,7 +53,7 @@ Known authentication output maps to `provider_not_authenticated` and an exact re
 
 `managed_child` creates a dedicated process group for the exact direct child. Normal completion, timeout, cancellation, Escape, and app exit wait for confirmed child exit and an empty owned process group. A process that cannot be confirmed stopped fails closed and prevents a new query from replacing its ownership record.
 
-Configuration limits are 32 fixed arguments, 4 KiB per argument, 32 KiB total fixed arguments, a 32 KiB question, a 256 KiB answer, a 16 KiB stderr tail, and a 5–300 second timeout. Stdout is decoded incrementally across split UTF-8 sequences. On terminal failure the error always takes precedence over partial stdout; sanitized stderr appears separately as provider detail only in the requester-gated review window. It never becomes answer content, telemetry, or a log field. Missing/non-executable paths, non-zero exits, timeouts, oversized output, and empty output surface stable actionable errors without paths or content in telemetry.
+Configuration limits are 32 fixed arguments, 4 KiB per argument, 32 KiB total fixed arguments, a 32 KiB question, a 512-byte app name, a 2 KiB window title, an 8 KiB selection, a final composite prompt cap, a 256 KiB answer, a 16 KiB stderr tail, and a 5–300 second timeout. Stdout is decoded incrementally across split UTF-8 sequences. On terminal failure the error always takes precedence over partial stdout; sanitized stderr appears separately as provider detail only in the requester-gated review window. It never becomes answer content, telemetry, or a log field. Missing/non-executable paths, non-zero exits, timeouts, oversized output, and empty output surface stable actionable errors without paths or content in telemetry.
 
 ## Structured provider output
 
@@ -66,6 +78,8 @@ The broadcast terminal state may carry the same typed numeric usage object for l
 | Orchestration and process streaming | `app/src-tauri/src/query_flow.rs` |
 | Structured provider adapters and pass-scoped usage | `app/src-tauri/src/query_adapter.rs` |
 | Provider presets, auth probes, and declared environment store | `app/src-tauri/src/query_provider.rs` |
+| Native frontmost app/window metadata | `app/src-tauri/src/frontmost.rs` |
+| Secure selected-text capture | `app/src-tauri/src/selection.rs` |
 | Direct child/process-group ownership | `app/src-tauri/src/managed_child.rs` |
 | Shared keyboard detector | `app/src-tauri/src/keyboard.rs` |
 | Native popover geometry | `app/src-tauri/src/commands/query_popover.rs` |
