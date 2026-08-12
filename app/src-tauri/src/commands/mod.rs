@@ -7,6 +7,7 @@ pub mod integrations;
 pub mod keyboard;
 pub mod knowledge;
 pub mod logging;
+pub mod microphone_preview;
 pub mod models;
 pub(crate) mod native_window;
 pub mod overlay;

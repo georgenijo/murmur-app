@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The 129 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
+The 134 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -44,6 +44,20 @@ For Rust → frontend events see [events.md](events.md). For the hooks that call
 | `reset_microphone_permission` | — | `Result<(), String>` | Clears a stale microphone TCC entry. |
 | `open_system_preferences` | — | `Result<(), String>` | Opens System Settings to the Microphone pane. |
 | `list_audio_devices` | — | `Result<Vec<AudioDeviceDescriptor>, String>` | CPAL input descriptors: backend-native stable `id` plus presentation-only `name`. |
+
+## Microphone input test (`commands/microphone_preview.rs`)
+
+These commands are gated to the main window. Preview owns the production audio
+supervisor but retains no recording buffer and never enters transcription or
+delivery. Live VAD uses only a bounded rolling in-memory window.
+
+| Command | Parameters | Returns | Description |
+|---------|-----------|---------|-------------|
+| `get_microphone_preview_status` | — | `MicrophonePreviewStatus` | Returns the current generation-aware lifecycle snapshot or retained terminal error. |
+| `start_microphone_preview` | `device_id: String`, `vad_sensitivity: u32` | `Result<MicrophonePreviewStatus, String>` | Claims a monotonic Preview owner with the current live-VAD sensitivity, returns its Connecting status immediately, and starts the selected stable device ID asynchronously so startup can be cancelled. `system_default` is the only value normalized to the live default. Refuses competing capture and benchmark owners. |
+| `update_microphone_preview_vad_sensitivity` | `preview_id: u64`, `vad_sensitivity: u32` | `Result<bool, String>` | Updates only the exact active preview generation, clamps sensitivity to 0–100, and invalidates an in-flight decision from the previous slider value. |
+| `stop_microphone_preview` | `preview_id: u64` | `Result<MicrophonePreviewStatus, String>` | Stops only the exact generation and waits for joined-worker `Idle`; a timeout blocks device reopening. |
+| `cancel_microphone_preview` | `preview_id?: u64` | `Result<bool, String>` | Best-effort exact-owner cleanup for page/window teardown. An omitted ID resolves the active preview before cancellation and is a no-op when none exists. |
 
 ## Optional integrations (`commands/integrations.rs`)
 

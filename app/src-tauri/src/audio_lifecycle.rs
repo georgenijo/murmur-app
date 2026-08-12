@@ -22,6 +22,7 @@ pub(crate) enum AudioOwner {
     Dictation(u64),
     Transform(u64),
     Query(u64),
+    Preview(u64),
     #[cfg(feature = "internal-benchmark")]
     Corpus(u64),
 }
@@ -29,7 +30,7 @@ pub(crate) enum AudioOwner {
 impl AudioOwner {
     pub(crate) fn telemetry_id(self) -> u64 {
         match self {
-            Self::Dictation(id) | Self::Transform(id) | Self::Query(id) => id,
+            Self::Dictation(id) | Self::Transform(id) | Self::Query(id) | Self::Preview(id) => id,
             #[cfg(feature = "internal-benchmark")]
             Self::Corpus(id) => id,
         }
@@ -40,8 +41,22 @@ impl AudioOwner {
             Self::Dictation(_) => "dictation",
             Self::Transform(_) => "transform",
             Self::Query(_) => "query",
+            Self::Preview(_) => "preview",
             #[cfg(feature = "internal-benchmark")]
             Self::Corpus(_) => "corpus",
+        }
+    }
+
+    /// Preview capture proves device readiness and drives a level meter, but
+    /// never keeps microphone samples for transcription or later replay.
+    pub(crate) fn retains_samples(self) -> bool {
+        !matches!(self, Self::Preview(_))
+    }
+
+    pub(crate) fn preview_id(self) -> Option<u64> {
+        match self {
+            Self::Preview(id) => Some(id),
+            _ => None,
         }
     }
 }
@@ -195,6 +210,17 @@ impl PublicState {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 == Some(owner)
     }
+
+    fn preview_owner(&self) -> Option<u64> {
+        match *self
+            .owner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        {
+            Some(AudioOwner::Preview(preview_id)) => Some(preview_id),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -274,6 +300,13 @@ impl LifecycleSink for ProductionLifecycleSink {
             }
             AudioOwner::Query(query_pass_id) => {
                 crate::query_flow::handle_audio_lifecycle(app_handle.clone(), query_pass_id, event);
+            }
+            AudioOwner::Preview(preview_id) => {
+                crate::commands::microphone_preview::handle_audio_lifecycle(
+                    app_handle.clone(),
+                    preview_id,
+                    event,
+                );
             }
             #[cfg(feature = "internal-benchmark")]
             AudioOwner::Corpus(capture_id) => {
@@ -738,11 +771,12 @@ fn handle_worker_event(
         }
         AudioWorkerEvent::FirstBuffer { sample_rate, .. } => match current.phase {
             AttemptPhase::Starting => {
-                if current
-                    .shared
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .is_empty()
+                if current.owner.retains_samples()
+                    && current
+                        .shared
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .is_empty()
                 {
                     tracing::error!(
                         target: "audio",
@@ -801,7 +835,9 @@ fn handle_worker_event(
                 // worker exit. Transform audio has no partial-transcript path,
                 // so preserve its typed, content-free failure before recovery.
                 let report_failure = match current.owner {
-                    AudioOwner::Transform(_) | AudioOwner::Query(_) => Some(failure),
+                    AudioOwner::Transform(_) | AudioOwner::Query(_) | AudioOwner::Preview(_) => {
+                        Some(failure)
+                    }
                     #[cfg(feature = "internal-benchmark")]
                     AudioOwner::Corpus(_) => Some(failure),
                     AudioOwner::Dictation(_) => None,
@@ -849,6 +885,7 @@ fn finish_attempt(attempt: &mut Option<Attempt>, sink: &dyn LifecycleSink, publi
         "audio thread exited and joined"
     );
 
+    let preview_idle_after_clear = matches!(finished.owner, AudioOwner::Preview(_));
     match finished.phase {
         AttemptPhase::Stopping => {
             let samples = take_samples(&mut finished);
@@ -856,7 +893,7 @@ fn finish_attempt(attempt: &mut Option<Attempt>, sink: &dyn LifecycleSink, publi
                 .stop_response
                 .take()
                 .is_some_and(|response| response.send(Ok(samples)).is_ok());
-            if !response_delivered {
+            if !response_delivered && !preview_idle_after_clear {
                 sink.notify(
                     finished.app_handle.as_ref(),
                     finished.owner,
@@ -872,11 +909,13 @@ fn finish_attempt(attempt: &mut Option<Attempt>, sink: &dyn LifecycleSink, publi
             if let Some(response) = finished.start_response.take() {
                 let _ = response.send(Err(AudioStartError::InitializationFailed(failure)));
             }
-            sink.notify(
-                finished.app_handle.as_ref(),
-                finished.owner,
-                AudioLifecycleEvent::Idle,
-            );
+            if !preview_idle_after_clear {
+                sink.notify(
+                    finished.app_handle.as_ref(),
+                    finished.owner,
+                    AudioLifecycleEvent::Idle,
+                );
+            }
         }
         AttemptPhase::Recording => {
             report_failure_once(
@@ -884,11 +923,13 @@ fn finish_attempt(attempt: &mut Option<Attempt>, sink: &dyn LifecycleSink, publi
                 sink,
                 AudioFailure::new(AudioFailureKind::BackendError, AudioInitPhase::Runtime),
             );
-            sink.notify(
-                finished.app_handle.as_ref(),
-                finished.owner,
-                AudioLifecycleEvent::Idle,
-            );
+            if !preview_idle_after_clear {
+                sink.notify(
+                    finished.app_handle.as_ref(),
+                    finished.owner,
+                    AudioLifecycleEvent::Idle,
+                );
+            }
         }
         AttemptPhase::Recovering => {
             if finished.recovery_reason == Some(AudioCancelReason::RuntimeFailure)
@@ -923,7 +964,7 @@ fn finish_attempt(attempt: &mut Option<Attempt>, sink: &dyn LifecycleSink, publi
                         duration_ms,
                     },
                 );
-            } else {
+            } else if !preview_idle_after_clear {
                 sink.notify(
                     finished.app_handle.as_ref(),
                     finished.owner,
@@ -936,6 +977,16 @@ fn finish_attempt(attempt: &mut Option<Attempt>, sink: &dyn LifecycleSink, publi
     public.still_connecting.store(false, Ordering::SeqCst);
     public.clear_owner(finished.owner);
     public.set_phase(PublicPhase::Idle);
+    if preview_idle_after_clear {
+        // Preview callers wait for this event before opening another device.
+        // Publish it only after the worker is joined and supervisor ownership
+        // is visibly idle, so device switching cannot race teardown.
+        sink.notify(
+            finished.app_handle.as_ref(),
+            finished.owner,
+            AudioLifecycleEvent::Idle,
+        );
+    }
 }
 
 fn take_samples(attempt: &mut Attempt) -> Vec<f32> {
@@ -1230,6 +1281,20 @@ pub(crate) fn start_query_recording(
     .map_err(|error| error.to_string())
 }
 
+pub(crate) fn start_preview_recording(
+    app_handle: tauri::AppHandle,
+    device_id: Option<String>,
+    preview_id: u64,
+) -> Result<(), AudioStartError> {
+    send_start(
+        AudioOwner::Preview(preview_id),
+        Some(app_handle),
+        device_id,
+        "preview",
+        false,
+    )
+}
+
 #[cfg(feature = "internal-benchmark")]
 pub(crate) fn start_corpus_recording(
     app_handle: tauri::AppHandle,
@@ -1252,6 +1317,10 @@ pub(crate) fn stop_dictation_recording(recording_id: u64) -> Result<Vec<f32>, St
 
 pub(crate) fn stop_query_recording(query_pass_id: u64) -> Result<Vec<f32>, String> {
     stop(Some(AudioOwner::Query(query_pass_id)))
+}
+
+pub(crate) fn stop_preview_recording(preview_id: u64) -> Result<Vec<f32>, String> {
+    stop(Some(AudioOwner::Preview(preview_id)))
 }
 
 #[cfg(feature = "internal-benchmark")]
@@ -1299,6 +1368,13 @@ pub(crate) fn cancel_query_capture(
     cancel(Some(AudioOwner::Query(query_pass_id)), reason, false)
 }
 
+pub(crate) fn cancel_preview_capture(
+    preview_id: u64,
+    reason: AudioCancelReason,
+) -> Result<bool, String> {
+    cancel(Some(AudioOwner::Preview(preview_id)), reason, false)
+}
+
 #[cfg(feature = "internal-benchmark")]
 pub(crate) fn cancel_corpus_capture(
     capture_id: u64,
@@ -1317,6 +1393,19 @@ pub(crate) fn cancel_starting_for_environment_change(reason: AudioCancelReason) 
         owner: None,
         reason,
         starting_only: true,
+        response: response_sender,
+    });
+}
+
+pub(crate) fn cancel_preview_for_environment_change(reason: AudioCancelReason) {
+    let Some(preview_id) = supervisor().public.preview_owner() else {
+        return;
+    };
+    let (response_sender, _response_receiver) = mpsc::channel();
+    let _ = supervisor().sender.send(SupervisorMessage::Cancel {
+        owner: Some(AudioOwner::Preview(preview_id)),
+        reason,
+        starting_only: false,
         response: response_sender,
     });
 }
@@ -1377,6 +1466,9 @@ pub(crate) fn register_sleep_wake_observer() {
     ) {
         let block =
             block2::RcBlock::new(move |_notification: std::ptr::NonNull<NSNotification>| {
+                if reason == AudioCancelReason::SystemSleep {
+                    cancel_preview_for_environment_change(reason);
+                }
                 cancel_starting_for_environment_change(reason);
             });
         unsafe {
@@ -2082,6 +2174,76 @@ mod tests {
     }
 
     #[test]
+    fn preview_readiness_does_not_require_retained_pcm() {
+        let (supervisor, gate, _, sink, _) =
+            harness(AudioInitPhase::FirstBufferWait, SupervisorConfig::default());
+        let owner = AudioOwner::Preview(11);
+        assert_eq!(start(&supervisor, owner).recv().unwrap(), Ok(()));
+        supervisor
+            .sender
+            .send(SupervisorMessage::Worker(AudioWorkerEvent::FirstBuffer {
+                owner,
+                sample_rate: WHISPER_SAMPLE_RATE,
+            }))
+            .unwrap();
+        assert_eq!(
+            cancel_any_phase(&supervisor, owner).recv().unwrap(),
+            Ok(true)
+        );
+        assert!(sink
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(event_owner, event)| *event_owner == owner
+                && *event == AudioLifecycleEvent::Ready));
+        gate.open();
+        wait_until("preview worker did not finish teardown", || {
+            !supervisor.public.is_active()
+        });
+        shutdown(&supervisor);
+    }
+
+    #[test]
+    fn preview_stop_while_connecting_emits_idle_only_after_worker_exit() {
+        let (supervisor, gate, _, sink, _) =
+            harness(AudioInitPhase::StreamBuild, SupervisorConfig::default());
+        let owner = AudioOwner::Preview(12);
+        assert_eq!(start(&supervisor, owner).recv().unwrap(), Ok(()));
+        let (response_sender, response_receiver) = mpsc::channel();
+        supervisor
+            .sender
+            .send(SupervisorMessage::Stop {
+                owner: Some(owner),
+                response: response_sender,
+            })
+            .unwrap();
+        assert_eq!(response_receiver.recv().unwrap(), Ok(Vec::new()));
+        assert!(supervisor.public.is_active());
+        assert!(!sink
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(
+                |(event_owner, event)| *event_owner == owner && *event == AudioLifecycleEvent::Idle
+            ));
+        gate.open();
+        wait_until("stopped preview worker did not exit", || {
+            !supervisor.public.is_active()
+        });
+        assert!(sink
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(
+                |(event_owner, event)| *event_owner == owner && *event == AudioLifecycleEvent::Idle
+            ));
+        shutdown(&supervisor);
+    }
+
+    #[test]
     fn first_buffer_enqueued_before_stop_returns_retained_pcm_exactly_once() {
         let release_spawn = Gate::closed();
         let (first_buffer_sender, first_buffer_receiver) = mpsc::channel();
@@ -2310,6 +2472,41 @@ mod tests {
             1,
             "transform runtime failure must be reported exactly once"
         );
+        shutdown(&supervisor);
+    }
+
+    #[test]
+    fn preview_runtime_failure_reaches_supervisor_as_typed_error() {
+        let sink = Arc::new(RecordingSink::default());
+        let supervisor = spawn_supervisor(
+            Arc::new(RuntimeFailureFactory),
+            sink.clone(),
+            SupervisorConfig::default(),
+        );
+        let owner = AudioOwner::Preview(82);
+        assert_eq!(start(&supervisor, owner).recv().unwrap(), Ok(()));
+        wait_until(
+            "preview runtime failure did not reach lifecycle sink",
+            || {
+                sink.events
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|(event_owner, event)| {
+                        *event_owner == owner
+                            && matches!(
+                                event,
+                                AudioLifecycleEvent::InitializationFailed {
+                                    kind: AudioFailureKind::StreamInvalidated,
+                                    ..
+                                }
+                            )
+                    })
+            },
+        );
+        wait_until("runtime-failed preview worker did not exit", || {
+            !supervisor.public.is_active()
+        });
         shutdown(&supervisor);
     }
 

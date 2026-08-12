@@ -4,3 +4,4 @@ export {
   resolvePage,
   settingsLatencyView,
 } from './SettingsPanel';
+export { SettingsSurfaceActiveContext } from './SettingsSurfaceContext';
