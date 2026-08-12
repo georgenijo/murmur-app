@@ -177,6 +177,11 @@ vocabulary, knowledge, commands, and selected-text transforms), and **App**
 disclosures. Vocabulary, aliases, knowledge, transforms, voice commands, and
 project scan share one six-tab editor window.
 
+Dictation Settings also includes a local-only
+[live microphone input test](features/microphone-input-test.md) with RMS/peak
+metering, quiet/clipping guidance, automatic pause/resume around dictation,
+exact device switching, and no retained PCM.
+
 ### Appearance — [features/appearance.md](features/appearance.md)
 Local System/Light/Dark appearance with accessible custom accent, background, foreground, and contrast controls. The main window owns the revisioned local document and native title-bar appearance; the transparent overlay and transform review remain unsynchronized always-dark glass. Import/export is bounded, atomic, UTF-8 JSON and never touches the clipboard.
 
@@ -245,7 +250,7 @@ Every transform-key hold is recorded as a content-free `TransformAttemptV1` with
 
 | Area | Location |
 |------|----------|
-| Rust backend | `app/src-tauri/src/` — 122 Tauri commands |
+| Rust backend | `app/src-tauri/src/` — 134 Tauri commands |
 | Frontend | `app/src/` — React 18 + TypeScript + Tailwind 4 |
 | LLM sidecar | `app/src-tauri/sidecars/local-llm/`, protocol in `crates/local-llm-protocol` |
 | Diagnostics MCP tool | `tools/murmur-diag/` |

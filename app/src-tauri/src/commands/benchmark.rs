@@ -58,6 +58,13 @@ pub async fn run_benchmark(
             "Wait for the transform to finish before benchmarking",
         )?;
     }
+    // Serialize the benchmark claim with every live microphone owner. This
+    // closes the check/claim race in both directions with preview startup.
+    let transition = crate::commands::microphone_preview::transition_after_stopping_preview(
+        &app_handle,
+        state.inner(),
+    )
+    .await?;
     {
         let dictation = state.app_state.dictation.lock_or_recover();
         // An ACTIVE transform (Capturing/Listening/Thinking/Applying) holds
@@ -87,6 +94,7 @@ pub async fn run_benchmark(
             });
         }
     }
+    drop(transition);
     // Only one heavy inference runtime may be resident: stop any local-LLM
     // helper before benchmarking (fail-fast no-op while a transform is in
     // flight). The benchmark slot is already claimed above.

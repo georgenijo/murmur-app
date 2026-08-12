@@ -45,6 +45,12 @@ pub fn is_enabled(sensitivity: u32) -> bool {
     sensitivity > 0
 }
 
+/// Map the user-facing sensitivity scale to whisper.cpp's VAD threshold.
+/// Higher sensitivity keeps more audio, so it uses a lower threshold.
+pub fn threshold_for_sensitivity(sensitivity: u32) -> f32 {
+    1.0 - (sensitivity.clamp(0, 100) as f32 / 100.0)
+}
+
 /// Run Silero VAD on the given 16kHz mono samples and return only speech segments.
 ///
 /// `model_path` must point to a valid Silero VAD GGML model file.
@@ -131,6 +137,14 @@ mod tests {
         assert!(!is_enabled(0));
         assert!(is_enabled(1));
         assert!(is_enabled(100));
+    }
+
+    #[test]
+    fn sensitivity_threshold_mapping_is_clamped_and_shared() {
+        assert_eq!(threshold_for_sensitivity(0), 1.0);
+        assert_eq!(threshold_for_sensitivity(50), 0.5);
+        assert_eq!(threshold_for_sensitivity(100), 0.0);
+        assert_eq!(threshold_for_sensitivity(150), 0.0);
     }
 
     #[test]

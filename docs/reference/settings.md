@@ -17,7 +17,7 @@ The native Settings workspace has four horizontal tabs in this order
 (`SETTINGS_CATEGORIES` in `SettingsPanel.tsx`). The search field above them
 matches rows across every tab and routes a selected result to its owner:
 
-1. **Dictation** — microphone, voice detection, recording trigger, shortcut feedback, clipboard-first delivery, auto-paste, file output, and app overrides
+1. **Dictation** — microphone selection and live input test, voice detection, recording trigger, shortcut feedback, clipboard-first delivery, auto-paste, file output, and app overrides
 2. **Model** — model selector, language, lifecycle/download state, idle release, Performance Lab, and the advanced diagnostics workspace
 3. **Text** — punctuation, cleanup, names and terms, corrections, structured writing, spoken commands, personal knowledge, and selected-text transforms
 4. **App** — appearance, launch at login, setup, overlay calibration, statistics, updates, and version
@@ -32,6 +32,12 @@ reloads every current `Settings` field, including tri-state app overrides and
 IDE roots.
 
 **Source file:** `app/src/lib/settings.ts`
+
+The live microphone monitor is operational state, not a setting. It starts
+automatically on Dictation Settings, uses the persisted `microphone` ID, keeps
+no audio, yields to real dictation, resumes afterward, and stops when Dictation
+Settings is left or hidden. See
+[Microphone Input Test](../features/microphone-input-test.md).
 
 **TypeScript interface** (full current shape — see `settings.ts` for the per-field comments):
 

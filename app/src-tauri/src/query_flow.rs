@@ -377,7 +377,11 @@ pub(crate) async fn start_query_capture(
             return Ok(());
         }
     };
-    let _transition = state.app_state.recording_transition.lock().await;
+    let _transition = crate::commands::microphone_preview::transition_after_stopping_preview(
+        &app_handle,
+        state.inner(),
+    )
+    .await?;
     if !state.query.is_active(query_pass_id) {
         return Ok(());
     }
@@ -498,7 +502,7 @@ async fn transcribe_query(
         if !crate::vad::is_enabled(transcription.vad_sensitivity) {
             (samples.clone(), false)
         } else {
-            let threshold = 1.0 - (transcription.vad_sensitivity as f32 / 100.0);
+            let threshold = crate::vad::threshold_for_sensitivity(transcription.vad_sensitivity);
             match crate::vad::vad_model_path().filter(|path| path.exists()) {
                 Some(path) => {
                     let path = path.to_string_lossy().into_owned();

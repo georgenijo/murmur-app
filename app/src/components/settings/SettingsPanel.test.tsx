@@ -19,6 +19,34 @@ const coreMocks = vi.hoisted(() => ({
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(async (command: string) => {
     if (command === 'list_audio_devices') return [];
+    if (command === 'get_microphone_preview_status') {
+      return {
+        previewId: null,
+        state: 'idle',
+        stillConnecting: false,
+        errorKind: null,
+        message: null,
+      };
+    }
+    if (command === 'start_microphone_preview') {
+      return {
+        previewId: 1,
+        state: 'active',
+        stillConnecting: false,
+        errorKind: null,
+        message: null,
+      };
+    }
+    if (command === 'stop_microphone_preview') {
+      return {
+        previewId: null,
+        state: 'idle',
+        stillConnecting: false,
+        errorKind: null,
+        message: null,
+      };
+    }
+    if (command === 'cancel_microphone_preview') return false;
     if (command === 'is_notchpill_installed') {
       if (coreMocks.notchPillDetectionError) throw new Error('detector unavailable');
       return coreMocks.notchPillInstalled;
@@ -62,13 +90,15 @@ describe('SettingsPanel information architecture', () => {
   let container: HTMLDivElement;
   let root: Root;
   const scrollTo = vi.fn();
+  const onUpdateSettings = vi.fn();
 
   function renderPanel(isOpen = true) {
     void isOpen;
     return root.render(
       <SettingsPanel
         settings={DEFAULT_SETTINGS}
-        onUpdateSettings={vi.fn()}
+        onUpdateSettings={onUpdateSettings}
+        initialized
         status="idle"
         onResetStats={vi.fn()}
         onRerunSetup={vi.fn()}
@@ -84,6 +114,7 @@ describe('SettingsPanel information architecture', () => {
     coreMocks.notchPillInstalled = false;
     coreMocks.notchPillDetectionError = false;
     scrollTo.mockReset();
+    onUpdateSettings.mockReset();
     Object.defineProperty(HTMLElement.prototype, 'scrollTo', { value: scrollTo, configurable: true });
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -106,6 +137,20 @@ describe('SettingsPanel information architecture', () => {
     expect(container.querySelector('h1')?.textContent).toBe('Microphone & Trigger');
     expect(container.textContent).toContain('Microphone');
     expect(container.textContent).toContain('Always copied to clipboard');
+  });
+
+  it('commits keyboard changes to voice-detection sensitivity', async () => {
+    const heading = Array.from(container.querySelectorAll('p')).find(
+      (item) => item.textContent === 'Voice Detection',
+    ) as HTMLParagraphElement;
+    const slider = heading.parentElement?.querySelector('input[type="range"]') as HTMLInputElement;
+    await act(async () => {
+      slider.value = '75';
+      slider.dispatchEvent(new Event('input', { bubbles: true }));
+      slider.dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowRight', bubbles: true }));
+    });
+
+    expect(onUpdateSettings).toHaveBeenCalledWith({ vadSensitivity: 75 });
   });
 
   it('hides the NotchPill setting when the companion app is absent', () => {
@@ -292,6 +337,7 @@ describe('SettingsPanel transform block (#312 D1 round-2 findings 6-8)', () => {
       <SettingsPanel
         settings={{ ...DEFAULT_SETTINGS, ...settingsOverrides }}
         onUpdateSettings={vi.fn()}
+        initialized
         status="idle"
         onResetStats={vi.fn()}
         onRerunSetup={vi.fn()}
