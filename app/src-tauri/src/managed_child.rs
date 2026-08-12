@@ -78,7 +78,11 @@ impl ManagedChild {
     ///
     /// The child receives only the small environment needed by common CLI
     /// shims and credential stores. Arbitrary parent variables (including API
-    /// keys) are deliberately not forwarded.
+    /// keys) are deliberately not forwarded. `USER`/`LOGNAME` carry no secret
+    /// (the username is already visible in `HOME`) and are required on macOS:
+    /// Claude Code derives its Keychain credential account name from `USER`
+    /// and resolves to a nonexistent "unknown" account without it, reporting
+    /// "Not logged in" even when the user is signed in.
     pub fn spawn_user_cli(
         executable: &Path,
         arguments: &[String],
@@ -91,7 +95,9 @@ impl ManagedChild {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .env_clear();
-        for key in ["HOME", "PATH", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE"] {
+        for key in [
+            "HOME", "PATH", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "USER", "LOGNAME",
+        ] {
             if let Some(value) = std::env::var_os(key) {
                 command.env(key, value);
             }
@@ -306,7 +312,9 @@ mod tests {
         child
             .wait_for_exit(Instant::now() + Duration::from_secs(1))
             .expect("env must exit cleanly");
-        let allowed = ["HOME", "PATH", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE"];
+        let allowed = [
+            "HOME", "PATH", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "USER", "LOGNAME",
+        ];
         for line in output.lines() {
             let key = line.split_once('=').map(|(key, _)| key).unwrap_or(line);
             assert!(
