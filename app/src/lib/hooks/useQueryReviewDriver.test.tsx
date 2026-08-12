@@ -102,7 +102,7 @@ describe('useQueryReviewDriver ownership', () => {
     expect(current!.signInFix).toBe('current fix');
   });
 
-  it('keeps only the newest same-pass recovery snapshot', async () => {
+  it('keeps only the newest same-pass recovery snapshot across a replace gap race', async () => {
     let resolveOlder!: (value: ReturnType<typeof content>) => void;
     let resolveNewer!: (value: ReturnType<typeof content>) => void;
     const older = new Promise<ReturnType<typeof content>>((resolve) => { resolveOlder = resolve; });
@@ -114,10 +114,10 @@ describe('useQueryReviewDriver ownership', () => {
         payload: { queryPassId: 71, state: 'running', errorCode: null },
       });
       mocks.listeners['query-answer-chunk']?.({
-        payload: { queryPassId: 71, sequence: 1, text: 'gap' },
+        payload: { queryPassId: 71, sequence: 1, text: 'gap', replace: false },
       });
       mocks.listeners['query-answer-chunk']?.({
-        payload: { queryPassId: 71, sequence: 2, text: 'later' },
+        payload: { queryPassId: 71, sequence: 2, text: 'raw fallback', replace: true },
       });
       await Promise.resolve();
     });
@@ -136,7 +136,7 @@ describe('useQueryReviewDriver ownership', () => {
     expect(current!.signInFix).toBe('latest fix');
   });
 
-  it('keeps the terminal snapshot authoritative when a final chunk event is missing', async () => {
+  it('keeps the terminal snapshot authoritative over a concurrent replace event', async () => {
     let resolveTerminal!: (value: ReturnType<typeof content>) => void;
     const terminal = new Promise<ReturnType<typeof content>>((resolve) => { resolveTerminal = resolve; });
     mocks.invoke.mockImplementationOnce(() => terminal);
@@ -147,11 +147,11 @@ describe('useQueryReviewDriver ownership', () => {
       });
       await Promise.resolve();
       mocks.listeners['query-answer-chunk']?.({
-        payload: { queryPassId: 81, sequence: 0, text: 'streamed prefix' },
+        payload: { queryPassId: 81, sequence: 0, text: 'raw fallback', replace: true },
       });
       await Promise.resolve();
     });
-    expect(current!.answer).toBe('streamed prefix');
+    expect(current!.answer).toBe('raw fallback');
     await act(async () => {
       resolveTerminal(content(81, 'streamed prefix plus tail', '', ''));
       await Promise.resolve();
@@ -209,5 +209,57 @@ describe('useQueryReviewDriver ownership', () => {
     });
     expect(current!.signInStatus).toBeNull();
     expect(current!.signInBusy).toBe(false);
+  });
+
+  it('replaces optimistic structured chunks when the adapter falls back to raw', async () => {
+    await mount();
+    await act(async () => {
+      mocks.listeners['query-state-changed']?.({
+        payload: { queryPassId: 17, state: 'running', errorCode: null },
+      });
+      mocks.listeners['query-answer-chunk']?.({
+        payload: {
+          queryPassId: 17,
+          sequence: 0,
+          text: 'clean answer',
+          replace: false,
+        },
+      });
+    });
+    expect(current!.answer).toBe('clean answer');
+
+    await act(async () => {
+      mocks.listeners['query-answer-chunk']?.({
+        payload: {
+          queryPassId: 17,
+          sequence: 1,
+          text: '{"type":"partial"}\nmalformed\n',
+          replace: true,
+        },
+      });
+      mocks.listeners['query-answer-chunk']?.({
+        payload: {
+          queryPassId: 17,
+          sequence: 2,
+          text: 'raw tail',
+          replace: false,
+        },
+      });
+    });
+
+    expect(current!.answer).toBe('{"type":"partial"}\nmalformed\nraw tail');
+  });
+
+  it('rejects chunks that omit the explicit append-or-replace mode', async () => {
+    await mount();
+    await act(async () => {
+      mocks.listeners['query-state-changed']?.({
+        payload: { queryPassId: 18, state: 'running', errorCode: null },
+      });
+      mocks.listeners['query-answer-chunk']?.({
+        payload: { queryPassId: 18, sequence: 0, text: 'ambiguous' },
+      });
+    });
+    expect(current!.answer).toBe('');
   });
 });

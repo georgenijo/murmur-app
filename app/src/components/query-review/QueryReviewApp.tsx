@@ -22,6 +22,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   termination_unconfirmed: 'Murmur could not confirm that the CLI process stopped.',
   process_failed: 'The configured CLI process failed.',
   exit_nonzero: 'The configured CLI exited with an error.',
+  provider_error: 'The configured provider reported an error.',
   provider_not_authenticated: 'The configured provider is not signed in.',
   output_too_large: 'The answer exceeded the 256 KB safety limit and was stopped.',
   empty_answer: 'The configured CLI returned no answer.',

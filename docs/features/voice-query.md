@@ -1,6 +1,6 @@
 # Voice query
 
-Issues [#538](https://github.com/georgenijo/murmur-app/issues/538) and [#550](https://github.com/georgenijo/murmur-app/issues/550). Voice Query is an opt-in bridge from Murmur's local speech recognition to one user-configured CLI executable. Double-tap its dedicated shortcut, ask a question, tap once to finish, and read the CLI's streaming stdout in a separate answer popover.
+Issues [#538](https://github.com/georgenijo/murmur-app/issues/538), [#550](https://github.com/georgenijo/murmur-app/issues/550), and [#551](https://github.com/georgenijo/murmur-app/issues/551). Voice Query is an opt-in bridge from Murmur's local speech recognition to one user-configured CLI executable. Double-tap its dedicated shortcut, ask a question, tap once to finish, and read the CLI's streaming answer in a separate popover.
 
 ## Privacy and trust boundary
 
@@ -31,7 +31,7 @@ Like the notch overlay, the answer popover is configured `visibleOnAllWorkspaces
 
 ## Provider presets and preflight
 
-Claude, Codex, Grok, Cursor, and Custom are data presets rather than special execution paths. A preset declares discovery candidates, recommended literal argv, an authentication probe, known authentication-failure signatures, an interactive sign-in command, and permitted config-directory environment names. Selecting a preset copies its discovered absolute executable and recommended argv into the editable configuration; Custom preserves the generic bridge.
+Claude, Codex, Grok, Cursor, and Custom are data presets rather than alternate process-launch paths. A preset declares discovery candidates, recommended literal argv, an authentication probe, known authentication-failure signatures, an interactive sign-in command, and permitted config-directory environment names. Claude's recommended argv is `--print --output-format stream-json --include-partial-messages`; Codex's starts with `exec --json`. Selecting a preset copies its discovered absolute executable and recommended argv into the editable configuration; Custom preserves the generic bridge.
 
 Enabling Voice Query validates the exact executable, argv limits, timeout, provider, and Rust-owned environment before the global listener is armed. Settings' **Test** action additionally runs the preset's authentication probe (for example, `claude auth status` or `codex login status`) through the identical direct `spawn_user_cli` path. Probe stdout and stderr are bounded to 16 KiB tails and shown only in Settings; they never enter telemetry or logs. Custom has no built-in authentication probe, so Test validates its executable and configuration only.
 
@@ -43,11 +43,20 @@ Known authentication output maps to `provider_not_authenticated` and an exact re
 
 Configuration limits are 32 fixed arguments, 4 KiB per argument, 32 KiB total fixed arguments, a 32 KiB question, a 256 KiB answer, a 16 KiB stderr tail, and a 5–300 second timeout. Stdout is decoded incrementally across split UTF-8 sequences. On terminal failure the error always takes precedence over partial stdout; sanitized stderr appears separately as provider detail only in the requester-gated review window. It never becomes answer content, telemetry, or a log field. Missing/non-executable paths, non-zero exits, timeouts, oversized output, and empty output surface stable actionable errors without paths or content in telemetry.
 
+## Structured provider output
+
+One `VoiceQueryAdapter` seam sits after the shared bounded stdout reader. Claude stream-json text deltas map to the existing sequence-numbered answer events; its terminal result supplies input/output/cache token counts and provider-reported cost for the pass. Codex JSONL emits completed `agent_message` items and terminal usage in the same typed form. Provider banners, reasoning, tool activity, session IDs, and other metadata are not answer text. Usage remains Rust-side and pass-scoped until the separate opt-in presentation and aggregate work in #552.
+
+Typed Claude result errors and Codex `turn.failed`/`error` events fail the pass even if the process exits zero. Known authentication details still map to `provider_not_authenticated`; other typed failures map to content-free `provider_error`. Provider detail remains bounded to the same requester-only 16 KiB field and never enters telemetry.
+
+Custom, Grok, and Cursor retain raw stdout behavior. If a Claude or Codex line is malformed or outside the recognized JSONL contract, parsing never fails the pass: the adapter atomically replaces any optimistic extracted chunks with the complete raw stdout received so far, then streams later bytes in raw mode. The replacement flag and sequence number prevent duplicated content during this fail-safe transition. The structured raw archive shares the existing 256 KiB output cap.
+
 ## Related modules
 
 | Area | Path |
 |------|------|
 | Orchestration and process streaming | `app/src-tauri/src/query_flow.rs` |
+| Structured provider adapters and pass-scoped usage | `app/src-tauri/src/query_adapter.rs` |
 | Provider presets, auth probes, and declared environment store | `app/src-tauri/src/query_provider.rs` |
 | Direct child/process-group ownership | `app/src-tauri/src/managed_child.rs` |
 | Shared keyboard detector | `app/src-tauri/src/keyboard.rs` |

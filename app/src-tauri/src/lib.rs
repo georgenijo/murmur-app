@@ -36,6 +36,7 @@ mod model_artifact;
 mod model_runtime;
 mod performance_metrics;
 mod platform;
+mod query_adapter;
 mod query_flow;
 mod query_provider;
 mod resource_monitor;

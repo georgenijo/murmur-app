@@ -8,6 +8,7 @@
 use crate::dictation_context::DictationContextSnapshot;
 use crate::managed_child::ManagedChild;
 use crate::model_runtime::PreparationReason;
+use crate::query_adapter::{AnswerUpdate, QueryUsage, VoiceQueryAdapter};
 use crate::query_provider::{
     QueryEnvironmentVariable, QueryProviderId, QueryProviderTestResult, MAX_STDERR_BYTES,
 };
@@ -113,6 +114,7 @@ struct QuerySession {
     context: Arc<DictationContextSnapshot>,
     command: ValidatedQueryCommand,
     answer: String,
+    usage: Option<QueryUsage>,
     error_detail: Option<String>,
 }
 
@@ -227,8 +229,38 @@ impl QueryCoordinator {
         Ok(())
     }
 
+    fn replace_answer(&self, pass_id: u64, text: String) -> Result<(), &'static str> {
+        let _ownership = self.ownership.lock_or_recover();
+        if !self.is_active(pass_id) {
+            return Err("stale_pass");
+        }
+        if text.len() > MAX_ANSWER_BYTES {
+            return Err("output_too_large");
+        }
+        let mut slot = self.session.lock_or_recover();
+        let session = slot
+            .as_mut()
+            .filter(|session| session.pass_id == pass_id)
+            .ok_or("stale_pass")?;
+        session.answer = text;
+        Ok(())
+    }
+
     fn answer(&self, pass_id: u64) -> Option<String> {
         self.session(pass_id).map(|session| session.answer)
+    }
+
+    fn set_usage(&self, pass_id: u64, usage: Option<QueryUsage>) -> bool {
+        let _ownership = self.ownership.lock_or_recover();
+        if !self.is_active(pass_id) {
+            return false;
+        }
+        let mut slot = self.session.lock_or_recover();
+        let Some(session) = slot.as_mut().filter(|session| session.pass_id == pass_id) else {
+            return false;
+        };
+        session.usage = usage;
+        true
     }
 
     fn set_error_detail(&self, pass_id: u64, detail: Option<String>) -> bool {
@@ -643,6 +675,7 @@ pub(crate) async fn start_query_capture(
         context: Arc::clone(&context),
         command,
         answer: String::new(),
+        usage: None,
         error_detail: None,
     };
     if !state.query.install_session(query_pass_id, session)
@@ -800,45 +833,6 @@ async fn transcribe_query(
     }
 }
 
-struct Utf8Chunks {
-    pending: Vec<u8>,
-}
-
-impl Utf8Chunks {
-    fn new() -> Self {
-        Self {
-            pending: Vec::new(),
-        }
-    }
-
-    fn push(&mut self, bytes: &[u8]) -> String {
-        self.pending.extend_from_slice(bytes);
-        match std::str::from_utf8(&self.pending) {
-            Ok(text) => {
-                let text = text.to_string();
-                self.pending.clear();
-                text
-            }
-            Err(error) => {
-                let valid = error.valid_up_to();
-                if error.error_len().is_none() {
-                    let text = String::from_utf8_lossy(&self.pending[..valid]).into_owned();
-                    self.pending.drain(..valid);
-                    text
-                } else {
-                    let text = String::from_utf8_lossy(&self.pending).into_owned();
-                    self.pending.clear();
-                    text
-                }
-            }
-        }
-    }
-
-    fn finish(self) -> String {
-        String::from_utf8_lossy(&self.pending).into_owned()
-    }
-}
-
 #[derive(Debug)]
 struct QueryRunError {
     code: &'static str,
@@ -934,44 +928,50 @@ fn send_cli_output(
 fn accept_stdout(
     app: &tauri::AppHandle,
     pass_id: u64,
-    decoder: &mut Utf8Chunks,
+    adapter: &mut VoiceQueryAdapter,
     sequence: &mut u64,
     bytes: &[u8],
 ) -> Result<(), &'static str> {
-    let text = decoder.push(bytes);
-    if text.is_empty() {
-        return Ok(());
-    }
-    let state = app.state::<crate::State>();
-    state.query.append_answer(pass_id, &text)?;
-    let _ = crate::commands::query_popover::set_expanded_internal(app, true);
-    let _ = app.emit_to(
-        "query-review",
-        "query-answer-chunk",
-        serde_json::json!({
-            "queryPassId": pass_id,
-            "sequence": *sequence,
-            "text": text,
-        }),
-    );
-    *sequence += 1;
+    let updates = adapter.push_stdout(bytes)?;
+    accept_answer_updates(app, pass_id, sequence, updates)?;
     Ok(())
 }
 
-fn finish_stdout_after_reap(
-    query: &QueryCoordinator,
+fn accept_answer_updates(
+    app: &tauri::AppHandle,
     pass_id: u64,
-    decoder: Utf8Chunks,
-) -> Result<String, &'static str> {
-    // The direct child and owned process group have already been reaped. Drop
-    // that ownership before any final decoding/size check can return early, so
-    // cancellation never targets a stale PID/PGID after a terminal error.
-    query.clear_child(pass_id);
-    let tail = decoder.finish();
-    if !tail.is_empty() {
-        query.append_answer(pass_id, &tail)?;
+    sequence: &mut u64,
+    updates: Vec<AnswerUpdate>,
+) -> Result<(), &'static str> {
+    for update in updates {
+        let (text, replace) = match update {
+            AnswerUpdate::Append(text) => {
+                app.state::<crate::State>()
+                    .query
+                    .append_answer(pass_id, &text)?;
+                (text, false)
+            }
+            AnswerUpdate::Replace(text) => {
+                app.state::<crate::State>()
+                    .query
+                    .replace_answer(pass_id, text.clone())?;
+                (text, true)
+            }
+        };
+        let _ = crate::commands::query_popover::set_expanded_internal(app, true);
+        let _ = app.emit_to(
+            "query-review",
+            "query-answer-chunk",
+            serde_json::json!({
+                "queryPassId": pass_id,
+                "sequence": *sequence,
+                "text": text,
+                "replace": replace,
+            }),
+        );
+        *sequence += 1;
     }
-    Ok(tail)
+    Ok(())
 }
 
 fn discard_remaining_output(
@@ -1097,7 +1097,7 @@ fn run_cli(
     });
 
     let deadline = Instant::now() + command.timeout;
-    let mut decoder = Utf8Chunks::new();
+    let mut adapter = VoiceQueryAdapter::new(command.provider, MAX_ANSWER_BYTES);
     let mut sequence = 0_u64;
     let mut stderr_tail = StderrTail::new();
     let exit_status = loop {
@@ -1121,7 +1121,7 @@ fn run_cli(
         while let Ok(chunk) = rx.try_recv() {
             let result = match chunk {
                 CliOutput::Stdout(bytes) => {
-                    accept_stdout(&app, pass_id, &mut decoder, &mut sequence, &bytes)
+                    accept_stdout(&app, pass_id, &mut adapter, &mut sequence, &bytes)
                 }
                 CliOutput::Stderr(bytes) => {
                     stderr_tail.push(&bytes);
@@ -1240,7 +1240,7 @@ fn run_cli(
             match chunk {
                 CliOutput::Stdout(bytes) => {
                     if let Err(code) =
-                        accept_stdout(&app, pass_id, &mut decoder, &mut sequence, &bytes)
+                        accept_stdout(&app, pass_id, &mut adapter, &mut sequence, &bytes)
                     {
                         drain_error = Some(code);
                         break;
@@ -1267,7 +1267,7 @@ fn run_cli(
             match chunk {
                 CliOutput::Stdout(bytes) => {
                     if let Err(code) =
-                        accept_stdout(&app, pass_id, &mut decoder, &mut sequence, &bytes)
+                        accept_stdout(&app, pass_id, &mut adapter, &mut sequence, &bytes)
                     {
                         drain_error = Some(code);
                     }
@@ -1281,7 +1281,7 @@ fn run_cli(
     while let Ok(chunk) = rx.try_recv() {
         match chunk {
             CliOutput::Stdout(bytes) => {
-                if let Err(code) = accept_stdout(&app, pass_id, &mut decoder, &mut sequence, &bytes)
+                if let Err(code) = accept_stdout(&app, pass_id, &mut adapter, &mut sequence, &bytes)
                 {
                     drain_error = Some(code);
                 }
@@ -1293,19 +1293,35 @@ fn run_cli(
         app.state::<crate::State>().query.clear_child(pass_id);
         return Err(QueryRunError::with_stderr(code, &stderr_tail));
     }
-    let state = app.state::<crate::State>();
-    let tail = finish_stdout_after_reap(&state.query, pass_id, decoder)
+    // The direct child and its process group are confirmed gone at this point;
+    // release the ownership record before parser finalization so even a
+    // bounded-output refusal cannot leave a dead child blocking a later pass.
+    app.state::<crate::State>().query.clear_child(pass_id);
+    let completion = adapter
+        .finish()
         .map_err(|code| QueryRunError::with_stderr(code, &stderr_tail))?;
-    if !tail.is_empty() {
-        let _ = app.emit_to(
-            "query-review",
-            "query-answer-chunk",
-            serde_json::json!({
-                "queryPassId": pass_id,
-                "sequence": sequence,
-                "text": tail,
-            }),
-        );
+    accept_answer_updates(&app, pass_id, &mut sequence, completion.updates)
+        .map_err(|code| QueryRunError::with_stderr(code, &stderr_tail))?;
+    app.state::<crate::State>()
+        .query
+        .set_usage(pass_id, completion.usage);
+
+    if let Some(failure) = completion.failure {
+        let typed_detail = failure.detail.unwrap_or_default();
+        let stderr = stderr_tail.text().unwrap_or_default();
+        let code =
+            if crate::query_provider::is_auth_failure(command.provider, &typed_detail, &stderr) {
+                "provider_not_authenticated"
+            } else {
+                "provider_error"
+            };
+        if !typed_detail.is_empty() {
+            if !stderr_tail.bytes.is_empty() {
+                stderr_tail.push(b"\n");
+            }
+            stderr_tail.push(typed_detail.as_bytes());
+        }
+        return Err(QueryRunError::with_stderr(code, &stderr_tail));
     }
     if !exit_status.success() {
         let answer = app
@@ -1314,7 +1330,13 @@ fn run_cli(
             .answer(pass_id)
             .unwrap_or_default();
         let stderr = stderr_tail.text().unwrap_or_default();
-        let code = if crate::query_provider::is_auth_failure(command.provider, &answer, &stderr) {
+        let auth_output = if completion.used_structured_output {
+            ""
+        } else {
+            &answer
+        };
+        let code = if crate::query_provider::is_auth_failure(command.provider, auth_output, &stderr)
+        {
             "provider_not_authenticated"
         } else {
             "exit_nonzero"
@@ -1626,6 +1648,7 @@ mod tests {
                     environment: vec![],
                 },
                 answer: "a".repeat(MAX_ANSWER_BYTES),
+                usage: None,
                 error_detail: None,
             },
         );
@@ -1634,60 +1657,5 @@ mod tests {
         let next_pass_id = query.allocate_keyboard_pass().unwrap();
         assert_eq!(next_pass_id, pass_id + 1);
         assert_eq!(query.answer(next_pass_id), None);
-    }
-
-    #[test]
-    fn utf8_decoder_preserves_split_scalar_values() {
-        let mut decoder = Utf8Chunks::new();
-        let bytes = "hello 🦀".as_bytes();
-        assert_eq!(decoder.push(&bytes[..8]), "hello ");
-        assert_eq!(decoder.push(&bytes[8..]), "🦀");
-        assert_eq!(decoder.finish(), "");
-    }
-
-    #[test]
-    fn incomplete_utf8_tail_clears_reaped_child_before_cap_error() {
-        let query = QueryCoordinator::default();
-        let pass_id = query.allocate_keyboard_pass().unwrap();
-        let context = Arc::new(crate::dictation_context::resolve(
-            crate::dictation_context::ResolverInputs {
-                bundle_id: None,
-                global: &crate::state::DictationState::default(),
-                prompt: None,
-                correction_matcher: None,
-                ide_context_index: None,
-                vocabulary_version: 0,
-                voice_commands: None,
-                session_overrides: crate::dictation_context::SessionOverrides::default(),
-            },
-        ));
-        query.install_session(
-            pass_id,
-            QuerySession {
-                pass_id,
-                context,
-                command: ValidatedQueryCommand {
-                    provider: QueryProviderId::Custom,
-                    executable: PathBuf::from("/usr/bin/printf"),
-                    arguments: vec![],
-                    timeout: Duration::from_secs(5),
-                    environment: vec![],
-                },
-                answer: "a".repeat(MAX_ANSWER_BYTES - 1),
-                error_detail: None,
-            },
-        );
-        let (child, stdin, stdout, stderr) =
-            ManagedChild::spawn_user_cli(Path::new("/usr/bin/true"), &[], &[]).unwrap();
-        drop((stdin, stdout, stderr));
-        assert!(query.install_child(pass_id, Arc::new(Mutex::new(child))));
-
-        let mut decoder = Utf8Chunks::new();
-        assert_eq!(decoder.push(&[0xf0]), "");
-        assert_eq!(
-            finish_stdout_after_reap(&query, pass_id, decoder),
-            Err("output_too_large")
-        );
-        assert!(query.child.lock_or_recover().is_none());
     }
 }

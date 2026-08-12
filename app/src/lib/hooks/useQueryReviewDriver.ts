@@ -22,6 +22,7 @@ interface QueryChunkPayload {
   queryPassId: number;
   sequence: number;
   text: string;
+  replace: boolean;
 }
 
 interface QueryContent {
@@ -52,7 +53,8 @@ function isChunkPayload(value: unknown): value is QueryChunkPayload {
     && typeof payload.sequence === 'number'
     && Number.isSafeInteger(payload.sequence)
     && payload.sequence >= 0
-    && typeof payload.text === 'string';
+    && typeof payload.text === 'string'
+    && typeof payload.replace === 'boolean';
 }
 
 export function useQueryReviewDriver() {
@@ -154,7 +156,7 @@ export function useQueryReviewDriver() {
         if (terminalPassIdRef.current !== payload.queryPassId) {
           contentRefreshTicketRef.current += 1;
         }
-        setAnswer((current) => current + payload.text);
+        setAnswer((current) => payload.replace ? payload.text : current + payload.text);
       });
       if (disposed) { unlistenState(); unlistenChunk(); return; }
 

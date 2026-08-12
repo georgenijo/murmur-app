@@ -22,7 +22,7 @@ vi.mock('../../lib/hooks/useQueryReviewDriver', () => ({
   useQueryReviewDriver: () => mocks.driver,
 }));
 
-import { QueryReviewApp } from './QueryReviewApp';
+import { QueryReviewApp, queryErrorMessage } from './QueryReviewApp';
 
 describe('QueryReviewApp', () => {
   let container: HTMLDivElement;
@@ -37,6 +37,10 @@ describe('QueryReviewApp', () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+  });
+
+  it('maps typed provider failures without exposing their detail in the event', () => {
+    expect(queryErrorMessage('provider_error')).toBe('The configured provider reported an error.');
   });
 
   it('shows terminal failure ahead of partial stdout and keeps stderr distinct', async () => {

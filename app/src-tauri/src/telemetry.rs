@@ -494,6 +494,7 @@ fn is_safe_query_string(key: &str, value: &str) -> bool {
                 | "timed_out"
                 | "exit_nonzero"
                 | "provider_not_authenticated"
+                | "provider_error"
                 | "empty_answer"
                 | "clipboard_unavailable"
                 | "output_too_large"
@@ -948,6 +949,22 @@ mod tests {
         sanitize_event_data("query", &mut data, true);
         assert_eq!(data["error_code"], serde_json::Value::Null);
         assert_eq!(data.as_object().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn query_event_sanitizer_allows_typed_provider_error_without_detail() {
+        let mut data = serde_json::json!({
+            "event_code": "query.pass_state",
+            "query_pass_id": 10,
+            "state": "failed",
+            "error_code": "provider_error",
+            "provider_detail": "SENTINEL_PROVIDER_CONTENT",
+            "usage": { "input_tokens": 12, "output_tokens": 3 }
+        });
+        sanitize_event_data("query", &mut data, true);
+        assert_eq!(data["error_code"], "provider_error");
+        assert!(data.get("provider_detail").is_none());
+        assert!(data.get("usage").is_none());
     }
 
     #[test]

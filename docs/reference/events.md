@@ -83,8 +83,8 @@ Query content never appears in broadcast events. Only the dedicated review webvi
 
 | Event | Payload | Source | When it fires | Listeners |
 |-------|---------|--------|---------------|-----------|
-| `query-state-changed` | `{queryPassId, state, errorCode}` | `query_flow.rs` | Every content-free state transition: connecting, listening, transcribing, running, ready, or failed. `provider_not_authenticated` is the only provider-specific repair code; stderr is never included. | Query popover (`useQueryReviewDriver`). |
-| `query-answer-chunk` | `{queryPassId, sequence, text}` | `query_flow.rs` | A contiguous decoded stdout chunk is accepted within the 256 KiB cap. Targeted with `emit_to("query-review", …)`, never broadcast. | Query popover only. |
+| `query-state-changed` | `{queryPassId, state, errorCode}` | `query_flow.rs` | Every content-free state transition: connecting, listening, transcribing, running, ready, or failed. Typed provider failures use `provider_error`; known authentication failures use the repairable `provider_not_authenticated`. Stderr and provider detail are never included. | Query popover (`useQueryReviewDriver`). |
+| `query-answer-chunk` | `{queryPassId, sequence, text, replace}` | `query_flow.rs` | A decoded raw chunk or structured Claude/Codex answer chunk accepted within the 256 KiB cap. `replace: true` atomically resets optimistic structured text to the complete raw stream when JSONL parsing falls back; otherwise text appends. Targeted with `emit_to("query-review", …)`, never broadcast. | Query popover only. |
 | `query-review-hidden` | `()` | `query_flow.rs` | Exact-pass cancellation/close completes and the popover is hidden. | Main window and query popover. |
 | `query-busy` | `()` | `keyboard.rs`, `query_flow.rs` | A query press is refused because another pass or pipeline owner is active. | Reserved for UI feedback. |
 

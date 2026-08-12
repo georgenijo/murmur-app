@@ -72,7 +72,12 @@ const CLAUDE: ProviderPresetData = ProviderPresetData {
         "/opt/homebrew/bin/claude",
         "/usr/local/bin/claude",
     ],
-    recommended_arguments: &["-p"],
+    recommended_arguments: &[
+        "--print",
+        "--output-format",
+        "stream-json",
+        "--include-partial-messages",
+    ],
     auth_probe_arguments: &["auth", "status"],
     auth_failure_signatures: &[
         "not logged in",
@@ -101,6 +106,7 @@ const CODEX: ProviderPresetData = ProviderPresetData {
     ],
     recommended_arguments: &[
         "exec",
+        "--json",
         "--skip-git-repo-check",
         "--sandbox",
         "read-only",
@@ -867,12 +873,41 @@ mod tests {
             .iter()
             .find(|preset| preset.id == QueryProviderId::Claude)
             .unwrap();
-        assert_eq!(claude.recommended_arguments, vec!["-p"]);
+        assert_eq!(
+            claude.recommended_arguments,
+            vec![
+                "--print",
+                "--output-format",
+                "stream-json",
+                "--include-partial-messages"
+            ]
+        );
         assert_eq!(claude.auth_probe_arguments, vec!["auth", "status"]);
         assert_eq!(claude.sign_in_fix, Some("Run claude /login in Terminal."));
         assert_eq!(
             claude.permitted_environment_variables,
             vec!["CLAUDE_CONFIG_DIR"]
+        );
+        let codex = presets
+            .iter()
+            .find(|preset| preset.id == QueryProviderId::Codex)
+            .unwrap();
+        assert_eq!(codex.recommended_arguments[0..2], ["exec", "--json"]);
+        assert_eq!(
+            codex
+                .recommended_arguments
+                .iter()
+                .filter(|argument| **argument == "exec")
+                .count(),
+            1
+        );
+        assert_eq!(
+            codex
+                .recommended_arguments
+                .iter()
+                .filter(|argument| **argument == "--json")
+                .count(),
+            1
         );
     }
 

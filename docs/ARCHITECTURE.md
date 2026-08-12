@@ -193,6 +193,7 @@ available for packaging and callback-boundary validation. See the
 | `file_output.rs` | Numbered `.txt` / `.wav` output |
 | `frontmost.rs` | Native frontmost-app query + running-application list |
 | `query_flow.rs` | Voice Query capture, local ASR, literal argv dispatch, bounded stdout/stderr streaming, immutable provider configuration, and exact-pass cancellation |
+| `query_adapter.rs` | Incremental Claude/Codex JSONL answer, typed failure, and pass-scoped usage extraction with non-duplicating raw fallback |
 | `query_provider.rs` | Voice Query preset/discovery data, bounded auth preflight, known auth repair, and Rust-owned declared config-directory environment values |
 | `ide_context.rs` | Memory-only bounded IDE symbol / root-relative file index |
 | `injector.rs` | Clipboard write, CGEvent paste (osascript fallback), focused-field AX role checks |
