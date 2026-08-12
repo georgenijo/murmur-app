@@ -317,6 +317,44 @@ fn query_identity(process_id: i32, bundle_id: Option<String>) -> FrontmostAppIde
     }
 }
 
+/// Query context requires the exact native PID and bundle pair. Partial
+/// identities are deliberately never accepted because they cannot prove that
+/// per-app privacy exclusions were resolved for the same application.
+pub(crate) fn query_identity_matches(
+    expected: &FrontmostAppIdentity,
+    actual: &FrontmostAppIdentity,
+) -> bool {
+    matches!(
+        (
+            expected.process_id,
+            expected.bundle_id.as_deref(),
+            actual.process_id,
+            actual.bundle_id.as_deref(),
+        ),
+        (Some(expected_pid), Some(expected_bundle), Some(actual_pid), Some(actual_bundle))
+            if expected_pid == actual_pid && expected_bundle == actual_bundle
+    )
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) async fn query_identity_is_current(
+    app_handle: &tauri::AppHandle,
+    expected: &FrontmostAppIdentity,
+) -> bool {
+    let expected = expected.clone();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    if app_handle
+        .run_on_main_thread(move || {
+            let current = query_frontmost_app_identity();
+            let _ = tx.send(query_identity_matches(&expected, &current));
+        })
+        .is_err()
+    {
+        return false;
+    }
+    rx.await.unwrap_or(false)
+}
+
 /// Read the app name and focused-window title for the exact app identity that
 /// was frozen at query start. The native sample is rejected if focus moved in
 /// the meantime, preventing context from two different apps being combined.
@@ -349,7 +387,8 @@ fn native_query_metadata(expected: &FrontmostAppIdentity) -> Option<QueryAppMeta
     let bundle_id = application
         .bundleIdentifier()
         .map(|value| value.to_string());
-    if !identity_matches(expected, process_id, bundle_id.as_deref()) {
+    let actual = query_identity(process_id, bundle_id.clone());
+    if !query_identity_matches(expected, &actual) {
         return None;
     }
     let application_name = application
@@ -361,22 +400,6 @@ fn native_query_metadata(expected: &FrontmostAppIdentity) -> Option<QueryAppMeta
         application_name,
         window_title: ax_window_title(process_id),
     })
-}
-
-#[cfg(any(target_os = "macos", test))]
-fn identity_matches(
-    expected: &FrontmostAppIdentity,
-    actual_process_id: i32,
-    actual_bundle_id: Option<&str>,
-) -> bool {
-    match (expected.process_id, expected.bundle_id.as_deref()) {
-        (Some(process_id), Some(bundle_id)) => {
-            process_id == actual_process_id && actual_bundle_id == Some(bundle_id)
-        }
-        (Some(process_id), None) => process_id == actual_process_id,
-        (None, Some(bundle_id)) => actual_bundle_id == Some(bundle_id),
-        (None, None) => false,
-    }
 }
 
 #[cfg(target_os = "macos")]
@@ -504,6 +527,14 @@ pub fn query_frontmost_app_identity() -> FrontmostAppIdentity {
         bundle_id: None,
         process_id: None,
     }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) async fn query_identity_is_current(
+    _app_handle: &tauri::AppHandle,
+    _expected: &FrontmostAppIdentity,
+) -> bool {
+    false
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -751,24 +782,21 @@ mod tests {
             bundle_id: Some("com.example.Editor".to_string()),
             process_id: Some(42),
         };
-        assert!(identity_matches(&with_pid, 42, Some("com.example.Editor")));
-        assert!(!identity_matches(&with_pid, 43, Some("com.example.Editor")));
-        assert!(!identity_matches(&with_pid, 42, Some("com.example.Other")));
-
+        let same = FrontmostAppIdentity {
+            bundle_id: Some("com.example.Editor".to_string()),
+            process_id: Some(42),
+        };
+        assert!(query_identity_matches(&with_pid, &same));
         let bundle_only = FrontmostAppIdentity {
             bundle_id: Some("com.example.Editor".to_string()),
             process_id: None,
         };
-        assert!(identity_matches(
-            &bundle_only,
-            999,
-            Some("com.example.Editor")
-        ));
-        assert!(!identity_matches(
-            &bundle_only,
-            999,
-            Some("com.example.Other")
-        ));
+        assert!(!query_identity_matches(&with_pid, &bundle_only));
+        let different_bundle = FrontmostAppIdentity {
+            bundle_id: Some("com.example.Other".to_string()),
+            process_id: Some(42),
+        };
+        assert!(!query_identity_matches(&with_pid, &different_bundle));
     }
 
     #[test]

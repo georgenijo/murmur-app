@@ -926,6 +926,27 @@ fn prepare_model(app: tauri::AppHandle, pass_id: u64, model_name: String) {
     }));
 }
 
+fn reconcile_query_audio_start(
+    query: &QueryCoordinator,
+    pass_id: u64,
+    cancel_stale_audio: impl FnOnce(),
+) -> bool {
+    if query.is_active(pass_id)
+        && matches!(
+            query.status(),
+            QueryStatus::Connecting | QueryStatus::Listening
+        )
+    {
+        return true;
+    }
+    // `cancel_query` also attempts cancellation before clearing ownership. If
+    // that attempt wins the race before audio is published, this post-start
+    // handshake closes the opposite ordering and tears down the exact stale
+    // owner immediately.
+    cancel_stale_audio();
+    false
+}
+
 fn selection_matches_identity(
     snapshot: &crate::selection::TransformSnapshot,
     identity: &crate::frontmost::FrontmostAppIdentity,
@@ -975,7 +996,7 @@ async fn resolve_query_context(
     });
 
     let (selection, selection_truncated) = if level == QueryContextLevel::Selection {
-        match crate::selection::capture_query_selection(app).await {
+        match crate::selection::capture_query_selection(app, &identity).await {
             Ok(snapshot) if selection_matches_identity(&snapshot, &identity) => {
                 let (selection, truncated) =
                     bounded_utf8(&snapshot.text, MAX_CONTEXT_SELECTION_BYTES);
@@ -1096,6 +1117,14 @@ pub(crate) async fn start_query_capture(
         query_pass_id,
     ) {
         fail_query(&app_handle, &state, query_pass_id, "audio_start_failed");
+        return Ok(());
+    }
+    if !reconcile_query_audio_start(&state.query, query_pass_id, || {
+        let _ = crate::audio_lifecycle::cancel_query_capture(
+            query_pass_id,
+            crate::audio_lifecycle::AudioCancelReason::User,
+        );
+    }) {
         return Ok(());
     }
     Ok(())
@@ -2134,6 +2163,47 @@ mod tests {
         assert!(query.terminate_child(pass_id));
         assert!(query.child.lock_or_recover().is_none());
         assert_eq!(query.allocate_keyboard_pass(), Some(pass_id + 1));
+    }
+
+    #[test]
+    fn cancelled_before_start_publication_cancels_the_stale_audio_owner() {
+        let query = QueryCoordinator::default();
+        let pass_id = query.allocate_keyboard_pass().unwrap();
+        assert!(query.set_status(pass_id, QueryStatus::Connecting));
+        assert!(query.begin_cancel(pass_id));
+        assert!(query.complete_cancel(pass_id));
+
+        let cancellation_called = std::cell::Cell::new(false);
+        assert!(!reconcile_query_audio_start(&query, pass_id, || {
+            cancellation_called.set(true);
+        }));
+        assert!(cancellation_called.get());
+    }
+
+    #[test]
+    fn owned_connecting_audio_start_does_not_self_cancel() {
+        let query = QueryCoordinator::default();
+        let pass_id = query.allocate_keyboard_pass().unwrap();
+        assert!(query.set_status(pass_id, QueryStatus::Connecting));
+
+        let cancellation_called = std::cell::Cell::new(false);
+        assert!(reconcile_query_audio_start(&query, pass_id, || {
+            cancellation_called.set(true);
+        }));
+        assert!(!cancellation_called.get());
+    }
+
+    #[test]
+    fn owned_audio_that_reached_listening_before_reconciliation_stays_active() {
+        let query = QueryCoordinator::default();
+        let pass_id = query.allocate_keyboard_pass().unwrap();
+        assert!(query.set_status(pass_id, QueryStatus::Listening));
+
+        let cancellation_called = std::cell::Cell::new(false);
+        assert!(reconcile_query_audio_start(&query, pass_id, || {
+            cancellation_called.set(true);
+        }));
+        assert!(!cancellation_called.get());
     }
 
     #[test]

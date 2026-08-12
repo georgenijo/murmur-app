@@ -169,9 +169,17 @@ export function useQueryReviewDriver() {
         if (disposed || !isChunkPayload(event.payload)) return;
         const payload = event.payload;
         if (payload.queryPassId !== passIdRef.current) return;
+        // A terminal gated snapshot is Rust's complete bounded answer. A chunk
+        // delivered late across the two event channels is already represented
+        // in that snapshot and must not be appended a second time.
         if (terminalAnswerSnapshotRef.current) return;
         if (answerRecoveryRef.current) {
           nextSequenceRef.current = Math.max(nextSequenceRef.current, payload.sequence + 1);
+          // Rust appends before emitting each chunk. Reissuing while recovery
+          // is active makes only the snapshot requested after the latest seen
+          // chunk eligible to replace the incomplete local answer. Recovery is
+          // permanent for this pass: a snapshot may already contain queued
+          // chunks, so returning to append mode could duplicate their text.
           void refreshAnswer(
             payload.queryPassId,
             terminalPassIdRef.current === payload.queryPassId,
@@ -188,6 +196,10 @@ export function useQueryReviewDriver() {
           return;
         }
         nextSequenceRef.current += 1;
+        // Before a terminal state, a snapshot requested before this chunk must
+        // not replace newer local stream state. Ready/Failed is different:
+        // Rust emits it only after storing every output chunk, so that pending
+        // gated snapshot is authoritative and must recover a missed tail event.
         if (terminalPassIdRef.current !== payload.queryPassId) {
           contentRefreshTicketRef.current += 1;
         }

@@ -483,4 +483,298 @@ describe('useQueryReviewDriver ownership', () => {
     expect(current!.answer).toBe('');
     expect(current!.contextSummary).toBeNull();
   });
+
+  it('does not let a delayed prior-pass refresh overwrite the active pass', async () => {
+    let resolvePrior!: (content: {
+      queryPassId: number;
+      answer: string;
+      contextSummary: string;
+    }) => void;
+    const priorRefresh = new Promise<{
+      queryPassId: number;
+      answer: string;
+      contextSummary: string;
+    }>((resolve) => {
+      resolvePrior = resolve;
+    });
+    mocks.invoke
+      .mockImplementationOnce(() => priorRefresh)
+      .mockResolvedValueOnce({
+        queryPassId: 62,
+        answer: 'current answer',
+        contextSummary: 'Context: Current app',
+      })
+      .mockResolvedValueOnce({
+        queryPassId: 62,
+        answer: 'current answer',
+        contextSummary: 'Context: Current app',
+      });
+    await mount();
+
+    await act(async () => {
+      mocks.listeners['query-state-changed']?.({
+        payload: { queryPassId: 61, state: 'running', errorCode: null },
+      });
+      await Promise.resolve();
+      mocks.listeners['query-state-changed']?.({
+        payload: { queryPassId: 62, state: 'ready', errorCode: null },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(current!.answer).toBe('current answer');
+    expect(current!.contextSummary).toBe('Context: Current app');
+
+    await act(async () => {
+      resolvePrior({
+        queryPassId: 61,
+        answer: 'stale answer',
+        contextSummary: 'Context: Stale app — secret selection',
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(current!.answer).toBe('current answer');
+    expect(current!.contextSummary).toBe('Context: Current app');
+  });
+
+  it('keeps only the newest same-pass answer recovery response', async () => {
+    let resolveOlder!: (content: {
+      queryPassId: number;
+      answer: string;
+      contextSummary: string | null;
+    }) => void;
+    let resolveNewer!: typeof resolveOlder;
+    const older = new Promise<{
+      queryPassId: number;
+      answer: string;
+      contextSummary: string | null;
+    }>((resolve) => { resolveOlder = resolve; });
+    const newer = new Promise<{
+      queryPassId: number;
+      answer: string;
+      contextSummary: string | null;
+    }>((resolve) => { resolveNewer = resolve; });
+    mocks.invoke
+      .mockResolvedValueOnce({ queryPassId: 71, answer: '', contextSummary: null })
+      .mockImplementationOnce(() => older)
+      .mockImplementationOnce(() => newer);
+    await mount();
+
+    await act(async () => {
+      mocks.listeners['query-state-changed']?.({
+        payload: { queryPassId: 71, state: 'running', errorCode: null },
+      });
+      await Promise.resolve();
+      mocks.listeners['query-answer-chunk']?.({
+        payload: { queryPassId: 71, sequence: 1, text: 'gap chunk' },
+      });
+      mocks.listeners['query-answer-chunk']?.({
+        payload: { queryPassId: 71, sequence: 2, text: 'later chunk' },
+      });
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      resolveNewer({ queryPassId: 71, answer: 'complete latest answer', contextSummary: null });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(current!.answer).toBe('complete latest answer');
+
+    await act(async () => {
+      resolveOlder({ queryPassId: 71, answer: 'older incomplete answer', contextSummary: null });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(current!.answer).toBe('complete latest answer');
+  });
+
+  it('lets the authoritative terminal snapshot recover a missing final chunk event', async () => {
+    let resolveSnapshot!: (content: {
+      queryPassId: number;
+      answer: string;
+      contextSummary: string | null;
+    }) => void;
+    const snapshot = new Promise<{
+      queryPassId: number;
+      answer: string;
+      contextSummary: string | null;
+    }>((resolve) => { resolveSnapshot = resolve; });
+    mocks.invoke
+      .mockResolvedValueOnce({ queryPassId: 81, answer: '', contextSummary: null })
+      .mockImplementationOnce(() => snapshot);
+    await mount();
+
+    await act(async () => {
+      mocks.listeners['query-state-changed']?.({
+        payload: { queryPassId: 81, state: 'ready', errorCode: null },
+      });
+      await Promise.resolve();
+      mocks.listeners['query-answer-chunk']?.({
+        payload: { queryPassId: 81, sequence: 0, text: 'new streamed text' },
+      });
+      await Promise.resolve();
+    });
+    expect(current!.answer).toBe('new streamed text');
+
+    await act(async () => {
+      resolveSnapshot({
+        queryPassId: 81,
+        answer: 'new streamed text plus missing final tail',
+        contextSummary: null,
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(current!.answer).toBe('new streamed text plus missing final tail');
+  });
+
+  it('does not duplicate a chunk delivered after the complete terminal snapshot', async () => {
+    mocks.invoke
+      .mockResolvedValueOnce({ queryPassId: 91, answer: 'complete answer', contextSummary: null })
+      .mockResolvedValueOnce({ queryPassId: 91, answer: 'complete answer', contextSummary: null });
+    await mount();
+
+    await act(async () => {
+      mocks.listeners['query-state-changed']?.({
+        payload: { queryPassId: 91, state: 'ready', errorCode: null },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(current!.answer).toBe('complete answer');
+
+    await act(async () => {
+      mocks.listeners['query-answer-chunk']?.({
+        payload: { queryPassId: 91, sequence: 0, text: 'complete answer' },
+      });
+      await Promise.resolve();
+    });
+    expect(current!.answer).toBe('complete answer');
+  });
+
+  it('stays snapshot-only after a running gap when represented chunks arrive later', async () => {
+    let resolveRecovery!: (content: {
+      queryPassId: number;
+      answer: string;
+      contextSummary: string | null;
+    }) => void;
+    const recovery = new Promise<{
+      queryPassId: number;
+      answer: string;
+      contextSummary: string | null;
+    }>((resolve) => { resolveRecovery = resolve; });
+    mocks.invoke
+      .mockResolvedValueOnce({ queryPassId: 101, answer: '', contextSummary: null })
+      .mockImplementationOnce(() => recovery)
+      .mockResolvedValueOnce({
+        queryPassId: 101,
+        answer: 'snapshot through two',
+        contextSummary: null,
+      })
+      .mockResolvedValueOnce({
+        queryPassId: 101,
+        answer: 'snapshot through three',
+        contextSummary: null,
+      });
+    await mount();
+
+    await act(async () => {
+      mocks.listeners['query-state-changed']?.({
+        payload: { queryPassId: 101, state: 'running', errorCode: null },
+      });
+      await Promise.resolve();
+      mocks.listeners['query-answer-chunk']?.({
+        payload: { queryPassId: 101, sequence: 1, text: 'two' },
+      });
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      resolveRecovery({
+        queryPassId: 101,
+        answer: 'snapshot through two',
+        contextSummary: null,
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(current!.answer).toBe('snapshot through two');
+
+    await act(async () => {
+      mocks.listeners['query-answer-chunk']?.({
+        payload: { queryPassId: 101, sequence: 2, text: 'two' },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(current!.answer).toBe('snapshot through two');
+
+    await act(async () => {
+      mocks.listeners['query-answer-chunk']?.({
+        payload: { queryPassId: 101, sequence: 3, text: 'three' },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(current!.answer).toBe('snapshot through three');
+  });
+
+  it('keeps terminal recovery snapshot-only when a gap invalidates the ready refresh', async () => {
+    let resolveTerminal!: (content: {
+      queryPassId: number;
+      answer: string;
+      contextSummary: string | null;
+    }) => void;
+    const terminal = new Promise<{
+      queryPassId: number;
+      answer: string;
+      contextSummary: string | null;
+    }>((resolve) => { resolveTerminal = resolve; });
+    mocks.invoke
+      .mockResolvedValueOnce({ queryPassId: 111, answer: '', contextSummary: null })
+      .mockImplementationOnce(() => terminal)
+      .mockResolvedValueOnce({
+        queryPassId: 111,
+        answer: 'complete recovered answer',
+        contextSummary: null,
+      });
+    await mount();
+
+    await act(async () => {
+      mocks.listeners['query-state-changed']?.({
+        payload: { queryPassId: 111, state: 'ready', errorCode: null },
+      });
+      await Promise.resolve();
+      mocks.listeners['query-answer-chunk']?.({
+        payload: { queryPassId: 111, sequence: 1, text: 'represented gap text' },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(current!.answer).toBe('complete recovered answer');
+
+    await act(async () => {
+      mocks.listeners['query-answer-chunk']?.({
+        payload: { queryPassId: 111, sequence: 1, text: 'represented gap text' },
+      });
+      mocks.listeners['query-answer-chunk']?.({
+        payload: { queryPassId: 111, sequence: 2, text: 'represented tail' },
+      });
+      await Promise.resolve();
+    });
+    expect(current!.answer).toBe('complete recovered answer');
+
+    await act(async () => {
+      resolveTerminal({
+        queryPassId: 111,
+        answer: 'older terminal snapshot',
+        contextSummary: null,
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(current!.answer).toBe('complete recovered answer');
+  });
 });
