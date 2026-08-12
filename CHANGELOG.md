@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+
+- Releases now build, rehearse, promote, and publish macOS artifacts only;
+  Linux packaging and its AppImage dependencies no longer gate Mac releases
+  (#549).
+
 ## [0.31.2] - 2026-08-12
 
 ### Fixed

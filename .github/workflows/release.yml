@@ -237,7 +237,7 @@ jobs:
           fi
 
           ARTIFACTS=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${ARTIFACT_RUN_ID}/artifacts")
-          for NAME in "macos-release-${SOURCE_SHA}" "linux-release-${SOURCE_SHA}"; do
+          for NAME in "macos-release-${SOURCE_SHA}"; do
             COUNT=$(echo "$ARTIFACTS" | jq --arg name "$NAME" \
               '[.artifacts[] | select(.name == $name and .expired == false)] | length')
             if [ "$COUNT" != "1" ]; then
@@ -284,15 +284,6 @@ jobs:
         with:
           name: macos-release-${{ needs.resolve.outputs.source-sha }}
           path: artifacts/macos
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          repository: ${{ github.repository }}
-          run-id: ${{ needs.resolve.outputs.artifact-run-id }}
-
-      - name: Download immutable Linux artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: linux-release-${{ needs.resolve.outputs.source-sha }}
-          path: artifacts/linux
           github-token: ${{ secrets.GITHUB_TOKEN }}
           repository: ${{ github.repository }}
           run-id: ${{ needs.resolve.outputs.artifact-run-id }}
@@ -354,7 +345,7 @@ jobs:
               if [ "$ASSET" = "latest-v2.json" ] || [ "$ASSET" = "latest.json" ]; then
                 continue
               fi
-              if ! find artifacts/macos artifacts/linux -maxdepth 1 -type f \
+              if ! find artifacts/macos -maxdepth 1 -type f \
                   ! -name provenance.json -exec basename {} \; | grep -Fqx "$ASSET"; then
                 echo "ERROR: existing draft $TAG contains unexpected asset: $ASSET"
                 exit 1
@@ -376,7 +367,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.resolve.outputs.tag }}
         run: |
-          find artifacts/macos artifacts/linux -maxdepth 1 -type f ! -name provenance.json \
+          find artifacts/macos -maxdepth 1 -type f ! -name provenance.json \
             -print0 | while IFS= read -r -d '' FILE; do
               echo "Uploading: $FILE"
               gh release upload "$TAG" "$FILE" --repo "$GITHUB_REPOSITORY" --clobber
@@ -391,7 +382,7 @@ jobs:
           mkdir -p remote-signatures
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
             --pattern '*.sig' --dir remote-signatures
-          for LOCAL in artifacts/macos/*.sig artifacts/linux/*.sig; do
+          for LOCAL in artifacts/macos/*.sig; do
             REMOTE="remote-signatures/$(basename "$LOCAL")"
             if [ ! -f "$REMOTE" ] || ! cmp -s "$LOCAL" "$REMOTE"; then
               echo "ERROR: uploaded signature differs from trusted build artifact: $(basename "$LOCAL")"
@@ -466,10 +457,9 @@ jobs:
           cmp manifests/latest.json remote-manifests/latest.json
 
           MACOS_SIG=$(cat artifacts/macos/*.app.tar.gz.sig)
-          LINUX_SIG=$(cat artifacts/linux/*.AppImage.sig)
-          jq -e --arg mac "$MACOS_SIG" --arg linux "$LINUX_SIG" '
-            ([.platforms[] | .signature] | index($mac)) != null
-            and ([.platforms[] | .signature] | index($linux)) != null
+          jq -e --arg mac "$MACOS_SIG" '
+            (.platforms | length) == 1
+            and ([.platforms[] | .signature] | index($mac)) != null
           ' remote-manifests/latest-v2.json >/dev/null || {
             echo "ERROR: published modern manifest signatures do not match uploaded .sig assets"
             exit 1

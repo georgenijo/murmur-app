@@ -110,8 +110,7 @@ unprovable Accessibility states fail closed.
 | Platform | Experience |
 |---|---|
 | **Apple Silicon · macOS 14+** | Everything: Core ML/ANE, Metal, Transform, native Accessibility, notch overlay, signed updates |
-| **Linux** | `.deb` and AppImage with core dictation through CPU Parakeet or Whisper; macOS-only surfaces and Transform are unavailable |
-| **Intel Mac / Windows** | Not supported |
+| **Other platforms** | Not supported |
 
 ---
 

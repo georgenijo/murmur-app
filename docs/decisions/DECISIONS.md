@@ -6,6 +6,26 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 ---
 
+## 2026-08-12: Releases are macOS-only
+
+**Decision:** Stop building, rehearsing, promoting, or publishing Linux release
+artifacts. The trusted release lane now produces one signed and notarized macOS
+artifact set, and both updater manifests contain only the macOS platform entry.
+Keep the Linux CI compile/test job and `platform/linux` seams for inexpensive
+portability coverage, but do not install AppImage packaging tools in that job.
+
+**Rationale:** Murmur is a macOS product, while mutable Linux packaging
+dependencies repeatedly blocked unrelated macOS releases without delivering
+user value. A macOS-only artifact contract shortens the critical path and
+removes that release availability risk without deleting harmless source seams.
+
+**Status:** active
+
+**References:** #549; `.github/workflows/release-build.yml`,
+`.github/workflows/release.yml`, `.github/workflows/release-rehearsal.yml`
+
+---
+
 ## 2026-08-11: Meeting capture uses explicit-session CATap in the signed capture worker
 
 **Decision:** Phase-one meeting capture creates a private, unmuted Core Audio

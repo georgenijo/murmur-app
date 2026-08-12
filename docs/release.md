@@ -3,32 +3,25 @@
 Murmur builds signed release artifacts once on trusted `main`, then automatically
 promotes those exact artifacts after the version-bump build succeeds. Promotion
 creates the matching version tag; neither automatic nor recovery tag runs compile
-the application or save Cargo or CUDA caches.
+the application or save Cargo caches.
 
 ## Trust and cache policy
 
 - `Release Build` runs automatically only for a `main` push whose commit starts
   with `chore: bump version`, or by an explicit `workflow_dispatch` rehearsal.
-- Frontend validation, macOS build/sign/notarization, and Linux CUDA packaging
-  run concurrently. A workflow run is successful only when all three pass.
-- Linux release packaging is limited to the supported updater artifacts (`deb`
-  and `AppImage`); RPM is intentionally skipped to keep it off the critical path.
-- Cargo and CUDA cache writes are authorized only for trusted `main` pushes or
-  a manually dispatched cache-prime rehearsal. Pull requests restore default-
-  branch caches but never save CUDA or release-profile Cargo caches.
+- Frontend validation and the macOS build/sign/notarization job run concurrently.
+  A workflow run is successful only when both pass.
+- Release-profile Cargo cache writes are authorized only for trusted `main`
+  pushes or a manually dispatched cache-prime rehearsal. Pull requests restore
+  default-branch caches but never save release-profile caches.
 - No release workflow uses a self-hosted runner. In particular, pull-request
   code is never sent to a Mac Mini or other signing/release host.
-- CUDA caching contains only `/usr/local/cuda-12.8`. The transient
-  `/usr/local/cuda` symlink and loader configuration are recreated after every
-  restore. A claimed hit with a missing or wrong-version `nvcc` fails instead
-  of silently reinstalling.
 
 ## Immutable artifacts
 
 Each successful build uploads these 30-day artifacts:
 
 - `macos-release-<40-character-commit-sha>`
-- `linux-release-<40-character-commit-sha>`
 - `capture-helper-tcc-evidence-<40-character-commit-sha>` (allowlisted,
   content-free structured signature facts and strictly validated
   non-interactive probe evidence whose outcome, last phase, callback presence,
@@ -37,19 +30,19 @@ Each successful build uploads these 30-day artifacts:
   for the manual #407 TCC matrix)
 
 Release binaries retain the Tauri bundle-type marker (Cargo release stripping
-is disabled) so the updater can distinguish the deb and AppImage packages.
+is disabled) so the updater can identify the packaged macOS application.
 After final signing and notarization, the release job launches the exact packaged
 capture worker, completes its production-v4 hello handshake, sends a bounded
 AUHAL start request, and requires the worker's stream-open phase. This catches
 sandbox or entitlement failures that static plist and signature checks cannot.
 
 Each artifact contains `provenance.json` with the exact commit SHA, workflow
-run ID, platform/updater names, sizes, and SHA-256 hashes. Promotion accepts one
-unexpired macOS artifact and one unexpired Linux artifact from a successful
-`Release Build` on `main` for the exact source commit. Automatic promotion also
-requires a successful `push` event, the version-bump commit prefix, and matching
-semver values in `tauri.conf.json`, `Cargo.toml`, `Cargo.lock`, `package.json`,
-and `package-lock.json`. The newest dated CHANGELOG section must match that same
+run ID, updater names, sizes, and SHA-256 hashes. Promotion accepts exactly one
+unexpired macOS artifact from a successful `Release Build` on `main` for the
+exact source commit. Automatic promotion also requires a successful `push`
+event, the version-bump commit prefix, and matching semver values in
+`tauri.conf.json`, `Cargo.toml`, `Cargo.lock`, `package.json`, and
+`package-lock.json`. The newest dated CHANGELOG section must match that same
 version. Any tag, run, filename, version, changelog, hash, or updater-signature
 mismatch fails before publication.
 
@@ -104,10 +97,9 @@ that no tag, draft, release asset, updater manifest, or published release was
 created.
 
 Run the build rehearsal once to prime caches and a second time to measure the
-warm path. Record the `release-macos`, `release-linux`, and overall workflow
-durations, the CUDA/Rust cache summaries, and repository cache usage. The
-release targets are macOS <= 5 minutes, Linux <= 9 minutes, and total wall time
-<= 9 minutes.
+warm path. Record the `release-macos` and overall workflow durations, the Rust
+cache summary, and repository cache usage. The release target is macOS and total
+wall time <= 5 minutes.
 
 ## Cold fallback
 
@@ -122,8 +114,8 @@ being repaired.
 
 If artifacts expired or `main` has advanced, rerun the original version-bump
 workflow rather than building arbitrary PR or tag code with signing secrets.
-Promotion remains blocked until a successful trusted push build and both
-SHA-named artifacts exist for the version-bump commit.
+Promotion remains blocked until a successful trusted push build and the
+SHA-named macOS artifact exists for the version-bump commit.
 
 ## Release authorization and recovery
 

@@ -315,8 +315,8 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
     def test_release_rehearsal_requires_isolated_cache_namespaces(self) -> None:
         workflow = (ROOT / ".github/workflows/release-rehearsal.yml").read_text()
         mutated = workflow.replace(
-            "cuda-rehearsal-${{ needs.context.outputs.source-sha }}",
-            "cuda-minimal",
+            "macos-release-rehearsal-${{ needs.context.outputs.source-sha }}",
+            "macos-release-v1",
             1,
         )
         with self.assertRaises(AssertionError):
@@ -332,13 +332,9 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             validate_release_rehearsal(mutated)
 
-    def test_release_rehearsal_uses_trusted_cache_action(self) -> None:
+    def test_release_rehearsal_rejects_linux_jobs(self) -> None:
         workflow = (ROOT / ".github/workflows/release-rehearsal.yml").read_text()
-        mutated = workflow.replace(
-            "uses: ./.trusted-rehearsal/.github/actions/setup-linux-build",
-            "uses: ./.github/actions/setup-linux-build",
-            1,
-        )
+        mutated = workflow + "\n# rehearse-linux:\n"
         with self.assertRaises(AssertionError):
             validate_release_rehearsal(mutated)
 
@@ -352,78 +348,11 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             validate_linux_cache_policy(mutated)
 
-    def test_linuxdeploy_must_exclude_driver_stub(self) -> None:
+    def test_linux_ci_action_rejects_release_packaging_tooling(self) -> None:
         action = (ROOT / ".github/actions/setup-linux-build/action.yml").read_text()
-        mutated = action.replace(
-            "LINUXDEPLOY_EXCLUDED_LIBRARIES=libcuda.so.1",
-            "LINUXDEPLOY_EXCLUDED_LIBRARIES=",
-            1,
-        )
+        mutated = action + "\n# AppImage type2-runtime\n"
         with self.assertRaises(AssertionError):
             validate_linux_cache_policy(mutated)
-
-    def test_linuxdeploy_override_must_be_checksum_pinned(self) -> None:
-        action = (ROOT / ".github/actions/setup-linux-build/action.yml").read_text()
-        mutated = action.replace(
-            'echo "$LINUXDEPLOY_SHA256  $LINUXDEPLOY_PATH" | sha256sum --check --strict',
-            'echo "linuxdeploy checksum validation skipped"',
-            1,
-        )
-        with self.assertRaises(AssertionError):
-            validate_linux_cache_policy(mutated)
-
-    def test_appimage_tooling_policy_rejects_mutations(self) -> None:
-        action = (ROOT / ".github/actions/setup-linux-build/action.yml").read_text()
-        mutations = {
-            "plugin URL": (
-                "https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/"
-                "download/continuous/linuxdeploy-plugin-appimage-x86_64.AppImage",
-                "https://example.invalid/plugin.AppImage",
-            ),
-            "plugin checksum": (
-                "a45d3e227bc7f397e9cf6bfa4c9507494efa2293357b6e86690a3de2ca992e79",
-                "0" * 64,
-            ),
-            "plugin path": (
-                "$HOME/.cache/tauri/linuxdeploy-plugin-appimage-x86_64.AppImage",
-                "$HOME/.cache/tauri/untrusted-plugin.AppImage",
-            ),
-            "plugin checksum pipeline": (
-                'echo "$PLUGIN_SHA256  $PLUGIN_PATH" | sha256sum --check --strict',
-                'echo "plugin checksum validation skipped"',
-            ),
-            "runtime URL": (
-                "https://github.com/AppImage/type2-runtime/releases/download/"
-                "continuous/runtime-x86_64",
-                "https://example.invalid/runtime-x86_64",
-            ),
-            "runtime checksum": (
-                "1cc49bcf1e2ccd593c379adb17c9f85a36d619088296504de95b1d06215aebbf",
-                "0" * 64,
-            ),
-            "runtime directory": (
-                "${XDG_CACHE_HOME:-$HOME/.cache}/appimageify",
-                "$HOME/.cache/untrusted-runtime",
-            ),
-            "runtime path": (
-                "$RUNTIME_DIR/runtime-x86_64",
-                "$RUNTIME_DIR/untrusted-runtime",
-            ),
-            "runtime checksum pipeline": (
-                'echo "$RUNTIME_SHA256  $RUNTIME_PATH" | sha256sum --check --strict',
-                'echo "runtime checksum validation skipped"',
-            ),
-            "runtime executable permission": (
-                'chmod +x "$RUNTIME_PATH"',
-                'chmod +x "$RUNTIME_PATH" || true',
-            ),
-        }
-        for name, (expected, replacement) in mutations.items():
-            with self.subTest(name=name):
-                mutated = action.replace(expected, replacement, 1)
-                self.assertNotEqual(action, mutated)
-                with self.assertRaises(AssertionError):
-                    validate_linux_cache_policy(mutated)
 
     def test_cuda_stub_paths_reject_empty_loader_segments(self) -> None:
         action = (ROOT / ".github/actions/setup-linux-build/action.yml").read_text()
@@ -435,34 +364,17 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             validate_linux_cache_policy(mutated_action)
 
+    def test_release_build_rejects_linux_packaging(self) -> None:
         workflow = (ROOT / ".github/workflows/release-build.yml").read_text()
-        mutated_workflow = workflow.replace(
-            "${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}",
-            ":${LD_LIBRARY_PATH:-}",
-            1,
-        )
-        with self.assertRaises(AssertionError):
-            validate_release_build(mutated_workflow)
-
-    def test_release_build_rejects_rpm_or_non_verbose_packaging(self) -> None:
-        workflow = (ROOT / ".github/workflows/release-build.yml").read_text()
-        mutated = workflow.replace(
-            "args: --bundles deb,appimage --verbose",
-            "args: --bundles all",
-            1,
-        )
+        mutated = workflow + "\n# release-linux:\n# AppImage\n"
         with self.assertRaises(AssertionError):
             validate_release_build(mutated)
 
-    def test_cuda_driver_audit_rejects_broad_libcuda_glob(self) -> None:
-        workflow = (ROOT / ".github/workflows/release-build.yml").read_text()
-        mutated = workflow.replace(
-            "-name 'libcuda.so*' -print -quit",
-            "-name 'libcuda*' -print -quit",
-            1,
-        )
+    def test_promotion_rejects_linux_artifact_paths(self) -> None:
+        workflow = (ROOT / ".github/workflows/release.yml").read_text()
+        mutated = workflow + "\n# artifacts/linux\n"
         with self.assertRaises(AssertionError):
-            validate_release_build(mutated)
+            validate_promotion_policy(mutated)
 
     def test_release_profile_must_retain_tauri_bundle_marker(self) -> None:
         cargo_toml = (ROOT / "app/src-tauri/Cargo.toml").read_text()

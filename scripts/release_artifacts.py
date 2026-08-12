@@ -28,11 +28,9 @@ HELPER_FIELDS = (
 )
 PLATFORM_SUFFIXES = {
     "macos": (".dmg", ".app.tar.gz", ".app.tar.gz.sig"),
-    "linux": (".deb", ".AppImage", ".AppImage.sig"),
 }
 UPDATER_SUFFIX = {
     "macos": ".app.tar.gz",
-    "linux": ".AppImage",
 }
 
 
@@ -388,7 +386,7 @@ def validate_release(
                 require_macos_capture_helper and platform == "macos"
             ),
         )
-        for platform in ("macos", "linux")
+        for platform in ("macos",)
     }
     names: list[str] = []
     for payload in platforms.values():
@@ -439,8 +437,10 @@ def write_updater_manifests(
         raise ArtifactError("release notes must not be empty")
 
     validated = json.loads(validated_path.read_text(encoding="utf-8"))
-    macos = validated["platforms"]["macos"]
-    linux = validated["platforms"]["linux"]
+    platforms = validated.get("platforms")
+    if not isinstance(platforms, dict) or set(platforms) != {"macos"}:
+        raise ArtifactError("validated release must contain exactly the macos platform")
+    macos = platforms["macos"]
     version = tag[1:]
     if min_version is not None:
         min_version = min_version.strip()
@@ -467,10 +467,6 @@ def write_updater_manifests(
                 "url": f"{base_url}/{macos['updater_bundle']}",
                 "signature": macos["signature"],
             },
-            linux["platform_key"]: {
-                "url": f"{base_url}/{linux['updater_bundle']}",
-                "signature": linux["signature"],
-            },
         },
         "notes": release_notes,
     }
@@ -483,10 +479,6 @@ def write_updater_manifests(
             macos["platform_key"]: {
                 "url": bridge_url,
                 "signature": bridge_signature,
-            },
-            linux["platform_key"]: {
-                "url": f"{base_url}/{linux['updater_bundle']}",
-                "signature": linux["signature"],
             },
         },
         "notes": (

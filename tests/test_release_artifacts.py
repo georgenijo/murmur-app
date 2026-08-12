@@ -45,19 +45,13 @@ class ReleaseArtifactTests(unittest.TestCase):
         self.root = Path(self.tempdir.name)
         self.artifacts = self.root / "artifacts"
         macos = self.artifacts / "macos"
-        linux = self.artifacts / "linux"
         macos.mkdir(parents=True)
-        linux.mkdir(parents=True)
 
         (macos / "Murmur.dmg").write_bytes(b"dmg")
         (macos / "Murmur.app.tar.gz").write_bytes(b"mac updater")
         (macos / "Murmur.app.tar.gz.sig").write_text("mac-signature\n")
-        (linux / "Murmur.deb").write_bytes(b"deb")
-        (linux / "Murmur.AppImage").write_bytes(b"linux updater")
-        (linux / "Murmur.AppImage.sig").write_text("linux-signature\n")
 
         create_provenance("macos", "darwin-aarch64", macos, SHA, RUN_ID)
-        create_provenance("linux", "linux-x86_64", linux, SHA, RUN_ID)
 
     def tearDown(self) -> None:
         self.tempdir.cleanup()
@@ -85,16 +79,12 @@ class ReleaseArtifactTests(unittest.TestCase):
         self.assertEqual(
             modern["platforms"]["darwin-aarch64"]["signature"], "mac-signature"
         )
-        self.assertEqual(
-            modern["platforms"]["linux-x86_64"]["signature"], "linux-signature"
-        )
+        self.assertEqual(set(modern["platforms"]), {"darwin-aarch64"})
         self.assertEqual(
             legacy["platforms"]["darwin-aarch64"]["signature"],
             "bridge-signature",
         )
-        self.assertEqual(
-            legacy["platforms"]["linux-x86_64"]["signature"], "linux-signature"
-        )
+        self.assertEqual(set(legacy["platforms"]), {"darwin-aarch64"})
         self.assertEqual(
             modern["notes"],
             "## New Features\n\n- Added post-update release notes.",
@@ -225,8 +215,8 @@ class ReleaseArtifactTests(unittest.TestCase):
             validate_release(self.artifacts, SHA, RUN_ID + 1)
 
     def test_signature_tampering_fails_closed(self) -> None:
-        signature = self.artifacts / "linux" / "Murmur.AppImage.sig"
-        signature.write_text("xxxxx-signature\n")
+        signature = self.artifacts / "macos" / "Murmur.app.tar.gz.sig"
+        signature.write_text("bad-signature\n")
         with self.assertRaisesRegex(ArtifactError, "SHA-256 mismatch"):
             validate_release(self.artifacts, SHA, RUN_ID)
 
@@ -404,11 +394,15 @@ class ReleaseArtifactTests(unittest.TestCase):
         with self.assertRaisesRegex(ArtifactError, "entitlement_sha256"):
             self._rerecord_macos_with_helper({**self.HELPER, "entitlement_sha256": "short"})
 
-    def test_helper_provenance_rejected_for_linux(self) -> None:
-        linux = self.artifacts / "linux"
-        (linux / "provenance.json").unlink()
-        with self.assertRaisesRegex(ArtifactError, "only recorded for macos"):
-            create_provenance("linux", "linux-x86_64", linux, SHA, RUN_ID, helper=self.HELPER)
+    def test_linux_release_artifact_recording_is_unsupported(self) -> None:
+        with self.assertRaisesRegex(ArtifactError, "unsupported platform: linux"):
+            create_provenance(
+                "linux",
+                "linux-x86_64",
+                self.artifacts / "linux",
+                SHA,
+                RUN_ID,
+            )
 
     def test_helper_bad_team_id_fails_closed(self) -> None:
         with self.assertRaisesRegex(ArtifactError, "team_id must be a 10-character"):
@@ -478,16 +472,6 @@ class ReleaseArtifactTests(unittest.TestCase):
                     self._rerecord_macos_with_helper(
                         {**self.HELPER, "designated_requirement": dr}
                     )
-
-    def test_validate_rejects_helper_block_on_linux(self) -> None:
-        # A helper block must never appear on a non-macos platform, even if a
-        # provenance file is hand-edited to smuggle one in.
-        linux = self.artifacts / "linux"
-        payload = json.loads((linux / "provenance.json").read_text())
-        payload["helper"] = self.HELPER
-        (linux / "provenance.json").write_text(json.dumps(payload))
-        with self.assertRaisesRegex(ArtifactError, "must not carry a helper block"):
-            validate_release(self.artifacts, SHA, RUN_ID)
 
     def test_macos_bundle_requires_exact_production_executables(self) -> None:
         app = self.root / "Murmur.app"
