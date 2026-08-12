@@ -5,9 +5,6 @@ const MAX_RELEASE_NOTES_LENGTH = 50_000;
 export const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
 export const CHECK_TIMER_TICK_MS = 15 * 60 * 1000; // 15 minutes
 
-const LATEST_JSON_URL =
-  'https://github.com/georgenijo/murmur-app/releases/latest/download/latest-v2.json';
-
 // --- Semver comparison ---
 
 export function parseSemver(version: string): [number, number, number] | null {
@@ -153,7 +150,7 @@ function normalizedVersionIdentity(version: string): string | null {
   return version.trim().replace(/^v/, '');
 }
 
-// --- min_version fetch ---
+// --- min_version policy ---
 
 export type MinVersionPolicy =
   | { status: 'present'; minVersion: string }
@@ -161,31 +158,24 @@ export type MinVersionPolicy =
   | { status: 'unavailable'; message: string };
 
 /**
- * Fetch the custom min_version field from the current update channel.
- * Absence is an intentional optional-update policy; transport and schema
- * failures stay distinct so callers cannot silently downgrade enforcement.
+ * Parse the custom min_version field from the raw manifest returned by
+ * Tauri's native updater check. Reading the same native response avoids a
+ * second fetch from the webview, where GitHub release assets are blocked by
+ * cross-origin policy.
  */
-export async function fetchMinVersionPolicy(): Promise<MinVersionPolicy> {
-  try {
-    const response = await fetch(LATEST_JSON_URL, { cache: 'no-store' });
-    if (!response.ok) {
-      return {
-        status: 'unavailable',
-        message: `Update policy request failed with status ${response.status}.`,
-      };
-    }
-    const data: unknown = await response.json();
-    if (typeof data !== 'object' || data === null) {
-      return { status: 'unavailable', message: 'Update policy response was not an object.' };
-    }
-    if (!('min_version' in data)) return { status: 'absent' };
-    if (typeof data.min_version !== 'string') {
-      return { status: 'unavailable', message: 'Update policy min_version was not a string.' };
-    }
-    return { status: 'present', minVersion: data.min_version };
-  } catch (error) {
-    return { status: 'unavailable', message: String(error) };
+export function parseMinVersionPolicy(rawManifest: unknown): MinVersionPolicy {
+  if (
+    typeof rawManifest !== 'object' ||
+    rawManifest === null ||
+    Array.isArray(rawManifest)
+  ) {
+    return { status: 'unavailable', message: 'Update manifest was not an object.' };
   }
+  if (!('min_version' in rawManifest)) return { status: 'absent' };
+  if (typeof rawManifest.min_version !== 'string') {
+    return { status: 'unavailable', message: 'Update policy min_version was not a string.' };
+  }
+  return { status: 'present', minVersion: rawManifest.min_version };
 }
 
 // --- Update state types ---

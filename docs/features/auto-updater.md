@@ -27,7 +27,10 @@ The update manifest is fetched from:
 https://github.com/georgenijo/murmur-app/releases/latest/download/latest-v2.json
 ```
 
-This URL is configured in `tauri.conf.json` as the updater plugin endpoint. The fetch uses `cache: 'no-store'` to bypass browser caching.
+This URL is configured in `tauri.conf.json` as the updater plugin endpoint.
+Tauri fetches it natively and exposes the decoded response as `Update.rawJson`;
+the frontend reads `min_version` from that same response instead of issuing a
+second cross-origin request from the webview.
 
 ### macOS 14 Channel Migration
 
@@ -101,8 +104,8 @@ Check failures and installation failures remain distinct in `UpdateStatus`, so
 the Settings page and homepage indicator do not describe a completed download
 or failed installation as an update-check failure.
 
-The updater manifest policy fetch also distinguishes an intentionally absent
-`min_version` from an unavailable or malformed response. Once update
+The updater manifest policy parser also distinguishes an intentionally absent
+`min_version` from unavailable or malformed native metadata. Once update
 availability is known, Murmur refuses to present it as optional unless the
 policy was verified. A policy failure is retryable as an update-check error and
 does not advance the successful-check timestamp.

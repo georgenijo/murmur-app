@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import {
   parseSemver,
   compareSemver,
@@ -12,7 +12,7 @@ import {
   setPendingUpdate,
   clearPendingUpdate,
   getPendingUpdateForVersion,
-  fetchMinVersionPolicy,
+  parseMinVersionPolicy,
   CHECK_INTERVAL_MS,
 } from './updater';
 
@@ -185,48 +185,26 @@ describe('post-update release notes', () => {
   });
 });
 
-describe('minimum-version policy fetch', () => {
-  it('distinguishes an intentionally absent policy', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ version: '0.24.2' }),
-    }));
-
-    await expect(fetchMinVersionPolicy()).resolves.toEqual({ status: 'absent' });
-    vi.unstubAllGlobals();
+describe('minimum-version policy parsing', () => {
+  it('distinguishes an intentionally absent policy', () => {
+    expect(parseMinVersionPolicy({ version: '0.24.2' })).toEqual({ status: 'absent' });
   });
 
-  it('returns a present policy', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ min_version: '0.23.0' }),
-    }));
-
-    await expect(fetchMinVersionPolicy()).resolves.toEqual({
+  it('returns a present policy', () => {
+    expect(parseMinVersionPolicy({ min_version: '0.23.0' })).toEqual({
       status: 'present',
       minVersion: '0.23.0',
     });
-    vi.unstubAllGlobals();
   });
 
-  it('does not collapse transport and schema failures into absence', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: false,
-      status: 503,
-    }));
-    await expect(fetchMinVersionPolicy()).resolves.toMatchObject({
+  it('does not collapse missing or malformed native metadata into absence', () => {
+    expect(parseMinVersionPolicy(undefined)).toMatchObject({
       status: 'unavailable',
-      message: expect.stringContaining('503'),
+      message: expect.stringContaining('not an object'),
     });
-
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ min_version: 23 }),
-    }));
-    await expect(fetchMinVersionPolicy()).resolves.toMatchObject({
+    expect(parseMinVersionPolicy({ min_version: 23 })).toMatchObject({
       status: 'unavailable',
       message: expect.stringContaining('not a string'),
     });
-    vi.unstubAllGlobals();
   });
 });

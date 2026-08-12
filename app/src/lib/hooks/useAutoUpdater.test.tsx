@@ -79,6 +79,7 @@ describe('useAutoUpdater presentation state', () => {
       available: true,
       version: '0.23.0',
       body: 'Release notes',
+      rawJson: {},
       downloadAndInstall: vi.fn(),
     });
 
@@ -89,6 +90,7 @@ describe('useAutoUpdater presentation state', () => {
       isForced: false,
     });
     expect(current.isUpdateDialogOpen).toBe(true);
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
 
     await act(async () => current.dismissUpdate());
     expect(current.updateStatus.phase).toBe('available');
@@ -103,6 +105,7 @@ describe('useAutoUpdater presentation state', () => {
       available: true,
       version: '0.23.0',
       body: '',
+      rawJson: {},
       downloadAndInstall: vi.fn(),
     });
 
@@ -155,6 +158,7 @@ describe('useAutoUpdater presentation state', () => {
         available: true,
         version: '0.23.0',
         body: 'Release notes',
+        rawJson: {},
         downloadAndInstall: vi.fn(),
       });
 
@@ -181,9 +185,9 @@ describe('useAutoUpdater presentation state', () => {
       available: true,
       version: '0.24.2',
       body: 'Release notes',
+      rawJson: undefined,
       downloadAndInstall: vi.fn(),
     });
-    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
 
     await act(async () => current.checkForUpdate());
 
@@ -195,34 +199,23 @@ describe('useAutoUpdater presentation state', () => {
     expect(localStorage.getItem('updater-last-check')).toBeNull();
   });
 
-  it('recovers from a transient update-policy fetch failure', async () => {
+  it('uses an absent policy from the native response without a webview fetch', async () => {
     mocks.check.mockResolvedValue({
       available: true,
       version: '0.24.2',
       body: 'Release notes',
+      rawJson: { version: '0.24.2' },
       downloadAndInstall: vi.fn(),
     });
-    const fetchMock = vi.fn()
-      .mockRejectedValueOnce(new Error('temporary policy failure'))
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({}),
-      });
-    vi.stubGlobal('fetch', fetchMock);
 
     await act(async () => current.checkForUpdate());
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
     expect(current.updateStatus).toMatchObject({
       phase: 'available',
       version: '0.24.2',
       isForced: false,
     });
-    expect(mocks.flogWarn).toHaveBeenCalledWith(
-      'updater',
-      'policy check failed; retrying',
-      { error: 'Error: temporary policy failure' },
-    );
   });
 
   it('opens a required update when the verified policy is above the installed version', async () => {
@@ -230,12 +223,9 @@ describe('useAutoUpdater presentation state', () => {
       available: true,
       version: '0.24.2',
       body: 'Required reliability update',
+      rawJson: { min_version: '0.24.0' },
       downloadAndInstall: vi.fn(),
     });
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ min_version: '0.24.0' }),
-    }));
 
     await act(async () => current.checkForUpdate());
 
@@ -253,6 +243,7 @@ describe('useAutoUpdater presentation state', () => {
       available: true,
       version: '0.24.2',
       body: 'Release notes',
+      rawJson: {},
       downloadAndInstall,
     });
     mocks.getUpdateInstallEnvironment.mockResolvedValue({ appTranslocated: true });
@@ -284,6 +275,7 @@ describe('useAutoUpdater presentation state', () => {
       available: true,
       version: '0.24.2',
       body: 'Release notes',
+      rawJson: {},
       downloadAndInstall,
     });
 
@@ -306,6 +298,7 @@ describe('useAutoUpdater presentation state', () => {
       available: true,
       version: '0.24.2',
       body: 'Release notes',
+      rawJson: {},
       downloadAndInstall,
     });
 
@@ -333,6 +326,7 @@ describe('useAutoUpdater presentation state', () => {
       available: true,
       version: '0.24.2',
       body: 'Release notes',
+      rawJson: {},
       downloadAndInstall,
     });
     mocks.getUpdateInstallEnvironment.mockReturnValue(environment);
@@ -361,6 +355,7 @@ describe('useAutoUpdater presentation state', () => {
       available: true,
       version: '0.24.2',
       body: '',
+      rawJson: {},
       downloadAndInstall,
     };
     mocks.check.mockResolvedValue(update);
@@ -399,6 +394,7 @@ describe('useAutoUpdater presentation state', () => {
       available: true,
       version: '0.24.2',
       body: '',
+      rawJson: {},
       downloadAndInstall,
     });
     mocks.getUpdateInstallEnvironment.mockReturnValue(environment);
@@ -429,6 +425,7 @@ describe('useAutoUpdater presentation state', () => {
       available: true,
       version: '0.24.2',
       body: '',
+      rawJson: {},
       downloadAndInstall,
     });
 

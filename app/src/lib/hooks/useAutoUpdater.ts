@@ -21,7 +21,7 @@ import {
   getPendingUpdateForVersion,
   isDueForCheck,
   setLastCheckTimestamp,
-  fetchMinVersionPolicy,
+  parseMinVersionPolicy,
   CHECK_TIMER_TICK_MS,
 } from '../updater';
 import { getUpdateInstallEnvironment } from '../updaterEnvironment';
@@ -150,15 +150,10 @@ export function useAutoUpdater(
 
       flog.info('updater', 'update available', { version: update.version });
 
-      // Check min_version (custom field not exposed by Tauri updater)
+      // Tauri exposes the exact native response as rawJson, so policy parsing
+      // does not need a second cross-origin request from the webview.
       const currentVersion = await getVersion();
-      let policy = await fetchMinVersionPolicy();
-      if (policy.status === 'unavailable') {
-        flog.warn('updater', 'policy check failed; retrying', {
-          error: policy.message,
-        });
-        policy = await fetchMinVersionPolicy();
-      }
+      const policy = parseMinVersionPolicy(update.rawJson);
       if (policy.status === 'unavailable') {
         flog.warn('updater', 'could not verify update policy', {
           error: policy.message,

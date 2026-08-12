@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Update checks now read minimum-version policy from Tauri's native updater
+  response, avoiding a webview cross-origin failure that hid available updates
+  behind misleading connection guidance.
+
 ## [0.31.0] - 2026-08-11
 
 ### Fixed
