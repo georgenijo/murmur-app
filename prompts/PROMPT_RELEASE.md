@@ -111,9 +111,9 @@ Run these steps in order:
    `chore: bump version to {new_version}`.
 5. Push: `git push origin main`
 6. Wait for the `Release Build` workflow on that exact commit to succeed.
-7. Verify its `typecheck`, `release-macos`, and `release-linux` jobs, signed
-   artifacts named with the exact 40-character commit SHA, package smoke tests,
-   and cache summaries. Do not continue if any job or artifact is missing.
+7. Verify its `typecheck` and `release-macos` jobs, signed macOS artifact named
+   with the exact 40-character commit SHA, package smoke tests, and cache
+   summary. Do not continue if either job or the artifact is missing.
 
 If the build fails, use the cold fallback in `docs/release.md`. Automation will
 not create a tag or release for a failed build.
@@ -122,7 +122,7 @@ not create a tag or release for a failed build.
 
 Wait for the `Release` workflow started by the completed `Release Build`. Verify
 that it used the exact build run ID and commit SHA, created `v{new_version}` at
-that commit, validated both immutable artifacts and updater signatures, and
+that commit, validated the immutable macOS artifact and updater signature, and
 published the GitHub Release.
 
 If automatic promotion fails after the build succeeded, fix or rerun it. The

@@ -6,10 +6,9 @@ inputs:
     description: Full CUDA version string for Jimver/cuda-toolkit (e.g. 12.8.0)
     required: true
     default: '12.8.0'
-  # Default is linux-cuda-debug so a caller that forgets to set this gets the CI-safe
-  # profile rather than accidentally polluting the release cache.
+  # Default is the CI debug cache so callers cannot create an ambiguous namespace.
   rust-cache-shared-key:
-    description: swatinem/rust-cache shared-key; use linux-cuda-release for release workflows to avoid debug/release profile thrash
+    description: swatinem/rust-cache shared-key for the Linux CI compile/test lane
     required: true
     default: 'linux-cuda-debug'
   rust-cache-save-if:
@@ -19,7 +18,7 @@ inputs:
     description: Expression controlling whether the CUDA cache is saved; defaults to trusted main-branch pushes only
     default: "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}"
   cuda-cache-key-prefix:
-    description: Cache-key namespace; rehearsals must use a source-SHA-specific prefix instead of the trusted release namespace
+    description: Cache-key namespace for the Linux CI compile/test lane
     required: true
     default: 'cuda-minimal'
 
@@ -93,8 +92,7 @@ runs:
 
         # GitHub-hosted runners have no NVIDIA driver. cuda-driver-dev supplies
         # a link-time libcuda.so stub but no libcuda.so.1 runtime soname. Keep a
-        # runner-local alias for tests, bundler dependency resolution, and smoke
-        # only. linuxdeploy is explicitly told not to package the driver stub.
+        # runner-local alias for compile and unit-test dependency resolution only.
         DRIVER_STUB=$(find "/usr/local/cuda-${CUDA_MM}" -path '*/stubs/libcuda.so' -print -quit)
         if [ -z "$DRIVER_STUB" ]; then
           echo "ERROR: minimal CUDA tree is missing the driver development stub"
@@ -105,7 +103,6 @@ runs:
         ln -sfn "$DRIVER_STUB" "$STUB_DIR/libcuda.so.1"
         echo "CUDA_DRIVER_STUB_DIR=$STUB_DIR" >> "$GITHUB_ENV"
         echo "LD_LIBRARY_PATH=$STUB_DIR:/usr/local/cuda/lib64:/usr/local/cuda/targets/x86_64-linux/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" >> "$GITHUB_ENV"
-        echo "LINUXDEPLOY_EXCLUDED_LIBRARIES=libcuda.so.1" >> "$GITHUB_ENV"
 
     # A claimed hit with a damaged tree fails closed. It must not silently reinstall and
     # overwrite a trusted cache with another ambiguous archive.
@@ -130,42 +127,6 @@ runs:
           echo "ERROR: runner-local libcuda.so.1 test stub was not configured"
           exit 1
         }
-
-    # Tauri's binary-releases mirror currently serves a July 2024 linuxdeploy
-    # build that predates LINUXDEPLOY_EXCLUDED_LIBRARIES. Seed Tauri's tool cache
-    # with a checksum-pinned upstream build so the runner-only CUDA driver stub
-    # is available for dependency resolution but cannot enter the AppImage.
-    # Also pre-seed the AppImage plugin and type2 runtime so bundling does not
-    # hit the network mid-job (~0–2m saved on cold packaging).
-    - name: Install driver-stub-aware linuxdeploy
-      shell: bash
-      run: |
-        LINUXDEPLOY_URL="https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"
-        LINUXDEPLOY_SHA256="421ca71d5c69ea97c6309276232990d43df1dcece0edfaa26bbf926ff96ed12e"
-        LINUXDEPLOY_PATH="$HOME/.cache/tauri/linuxdeploy-x86_64.AppImage"
-        mkdir -p "$(dirname "$LINUXDEPLOY_PATH")"
-        curl --fail --location --retry 3 "$LINUXDEPLOY_URL" --output "$LINUXDEPLOY_PATH"
-        echo "$LINUXDEPLOY_SHA256  $LINUXDEPLOY_PATH" | sha256sum --check --strict
-        chmod +x "$LINUXDEPLOY_PATH"
-
-        PLUGIN_URL="https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-x86_64.AppImage"
-        PLUGIN_SHA256="a45d3e227bc7f397e9cf6bfa4c9507494efa2293357b6e86690a3de2ca992e79"
-        PLUGIN_PATH="$HOME/.cache/tauri/linuxdeploy-plugin-appimage-x86_64.AppImage"
-        curl --fail --location --retry 3 "$PLUGIN_URL" --output "$PLUGIN_PATH"
-        echo "$PLUGIN_SHA256  $PLUGIN_PATH" | sha256sum --check --strict
-        chmod +x "$PLUGIN_PATH"
-
-        # appimagetool type2 runtime — seed XDG cache so packaging skips download
-        RUNTIME_URL="https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64"
-        RUNTIME_SHA256="1cc49bcf1e2ccd593c379adb17c9f85a36d619088296504de95b1d06215aebbf"
-        RUNTIME_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/appimageify"
-        mkdir -p "$RUNTIME_DIR"
-        RUNTIME_PATH="$RUNTIME_DIR/runtime-x86_64"
-        curl --fail --location --retry 3 "$RUNTIME_URL" --output "$RUNTIME_PATH"
-        echo "$RUNTIME_SHA256  $RUNTIME_PATH" | sha256sum --check --strict
-        chmod +x "$RUNTIME_PATH"
-
-        echo "$HOME/.cache/tauri" >> "$GITHUB_PATH"
 
     - name: Save CUDA toolkit cache
       if: steps.cuda-cache.outputs.cache-hit != 'true' && inputs.cuda-cache-save-if == 'true'

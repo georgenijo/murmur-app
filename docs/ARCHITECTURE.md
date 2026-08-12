@@ -441,7 +441,7 @@ cd app && npx tsc --noEmit && npm test
 ### Release pipeline
 
 1. Push a `chore: bump version ...` commit to trusted `main`.
-2. `Release Build` runs frontend verification, macOS signing/notarization (including the sidecar's split entitlements), and Linux packaging concurrently, with launch smoke tests.
+2. `Release Build` runs frontend verification and macOS signing/notarization (including the sidecar's split entitlements) concurrently, with launch smoke tests.
 3. Artifacts plus SHA-256 provenance are stored under names keyed by the exact commit SHA.
 4. The completed-build event verifies the trusted push, version-bump message, matching versions, exact run ID, source SHA, and immutable artifacts.
 5. Promotion creates `vX.Y.Z`, verifies remote `.sig` files, generates `latest-v2.json` plus the legacy-safe `latest.json`, then publishes.

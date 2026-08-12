@@ -14,7 +14,7 @@ on:
         type: string
         required: true
       prime_caches:
-        description: Save source-SHA-isolated Cargo and CUDA caches for a warm follow-up run
+        description: Save the source-SHA-isolated macOS Cargo cache for a warm follow-up run
         type: boolean
         default: false
 
@@ -219,114 +219,5 @@ jobs:
         with:
           name: release-rehearsal-macos-${{ needs.context.outputs.source-sha }}-${{ github.run_id }}
           path: rehearsal-metrics/macos.json
-          if-no-files-found: error
-          retention-days: 30
-
-  rehearse-linux:
-    needs: context
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.context.outputs.source-sha }}
-          persist-credentials: false
-
-      - name: Check out trusted rehearsal actions
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.context.outputs.workflow-sha }}
-          path: .trusted-rehearsal
-          persist-credentials: false
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: npm
-          cache-dependency-path: app/package-lock.json
-
-      - name: Free disk space for CUDA rehearsal
-        run: |
-          free_gib() { df -Pk / | awk 'NR==2 {printf "%d", $4/1024/1024}'; }
-          sudo rm -rf \
-            /usr/local/lib/android \
-            /usr/share/dotnet \
-            /opt/ghc \
-            /usr/local/.ghcup \
-            /opt/hostedtoolcache/CodeQL
-          sudo apt-get clean || true
-          FREE_GIB=$(free_gib)
-          if [ "$FREE_GIB" -lt 25 ]; then
-            docker system prune --all --force || true
-          fi
-
-      - name: Setup isolated Linux release environment
-        uses: ./.trusted-rehearsal/.github/actions/setup-linux-build
-        with:
-          cuda-version: '12.8.0'
-          rust-cache-shared-key: linux-cuda-rehearsal-${{ needs.context.outputs.source-sha }}
-          rust-cache-save-if: ${{ needs.context.outputs.cache-write == 'true' }}
-          cuda-cache-save-if: ${{ needs.context.outputs.cache-write == 'true' }}
-          cuda-cache-key-prefix: cuda-rehearsal-${{ needs.context.outputs.source-sha }}
-
-      - name: Install frontend dependencies
-        run: cd app && npm ci
-
-      - name: Build unsigned Linux release proxies
-        id: build
-        run: |
-          STARTED=$(date +%s)
-          cd app
-          npx tauri build --no-sign --bundles deb,appimage --verbose
-          echo "build_seconds=$(($(date +%s) - STARTED))" >> "$GITHUB_OUTPUT"
-
-      - name: Record Linux timing and size metrics
-        env:
-          SOURCE_SHA: ${{ needs.context.outputs.source-sha }}
-          WORKFLOW_SHA: ${{ needs.context.outputs.workflow-sha }}
-          BUILD_SECONDS: ${{ steps.build.outputs.build_seconds }}
-        run: |
-          DEB=$(find app/src-tauri/target/release/bundle/deb -maxdepth 1 -type f -name '*.deb' -print -quit)
-          APPIMAGE=$(find app/src-tauri/target/release/bundle/appimage -maxdepth 1 -type f -name '*.AppImage' -print -quit)
-          BINARY=app/src-tauri/target/release/ui
-          if [ -z "$DEB" ] || [ -z "$APPIMAGE" ] || [ ! -f "$BINARY" ]; then
-            echo "ERROR: unsigned Linux release proxy is incomplete"
-            exit 1
-          fi
-          mkdir -p rehearsal-metrics
-          export DEB APPIMAGE BINARY
-          python3 - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          metrics = {
-              "schema_version": 1,
-              "proxy": "unsigned-release-build",
-              "platform": "linux",
-              "source_sha": os.environ["SOURCE_SHA"],
-              "workflow_sha": os.environ["WORKFLOW_SHA"],
-              "run_id": os.environ["GITHUB_RUN_ID"],
-              "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
-              "build_seconds": int(os.environ["BUILD_SECONDS"]),
-              "main_binary_bytes": Path(os.environ["BINARY"]).stat().st_size,
-              "deb_bytes": Path(os.environ["DEB"]).stat().st_size,
-              "appimage_bytes": Path(os.environ["APPIMAGE"]).stat().st_size,
-          }
-          Path("rehearsal-metrics/linux.json").write_text(
-              json.dumps(metrics, indent=2, sort_keys=True) + "\n"
-          )
-          PY
-          cat rehearsal-metrics/linux.json
-          {
-            echo "### Linux unsigned release proxy"
-            echo "- build seconds: \`$BUILD_SECONDS\`"
-            echo "- metrics: \`linux.json\`"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload Linux rehearsal metrics
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-rehearsal-linux-${{ needs.context.outputs.source-sha }}-${{ github.run_id }}
-          path: rehearsal-metrics/linux.json
           if-no-files-found: error
           retention-days: 30

@@ -221,14 +221,16 @@ def validate_release_build(workflow: str) -> int:
     assert "contents: write" not in workflow
     assert "tests/test_release_version.py" in workflow
     assert scalar(job_block(workflow, "context"), "if") == RELEASE_BUILD_GUARD
-    for job in ("typecheck", "release-macos", "release-linux"):
+    for job in ("typecheck", "release-macos"):
         assert scalar(job_block(workflow, job), "needs") == "context"
 
-    # Native builds and frontend verification share only `context`, so all three
+    # The native build and frontend verification share only `context`, so both
     # enter the queue concurrently instead of serializing behind typecheck.
     assert "needs: [typecheck]" not in workflow
     assert "macos-release-${{ needs.context.outputs.source-sha }}" in workflow
-    assert "linux-release-${{ needs.context.outputs.source-sha }}" in workflow
+    normalized = workflow.casefold()
+    for forbidden in ("release-linux:", "linux-release-", "appimage", "--bundles deb"):
+        assert forbidden not in normalized
     assert "capture-helper-tcc-evidence-${{ needs.context.outputs.source-sha }}" in workflow
     assert (
         "--capture-helper-entitlements app/src-tauri/capture-helper.entitlements.plist"
@@ -282,22 +284,9 @@ def validate_release_build(workflow: str) -> int:
     assert "codesign.txt" not in capture_evidence
     assert "designated-requirement.txt" not in capture_evidence
     assert "shared-key: macos-release-v1" in workflow
-    assert "shared-key: linux-cuda-release-v1" in workflow
     assert "Print :CFBundleExecutable" in workflow
     assert '$(ls "$APP/Contents/MacOS/" | head -1)' not in workflow
-    assert "DEB_BINARY=/tmp/murmur-deb-root/usr/bin/ui" in workflow
-    assert "find /tmp/murmur-deb-root/usr/bin -maxdepth 1" not in workflow
-    linux_build = named_step_block(workflow, "Build signed packages", 6)
-    assert "args: --bundles deb,appimage --verbose" in linux_build
-    assert "rpm" not in linux_build
-    assert workflow.count("${{ needs.context.outputs.cache-write == 'true' }}") >= 3
-    assert "AppImage must not contain the runner-local NVIDIA driver stub" in workflow
-    assert "-name 'libcuda.so*' -print -quit" in workflow
-    assert "-name 'libcuda*' -print -quit" not in workflow
-    assert workflow.count(
-        "LD_LIBRARY_PATH=\"$CUDA_DRIVER_STUB_DIR${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}\""
-    ) == 2
-    assert 'LD_LIBRARY_PATH="$CUDA_DRIVER_STUB_DIR:${LD_LIBRARY_PATH:-}"' not in workflow
+    assert workflow.count("${{ needs.context.outputs.cache-write == 'true' }}") == 1
 
     cases = (
         ("push", "chore: bump version to 0.17.0", True),
@@ -339,37 +328,27 @@ def validate_release_rehearsal(workflow: str) -> int:
     assert 'echo "source_sha=$RESOLVED" >> "$GITHUB_OUTPUT"' in workflow
     assert 'echo "workflow_sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"' in workflow
 
-    for job in ("typecheck", "rehearse-macos", "rehearse-linux"):
+    for job in ("typecheck", "rehearse-macos"):
         assert scalar(job_block(workflow, job), "needs") == "context"
-    assert workflow.count("ref: ${{ needs.context.outputs.source-sha }}") == 3
-    assert workflow.count("persist-credentials: false") == 5
-    assert "ref: ${{ needs.context.outputs.workflow-sha }}" in workflow
-    assert "path: .trusted-rehearsal" in workflow
-    assert "uses: ./.trusted-rehearsal/.github/actions/setup-linux-build" in workflow
+    assert workflow.count("ref: ${{ needs.context.outputs.source-sha }}") == 2
+    assert workflow.count("persist-credentials: false") == 3
     assert "uses: ./.github/actions/setup-linux-build" not in workflow
+    normalized = workflow.casefold()
+    for forbidden in ("rehearse-linux:", "linux", "cuda", "appimage"):
+        assert forbidden not in normalized
 
     assert (
         "shared-key: macos-release-rehearsal-${{ needs.context.outputs.source-sha }}"
         in workflow
     )
-    assert (
-        "rust-cache-shared-key: linux-cuda-rehearsal-${{ needs.context.outputs.source-sha }}"
-        in workflow
-    )
-    assert (
-        "cuda-cache-key-prefix: cuda-rehearsal-${{ needs.context.outputs.source-sha }}"
-        in workflow
-    )
     assert "macos-release-v1" not in workflow
-    assert "linux-cuda-release-v1" not in workflow
-    assert "cuda-minimal-${{ runner.os }}" not in workflow
-    assert workflow.count("--no-sign") == 2
+    assert workflow.count("--no-sign") == 1
     assert '"proxy": "unsigned-release-build"' in workflow
     assert '"workflow_sha": os.environ["WORKFLOW_SHA"]' in workflow
     assert '"source_sha": os.environ["SOURCE_SHA"]' in workflow
     assert '"build_seconds": int(os.environ["BUILD_SECONDS"])' in workflow
-    assert workflow.count("uses: actions/upload-artifact@v4") == 2
-    return 3
+    assert workflow.count("uses: actions/upload-artifact@v4") == 1
+    return 2
 
 
 def validate_linux_cache_policy(action: str) -> None:
@@ -385,56 +364,8 @@ def validate_linux_cache_policy(action: str) -> None:
     assert 'non-cuda-sub-packages: \'["libcublas-dev"]\'' in action
     assert 'STUB_DIR="$RUNNER_TEMP/murmur-cuda-driver-stub"' in action
     assert "CUDA_DRIVER_STUB_DIR=$STUB_DIR" in action
-    assert "LINUXDEPLOY_EXCLUDED_LIBRARIES=libcuda.so.1" in action
-
-    linuxdeploy = named_step_block(
-        action, "Install driver-stub-aware linuxdeploy", 4
-    )
-    assert (
-        "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/"
-        "linuxdeploy-x86_64.AppImage"
-    ) in linuxdeploy
-    assert (
-        'LINUXDEPLOY_SHA256="421ca71d5c69ea97c6309276232990d43df1dcece0edfaa26bbf926ff96ed12e"'
-        in linuxdeploy
-    )
-    assert 'LINUXDEPLOY_PATH="$HOME/.cache/tauri/linuxdeploy-x86_64.AppImage"' in linuxdeploy
-    assert (
-        'echo "$LINUXDEPLOY_SHA256  $LINUXDEPLOY_PATH" | sha256sum --check --strict'
-        in linuxdeploy
-    )
-    assert (
-        "https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/"
-        "download/continuous/linuxdeploy-plugin-appimage-x86_64.AppImage"
-    ) in linuxdeploy
-    assert (
-        'PLUGIN_SHA256="a45d3e227bc7f397e9cf6bfa4c9507494efa2293357b6e86690a3de2ca992e79"'
-        in linuxdeploy
-    )
-    assert (
-        'PLUGIN_PATH="$HOME/.cache/tauri/'
-        'linuxdeploy-plugin-appimage-x86_64.AppImage"'
-    ) in linuxdeploy
-    assert (
-        'echo "$PLUGIN_SHA256  $PLUGIN_PATH" | sha256sum --check --strict'
-        in linuxdeploy
-    )
-    assert (
-        "https://github.com/AppImage/type2-runtime/releases/download/continuous/"
-        "runtime-x86_64"
-    ) in linuxdeploy
-    assert (
-        'RUNTIME_SHA256="1cc49bcf1e2ccd593c379adb17c9f85a36d619088296504de95b1d06215aebbf"'
-        in linuxdeploy
-    )
-    assert 'RUNTIME_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/appimageify"' in linuxdeploy
-    assert 'RUNTIME_PATH="$RUNTIME_DIR/runtime-x86_64"' in linuxdeploy
-    assert (
-        'echo "$RUNTIME_SHA256  $RUNTIME_PATH" | sha256sum --check --strict'
-        in linuxdeploy
-    )
-    assert 'chmod +x "$RUNTIME_PATH"' in linuxdeploy
-    assert 'chmod +x "$RUNTIME_PATH" || true' not in linuxdeploy
+    for forbidden in ("linuxdeploy", "AppImage", "appimage", "type2-runtime"):
+        assert forbidden not in action
 
     prepare = named_step_block(action, "Prepare CUDA cache restore path", 4)
     assert 'sudo mkdir -p "/usr/local/cuda-${CUDA_MM}"' in prepare
@@ -512,6 +443,10 @@ def validate_promotion_policy(workflow: str) -> int:
     assert 'split("@")[0]) == ".github/workflows/release-build.yml"' in workflow
     assert "expired == false" in workflow
     assert "scripts/release_artifacts.py validate" in workflow
+    normalized = workflow.casefold()
+    for forbidden in ("linux-release-", "artifacts/linux", "appimage"):
+        assert forbidden not in normalized
+    assert 'for NAME in "macos-release-${SOURCE_SHA}"; do' in workflow
     assert "scripts/release_version.py check" in workflow
     assert '--git-ref "$SOURCE_SHA"' in workflow
     assert "--require-macos-capture-helper" in workflow
