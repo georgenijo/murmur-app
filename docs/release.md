@@ -39,7 +39,7 @@ Each successful build uploads these 30-day artifacts:
 Release binaries retain the Tauri bundle-type marker (Cargo release stripping
 is disabled) so the updater can distinguish the deb and AppImage packages.
 After final signing and notarization, the release job launches the exact packaged
-capture worker, completes its production-v3 hello handshake, sends a bounded
+capture worker, completes its production-v4 hello handshake, sends a bounded
 AUHAL start request, and requires the worker's stream-open phase. This catches
 sandbox or entitlement failures that static plist and signature checks cannot.
 
@@ -73,7 +73,9 @@ version below that threshold must update or quit. Policy changes receive the
 same code review and trusted-main provenance as the release itself.
 
 Immediately before publication, the workflow requires the draft release body
-to match the remotely downloaded updater manifest notes. Once published,
+to match the remotely downloaded updater manifest notes after applying the same
+line-ending normalization and outer-whitespace trim to both. All remaining
+content must match exactly; the check is not fuzzy. Once published,
 updater assets are immutable; do not edit the release body independently. Ship
 a patch release when corrected notes must appear both on GitHub and in Murmur.
 

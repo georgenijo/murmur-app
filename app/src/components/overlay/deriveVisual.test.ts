@@ -159,4 +159,13 @@ describe('deriveVisual', () => {
     expect(visual.indicator).toEqual({ kind: 'calibrating' });
     expect(visual.waveformVisible).toBe(false);
   });
+
+  it('shows a distinct persistent meeting indicator and finishing state', () => {
+    expect(
+      deriveVisual('idle', false, false, false, false, false, false, false, false, false, 'recording').indicator,
+    ).toEqual({ kind: 'meeting', processing: false });
+    expect(
+      deriveVisual('idle', false, false, false, false, false, false, false, false, false, 'processing').indicator,
+    ).toEqual({ kind: 'meeting', processing: true });
+  });
 });

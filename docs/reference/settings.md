@@ -17,7 +17,7 @@ The native Settings workspace has four horizontal tabs in this order
 (`SETTINGS_CATEGORIES` in `SettingsPanel.tsx`). The search field above them
 matches rows across every tab and routes a selected result to its owner:
 
-1. **Dictation** — microphone, voice detection, recording trigger, shortcut feedback, clipboard-first delivery, auto-paste, file output, and app overrides
+1. **Dictation** — microphone selection and live input test, voice detection, recording trigger, shortcut feedback, clipboard-first delivery, auto-paste, file output, and app overrides
 2. **Model** — model selector, language, lifecycle/download state, idle release, Performance Lab, and the advanced diagnostics workspace
 3. **Text** — punctuation, cleanup, names and terms, corrections, structured writing, spoken commands, personal knowledge, and selected-text transforms
 4. **App** — appearance, launch at login, setup, overlay calibration, statistics, updates, and version
@@ -32,6 +32,12 @@ reloads every current `Settings` field, including tri-state app overrides and
 IDE roots.
 
 **Source file:** `app/src/lib/settings.ts`
+
+The live microphone monitor is operational state, not a setting. It starts
+automatically on Dictation Settings, uses the persisted `microphone` ID, keeps
+no audio, yields to real dictation, resumes afterward, and stops when Dictation
+Settings is left or hidden. See
+[Microphone Input Test](../features/microphone-input-test.md).
 
 **TypeScript interface** (full current shape — see `settings.ts` for the per-field comments):
 
@@ -54,10 +60,19 @@ interface Settings {
   // Transform (selected-text rewrite)
   transformHoldKey: TransformKey | null;   // null = disabled (default)
 
+  // Voice Query (configured CLI)
+  queryHotkey: QueryKey | null;            // null = disabled (default)
+  queryExecutable: string;                 // absolute executable path
+  queryArguments: string[];                // fixed argv before question
+  queryTimeoutSeconds: number;             // 5–300, default 60
+
   // Delivery
   autoPaste: boolean;
   autoPasteDelayMs: number;
   retainHistory: boolean;
+  meetingRetainAudio: boolean;
+  meetingRetentionDays: number;            // 0 = no age limit
+  meetingMaxSessions: number;
   saveTranscript: boolean;
   saveAudio: boolean;
   mirrorToNotchPill: boolean;
@@ -133,12 +148,26 @@ model-selection side effects.
 | `vadSensitivity` | `number` | `50` | 0 (Off), 5-100; step 5 in UI | Voice Activity Detection sensitivity. Off skips VAD for the lowest post-release latency but gives up no-speech rejection. For non-zero values, higher values keep more audio and lower values trim silence more aggressively; the backend threshold is `1.0 - (sensitivity / 100.0)`. Clamped to 0-100 by the backend. |
 | `disabled` | `boolean` | `false` | `true` / `false` | Global disable. Mirrors the tray "Disable Murmur" check item and the overlay's power button; the hover quick-settings card stays reachable while disabled so the overlay can turn Murmur back on. |
 | `idleTimeoutMinutes` | `number` | `5` | `5`, `15`, `0` (Never) | How long an idle loaded model stays resident before the runtime releases it. `0` keeps it loaded indefinitely. |
+| `meetingRetainAudio` | `boolean` | `false` | `true` / `false` | Keeps each meeting chunk WAV after its transcript commits. Off deletes the WAV only after the corresponding SQLite transaction succeeds. |
+| `meetingRetentionDays` | `number` | `0` | `0` or 1–3650 days | Age cap applied before starting a meeting; `0` preserves completed sessions by age. |
+| `meetingMaxSessions` | `number` | `100` | 1–10,000 | Maximum completed/interrupted sessions retained when pruning before a new meeting. |
 
 ### Transform Settings
 
 | Setting | Type | Default | Valid Options/Range | Description |
 |---------|------|---------|-------------------|-------------|
 | `transformHoldKey` | `TransformKey \| null` | `null` | `'alt_r'` (Right Option), `'ctrl_l'` (Left Control), `'shift_r'` (Right Shift), or `null` to disable | The independent hold key for selected-text transform. Deliberately a distinct id set from `doubleTapKey` so the two shortcuts coexist; the picker rejects the active dictation key. Anything unrecognized — including an absent field on pre-feature settings — coerces back to `null` rather than silently arming a shortcut.<br><br>The transform **model**, saved transforms, and presets are not localStorage settings: the model install lives on disk under the app models directory, and saved transforms are knowledge-store records. See [Selected-text Transform](../features/selected-text-transform.md). |
+
+### Voice Query
+
+| Setting | Type | Default | Valid Options/Range | Description |
+|---------|------|---------|-------------------|-------------|
+| `queryHotkey` | `QueryKey \| null` | `null` | `'alt_r'`, `'ctrl_l'`, `'shift_r'`, or `null` | Dedicated double-tap-to-start / single-tap-to-stop shortcut. It may not equal `transformHoldKey`; a persisted conflict disables Voice Query. |
+| `queryExecutable` | `string` | `''` | Absolute executable path, at most 4096 bytes | Exact CLI program to spawn. Murmur never provides a default and never invokes a shell. |
+| `queryArguments` | `string[]` | `[]` | At most 32 fixed arguments, 4096 bytes each and 32 KiB total | Passed literally before the locally transcribed question, which is one final argv element. |
+| `queryTimeoutSeconds` | `number` | `60` | Integer 5–300 | Deadline after which the owned CLI process group is terminated and confirmed empty. |
+
+The Settings disclosure explicitly states that the configured CLI may send the question or answer to cloud services and that Murmur cannot control its network behavior. See [Voice Query](../features/voice-query.md).
 
 ### Recording Mode Details
 
@@ -217,7 +246,7 @@ The blob is opaque to Rust. The host validates only the container — at most 1 
 
 ### Boot Hydration
 
-Each window entry (`main.tsx`, `overlay.tsx`, `transform-review.tsx`, `diagnostics.tsx`) awaits `hydrateSettingsFromDisk()` before its first render:
+Each window entry (`main.tsx`, `overlay.tsx`, `transform-review.tsx`, `query-review.tsx`, `diagnostics.tsx`) awaits `hydrateSettingsFromDisk()` before its first render:
 
 1. Outside Tauri (plain browser, tests) it is a no-op and `localStorage` remains the only store.
 2. `load_settings_blob` returns a blob → it is written into `localStorage` verbatim. Disk wins; the cache may be stale or evicted.
@@ -274,15 +303,22 @@ When settings change, `useSettings.updateSettings` pushes the following fields t
 
 ---
 
-## Related localStorage Keys
+## Related Durable User Data
 
-Other data persisted to localStorage by the application (not part of the `Settings` object):
+History and usage statistics are not part of the `Settings` object, but use the
+same durable-source/localStorage-cache contract. On main-window boot,
+`hydrateUserDataFromDisk()` loads `history.json` and `stats.json` before React
+renders. Disk wins over stale caches; when a durable file is absent, the
+corresponding existing localStorage blob migrates to disk once. Failures are
+isolated per file and never block boot.
+
+Other localStorage caches and browser-scoped state:
 
 | Key | Purpose | Used By |
 |-----|---------|---------|
-| `dictation-history` | Transcription history entries (rolling max 200) | `useHistoryManagement` |
+| `dictation-history` | Synchronous cache for durable `history.json` entries (rolling max 200) | `useHistoryManagement` |
 | `murmur-appearance` | Versioned appearance mode/theme configuration plus a strictly validated derived light/dark token cache. Independent from `Settings`; imports discard and regenerate revision/cache data. | Main appearance controller (writer/native theme) |
-| `dictation-stats` | Cumulative transcription statistics | `lib/stats.ts` |
+| `dictation-stats` | Synchronous cache for durable `stats.json` usage aggregates | `lib/stats.ts` |
 | `skipped-update-version` | Version string the user chose to skip | `useAutoUpdater` |
 | `updater-last-check` | Timestamp of last update check | `useAutoUpdater` |
 | `resource-monitor-collapsed` | Whether the resource monitor panel is collapsed | ResourceMonitor component |

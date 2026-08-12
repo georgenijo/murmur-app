@@ -149,25 +149,34 @@ the ordered sequence, and cite event codes in its diagnosis.
 the retained production JSONL. Its versioned report groups only privacy-safe
 capture metrics by install and receiver-observed app version:
 
-- readiness `startup_ms` p50/p95;
+- dictation readiness `startup_ms` p50/p95;
 - active initialization timeouts split by stable backend and
   `last_setup_step`;
 - fallback and both-backends-failed counts;
-- ready-recording counts per completed attempted app session.
+- ready-recording counts for the five most recent completed attempted
+  dictation sessions per cohort.
 
 The watch alerts when a newest comparable cohort (at least five readiness
-samples) has a p50 above twice the preceding version on the same install, or
-when the same install/version has two completed attempted sessions with zero
-ready recordings. An app session is delimited by `startup_baseline`; idle
-launches and the currently open session cannot create a zero-ready verdict.
+samples) has a p50 above twice the best retained earlier eligible cohort on the
+same install. Anchoring to that healthy baseline keeps an equally slow later
+release from masking an unresolved regression. It also alerts when the latest
+version cohort with a completed attempted dictation session has two zero-ready
+outcomes among its five most recent attempts. A newer healthy cohort supersedes
+an older failed cohort, and enough later healthy attempts age failures out of
+the window. An app session is delimited by `startup_baseline`; idle launches,
+transform captures, and the currently open session cannot create a zero-ready
+verdict.
 
 Reports contain no raw event summaries, device fields, content, paths, or free
-form errors. Backend/setup-step values are allowlisted and unknown values
-collapse to `unknown`. Memory is bounded to the newest 500 startup samples per
-cohort and 64 explicit versions per install; excess versions collapse into a
-non-comparable `overflow` cohort. The report is atomically replaced at
-`~/murmur-logs/capture-watch.json`; an alert also makes the one-shot exit
-nonzero for systemd/journal visibility and appears on the protected dashboard.
+form errors. Backend/setup-step values are allowlisted (including the explicit
+pre-native-call `none` setup step) and unknown values collapse to `unknown`.
+Memory is bounded to the newest 500 startup samples and five attempted-session
+outcomes per cohort, with ready counts at or above 20 combined into one capped
+tail bucket. Each install has at most 64 explicit versions; excess versions
+collapse into a non-comparable `overflow` cohort. The report is atomically
+replaced at `~/murmur-logs/capture-watch.json`; an alert also makes the one-shot
+exit nonzero for systemd/journal visibility and appears on the protected
+dashboard.
 
 ### Operator event semantics
 

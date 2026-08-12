@@ -62,7 +62,8 @@ the Git commit, branch, dirty state, machine label, timing, corpus tier, and
 model selection without modifying the portable report.
 
 Compare two runs made on the same OS, hardware, corpus, preset, iteration count,
-VAD threshold, and execution path:
+VAD threshold, execution path, transform profile, percentile method, model run
+order, and shared-initialization order:
 
 ```bash
 python3 scripts/murmur_bench.py compare baseline.json candidate.json \
@@ -85,6 +86,51 @@ detached temporary worktrees under the supplied cache root, shares one Cargo
 release cache, copies the four exact gitignored helper build prerequisites from
 the clean source checkout, runs both commits, compares their reports, then
 removes only those temporary worktrees. It never modifies the source helpers.
+
+Fleet comparisons use the `conditioned-timed-path-v2` cache policy. Immediately
+before each measured ref, the helper first runs a discarded Quick pass of the
+same commit and exact selected model set. This absorbs release compilation and
+conditions every selected model's filesystem, model-weight, Core ML, and Metal
+caches. It then reads that report's declared `sharedInitOrder` and runs two
+identical discarded Quick passes over those targets. The fixed repeated target
+workload is required for the timed path: in a clean seven-model Thorough
+control, one full-set pass still left CPU Parakeet warm median, p95, and RTF
+20–23% slower for the second ref, while the two target passes removed every
+configured product regression. The host settles again only after all three
+conditioning passes complete.
+
+`sharedInitMs` is a setup diagnostic, not a product-latency metric. The Rust
+benchmark deliberately performs and times this shared backend initialization
+before it starts any model-load or inference timer. On the trusted Mac the
+value can still vary from approximately 1.5 seconds to 15 seconds across
+otherwise controlled processes; repeated external warm-up processes do not
+predict or stabilize it. Two clean seven-model Thorough comparisons showed
+that this setup-only swing can exceed 13 seconds while every configured
+per-model latency, RTF, WER, and memory gate remains within threshold. Fleet
+therefore records and reports a material `sharedInitMs` skew informationally,
+while gating the timed product path that begins after the in-process warm-up.
+
+The helper requires three consecutive host samples at or below 20% normalized
+CPU five seconds apart both before conditioning and before starting the
+measured preset. Active external build processes reset this idle window. The
+host must remain on AC power with Low Power Mode off and no macOS
+thermal/performance warning. Another Fleet comparison using the same cache root
+causes a hard failure. The helper also samples the process tree throughout all
+conditioning passes and measurement; any `cargo`, `rustc`, or executable whose
+name ends in `headless_benchmark` outside the runner's own subtree invalidates
+the run. The conditioning reports are temporary and are deleted without being
+published.
+
+The measured report metadata records the cache policy, conditioning durations
+and `sharedInitMs` values, exact target order, conditioning commit, runner
+order, host snapshots before conditioning, before measurement, and after
+measurement, plus the idle-settling parameters. Comparison refuses conditioned
+reports when the conditioning policy or target evidence differs, the
+conditioning commit differs from the measured commit, either worktree was
+dirty, host-settling policies differ, post-run host state is invalid, or model
+order differs. A material measured `sharedInitMs` difference is retained in the
+comparison receipt as an informational setup skew. No product regression
+threshold is changed or bypassed.
 
 Example on the Mac Mini:
 
@@ -112,11 +158,12 @@ python3 scripts/murmur_bench_fleet.py \
 ```
 
 Both refs must contain the internal harness, so the first completed run of this
-feature establishes the baseline for subsequent commits. Use Quick (5 clips ×
-1) for a fast candidate smoke run, Standard (20 × 1) for routine comparisons,
-and Thorough (20 × 3) before a release. Alternate `--candidate-first` between
-repeat comparisons when investigating small deltas to reduce order/thermal
-bias.
+feature establishes the baseline for subsequent commits. Each ref incurs the
+discarded full-set Quick conditioning stage and two target-only Quick passes.
+Use Quick (5 clips × 1) for a fast candidate smoke run, Standard (20 × 1) for
+routine comparisons, and Thorough (20 × 3) before a release. Alternate
+`--candidate-first` between repeat comparisons when investigating small deltas
+to expose residual order/thermal bias.
 
 ## Required PR and release gates
 

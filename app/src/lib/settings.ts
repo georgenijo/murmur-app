@@ -12,6 +12,7 @@ export type DoubleTapKey = 'shift_l' | 'alt_l' | 'ctrl_r';
  * options live on the opposite side of the keyboard.
  */
 export type TransformKey = 'alt_r' | 'ctrl_l' | 'shift_r';
+export type QueryKey = TransformKey;
 
 export type WritingStyle =
   | 'conversational'
@@ -200,6 +201,13 @@ export interface Settings {
   /** Independent transform-shortcut hotkey (issue #312). `null` = disabled;
    * no settings UI exposes this yet. */
   transformHoldKey: TransformKey | null;
+  /** Independent double-tap voice-query shortcut. `null` keeps the integration off. */
+  queryHotkey: QueryKey | null;
+  /** Absolute path to the exact user-selected CLI executable. */
+  queryExecutable: string;
+  /** Fixed argv elements placed before the one-element spoken question. */
+  queryArguments: string[];
+  queryTimeoutSeconds: number;
   language: string;
   autoPaste: boolean;
   autoPasteDelayMs: number;
@@ -222,6 +230,12 @@ export interface Settings {
   smartPunctuation: boolean;
   /** Persist completed microphone and file transcripts in local history. */
   retainHistory: boolean;
+  /** Keep meeting chunk WAV files after their durable transcript commits. */
+  meetingRetainAudio: boolean;
+  /** Delete completed meetings older than this many days; 0 keeps them by age. */
+  meetingRetentionDays: number;
+  /** Maximum completed/interrupted meeting sessions retained in SQLite. */
+  meetingMaxSessions: number;
   saveTranscript: boolean;
   saveAudio: boolean;
   /** Mirror each final transcript to a local file NotchPill can show in the notch. */
@@ -325,6 +339,8 @@ export const TRANSFORM_KEY_OPTIONS: { value: TransformKey; label: string }[] = [
   { value: 'shift_r', label: 'Right Shift' },
 ];
 
+export const QUERY_KEY_OPTIONS: { value: QueryKey; label: string }[] = TRANSFORM_KEY_OPTIONS;
+
 export const RECORDING_MODE_OPTIONS: { value: RecordingMode; label: string }[] = [
   { value: 'hold_down', label: 'Hold Down' },
   { value: 'double_tap', label: 'Double-Tap' },
@@ -371,6 +387,10 @@ export const DEFAULT_SETTINGS: Settings = {
   doubleTapKey: 'shift_l',
   // Disabled by default — no settings UI to configure it yet (Phase D).
   transformHoldKey: null,
+  queryHotkey: null,
+  queryExecutable: '',
+  queryArguments: [],
+  queryTimeoutSeconds: 60,
   // 'auto' lets Whisper auto-detect the spoken language ("just works"); the
   // non-Whisper models may auto-detect or ignore this value.
   language: 'auto',
@@ -391,6 +411,9 @@ export const DEFAULT_SETTINGS: Settings = {
   disabled: false,
   smartPunctuation: true,
   retainHistory: true,
+  meetingRetainAudio: false,
+  meetingRetentionDays: 0,
+  meetingMaxSessions: 100,
   saveTranscript: false,
   saveAudio: false,
   mirrorToNotchPill: false,
@@ -610,6 +633,46 @@ export function loadSettings(): Settings {
         }
       }
 
+      // Voice Query is disabled by default. Persisted/tampered values must
+      // stay inside the same explicit opposite-side modifier allow-list as
+      // Transform, and command configuration is bounded before it reaches IPC.
+      {
+        const validQueryKeys = new Set<string>(QUERY_KEY_OPTIONS.map((o) => o.value));
+        if (
+          parsed.queryHotkey !== null
+          && (typeof parsed.queryHotkey !== 'string' || !validQueryKeys.has(parsed.queryHotkey))
+        ) {
+          parsed.queryHotkey = DEFAULT_SETTINGS.queryHotkey;
+        }
+      }
+      if (typeof parsed.queryExecutable !== 'string') {
+        parsed.queryExecutable = DEFAULT_SETTINGS.queryExecutable;
+      } else {
+        parsed.queryExecutable = parsed.queryExecutable.slice(0, 4096);
+      }
+      if (!Array.isArray(parsed.queryArguments)) {
+        parsed.queryArguments = DEFAULT_SETTINGS.queryArguments;
+      } else {
+        parsed.queryArguments = parsed.queryArguments
+          .filter((argument): argument is string => typeof argument === 'string')
+          .map((argument) => argument.slice(0, 4096))
+          .slice(0, 32);
+      }
+      if (
+        typeof parsed.queryTimeoutSeconds !== 'number'
+        || !Number.isInteger(parsed.queryTimeoutSeconds)
+        || parsed.queryTimeoutSeconds < 5
+        || parsed.queryTimeoutSeconds > 300
+      ) {
+        parsed.queryTimeoutSeconds = DEFAULT_SETTINGS.queryTimeoutSeconds;
+      }
+      if (
+        parsed.queryHotkey !== null
+        && parsed.queryHotkey === parsed.transformHoldKey
+      ) {
+        parsed.queryHotkey = null;
+      }
+
       // outputDir feeds a filesystem path on the Rust side — coerce anything
       // non-string back to the default (empty = app-chosen Documents/Murmur).
       if (typeof parsed.outputDir !== 'string') {
@@ -715,6 +778,31 @@ export function loadSettings(): Settings {
 
       if (typeof parsed.retainHistory !== 'boolean') {
         parsed.retainHistory = DEFAULT_SETTINGS.retainHistory;
+      }
+      if (typeof parsed.meetingRetainAudio !== 'boolean') {
+        parsed.meetingRetainAudio = DEFAULT_SETTINGS.meetingRetainAudio;
+      }
+      if (
+        typeof parsed.meetingRetentionDays !== 'number'
+        || !Number.isFinite(parsed.meetingRetentionDays)
+      ) {
+        parsed.meetingRetentionDays = DEFAULT_SETTINGS.meetingRetentionDays;
+      } else {
+        parsed.meetingRetentionDays = Math.max(
+          0,
+          Math.min(3650, Math.trunc(parsed.meetingRetentionDays)),
+        );
+      }
+      if (
+        typeof parsed.meetingMaxSessions !== 'number'
+        || !Number.isFinite(parsed.meetingMaxSessions)
+      ) {
+        parsed.meetingMaxSessions = DEFAULT_SETTINGS.meetingMaxSessions;
+      } else {
+        parsed.meetingMaxSessions = Math.max(
+          1,
+          Math.min(10_000, Math.trunc(parsed.meetingMaxSessions)),
+        );
       }
 
       // autoStopSilenceMs ends a recording on its own, so an unrecognised or

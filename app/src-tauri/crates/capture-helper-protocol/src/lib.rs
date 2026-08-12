@@ -13,7 +13,7 @@ pub const SYNTHETIC_FIXTURE_DIGEST: &str =
 // Production capture uses a separate, binary-framed protocol. Probe v1 above
 // remains stable so shipped attribution/recovery evidence stays readable.
 pub const PRODUCTION_PROTOCOL_NAME: &str = "murmur.capture";
-pub const PRODUCTION_PROTOCOL_VERSION: u16 = 3;
+pub const PRODUCTION_PROTOCOL_VERSION: u16 = 4;
 pub const PRODUCTION_MAGIC: [u8; 4] = *b"MRMR";
 pub const PRODUCTION_HEADER_BYTES: usize = 36;
 pub const MAX_CONTROL_BYTES: usize = 16 * 1024;
@@ -25,6 +25,33 @@ pub type SessionNonce = [u8; 16];
 pub enum CaptureBackend {
     Cpal,
     Auhal,
+}
+
+/// Physical source carried by a production PCM frame. Dictation emits only
+/// `Microphone`; meeting capture keeps microphone and system output separate
+/// all the way to durable storage.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub enum CaptureChannel {
+    Microphone,
+    System,
+}
+
+impl CaptureChannel {
+    fn wire_value(self) -> u8 {
+        match self {
+            Self::Microphone => 1,
+            Self::System => 2,
+        }
+    }
+
+    fn from_wire(value: u8) -> Option<Self> {
+        match value {
+            1 => Some(Self::Microphone),
+            2 => Some(Self::System),
+            _ => None,
+        }
+    }
 }
 
 impl CaptureBackend {
@@ -57,6 +84,14 @@ pub enum ProductionHostMessage {
         device_id: Option<String>,
         backend: CaptureBackend,
     },
+    StartMeeting {
+        device_id: Option<String>,
+        backend: CaptureBackend,
+    },
+    /// Explicit, user-initiated CATap probe. The host never sends this from a
+    /// focus listener or permission polling loop because creating a tap is the
+    /// permission request on macOS.
+    ProbeSystemAudio,
     Stop,
     Cancel,
 }
@@ -95,6 +130,36 @@ pub enum ProductionHelperMessage {
     Stopped {
         retained_samples: u64,
     },
+    MeetingPhase {
+        phase: CapturePhase,
+        channel: CaptureChannel,
+    },
+    MeetingSetupStep {
+        channel: CaptureChannel,
+        step: CaptureSetupStep,
+        transition: SetupTransition,
+    },
+    SystemAudioPermission {
+        status: SystemAudioPermissionStatus,
+    },
+    MeetingFailure {
+        code: FailureCode,
+        channel: Option<CaptureChannel>,
+        microphone_samples: u64,
+        system_samples: u64,
+    },
+    MeetingStopped {
+        microphone_samples: u64,
+        system_samples: u64,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum SystemAudioPermissionStatus {
+    Granted,
+    Denied,
+    Unsupported,
 }
 
 /// Capture setup steps bracket the native calls the worker makes, so a step
@@ -135,6 +200,10 @@ pub enum CaptureSetupStep {
     StreamBuild,
     StreamStart,
     AwaitingFirstCallback,
+    SystemTapCreate,
+    AggregateDeviceCreate,
+    IoProcCreate,
+    IoProcStart,
 }
 
 impl CaptureSetupStep {
@@ -152,6 +221,10 @@ impl CaptureSetupStep {
             Self::StreamBuild => "stream_build",
             Self::StreamStart => "stream_start",
             Self::AwaitingFirstCallback => "awaiting_first_callback",
+            Self::SystemTapCreate => "system_tap_create",
+            Self::AggregateDeviceCreate => "aggregate_device_create",
+            Self::IoProcCreate => "io_proc_create",
+            Self::IoProcStart => "io_proc_start",
         }
     }
 }
@@ -174,9 +247,24 @@ impl SetupTransition {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProductionPcm {
+    pub channel: CaptureChannel,
     pub sequence: u64,
     pub sample_rate: u32,
+    /// Nanoseconds elapsed on the worker's monotonic clock when the callback
+    /// batch was drained. This orders channels best-effort; their hardware
+    /// clocks are intentionally not presented as sample-accurate peers.
+    pub captured_at_ns: u64,
+    pub sample_offset: u64,
     pub samples: Vec<f32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProductionPcmMetadata {
+    pub channel: CaptureChannel,
+    pub sequence: u64,
+    pub sample_rate: u32,
+    pub captured_at_ns: u64,
+    pub sample_offset: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -199,6 +287,8 @@ pub enum CapturePhase {
 #[serde(rename_all = "camelCase")]
 pub enum FailureCode {
     PermissionDenied,
+    UnsupportedOs,
+    SystemAudioUnavailable,
     NoInputDevice,
     EnumerationFailed,
     ConfigurationFailed,
@@ -402,12 +492,13 @@ pub fn write_frame<T: Serialize>(writer: &mut impl Write, value: &T) -> Result<(
 fn write_production_header(
     writer: &mut impl Write,
     kind: u8,
+    channel: u8,
     payload_len: usize,
     capture_id: u64,
     nonce: SessionNonce,
 ) -> Result<(), FrameError> {
     let limit = if kind == 1 {
-        16 + MAX_PCM_SAMPLES * std::mem::size_of::<f32>()
+        32 + MAX_PCM_SAMPLES * std::mem::size_of::<f32>()
     } else {
         MAX_CONTROL_BYTES
     };
@@ -418,6 +509,7 @@ fn write_production_header(
     header[0..4].copy_from_slice(&PRODUCTION_MAGIC);
     header[4..6].copy_from_slice(&PRODUCTION_PROTOCOL_VERSION.to_le_bytes());
     header[6] = kind;
+    header[7] = channel;
     header[8..12].copy_from_slice(&(payload_len as u32).to_le_bytes());
     header[12..20].copy_from_slice(&capture_id.to_le_bytes());
     header[20..36].copy_from_slice(&nonce);
@@ -433,7 +525,7 @@ pub fn write_production_control<T: Serialize>(
     value: &T,
 ) -> Result<(), FrameError> {
     let body = serde_json::to_vec(value).map_err(|_| FrameError::InvalidJson)?;
-    write_production_header(writer, 0, body.len(), capture_id, nonce)?;
+    write_production_header(writer, 0, 0, body.len(), capture_id, nonce)?;
     writer
         .write_all(&body)
         .and_then(|_| writer.flush())
@@ -444,19 +536,27 @@ pub fn write_production_pcm(
     writer: &mut impl Write,
     capture_id: u64,
     nonce: SessionNonce,
-    sequence: u64,
-    sample_rate: u32,
+    metadata: ProductionPcmMetadata,
     samples: &[f32],
 ) -> Result<(), FrameError> {
     if samples.is_empty() || samples.len() > MAX_PCM_SAMPLES {
         return Err(FrameError::InvalidPcm);
     }
-    let payload_len = 16 + std::mem::size_of_val(samples);
-    write_production_header(writer, 1, payload_len, capture_id, nonce)?;
+    let payload_len = 32 + std::mem::size_of_val(samples);
+    write_production_header(
+        writer,
+        1,
+        metadata.channel.wire_value(),
+        payload_len,
+        capture_id,
+        nonce,
+    )?;
     writer
-        .write_all(&sequence.to_le_bytes())
-        .and_then(|_| writer.write_all(&sample_rate.to_le_bytes()))
+        .write_all(&metadata.sequence.to_le_bytes())
+        .and_then(|_| writer.write_all(&metadata.sample_rate.to_le_bytes()))
         .and_then(|_| writer.write_all(&(samples.len() as u32).to_le_bytes()))
+        .and_then(|_| writer.write_all(&metadata.captured_at_ns.to_le_bytes()))
+        .and_then(|_| writer.write_all(&metadata.sample_offset.to_le_bytes()))
         .map_err(|_| FrameError::WriteFailed)?;
     for sample in samples {
         writer
@@ -477,11 +577,11 @@ pub fn read_production_frame<T: DeserializeOwned>(
         .map_err(|_| FrameError::IncompleteHeader)?;
     if header[0..4] != PRODUCTION_MAGIC
         || u16::from_le_bytes([header[4], header[5]]) != PRODUCTION_PROTOCOL_VERSION
-        || header[7] != 0
     {
         return Err(FrameError::InvalidHeader);
     }
     let kind = header[6];
+    let channel = header[7];
     let length = u32::from_le_bytes(header[8..12].try_into().unwrap()) as usize;
     let capture_id = u64::from_le_bytes(header[12..20].try_into().unwrap());
     let nonce: SessionNonce = header[20..36].try_into().unwrap();
@@ -489,7 +589,7 @@ pub fn read_production_frame<T: DeserializeOwned>(
         return Err(FrameError::StaleCapture);
     }
     match kind {
-        0 if length <= MAX_CONTROL_BYTES => {
+        0 if channel == 0 && length <= MAX_CONTROL_BYTES => {
             let mut body = vec![0_u8; length];
             reader
                 .read_exact(&mut body)
@@ -497,7 +597,8 @@ pub fn read_production_frame<T: DeserializeOwned>(
             let value = serde_json::from_slice(&body).map_err(|_| FrameError::InvalidJson)?;
             Ok(ProductionFrame::Control(value))
         }
-        1 if (16..=16 + MAX_PCM_SAMPLES * 4).contains(&length) => {
+        1 if (32..=32 + MAX_PCM_SAMPLES * 4).contains(&length) => {
+            let channel = CaptureChannel::from_wire(channel).ok_or(FrameError::InvalidPcm)?;
             let mut body = vec![0_u8; length];
             reader
                 .read_exact(&mut body)
@@ -505,16 +606,21 @@ pub fn read_production_frame<T: DeserializeOwned>(
             let sequence = u64::from_le_bytes(body[0..8].try_into().unwrap());
             let sample_rate = u32::from_le_bytes(body[8..12].try_into().unwrap());
             let count = u32::from_le_bytes(body[12..16].try_into().unwrap()) as usize;
-            if count == 0 || count > MAX_PCM_SAMPLES || length != 16 + count * 4 {
+            let captured_at_ns = u64::from_le_bytes(body[16..24].try_into().unwrap());
+            let sample_offset = u64::from_le_bytes(body[24..32].try_into().unwrap());
+            if count == 0 || count > MAX_PCM_SAMPLES || length != 32 + count * 4 {
                 return Err(FrameError::InvalidPcm);
             }
-            let samples = body[16..]
+            let samples = body[32..]
                 .chunks_exact(4)
                 .map(|bytes| f32::from_bits(u32::from_le_bytes(bytes.try_into().unwrap())))
                 .collect();
             Ok(ProductionFrame::Pcm(ProductionPcm {
+                channel,
                 sequence,
                 sample_rate,
+                captured_at_ns,
+                sample_offset,
                 samples,
             }))
         }
@@ -566,21 +672,84 @@ mod tests {
     fn production_pcm_round_trip_is_capture_scoped_and_bounded() {
         let nonce = [7_u8; 16];
         let mut bytes = Vec::new();
-        write_production_pcm(&mut bytes, 42, nonce, 3, 48_000, &[0.25, -0.5]).unwrap();
+        write_production_pcm(
+            &mut bytes,
+            42,
+            nonce,
+            ProductionPcmMetadata {
+                channel: CaptureChannel::Microphone,
+                sequence: 3,
+                sample_rate: 48_000,
+                captured_at_ns: 123,
+                sample_offset: 456,
+            },
+            &[0.25, -0.5],
+        )
+        .unwrap();
         let frame =
             read_production_frame::<ProductionHelperMessage>(&mut bytes.as_slice(), 42, nonce)
                 .unwrap();
         assert_eq!(
             frame,
             ProductionFrame::Pcm(ProductionPcm {
+                channel: CaptureChannel::Microphone,
                 sequence: 3,
                 sample_rate: 48_000,
+                captured_at_ns: 123,
+                sample_offset: 456,
                 samples: vec![0.25, -0.5],
             })
         );
         assert!(matches!(
             read_production_frame::<ProductionHelperMessage>(&mut bytes.as_slice(), 43, nonce),
             Err(FrameError::StaleCapture)
+        ));
+    }
+
+    #[test]
+    fn production_v3_and_unknown_pcm_channels_are_rejected() {
+        let nonce = [4_u8; 16];
+        let mut version_mismatch = Vec::new();
+        write_production_control(
+            &mut version_mismatch,
+            9,
+            nonce,
+            &ProductionHostMessage::Hello,
+        )
+        .unwrap();
+        version_mismatch[4..6].copy_from_slice(&3_u16.to_le_bytes());
+        assert!(matches!(
+            read_production_frame::<ProductionHostMessage>(
+                &mut version_mismatch.as_slice(),
+                9,
+                nonce,
+            ),
+            Err(FrameError::InvalidHeader)
+        ));
+
+        let mut invalid_channel = Vec::new();
+        write_production_pcm(
+            &mut invalid_channel,
+            9,
+            nonce,
+            ProductionPcmMetadata {
+                channel: CaptureChannel::System,
+                sequence: 0,
+                sample_rate: 48_000,
+                captured_at_ns: 0,
+                sample_offset: 0,
+            },
+            &[0.0],
+        )
+        .unwrap();
+        invalid_channel[7] = 99;
+        assert!(matches!(
+            read_production_frame::<ProductionHelperMessage>(
+                &mut invalid_channel.as_slice(),
+                9,
+                nonce,
+            ),
+            Err(FrameError::InvalidPcm)
         ));
     }
 

@@ -7,7 +7,10 @@ Microphone enumeration and streaming execute only in the signed
 frame to a capture ID and nonce and rejects stale, malformed, oversized,
 out-of-sequence, or sample-rate-changing input. The worker callback writes mono
 samples into a preallocated SPSC ring; the parent retains PCM before declaring
-readiness and calculates waveform levels locally.
+readiness and calculates waveform levels locally. The Settings microphone
+preview is the deliberate exception to PCM retention: it reaches readiness on
+valid first PCM, aggregates only content-free RMS/peak values, and immediately
+discards the samples.
 
 Direct AUHAL is the primary backend and CPAL is the independent fallback. A
 single fallback is allowed only before any audio is retained and must target the
@@ -56,6 +59,11 @@ Transcription processing is local. Network access occurs for model setup and may
   that generation's publication gate and requests stop, but ownership remains
   in `Recovering` until the worker exits and is joined. Rapid retries therefore
   cannot create overlapping in-process CoreAudio owners.
+- The Settings test uses a first-class `Preview(preview_id)` owner. It is
+  mutually exclusive with dictation, transform/query/corpus capture, and
+  benchmarks, clears only after joined-worker `Idle`, and emits only targeted
+  `microphone-preview-*` events. It never emits the global dictation
+  `audio-level` stream. See [Microphone Input Test](microphone-input-test.md).
 - Dictation start returns after ownership is accepted, without waiting for
   Core Audio. The helper reports device enumeration, stream construction,
   first-buffer wait, active capture, stop, runtime failure, and exit events back
@@ -194,7 +202,7 @@ raw transcript → cleanup → voice commands → Smart Correction (explicit ali
 
 Each stage receives immutable session/source metadata plus privacy-safe enablement flags and produces privacy-safe execution metadata (`duration_us`, changed/not-changed, outcome, and required/optional failure policy). Structured stage logs never include transcript text, model/language settings, app/profile values, custom replacement values, correction vocabulary, package/script names, or project paths.
 
-Cleanup, voice commands, Smart Formatting, Spoken Structure, spoken numbers, IDE context, and CLI formatting are required deterministic stages when enabled. Smart Correction is optional-fallback: a future recoverable correction failure leaves the preceding text intact. Explicit vocabulary aliases outrank enabled replacement knowledge; knowledge then uses project/app/global scope and repository provenance precedence before derived and fuzzy vocabulary. The compiled matcher is captured at recording start and never queries SQLite in the stage. Smart Formatting is live-only and opt-in, fails closed outside its bounded prose grammar, and skips any utterance owned by the CLI grammar. Spoken Structure is live-only, applies the immutable Off/Basic/Extended/Union policy, and owns punctuation, layout, symbols, and `scratch that`. Spoken-number rendering is live-only and enabled by default outside the explicit Verbatim profile; it runs after Spoken Structure so fractions receive numeric separators while list ordinals remain authoritative. Explicit IDE opt-in bypasses Smart Formatting, then applies only the matching profile's fresh memory-only project index. The final CLI stage remains authoritative, uses conservative prefix/trigger/profile activation, and returns non-command prose byte-for-byte unchanged. Imported-file transcription invokes the same entry point with every stage disabled so its existing raw-ASR output remains unchanged.
+Cleanup, voice commands, Smart Formatting, Spoken Structure, spoken numbers, IDE context, and CLI formatting are required deterministic stages when enabled. Smart Correction is optional-fallback: a future recoverable correction failure leaves the preceding text intact. Explicit vocabulary aliases outrank enabled replacement knowledge; knowledge then uses project/app/global scope and repository provenance precedence before derived and fuzzy vocabulary. A bounded built-in homophone rule resolves `Maine`/`me` to the Git branch name `main` only when nearby branch or version-control language establishes that meaning, with geographic cues failing closed. The compiled matcher is captured at recording start and never queries SQLite in the stage. Smart Formatting is live-only and opt-in, fails closed outside its bounded prose grammar, and skips any utterance owned by the CLI grammar. Spoken Structure is live-only, applies the immutable Off/Basic/Extended/Union policy, and owns punctuation, layout, symbols, and `scratch that`. Spoken-number rendering is live-only and enabled by default outside the explicit Verbatim profile; it runs after Spoken Structure so fractions receive numeric separators while list ordinals remain authoritative. Explicit IDE opt-in bypasses Smart Formatting, then applies only the matching profile's fresh memory-only project index. The final CLI stage remains authoritative, uses conservative prefix/trigger/profile activation, and returns non-command prose byte-for-byte unchanged. Imported-file transcription invokes the same entry point with every stage disabled so its existing raw-ASR output remains unchanged.
 
 The pipeline result can compare its original and final strings in memory for tests and diagnostics, but only privacy-safe stage metadata is logged. Only the final string reaches optional file output, clipboard/paste, history, and stats; delivery remains final-only and happens once.
 

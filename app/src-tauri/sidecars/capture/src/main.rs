@@ -1,5 +1,7 @@
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod production;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+mod system_audio;
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod supported {
@@ -55,7 +57,7 @@ mod supported {
         config: &cpal::SupportedStreamConfig,
         state: &Arc<CallbackState>,
     ) -> Result<Stream, FailureCode> {
-        let stream_config: StreamConfig = config.clone().into();
+        let stream_config: StreamConfig = (*config).into();
         macro_rules! build {
             ($sample:ty) => {{
                 let callback_state = Arc::clone(state);
@@ -385,7 +387,7 @@ fn main() {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
         let arguments = std::env::args().skip(1).collect::<Vec<_>>();
-        if arguments.first().map(String::as_str) == Some("--production-v3") {
+        if arguments.first().map(String::as_str) == Some("--production-v4") {
             if production::run(&arguments[1..]).is_ok() {
                 return;
             }

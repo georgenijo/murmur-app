@@ -55,18 +55,19 @@ class CaptureWorkerSmokeTests(unittest.TestCase):
             import struct
             import sys
 
+            assert sys.argv[1] == "--production-v4"
             capture_id = int(sys.argv[2])
             nonce = bytes.fromhex(sys.argv[3])
 
             def read_frame():
                 header = sys.stdin.buffer.read(36)
                 magic, version, kind, reserved, length, actual_id, actual_nonce = struct.unpack("<4sHBBIQ16s", header)
-                assert (magic, version, kind, reserved, actual_id, actual_nonce) == (b"MRMR", 3, 0, 0, capture_id, nonce)
+                assert (magic, version, kind, reserved, actual_id, actual_nonce) == (b"MRMR", 4, 0, 0, capture_id, nonce)
                 return json.loads(sys.stdin.buffer.read(length))
 
             def write_frame(message):
                 body = json.dumps(message, separators=(",", ":")).encode()
-                sys.stdout.buffer.write(struct.pack("<4sHBBIQ16s", b"MRMR", 3, 0, 0, len(body), capture_id, nonce) + body)
+                sys.stdout.buffer.write(struct.pack("<4sHBBIQ16s", b"MRMR", 4, 0, 0, len(body), capture_id, nonce) + body)
                 sys.stdout.buffer.flush()
 
             assert read_frame() == {"type": "hello"}

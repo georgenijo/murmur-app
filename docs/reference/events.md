@@ -11,6 +11,9 @@ For commands see [commands.md](commands.md). For the hooks that consume these ev
 | Event | Payload | Source | When it fires | Listeners |
 |-------|---------|--------|---------------|-----------|
 | `audio-level` | `f32` (RMS 0.0–1.0) | `audio.rs` | Continuously during capture, throttled to ~60fps (16ms minimum gap). | Overlay (`useWaveform`), main window (`useRecordingState`). |
+| `microphone-preview-level` | `{previewId, rms, peak, classification}` | `audio.rs` | Targeted to the main window at display rate while the exact Preview owner is active. Samples are aggregated between emissions; classification is `no_signal`, `too_quiet`, `signal_detected`, or `clipping`. Preview never emits `audio-level`. | Settings (`MicrophoneInputTest`, requestAnimationFrame direct DOM updates). |
+| `microphone-preview-vad` | `{previewId, sensitivity, decision}` | `microphone_preview.rs` | When the actual Silero VAD decision changes for the exact Preview generation. A bounded trailing window is analyzed off the capture thread at most every 400 ms. Decision is `speech_detected`, `no_speech`, or `unavailable`; results from older slider revisions are discarded. | Settings (`MicrophoneInputTest`). |
+| `microphone-preview-status` | `{previewId, state, stillConnecting, errorKind, message}` | `commands/microphone_preview.rs` | On generation-aware preview transitions: connecting, active, stopping, error, and joined-worker idle. Terminal errors retain a message with null ownership. | Settings (`MicrophoneInputTest`). |
 | `recording-status-changed` | `string` — `"idle"` \| `"starting"` \| `"recording"` \| `"recovering"` \| `"processing"` | `commands/recording.rs` | Every dictation state transition. Suppressed when the recording has been superseded by a newer generation. | Main window (`useRecordingState`), overlay (visual state). |
 | `audio-initialization-stalled` | `{recordingId}` | `commands/recording.rs` | The current generation has spent 5 seconds in `Starting`; this is informational, not failure. | Overlay slow-connecting cue. |
 | `audio-recovery-started` | `{recordingId, reason}` | `commands/recording.rs` | A starting/recording owner was cancelled, including when the 30-second hard deadline begins recovery. The app reports `recovering` and retains exclusive logical ownership until its worker exits, then returns to `idle`. A hard deadline also emits the failure event below. | Overlay recovering cue and diagnostics. |
@@ -22,6 +25,19 @@ For commands see [commands.md](commands.md). For the hooks that consume these ev
 | `auto-paste-failed` | `string` (hint) | `commands/recording.rs` via `injector.rs` | Auto-paste failed or timed out. The text is already on the clipboard. | Main window (`useRecordingState`, shown for 5s). |
 | `file-output-failed` | `string` (hint) | `commands/recording.rs` | Saving the transcript/audio file failed; clipboard delivery still happened. | Main window. |
 | `file-transcription-status-changed` | `boolean` | `commands/recording.rs` | `true` when an imported-file transcription starts, `false` when it finishes or aborts. Gates dictation and transform. | Main window (`useFileTranscription`). |
+
+## Meeting capture
+
+Meeting transcript text is carried only by the targeted finalized-segment UI
+event and local SQLite reads. Structured meeting logs are independently
+sanitized, and the fleet log shipper drops the entire `meeting` stream.
+
+| Event | Payload | Source | When it fires | Listeners |
+|-------|---------|--------|---------------|-----------|
+| `meeting-status-changed` | `MeetingRuntimeStatus {generation, sessionId, phase, elapsedMs, microphoneActive, systemAudioActive, errorCode}` | `meeting_capture.rs` | On start/setup/channel-ready/stop/processing/failure transitions. Contains no transcript or path. | Main (`useMeetings`), overlay (distinct meeting state). |
+| `meeting-segment-finalized` | `MeetingSegment` | `meeting_capture.rs` | After a pending chunk transcribes and its final segment transaction commits. | Main (`useMeetings` bounded live transcript). |
+| `meeting-segment-failed` | `{sessionId, segmentId, errorCode}` | `meeting_capture.rs` | A durable pending chunk could not be read or transcribed and transitioned to failed. Contains no text/path. | Main (`useMeetings` actionable warning). |
+| `system-audio-permission-changed` | `"unknown" \| "granted" \| "denied" \| "unsupported"` | `commands/meeting.rs` | After the user explicitly runs the short-lived permission probe. | Main permission banner and `useMeetings`. |
 
 ## Models
 
@@ -41,6 +57,7 @@ For commands see [commands.md](commands.md). For the hooks that consume these ev
 | `hotkey-tap-rejected` | `{reason: "second_tap_expired", mode: "double_tap" \| "both"}` | `keyboard.rs` | An idle first tap is not followed by a second within 400ms. Never for holds, combos, processing skips, or valid double-taps. | Overlay — amber timing-miss flash, only when `hotkeyMissFeedback` is on. |
 | `keyboard-listener-error` | `string` | `keyboard.rs` | The rdev listener thread errors. | All three recording hooks; they wait 2s and restart the listener. |
 | `app-disabled-changed` | `boolean` | `commands/keyboard.rs` | Global disable toggled from the tray or the overlay's power button. | Main window, overlay (`useOverlayRuntime`). |
+| `query-toggle` | `{queryPassId, action: "start" \| "stop"}` | `keyboard.rs` | A dedicated query-key double-tap starts a pass, or its next single tap stops capture. There is no spoken-keyword trigger. | Main window (`useQueryFlow`). |
 
 **Dead listener:** `useCombinedToggle` registers `hold-down-cancel`, which nothing emits. In Both mode an unpromoted tap emits nothing at all, because no recording was ever started.
 
@@ -58,7 +75,18 @@ All transform events carry a `transformPassId` where a pass exists, so a delayed
 | `transform-secure-field` | `()` | `transform_flow.rs` | Capture refused because the focused element is (or cannot be proven not to be) a secure field. No content is shown. | Overlay flash only. |
 | `transform-capture-failed` | `()` | `transform_flow.rs` | The isolated audio worker interrupted a selected-text transform. The backend clears the active transform pass and returns to idle before emitting. | No current frontend listener; retained as a backend failure notification contract. |
 | `transform-apply-failed` | `string` (stable error code) | `transform_apply.rs` | Apply or undo write-back failed. | Popover — surfaces the failure inline while keeping Undo available. |
-| `escape-cancel` | `{transformPassId}` | `keyboard.rs` | Escape pressed during Capturing / Connecting / Listening / Thinking, or the brief ReviewPending window before the popover is focusable. Snapshots the pass ID at press time. | Main window (`useEscapeCancel`) → scoped `cancel_transform`. |
+| `escape-cancel` | `{transformPassId, queryPassId}` | `keyboard.rs` | Escape snapshots the active transform first, otherwise the active query, otherwise dictation. Exact pass IDs prevent delayed cancellation from reaching a newer flow. | Main window (`useEscapeCancel`) routes to scoped cancellation. |
+
+## Voice Query
+
+Query content never appears in broadcast events. Only the dedicated review webview receives answer chunks.
+
+| Event | Payload | Source | When it fires | Listeners |
+|-------|---------|--------|---------------|-----------|
+| `query-state-changed` | `{queryPassId, state, errorCode}` | `query_flow.rs` | Every content-free state transition: connecting, listening, transcribing, running, ready, or failed. | Query popover (`useQueryReviewDriver`). |
+| `query-answer-chunk` | `{queryPassId, sequence, text}` | `query_flow.rs` | A contiguous decoded stdout chunk is accepted within the 256 KiB cap. Targeted with `emit_to("query-review", …)`, never broadcast. | Query popover only. |
+| `query-review-hidden` | `()` | `query_flow.rs` | Exact-pass cancellation/close completes and the popover is hidden. | Main window and query popover. |
+| `query-busy` | `()` | `keyboard.rs`, `query_flow.rs` | A query press is refused because another pass or pipeline owner is active. | Reserved for UI feedback. |
 
 ## Overlay
 
@@ -81,7 +109,7 @@ All transform events carry a `transformPassId` where a pass exists, so a delayed
 
 | Event | Payload | Source | When it fires | Listeners |
 |-------|---------|--------|---------------|-----------|
-| `app-event` | `AppEvent` | `telemetry.rs` (`TauriEmitterLayer`) | For **every** `tracing` event in the Rust backend. | Log viewer (`useEventStore`). Release `pipeline` strings are stripped; `transform` strings are restricted by key **and** value to an explicit stable vocabulary in all builds. |
+| `app-event` | `AppEvent` | `telemetry.rs` (`TauriEmitterLayer`) | For **every** `tracing` event in the Rust backend. | Log viewer (`useEventStore`). Release `pipeline` strings are stripped; `transform` and `meeting` strings are restricted by key **and** value to explicit stable vocabularies in all builds. |
 
 Transcript stage telemetry uses the versioned stage vocabulary from
 `PerformanceStageV1`, including `spokenStructure`. It carries only stage
@@ -123,7 +151,7 @@ interface AppEvent {
                                   // high-value outcomes may include allowlisted event_code
 }
 
-type StreamName = 'pipeline' | 'audio' | 'keyboard' | 'transform' | 'system';
+type StreamName = 'pipeline' | 'audio' | 'keyboard' | 'transform' | 'meeting' | 'query' | 'system';
 type LevelName  = 'trace' | 'debug' | 'info' | 'warn' | 'error';
 ```
 

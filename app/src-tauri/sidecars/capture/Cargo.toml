@@ -9,9 +9,15 @@ cpal = "=0.18.1"
 murmur-capture-helper-protocol = { path = "../../crates/capture-helper-protocol" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
 libc = "0.2"
 coreaudio-rs = "0.11.3"
 core-foundation-sys = "0.8"
+objc2 = "0.6"
+objc2-core-audio = "0.3"
+objc2-core-audio-types = { version = "0.3", features = ["CoreAudioBaseTypes"] }
+objc2-core-foundation = { version = "0.3", features = ["CFArray", "CFDictionary", "CFString"] }
+objc2-foundation = { version = "0.3", features = ["NSArray", "NSString", "NSUUID", "NSValue"] }
 
 [dev-dependencies]
 loom = "0.7.2"

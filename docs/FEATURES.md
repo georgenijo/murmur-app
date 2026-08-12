@@ -1,11 +1,12 @@
 # Murmur — Feature Map
 
-Production microphone capture is isolated in a signed, killable helper. Strict
-capture-scoped framing, bounded CPAL-to-AUHAL fallback, and interrupted-prefix
+Production audio capture is isolated in a signed, killable helper. Strict
+capture-scoped framing, bounded callback rings, and interrupted-prefix
 transcription keep the app responsive without discarding already-delivered
-speech. See [Transcription](features/transcription.md).
+speech. See [Transcription](features/transcription.md) and
+[Meeting Capture](features/meeting-capture.md).
 
-Current as of **v0.21.3**. This is the breadth-first inventory of what ships; each area links to its detailed feature doc. For system structure see [ARCHITECTURE.md](ARCHITECTURE.md).
+Current as of **v0.30.1**. This is the breadth-first inventory of what ships; each area links to its detailed feature doc. For system structure see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ---
 
@@ -14,7 +15,7 @@ Current as of **v0.21.3**. This is the breadth-first inventory of what ships; ea
 **[docs/features/transcription.md](features/transcription.md)**
 
 - Hold a key, speak, release — text lands on the clipboard and (optionally) pastes into the focused app.
-- Fully offline. No cloud calls, no API keys, no telemetry leaving the machine.
+- Murmur's dictation pipeline is fully offline: no cloud calls or API keys. Release builds send only privacy-stripped diagnostic metadata—never audio or text.
 - Seven models across three local engines, all from one catalog (see [Models](#3-models-and-runtime)).
 - One final-after-stop transcription path for every backend. Delivery happens exactly once.
 - Recordings under 0.3s are discarded as phantom triggers.
@@ -45,6 +46,19 @@ Current as of **v0.21.3**. This is the breadth-first inventory of what ships; ea
 - Opt-in hands-free finish for toggle-started recordings: 1.5s / 2.5s / 4s of trailing quiet ends the recording.
 - Applies to any recording **not started by holding the trigger key** — double-tap, the main-window button, the overlay click, and locked mode, in every recording mode. While the key is physically held, the release owns the stop.
 - Arms only after it has heard speech, and its threshold only ever rises above an absolute floor — on a quiet mic it does nothing rather than cutting you off. Stopping manually always still works.
+
+### Meeting Capture — [features/meeting-capture.md](features/meeting-capture.md)
+
+- Explicit long-form sessions capture microphone as **Me** and Mac playback as
+  **Them** on separate native channels; no diarization or cloud processing.
+- VAD-sized chunks transcribe incrementally through the selected shared model,
+  with a distinct meeting overlay and mutual exclusion from dictation,
+  transforms, imported files, corpus capture, and benchmarks.
+- Searchable sessions and segments are durable in SQLite. Chunk WAVs are
+  fsynced before pending rows and deleted only after transcript commit unless
+  audio retention is enabled.
+- Requires macOS 14.2+ and optional System Audio permission. The tap exists only
+  during an explicit permission check or active meeting.
 
 ---
 
@@ -137,7 +151,20 @@ Hold a dedicated key with text selected in any app, speak an instruction, review
 
 ---
 
-## 6. Interface
+## 6. Voice query
+
+**[docs/features/voice-query.md](features/voice-query.md)**
+
+Double-tap a dedicated key, ask a question, and stream an answer from an explicitly configured CLI into a popover.
+
+- Opt-in with no default executable and explicit warning that the chosen CLI may use cloud services.
+- Local ASR; the transcript is one literal final argv element passed through direct process spawn with no shell or interpolation.
+- Owned process group with confirmed termination on cancel, timeout, Escape, and app exit.
+- Question and answer content stay out of telemetry, history, stats, and file output. The completed answer is copied but never auto-pasted.
+
+---
+
+## 7. Interface
 
 ### Main window
 A single-line header combines app status, the configured hotkey hint, recording
@@ -148,7 +175,10 @@ drag-and-drop, the command palette, and the history overflow menu; queued jobs
 appear as cancelable bottom-right toasts.
 
 ### History workspace — [features/history-workspace.md](features/history-workspace.md)
-Search with match highlighting (tokens are ANDed) and Mic/File filters over a rolling 200-entry history. Export exactly what is on screen as Markdown, plain text, or JSON — to the clipboard or, through a validated extension-allow-listed atomic write, to a file. Teaching context is never exported.
+The Transcripts tab provides match highlighting and Mic/File filters over a
+rolling 200-entry history. The Meetings tab lists and searches durable Me/Them
+sessions, supports copy/text export, and deletes one or all sessions locally.
+Teaching context is never exported.
 
 ### Command palette — [features/command-palette.md](features/command-palette.md)
 `⌘K` opens a keyboard-first launcher for every settings page and the common main-window actions, with deterministic tiered ranking. `⌘F` focuses transcript search, `⌘,` opens Settings, `⌘L` opens Settings → Performance.
@@ -164,6 +194,11 @@ vocabulary, knowledge, commands, and selected-text transforms), and **App**
 disclosures. Vocabulary, aliases, knowledge, transforms, voice commands, and
 project scan share one six-tab editor window.
 
+Dictation Settings also includes a local-only
+[live microphone input test](features/microphone-input-test.md) with RMS/peak
+metering, quiet/clipping guidance, automatic pause/resume around dictation,
+exact device switching, and no retained PCM.
+
 ### Appearance — [features/appearance.md](features/appearance.md)
 Local System/Light/Dark appearance with accessible custom accent, background, foreground, and contrast controls. The main window owns the revisioned local document and native title-bar appearance; the transparent overlay and transform review remain unsynchronized always-dark glass. Import/export is bounded, atomic, UTF-8 JSON and never touches the clipboard.
 
@@ -173,9 +208,9 @@ tokens, compact control primitives, and transcript-card invariants keep the
 eight redesigned surfaces visually consistent as features evolve.
 
 ### Onboarding — [features/onboarding-flow.md](features/onboarding-flow.md)
-First-launch wizard: Welcome → Microphone → Accessibility → Model download →
-Hotkey → Done. The mic step fires the native macOS prompt in-app; both permission
-steps poll live so a grant made in System Settings flips the step on return;
+First-launch wizard: Welcome → Microphone → Accessibility → optional System
+Audio → Model download → Hotkey → Done. The mic step fires the native macOS
+prompt in-app; permission steps update when the user returns from System Settings;
 denied/stale-TCC states get inline reset-and-retry. Already-downloaded models are
 detected and badged. The chosen recording mode and trigger key are saved at
 completion. Existing installs with permissions and a model are grandfathered.
@@ -186,7 +221,7 @@ Static white waveform icon. Menu: Show Murmur, Disable Murmur (check item), Quit
 
 ---
 
-## 7. Diagnostics and evaluation
+## 8. Diagnostics and evaluation
 
 ### Performance workspace — [features/log-viewer.md](features/log-viewer.md)
 Embedded under Settings → Model → Advanced with **Events**, **Runs**,
@@ -217,24 +252,25 @@ Every transform-key hold is recorded as a content-free `TransformAttemptV1` with
 
 ---
 
-## 8. Platform, privacy, distribution
+## 9. Platform, privacy, distribution
 
 - macOS 14+ on Apple Silicon (Core ML/ANE); Whisper and CPU Parakeet also build for Linux.
 - Developer ID signed and notarized; hardened runtime; sidecar ships with split entitlements; release finalization fails closed on any unexpected bundle executable.
 - Release builds use `opt-level = "s"`, LTO off, 16 parallel codegen units, and panic abort; stripping remains disabled so Tauri can patch the updater bundle-type marker.
 - **Auto-updater** — [features/auto-updater.md](features/auto-updater.md). Due-gated checks on launch, every six hours, foreground activation, and macOS wake against `latest-v2.json`; passive homepage/menu-bar availability indicators; ed25519 signatures; required-version enforcement; progress and auto-relaunch.
-- **Privacy boundaries**: release `pipeline` events drop all strings; `transform` events are restricted to an explicit stable vocabulary in *all* builds; knowledge content and selected paths are excluded from logs; instructions never enter history or stats; audio and transcripts are written to disk only when the user turns file output on.
+- **Privacy boundaries**: release `pipeline` events drop all strings; `transform` and `meeting` events are restricted to explicit stable vocabularies in *all* builds; the remote log shipper excludes the entire meeting stream; knowledge content and selected paths are excluded from logs; instructions never enter history or stats. Meeting transcripts always persist locally in SQLite; meeting audio persists only when explicitly retained.
 - All local data is inspectable and deletable from within the app.
 
 ---
 
-## 9. Development surface
+## 10. Development surface
 
 | Area | Location |
 |------|----------|
-| Rust backend | `app/src-tauri/src/` — 110 Tauri commands |
+| Rust backend | `app/src-tauri/src/` — 147 Tauri commands |
 | Frontend | `app/src/` — React 18 + TypeScript + Tailwind 4 |
 | LLM sidecar | `app/src-tauri/sidecars/local-llm/`, protocol in `crates/local-llm-protocol` |
+| Capture worker | `app/src-tauri/sidecars/capture/`, protocol in `crates/capture-helper-protocol` |
 | Diagnostics MCP tool | `tools/murmur-diag/` |
 | Benchmark fixtures | `bench/` |
 | Release/packaging scripts | `scripts/` |

@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 const REFACTOR_TEST_IDENTIFIER: &str = "com.localdictation.refactor-test";
 const BENCH_IDENTIFIER: &str = "com.localdictation.bench";
@@ -160,7 +160,7 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for TauriEmitterLayer 
         let mut visitor = JsonVisitor::new();
         event.record(&mut visitor);
 
-        let summary = visitor.message.unwrap_or_default();
+        let summary = sanitized_summary(&stream, visitor.message);
         let mut data = serde_json::Value::Object(visitor.fields);
 
         sanitize_event_data(&stream, &mut data, cfg!(debug_assertions));
@@ -174,6 +174,11 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for TauriEmitterLayer 
             summary,
             data,
         };
+
+        self.app_handle
+            .state::<crate::State>()
+            .capture_health
+            .observe(&app_event);
 
         // Push to ring buffer
         {
@@ -207,6 +212,7 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "keyboard.listener_silent" => Some("keyboard.listener_silent"),
         "keyboard.listener_failed" => Some("keyboard.listener_failed"),
         "audio.capture_backend_timeout" => Some("audio.capture_backend_timeout"),
+        "audio.capture_started" => Some("audio.capture_started"),
         "audio.fallback_started" => Some("audio.fallback_started"),
         "audio.capture_ready" => Some("audio.capture_ready"),
         "audio.capture_failed" => Some("audio.capture_failed"),
@@ -214,12 +220,29 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "pipeline.dictation_completed" => Some("pipeline.dictation_completed"),
         "pipeline.dictation_failed" => Some("pipeline.dictation_failed"),
         "transform.pass_outcome" => Some("transform.pass_outcome"),
+        "meeting.capture_started" => Some("meeting.capture_started"),
+        "meeting.capture_stopped" => Some("meeting.capture_stopped"),
+        "meeting.capture_failed" => Some("meeting.capture_failed"),
+        "meeting.channel_active" => Some("meeting.channel_active"),
+        "meeting.tap_active" => Some("meeting.tap_active"),
+        "meeting.tap_destroyed" => Some("meeting.tap_destroyed"),
+        "query.pass_state" => Some("query.pass_state"),
         "updater.check_current" => Some("updater.check_current"),
         "updater.check_failed" => Some("updater.check_failed"),
         "updater.install_blocked" => Some("updater.install_blocked"),
         "updater.install_ready" => Some("updater.install_ready"),
         "updater.install_failed" => Some("updater.install_failed"),
         _ => None,
+    }
+}
+
+fn sanitized_summary(stream: &str, summary: Option<String>) -> String {
+    if stream == "meeting" {
+        // Event codes carry the useful lifecycle meaning. Keep the JSONL/UI
+        // summary constant so formatted content cannot leak from a call site.
+        "Meeting event".to_string()
+    } else {
+        summary.unwrap_or_default()
     }
 }
 
@@ -337,8 +360,10 @@ fn is_safe_transform_string(key: &str, value: &str) -> bool {
                 | "dictation_active"
                 | "benchmark_running"
                 | "file_transcribing"
+                | "meeting_active"
                 | "runtime_busy"
                 | "transform_busy"
+                | "query_busy"
                 | "audio_start_failed"
                 | "no_instruction"
                 | "show_failed"
@@ -370,6 +395,59 @@ fn is_safe_transform_string(key: &str, value: &str) -> bool {
     }
 }
 
+fn is_safe_query_string(key: &str, value: &str) -> bool {
+    match key {
+        "event_code" => value == "query.pass_state",
+        "state" => matches!(
+            value,
+            "idle" | "connecting" | "listening" | "transcribing" | "running" | "ready" | "failed"
+        ),
+        "error_code" => matches!(
+            value,
+            "not_configured"
+                | "invalid_executable"
+                | "invalid_arguments"
+                | "invalid_timeout"
+                | "busy"
+                | "audio_start_failed"
+                | "audio_not_ready"
+                | "audio_stalled"
+                | "audio_recovering"
+                | "audio_recovery_stalled"
+                | "no_speech"
+                | "transcription_failed"
+                | "empty_query"
+                | "query_too_large"
+                | "spawn_failed"
+                | "timed_out"
+                | "exit_nonzero"
+                | "empty_answer"
+                | "clipboard_unavailable"
+                | "output_too_large"
+                | "process_failed"
+                | "termination_unconfirmed"
+                | "cancelled"
+        ),
+        _ => false,
+    }
+}
+
+fn is_safe_query_field(key: &str, value: &serde_json::Value) -> bool {
+    match key {
+        "event_code" | "state" => value
+            .as_str()
+            .is_some_and(|value| is_safe_query_string(key, value)),
+        "error_code" => {
+            value.is_null()
+                || value
+                    .as_str()
+                    .is_some_and(|value| is_safe_query_string(key, value))
+        }
+        "query_pass_id" => value.as_u64().is_some(),
+        _ => false,
+    }
+}
+
 fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: bool) {
     let Some(obj) = data.as_object_mut() else {
         return;
@@ -389,6 +467,47 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
             Some(value) => is_safe_transform_string(key, value),
             None => true,
         });
+    } else if stream == "query" {
+        // Query content may contain anything the user can say or an agent can
+        // return. Use an exact key-and-type allowlist, including for structured
+        // values, so future instrumentation cannot accidentally retain it.
+        obj.retain(|key, value| is_safe_query_field(key, value));
+    }
+    if stream == "meeting" {
+        obj.retain(|key, value| match value.as_str() {
+            Some(value) => match key.as_str() {
+                "event_code" => canonical_event_code(value).is_some(),
+                "phase" => matches!(
+                    value,
+                    "idle" | "starting" | "recording" | "stopping" | "processing" | "failed"
+                ),
+                "channel" => matches!(value, "microphone" | "system" | "both" | "none"),
+                "error_code" => matches!(
+                    value,
+                    "unsupported_os"
+                        | "system_audio_permission_denied"
+                        | "microphone_permission_denied"
+                        | "microphone_unavailable"
+                        | "system_audio_unavailable"
+                        | "system_audio_callback_stalled"
+                        | "microphone_callback_stalled"
+                        | "permission_prompt_timeout"
+                        | "capture_setup_timeout"
+                        | "protocol_error"
+                        | "capture_backlog"
+                        | "capture_failed"
+                        | "capture_stop_timeout"
+                        | "supervisor_panicked"
+                        | "termination_unconfirmed"
+                        | "spool_failed"
+                        | "store_unavailable"
+                        | "transcription_failed"
+                        | "none"
+                ),
+                _ => false,
+            },
+            None => true,
+        });
     }
 }
 
@@ -403,6 +522,13 @@ fn jsonl_path() -> Option<std::path::PathBuf> {
         "events.jsonl"
     };
     Some(logs_dir()?.join(name))
+}
+
+pub(crate) fn event_jsonl_paths() -> Vec<PathBuf> {
+    let Some(current) = jsonl_path() else {
+        return Vec::new();
+    };
+    vec![current.with_extension("jsonl.1"), current]
 }
 
 /// Read the last `n` AppEvent entries from the JSONL file to seed the ring buffer.
@@ -710,6 +836,45 @@ mod tests {
     }
 
     #[test]
+    fn query_event_sanitizer_rejects_question_answer_command_and_paths() {
+        let mut data = serde_json::json!({
+            "event_code": "query.pass_state",
+            "query_pass_id": 8,
+            "state": "running",
+            "error_code": "spawn_failed",
+            "question": "SENTINEL_QUESTION ; rm -rf",
+            "answer": "SENTINEL_ANSWER",
+            "command": "/Users/private/bin/agent",
+            "arguments": ["SENTINEL_ARGUMENTS"],
+            "structured_answer": { "content": "SENTINEL_OBJECT" },
+            "unknown_numeric": 42
+        });
+        sanitize_event_data("query", &mut data, true);
+        let encoded = serde_json::to_string(&data).unwrap();
+        assert_eq!(data["event_code"], "query.pass_state");
+        assert_eq!(data["query_pass_id"], 8);
+        assert_eq!(data["state"], "running");
+        assert_eq!(data["error_code"], "spawn_failed");
+        assert!(!encoded.contains("SENTINEL"));
+        assert!(!encoded.contains("/Users/private"));
+        assert!(!encoded.contains("rm -rf"));
+        assert_eq!(data.as_object().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn query_event_sanitizer_allows_a_null_error_code() {
+        let mut data = serde_json::json!({
+            "event_code": "query.pass_state",
+            "query_pass_id": 9,
+            "state": "ready",
+            "error_code": null
+        });
+        sanitize_event_data("query", &mut data, true);
+        assert_eq!(data["error_code"], serde_json::Value::Null);
+        assert_eq!(data.as_object().unwrap().len(), 4);
+    }
+
+    #[test]
     fn release_pipeline_keeps_only_allowlisted_event_codes_from_string_fields() {
         let mut data = serde_json::json!({
             "recording_id": 9,
@@ -730,5 +895,31 @@ mod tests {
         data["event_code"] = serde_json::Value::String("private.content".to_string());
         sanitize_event_data("pipeline", &mut data, false);
         assert!(data.get("event_code").is_none());
+    }
+
+    #[test]
+    fn meeting_event_sanitizer_rejects_transcript_and_audio_paths() {
+        let mut data = serde_json::json!({
+            "generation": 12,
+            "event_code": "meeting.capture_failed",
+            "phase": "failed",
+            "channel": "system",
+            "error_code": "capture_failed",
+            "transcript": "SENTINEL_PRIVATE_TRANSCRIPT",
+            "audio_path": "/Users/private/meeting.wav",
+            "session_id": "private-session-id",
+            "model": "private-model"
+        });
+        sanitize_event_data("meeting", &mut data, true);
+        let encoded = serde_json::to_string(&data).unwrap();
+        assert_eq!(data["generation"], 12);
+        assert_eq!(data["event_code"], "meeting.capture_failed");
+        assert!(!encoded.contains("SENTINEL"));
+        assert!(!encoded.contains("/Users/private"));
+        assert!(!encoded.contains("private-session"));
+        assert!(!encoded.contains("private-model"));
+        let summary = sanitized_summary("meeting", Some("SENTINEL_PRIVATE_TRANSCRIPT".to_string()));
+        assert_eq!(summary, "Meeting event");
+        assert!(!summary.contains("SENTINEL"));
     }
 }

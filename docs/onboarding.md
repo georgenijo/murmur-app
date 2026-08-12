@@ -106,8 +106,9 @@ The app searches these locations in order:
 |------------|-------------|--------------|
 | **Microphone** | Audio capture — dictation and transform instructions | Prompted in-app by the setup assistant |
 | **Accessibility** | All hotkeys (rdev), auto-paste, and transform selection capture / write-back | System Settings > Privacy & Security > Accessibility |
+| **System Audio** (optional, macOS 14.2+) | Meeting playback capture as the Them channel | Explicit check in onboarding or History → Meetings; grant under Privacy & Security > Screen & System Audio Recording |
 
-Under `npm run tauri:dev`, grant both to your *terminal app* — dev builds are
+Under `npm run tauri:dev`, grant these to your *terminal app* — dev builds are
 re-signed on each rebuild, so a grant to the dev binary never sticks.
 
 ## Logs
@@ -137,3 +138,12 @@ Local run history and CPU/memory samples live in `diagnostics/performance.sqlite
 ## Personal knowledge data
 
 Settings → Knowledge stores replacement rules, vocabulary terms, and snippets only on this Mac under the app data directory in `knowledge/knowledge.sqlite3`. Use the Knowledge page to inspect, edit, disable, export, import, or permanently delete this data. Knowledge content and selected file paths are excluded from logs. See [`features/personal-knowledge-store.md`](features/personal-knowledge-store.md) for migration, backup, and recovery behavior.
+
+## Meeting data
+
+History → Meetings stores sessions under the Tauri app-data directory in
+`meetings/meetings.sqlite3`, with crash-recovery chunk WAVs under
+`meetings/audio/`. Audio retention is off by default, and the app deletes each
+WAV only after its transcript commits. Search, export, and permanent deletion
+are available from the Meetings tab. See
+[`features/meeting-capture.md`](features/meeting-capture.md).

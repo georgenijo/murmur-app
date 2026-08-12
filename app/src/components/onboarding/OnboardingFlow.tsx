@@ -13,10 +13,16 @@ import { getModelRuntimeCatalog } from '../../lib/modelRuntime';
 import { DOWNLOAD_MODEL_KEYS, ModelDownloadPanel } from '../ModelDownloader';
 import { WindowHeader } from '../ui/WindowHeader';
 import type { DoubleTapKey, ModelOption, RecordingMode } from '../../lib/settings';
+import {
+  getSystemAudioPermissionStatus,
+  openSystemAudioPreferences,
+  requestSystemAudioPermission,
+  type SystemAudioPermissionState,
+} from '../../lib/meetings';
 
-type Step = 'welcome' | 'microphone' | 'accessibility' | 'model' | 'hotkey' | 'done';
+type Step = 'welcome' | 'microphone' | 'accessibility' | 'systemAudio' | 'model' | 'hotkey' | 'done';
 
-const STEP_ORDER: Step[] = ['welcome', 'microphone', 'accessibility', 'model', 'hotkey', 'done'];
+const STEP_ORDER: Step[] = ['welcome', 'microphone', 'accessibility', 'systemAudio', 'model', 'hotkey', 'done'];
 
 const KEY_LABELS: Record<DoubleTapKey, string> = {
   shift_l: 'Left Shift',
@@ -57,6 +63,9 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   const [axGranted, setAxGranted] = useState<boolean | null>(null);
   const [axRequested, setAxRequested] = useState(false);
   const [axError, setAxError] = useState<string | null>(null);
+  const [systemAudioStatus, setSystemAudioStatus] = useState<SystemAudioPermissionState>('unknown');
+  const [systemAudioBusy, setSystemAudioBusy] = useState(false);
+  const [systemAudioError, setSystemAudioError] = useState<string | null>(null);
   // Per-model on-disk status for every option the download panel offers.
   // null = not probed yet; the model step shows a spinner-less blank until known.
   const [installedModels, setInstalledModels] = useState<Partial<Record<ModelOption, boolean>> | null>(null);
@@ -132,6 +141,11 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
     return () => {
       stale = true;
     };
+  }, [step]);
+
+  useEffect(() => {
+    if (step !== 'systemAudio') return;
+    void getSystemAudioPermissionStatus().then(setSystemAudioStatus).catch(() => {});
   }, [step]);
 
   // If the settings model is missing but another offered model is on disk,
@@ -215,6 +229,18 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
     }
   };
 
+  const handleRequestSystemAudio = async () => {
+    setSystemAudioError(null);
+    setSystemAudioBusy(true);
+    try {
+      setSystemAudioStatus(await requestSystemAudioPermission());
+    } catch (error) {
+      setSystemAudioError(typeof error === 'string' ? error : 'Could not check System Audio access.');
+    } finally {
+      setSystemAudioBusy(false);
+    }
+  };
+
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background font-[-apple-system,BlinkMacSystemFont,'Segoe_UI',Roboto,sans-serif]">
       <WindowHeader />
@@ -273,8 +299,8 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
               your audio never leaves this machine.
             </p>
             <p className="mx-auto mb-8 max-w-md text-sm leading-relaxed text-on-surface-variant">
-              Setup takes about a minute: two macOS permissions and a one-time
-              model download, then your recording shortcut.
+              Setup takes about a minute: core macOS permissions, optional System
+              Audio access for meetings, and a one-time model download.
             </p>
             <button
               onClick={goNext}
@@ -404,6 +430,56 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
           </div>
         )}
 
+        {step === 'systemAudio' && (
+          <div>
+            <StepHeading
+              title="System Audio Access"
+              granted={systemAudioStatus === 'granted'}
+              subtitle="Optional for Meetings. It lets Murmur capture Mac playback as Them while your microphone remains Me. The permission check creates a short-lived native audio tap only when you press the button."
+            />
+
+            {systemAudioStatus === 'granted' ? (
+              <GrantedCard label="System Audio access granted" />
+            ) : systemAudioStatus === 'unsupported' ? (
+              <div className="mb-6 rounded-lg border border-warning/30 bg-warning/10 px-4 py-3 text-sm text-warning">
+                Meeting capture requires macOS 14.2 or newer. Dictation is still available.
+              </div>
+            ) : (
+              <div className="mb-6 space-y-3">
+                <button
+                  type="button"
+                  disabled={systemAudioBusy}
+                  onClick={() => void handleRequestSystemAudio()}
+                  className="w-full rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-on-primary transition-colors disabled:cursor-wait disabled:opacity-60"
+                >
+                  {systemAudioBusy ? 'Waiting for macOS…' : systemAudioStatus === 'denied' ? 'Re-check System Audio Access' : 'Allow System Audio Access'}
+                </button>
+                <p className="text-center text-xs leading-relaxed text-on-surface-variant">
+                  macOS may show Murmur under Privacy &amp; Security → Screen &amp; System Audio Recording.
+                </p>
+                {systemAudioStatus === 'denied' && (
+                  <button
+                    type="button"
+                    onClick={() => void openSystemAudioPreferences()}
+                    className="w-full rounded-lg border border-error/30 bg-error/10 px-4 py-2 text-sm font-medium text-error"
+                  >
+                    Open System Settings
+                  </button>
+                )}
+              </div>
+            )}
+
+            {systemAudioError && <p className="mb-4 text-xs text-error">{systemAudioError}</p>}
+            <WizardFooter
+              onNext={goNext}
+              nextEnabled={systemAudioStatus === 'granted'}
+              nextLabel="Continue"
+              skippable={systemAudioStatus !== 'granted'}
+              skipLabel="Skip Meetings for now"
+            />
+          </div>
+        )}
+
         {step === 'model' && (
           <div>
             <h1 className="text-xl font-semibold text-on-surface mb-1">
@@ -496,6 +572,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
             <div className="space-y-2 mb-6">
               <SummaryRow ok={micGranted} label="Microphone" okText="Granted" missingText="Not granted — grant later from the in-app banner or Settings" />
               <SummaryRow ok={axGranted === true} label="Accessibility" okText="Granted" missingText="Not granted — the recording key won't work outside the app" />
+              <SummaryRow ok={systemAudioStatus === 'granted'} label="System Audio" okText="Granted for Meetings" missingText="Optional — enable later from Meetings" />
               <SummaryRow ok={modelInstalled === true} label="Model" okText="Installed" missingText="Not verified — the app will ask again if it's missing" />
             </div>
 

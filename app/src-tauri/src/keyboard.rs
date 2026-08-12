@@ -476,6 +476,23 @@ fn schedule_second_tap_expiry(
     });
 }
 
+fn schedule_query_second_tap_expiry(generation: u64, started_at: Instant) {
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(
+            DOUBLE_TAP_WINDOW_MS as u64 + 5,
+        ));
+        if !QUERY_ACTIVE.load(Ordering::SeqCst)
+            || QUERY_GENERATION.load(Ordering::SeqCst) != generation
+        {
+            return;
+        }
+        let mut detector = QUERY_DETECTOR.lock_or_recover();
+        if let Some(detector) = detector.as_mut() {
+            let _ = detector.expire_second_tap_wait(started_at);
+        }
+    });
+}
+
 fn listener_context_matches(mode: DetectorMode, generation: u64) -> bool {
     listener_context_is_current(
         LISTENER_ACTIVE.load(Ordering::SeqCst),
@@ -656,6 +673,12 @@ pub fn set_processing(processing: bool) {
                 d.reset();
             }
         }
+        if let Ok(mut det) = QUERY_DETECTOR.lock() {
+            if let Some(d) = det.as_mut() {
+                d.reset();
+                d.recording = false;
+            }
+        }
     } else if was_processing && !processing {
         // Exiting processing: reset detectors with cooldown so rapid
         // post-processing taps don't immediately toggle.
@@ -743,6 +766,14 @@ static TRANSFORM_HOLD_CONTEXT: Mutex<Option<(u64, Instant)>> = Mutex::new(None);
 /// work even if, hypothetically, it were started before the dictation
 /// listener.
 static TRANSFORM_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+// -- Voice-query hotkey (#538) --
+// Independent double-tap/single-tap detector on the same rdev callback. Query
+// keys share the opposite-side modifier allow-list with Transform, so the
+// command boundary rejects a physical-key collision between the two.
+static QUERY_DETECTOR: Mutex<Option<DoubleTapDetector>> = Mutex::new(None);
+static QUERY_ACTIVE: AtomicBool = AtomicBool::new(false);
+static QUERY_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// Start the keyboard listener. Spawns the rdev listener thread if not already running.
 /// If already running, just updates the target key, mode, and re-enables.
@@ -864,6 +895,7 @@ fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                 // active is enough to keep processing events on this thread.
                 if !LISTENER_ACTIVE.load(Ordering::SeqCst)
                     && !TRANSFORM_ACTIVE.load(Ordering::SeqCst)
+                    && !QUERY_ACTIVE.load(Ordering::SeqCst)
                 {
                     return;
                 }
@@ -912,6 +944,14 @@ fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                             d.last_stopped_at = Some(Instant::now());
                         }
                     }
+                    {
+                        let mut det = QUERY_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
+                        if let Some(d) = det.as_mut() {
+                            d.reset();
+                            d.recording = false;
+                            d.last_fired_at = Some(Instant::now());
+                        }
+                    }
                     let held_transform_pass_id =
                         take_transform_hold_context().map(|(pass_id, elapsed_ms)| {
                             crate::transform_trace::key_stop(pass_id, elapsed_ms, "escape");
@@ -926,6 +966,22 @@ fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                             transform_pass_id,
                         );
                     }
+                    let query_pass_id = if transform_pass_id.is_none() {
+                        let status = state.query.status();
+                        state.query.active_pass_id().filter(|_| {
+                            matches!(
+                                status,
+                                crate::query_flow::QueryStatus::Connecting
+                                    | crate::query_flow::QueryStatus::Listening
+                                    | crate::query_flow::QueryStatus::Transcribing
+                                    | crate::query_flow::QueryStatus::Running
+                                    | crate::query_flow::QueryStatus::Ready
+                                    | crate::query_flow::QueryStatus::Failed
+                            )
+                        })
+                    } else {
+                        None
+                    };
                     // Invalidate pending hold-promotion timers
                     HOLD_PROMOTED.store(false, Ordering::SeqCst);
                     HOLD_PRESS_COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -933,7 +989,10 @@ fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                     tracing::info!(target: "keyboard", "Escape pressed — emitting escape-cancel");
                     let _ = handle.emit(
                         "escape-cancel",
-                        serde_json::json!({ "transformPassId": transform_pass_id }),
+                        serde_json::json!({
+                            "transformPassId": transform_pass_id,
+                            "queryPassId": query_pass_id,
+                        }),
                     );
                     return;
                 }
@@ -1084,6 +1143,58 @@ fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                             }
                         }
                         HoldDownEvent::None => {}
+                    }
+                }
+
+                if QUERY_ACTIVE.load(Ordering::SeqCst) {
+                    let (fired, was_recording, wait_started_at) = {
+                        let mut det = QUERY_DETECTOR.lock_or_recover();
+                        if let Some(detector) = det.as_mut() {
+                            let was_recording = detector.recording;
+                            let previous_wait = detector.second_tap_wait_started_at();
+                            let fired = detector.handle_event(&event.event_type);
+                            let wait_started_at = detector
+                                .second_tap_wait_started_at()
+                                .filter(|started_at| Some(*started_at) != previous_wait);
+                            (fired, was_recording, wait_started_at)
+                        } else {
+                            (false, false, None)
+                        }
+                    };
+                    if let Some(started_at) = wait_started_at {
+                        schedule_query_second_tap_expiry(
+                            QUERY_GENERATION.load(Ordering::SeqCst),
+                            started_at,
+                        );
+                    }
+                    if fired {
+                        let state = handle.state::<crate::State>();
+                        if was_recording {
+                            set_query_recording_state(false);
+                            if let Some(query_pass_id) = state.query.active_pass_id() {
+                                let _ = handle.emit(
+                                    "query-toggle",
+                                    serde_json::json!({
+                                        "queryPassId": query_pass_id,
+                                        "action": "stop",
+                                    }),
+                                );
+                            }
+                        } else if let Some(query_pass_id) = state.query.allocate_keyboard_pass() {
+                            // Own the key immediately, including while the audio
+                            // helper is still connecting. A single tap can then
+                            // cancel before listening begins.
+                            set_query_recording_state(true);
+                            let _ = handle.emit(
+                                "query-toggle",
+                                serde_json::json!({
+                                    "queryPassId": query_pass_id,
+                                    "action": "start",
+                                }),
+                            );
+                        } else {
+                            let _ = handle.emit("query-busy", ());
+                        }
                     }
                 }
 
@@ -1544,6 +1655,22 @@ pub fn set_transform_key(hotkey: &str) -> bool {
     }
 }
 
+pub fn transform_key_conflicts_with_query(hotkey: &str) -> bool {
+    let target = hotkey_to_rdev_key(hotkey);
+    QUERY_DETECTOR
+        .lock_or_recover()
+        .as_ref()
+        .is_some_and(|detector| detector.target_key.is_some() && detector.target_key == target)
+}
+
+pub fn query_key_conflicts_with_transform(hotkey: &str) -> bool {
+    let target = hotkey_to_rdev_key(hotkey);
+    TRANSFORM_DETECTOR
+        .lock_or_recover()
+        .as_ref()
+        .is_some_and(|detector| detector.target_key.is_some() && detector.target_key == target)
+}
+
 /// Consume the current physical transform hold and return its privacy-safe
 /// correlation/timing metadata.
 pub fn take_transform_hold_context() -> Option<(u64, u64)> {
@@ -1558,6 +1685,45 @@ pub fn take_transform_hold_context() -> Option<(u64, u64)> {
 #[cfg(test)]
 pub(crate) fn is_transform_active() -> bool {
     TRANSFORM_ACTIVE.load(Ordering::SeqCst)
+}
+
+pub fn start_query_listener(app_handle: tauri::AppHandle, hotkey: &str) {
+    let target = hotkey_to_rdev_key(hotkey);
+    {
+        let mut detector = QUERY_DETECTOR.lock_or_recover();
+        match detector.as_mut() {
+            Some(detector) => {
+                detector.set_target(target);
+                detector.recording = false;
+            }
+            None => {
+                let mut next = DoubleTapDetector::new();
+                next.set_target(target);
+                *detector = Some(next);
+            }
+        }
+    }
+    QUERY_GENERATION.fetch_add(1, Ordering::SeqCst);
+    QUERY_ACTIVE.store(true, Ordering::SeqCst);
+    ensure_listener_thread_spawned(app_handle);
+}
+
+pub fn stop_query_listener() {
+    QUERY_ACTIVE.store(false, Ordering::SeqCst);
+    QUERY_GENERATION.fetch_add(1, Ordering::SeqCst);
+    let mut detector = QUERY_DETECTOR.lock_or_recover();
+    if let Some(detector) = detector.as_mut() {
+        detector.set_target(None);
+        detector.recording = false;
+        detector.reset();
+    }
+}
+
+pub fn set_query_recording_state(recording: bool) {
+    let mut detector = QUERY_DETECTOR.lock_or_recover();
+    if let Some(detector) = detector.as_mut() {
+        detector.recording = recording;
+    }
 }
 
 #[cfg(test)]

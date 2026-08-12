@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The 115 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
+The 147 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -43,7 +43,39 @@ For Rust → frontend events see [events.md](events.md). For the hooks that call
 | `request_microphone_permission` | — | `Result<(), String>` | Opens the Microphone privacy pane. |
 | `reset_microphone_permission` | — | `Result<(), String>` | Clears a stale microphone TCC entry. |
 | `open_system_preferences` | — | `Result<(), String>` | Opens System Settings to the Microphone pane. |
+| `open_system_audio_preferences` | — | `Result<(), String>` | Opens Privacy & Security → Screen & System Audio Recording. |
 | `list_audio_devices` | — | `Result<Vec<AudioDeviceDescriptor>, String>` | CPAL input descriptors: backend-native stable `id` plus presentation-only `name`. |
+
+## Meeting capture (`commands/meeting.rs`)
+
+| Command | Parameters | Returns | Description |
+|---------|-----------|---------|-------------|
+| `start_meeting` | `request: {deviceName?, retainAudio, retentionDays?, maxSessions}` | `Result<MeetingSession, String>` | Freezes model/language/punctuation and retention policy, prunes configured history, creates the SQLite session, and starts separate microphone/System Audio capture. Refuses every competing audio/model owner. |
+| `stop_meeting` | — | `Result<(), String>` | Requests capture teardown; the worker must destroy the IOProc, aggregate device, and tap before acknowledging. Pending durable chunks continue through serialized inference. |
+| `get_meeting_status` | — | `MeetingRuntimeStatus` | Current generation, session, phase, elapsed time, per-channel activity, and stable failure code. |
+| `get_system_audio_permission_status` | — | `SystemAudioPermissionState` | Returns the cached `unknown` / `granted` / `denied` / `unsupported` state without creating a tap. |
+| `request_system_audio_permission` | — | `Result<SystemAudioPermissionState, String>` | Explicitly creates one short-lived tap probe, then tears it down and emits the resulting permission state. |
+| `get_meeting_store_status` | — | `MeetingStoreStatus` | Store availability, schema version, session count, and pending-segment count. |
+| `list_meetings` | `query?`, `offset?`, `limit?` | `Result<MeetingPage, String>` | Bounded newest-first list; a non-empty query searches finalized transcript text through FTS5. |
+| `get_meeting` | `id` | `Result<MeetingDetail, String>` | One session plus its ordered Me/Them segments. |
+| `get_meeting_export_text` | `id` | `Result<String, String>` | Renders `[MM:SS] Me/Them` plain text for clipboard or validated file export. |
+| `delete_meeting` | `id` | `Result<(), String>` | Deletes one inactive session, its segments/FTS rows, and owned chunk audio. |
+| `delete_all_meetings` | — | `Result<(), String>` | Deletes all sessions and owned chunk audio; refused while a meeting is active. |
+| `prune_meetings` | `retentionDays?`, `maxSessions` | `Result<u64, String>` | Deletes completed/interrupted sessions beyond the bounded age/count policy. |
+
+## Microphone input test (`commands/microphone_preview.rs`)
+
+These commands are gated to the main window. Preview owns the production audio
+supervisor but retains no recording buffer and never enters transcription or
+delivery. Live VAD uses only a bounded rolling in-memory window.
+
+| Command | Parameters | Returns | Description |
+|---------|-----------|---------|-------------|
+| `get_microphone_preview_status` | — | `MicrophonePreviewStatus` | Returns the current generation-aware lifecycle snapshot or retained terminal error. |
+| `start_microphone_preview` | `device_id: String`, `vad_sensitivity: u32` | `Result<MicrophonePreviewStatus, String>` | Claims a monotonic Preview owner with the current live-VAD sensitivity, returns its Connecting status immediately, and starts the selected stable device ID asynchronously so startup can be cancelled. `system_default` is the only value normalized to the live default. Refuses competing capture and benchmark owners. |
+| `update_microphone_preview_vad_sensitivity` | `preview_id: u64`, `vad_sensitivity: u32` | `Result<bool, String>` | Updates only the exact active preview generation, clamps sensitivity to 0–100, and invalidates an in-flight decision from the previous slider value. |
+| `stop_microphone_preview` | `preview_id: u64` | `Result<MicrophonePreviewStatus, String>` | Stops only the exact generation and waits for joined-worker `Idle`; a timeout blocks device reopening. |
+| `cancel_microphone_preview` | `preview_id?: u64` | `Result<bool, String>` | Best-effort exact-owner cleanup for page/window teardown. An omitted ID resolves the active preview before cancellation and is a no-op when none exists. |
 
 ## Optional integrations (`commands/integrations.rs`)
 
@@ -64,6 +96,18 @@ For Rust → frontend events see [events.md](events.md). For the hooks that call
 | `start_transform_listener` | `hotkey: String` | `Result<(), String>` | Arms the independent transform hold key. Rejects the active dictation key. |
 | `stop_transform_listener` | — | `()` | Disarms the transform key. |
 | `set_transform_key` | `hotkey: String` | `Result<(), String>` | Changes the transform key at runtime. |
+| `start_query_listener` | `hotkey: String` | `Result<(), String>` | Arms the independent Voice Query double-tap key on the shared rdev thread. Rejects dictation and transform conflicts. |
+| `stop_query_listener` | — | `()` | Disarms the query key without stopping the shared listener thread. |
+
+## Voice Query (`query_flow.rs`)
+
+| Command | Parameters | Returns | Description |
+|---------|-----------|---------|-------------|
+| `start_query_capture` | `device_name: Option<String>`, `query_pass_id: u64`, `command: QueryCommandConfig` | `Result<(), String>` | Validates the configured executable/fixed argv, freezes local ASR context, and starts query capture for the exact pass. |
+| `finish_query_capture` | `query_pass_id: u64` | `Result<(), String>` | Stops capture, transcribes locally, appends the transcript as one final argv element, and streams bounded stdout to the query popover. |
+| `cancel_query` | `query_pass_id: u64` | `Result<(), String>` | Cancels the exact pass, confirms capture/owned process-group teardown, and hides the popover. Stale IDs no-op. |
+| `copy_query_answer` | `query_pass_id: u64` | `Result<(), String>` | Copies a completed answer. It never pastes into another app. |
+| `get_query_review_content` | — | `QueryReviewContent` | Returns `{queryPassId, answer}` only when invoked by the `query-review` webview; every other window receives empty content. |
 
 ## Selected-text transform (`transform_flow.rs`, `transform_apply.rs`)
 
@@ -176,7 +220,8 @@ frontend.
 | `list_performance_runs` | `limit: Option<u32>` | `Result<PerformanceRunListV1, String>` | Completed runs, newest first (cap 200). |
 | `get_performance_run` | `run_id: String` | `Result<Option<PerformanceRunV1>, String>` | One run with stage timings, warm state, RSS deltas, and transform follow-ups. |
 | `get_performance_resource_window` | — | `Result<Vec<ResourceSampleV1>, String>` | The rolling CPU/memory sample window (cap 600). |
-| `clear_performance_diagnostics` | — | `Result<(), String>` | Deletes local run history and samples; emits `performance-diagnostics-cleared`. |
+| `get_capture_health_history` | — | `CaptureHealthHistoryV1` | The 20 newest finalized dictation startup observations. Each contains only `startupMs`, `usedFallback`, and an optional allowlisted fallback backend enum. |
+| `clear_performance_diagnostics` | — | `Result<(), String>` | Deletes local run history, samples, and capture-startup observations; emits `performance-diagnostics-cleared`. |
 | `show_diagnostics_window` | `tab: String` | `Result<(), String>` | Shows and focuses the persistent Diagnostics window, selecting one of its exact allowlisted tabs. |
 
 ## Logging (`commands/logging.rs`)
@@ -193,17 +238,25 @@ frontend.
 |---------|-----------|---------|-------------|
 | `save_text_export` | `path: String`, `contents: String` | `Result<u64, String>` | Writes a user-authored text export (transcript history today) to a path chosen in the native save dialog, returning bytes written. Refuses relative paths, directories, dotfiles, missing parents, extensions outside `.json`/`.md`/`.txt`, and payloads over 8 MB. The write is atomic (temp sibling, then rename). |
 
-## Settings store (`commands/settings_store.rs`)
+## Durable frontend data store (`commands/settings_store.rs`)
 
-The durable home for the frontend's settings object, in `settings.json` under
-the per-bundle app data directory. The blob is opaque to Rust: only the
-container is checked (bounded, parses as a JSON object), so schema and
-migration rules stay entirely in `lib/settings.ts`.
+The durable home for frontend-owned settings, bounded transcript history, and
+usage statistics under the per-bundle app data directory. Blobs are opaque to
+Rust: only their size and top-level JSON container are checked, so schema and
+migration rules stay in TypeScript. Writes are atomic, serialized, and created
+with owner-only permissions on Unix; rejected files are quarantined locally
+without logging their content.
 
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
 | `load_settings_blob` | — | `Result<Option<String>, String>` | Reads `settings.json`, creating the directory if needed. `None` when the file is absent, or when it was over 1 MiB, not UTF-8, not valid JSON, or not a JSON object — those are renamed to `settings.json.corrupt-<unix-seconds>` and never deleted, so the caller falls back to its localStorage cache. `Err` is reserved for filesystem failures. |
 | `save_settings_blob` | `blob: String` | `Result<(), String>` | Refuses anything over 1 MiB or not a JSON object, then publishes atomically (temp sibling, then rename). Concurrent writers (main and overlay windows) are serialized; a failed write removes the temp file and preserves the previous settings. |
+| `load_history_blob` | — | `Result<Option<String>, String>` | Reads `history.json`. `None` means absent or quarantined; the 8 MiB JSON-array bound is checked before returning content. |
+| `save_history_blob` | `blob: String` | `Result<(), String>` | Atomically publishes a history JSON array up to 8 MiB. |
+| `clear_history_blob` | — | `Result<(), String>` | Idempotently removes `history.json` without touching settings or stats. |
+| `load_stats_blob` | — | `Result<Option<String>, String>` | Reads `stats.json`. `None` means absent or quarantined; the 1 MiB JSON-object bound is checked before returning content. |
+| `save_stats_blob` | `blob: String` | `Result<(), String>` | Atomically publishes a statistics JSON object up to 1 MiB. |
+| `clear_stats_blob` | — | `Result<(), String>` | Idempotently removes `stats.json` without touching settings or history. |
 
 ## Overlay (`commands/overlay.rs`)
 

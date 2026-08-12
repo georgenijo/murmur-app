@@ -1711,7 +1711,11 @@ pub(crate) async fn start_transform_capture(
     // same order (`recording_transition` then `dictation`) as
     // `start_native_recording`, so the two audio paths can't tear each other's
     // recorder down.
-    let _transition = state.app_state.recording_transition.lock().await;
+    let _transition = crate::commands::microphone_preview::transition_after_stopping_preview(
+        &app_handle,
+        state.inner(),
+    )
+    .await?;
 
     let claim_result: Result<(), &'static str> = {
         let dictation = state.app_state.dictation.lock_or_recover();
@@ -1727,6 +1731,9 @@ pub(crate) async fn start_transform_capture(
         } else if state.benchmark.is_running() {
             tracing::info!(target: "transform", transform_pass_id, error_code = "benchmark_running", "start_transform_capture ignored");
             Err("benchmark_running")
+        } else if state.app_state.meeting_blocks_asr() {
+            tracing::info!(target: "transform", transform_pass_id, error_code = "meeting_active", "start_transform_capture ignored");
+            Err("meeting_active")
         } else if corpus_recording_active(&state) {
             tracing::info!(target: "transform", transform_pass_id, error_code = "corpus_recording", "start_transform_capture ignored");
             Err("corpus_recording")
@@ -1740,6 +1747,9 @@ pub(crate) async fn start_transform_capture(
         } else if state.transform_runtime.is_transform_busy() {
             tracing::info!(target: "transform", transform_pass_id, error_code = "runtime_busy", "start_transform_capture ignored");
             Err("runtime_busy")
+        } else if state.query.status().blocks_pipeline() {
+            tracing::info!(target: "transform", transform_pass_id, error_code = "query_busy", "start_transform_capture ignored");
+            Err("query_busy")
         } else {
             // Atomic Idle -> Capturing under the dictation lock.
             claim_transform_start_status(&state.app_state, transform_pass_id)
@@ -2447,7 +2457,11 @@ pub(crate) async fn retry_transform_instruction(
     state: tauri::State<'_, crate::State>,
     device_name: Option<String>,
 ) -> Result<(), String> {
-    let _transition = state.app_state.recording_transition.lock().await;
+    let _transition = crate::commands::microphone_preview::transition_after_stopping_preview(
+        &app_handle,
+        state.inner(),
+    )
+    .await?;
 
     let fx = TauriFlowEffects {
         app: &app_handle,

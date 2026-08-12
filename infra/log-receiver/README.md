@@ -136,21 +136,28 @@ newest 500 readiness samples per install/version cohort and 64 explicit version
 cohorts per install. Further versions collapse into a non-comparable
 `overflow` cohort. It reports:
 
-- `startup_ms` p50 and p95;
+- dictation `startup_ms` p50 and p95;
 - active-budget timeouts split by stable backend and native setup step;
 - fallback and both-backends-failed counts;
-- a histogram of ready recordings per completed, attempted app session.
+- a histogram of ready recordings for the five most recent completed,
+  attempted dictation sessions in each cohort.
 
 `startup_baseline` begins an app session. A session contributes to the
 zero-ready signal only after a later baseline proves it ended and only when it
-contained `audio initialization accepted`; idle launches and the currently open
-session are excluded.
+contained a dictation `audio initialization accepted`; idle launches, transform
+captures, and the currently open session are excluded. Per-session ready counts
+at or above 20 share one capped tail bucket, bounding both memory and report
+cardinality.
 
 An alert is created when the newest comparable version has at least five
-readiness samples and its p50 is more than twice the preceding comparable
-version on the same install, or when one install/version has at least two
-completed attempted sessions with zero ready recordings. Thresholds live in the
-watch script and are fixture-tested.
+dictation readiness samples and its p50 is more than twice the best retained
+earlier eligible cohort on the same install. This baseline remains anchored
+across equally slow later releases. A zero-ready alert is created only for the
+latest version cohort with a completed attempted dictation session when at
+least two of its five most recent attempts had no ready recording; a newer
+healthy cohort supersedes stale failures and later healthy attempts age them
+out. Thresholds live in the watch script and are fixture-tested. The allowlist
+preserves `last_setup_step: "none"` as the explicit pre-native-call state.
 
 ## Tests
 

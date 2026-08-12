@@ -4,6 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { flog } from './lib/log';
 import {
   SettingsPanel,
+  SettingsSurfaceActiveContext,
   SETTINGS_CATEGORIES,
   settingsLatencyView,
 } from './components/settings';
@@ -14,17 +15,19 @@ import { saveHistoryExport } from './lib/historyExport';
 import { PermissionsBanner } from './components/PermissionsBanner';
 import { AboutModal } from './components/AboutModal';
 import { MainHeader } from './components/MainHeader';
-import { TranscriptionView } from './components/TranscriptionView';
+import { TranscriptionView, type HistoryWorkspace } from './components/TranscriptionView';
 import { FooterStats } from './components/FooterStats';
 import { FileTranscriptionToasts } from './components/FileTranscriptionToasts';
 import { useInitialization } from './lib/hooks/useInitialization';
 import { useSettings } from './lib/hooks/useSettings';
 import { useHistoryManagement } from './lib/hooks/useHistoryManagement';
+import { useMeetings } from './lib/hooks/useMeetings';
 import { useFileTranscription } from './lib/hooks/useFileTranscription';
 import { useRecordingState } from './lib/hooks/useRecordingState';
 import { useHoldDownToggle } from './lib/hooks/useHoldDownToggle';
 import { useDoubleTapToggle } from './lib/hooks/useDoubleTapToggle';
 import { useTransformFlow } from './lib/hooks/useTransformFlow';
+import { useQueryFlow } from './lib/hooks/useQueryFlow';
 import { useCombinedToggle } from './lib/hooks/useCombinedToggle';
 import { useShowAboutListener } from './lib/hooks/useShowAboutListener';
 import { useOverlaySettingsSync } from './lib/hooks/useOverlaySettingsSync';
@@ -44,6 +47,7 @@ import { checkAccessibilityPermission, checkMicrophonePermissionStatus, checkMod
 import { getModelRuntimeCatalog } from './lib/modelRuntime';
 import { open } from '@tauri-apps/plugin-dialog';
 import { INTERNAL_BENCHMARK_BUILD } from './lib/buildFlavor';
+import { cancelMicrophonePreview } from './lib/microphonePreview';
 import {
   beginCurrentUiTransition,
   useUiLatencyDestination,
@@ -74,6 +78,7 @@ function App() {
   const [modelReady, setModelReady] = useState<boolean | null>(null);
 
   const { settings, updateSettings, applyExternalSettings, configureError } = useSettings();
+  const meetings = useMeetings(settings);
   const markModelReady = useCallback((downloadedModel: typeof settings.model) => {
     if (downloadedModel !== settings.model) {
       updateSettings({ model: downloadedModel });
@@ -189,6 +194,20 @@ function App() {
     accessibilityGranted,
     transformHoldKey: settings.transformHoldKey,
     microphone: settings.microphone,
+  });
+  useQueryFlow({
+    enabled: hotkeysArmed
+      && settings.queryHotkey !== null
+      && settings.queryExecutable.trim().length > 0,
+    initialized,
+    accessibilityGranted,
+    queryHotkey: settings.queryHotkey,
+    microphone: settings.microphone,
+    command: {
+      executable: settings.queryExecutable,
+      arguments: settings.queryArguments,
+      timeoutSeconds: settings.queryTimeoutSeconds,
+    },
   });
   const { showAbout, setShowAbout } = useShowAboutListener();
   const updater = useAutoUpdater({ automaticChecksEnabled: !INTERNAL_BENCHMARK_BUILD });
@@ -306,6 +325,16 @@ function App() {
   const settingsViewRef = useRef('settings.dictation');
   const settingsActiveRef = useRef(isSettingsOpen);
   settingsActiveRef.current = isSettingsOpen;
+  useEffect(() => {
+    if (isSettingsOpen) return;
+    // Settings is warm-mounted behind the main surface. Explicitly cancel its
+    // capture-only preview whenever that surface is hidden.
+    void cancelMicrophonePreview().catch((error: unknown) => {
+      flog.warn('audio', 'could not cancel hidden microphone preview', {
+        error: String(error),
+      });
+    });
+  }, [isSettingsOpen]);
   const trackSettingsView = useCallback((view: string) => {
     settingsViewRef.current = view;
   }, []);
@@ -330,8 +359,10 @@ function App() {
 
   // Bumped to move focus into the history search box (command palette action).
   const [historySearchToken, setHistorySearchToken] = useState<number | undefined>(undefined);
+  const [historyWorkspace, setHistoryWorkspace] = useState<HistoryWorkspace>('transcripts');
   const focusHistorySearch = useCallback((trigger: UiLatencyTrigger = 'programmatic') => {
     closeSettings(trigger);
+    setHistoryWorkspace('transcripts');
     setHistorySearchToken((token) => (token ?? 0) + 1);
   }, [closeSettings]);
 
@@ -383,9 +414,11 @@ function App() {
 
   const commands = useMemo<PaletteCommand[]>(() => {
     const isRecording = status === 'recording' || status === 'starting';
+    const meetingBusy = !['idle', 'failed'].includes(meetings.status.phase);
+    const meetingCanStop = ['starting', 'recording'].includes(meetings.status.phase);
     const lastEntry = historyEntries[historyEntries.length - 1];
     const items: PaletteCommand[] = [
-      {
+      ...(!meetingBusy ? [{
         id: 'recording-toggle',
         title: status === 'starting'
           ? 'Cancel microphone connection'
@@ -395,6 +428,22 @@ function App() {
         section: 'Recording',
         keywords: ['dictate', 'microphone', 'transcribe'],
         run: () => { void (isRecording ? handleStop() : handleStart()); },
+      }] : []),
+      {
+        id: 'meeting-toggle',
+        title: meetings.status.phase === 'processing' || meetings.status.phase === 'stopping'
+          ? 'Show meeting transcript progress'
+          : meetingCanStop
+            ? 'Stop meeting capture'
+            : 'Start meeting capture',
+        section: 'Meeting',
+        keywords: ['system audio', 'call', 'me', 'them', 'record'],
+        run: () => {
+          closeSettings('programmatic');
+          setHistoryWorkspace('meetings');
+          if (meetings.status.phase === 'processing' || meetings.status.phase === 'stopping') return;
+          void (meetingCanStop ? meetings.stop() : meetings.start());
+        },
       },
       {
         id: 'app-disable-toggle',
@@ -443,7 +492,14 @@ function App() {
         title: 'Show transcription history',
         section: 'Navigation',
         keywords: ['record', 'main'],
-        run: () => closeSettings('programmatic'),
+        run: () => { closeSettings('programmatic'); setHistoryWorkspace('transcripts'); },
+      },
+      {
+        id: 'show-meetings',
+        title: 'Show meeting transcripts',
+        section: 'Navigation',
+        keywords: ['system audio', 'calls', 'me', 'them'],
+        run: () => { closeSettings('programmatic'); setHistoryWorkspace('meetings'); },
       },
       ...SETTINGS_CATEGORIES.map((category) => ({
         id: `settings-${category.id}`,
@@ -485,6 +541,7 @@ function App() {
   }, [
     status, historyEntries, settings.disabled, updateSettings, handleStart, handleStop,
     focusHistorySearch, openSettingsPage, closeSettings, checkForUpdate, setShowAbout, pickAudioFiles,
+    meetings,
   ]);
 
   const error = initError || recordingError;
@@ -534,6 +591,8 @@ function App() {
         settingsOpen={isSettingsOpen}
         mode={isSettingsOpen ? 'settings' : 'main'}
         buildBadge={PERFORMANCE_BUILD_BADGE}
+        meetingPhase={meetings.status.phase}
+        meetingElapsedMs={meetings.status.elapsedMs}
         updateIndicator={!INTERNAL_BENCHMARK_BUILD ? (
           <UpdateIndicator
             status={updateStatus}
@@ -557,6 +616,9 @@ function App() {
             onUpdateHistoryEntry={updateEntry}
             focusSearchToken={historySearchToken}
             onTranscribeFile={pickAudioFiles}
+            workspace={historyWorkspace}
+            onWorkspaceChange={setHistoryWorkspace}
+            meetings={meetings}
           />
 
           {error && (
@@ -588,20 +650,23 @@ function App() {
           {...(!isSettingsOpen ? { inert: '' } : {})}
           className={`ui-persistent-surface absolute inset-0 flex min-h-0 overflow-hidden ${isSettingsOpen ? 'opacity-100' : 'pointer-events-none opacity-0'}`}
         >
-          <SettingsPanel
-            settings={settings}
-            onUpdateSettings={updateSettings}
-            status={status}
-            onResetStats={handleResetStats}
-            onRerunSetup={rerunSetup}
-            accessibilityGranted={accessibilityGranted}
-            onCheckForUpdate={checkForUpdate}
-            updateStatus={updateStatus}
-            configureError={configureError}
-            pageRequest={settingsPageRequest}
-            onLatencyViewChange={trackSettingsView}
-            activeRef={settingsActiveRef}
-          />
+          <SettingsSurfaceActiveContext.Provider value={isSettingsOpen}>
+            <SettingsPanel
+              settings={settings}
+              onUpdateSettings={updateSettings}
+              initialized={initialized}
+              status={status}
+              onResetStats={handleResetStats}
+              onRerunSetup={rerunSetup}
+              accessibilityGranted={accessibilityGranted}
+              onCheckForUpdate={checkForUpdate}
+              updateStatus={updateStatus}
+              configureError={configureError}
+              pageRequest={settingsPageRequest}
+              onLatencyViewChange={trackSettingsView}
+              activeRef={settingsActiveRef}
+            />
+          </SettingsSurfaceActiveContext.Provider>
         </section>
       </div>
 

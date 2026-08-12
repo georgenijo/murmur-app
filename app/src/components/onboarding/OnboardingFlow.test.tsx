@@ -21,6 +21,12 @@ vi.mock('../../lib/modelRuntime', () => ({
   getModelRuntimeCatalog: () => mocks.getModelRuntimeCatalog(),
 }));
 
+vi.mock('../../lib/meetings', () => ({
+  getSystemAudioPermissionStatus: vi.fn().mockResolvedValue('unknown'),
+  openSystemAudioPreferences: vi.fn().mockResolvedValue(undefined),
+  requestSystemAudioPermission: vi.fn().mockResolvedValue('granted'),
+}));
+
 vi.mock('../ModelDownloader', () => ({
   DOWNLOAD_MODEL_KEYS: ['base.en'],
   ModelDownloadPanel: ({
@@ -99,6 +105,9 @@ describe('OnboardingFlow', () => {
     expect(container.textContent).toContain('Accessibility Access');
 
     await clickButton('Continue');
+    expect(container.textContent).toContain('System Audio Access');
+
+    await clickButton('Skip Meetings for now');
     expect(container.textContent).toContain('Transcription Model');
 
     await clickButton('Start model download');

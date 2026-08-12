@@ -2,7 +2,6 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
 import {
-  audioDeviceSelectOptions,
   selectedDeviceExists,
   type AudioDeviceDescriptor,
 } from '../../lib/audioDevices';
@@ -16,7 +15,9 @@ import {
   IDLE_TIMEOUT_OPTIONS,
   LANGUAGE_OPTIONS,
   RECORDING_MODE_OPTIONS,
+  QUERY_KEY_OPTIONS,
   TRANSFORM_KEY_OPTIONS,
+  type QueryKey,
   type RecordingMode,
   type Settings,
   type TransformKey,
@@ -48,6 +49,7 @@ import { INTERNAL_BENCHMARK_BUILD } from '../../lib/buildFlavor';
 import { AppOverridesEditor } from './AppOverridesEditor';
 import { AppearanceSettings } from './AppearanceSettings';
 import { PerformanceLab } from './PerformanceLab';
+import { MicrophoneInputTest } from './MicrophoneInputTest';
 import { SettingsSection } from './SettingsSection';
 import { SettingsEditorsWindow, type SettingsEditorTab } from './SettingsEditorsWindow';
 import {
@@ -119,7 +121,15 @@ function PasteDelaySlider({ value, onCommit }: { value: number; onCommit: (value
   );
 }
 
-function VadSensitivitySlider({ value, onCommit }: { value: number; onCommit: (value: number) => void }) {
+function VadSensitivitySlider({
+  value,
+  onPreview,
+  onCommit,
+}: {
+  value: number;
+  onPreview: (value: number) => void;
+  onCommit: (value: number) => void;
+}) {
   const [draft, setDraft] = useState(value);
   useEffect(() => setDraft(value), [value]);
   return (
@@ -134,8 +144,13 @@ function VadSensitivitySlider({ value, onCommit }: { value: number; onCommit: (v
         max={100}
         step={5}
         value={draft}
-        onChange={(event) => setDraft(Number(event.target.value))}
-        onPointerUp={() => onCommit(draft)}
+        onChange={(event) => {
+          const next = Number(event.target.value);
+          setDraft(next);
+          onPreview(next);
+        }}
+        onPointerUp={(event) => onCommit(Number(event.currentTarget.value))}
+        onKeyUp={(event) => onCommit(Number(event.currentTarget.value))}
         className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-surface-container-highest accent-primary"
       />
       <p className="mt-1 text-xs text-on-surface-variant">Off skips silence filtering for the lowest latency. Otherwise, higher keeps more audio.</p>
@@ -153,6 +168,7 @@ function sameAudioDevices(left: AudioDeviceDescriptor[], right: AudioDeviceDescr
 interface SettingsPanelProps {
   settings: Settings;
   onUpdateSettings: (updates: Partial<Settings>) => void;
+  initialized: boolean;
   status: DictationStatus;
   onResetStats: () => void;
   onRerunSetup: () => void;
@@ -192,11 +208,12 @@ export function settingsLatencyView(page: string | undefined): string {
 }
 
 const SETTINGS_SEARCH_ITEMS = [
-  { tab: 'dictation', title: 'Input Device', detail: 'Choose the microphone used while recording.', keywords: 'microphone audio device' },
+  { tab: 'dictation', title: 'Input Device', detail: 'Choose a microphone and check its live input level.', keywords: 'microphone audio device test level gain' },
   { tab: 'dictation', title: 'Recording Trigger', detail: 'Hold, double-tap, or use both.', keywords: 'hotkey shortcut key' },
   { tab: 'dictation', title: 'Stop on Silence', detail: 'Finish hands-free recordings after quiet.', keywords: 'automatic stop vad' },
   { tab: 'dictation', title: 'Auto-Paste', detail: 'Paste clipboard results into the active app.', keywords: 'delivery clipboard' },
   { tab: 'dictation', title: 'Save to File', detail: 'Save transcript or audio files locally.', keywords: 'delivery output folder wav txt' },
+  { tab: 'dictation', title: 'Meeting Capture', detail: 'Choose local transcript retention and optional audio retention.', keywords: 'system audio me them history sqlite' },
   { tab: 'model', title: 'Transcription Model', detail: 'Select and manage the local speech model.', keywords: 'whisper parakeet core ml download' },
   { tab: 'model', title: 'Language', detail: 'Choose a fixed language or automatic detection.', keywords: 'multilingual' },
   { tab: 'model', title: 'Benchmark', detail: 'Compare installed models on this Mac.', keywords: 'performance lab speed accuracy' },
@@ -205,6 +222,7 @@ const SETTINGS_SEARCH_ITEMS = [
   { tab: 'text', title: 'Cleanup', detail: 'Remove filler words and tidy transcript spacing.', keywords: 'filler capitalization' },
   { tab: 'text', title: 'Vocabulary & Aliases', detail: 'Manage preferred words and spoken variants.', keywords: 'names spelling project scan developer terms' },
   { tab: 'text', title: 'Knowledge', detail: 'Manage local corrections, snippets, and transforms.', keywords: 'voice commands replacement' },
+  { tab: 'text', title: 'Voice Query', detail: 'Ask a configured local CLI agent with a dedicated shortcut.', keywords: 'agent command executable cloud answer hotkey' },
   { tab: 'text', title: 'Selected-text Transform', detail: 'Configure on-device rewriting.', keywords: 'llm rewrite shortcut' },
   { tab: 'app', title: 'Launch at Login', detail: 'Start Murmur when you sign in.', keywords: 'startup autostart' },
   { tab: 'app', title: 'Appearance', detail: 'Theme, accent, contrast, and color controls.', keywords: 'dark light colors' },
@@ -234,6 +252,7 @@ export function fileOutputDeliveryDescription(settings: Pick<Settings, 'autoPast
 export const SettingsPanel = memo(function SettingsPanel({
   settings,
   onUpdateSettings,
+  initialized,
   status,
   onResetStats,
   onRerunSetup,
@@ -379,6 +398,8 @@ export const SettingsPanel = memo(function SettingsPanel({
   }, [settings.model]);
 
   const [audioDevices, setAudioDevices] = useState<AudioDeviceDescriptor[]>([]);
+  const [previewVadSensitivity, setPreviewVadSensitivity] = useState(settings.vadSensitivity);
+  useEffect(() => setPreviewVadSensitivity(settings.vadSensitivity), [settings.vadSensitivity]);
   useEffect(() => {
     let cancelled = false;
     const refresh = () => {
@@ -458,6 +479,7 @@ export const SettingsPanel = memo(function SettingsPanel({
   // block's error slot (#312 D1 round-2 finding 8).
   const [transformKeyError, setTransformKeyError] = useState<string | null>(null);
   const [transformDownloadPct, setTransformDownloadPct] = useState<number | null>(null);
+  const [queryConfigError, setQueryConfigError] = useState<string | null>(null);
 
   const refreshTransformModel = useCallback(async () => {
     try {
@@ -493,6 +515,10 @@ export const SettingsPanel = memo(function SettingsPanel({
 
   const updateTransformHoldKey = async (next: TransformKey | null) => {
     setTransformKeyError(null);
+    if (next !== null && next === settings.queryHotkey) {
+      setTransformKeyError('That key is already assigned to Voice Query.');
+      return;
+    }
     try {
       if (next === null) {
         await stopTransformListener();
@@ -558,6 +584,36 @@ export const SettingsPanel = memo(function SettingsPanel({
   const keyHelp = isBoth
     ? 'Hold to record, or double-tap to start and single-tap to stop.'
     : isDoubleTap ? 'Double-tap to start and single-tap to stop.' : 'Hold to start and release to stop.';
+
+  const toggleVoiceQuery = () => {
+    setQueryConfigError(null);
+    if (settings.queryHotkey !== null) {
+      onUpdateSettings({ queryHotkey: null });
+      return;
+    }
+    if (!settings.queryExecutable.trim()) {
+      setQueryConfigError('Choose the absolute path to a CLI executable before enabling Voice Query.');
+      return;
+    }
+    const key = QUERY_KEY_OPTIONS.find((option) => option.value !== settings.transformHoldKey)?.value;
+    if (!key) {
+      setQueryConfigError('No dedicated shortcut is available.');
+      return;
+    }
+    onUpdateSettings({ queryHotkey: key });
+  };
+
+  const chooseQueryExecutable = async () => {
+    try {
+      const selected = await open({ directory: false, multiple: false });
+      if (typeof selected === 'string') {
+        setQueryConfigError(null);
+        onUpdateSettings({ queryExecutable: selected });
+      }
+    } catch {
+      // Cancellation leaves the configured executable untouched.
+    }
+  };
   const missingDevice = settings.microphone !== DEFAULT_SETTINGS.microphone
     && audioDevices.length > 0
     && !selectedDeviceExists(settings.microphone, audioDevices);
@@ -701,14 +757,23 @@ export const SettingsPanel = memo(function SettingsPanel({
           ) : (
           <div className="settings-page">
           <SettingsSection pageId="dictation" activePage={activeCat} title="Microphone & Trigger" subtitle="Recording input, shortcuts, silence, and delivery">
-            <div>
-              <label className="mb-2 block text-sm font-medium text-on-surface">Microphone</label>
-              <Select value={settings.microphone} onChange={(microphone) => onUpdateSettings({ microphone })} disabled={isRecording} items={[{ value: 'system_default', label: 'System Default' }, ...audioDeviceSelectOptions(audioDevices)]} />
-              {missingDevice && <p className="mt-2 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-on-surface">Selected device not found — choose an available microphone or System Default.</p>}
-            </div>
+            <MicrophoneInputTest
+              microphone={settings.microphone}
+              devices={audioDevices}
+              active={activeCat === 'dictation'}
+              ready={initialized}
+              vadSensitivity={previewVadSensitivity}
+              dictationBusy={isRecording}
+              missingDevice={missingDevice}
+              onChange={(microphone) => onUpdateSettings({ microphone })}
+            />
             <div>
               <p className="mb-2 text-sm font-medium text-on-surface">Voice Detection</p>
-              <VadSensitivitySlider value={settings.vadSensitivity} onCommit={(vadSensitivity) => onUpdateSettings({ vadSensitivity })} />
+              <VadSensitivitySlider
+                value={settings.vadSensitivity}
+                onPreview={setPreviewVadSensitivity}
+                onCommit={(vadSensitivity) => onUpdateSettings({ vadSensitivity })}
+              />
             </div>
             <div>
               <p className="mb-2 text-sm font-medium text-on-surface">Recording Trigger</p>
@@ -756,6 +821,112 @@ export const SettingsPanel = memo(function SettingsPanel({
                 once Murmur has heard you speak, so a silent start never stops itself, and you
                 can still stop manually at any time.
               </p>
+            </div>
+          </SettingsSection>
+
+          <SettingsSection pageId="text" activePage={activeCat} title="Voice Query" subtitle="Ask a CLI agent with a dedicated spoken-query shortcut">
+            <div className="rounded-xl border border-warning bg-warning/10 p-3">
+              <p className="text-sm font-medium text-on-surface">You control where the question goes</p>
+              <p className="mt-1 text-xs leading-relaxed text-on-surface">
+                Murmur transcribes your question locally, then gives it to the exact CLI executable below.
+                That CLI may send the question or answer to cloud services according to its own configuration.
+                Murmur cannot verify or prevent that network egress.
+              </p>
+            </div>
+
+            <SettingToggle
+              title="Enable Voice Query"
+              description="Double-tap a dedicated key to record; tap once to finish. No spoken keyword is used."
+              checked={settings.queryHotkey !== null}
+              onChange={toggleVoiceQuery}
+            />
+
+            <div className="space-y-4">
+              <div>
+                <label htmlFor="query-executable" className="mb-1.5 block text-sm font-medium text-on-surface">CLI executable</label>
+                <div className="flex gap-2">
+                  <input
+                    id="query-executable"
+                    type="text"
+                    value={settings.queryExecutable}
+                    onChange={(event) => {
+                      setQueryConfigError(null);
+                      onUpdateSettings({ queryExecutable: event.target.value });
+                    }}
+                    placeholder="/absolute/path/to/agent"
+                    spellCheck={false}
+                    className="min-w-0 flex-1 rounded-lg border border-outline-variant bg-surface-container-lowest px-3 py-2 font-mono text-xs text-on-surface outline-none focus:border-primary"
+                  />
+                  <button type="button" onClick={() => void chooseQueryExecutable()} className="rounded-lg border border-outline-variant/30 px-3 py-2 text-xs font-semibold text-on-surface hover:bg-surface-container">
+                    Browse…
+                  </button>
+                </div>
+                <p className="mt-1 text-xs text-on-surface-variant">
+                  Must be an absolute path to an executable file. No shell is ever invoked.
+                </p>
+              </div>
+
+              <div>
+                <label htmlFor="query-arguments" className="mb-1.5 block text-sm font-medium text-on-surface">Fixed arguments</label>
+                <textarea
+                  id="query-arguments"
+                  rows={3}
+                  value={settings.queryArguments.join('\n')}
+                  onChange={(event) => onUpdateSettings({ queryArguments: event.target.value.split('\n').filter((argument) => argument.length > 0) })}
+                  placeholder={'One argument per line\n--print'}
+                  spellCheck={false}
+                  className="w-full resize-y rounded-lg border border-outline-variant bg-surface-container-lowest px-3 py-2 font-mono text-xs leading-relaxed text-on-surface outline-none focus:border-primary"
+                />
+                <p className="mt-1 text-xs text-on-surface-variant">
+                  Each line stays one argument. The transcript is appended as exactly one final argument, including spaces and punctuation.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="mb-1.5 block text-sm font-medium text-on-surface">Query shortcut</label>
+                  <Select
+                    value={settings.queryHotkey ?? QUERY_KEY_OPTIONS.find((option) => option.value !== settings.transformHoldKey)?.value ?? 'shift_r'}
+                    disabled={settings.queryHotkey === null}
+                    onChange={(value) => {
+                      const queryHotkey = value as QueryKey;
+                      if (queryHotkey === settings.transformHoldKey) {
+                        setQueryConfigError('That key is already assigned to Selected-text Transform.');
+                        return;
+                      }
+                      setQueryConfigError(null);
+                      onUpdateSettings({ queryHotkey });
+                    }}
+                    items={QUERY_KEY_OPTIONS}
+                  />
+                </div>
+                <div>
+                  <label className="mb-1.5 block text-sm font-medium text-on-surface">Timeout</label>
+                  <Select
+                    value={String(settings.queryTimeoutSeconds)}
+                    onChange={(value) => onUpdateSettings({ queryTimeoutSeconds: Number(value) })}
+                    items={[
+                      { value: '30', label: '30 seconds' },
+                      { value: '60', label: '1 minute' },
+                      { value: '120', label: '2 minutes' },
+                      { value: '300', label: '5 minutes' },
+                    ]}
+                  />
+                </div>
+              </div>
+
+              {queryConfigError && <p role="alert" className="text-xs text-error">{queryConfigError}</p>}
+              {accessibilityGranted === false && settings.queryHotkey !== null && (
+                <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-on-surface">
+                  <span>Accessibility permission is required for the global query shortcut.</span>
+                  <button type="button" onClick={requestAccessibility} className="ml-auto underline">Grant</button>
+                </div>
+              )}
+            </div>
+
+            <div className="border-t border-outline-variant/20 pt-4 text-xs leading-relaxed text-on-surface-variant">
+              Answers stream into a popover and are copied to the clipboard when complete. They are never
+              auto-pasted. Murmur does not add question or answer text to history, saved files, usage stats, or telemetry.
             </div>
           </SettingsSection>
 
@@ -986,6 +1157,46 @@ export const SettingsPanel = memo(function SettingsPanel({
               checked={settings.retainHistory}
               onChange={() => onUpdateSettings({ retainHistory: !settings.retainHistory })}
             />
+            <div className="space-y-3 rounded-xl border border-outline-variant/20 bg-surface-container-low p-3">
+              <div>
+                <h2 className="text-sm font-medium text-on-surface">Meeting Capture</h2>
+                <p className="mt-0.5 text-xs leading-relaxed text-on-surface-variant">
+                  Meeting transcripts always use the crash-safe local SQLite store and never dictation history.
+                </p>
+              </div>
+              <SettingToggle
+                title="Keep Meeting Audio"
+                description="Off by default. When off, each private chunk WAV is deleted only after its transcript commits."
+                checked={settings.meetingRetainAudio}
+                onChange={() => onUpdateSettings({ meetingRetainAudio: !settings.meetingRetainAudio })}
+              />
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="text-xs text-on-surface-variant">
+                  Keep by age
+                  <select
+                    value={settings.meetingRetentionDays}
+                    onChange={(event) => onUpdateSettings({ meetingRetentionDays: Number(event.target.value) })}
+                    className="mt-1 h-9 w-full rounded-lg border border-outline-variant bg-surface-container-lowest px-2 text-sm text-on-surface"
+                  >
+                    <option value={0}>No age limit</option>
+                    <option value={30}>30 days</option>
+                    <option value={90}>90 days</option>
+                    <option value={365}>1 year</option>
+                  </select>
+                </label>
+                <label className="text-xs text-on-surface-variant">
+                  Session limit
+                  <input
+                    type="number"
+                    min={1}
+                    max={10000}
+                    value={settings.meetingMaxSessions}
+                    onChange={(event) => onUpdateSettings({ meetingMaxSessions: Math.max(1, Math.min(10000, Number(event.target.value) || 1)) })}
+                    className="mt-1 h-9 w-full rounded-lg border border-outline-variant bg-surface-container-lowest px-2 text-sm text-on-surface"
+                  />
+                </label>
+              </div>
+            </div>
             {notchPillInstalled && <SettingToggle title="Mirror Captions to NotchPill" description="Show your latest dictation in the NotchPill notch overlay. Stays on this Mac — only the final text is written locally." checked={settings.mirrorToNotchPill} onChange={() => onUpdateSettings({ mirrorToNotchPill: !settings.mirrorToNotchPill })} />}
             {saveToFile && (
               <div>

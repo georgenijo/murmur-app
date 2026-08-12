@@ -24,6 +24,20 @@ pub fn open_system_preferences() -> Result<(), String> {
     }
 }
 
+/// Open the macOS pane that owns Screen & System Audio Recording access.
+/// CATap permission is surfaced there on supported macOS releases.
+#[tauri::command]
+pub fn open_system_audio_preferences() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        open_system_preference_pane("Privacy_ScreenCapture")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("System Audio settings are only available on macOS".to_string())
+    }
+}
+
 /// Check if accessibility permission is granted (macOS)
 #[tauri::command]
 pub fn check_accessibility_permission() -> bool {

@@ -150,7 +150,7 @@ fn cached_code_vocab_prompt(
 /// Resolve one immutable context from a consistent settings/vocabulary
 /// generation. A concurrent settings change causes a retry rather than a mixed
 /// snapshot.
-fn resolve_live_context(
+pub(crate) fn resolve_live_context(
     app_state: &AppState,
     knowledge: &crate::knowledge_store::KnowledgeStore,
     app_identity: &crate::frontmost::FrontmostAppIdentity,
@@ -662,7 +662,7 @@ fn pipeline_stages(timings: &PipelineTimings, total_ms: u64) -> Vec<StageTimingV
 }
 
 #[allow(clippy::too_many_arguments)]
-fn transcribe_with_coreml_vad_retry(
+pub(crate) fn transcribe_with_coreml_vad_retry(
     backend: &mut dyn transcriber::TranscriptionBackend,
     model_name: &str,
     samples_for_transcription: &[f32],
@@ -747,7 +747,7 @@ async fn run_transcription_pipeline(
         tracing::info!(target: "pipeline", "VAD disabled for lowest-latency transcription");
         (samples.to_vec(), false)
     } else {
-        let vad_threshold = 1.0 - (transcription.vad_sensitivity as f32 / 100.0);
+        let vad_threshold = vad::threshold_for_sensitivity(transcription.vad_sensitivity);
         match vad::vad_model_path() {
             Some(vad_path) if vad_path.exists() => {
                 let vad_path_str = vad_path.to_string_lossy().to_string();
@@ -1056,6 +1056,10 @@ pub async fn process_audio(
     audio_data: String,
     state: tauri::State<'_, State>,
 ) -> Result<serde_json::Value, String> {
+    let transition = state.app_state.recording_transition.lock().await;
+    if state.app_state.meeting_blocks_asr() {
+        return Err("Cannot process audio while a meeting transcript is active.".to_string());
+    }
     // Auto-dismiss a parked transform review, refuse on an active transform
     // (issue #338 — same policy as start_native_recording). The in-lock
     // transform guard below stays as a race guard.
@@ -1094,6 +1098,10 @@ pub async fn process_audio(
             tracing::warn!(target: "pipeline", "process_audio: blocked — transform in progress");
             return Err("Cannot process audio while a transform is in progress.".to_string());
         }
+        if state.query.status().blocks_pipeline() {
+            tracing::warn!(target: "pipeline", "process_audio: blocked — voice query in progress");
+            return Err("Cannot process audio while a voice query is in progress.".to_string());
+        }
         // Mutual exclusion with the local-LLM transform runtime: only one heavy
         // inference runtime may be resident. Refuse while a transform is active.
         if state.transform_runtime.is_transform_busy() {
@@ -1106,6 +1114,7 @@ pub async fn process_audio(
         dictation.status = DictationStatus::Processing;
         state.app_state.next_recording_id()
     };
+    drop(transition);
     keyboard::set_processing(true);
     let _ = app_handle.emit("recording-status-changed", "processing");
     let app_identity = crate::frontmost::frontmost_app_identity();
@@ -2488,7 +2497,11 @@ pub async fn start_native_recording(
 ) -> Result<serde_json::Value, String> {
     // This lock covers only the synchronous ownership transition. Core Audio
     // initialization happens on the supervisor and never waits under it.
-    let _transition = state.app_state.recording_transition.lock().await;
+    let _transition = crate::commands::microphone_preview::transition_after_stopping_preview(
+        &app_handle,
+        state.inner(),
+    )
+    .await?;
     if keyboard::is_app_disabled() {
         tracing::info!(target: "pipeline", "start_native_recording: app disabled — ignoring");
         return Ok(serde_json::json!({ "type": "app_disabled", "state": "idle" }));
@@ -2530,6 +2543,13 @@ pub async fn start_native_recording(
     // critical section so no concurrent cancel/start can slip between them.
     let rid = {
         let mut dictation = state.app_state.dictation.lock_or_recover();
+        if state.app_state.meeting_blocks_asr() {
+            tracing::warn!(target: "pipeline", "start_native_recording: blocked — meeting capture in progress");
+            return Ok(serde_json::json!({
+                "type": "busy_meeting",
+                "state": "idle"
+            }));
+        }
         // Refuse if a file transcription holds the shared Whisper backend.
         // Checked under the dictation lock (which `transcribe_file` takes only
         // after claiming the flag) so the two paths can't both start.
@@ -2562,6 +2582,13 @@ pub async fn start_native_recording(
             tracing::warn!(target: "pipeline", "start_native_recording: blocked — transform in progress");
             return Ok(serde_json::json!({
                 "type": "busy_transforming",
+                "state": "idle"
+            }));
+        }
+        if state.query.status().blocks_pipeline() {
+            tracing::warn!(target: "pipeline", "start_native_recording: blocked — voice query in progress");
+            return Ok(serde_json::json!({
+                "type": "busy_querying",
                 "state": "idle"
             }));
         }
@@ -3148,6 +3175,12 @@ pub async fn transcribe_file(
     state: tauri::State<'_, State>,
     file_path: String,
 ) -> Result<serde_json::Value, String> {
+    let transition = state.app_state.recording_transition.lock().await;
+    if state.app_state.meeting_blocks_asr() {
+        return Err(
+            "Wait for the meeting transcript to finish before transcribing a file.".to_string(),
+        );
+    }
     // Mutual exclusion with live dictation: both share one Whisper backend.
     // Claim the slot first (so a racing `start_native_recording` is blocked),
     // then refuse if a live recording/processing is already underway. The guard
@@ -3159,6 +3192,7 @@ pub async fn transcribe_file(
     {
         return Err("Already transcribing a file.".to_string());
     }
+    drop(transition);
     // Auto-dismiss a parked transform review, refuse on an active transform
     // (issue #338 — same policy as start_native_recording; a parked review
     // never finishes on its own, so "wait for the transform" would never
@@ -3204,6 +3238,11 @@ pub async fn transcribe_file(
         // backend, so it must be mutually exclusive with file transcription too.
         if state.app_state.transform_status().blocks_recording() {
             return Err("Wait for the transform to finish before transcribing a file.".to_string());
+        }
+        if state.query.status().blocks_pipeline() {
+            return Err(
+                "Wait for the voice query to finish before transcribing a file.".to_string(),
+            );
         }
         if dictation.status != DictationStatus::Idle {
             return Err(
@@ -3285,7 +3324,7 @@ pub async fn transcribe_file(
         tracing::info!(target: "pipeline", "transcribe_file: VAD disabled for lowest-latency transcription");
         (samples.clone(), false)
     } else {
-        let vad_threshold = 1.0 - (vad_sensitivity as f32 / 100.0);
+        let vad_threshold = vad::threshold_for_sensitivity(vad_sensitivity);
         match vad::vad_model_path() {
             Some(vad_path) if vad_path.exists() => {
                 let vad_path_str = vad_path.to_string_lossy().to_string();
@@ -3500,7 +3539,10 @@ mod tests {
                 #[cfg(feature = "internal-benchmark")]
                 corpus: crate::commands::corpus::CorpusRecorderState::default(),
                 knowledge: crate::knowledge_store::KnowledgeStore::default(),
+                meeting_store: crate::meeting_store::MeetingStore::default(),
+                meetings: crate::meeting_capture::MeetingCoordinator::default(),
                 correct_and_teach: crate::correct_and_teach::CorrectAndTeachState::default(),
+                capture_health: crate::capture_health::CaptureHealthDiagnostics::default(),
                 performance: performance.clone(),
                 transform_diagnostics: crate::transform_diagnostics::TransformDiagnostics::default(
                 ),
@@ -3509,6 +3551,7 @@ mod tests {
                 transform_popover_anchor: std::sync::Mutex::new(None),
                 transform_main_was_visible: std::sync::Mutex::new(None),
                 transform_runtime: Arc::new(crate::llm_sidecar::LlmSidecar::new()),
+                query: crate::query_flow::QueryCoordinator::default(),
             })
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build mock Tauri app");
@@ -3589,7 +3632,10 @@ mod tests {
                 #[cfg(feature = "internal-benchmark")]
                 corpus: crate::commands::corpus::CorpusRecorderState::default(),
                 knowledge: crate::knowledge_store::KnowledgeStore::default(),
+                meeting_store: crate::meeting_store::MeetingStore::default(),
+                meetings: crate::meeting_capture::MeetingCoordinator::default(),
                 correct_and_teach: crate::correct_and_teach::CorrectAndTeachState::default(),
+                capture_health: crate::capture_health::CaptureHealthDiagnostics::default(),
                 performance: crate::performance_metrics::PerformanceMetrics::default(),
                 transform_diagnostics: crate::transform_diagnostics::TransformDiagnostics::default(
                 ),
@@ -3598,6 +3644,7 @@ mod tests {
                 transform_popover_anchor: std::sync::Mutex::new(None),
                 transform_main_was_visible: std::sync::Mutex::new(None),
                 transform_runtime: Arc::new(crate::llm_sidecar::LlmSidecar::new()),
+                query: crate::query_flow::QueryCoordinator::default(),
             })
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build mock Tauri app");

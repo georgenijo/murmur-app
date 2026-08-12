@@ -69,6 +69,37 @@ impl ManagedChild {
         #[cfg(not(any(debug_assertions, feature = "llm-test-support")))]
         let _ = test_environment;
 
+        Self::spawn_command(command)
+    }
+
+    /// Spawn an explicitly configured user CLI without a shell. `arguments`
+    /// are passed straight to `Command::args`; callers append any untrusted
+    /// content as its own element and never build a command string.
+    ///
+    /// The child receives only the small environment needed by common CLI
+    /// shims and credential stores. Arbitrary parent variables (including API
+    /// keys) are deliberately not forwarded.
+    pub fn spawn_user_cli(
+        executable: &Path,
+        arguments: &[String],
+    ) -> std::io::Result<(Self, ChildStdin, ChildStdout)> {
+        let mut command = Command::new(executable);
+        command
+            .args(arguments)
+            .current_dir("/")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .env_clear();
+        for key in ["HOME", "PATH", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE"] {
+            if let Some(value) = std::env::var_os(key) {
+                command.env(key, value);
+            }
+        }
+        Self::spawn_command(command)
+    }
+
+    fn spawn_command(mut command: Command) -> std::io::Result<(Self, ChildStdin, ChildStdout)> {
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
@@ -210,6 +241,7 @@ pub fn bundled_sibling(name: &str) -> Result<PathBuf, ()> {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use std::io::Read;
     use std::sync::atomic::Ordering;
 
     #[test]
@@ -240,5 +272,59 @@ mod tests {
         assert!(!child.termination_armed);
         drop(child);
         assert_eq!(observer.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn user_cli_receives_metacharacters_as_one_literal_argument() {
+        let directory = tempfile::tempdir().unwrap();
+        let marker = directory.path().join("shell-interpolation-must-not-run");
+        let question = format!("what?; $(touch {}) && echo unsafe", marker.display());
+        let arguments = vec!["%s".to_string(), question.clone()];
+        let (mut child, stdin, mut stdout) =
+            ManagedChild::spawn_user_cli(Path::new("/usr/bin/printf"), &arguments).unwrap();
+        drop(stdin);
+        let mut output = String::new();
+        stdout.read_to_string(&mut output).unwrap();
+        let termination = child
+            .wait_for_exit(Instant::now() + Duration::from_secs(1))
+            .expect("printf must exit cleanly");
+        assert_eq!(termination.exit_code, Some(0));
+        assert_eq!(output, question);
+        assert!(
+            !marker.exists(),
+            "question content must never be shell-evaluated"
+        );
+    }
+
+    #[test]
+    fn user_cli_environment_contains_only_explicit_allowlist() {
+        let (mut child, stdin, mut stdout) =
+            ManagedChild::spawn_user_cli(Path::new("/usr/bin/env"), &[]).unwrap();
+        drop(stdin);
+        let mut output = String::new();
+        stdout.read_to_string(&mut output).unwrap();
+        child
+            .wait_for_exit(Instant::now() + Duration::from_secs(1))
+            .expect("env must exit cleanly");
+        let allowed = ["HOME", "PATH", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE"];
+        for line in output.lines() {
+            let key = line.split_once('=').map(|(key, _)| key).unwrap_or(line);
+            assert!(
+                allowed.contains(&key),
+                "unexpected inherited environment key: {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn user_cli_hard_kill_confirms_descendant_process_group_is_empty() {
+        let arguments = vec!["-c".to_string(), "sleep 30 & wait".to_string()];
+        let (mut child, stdin, stdout) =
+            ManagedChild::spawn_user_cli(Path::new("/bin/sh"), &arguments).unwrap();
+        drop((stdin, stdout));
+        let termination = child
+            .hard_kill_confirmed(Instant::now() + Duration::from_secs(2))
+            .expect("owned child and its descendant must be confirmed stopped");
+        assert!(termination.process_group_empty);
     }
 }

@@ -59,7 +59,7 @@ Start here for orientation:
 
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — System structure: module map, data flows, windows, threads, design decisions
 - **[docs/FEATURES.md](docs/FEATURES.md)** — What ships, breadth-first, with links into each feature doc
-- **[docs/reference/](docs/reference/)** — `commands.md` (115 Tauri commands), `events.md`, `hooks.md`, `settings.md`
+- **[docs/reference/](docs/reference/)** — `commands.md` (147 Tauri commands), `events.md`, `hooks.md`, `settings.md`
 
 Read these before working on a feature:
 
@@ -95,7 +95,7 @@ Read these before working on a feature:
 
 | File | Purpose |
 |------|---------|
-| `lib.rs` | App wiring: mod declarations, `State`, `MutexExt`, 115 registered commands, setup, tray, `run()` |
+| `lib.rs` | App wiring: mod declarations, `State`, `MutexExt`, 147 registered commands, setup, tray, `run()` |
 | `commands/mod.rs` | Re-exports command sub-modules |
 | `commands/integrations.rs` | Local availability probes for optional companion apps |
 | `commands/recording.rs` | `IdleGuard`, dictation pipeline, file transcription, vocab scan, IDE context commands |
@@ -160,10 +160,11 @@ Read these before working on a feature:
 | File | Purpose |
 |------|---------|
 | `App.tsx` | Main orchestrator, wires hooks together |
-| `lib/settings.ts` | Settings types, defaults, localStorage persistence |
+| `lib/settings.ts` | Settings types, defaults, durable-source/localStorage-cache persistence |
 | `lib/onboarding.ts` | First-launch setup-assistant completion flag |
 | `lib/events.ts` | Event types, stream/level definitions, color constants |
-| `lib/history.ts` | History entry types and localStorage persistence |
+| `lib/history.ts` | History entry types, rolling trim, and durable write-through persistence |
+| `lib/durableUserData.ts` | History/stats disk hydration, localStorage migration, write-through and clear |
 | `lib/stats.ts` | Usage metrics: words, WPM, recordings, tokens |
 | `lib/dictation.ts` | Tauri command wrappers for dictation pipeline |
 | `lib/updater.ts` | Semver parsing, min-version checking, update utilities |
@@ -173,7 +174,7 @@ Read these before working on a feature:
 | `lib/hooks/useCombinedToggle.ts` | Both mode (hold-down + double-tap simultaneous) |
 | `lib/hooks/useRecordingState.ts` | Recording status, transcription, toggle logic |
 | `lib/hooks/useAutoUpdater.ts` | OTA updates, min-version enforcement |
-| `lib/hooks/useHistoryManagement.ts` | Transcription history with localStorage persistence |
+| `lib/hooks/useHistoryManagement.ts` | Transcription history with durable write-through persistence |
 | `lib/hooks/useInitialization.ts` | One-time init sequence (initDictation + configure) |
 | `lib/hooks/useShowAboutListener.ts` | Listens for show-about tray event |
 | `lib/hooks/useEventStore.ts` | Structured event log buffer with live streaming |

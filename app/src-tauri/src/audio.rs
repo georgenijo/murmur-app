@@ -1,7 +1,11 @@
 use crate::managed_child::{bundled_sibling, ManagedChild};
+use crate::microphone_preview::{
+    can_schedule_vad_analysis, classify_level, schedule_vad_analysis, MicrophonePreviewLevel,
+    PreviewLevelAccumulator, PreviewLevelTracker, PreviewVadWindow,
+};
 use crate::MutexExt;
 use murmur_capture_helper_protocol::{
-    read_production_frame, write_production_control, CaptureBackend, CapturePhase,
+    read_production_frame, write_production_control, CaptureBackend, CaptureChannel, CapturePhase,
     CaptureSetupStep, FailureCode, ProductionFrame, ProductionHelperMessage, ProductionHostMessage,
     SessionNonce, SetupTransition,
 };
@@ -159,6 +163,8 @@ impl fmt::Display for AudioFailure {
 fn failure_kind(code: FailureCode) -> AudioFailureKind {
     match code {
         FailureCode::PermissionDenied => AudioFailureKind::PermissionDenied,
+        FailureCode::UnsupportedOs => AudioFailureKind::UnsupportedConfig,
+        FailureCode::SystemAudioUnavailable => AudioFailureKind::HostUnavailable,
         FailureCode::NoInputDevice => AudioFailureKind::DeviceUnavailable,
         FailureCode::ConfigurationFailed => AudioFailureKind::UnsupportedConfig,
         FailureCode::CallbackStalled => AudioFailureKind::FirstBufferTimeout,
@@ -347,7 +353,7 @@ fn spawn_helper(
     }
     let signature_ms = signature_started.elapsed().as_millis() as u64;
     let capture_id_text = capture_id.to_string();
-    let mut arguments = vec!["--production-v3", capture_id_text.as_str(), nonce_hex];
+    let mut arguments = vec!["--production-v4", capture_id_text.as_str(), nonce_hex];
     if let Some(fault) = fault {
         arguments.extend(["--fault", fault]);
     }
@@ -495,6 +501,14 @@ pub fn start_transform_capture_audio(
     transform_pass_id: u64,
 ) -> Result<(), String> {
     crate::audio_lifecycle::start_transform_recording(app_handle, device_id, transform_pass_id)
+}
+
+pub fn start_query_capture_audio(
+    app_handle: Option<tauri::AppHandle>,
+    device_id: Option<String>,
+    query_pass_id: u64,
+) -> Result<(), String> {
+    crate::audio_lifecycle::start_query_recording(app_handle, device_id, query_pass_id)
 }
 
 enum HelperRead {
@@ -958,6 +972,9 @@ fn run_backend(
     let mut retained_audio = false;
     let mut first_callback_wait_started = None;
     let mut last_level_emit = Instant::now() - Duration::from_secs(1);
+    let mut preview_levels = PreviewLevelAccumulator::default();
+    let mut preview_classification = PreviewLevelTracker::default();
+    let mut preview_vad_window = PreviewVadWindow::default();
     let mut last_permission_check = Instant::now() - PERMISSION_POLL_INTERVAL;
     let mut current_phase = AudioInitPhase::StreamBuild;
     let mut last_setup_step: Option<(CaptureSetupStep, SetupTransition)> = None;
@@ -1188,7 +1205,8 @@ fn run_backend(
 
         match reader_rx.recv_timeout(CAPTURE_COMMAND_POLL_INTERVAL) {
             Ok(HelperRead::Frame(ProductionFrame::Pcm(pcm))) => {
-                if pcm.sequence != expected_sequence
+                if pcm.channel != CaptureChannel::Microphone
+                    || pcm.sequence != expected_sequence
                     || pcm.samples.is_empty()
                     || sample_rate.is_some_and(|rate| rate != pcm.sample_rate)
                 {
@@ -1221,13 +1239,45 @@ fn run_backend(
                 }
                 expected_sequence += 1;
                 sample_rate = Some(pcm.sample_rate);
-                shared
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .extend_from_slice(&pcm.samples);
+                if owner.retains_samples() {
+                    shared
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .extend_from_slice(&pcm.samples);
+                }
+                if let Some(preview_id) = owner.preview_id() {
+                    // Accumulate every callback between paint-rate emissions;
+                    // otherwise a short peak could disappear in the throttle.
+                    preview_levels.observe(&pcm.samples);
+                    // Keep only a bounded rolling window in memory. The
+                    // analyzer runs off-thread and never writes preview PCM to
+                    // the retained recording buffer, disk, or telemetry.
+                    preview_vad_window.observe(&pcm.samples, pcm.sample_rate);
+                    let vad_now = Instant::now();
+                    if preview_vad_window.is_due(vad_now) {
+                        let analysis = app_handle
+                            .as_ref()
+                            .filter(|handle| can_schedule_vad_analysis(handle, preview_id))
+                            .and_then(|handle| {
+                                preview_vad_window
+                                    .snapshot_if_due(vad_now)
+                                    .map(|snapshot| (handle.clone(), snapshot))
+                            });
+                        if let Some((handle, (samples, sample_rate))) = analysis {
+                            schedule_vad_analysis(handle, preview_id, samples, sample_rate);
+                        } else {
+                            // Sensitivity can be Off, an inference can already
+                            // be running, or teardown can have started. Advance
+                            // the cadence without copying the rolling window.
+                            preview_vad_window.defer_due_snapshot(vad_now);
+                        }
+                    }
+                }
                 if !retained_audio {
                     retained_audio = true;
                     current_phase = AudioInitPhase::Runtime;
+                    // A successful preview is real device-readiness evidence,
+                    // so it intentionally trains the per-device backend memo.
                     note_first_pcm(device_id, backend, ctx.is_primary, start_sent_at.elapsed());
                     end_permission_prompt_pause(
                         &mut permission_prompt_started,
@@ -1240,7 +1290,7 @@ fn run_backend(
                         target: "audio",
                         capture_id,
                         start_to_first_pcm_ms = start_sent_at.elapsed().as_millis() as u64,
-                        "capture helper first PCM retained"
+                        "capture helper first PCM accepted"
                     );
                     let _ = event_sender.send(AudioWorkerEvent::PhaseExited {
                         owner,
@@ -1259,7 +1309,33 @@ fn run_backend(
                     && last_level_emit.elapsed() >= Duration::from_millis(AUDIO_LEVEL_THROTTLE_MS)
                 {
                     if let Some(handle) = app_handle {
-                        let _ = handle.emit("audio-level", compute_rms(&pcm.samples));
+                        if let Some(preview_id) = owner.preview_id() {
+                            let (rms, peak) = preview_levels.take();
+                            let raw = classify_level(rms, peak);
+                            let (classification, first_observation) =
+                                preview_classification.stabilize(raw, Instant::now());
+                            if first_observation {
+                                tracing::info!(
+                                    target: "audio",
+                                    event_code = "audio.preview_level_classified",
+                                    preview_id,
+                                    classification = classification.as_str(),
+                                    "microphone preview observed a signal classification"
+                                );
+                            }
+                            let _ = handle.emit_to(
+                                "main",
+                                "microphone-preview-level",
+                                MicrophonePreviewLevel {
+                                    preview_id,
+                                    rms,
+                                    peak,
+                                    classification,
+                                },
+                            );
+                        } else {
+                            let _ = handle.emit("audio-level", compute_rms(&pcm.samples));
+                        }
                     }
                     last_level_emit = Instant::now();
                 }

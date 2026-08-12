@@ -30,7 +30,17 @@ All three are always called (Rules of Hooks) and switched by the `enabled` prop 
 Imported-file transcription: file selection, `transcribe_file`, and the `file-transcription-status-changed` busy state. Adds the result to history through the same `addEntry` path as live dictation.
 
 ### `useHistoryManagement`
-Transcription history with localStorage persistence (`dictation-history`, rolling 200-entry cap). Owns add / update / clear. Search, filtering, and export live in `lib/history.ts`; see [features/history-workspace.md](../features/history-workspace.md).
+Transcription history with a Rust-owned `history.json` source of truth and a
+synchronous `dictation-history` localStorage cache (rolling 200-entry cap).
+Owns add / update / clear; `retainHistory=false` rejects new content before
+either store. Search, filtering, and export live in `lib/history.ts`; see
+[features/history-workspace.md](../features/history-workspace.md).
+
+### `useMeetings`
+Owns the durable Meetings tab: hydrates runtime/permission/store state, listens
+for content-free status and finalized-segment events, keeps at most 200 live
+segments, and invokes start/stop/search/detail/copy/export/delete operations.
+Meeting history comes from SQLite and never enters transcript localStorage.
 
 ### `useSilenceAutoStop`
 Ends a hands-free recording after a run of trailing silence — any recording **not started by holding the trigger key**. Folds the existing `audio-level` samples through the pure `reduceSilenceSample` detector, resets per recording, ignores samples while the origin is `'hold'`, and calls `onAutoStop` at most once. Inert unless `enabled` and `silenceMs > 0`. See [features/silence-auto-stop.md](../features/silence-auto-stop.md).
@@ -143,7 +153,9 @@ The structured event buffer: hydrates from `get_event_history`, streams live `ap
 Run history and resource samples. Hydrates from `list_performance_runs` / `get_performance_resource_window`, then merges live `performance-run-completed` and `performance-resource-sample` events (the exported `mergeRuns` / `mergeResourceSamples` are pure and unit-tested), and resets on `performance-diagnostics-cleared`. Gated by an `enabled` flag so a hidden tab does no work.
 
 ### `usePerformanceHealth`
-Summary health of the diagnostics store (availability, counts) with an explicit `refresh`.
+Live pipeline/model state plus capture-startup health with an explicit `refresh`.
+Its two-second refresh reads the dedicated bounded `get_capture_health_history`
+payload rather than polling the general event history.
 
 ### `useResourceMonitor`
 CPU/memory polling with a rolling 60-reading buffer. Only polls while the panel is expanded.

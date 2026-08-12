@@ -22,5 +22,7 @@
     <string>14.0</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Murmur needs microphone access to record your voice for local transcription.</string>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>Murmur needs system audio access to create local Me/Them meeting transcripts.</string>
 </dict>
 </plist>

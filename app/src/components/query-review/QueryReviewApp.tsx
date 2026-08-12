@@ -1,0 +1,120 @@
+import { useEffect, useMemo } from 'react';
+import { useQueryReviewDriver, type QueryReviewState } from '../../lib/hooks/useQueryReviewDriver';
+
+const ERROR_MESSAGES: Record<string, string> = {
+  not_configured: 'Choose a CLI executable in Voice Query settings.',
+  invalid_executable: 'The configured CLI executable is missing or cannot be run.',
+  invalid_arguments: 'The configured fixed arguments are invalid.',
+  invalid_timeout: 'Choose a timeout between 5 seconds and 5 minutes.',
+  busy: 'Murmur is already recording or running another local task.',
+  audio_start_failed: 'The microphone could not start. Check the selected input and permission.',
+  audio_not_ready: 'The microphone was not ready yet. Try the shortcut again.',
+  audio_recovering: 'Audio capture is recovering. Try again in a moment.',
+  audio_recovery_stalled: 'Audio capture recovery stalled. Reopen Murmur and try again.',
+  no_speech: 'No speech was detected. Try asking again.',
+  empty_query: 'The recording did not contain a question.',
+  query_too_large: 'The spoken query exceeded the safety limit.',
+  transcription_failed: 'Local transcription failed. Check the selected model.',
+  spawn_failed: 'The configured CLI could not be started. Check its path and permissions.',
+  timed_out: 'The configured CLI timed out and was stopped.',
+  termination_unconfirmed: 'Murmur could not confirm that the CLI process stopped.',
+  process_failed: 'The configured CLI process failed.',
+  exit_nonzero: 'The configured CLI exited with an error.',
+  output_too_large: 'The answer exceeded the 256 KB safety limit and was stopped.',
+  empty_answer: 'The configured CLI returned no answer.',
+  clipboard_unavailable: 'The answer is ready, but the clipboard is unavailable. Use Copy to try again.',
+};
+
+function statusLabel(state: QueryReviewState, errorCode: string | null): string {
+  switch (state) {
+    case 'connecting': return 'Connecting microphone…';
+    case 'listening': return 'Listening — tap the query key once when done';
+    case 'transcribing': return 'Transcribing locally…';
+    case 'running': return 'Agent is answering…';
+    case 'ready': return errorCode === 'clipboard_unavailable' ? 'Answer ready' : 'Answer copied to clipboard';
+    case 'failed': return 'Voice query failed';
+    default: return 'Voice Query';
+  }
+}
+
+export function queryErrorMessage(errorCode: string | null): string | null {
+  if (!errorCode || errorCode === 'audio_stalled') return null;
+  return ERROR_MESSAGES[errorCode] ?? 'The voice query could not be completed.';
+}
+
+export function QueryReviewApp() {
+  const driver = useQueryReviewDriver();
+  const errorMessage = useMemo(() => queryErrorMessage(driver.errorCode), [driver.errorCode]);
+  const terminal = driver.state === 'ready' || driver.state === 'failed';
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        driver.cancel();
+      } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'c' && driver.state === 'ready') {
+        event.preventDefault();
+        driver.copy();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [driver.cancel, driver.copy, driver.state]);
+
+  return (
+    <main
+      className="query-review-surface flex h-full w-full select-none flex-col overflow-hidden rounded-[16px] border border-white/10 bg-[#141414]/95 text-white shadow-2xl backdrop-blur-3xl"
+      aria-label="Voice Query"
+    >
+      <header className="flex min-h-[64px] items-center gap-3 px-4 py-3">
+        <span
+          aria-hidden="true"
+          className={`h-2.5 w-2.5 shrink-0 rounded-full ${driver.state === 'failed' ? 'bg-red-400' : driver.state === 'ready' ? 'bg-emerald-400' : 'animate-pulse bg-violet-400'}`}
+        />
+        <div className="min-w-0 flex-1">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/45">Voice Query</p>
+          <p aria-live="polite" className="mt-0.5 truncate text-[13px] font-medium text-white/90">
+            {statusLabel(driver.state, driver.errorCode)}
+          </p>
+        </div>
+        {!terminal && (
+          <button type="button" onClick={driver.cancel} className="rounded-lg px-2.5 py-1.5 text-xs font-medium text-white/60 hover:bg-white/10 hover:text-white">
+            Cancel
+          </button>
+        )}
+      </header>
+
+      {(driver.answer || errorMessage || terminal) && (
+        <section className="flex min-h-0 flex-1 flex-col border-t border-white/10">
+          <div
+            aria-label="Query answer"
+            aria-live="polite"
+            className="min-h-0 flex-1 select-text overflow-y-auto whitespace-pre-wrap break-words px-4 py-3 text-[13px] leading-relaxed text-white/85"
+          >
+            {driver.answer || errorMessage || 'No answer was returned.'}
+            {driver.state === 'running' && <span aria-hidden="true" className="ml-0.5 inline-block h-3 w-px animate-pulse bg-white/60 align-middle" />}
+          </div>
+          <footer className="flex items-center justify-between border-t border-white/10 px-3 py-2">
+            <span className={`text-[10px] ${driver.errorCode === 'clipboard_unavailable' ? 'text-amber-300/80' : 'text-white/35'}`}>
+              {driver.errorCode === 'clipboard_unavailable'
+                ? 'Clipboard unavailable · never auto-pasted'
+                : driver.state === 'ready' ? 'Never auto-pasted' : 'Esc to cancel'}
+            </span>
+            <div className="flex gap-2">
+              {driver.state === 'ready' && (
+                <button type="button" onClick={driver.copy} className="rounded-lg bg-white/10 px-3 py-1.5 text-xs font-semibold text-white hover:bg-white/15">
+                  Copy
+                </button>
+              )}
+              {terminal && (
+                <button type="button" onClick={driver.cancel} className="rounded-lg bg-violet-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-violet-400">
+                  Close
+                </button>
+              )}
+            </div>
+          </footer>
+        </section>
+      )}
+    </main>
+  );
+}

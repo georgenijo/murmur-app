@@ -1,15 +1,18 @@
 import { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import {
   checkMicrophonePermissionStatus,
   resetAccessibilityPermission,
   resetMicrophonePermission,
   type MicPermissionStatus,
 } from '../lib/dictation';
+import type { SystemAudioPermissionState } from '../lib/meetings';
 
 interface PermissionStatus {
   microphone: MicPermissionStatus;
   accessibility: 'unknown' | 'granted' | 'denied';
+  systemAudio: SystemAudioPermissionState;
 }
 
 /**
@@ -26,6 +29,7 @@ export function PermissionsBanner() {
   const [permissions, setPermissions] = useState<PermissionStatus>({
     microphone: 'unknown',
     accessibility: 'unknown',
+    systemAudio: 'unknown',
   });
   const [dismissed, setDismissed] = useState(false);
   const [checking, setChecking] = useState(true);
@@ -37,7 +41,10 @@ export function PermissionsBanner() {
     setChecking(true);
     try {
       // Check accessibility permission via Tauri command
-      const hasAccessibility = await invoke<boolean>('check_accessibility_permission');
+      const [hasAccessibility, systemAudio] = await Promise.all([
+        invoke<boolean>('check_accessibility_permission'),
+        invoke<SystemAudioPermissionState>('get_system_audio_permission_status').catch(() => 'unknown' as const),
+      ]);
 
       // Check microphone via native TCC status query (issue #177).
       // Must NOT use getUserMedia here: opening the mic spins up voice-processing
@@ -56,6 +63,7 @@ export function PermissionsBanner() {
       setPermissions({
         microphone: micStatus,
         accessibility: hasAccessibility ? 'granted' : 'denied',
+        systemAudio,
       });
     } catch (error) {
       console.error('Failed to check permissions:', error);
@@ -71,6 +79,20 @@ export function PermissionsBanner() {
     window.addEventListener('focus', checkPermissions);
     return () => window.removeEventListener('focus', checkPermissions);
   }, [checkPermissions]);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    listen<SystemAudioPermissionState>('system-audio-permission-changed', (event) => {
+      setPermissions((current) => ({ ...current, systemAudio: event.payload }));
+      if (event.payload === 'denied') setDismissed(false);
+    }).then((fn) => {
+      if (disposed) fn(); else unlisten = fn;
+    }).catch(() => {
+      // Unit tests and non-Tauri previews do not expose the native event bridge.
+    });
+    return () => { disposed = true; unlisten?.(); };
+  }, []);
 
   const handleOpenAccessibility = async () => {
     await invoke('request_accessibility_permission');
@@ -113,17 +135,20 @@ export function PermissionsBanner() {
   };
 
   const micDenied = isMicHardDenied(permissions.microphone);
+  const systemAudioDenied = permissions.systemAudio === 'denied';
   // Only a genuine denial blocks recording; treat notDetermined/unknown as "fine
   // for now" so the banner doesn't surface a false-negative (issue #190).
   const micOk = !micDenied;
-  const allGranted = micOk && permissions.accessibility === 'granted';
+  const allGranted = micOk && permissions.accessibility === 'granted' && !systemAudioDenied;
 
   if (dismissed || allGranted || checking) {
     return null;
   }
 
   const needsAccessibility = permissions.accessibility !== 'granted';
-  const message = micDenied && needsAccessibility
+  const message = systemAudioDenied
+    ? 'System Audio access was denied; Meeting capture cannot start.'
+    : micDenied && needsAccessibility
     ? 'Microphone and Accessibility access are needed.'
     : micDenied
       ? 'Microphone access was revoked.'
@@ -139,7 +164,11 @@ export function PermissionsBanner() {
       <span className="min-w-0 flex-1 truncate">{message}</span>
       <button
         type="button"
-        onClick={micDenied ? handleOpenMicrophone : handleOpenAccessibility}
+        onClick={() => void (systemAudioDenied
+          ? invoke('open_system_audio_preferences')
+          : micDenied
+            ? handleOpenMicrophone()
+            : handleOpenAccessibility())}
         className="shrink-0 font-semibold underline underline-offset-2 hover:no-underline"
       >
         Open System Settings

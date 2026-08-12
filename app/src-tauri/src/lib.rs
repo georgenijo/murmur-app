@@ -8,6 +8,7 @@ mod audio_lifecycle;
 // stable external API.
 pub mod benchmark;
 pub mod capture_agent_probe;
+mod capture_health;
 pub mod capture_helper_probe;
 mod cleanup;
 mod cli_command;
@@ -27,10 +28,14 @@ mod knowledge_store;
 pub mod llm_sidecar;
 mod log_shipper;
 pub mod managed_child;
+mod meeting_capture;
+mod meeting_store;
+mod microphone_preview;
 mod model_artifact;
 mod model_runtime;
 mod performance_metrics;
 mod platform;
+mod query_flow;
 mod resource_monitor;
 mod selection;
 mod smart_formatting;
@@ -124,7 +129,10 @@ pub(crate) struct State {
     #[cfg(feature = "internal-benchmark")]
     pub(crate) corpus: commands::corpus::CorpusRecorderState,
     pub(crate) knowledge: knowledge_store::KnowledgeStore,
+    pub(crate) meeting_store: meeting_store::MeetingStore,
+    pub(crate) meetings: meeting_capture::MeetingCoordinator,
     pub(crate) correct_and_teach: correct_and_teach::CorrectAndTeachState,
+    pub(crate) capture_health: capture_health::CaptureHealthDiagnostics,
     pub(crate) performance: performance_metrics::PerformanceMetrics,
     pub(crate) transform_diagnostics: transform_diagnostics::TransformDiagnostics,
     /// Cached overlay screen geometry
@@ -149,6 +157,8 @@ pub(crate) struct State {
     pub(crate) transform_main_was_visible: Mutex<Option<bool>>,
     /// Host-side supervisor for the signed local-LLM transform sidecar (#312).
     pub(crate) transform_runtime: std::sync::Arc<llm_sidecar::LlmSidecar>,
+    /// Session-only voice-query state plus exact owned CLI child (#538).
+    pub(crate) query: query_flow::QueryCoordinator,
 }
 
 /// Production mutual-exclusion bridge: lets the sidecar refuse to start over a
@@ -171,6 +181,13 @@ impl llm_sidecar::HostGuard for AppHostGuard {
             .load(std::sync::atomic::Ordering::SeqCst)
         {
             return Some("fileTranscription");
+        }
+        if state
+            .app_state
+            .meeting_inference_active
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Some("meeting");
         }
         if state.app_state.dictation.lock_or_recover().status != state::DictationStatus::Idle {
             return Some("recording");
@@ -246,7 +263,10 @@ pub fn run() {
             #[cfg(feature = "internal-benchmark")]
             corpus: commands::corpus::CorpusRecorderState::default(),
             knowledge: knowledge_store::KnowledgeStore::default(),
+            meeting_store: meeting_store::MeetingStore::default(),
+            meetings: meeting_capture::MeetingCoordinator::default(),
             correct_and_teach: correct_and_teach::CorrectAndTeachState::default(),
+            capture_health: capture_health::CaptureHealthDiagnostics::default(),
             performance: performance_metrics::PerformanceMetrics::default(),
             transform_diagnostics: transform_diagnostics::TransformDiagnostics::default(),
             notch_info: Mutex::new(None),
@@ -254,6 +274,7 @@ pub fn run() {
             transform_popover_anchor: Mutex::new(None),
             transform_main_was_visible: Mutex::new(None),
             transform_runtime: std::sync::Arc::new(llm_sidecar::LlmSidecar::new()),
+            query: query_flow::QueryCoordinator::default(),
         })
         .invoke_handler(tauri::generate_handler![
             commands::recording::init_dictation,
@@ -277,6 +298,7 @@ pub fn run() {
             commands::correct_and_teach::confirm_learned_correction,
             commands::correct_and_teach::discard_learned_correction_proposal,
             commands::permissions::open_system_preferences,
+            commands::permissions::open_system_audio_preferences,
             commands::permissions::check_accessibility_permission,
             commands::permissions::request_accessibility_permission,
             commands::permissions::reset_accessibility_permission,
@@ -286,6 +308,11 @@ pub fn run() {
             commands::permissions::check_microphone_permission_status,
             commands::permissions::reset_microphone_permission,
             commands::permissions::list_audio_devices,
+            commands::microphone_preview::get_microphone_preview_status,
+            commands::microphone_preview::start_microphone_preview,
+            commands::microphone_preview::update_microphone_preview_vad_sensitivity,
+            commands::microphone_preview::stop_microphone_preview,
+            commands::microphone_preview::cancel_microphone_preview,
             commands::integrations::is_notchpill_installed,
             commands::keyboard::start_keyboard_listener,
             commands::keyboard::stop_keyboard_listener,
@@ -296,6 +323,8 @@ pub fn run() {
             commands::keyboard::start_transform_listener,
             commands::keyboard::stop_transform_listener,
             commands::keyboard::set_transform_key,
+            commands::keyboard::start_query_listener,
+            commands::keyboard::stop_query_listener,
             commands::recording::transform_status,
             transform_apply::apply_transform_result,
             transform_apply::undo_transform,
@@ -305,6 +334,11 @@ pub fn run() {
             transform_flow::approve_transform,
             transform_flow::cancel_transform,
             transform_flow::undo_transform_and_close,
+            query_flow::start_query_capture,
+            query_flow::finish_query_capture,
+            query_flow::cancel_query,
+            query_flow::copy_query_answer,
+            query_flow::get_query_review_content,
             commands::knowledge::get_knowledge_store_status,
             commands::knowledge::retry_knowledge_store,
             commands::knowledge::list_knowledge,
@@ -318,14 +352,33 @@ pub fn run() {
             commands::knowledge::inspect_knowledge_import,
             commands::knowledge::import_knowledge_from_file,
             commands::knowledge::delete_all_knowledge,
+            commands::meeting::start_meeting,
+            commands::meeting::stop_meeting,
+            commands::meeting::get_meeting_status,
+            commands::meeting::get_system_audio_permission_status,
+            commands::meeting::request_system_audio_permission,
+            commands::meeting::get_meeting_store_status,
+            commands::meeting::list_meetings,
+            commands::meeting::get_meeting,
+            commands::meeting::get_meeting_export_text,
+            commands::meeting::delete_meeting,
+            commands::meeting::delete_all_meetings,
+            commands::meeting::prune_meetings,
             commands::export::save_text_export,
             commands::settings_store::load_settings_blob,
             commands::settings_store::save_settings_blob,
+            commands::settings_store::load_history_blob,
+            commands::settings_store::save_history_blob,
+            commands::settings_store::clear_history_blob,
+            commands::settings_store::load_stats_blob,
+            commands::settings_store::save_stats_blob,
+            commands::settings_store::clear_stats_blob,
             commands::theme::read_theme_file,
             commands::theme::write_theme_file,
             commands::logging::get_log_contents,
             commands::logging::clear_logs,
             commands::logging::log_frontend,
+            capture_health::get_capture_health_history,
             commands::performance::list_performance_runs,
             commands::performance::get_performance_run,
             commands::performance::get_performance_resource_window,
@@ -377,6 +430,11 @@ pub fn run() {
                 // Hide instead of destroy for persistent windows
                 if window.label() == "main" || window.label() == "diagnostics" {
                     api.prevent_close();
+                    if window.label() == "main" {
+                        commands::microphone_preview::cancel_for_window_close(
+                            window.app_handle().clone(),
+                        );
+                    }
                     let _ = window.hide();
                     tracing::info!(target: "system", "{} window hidden on close request", window.label());
                 }
@@ -392,8 +450,21 @@ pub fn run() {
             if let Some(diagnostics_window) = app.get_webview_window("diagnostics") {
                 commands::native_window::hide_titlebar_separator(&diagnostics_window);
             }
+            commands::query_popover::apply_initial_size(app.handle());
 
             let performance_root = app.path().app_data_dir()?.join("diagnostics");
+            if let Err(error) = app
+                .state::<State>()
+                .capture_health
+                .initialize(performance_root.clone(), &telemetry::event_jsonl_paths())
+            {
+                tracing::warn!(
+                    target: "system",
+                    diagnostics_available = false,
+                    "capture-health diagnostics store unavailable: {}",
+                    error
+                );
+            }
             if let Err(error) = app
                 .state::<State>()
                 .performance
@@ -433,6 +504,25 @@ pub fn run() {
                 record_count = knowledge_status.record_count,
                 "personal knowledge store initialized"
             );
+
+            let meeting_root = app.path().app_data_dir()?.join("meetings");
+            let meeting_status = app
+                .state::<State>()
+                .meeting_store
+                .initialize(meeting_root);
+            tracing::info!(
+                target: "meeting",
+                availability = ?meeting_status.availability,
+                schema_version = meeting_status.schema_version,
+                session_count = meeting_status.session_count,
+                pending_segment_count = meeting_status.pending_segment_count,
+                "meeting transcript store initialized"
+            );
+            if let Ok(repository) = app.state::<State>().meeting_store.repository() {
+                app.state::<State>()
+                    .meetings
+                    .recover_pending(app.handle().clone(), repository);
+            }
 
             tracing::info!(target: "system", "app setup — Murmur v{}", env!("CARGO_PKG_VERSION"));
 
@@ -606,7 +696,9 @@ pub fn run() {
         #[cfg(target_os = "macos")]
         if let RunEvent::Exit = &_event {
             if let Some(state) = _app_handle.try_state::<State>() {
+                state.meetings.shutdown(_app_handle);
                 state.transform_runtime.shutdown();
+                state.query.shutdown();
             }
         }
     });

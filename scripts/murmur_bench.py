@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -26,6 +27,12 @@ LATENCY_RELATIVE_LIMIT = 0.10
 LATENCY_ABSOLUTE_LIMIT_MS = 25.0
 WER_ABSOLUTE_LIMIT = 0.01
 MEMORY_ABSOLUTE_LIMIT_MB = 128.0
+CONDITIONED_CACHE_POLICY = "conditioned-timed-path-v2"
+CONDITIONING_STAGES = (
+    "all-selected-quick",
+    "shared-init-targets-quick-x2",
+)
+TARGET_CONDITIONING_PASSES = 2
 
 
 def git(repo: Path, *args: str) -> str:
@@ -119,6 +126,17 @@ def load_report(path: Path) -> dict[str, Any]:
     return report
 
 
+def load_optional_metadata(report: Path) -> dict[str, Any] | None:
+    meta = metadata_path(report)
+    if not meta.is_file():
+        return None
+    with meta.open("r", encoding="utf-8") as handle:
+        value = json.load(handle)
+    if not isinstance(value, dict):
+        raise ValueError(f"{meta} is not Murmur benchmark metadata")
+    return value
+
+
 def comparable_identity(report: dict[str, Any]) -> tuple[Any, ...]:
     environment = report.get("environment") or {}
     corpus = report.get("corpus") or {}
@@ -135,7 +153,156 @@ def comparable_identity(report: dict[str, Any]) -> tuple[Any, ...]:
         report.get("iterations"),
         configuration.get("vadThreshold"),
         configuration.get("executionPath"),
+        configuration.get("transcriptTransformProfile"),
+        configuration.get("percentileMethod"),
+        tuple(configuration.get("modelRunOrder") or []),
+        tuple(configuration.get("sharedInitOrder") or []),
     )
+
+
+def differs_beyond_latency_tolerance(
+    left: float,
+    right: float,
+    *,
+    relative_limit: float = LATENCY_RELATIVE_LIMIT,
+    absolute_limit_ms: float = LATENCY_ABSOLUTE_LIMIT_MS,
+) -> bool:
+    smaller = min(left, right)
+    absolute = abs(right - left)
+    relative = absolute / smaller if smaller > 0 else None
+    return relative is None or (
+        relative > relative_limit and absolute > absolute_limit_ms
+    )
+
+
+def validate_comparability(
+    baseline: dict[str, Any],
+    candidate: dict[str, Any],
+    baseline_metadata: dict[str, Any] | None,
+    candidate_metadata: dict[str, Any] | None,
+) -> None:
+    baseline_configuration = baseline.get("configuration") or {}
+    candidate_configuration = candidate.get("configuration") or {}
+    baseline_models = tuple(baseline_configuration.get("modelRunOrder") or [])
+    candidate_models = tuple(candidate_configuration.get("modelRunOrder") or [])
+    if baseline_models != candidate_models:
+        raise ValueError("reports are not comparable: model set or run order differs")
+    if comparable_identity(baseline) != comparable_identity(candidate):
+        raise ValueError(
+            "reports are not comparable: hardware, OS, corpus, preset, iterations, "
+            "VAD threshold, execution path, transform profile, percentile method, "
+            "or shared initialization order differ"
+        )
+
+    baseline_policy = (baseline_metadata or {}).get("cachePolicy")
+    candidate_policy = (candidate_metadata or {}).get("cachePolicy")
+    if baseline_policy != candidate_policy:
+        raise ValueError("reports are not comparable: cache conditioning policy differs")
+    if baseline_policy is None:
+        # Preserve local comparison support for reports created outside the
+        # release runner. Fleet release reports always carry an explicit policy.
+        return
+    if baseline_policy != CONDITIONED_CACHE_POLICY:
+        raise ValueError(
+            f"reports are not comparable: unsupported cache conditioning policy {baseline_policy!r}"
+        )
+
+    conditioning_identity: tuple[Any, ...] | None = None
+    for metadata, role in (
+        (baseline_metadata or {}, "baseline"),
+        (candidate_metadata or {}, "candidate"),
+    ):
+        if metadata.get("conditioningPreset") != "quick":
+            raise ValueError(
+                f"reports are not comparable: {role} conditioning preset is not quick"
+            )
+        if tuple(metadata.get("conditioningStages") or ()) != CONDITIONING_STAGES:
+            raise ValueError(
+                f"reports are not comparable: {role} conditioning stages differ"
+            )
+        if metadata.get("powerSource") != "AC Power":
+            raise ValueError(f"reports are not comparable: {role} did not run on AC power")
+        if metadata.get("lowPowerMode") is not False:
+            raise ValueError(f"reports are not comparable: {role} used Low Power Mode")
+        if metadata.get("thermalState") != "nominal":
+            raise ValueError(
+                f"reports are not comparable: {role} had non-nominal thermal state"
+            )
+        if metadata.get("gitDirty") is not False:
+            raise ValueError(
+                f"reports are not comparable: {role} worktree was not clean"
+            )
+        if metadata.get("conditioningGitCommit") != metadata.get("gitCommit"):
+            raise ValueError(
+                f"reports are not comparable: {role} conditioning commit differs "
+                "from its measured commit"
+            )
+        configuration = (
+            baseline_configuration if role == "baseline" else candidate_configuration
+        )
+        if metadata.get("targetConditioningModelOrder") != configuration.get(
+            "sharedInitOrder"
+        ):
+            raise ValueError(
+                f"reports are not comparable: {role} target conditioning order differs"
+            )
+        target_probes = metadata.get("targetConditioningSharedInitMs")
+        if (
+            not isinstance(target_probes, list)
+            or len(target_probes) != TARGET_CONDITIONING_PASSES
+            or not all(
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and math.isfinite(value)
+                and value > 0
+                for value in target_probes
+            )
+        ):
+            raise ValueError(
+                f"reports are not comparable: {role} lacks target conditioning evidence"
+            )
+        after = metadata.get("hostAfterMeasurement")
+        if not isinstance(after, dict):
+            raise ValueError(
+                f"reports are not comparable: {role} lacks a post-measurement host snapshot"
+            )
+        if (
+            after.get("powerSource") != "AC Power"
+            or after.get("lowPowerMode") is not False
+            or after.get("thermalState") != "nominal"
+        ):
+            raise ValueError(
+                f"reports are not comparable: {role} host state changed during measurement"
+            )
+
+        current_conditioning_identity = (
+            metadata.get("conditioningPreset"),
+            metadata.get("idleCpuLimitPercent"),
+            metadata.get("idleConsecutiveSamples"),
+            metadata.get("idleSampleIntervalSeconds"),
+        )
+        if conditioning_identity is None:
+            conditioning_identity = current_conditioning_identity
+        elif conditioning_identity != current_conditioning_identity:
+            raise ValueError(
+                "reports are not comparable: host-settling configuration differs"
+            )
+
+    baseline_shared = baseline.get("sharedInitMs")
+    candidate_shared = candidate.get("sharedInitMs")
+    if (
+        not isinstance(baseline_shared, (int, float))
+        or isinstance(baseline_shared, bool)
+        or not math.isfinite(baseline_shared)
+        or baseline_shared <= 0
+        or not isinstance(candidate_shared, (int, float))
+        or isinstance(candidate_shared, bool)
+        or not math.isfinite(candidate_shared)
+        or candidate_shared <= 0
+    ):
+        raise ValueError(
+            "reports are not comparable: conditioned reports require sharedInitMs"
+        )
 
 
 def percent_delta(before: float, after: float) -> float | None:
@@ -155,11 +322,14 @@ def compare_reports(args: argparse.Namespace) -> int:
     candidate_path = args.candidate.expanduser().resolve()
     baseline = load_report(baseline_path)
     candidate = load_report(candidate_path)
-    if comparable_identity(baseline) != comparable_identity(candidate):
-        raise ValueError(
-            "reports are not comparable: hardware, OS, corpus, preset, iterations, "
-            "VAD threshold, or execution path differ"
-        )
+    baseline_metadata = load_optional_metadata(baseline_path)
+    candidate_metadata = load_optional_metadata(candidate_path)
+    validate_comparability(
+        baseline,
+        candidate,
+        baseline_metadata,
+        candidate_metadata,
+    )
 
     baseline_results = {
         item.get("modelName"): item
@@ -174,6 +344,15 @@ def compare_reports(args: argparse.Namespace) -> int:
     common = sorted(set(baseline_results) & set(candidate_results))
     if not common:
         raise ValueError("reports contain no common successful model results")
+
+    baseline_shared = float(baseline["sharedInitMs"])
+    candidate_shared = float(candidate["sharedInitMs"])
+    shared_init_skew = differs_beyond_latency_tolerance(
+        baseline_shared,
+        candidate_shared,
+        relative_limit=args.latency_limit,
+        absolute_limit_ms=args.latency_ms,
+    )
 
     rows: list[dict[str, Any]] = []
     regressions: list[str] = []
@@ -243,6 +422,12 @@ def compare_reports(args: argparse.Namespace) -> int:
         "createdAt": dt.datetime.now(dt.timezone.utc).isoformat(),
         "baseline": str(baseline_path),
         "candidate": str(candidate_path),
+        "cachePolicy": (candidate_metadata or {}).get("cachePolicy"),
+        "sharedInitMs": {
+            "baseline": baseline_shared,
+            "candidate": candidate_shared,
+            "informationalSkew": shared_init_skew,
+        },
         "thresholds": {
             "latencyRelative": args.latency_limit,
             "latencyAbsoluteMs": args.latency_ms,
@@ -260,6 +445,12 @@ def compare_reports(args: argparse.Namespace) -> int:
         print(f"Comparison: {output}")
 
     print(f"Compared {len(common)} model(s) on the same hardware and corpus.")
+    if shared_init_skew:
+        print(
+            "Informational: untimed sharedInitMs differs "
+            f"({baseline_shared:.3f} ms vs {candidate_shared:.3f} ms); "
+            "per-model timers start after this setup warm-up."
+        )
     for row in rows:
         print(f"\n{row['modelName']}")
         for metric, values in row["metrics"].items():

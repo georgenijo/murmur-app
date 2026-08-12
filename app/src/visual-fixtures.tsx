@@ -24,6 +24,34 @@ const status: DictationStatus = requestedState === 'recording'
 document.documentElement.dataset.appearance = appearance;
 
 mockIPC((command) => {
+  if (command === 'get_microphone_preview_status') {
+    return {
+      previewId: null,
+      state: 'idle',
+      stillConnecting: false,
+      errorKind: null,
+      message: null,
+    };
+  }
+  if (command === 'start_microphone_preview') {
+    return {
+      previewId: 1,
+      state: 'active',
+      stillConnecting: false,
+      errorKind: null,
+      message: null,
+    };
+  }
+  if (command === 'stop_microphone_preview') {
+    return {
+      previewId: null,
+      state: 'idle',
+      stillConnecting: false,
+      errorKind: null,
+      message: null,
+    };
+  }
+  if (command === 'cancel_microphone_preview') return false;
   if (command === 'get_model_runtime_catalog' || command.startsWith('list_')) return [];
   if (command.includes('version')) return '0.27.0';
   return null;
@@ -92,6 +120,7 @@ function VisualFixture() {
         <SettingsPanel
           settings={DEFAULT_SETTINGS}
           onUpdateSettings={() => {}}
+          initialized
           status="idle"
           onResetStats={() => {}}
           onRerunSetup={() => {}}

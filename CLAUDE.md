@@ -59,7 +59,7 @@ Start here for orientation:
 
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — System structure: module map, data flows, windows, threads, design decisions
 - **[docs/FEATURES.md](docs/FEATURES.md)** — What ships, breadth-first, with links into each feature doc
-- **[docs/reference/](docs/reference/)** — `commands.md` (115 Tauri commands), `events.md`, `hooks.md`, `settings.md`
+- **[docs/reference/](docs/reference/)** — `commands.md` (147 Tauri commands), `events.md`, `hooks.md`, `settings.md`
 
 Read these before working on a feature:
 
@@ -70,6 +70,7 @@ Read these before working on a feature:
 - **[docs/features/silence-auto-stop.md](docs/features/silence-auto-stop.md)** — Hands-free trailing-silence finish for recordings not started by holding the key
 - **[docs/features/recording-modes.md](docs/features/recording-modes.md)** — Hold-down and double-tap modes, state machine, rdev threading
 - **[docs/features/transcription.md](docs/features/transcription.md)** — Audio capture, whisper pipeline, status flow
+- **[docs/features/microphone-input-test.md](docs/features/microphone-input-test.md)** — Capture-only Settings meter, device switching, privacy and ownership
 - **[docs/features/cli-command-formatting.md](docs/features/cli-command-formatting.md)** — Spoken CLI detection, grammar, lexicon, safety
 - **[docs/features/smart-formatting.md](docs/features/smart-formatting.md)** — Deterministic prose grammar, backtracking, bounds, privacy
 - **[docs/features/text-injection.md](docs/features/text-injection.md)** — Clipboard, auto-paste, osascript
@@ -99,14 +100,15 @@ Read these before working on a feature:
 
 | File | Purpose |
 |------|---------|
-| `lib.rs` | App wiring: mod declarations, `State`, `MutexExt`, 115 registered commands, setup, tray, `run()` |
+| `lib.rs` | App wiring: mod declarations, `State`, `MutexExt`, 147 registered commands, setup, tray, `run()` |
 | `commands/mod.rs` | Re-exports command sub-modules |
 | `commands/integrations.rs` | Local availability probes for optional companion apps |
 | `commands/recording.rs` | `IdleGuard`, dictation pipeline, file transcription, vocab scan, IDE context commands |
 | `commands/permissions.rs` | Permission check/request/reset and audio device commands (incl. in-app mic TCC prompt) |
+| `commands/microphone_preview.rs` | Main-window microphone test commands, lifecycle bridge, exact-owner teardown |
 | `commands/keyboard.rs` | Dictation + transform listener commands, global disable |
 | `commands/export.rs` | `save_text_export` — validated, atomic user-chosen text export sink |
-| `commands/settings_store.rs` | Durable `settings.json` in the app data dir: opaque bounded JSON-object blob, atomic write, corrupt-file quarantine |
+| `commands/settings_store.rs` | Durable `settings.json`, `history.json`, and `stats.json`: bounded opaque blobs, atomic write, clear, corrupt-file quarantine |
 | `commands/logging.rs` | Log commands, delegates to telemetry.rs |
 | `commands/models.rs` | Model catalog/status queries and the download pipeline |
 | `commands/knowledge.rs` | Personal knowledge store CRUD, resolve, preview, export/import |
@@ -121,12 +123,13 @@ Read these before working on a feature:
 | `commands/transform_model.rs` | Transform LLM model download/status/remove/reset |
 | `commands/transform_popover.rs` | Transform review window geometry + show/hide/focusable |
 | `keyboard.rs` | Hold-down, double-tap, and transform-hold detectors; shared rdev listener thread |
-| `audio.rs` / `audio_lifecycle.rs` | cpal capture plus the single-owner async initialization supervisor, cancellation/recovery, join ownership, mono conversion, and 16kHz resampling |
+| `audio.rs` / `audio_lifecycle.rs` | cpal capture plus the single-owner async initialization supervisor, cancellation/recovery, join ownership, preview level routing, mono conversion, and 16kHz resampling |
 | `audio_decode.rs` | Imported audio-file decoding |
 | `capture_agent_probe.rs` / `capture_helper_probe.rs` | Signed helper registration, callback-health probes, cancellation, and confirmed-termination evidence |
 | `code_signing.rs` / `managed_child.rs` | Runtime helper identity validation and direct-child/process-group ownership |
 | `transcriber/` (`whisper.rs`, `parakeet.rs`, `coreml.rs`) | `TranscriptionBackend` trait and backend implementations |
 | `model_runtime.rs` | Model catalog + serialized load/warm/readiness/unload lifecycle |
+| `microphone_preview.rs` | Capture-only preview coordinator, signal aggregation, stable quiet/clipping classification |
 | `dictation_context.rs` | Immutable per-recording context snapshot |
 | `transcript_transform.rs` | Ordered post-recognition pipeline (cleanup → commands → correction → formatting → IDE → CLI) |
 | `cleanup.rs` / `correction.rs` / `cli_command.rs` | Individual transform stages |
@@ -166,16 +169,18 @@ Read these before working on a feature:
 | File | Purpose |
 |------|---------|
 | `App.tsx` | Main orchestrator, wires hooks together |
-| `lib/settings.ts` | Settings types, defaults, localStorage persistence |
+| `lib/settings.ts` | Settings types, defaults, durable-source/localStorage-cache persistence |
 | `lib/onboarding.ts` | First-launch setup-assistant completion flag |
 | `lib/events.ts` | Event types, stream/level definitions, color constants |
 | `lib/history.ts` | History entries, rolling trim, search + match segmentation, export rendering |
+| `lib/durableUserData.ts` | History/stats disk hydration, localStorage migration, write-through and clear |
 | `lib/historyExport.ts` | Clipboard and save-dialog wrappers for history exports |
 | `lib/commandPalette.ts` | Palette command type, tiered scoring, filtering, selection movement |
 | `lib/keyboardShortcuts.ts` | Pure main-window keydown → action mapping (⌘K/⌘F/⌘,/⌘L) |
 | `lib/silenceAutoStop.ts` | Deterministic trailing-silence detector (pure per-sample fold) |
 | `lib/stats.ts` | Usage metrics: words, WPM, recordings, tokens |
 | `lib/dictation.ts` | Tauri command wrappers for dictation pipeline |
+| `lib/microphonePreview.ts` | Microphone preview command wrappers, event types, and meter presentation helpers |
 | `lib/updater.ts` | Semver parsing, min-version checking, update utilities |
 | `lib/log.ts` | Frontend logging via Rust tracing (flog utility) |
 | `lib/hooks/useHoldDownToggle.ts` | Hold-down mode (rdev press/release events) |
@@ -183,7 +188,7 @@ Read these before working on a feature:
 | `lib/hooks/useCombinedToggle.ts` | Both mode (hold-down + double-tap simultaneous) |
 | `lib/hooks/useRecordingState.ts` | Recording status, transcription, toggle logic |
 | `lib/hooks/useAutoUpdater.ts` | OTA updates, min-version enforcement |
-| `lib/hooks/useHistoryManagement.ts` | Transcription history: add/update/clear with localStorage persistence |
+| `lib/hooks/useHistoryManagement.ts` | Transcription history: add/update/clear with durable write-through persistence |
 | `lib/hooks/useSilenceAutoStop.ts` | Ends a hands-free (not hold-started) recording after trailing silence |
 | `lib/hooks/useRecordingOrigin.ts` | Tracks whether the in-flight recording is hold- or toggle-started |
 | `lib/hooks/useInitialization.ts` | One-time init sequence (initDictation + configure) |
@@ -217,6 +222,7 @@ Read these before working on a feature:
 | `components/CommandPalette.tsx` | ⌘K command palette dialog |
 | `components/history/HistoryPanel.tsx` | History workspace: search, filters, export menu |
 | `components/settings/SettingsPanel.tsx` | Settings UI with mode switching (incl. Transform page) |
+| `components/settings/MicrophoneInputTest.tsx` | Live capture-only microphone meter and safe input switching |
 | `components/settings/TransformsManager.tsx` | Saved transform CRUD UI |
 | `components/transform-review/` | Review popover UI (diff, actions, mock driver) |
 | `components/settings/PerformanceLab.tsx` | Benchmark UI, scoring tables, report save/export |
