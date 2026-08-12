@@ -542,6 +542,9 @@ pub async fn start_corpus_recording(
         if state.benchmark.is_running() {
             return Err("Finish the current benchmark first".to_string());
         }
+        // Strict predicate on purpose (see `benchmark.rs`): corpus audio is
+        // reference material, so it must not be recorded while a query's CLI
+        // child is loading the machine.
         if state.query.status().blocks_pipeline() {
             return Err("Finish the current voice query first".to_string());
         }

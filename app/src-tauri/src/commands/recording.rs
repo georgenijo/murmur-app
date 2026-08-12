@@ -1098,9 +1098,9 @@ pub async fn process_audio(
             tracing::warn!(target: "pipeline", "process_audio: blocked — transform in progress");
             return Err("Cannot process audio while a transform is in progress.".to_string());
         }
-        if state.query.status().blocks_pipeline() {
-            tracing::warn!(target: "pipeline", "process_audio: blocked — voice query in progress");
-            return Err("Cannot process audio while a voice query is in progress.".to_string());
+        if state.query.status().blocks_capture() {
+            tracing::warn!(target: "pipeline", "process_audio: blocked — voice query is capturing");
+            return Err("Cannot process audio while a voice query is listening.".to_string());
         }
         // Mutual exclusion with the local-LLM transform runtime: only one heavy
         // inference runtime may be resident. Refuse while a transform is active.
@@ -2585,8 +2585,8 @@ pub async fn start_native_recording(
                 "state": "idle"
             }));
         }
-        if state.query.status().blocks_pipeline() {
-            tracing::warn!(target: "pipeline", "start_native_recording: blocked — voice query in progress");
+        if state.query.status().blocks_capture() {
+            tracing::warn!(target: "pipeline", "start_native_recording: blocked — voice query is capturing");
             return Ok(serde_json::json!({
                 "type": "busy_querying",
                 "state": "idle"
@@ -3239,9 +3239,10 @@ pub async fn transcribe_file(
         if state.app_state.transform_status().blocks_recording() {
             return Err("Wait for the transform to finish before transcribing a file.".to_string());
         }
-        if state.query.status().blocks_pipeline() {
+        if state.query.status().blocks_capture() {
             return Err(
-                "Wait for the voice query to finish before transcribing a file.".to_string(),
+                "Wait for the voice query to finish listening before transcribing a file."
+                    .to_string(),
             );
         }
         if dictation.status != DictationStatus::Idle {

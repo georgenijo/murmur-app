@@ -71,7 +71,8 @@
         "resizable": false,
         "visible": false,
         "focus": false,
-        "shadow": true
+        "shadow": true,
+        "visibleOnAllWorkspaces": true
       },
       {
         "label": "query-review",
@@ -86,7 +87,8 @@
         "resizable": false,
         "visible": false,
         "focus": false,
-        "shadow": true
+        "shadow": true,
+        "visibleOnAllWorkspaces": true
       }
     ],
     "macOSPrivateApi": true,

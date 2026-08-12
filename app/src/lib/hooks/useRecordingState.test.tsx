@@ -92,6 +92,26 @@ describe('useRecordingState transition ordering', () => {
     expect(current.status).toBe('idle');
   });
 
+  it('surfaces a reason for every busy refusal instead of failing silently', async () => {
+    const refusals = [
+      'busy_benchmarking',
+      'busy_transcribing_file',
+      'busy_meeting',
+      'busy_querying',
+      'busy_transforming',
+      'busy_recording_corpus',
+    ];
+
+    for (const type of refusals) {
+      mocks.startRecording.mockResolvedValueOnce({ type, state: 'idle' });
+
+      await act(async () => current.handleStart());
+
+      expect(current.status).toBe('idle');
+      expect(current.error, `${type} must explain itself`).not.toBe('');
+    }
+  });
+
   it('does not let a start response overwrite an earlier readiness event', async () => {
     mocks.startRecording.mockImplementationOnce(async () => {
       mocks.listeners.get('recording-status-changed')?.({ payload: 'starting' });

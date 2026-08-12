@@ -232,6 +232,11 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
           else if (res.type === 'busy_benchmarking') setError('Wait for the benchmark to finish.');
           else if (res.type === 'busy_transcribing_file') setError('Wait for the file transcription to finish.');
           else if (res.type === 'busy_meeting') setError('Stop the meeting capture before starting dictation.');
+          // Without these three the press is a silent no-op: Rust refuses the
+          // start but nothing tells the user why.
+          else if (res.type === 'busy_querying') setError('Finish speaking your voice query before starting dictation.');
+          else if (res.type === 'busy_transforming') setError('Wait for the transform to finish.');
+          else if (res.type === 'busy_recording_corpus') setError('Finish the corpus recording before starting dictation.');
           else if (res.type === 'audio_recovering') {
             setError('Microphone cleanup is still in progress. Try again when Murmur is ready.');
           }

@@ -1747,6 +1747,9 @@ pub(crate) async fn start_transform_capture(
         } else if state.transform_runtime.is_transform_busy() {
             tracing::info!(target: "transform", transform_pass_id, error_code = "runtime_busy", "start_transform_capture ignored");
             Err("runtime_busy")
+        // Strict predicate on purpose: the transform holds the local-LLM
+        // sidecar, and only one heavy inference runtime may be resident. A
+        // query in `Running` may itself be driving an LLM.
         } else if state.query.status().blocks_pipeline() {
             tracing::info!(target: "transform", transform_pass_id, error_code = "query_busy", "start_transform_capture ignored");
             Err("query_busy")

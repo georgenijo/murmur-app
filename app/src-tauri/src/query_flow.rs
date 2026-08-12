@@ -54,11 +54,29 @@ impl QueryStatus {
         }
     }
 
-    pub(crate) fn blocks_pipeline(self) -> bool {
+    /// True while the query owns the microphone or the shared ASR backend.
+    ///
+    /// `finish_query_capture` stops and joins the query's audio owner before it
+    /// transitions to `Transcribing`, and ASR completes before `Running`, so a
+    /// query that has reached `Running` holds only its CLI child. Capture-only
+    /// work (dictation, file transcription, microphone preview) is therefore
+    /// free to start once the answer is being generated — which is the long
+    /// phase of a query and used to lock the user out of dictation entirely.
+    pub(crate) fn blocks_capture(self) -> bool {
         matches!(
             self,
-            Self::Connecting | Self::Listening | Self::Transcribing | Self::Running
+            Self::Connecting | Self::Listening | Self::Transcribing
         )
+    }
+
+    /// True for every non-terminal state, `Running` included.
+    ///
+    /// Stricter than [`Self::blocks_capture`]: the CLI child competes for CPU
+    /// and may itself be a heavy inference runtime. Latency-sensitive work
+    /// (benchmarks, corpus capture) and the local-LLM transform runtime stay
+    /// mutually exclusive with it, so they keep using this predicate.
+    pub(crate) fn blocks_pipeline(self) -> bool {
+        self.blocks_capture() || matches!(self, Self::Running)
     }
 
     fn accepts_new_pass(self) -> bool {
@@ -1000,6 +1018,29 @@ mod tests {
         };
         let valid = validate_command(valid).expect("printf must be executable");
         assert_eq!(valid.arguments, vec!["%s"]);
+    }
+
+    #[test]
+    fn running_frees_capture_but_still_blocks_heavy_runtimes() {
+        // Capture-only work may start once the answer is generating: the audio
+        // owner is stopped and joined before `Transcribing`, and ASR finishes
+        // before `Running`.
+        assert!(!QueryStatus::Running.blocks_capture());
+        assert!(QueryStatus::Running.blocks_pipeline());
+
+        for status in [
+            QueryStatus::Connecting,
+            QueryStatus::Listening,
+            QueryStatus::Transcribing,
+        ] {
+            assert!(status.blocks_capture(), "{status:?} owns mic or ASR");
+            assert!(status.blocks_pipeline(), "{status:?} must stay strict");
+        }
+
+        for status in [QueryStatus::Idle, QueryStatus::Ready, QueryStatus::Failed] {
+            assert!(!status.blocks_capture(), "{status:?} is terminal");
+            assert!(!status.blocks_pipeline(), "{status:?} is terminal");
+        }
     }
 
     #[test]
