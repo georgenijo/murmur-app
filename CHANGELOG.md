@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Diagnostic microphone-state refreshes now wait until dictation or transform
+  capture releases lifecycle ownership, then coalesce into one idle refresh.
 ### Added
 
 - Meeting Capture records the selected microphone and Mac playback as separate
