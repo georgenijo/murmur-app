@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.31.1] - 2026-08-12
+
 ### Fixed
 
 - Update checks now read minimum-version policy from Tauri's native updater
