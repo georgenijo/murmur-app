@@ -204,6 +204,7 @@ function App() {
     queryHotkey: settings.queryHotkey,
     microphone: settings.microphone,
     command: {
+      provider: settings.queryProvider,
       executable: settings.queryExecutable,
       arguments: settings.queryArguments,
       timeoutSeconds: settings.queryTimeoutSeconds,

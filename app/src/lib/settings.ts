@@ -13,6 +13,7 @@ export type DoubleTapKey = 'shift_l' | 'alt_l' | 'ctrl_r';
  */
 export type TransformKey = 'alt_r' | 'ctrl_l' | 'shift_r';
 export type QueryKey = TransformKey;
+export type QueryProviderId = 'claude' | 'codex' | 'grok' | 'cursor' | 'custom';
 
 export type WritingStyle =
   | 'conversational'
@@ -203,6 +204,8 @@ export interface Settings {
   transformHoldKey: TransformKey | null;
   /** Independent double-tap voice-query shortcut. `null` keeps the integration off. */
   queryHotkey: QueryKey | null;
+  /** Provider preset metadata; `custom` preserves the original generic bridge. */
+  queryProvider: QueryProviderId;
   /** Absolute path to the exact user-selected CLI executable. */
   queryExecutable: string;
   /** Fixed argv elements placed before the one-element spoken question. */
@@ -388,6 +391,7 @@ export const DEFAULT_SETTINGS: Settings = {
   // Disabled by default — no settings UI to configure it yet (Phase D).
   transformHoldKey: null,
   queryHotkey: null,
+  queryProvider: 'custom',
   queryExecutable: '',
   queryArguments: [],
   queryTimeoutSeconds: 60,
@@ -649,6 +653,12 @@ export function loadSettings(): Settings {
         parsed.queryExecutable = DEFAULT_SETTINGS.queryExecutable;
       } else {
         parsed.queryExecutable = parsed.queryExecutable.slice(0, 4096);
+      }
+      if (
+        typeof parsed.queryProvider !== 'string'
+        || !['claude', 'codex', 'grok', 'cursor', 'custom'].includes(parsed.queryProvider)
+      ) {
+        parsed.queryProvider = DEFAULT_SETTINGS.queryProvider;
       }
       if (!Array.isArray(parsed.queryArguments)) {
         parsed.queryArguments = DEFAULT_SETTINGS.queryArguments;

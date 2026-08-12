@@ -10,7 +10,7 @@
 //! is therefore forbidden from exposing any process-spawn surface.
 
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::{Duration, Instant};
 
 const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(1);
@@ -77,32 +77,89 @@ impl ManagedChild {
     /// content as its own element and never build a command string.
     ///
     /// The child receives only the small environment needed by common CLI
-    /// shims and credential stores. Arbitrary parent variables (including API
-    /// keys) are deliberately not forwarded. `USER`/`LOGNAME` carry no secret
-    /// (the username is already visible in `HOME`) and are required on macOS:
-    /// Claude Code derives its Keychain credential account name from `USER`
-    /// and resolves to a nonexistent "unknown" account without it, reporting
-    /// "Not logged in" even when the user is signed in.
+    /// shims and credential stores plus the two explicitly declared config-dir
+    /// additions. Arbitrary parent variables (including API keys) are
+    /// deliberately not forwarded, and callers cannot override a base key.
+    /// `USER`/`LOGNAME` carry no secret (the username is already visible in
+    /// `HOME`) and are required on macOS: Claude Code derives its Keychain
+    /// credential account name from `USER` and resolves to a nonexistent
+    /// "unknown" account without it, reporting "Not logged in" even when the
+    /// user is signed in.
     pub fn spawn_user_cli(
         executable: &Path,
         arguments: &[String],
-    ) -> std::io::Result<(Self, ChildStdin, ChildStdout)> {
+        declared_environment: &[(String, String)],
+    ) -> std::io::Result<(Self, ChildStdin, ChildStdout, ChildStderr)> {
+        const BASE_ENVIRONMENT: [&str; 8] = [
+            "HOME", "PATH", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "USER", "LOGNAME",
+        ];
+        const DECLARED_ENVIRONMENT: [&str; 2] = ["CLAUDE_CONFIG_DIR", "CODEX_HOME"];
+        let mut seen = std::collections::HashSet::new();
+        for (key, value) in declared_environment {
+            if !DECLARED_ENVIRONMENT.contains(&key.as_str())
+                || BASE_ENVIRONMENT.contains(&key.as_str())
+                || !seen.insert(key.as_str())
+                || key.contains(['\0', '='])
+                || value.contains('\0')
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "invalid declared user CLI environment",
+                ));
+            }
+        }
         let mut command = Command::new(executable);
         command
             .args(arguments)
             .current_dir("/")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .env_clear();
-        for key in [
-            "HOME", "PATH", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "USER", "LOGNAME",
-        ] {
+        for key in BASE_ENVIRONMENT {
             if let Some(value) = std::env::var_os(key) {
                 command.env(key, value);
             }
         }
-        Self::spawn_command(command)
+        for (key, value) in declared_environment {
+            command.env(key, value);
+        }
+        Self::spawn_user_cli_command(command)
+    }
+
+    fn spawn_user_cli_command(
+        mut command: Command,
+    ) -> std::io::Result<(Self, ChildStdin, ChildStdout, ChildStderr)> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            unsafe {
+                command.pre_exec(|| {
+                    if libc::setpgid(0, 0) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    let max_fd = libc::getdtablesize();
+                    let mut fd = 3;
+                    while fd < max_fd {
+                        libc::close(fd);
+                        fd += 1;
+                    }
+                    Ok(())
+                });
+            }
+        }
+
+        let mut child = command.spawn()?;
+        let stdin = child.stdin.take().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::BrokenPipe, "missing user CLI stdin")
+        })?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::BrokenPipe, "missing user CLI stdout")
+        })?;
+        let stderr = child.stderr.take().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::BrokenPipe, "missing user CLI stderr")
+        })?;
+        Ok((Self::from_spawned_child(child), stdin, stdout, stderr))
     }
 
     fn spawn_command(mut command: Command) -> std::io::Result<(Self, ChildStdin, ChildStdout)> {
@@ -286,9 +343,9 @@ mod tests {
         let marker = directory.path().join("shell-interpolation-must-not-run");
         let question = format!("what?; $(touch {}) && echo unsafe", marker.display());
         let arguments = vec!["%s".to_string(), question.clone()];
-        let (mut child, stdin, mut stdout) =
-            ManagedChild::spawn_user_cli(Path::new("/usr/bin/printf"), &arguments).unwrap();
-        drop(stdin);
+        let (mut child, stdin, mut stdout, stderr) =
+            ManagedChild::spawn_user_cli(Path::new("/usr/bin/printf"), &arguments, &[]).unwrap();
+        drop((stdin, stderr));
         let mut output = String::new();
         stdout.read_to_string(&mut output).unwrap();
         let termination = child
@@ -304,9 +361,9 @@ mod tests {
 
     #[test]
     fn user_cli_environment_contains_only_explicit_allowlist() {
-        let (mut child, stdin, mut stdout) =
-            ManagedChild::spawn_user_cli(Path::new("/usr/bin/env"), &[]).unwrap();
-        drop(stdin);
+        let (mut child, stdin, mut stdout, stderr) =
+            ManagedChild::spawn_user_cli(Path::new("/usr/bin/env"), &[], &[]).unwrap();
+        drop((stdin, stderr));
         let mut output = String::new();
         stdout.read_to_string(&mut output).unwrap();
         child
@@ -325,11 +382,38 @@ mod tests {
     }
 
     #[test]
+    fn user_cli_accepts_only_explicit_config_directory_additions() {
+        let additions = vec![("CODEX_HOME".to_string(), "/tmp/codex-home".to_string())];
+        let (mut child, stdin, mut stdout, stderr) =
+            ManagedChild::spawn_user_cli(Path::new("/usr/bin/env"), &[], &additions).unwrap();
+        drop((stdin, stderr));
+        let mut output = String::new();
+        stdout.read_to_string(&mut output).unwrap();
+        child
+            .wait_for_exit(Instant::now() + Duration::from_secs(1))
+            .expect("env must exit cleanly");
+        assert!(output
+            .lines()
+            .any(|line| line == "CODEX_HOME=/tmp/codex-home"));
+
+        for key in [
+            "HOME", "PATH", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "USER", "LOGNAME",
+        ] {
+            let rejected = vec![(key.to_string(), "/tmp/override".to_string())];
+            assert!(
+                ManagedChild::spawn_user_cli(Path::new("/usr/bin/env"), &[], &rejected).is_err()
+            );
+        }
+        let secret = vec![("ANTHROPIC_API_KEY".to_string(), "secret".to_string())];
+        assert!(ManagedChild::spawn_user_cli(Path::new("/usr/bin/env"), &[], &secret).is_err());
+    }
+
+    #[test]
     fn user_cli_hard_kill_confirms_descendant_process_group_is_empty() {
         let arguments = vec!["-c".to_string(), "sleep 30 & wait".to_string()];
-        let (mut child, stdin, stdout) =
-            ManagedChild::spawn_user_cli(Path::new("/bin/sh"), &arguments).unwrap();
-        drop((stdin, stdout));
+        let (mut child, stdin, stdout, stderr) =
+            ManagedChild::spawn_user_cli(Path::new("/bin/sh"), &arguments, &[]).unwrap();
+        drop((stdin, stdout, stderr));
         let termination = child
             .hard_kill_confirmed(Instant::now() + Duration::from_secs(2))
             .expect("owned child and its descendant must be confirmed stopped");

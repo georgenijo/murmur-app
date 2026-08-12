@@ -22,6 +22,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   termination_unconfirmed: 'Murmur could not confirm that the CLI process stopped.',
   process_failed: 'The configured CLI process failed.',
   exit_nonzero: 'The configured CLI exited with an error.',
+  provider_not_authenticated: 'The configured provider is not signed in.',
   output_too_large: 'The answer exceeded the 256 KB safety limit and was stopped.',
   empty_answer: 'The configured CLI returned no answer.',
   clipboard_unavailable: 'The answer is ready, but the clipboard is unavailable. Use Copy to try again.',
@@ -55,6 +56,9 @@ export function QueryReviewApp() {
   const driver = useQueryReviewDriver();
   const errorMessage = useMemo(() => queryErrorMessage(driver.errorCode), [driver.errorCode]);
   const terminal = driver.state === 'ready' || driver.state === 'failed';
+  const primaryText = driver.state === 'failed'
+    ? errorMessage ?? 'The voice query could not be completed.'
+    : driver.answer || errorMessage || (terminal ? 'No answer was returned.' : '');
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -100,10 +104,28 @@ export function QueryReviewApp() {
             aria-live="polite"
             className="min-h-0 flex-1 select-text overflow-y-auto break-words px-4 py-3 text-[13px] leading-relaxed text-white/85 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_a]:text-violet-300 [&_a]:underline [&_blockquote]:my-2 [&_blockquote]:border-l-2 [&_blockquote]:border-white/20 [&_blockquote]:pl-3 [&_blockquote]:text-white/70 [&_code]:rounded [&_code]:bg-white/10 [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-[12px] [&_em]:italic [&_h1]:mb-1 [&_h1]:mt-3 [&_h1]:text-[15px] [&_h1]:font-semibold [&_h1]:text-white [&_h2]:mb-1 [&_h2]:mt-3 [&_h2]:text-[14px] [&_h2]:font-semibold [&_h2]:text-white [&_h3]:mb-1 [&_h3]:mt-2 [&_h3]:text-[13px] [&_h3]:font-semibold [&_h3]:text-white [&_hr]:my-3 [&_hr]:border-white/10 [&_li]:my-0.5 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_pre]:my-2 [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:bg-black/40 [&_pre]:p-3 [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_strong]:font-semibold [&_strong]:text-white [&_table]:my-2 [&_table]:w-full [&_td]:pr-3 [&_th]:pr-3 [&_th]:text-left [&_th]:font-semibold [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5"
           >
-            {driver.answer
-              ? <Markdown rehypePlugins={[rehypeSanitize]}>{driver.answer}</Markdown>
-              : <p className="whitespace-pre-wrap">{errorMessage || 'No answer was returned.'}</p>}
+            {driver.state === 'failed'
+              ? <p className="whitespace-pre-wrap">{primaryText}</p>
+              : driver.answer
+                ? <Markdown rehypePlugins={[rehypeSanitize]}>{driver.answer}</Markdown>
+                : <p className="whitespace-pre-wrap">{primaryText}</p>}
             {driver.state === 'running' && <span aria-hidden="true" className="ml-0.5 inline-block h-3 w-px animate-pulse bg-white/60 align-middle" />}
+            {driver.state === 'failed' && driver.errorDetail && (
+              <div className="mt-3 rounded-lg border border-red-300/15 bg-red-950/30 p-2.5">
+                <p className="select-none text-[10px] font-semibold uppercase tracking-[0.12em] text-red-200/55">
+                  Provider detail
+                </p>
+                <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-red-100/75">
+                  {driver.errorDetail}
+                </pre>
+              </div>
+            )}
+            {driver.errorCode === 'provider_not_authenticated' && driver.signInFix && (
+              <p className="mt-3 text-xs text-amber-100/80">{driver.signInFix}</p>
+            )}
+            {driver.signInStatus && (
+              <p aria-live="polite" className="mt-2 text-xs text-white/60">{driver.signInStatus}</p>
+            )}
           </div>
           <footer className="flex items-center justify-between border-t border-white/10 px-3 py-2">
             <span className={`text-[10px] ${driver.errorCode === 'clipboard_unavailable' ? 'text-amber-300/80' : 'text-white/35'}`}>
@@ -114,6 +136,16 @@ export function QueryReviewApp() {
                   : driver.state === 'ready' ? 'Never auto-pasted' : 'Esc to cancel'}
             </span>
             <div className="flex gap-2">
+              {driver.errorCode === 'provider_not_authenticated' && driver.signInFix && (
+                <button
+                  type="button"
+                  disabled={driver.signInBusy}
+                  onClick={() => void driver.signIn()}
+                  className="rounded-lg bg-white/10 px-3 py-1.5 text-xs font-semibold text-white hover:bg-white/15 disabled:cursor-wait disabled:opacity-50"
+                >
+                  {driver.signInBusy ? 'Waiting…' : 'Sign in…'}
+                </button>
+              )}
               {driver.state === 'ready' && (
                 <button type="button" onClick={driver.copy} className="rounded-lg bg-white/10 px-3 py-1.5 text-xs font-semibold text-white hover:bg-white/15">
                   Copy

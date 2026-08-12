@@ -62,6 +62,7 @@ interface Settings {
 
   // Voice Query (configured CLI)
   queryHotkey: QueryKey | null;            // null = disabled (default)
+  queryProvider: QueryProviderId;           // preset metadata; default "custom"
   queryExecutable: string;                 // absolute executable path
   queryArguments: string[];                // fixed argv before question
   queryTimeoutSeconds: number;             // 5–300, default 60
@@ -163,11 +164,14 @@ model-selection side effects.
 | Setting | Type | Default | Valid Options/Range | Description |
 |---------|------|---------|-------------------|-------------|
 | `queryHotkey` | `QueryKey \| null` | `null` | `'alt_r'`, `'ctrl_l'`, `'shift_r'`, or `null` | Dedicated double-tap-to-start / single-tap-to-stop shortcut. It may not equal `transformHoldKey`; a persisted conflict disables Voice Query. |
+| `queryProvider` | `QueryProviderId` | `'custom'` | `'claude'`, `'codex'`, `'grok'`, `'cursor'`, or `'custom'` | Chooses inert discovery/auth metadata and recommended argv. Selecting a preset never bypasses the generic direct-spawn bridge. Unknown persisted values fail closed to Custom. |
 | `queryExecutable` | `string` | `''` | Absolute executable path, at most 4096 bytes | Exact CLI program to spawn. Murmur never provides a default and never invokes a shell. |
 | `queryArguments` | `string[]` | `[]` | At most 32 fixed arguments, 4096 bytes each and 32 KiB total | Passed literally before the locally transcribed question, which is one final argv element. |
 | `queryTimeoutSeconds` | `number` | `60` | Integer 5–300 | Deadline after which the owned CLI process group is terminated and confirmed empty. |
 
-The Settings disclosure explicitly states that the configured CLI may send the question or answer to cloud services and that Murmur cannot control its network behavior. See [Voice Query](../features/voice-query.md).
+Declared provider environment values are not settings fields. Rust stores only `CLAUDE_CONFIG_DIR` and/or `CODEX_HOME` under owner-only app data; `HOME`, base allowlist overrides, API keys, tokens, and arbitrary names are rejected. Webviews can stage a replacement value for Save, but saved values are never returned to the frontend or copied into localStorage. Settings receives configured names only.
+
+The Settings disclosure explicitly states that the configured CLI may send the question or answer to cloud services and that Murmur cannot control its network behavior. Enabling validates the configuration immediately; Test runs a bounded preset auth probe and keeps its stdout/stderr within Settings. See [Voice Query](../features/voice-query.md).
 
 ### Recording Mode Details
 

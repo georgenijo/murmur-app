@@ -18,10 +18,24 @@ import {
   QUERY_KEY_OPTIONS,
   TRANSFORM_KEY_OPTIONS,
   type QueryKey,
+  type QueryProviderId,
   type RecordingMode,
   type Settings,
   type TransformKey,
 } from '../../lib/settings';
+import {
+  CUSTOM_QUERY_PRESET,
+  launchQueryProviderSignIn,
+  listQueryProviderPresets,
+  loadQueryEnvironment,
+  saveQueryEnvironment,
+  testQueryProvider,
+  validateQueryCommand,
+  type QueryCommandConfig,
+  type QueryEnvironmentVariable,
+  type QueryProviderPreset,
+  type QueryProviderTestResult,
+} from '../../lib/queryProviders';
 import { useVocabScan } from '../../lib/hooks/useVocabScan';
 import { useModelRuntimeCatalog } from '../../lib/modelRuntime';
 import {
@@ -247,6 +261,25 @@ export function fileOutputDeliveryDescription(settings: Pick<Settings, 'autoPast
   return settings.autoPaste
     ? 'Clipboard copying stays on; only automatic paste is paused.'
     : 'Clipboard copying stays on; auto-paste remains off.';
+}
+
+function queryConfigurationMessage(error: unknown): string {
+  const code = String(error);
+  if (code.includes('invalid_executable')) return 'The CLI executable is missing, is not executable, or is not an absolute path.';
+  if (code.includes('invalid_arguments')) return 'Fixed arguments exceed the Voice Query safety limits.';
+  if (code.includes('invalid_timeout')) return 'Choose a timeout between 5 seconds and 5 minutes.';
+  if (code.includes('invalid_environment')) return 'Declared environment values must be absolute config-directory paths.';
+  if (code.includes('environment_unavailable')) return 'Murmur could not read the protected Voice Query environment file.';
+  return 'Murmur could not validate this Voice Query configuration.';
+}
+
+function queryCommand(settings: Settings): QueryCommandConfig {
+  return {
+    provider: settings.queryProvider,
+    executable: settings.queryExecutable,
+    arguments: settings.queryArguments,
+    timeoutSeconds: settings.queryTimeoutSeconds,
+  };
 }
 
 export const SettingsPanel = memo(function SettingsPanel({
@@ -480,6 +513,53 @@ export const SettingsPanel = memo(function SettingsPanel({
   const [transformKeyError, setTransformKeyError] = useState<string | null>(null);
   const [transformDownloadPct, setTransformDownloadPct] = useState<number | null>(null);
   const [queryConfigError, setQueryConfigError] = useState<string | null>(null);
+  const [queryPresets, setQueryPresets] = useState<QueryProviderPreset[]>([CUSTOM_QUERY_PRESET]);
+  const [queryEnvironment, setQueryEnvironment] = useState<QueryEnvironmentVariable[]>([]);
+  const [configuredQueryEnvironment, setConfiguredQueryEnvironment] = useState<string[]>([]);
+  const [queryEnvironmentStatus, setQueryEnvironmentStatus] = useState<string | null>(null);
+  const [queryConfigBusy, setQueryConfigBusy] = useState(false);
+  const [queryTestResult, setQueryTestResult] = useState<QueryProviderTestResult | null>(null);
+  const [queryTestBusy, setQueryTestBusy] = useState(false);
+  const [querySignInStatus, setQuerySignInStatus] = useState<string | null>(null);
+  const signInPollRef = useRef(0);
+
+  useEffect(() => () => {
+    signInPollRef.current += 1;
+  }, []);
+
+  useEffect(() => {
+    if (activeCat !== 'text') return;
+    let cancelled = false;
+    void listQueryProviderPresets()
+      .then((presets) => {
+        if (!cancelled) setQueryPresets(presets);
+      })
+      .catch(() => {
+        if (!cancelled) setQueryPresets([CUSTOM_QUERY_PRESET]);
+      });
+    return () => { cancelled = true; };
+  }, [activeCat]);
+
+  useEffect(() => {
+    if (activeCat !== 'text') return;
+    let cancelled = false;
+    setQueryEnvironmentStatus(null);
+    void loadQueryEnvironment(settings.queryProvider)
+      .then((names) => {
+        if (!cancelled) {
+          setConfiguredQueryEnvironment(Array.isArray(names) ? names : []);
+          setQueryEnvironment([]);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setQueryEnvironment([]);
+          setConfiguredQueryEnvironment([]);
+          setQueryEnvironmentStatus('Could not load the protected environment file.');
+        }
+      });
+    return () => { cancelled = true; };
+  }, [activeCat, settings.queryProvider]);
 
   const refreshTransformModel = useCallback(async () => {
     try {
@@ -585,7 +665,7 @@ export const SettingsPanel = memo(function SettingsPanel({
     ? 'Hold to record, or double-tap to start and single-tap to stop.'
     : isDoubleTap ? 'Double-tap to start and single-tap to stop.' : 'Hold to start and release to stop.';
 
-  const toggleVoiceQuery = () => {
+  const toggleVoiceQuery = async () => {
     setQueryConfigError(null);
     if (settings.queryHotkey !== null) {
       onUpdateSettings({ queryHotkey: null });
@@ -600,7 +680,120 @@ export const SettingsPanel = memo(function SettingsPanel({
       setQueryConfigError('No dedicated shortcut is available.');
       return;
     }
-    onUpdateSettings({ queryHotkey: key });
+    setQueryConfigBusy(true);
+    try {
+      await validateQueryCommand(queryCommand(settings));
+      onUpdateSettings({ queryHotkey: key });
+    } catch (error) {
+      setQueryConfigError(queryConfigurationMessage(error));
+    } finally {
+      setQueryConfigBusy(false);
+    }
+  };
+
+  const selectQueryProvider = (provider: QueryProviderId) => {
+    const selected = queryPresets.find((preset) => preset.id === provider)
+      ?? (provider === 'custom' ? CUSTOM_QUERY_PRESET : null);
+    if (!selected) return;
+    signInPollRef.current += 1;
+    setQueryConfigError(null);
+    setQueryTestResult(null);
+    setQuerySignInStatus(null);
+    setQueryEnvironmentStatus(null);
+    setQueryEnvironment([]);
+    setConfiguredQueryEnvironment([]);
+    onUpdateSettings({
+      queryProvider: provider,
+      queryExecutable: selected.discoveredExecutable ?? '',
+      queryArguments: selected.recommendedArguments,
+      queryHotkey: null,
+    });
+  };
+
+  const saveDeclaredEnvironment = async () => {
+    setQueryEnvironmentStatus(null);
+    const entered = queryEnvironment.filter((variable) => variable.value.length > 0);
+    if (entered.length === 0) {
+      setQueryEnvironmentStatus('Enter an absolute config-directory path to save.');
+      return;
+    }
+    try {
+      await saveQueryEnvironment(settings.queryProvider, entered);
+      setConfiguredQueryEnvironment((current) => [
+        ...new Set([...current, ...entered.map((variable) => variable.name)]),
+      ]);
+      setQueryEnvironment([]);
+      setQueryEnvironmentStatus('Saved in Murmur’s protected app-data directory.');
+      setQueryTestResult(null);
+      setQuerySignInStatus(null);
+      signInPollRef.current += 1;
+    } catch (error) {
+      setQueryEnvironmentStatus(queryConfigurationMessage(error));
+    }
+  };
+
+  const clearDeclaredEnvironment = async () => {
+    setQueryEnvironmentStatus(null);
+    try {
+      await saveQueryEnvironment(settings.queryProvider, []);
+      setQueryEnvironment([]);
+      setConfiguredQueryEnvironment([]);
+      setQueryEnvironmentStatus('Saved config-directory values cleared.');
+      setQueryTestResult(null);
+      setQuerySignInStatus(null);
+      signInPollRef.current += 1;
+    } catch (error) {
+      setQueryEnvironmentStatus(queryConfigurationMessage(error));
+    }
+  };
+
+  const runQueryTest = async (): Promise<QueryProviderTestResult | null> => {
+    setQueryConfigError(null);
+    setQuerySignInStatus(null);
+    signInPollRef.current += 1;
+    setQueryTestBusy(true);
+    try {
+      const result = await testQueryProvider(queryCommand(settings));
+      setQueryTestResult(result);
+      return result;
+    } catch (error) {
+      setQueryConfigError(queryConfigurationMessage(error));
+      setQueryTestResult(null);
+      return null;
+    } finally {
+      setQueryTestBusy(false);
+    }
+  };
+
+  const signInQueryProvider = async () => {
+    const poll = signInPollRef.current + 1;
+    signInPollRef.current = poll;
+    setQueryConfigError(null);
+    setQuerySignInStatus('Opening Terminal…');
+    try {
+      await launchQueryProviderSignIn(queryCommand(settings));
+      if (signInPollRef.current !== poll) return;
+      setQuerySignInStatus('Terminal opened. Waiting for sign-in…');
+      const deadline = Date.now() + 60_000;
+      while (signInPollRef.current === poll && Date.now() < deadline) {
+        await new Promise((resolve) => window.setTimeout(resolve, 2000));
+        if (signInPollRef.current !== poll) return;
+        const result = await testQueryProvider(queryCommand(settings));
+        setQueryTestResult(result);
+        if (result.ok) {
+          setQuerySignInStatus('Signed in and ready.');
+          return;
+        }
+      }
+      if (signInPollRef.current === poll) {
+        setQuerySignInStatus('Sign-in is still pending. Finish in Terminal, then choose Test.');
+      }
+    } catch (error) {
+      setQuerySignInStatus(null);
+      setQueryConfigError(String(error).includes('sign_in')
+        ? 'Murmur could not open the provider sign-in in Terminal.'
+        : queryConfigurationMessage(error));
+    }
   };
 
   const chooseQueryExecutable = async () => {
@@ -608,7 +801,10 @@ export const SettingsPanel = memo(function SettingsPanel({
       const selected = await open({ directory: false, multiple: false });
       if (typeof selected === 'string') {
         setQueryConfigError(null);
-        onUpdateSettings({ queryExecutable: selected });
+        setQueryTestResult(null);
+        setQuerySignInStatus(null);
+        signInPollRef.current += 1;
+        onUpdateSettings({ queryExecutable: selected, queryHotkey: null });
       }
     } catch {
       // Cancellation leaves the configured executable untouched.
@@ -623,6 +819,14 @@ export const SettingsPanel = memo(function SettingsPanel({
     : null;
   const saveToFile = settings.saveTranscript || settings.saveAudio;
   const autoPasteOn = effectiveAutoPaste(settings);
+  const selectedQueryPreset = queryPresets.find((preset) => preset.id === settings.queryProvider)
+    ?? (settings.queryProvider === 'custom' ? CUSTOM_QUERY_PRESET : null);
+  const queryProviderItems = queryPresets.map((preset) => ({
+    value: preset.id,
+    label: preset.discoveredExecutable || preset.id === 'custom'
+      ? preset.label
+      : `${preset.label} — not found`,
+  }));
 
   const resetStats = () => {
     if (confirmReset) {
@@ -834,11 +1038,30 @@ export const SettingsPanel = memo(function SettingsPanel({
               </p>
             </div>
 
+            <div>
+              <label className="mb-1.5 block text-sm font-medium text-on-surface">Provider</label>
+              <Select
+                value={settings.queryProvider}
+                onChange={(value) => selectQueryProvider(value as QueryProviderId)}
+                items={queryProviderItems.length > 0
+                  ? queryProviderItems
+                  : [{ value: 'custom', label: 'Custom' }]}
+              />
+              {selectedQueryPreset && settings.queryProvider !== 'custom' && (
+                <p className="mt-1 text-xs text-on-surface-variant">
+                  {selectedQueryPreset.discoveredExecutable
+                    ? `Found ${selectedQueryPreset.discoveredExecutable}`
+                    : `Not found in ${selectedQueryPreset.discoveryPaths.join(', ')}`}
+                </p>
+              )}
+            </div>
+
             <SettingToggle
               title="Enable Voice Query"
               description="Double-tap a dedicated key to record; tap once to finish. No spoken keyword is used."
               checked={settings.queryHotkey !== null}
-              onChange={toggleVoiceQuery}
+              disabled={queryConfigBusy}
+              onChange={() => void toggleVoiceQuery()}
             />
 
             <div className="space-y-4">
@@ -851,7 +1074,10 @@ export const SettingsPanel = memo(function SettingsPanel({
                     value={settings.queryExecutable}
                     onChange={(event) => {
                       setQueryConfigError(null);
-                      onUpdateSettings({ queryExecutable: event.target.value });
+                      setQueryTestResult(null);
+                      setQuerySignInStatus(null);
+                      signInPollRef.current += 1;
+                      onUpdateSettings({ queryExecutable: event.target.value, queryHotkey: null });
                     }}
                     placeholder="/absolute/path/to/agent"
                     spellCheck={false}
@@ -872,7 +1098,15 @@ export const SettingsPanel = memo(function SettingsPanel({
                   id="query-arguments"
                   rows={3}
                   value={settings.queryArguments.join('\n')}
-                  onChange={(event) => onUpdateSettings({ queryArguments: event.target.value.split('\n').filter((argument) => argument.length > 0) })}
+                  onChange={(event) => {
+                    setQueryTestResult(null);
+                    setQuerySignInStatus(null);
+                    signInPollRef.current += 1;
+                    onUpdateSettings({
+                      queryArguments: event.target.value.split('\n').filter((argument) => argument.length > 0),
+                      queryHotkey: null,
+                    });
+                  }}
                   placeholder={'One argument per line\n--print'}
                   spellCheck={false}
                   className="w-full resize-y rounded-lg border border-outline-variant bg-surface-container-lowest px-3 py-2 font-mono text-xs leading-relaxed text-on-surface outline-none focus:border-primary"
@@ -881,6 +1115,128 @@ export const SettingsPanel = memo(function SettingsPanel({
                   Each line stays one argument. The transcript is appended as exactly one final argument, including spaces and punctuation.
                 </p>
               </div>
+
+              <div className="rounded-xl border border-outline-variant/30 bg-surface-container-low p-3">
+                <div className="flex items-center gap-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium text-on-surface">Provider preflight</p>
+                    <p className="mt-1 text-xs text-on-surface-variant">
+                      Runs the preset’s bounded authentication probe through the same direct-spawn and cleared-environment path as a query.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={queryTestBusy || !settings.queryExecutable.trim()}
+                    onClick={() => void runQueryTest()}
+                    className="rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-on-primary hover:bg-primary-dim disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {queryTestBusy ? 'Testing…' : 'Test'}
+                  </button>
+                </div>
+                {queryTestResult && (
+                  <div className="mt-3 space-y-2 text-xs">
+                    <p className={queryTestResult.ok ? 'text-primary' : 'text-error'}>
+                      {queryTestResult.authenticated === null
+                        ? 'Executable validated. Custom providers do not have a built-in authentication probe.'
+                        : queryTestResult.ok
+                          ? 'Authenticated and ready.'
+                          : queryTestResult.errorCode === 'provider_not_authenticated'
+                            ? queryTestResult.signInFix ?? 'The provider is not authenticated.'
+                            : 'The provider probe failed. Review its output below.'}
+                    </p>
+                    {queryTestResult.stdout && (
+                      <div>
+                        <p className="font-semibold text-on-surface-variant">stdout{queryTestResult.stdoutTruncated ? ' · tail only' : ''}</p>
+                        <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-surface-container-lowest p-2 font-mono text-[11px] text-on-surface">
+                          {queryTestResult.stdout}
+                        </pre>
+                      </div>
+                    )}
+                    {queryTestResult.stderr && (
+                      <div>
+                        <p className="font-semibold text-on-surface-variant">stderr{queryTestResult.stderrTruncated ? ' · tail only' : ''}</p>
+                        <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-surface-container-lowest p-2 font-mono text-[11px] text-on-surface">
+                          {queryTestResult.stderr}
+                        </pre>
+                      </div>
+                    )}
+                    {!queryTestResult.ok && queryTestResult.signInFix && (
+                      <button
+                        type="button"
+                        onClick={() => void signInQueryProvider()}
+                        className="rounded-lg border border-outline-variant/30 px-3 py-1.5 font-semibold text-on-surface hover:bg-surface-container"
+                      >
+                        Sign in…
+                      </button>
+                    )}
+                  </div>
+                )}
+                {querySignInStatus && (
+                  <p aria-live="polite" className="mt-2 text-xs text-on-surface-variant">
+                    {querySignInStatus}
+                  </p>
+                )}
+              </div>
+
+              {selectedQueryPreset && selectedQueryPreset.permittedEnvironmentVariables.length > 0 && (
+                <div className="rounded-xl border border-outline-variant/30 bg-surface-container-low p-3">
+                  <p className="text-sm font-medium text-on-surface">Declared config directories</p>
+                  <p className="mt-1 text-xs leading-relaxed text-on-surface-variant">
+                    Optional absolute directory paths are added to the cleared child environment.
+                    HOME and the base allowlist cannot be overridden. API keys, tokens, and other
+                    secret variables are not accepted. Values live only in Rust-owned app data,
+                    never localStorage.
+                  </p>
+                  <div className="mt-3 space-y-3">
+                    {selectedQueryPreset.permittedEnvironmentVariables.map((name) => (
+                      <div key={name}>
+                        <label htmlFor={`query-env-${name}`} className="mb-1 block font-mono text-xs font-medium text-on-surface">
+                          {name}{configuredQueryEnvironment.includes(name) ? ' · configured' : ''}
+                        </label>
+                        <input
+                          id={`query-env-${name}`}
+                          type="text"
+                          value={queryEnvironment.find((variable) => variable.name === name)?.value ?? ''}
+                          onChange={(event) => {
+                            const value = event.target.value;
+                            setQueryEnvironment((current) => [
+                              ...current.filter((variable) => variable.name !== name),
+                              ...(value ? [{ name, value }] : []),
+                            ]);
+                            setQueryEnvironmentStatus(null);
+                          }}
+                          placeholder={configuredQueryEnvironment.includes(name)
+                            ? 'Enter a replacement path'
+                            : '/absolute/path/to/config'}
+                          spellCheck={false}
+                          className="w-full rounded-lg border border-outline-variant bg-surface-container-lowest px-3 py-2 font-mono text-xs text-on-surface outline-none focus:border-primary"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-3 flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => void saveDeclaredEnvironment()}
+                      className="rounded-lg border border-outline-variant/30 px-3 py-1.5 text-xs font-semibold text-on-surface hover:bg-surface-container"
+                    >
+                      Save environment
+                    </button>
+                    {configuredQueryEnvironment.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => void clearDeclaredEnvironment()}
+                        className="rounded-lg border border-outline-variant/30 px-3 py-1.5 text-xs font-semibold text-on-surface hover:bg-surface-container"
+                      >
+                        Clear saved values
+                      </button>
+                    )}
+                    {queryEnvironmentStatus && (
+                      <span className="text-xs text-on-surface-variant">{queryEnvironmentStatus}</span>
+                    )}
+                  </div>
+                </div>
+              )}
 
               <div className="grid grid-cols-2 gap-4">
                 <div>

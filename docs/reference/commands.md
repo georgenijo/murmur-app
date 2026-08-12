@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The 147 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
+The 155 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -103,11 +103,19 @@ delivery. Live VAD uses only a bounded rolling in-memory window.
 
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
-| `start_query_capture` | `device_name: Option<String>`, `query_pass_id: u64`, `command: QueryCommandConfig` | `Result<(), String>` | Validates the configured executable/fixed argv, freezes local ASR context, and starts query capture for the exact pass. |
+| `list_query_provider_presets` | — | `Result<Vec<QueryProviderPreset>, String>` | Main-window-only provider metadata and local executable discovery for Claude, Codex, Grok, Cursor, and Custom. Presets are data; they do not create alternate spawn paths. |
+| `load_query_environment` | `provider: QueryProviderId` | `Result<Vec<String>, String>` | Main-window-only list of configured environment **names**. Saved values remain Rust-side and are never returned to a webview. |
+| `save_query_environment` | `provider: QueryProviderId`, `variables: Vec<QueryEnvironmentVariable>` | `Result<(), String>` | Main-window-only owner-permission storage for permitted absolute config-directory values. Non-empty entries merge by name; an empty list clears the provider. Base allowlist overrides and secret variable names are rejected. |
+| `validate_query_command` | `command: QueryCommandConfig` | `Result<QueryCommandValidation, String>` | Main-window preflight used before enabling the shortcut. Resolves the exact executable and validates argv, timeout, provider, and Rust-owned declared environment. |
+| `test_query_provider` | `command: QueryCommandConfig` | `Result<QueryProviderTestResult, String>` | Main-window-only bounded auth probe through `spawn_user_cli`; returns sanitized 16 KiB stdout/stderr tails only to Settings and emits no content telemetry. |
+| `launch_query_provider_sign_in` | `command: QueryCommandConfig` | `Result<(), String>` | Main-window-only explicit repair action that opens the preset's interactive login in Terminal. Normal query and probe execution remain direct, shell-free spawns. |
+| `launch_query_sign_in_for_pass` | `query_pass_id: u64` | `Result<(), String>` | Query-review-only equivalent using the exact failed pass's immutable provider, executable, and Rust-owned environment. |
+| `probe_query_sign_in_for_pass` | `query_pass_id: u64` | `Result<bool, String>` | Query-review-only bounded re-probe used after interactive sign-in; no stdout/stderr content crosses this IPC boundary. |
+| `start_query_capture` | `device_name: Option<String>`, `query_pass_id: u64`, `command: QueryCommandConfig` | `Result<(), String>` | Revalidates the configured provider/executable/fixed argv, freezes local ASR and Rust-owned environment, and starts query capture for the exact pass. |
 | `finish_query_capture` | `query_pass_id: u64` | `Result<(), String>` | Stops capture, transcribes locally, appends the transcript as one final argv element, and streams bounded stdout to the query popover. |
 | `cancel_query` | `query_pass_id: u64` | `Result<(), String>` | Cancels the exact pass, confirms capture/owned process-group teardown, and hides the popover. Stale IDs no-op. |
 | `copy_query_answer` | `query_pass_id: u64` | `Result<(), String>` | Copies a completed answer. It never pastes into another app. |
-| `get_query_review_content` | — | `QueryReviewContent` | Returns `{queryPassId, answer}` only when invoked by the `query-review` webview; every other window receives empty content. |
+| `get_query_review_content` | — | `QueryReviewContent` | Returns `{queryPassId, answer, errorDetail, provider, signInFix}` only to the `query-review` webview. `errorDetail` is the bounded stderr tail and remains distinct from answer content; every other window receives empty content. |
 
 ## Selected-text transform (`transform_flow.rs`, `transform_apply.rs`)
 

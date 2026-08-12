@@ -45,6 +45,7 @@ describe('useQueryFlow', () => {
         queryHotkey: 'alt_r',
         microphone: 'system_default',
         command: {
+          provider: 'custom',
           executable: '/usr/bin/printf',
           arguments: ['%s'],
           timeoutSeconds: 60,
@@ -61,6 +62,14 @@ describe('useQueryFlow', () => {
 
   it('arms the dedicated listener and carries one exact pass through start and stop', async () => {
     await renderFlow();
+    expect(mocks.invoke).toHaveBeenCalledWith('validate_query_command', {
+      command: {
+        provider: 'custom',
+        executable: '/usr/bin/printf',
+        arguments: ['%s'],
+        timeoutSeconds: 60,
+      },
+    });
     expect(mocks.invoke).toHaveBeenCalledWith('start_query_listener', { hotkey: 'alt_r' });
 
     await act(async () => {
@@ -71,6 +80,7 @@ describe('useQueryFlow', () => {
       queryPassId: 17,
       deviceName: null,
       command: {
+        provider: 'custom',
         executable: '/usr/bin/printf',
         arguments: ['%s'],
         timeoutSeconds: 60,

@@ -1,6 +1,6 @@
 # Voice query
 
-Issue [#538](https://github.com/georgenijo/murmur-app/issues/538). Voice Query is an opt-in bridge from Murmur's local speech recognition to one user-configured CLI executable. Double-tap its dedicated shortcut, ask a question, tap once to finish, and read the CLI's streaming stdout in a separate answer popover.
+Issues [#538](https://github.com/georgenijo/murmur-app/issues/538) and [#550](https://github.com/georgenijo/murmur-app/issues/550). Voice Query is an opt-in bridge from Murmur's local speech recognition to one user-configured CLI executable. Double-tap its dedicated shortcut, ask a question, tap once to finish, and read the CLI's streaming stdout in a separate answer popover.
 
 ## Privacy and trust boundary
 
@@ -8,6 +8,7 @@ Issue [#538](https://github.com/georgenijo/murmur-app/issues/538). Voice Query i
 - Murmur starts the exact absolute executable path directly. It never invokes a shell, builds a command string, expands variables, or interprets the transcript.
 - Fixed arguments remain separate argv elements. The recognized question is appended as exactly one final argv element.
 - The child receives a cleared environment with only `HOME`, `PATH`, `TMPDIR`, `LANG`, `LC_ALL`, `LC_CTYPE`, `USER`, and `LOGNAME` forwarded when present. Arbitrary parent secrets are not inherited. `USER` is required on macOS: Claude Code derives its Keychain credential account name from it and reports "Not logged in" without it.
+- A provider may add only its declared config-directory selector: `CLAUDE_CONFIG_DIR` for Claude and `CODEX_HOME` for Codex (Custom may use either). Base allowlist keys, undeclared names, API keys, and tokens are rejected. Values are owner-only Rust app data, never localStorage; Settings receives only the configured variable names after saving and never reads saved values back.
 - The configured CLI is outside Murmur's local-only trust boundary. It may send the question or answer to cloud services according to its own configuration; Settings states this before the user opts in. Murmur cannot verify or prevent that egress.
 - No executable is selected by default and the shortcut is disabled by default.
 - Question and answer content never enters structured telemetry, dictation history, usage statistics, transcript/audio file output, or broadcast state events. Answer chunks are targeted only to the `query-review` webview; full answer retrieval is requester-gated to that window.
@@ -28,17 +29,26 @@ The popover never activates Murmur. It is created non-activating and stays that 
 
 Like the notch overlay, the answer popover is configured `visibleOnAllWorkspaces` so it joins every Space instead of staying pinned to the one it was created on. Its position still derives from the main window's monitor, so on a multi-display setup it follows that display rather than the active one.
 
+## Provider presets and preflight
+
+Claude, Codex, Grok, Cursor, and Custom are data presets rather than special execution paths. A preset declares discovery candidates, recommended literal argv, an authentication probe, known authentication-failure signatures, an interactive sign-in command, and permitted config-directory environment names. Selecting a preset copies its discovered absolute executable and recommended argv into the editable configuration; Custom preserves the generic bridge.
+
+Enabling Voice Query validates the exact executable, argv limits, timeout, provider, and Rust-owned environment before the global listener is armed. Settings' **Test** action additionally runs the preset's authentication probe (for example, `claude auth status` or `codex login status`) through the identical direct `spawn_user_cli` path. Probe stdout and stderr are bounded to 16 KiB tails and shown only in Settings; they never enter telemetry or logs. Custom has no built-in authentication probe, so Test validates its executable and configuration only.
+
+Known authentication output maps to `provider_not_authenticated` and an exact repair such as “Run claude /login in Terminal.” **Sign in…** is an explicit exception that opens the provider-owned interactive command in Terminal, then re-runs the direct bounded probe until it succeeds or the polling window ends. Query execution and probes never use Terminal or a shell.
+
 ## Process and output bounds
 
 `managed_child` creates a dedicated process group for the exact direct child. Normal completion, timeout, cancellation, Escape, and app exit wait for confirmed child exit and an empty owned process group. A process that cannot be confirmed stopped fails closed and prevents a new query from replacing its ownership record.
 
-Configuration limits are 32 fixed arguments, 4 KiB per argument, 32 KiB total fixed arguments, a 32 KiB question, a 256 KiB answer, and a 5–300 second timeout. Stdout is decoded incrementally across split UTF-8 sequences. Missing/non-executable paths, non-zero exits, timeouts, oversized output, and empty output surface stable actionable errors without paths or content in telemetry.
+Configuration limits are 32 fixed arguments, 4 KiB per argument, 32 KiB total fixed arguments, a 32 KiB question, a 256 KiB answer, a 16 KiB stderr tail, and a 5–300 second timeout. Stdout is decoded incrementally across split UTF-8 sequences. On terminal failure the error always takes precedence over partial stdout; sanitized stderr appears separately as provider detail only in the requester-gated review window. It never becomes answer content, telemetry, or a log field. Missing/non-executable paths, non-zero exits, timeouts, oversized output, and empty output surface stable actionable errors without paths or content in telemetry.
 
 ## Related modules
 
 | Area | Path |
 |------|------|
 | Orchestration and process streaming | `app/src-tauri/src/query_flow.rs` |
+| Provider presets, auth probes, and declared environment store | `app/src-tauri/src/query_provider.rs` |
 | Direct child/process-group ownership | `app/src-tauri/src/managed_child.rs` |
 | Shared keyboard detector | `app/src-tauri/src/keyboard.rs` |
 | Native popover geometry | `app/src-tauri/src/commands/query_popover.rs` |

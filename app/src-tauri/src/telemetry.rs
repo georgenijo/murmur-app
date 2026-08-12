@@ -493,6 +493,7 @@ fn is_safe_query_string(key: &str, value: &str) -> bool {
                 | "spawn_failed"
                 | "timed_out"
                 | "exit_nonzero"
+                | "provider_not_authenticated"
                 | "empty_answer"
                 | "clipboard_unavailable"
                 | "output_too_large"
@@ -915,12 +916,13 @@ mod tests {
             "event_code": "query.pass_state",
             "query_pass_id": 8,
             "state": "running",
-            "error_code": "spawn_failed",
+            "error_code": "provider_not_authenticated",
             "question": "SENTINEL_QUESTION ; rm -rf",
             "answer": "SENTINEL_ANSWER",
             "command": "/Users/private/bin/agent",
             "arguments": ["SENTINEL_ARGUMENTS"],
             "structured_answer": { "content": "SENTINEL_OBJECT" },
+            "stderr": "SENTINEL_STDERR secret-token",
             "unknown_numeric": 42
         });
         sanitize_event_data("query", &mut data, true);
@@ -928,7 +930,7 @@ mod tests {
         assert_eq!(data["event_code"], "query.pass_state");
         assert_eq!(data["query_pass_id"], 8);
         assert_eq!(data["state"], "running");
-        assert_eq!(data["error_code"], "spawn_failed");
+        assert_eq!(data["error_code"], "provider_not_authenticated");
         assert!(!encoded.contains("SENTINEL"));
         assert!(!encoded.contains("/Users/private"));
         assert!(!encoded.contains("rm -rf"));

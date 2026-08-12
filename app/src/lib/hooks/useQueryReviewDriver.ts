@@ -27,6 +27,9 @@ interface QueryChunkPayload {
 interface QueryContent {
   queryPassId: number | null;
   answer: string;
+  errorDetail: string | null;
+  provider: 'claude' | 'codex' | 'grok' | 'cursor' | 'custom' | null;
+  signInFix: string | null;
 }
 
 function validPassId(value: unknown): value is number {
@@ -56,8 +59,13 @@ export function useQueryReviewDriver() {
   const [state, setState] = useState<QueryReviewState>('idle');
   const [errorCode, setErrorCode] = useState<string | null>(null);
   const [answer, setAnswer] = useState('');
+  const [errorDetail, setErrorDetail] = useState<string | null>(null);
+  const [signInFix, setSignInFix] = useState<string | null>(null);
+  const [signInStatus, setSignInStatus] = useState<string | null>(null);
+  const [signInBusy, setSignInBusy] = useState(false);
   const passIdRef = useRef<number | null>(null);
   const nextSequenceRef = useRef(0);
+  const signInAttemptRef = useRef(0);
 
   useEffect(() => {
     let disposed = false;
@@ -70,6 +78,8 @@ export function useQueryReviewDriver() {
         const content = await invoke<QueryContent>('get_query_review_content');
         if (!disposed && content.queryPassId === expectedPassId && typeof content.answer === 'string') {
           setAnswer(content.answer);
+          setErrorDetail(typeof content.errorDetail === 'string' ? content.errorDetail : null);
+          setSignInFix(typeof content.signInFix === 'string' ? content.signInFix : null);
         }
       } catch {
         flog.warn('query-review', 'could not refresh answer content');
@@ -84,6 +94,10 @@ export function useQueryReviewDriver() {
           passIdRef.current = payload.queryPassId;
           nextSequenceRef.current = 0;
           setAnswer('');
+          setErrorDetail(null);
+          setSignInFix(null);
+          setSignInStatus(null);
+          signInAttemptRef.current += 1;
         }
         setState(payload.state);
         setErrorCode(payload.errorCode);
@@ -113,12 +127,18 @@ export function useQueryReviewDriver() {
         setState('idle');
         setErrorCode(null);
         setAnswer('');
+        setErrorDetail(null);
+        setSignInFix(null);
+        setSignInStatus(null);
+        setSignInBusy(false);
+        signInAttemptRef.current += 1;
       });
       if (disposed) { unlistenState(); unlistenChunk(); unlistenHidden(); }
     };
     void setup();
     return () => {
       disposed = true;
+      signInAttemptRef.current += 1;
       unlistenState?.();
       unlistenChunk?.();
       unlistenHidden?.();
@@ -144,5 +164,51 @@ export function useQueryReviewDriver() {
     });
   }, []);
 
-  return { state, errorCode, answer, cancel, copy };
+  const signIn = useCallback(async () => {
+    const queryPassId = passIdRef.current;
+    if (queryPassId === null || errorCode !== 'provider_not_authenticated') return;
+    const attempt = signInAttemptRef.current + 1;
+    signInAttemptRef.current = attempt;
+    setSignInBusy(true);
+    setSignInStatus('Opening Terminal…');
+    try {
+      await invoke('launch_query_sign_in_for_pass', { queryPassId });
+      if (signInAttemptRef.current !== attempt) return;
+      setSignInStatus('Terminal opened. Waiting for sign-in…');
+      const deadline = Date.now() + 60_000;
+      while (signInAttemptRef.current === attempt && Date.now() < deadline) {
+        await new Promise((resolve) => window.setTimeout(resolve, 2000));
+        if (signInAttemptRef.current !== attempt) return;
+        const authenticated = await invoke<boolean>('probe_query_sign_in_for_pass', {
+          queryPassId,
+        });
+        if (authenticated) {
+          setSignInStatus('Signed in. Ask the query again.');
+          return;
+        }
+      }
+      if (signInAttemptRef.current === attempt) {
+        setSignInStatus('Sign-in is still pending. Finish in Terminal, then try again.');
+      }
+    } catch {
+      if (signInAttemptRef.current === attempt) {
+        setSignInStatus('Murmur could not complete provider sign-in.');
+      }
+    } finally {
+      if (signInAttemptRef.current === attempt) setSignInBusy(false);
+    }
+  }, [errorCode]);
+
+  return {
+    state,
+    errorCode,
+    answer,
+    errorDetail,
+    signInFix,
+    signInStatus,
+    signInBusy,
+    cancel,
+    copy,
+    signIn,
+  };
 }

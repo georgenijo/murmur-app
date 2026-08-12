@@ -6,6 +6,52 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 ---
 
+## 2026-08-12: Voice Query environment additions are named, provider-scoped, and Rust-owned
+
+**Decision:** Keep `spawn_user_cli` fail-closed with only `HOME`, `PATH`,
+`TMPDIR`, `LANG`, `LC_ALL`, `LC_CTYPE`, `USER`, and `LOGNAME` copied from the
+parent. A provider may additionally declare only `CLAUDE_CONFIG_DIR` or
+`CODEX_HOME`; it cannot override a base key. Values must be absolute directory
+paths, live in an owner-only Rust app-data file, and are never returned to a
+webview after Save. API keys, tokens, and arbitrary environment names are not
+accepted. Any future secret-bearing variable requires a separate storage and
+redaction design before implementation.
+
+**Rationale:** Full parent-environment inheritance silently exports unrelated
+credentials, while local CLI wrappers and credential stores still need the
+small base set. Provider-scoped config roots solve the known multi-profile use
+case without turning Voice Query into a generic secret store or allowing a
+webview/localStorage copy of sensitive values.
+
+**Status:** active
+
+**References:** #550; `managed_child.rs`, `query_provider.rs`,
+`docs/features/voice-query.md`
+
+---
+
+## 2026-08-12: Voice Query stderr is bounded repair detail, never answer or telemetry
+
+**Decision:** Capture at most the final 16 KiB of provider stderr on query and
+auth-probe paths. A terminal query failure always renders its stable error ahead
+of any partial stdout, with sanitized stderr in a visually separate provider
+detail block available only through the requester-gated review window. Auth
+probe stdout/stderr is returned only to Settings. Neither stream enters logs,
+telemetry, stats, or history. Known provider signatures map to the content-free
+`provider_not_authenticated` code and an exact Terminal repair action.
+
+**Rationale:** Discarding stderr made authentication failures unactionable, but
+mixing it into answer content recreated the stdout-precedence bug and risked
+persisting CLI diagnostics. A small requester-only tail preserves enough vendor
+guidance while maintaining the query telemetry allowlist and output bounds.
+
+**Status:** active
+
+**References:** #550; `query_flow.rs`, `query_provider.rs`,
+`telemetry.rs`, `docs/features/voice-query.md`
+
+---
+
 ## 2026-08-12: Releases are macOS-only
 
 **Decision:** Stop building, rehearsing, promoting, or publishing Linux release

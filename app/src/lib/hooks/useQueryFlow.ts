@@ -2,13 +2,8 @@ import { useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { DEFAULT_SETTINGS, type QueryKey } from '../settings';
+import { validateQueryCommand, type QueryCommandConfig } from '../queryProviders';
 import { flog } from '../log';
-
-interface QueryCommandSnapshot {
-  executable: string;
-  arguments: string[];
-  timeoutSeconds: number;
-}
 
 interface QueryTogglePayload {
   queryPassId: number;
@@ -21,7 +16,7 @@ interface UseQueryFlowProps {
   accessibilityGranted: boolean | null;
   queryHotkey: QueryKey | null;
   microphone?: string;
-  command: QueryCommandSnapshot;
+  command: QueryCommandConfig;
 }
 
 function isTogglePayload(value: unknown): value is QueryTogglePayload {
@@ -90,9 +85,15 @@ export function useQueryFlow({
       }
 
       try {
+        // Preflight the exact provider, executable, argv, timeout, and
+        // Rust-owned declared environment before arming the global shortcut.
+        // A bad configuration therefore cannot wait until the first keypress
+        // to fail.
+        await validateQueryCommand(commandRef.current);
+        if (disposed) return;
         await invoke('start_query_listener', { hotkey: queryHotkey });
       } catch {
-        flog.warn('query', 'could not start voice-query listener');
+        flog.warn('query', 'voice-query preflight or listener setup failed');
       }
     };
     void setup();
@@ -108,5 +109,14 @@ export function useQueryFlow({
         void invoke('cancel_query', { queryPassId: passId }).catch(() => {});
       }
     };
-  }, [enabled, initialized, accessibilityGranted, queryHotkey]);
+  }, [
+    enabled,
+    initialized,
+    accessibilityGranted,
+    queryHotkey,
+    command.provider,
+    command.executable,
+    command.arguments,
+    command.timeoutSeconds,
+  ]);
 }

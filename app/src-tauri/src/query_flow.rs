@@ -8,11 +8,14 @@
 use crate::dictation_context::DictationContextSnapshot;
 use crate::managed_child::ManagedChild;
 use crate::model_runtime::PreparationReason;
+use crate::query_provider::{
+    QueryEnvironmentVariable, QueryProviderId, QueryProviderTestResult, MAX_STDERR_BYTES,
+};
 use crate::MutexExt;
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
@@ -87,6 +90,8 @@ impl QueryStatus {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct QueryCommandConfig {
+    #[serde(default)]
+    pub provider: QueryProviderId,
     pub executable: String,
     #[serde(default)]
     pub arguments: Vec<String>,
@@ -95,9 +100,11 @@ pub(crate) struct QueryCommandConfig {
 
 #[derive(Clone, Debug)]
 struct ValidatedQueryCommand {
+    provider: QueryProviderId,
     executable: PathBuf,
     arguments: Vec<String>,
     timeout: Duration,
+    environment: Vec<QueryEnvironmentVariable>,
 }
 
 #[derive(Clone)]
@@ -106,6 +113,7 @@ struct QuerySession {
     context: Arc<DictationContextSnapshot>,
     command: ValidatedQueryCommand,
     answer: String,
+    error_detail: Option<String>,
 }
 
 struct ActiveQueryChild {
@@ -214,6 +222,18 @@ impl QueryCoordinator {
         self.session(pass_id).map(|session| session.answer)
     }
 
+    fn set_error_detail(&self, pass_id: u64, detail: Option<String>) -> bool {
+        if !self.is_active(pass_id) {
+            return false;
+        }
+        let mut slot = self.session.lock_or_recover();
+        let Some(session) = slot.as_mut().filter(|session| session.pass_id == pass_id) else {
+            return false;
+        };
+        session.error_detail = detail;
+        true
+    }
+
     fn install_child(&self, pass_id: u64, child: Arc<Mutex<ManagedChild>>) -> bool {
         if !self.is_active(pass_id) {
             return false;
@@ -275,9 +295,15 @@ impl QueryCoordinator {
 pub(crate) struct QueryReviewContent {
     query_pass_id: Option<u64>,
     answer: String,
+    error_detail: Option<String>,
+    provider: Option<QueryProviderId>,
+    sign_in_fix: Option<&'static str>,
 }
 
-fn validate_command(config: QueryCommandConfig) -> Result<ValidatedQueryCommand, &'static str> {
+fn validate_command(
+    config: QueryCommandConfig,
+    environment: Vec<QueryEnvironmentVariable>,
+) -> Result<ValidatedQueryCommand, &'static str> {
     let executable = config.executable.trim();
     if executable.is_empty() {
         return Err("not_configured");
@@ -314,10 +340,153 @@ fn validate_command(config: QueryCommandConfig) -> Result<ValidatedQueryCommand,
         return Err("invalid_timeout");
     }
     Ok(ValidatedQueryCommand {
+        provider: config.provider,
         executable,
         arguments: config.arguments,
         timeout: Duration::from_secs(config.timeout_seconds),
+        environment,
     })
+}
+
+fn validate_command_for_app(
+    app: &tauri::AppHandle,
+    config: QueryCommandConfig,
+) -> Result<ValidatedQueryCommand, &'static str> {
+    let environment = crate::query_provider::load_environment(app, config.provider)?;
+    validate_command(config, environment)
+}
+
+fn require_window(window: &tauri::WebviewWindow, expected: &str) -> Result<(), String> {
+    (window.label() == expected)
+        .then_some(())
+        .ok_or_else(|| "This Voice Query command is not available from this window.".to_string())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct QueryCommandValidation {
+    executable: String,
+}
+
+#[tauri::command]
+pub(crate) fn list_query_provider_presets(
+    window: tauri::WebviewWindow,
+) -> Result<Vec<crate::query_provider::QueryProviderPreset>, String> {
+    require_window(&window, "main")?;
+    Ok(crate::query_provider::provider_presets())
+}
+
+#[tauri::command]
+pub(crate) fn load_query_environment(
+    app_handle: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    provider: QueryProviderId,
+) -> Result<Vec<String>, String> {
+    require_window(&window, "main")?;
+    crate::query_provider::configured_environment_names(&app_handle, provider)
+        .map_err(str::to_string)
+}
+
+#[tauri::command]
+pub(crate) fn save_query_environment(
+    app_handle: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    provider: QueryProviderId,
+    variables: Vec<QueryEnvironmentVariable>,
+) -> Result<(), String> {
+    require_window(&window, "main")?;
+    crate::query_provider::save_environment(&app_handle, provider, variables)
+        .map_err(str::to_string)
+}
+
+#[tauri::command]
+pub(crate) fn validate_query_command(
+    app_handle: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    command: QueryCommandConfig,
+) -> Result<QueryCommandValidation, String> {
+    require_window(&window, "main")?;
+    let command = validate_command_for_app(&app_handle, command).map_err(str::to_string)?;
+    Ok(QueryCommandValidation {
+        executable: command.executable.to_string_lossy().into_owned(),
+    })
+}
+
+#[tauri::command]
+pub(crate) async fn test_query_provider(
+    app_handle: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    command: QueryCommandConfig,
+) -> Result<QueryProviderTestResult, String> {
+    require_window(&window, "main")?;
+    let command = validate_command_for_app(&app_handle, command).map_err(str::to_string)?;
+    tokio::task::spawn_blocking(move || {
+        crate::query_provider::run_auth_probe(
+            command.provider,
+            &command.executable,
+            &command.environment,
+        )
+    })
+    .await
+    .map_err(|_| "probe_failed".to_string())
+}
+
+#[tauri::command]
+pub(crate) fn launch_query_provider_sign_in(
+    app_handle: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    command: QueryCommandConfig,
+) -> Result<(), String> {
+    require_window(&window, "main")?;
+    let command = validate_command_for_app(&app_handle, command).map_err(str::to_string)?;
+    crate::query_provider::launch_sign_in(
+        command.provider,
+        &command.executable,
+        &command.environment,
+    )
+    .map_err(str::to_string)
+}
+
+#[tauri::command]
+pub(crate) fn launch_query_sign_in_for_pass(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, crate::State>,
+    query_pass_id: u64,
+) -> Result<(), String> {
+    require_window(&window, "query-review")?;
+    let session = state
+        .query
+        .session(query_pass_id)
+        .ok_or_else(|| "That query is no longer available.".to_string())?;
+    crate::query_provider::launch_sign_in(
+        session.command.provider,
+        &session.command.executable,
+        &session.command.environment,
+    )
+    .map_err(str::to_string)
+}
+
+#[tauri::command]
+pub(crate) async fn probe_query_sign_in_for_pass(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, crate::State>,
+    query_pass_id: u64,
+) -> Result<bool, String> {
+    require_window(&window, "query-review")?;
+    let session = state
+        .query
+        .session(query_pass_id)
+        .ok_or_else(|| "That query is no longer available.".to_string())?;
+    let result = tokio::task::spawn_blocking(move || {
+        crate::query_provider::run_auth_probe(
+            session.command.provider,
+            &session.command.executable,
+            &session.command.environment,
+        )
+    })
+    .await
+    .map_err(|_| "probe_failed".to_string())?;
+    Ok(result.authenticated())
 }
 
 fn emit_state(
@@ -393,7 +562,7 @@ pub(crate) async fn start_query_capture(
     query_pass_id: u64,
     command: QueryCommandConfig,
 ) -> Result<(), String> {
-    let command = match validate_command(command) {
+    let command = match validate_command_for_app(&app_handle, command) {
         Ok(command) => command,
         Err(error_code) => {
             fail_query(&app_handle, &state, query_pass_id, error_code);
@@ -440,6 +609,7 @@ pub(crate) async fn start_query_capture(
         context: Arc::clone(&context),
         command,
         answer: String::new(),
+        error_detail: None,
     };
     if !state.query.install_session(query_pass_id, session)
         || !state
@@ -635,41 +805,243 @@ impl Utf8Chunks {
     }
 }
 
+#[derive(Debug)]
+struct QueryRunError {
+    code: &'static str,
+    detail: Option<String>,
+}
+
+impl QueryRunError {
+    fn code(code: &'static str) -> Self {
+        Self { code, detail: None }
+    }
+
+    fn with_stderr(code: &'static str, stderr: &StderrTail) -> Self {
+        Self {
+            code,
+            detail: stderr.text(),
+        }
+    }
+}
+
+struct StderrTail {
+    bytes: Vec<u8>,
+    truncated: bool,
+}
+
+impl StderrTail {
+    fn new() -> Self {
+        Self {
+            bytes: Vec::new(),
+            truncated: false,
+        }
+    }
+
+    fn push(&mut self, bytes: &[u8]) {
+        if bytes.len() >= MAX_STDERR_BYTES {
+            self.bytes.clear();
+            self.bytes
+                .extend_from_slice(&bytes[bytes.len() - MAX_STDERR_BYTES..]);
+            self.truncated = true;
+            return;
+        }
+        let excess = self
+            .bytes
+            .len()
+            .saturating_add(bytes.len())
+            .saturating_sub(MAX_STDERR_BYTES);
+        if excess > 0 {
+            self.bytes.drain(..excess);
+            self.truncated = true;
+        }
+        self.bytes.extend_from_slice(bytes);
+    }
+
+    fn text(&self) -> Option<String> {
+        let text = crate::query_provider::sanitize_output(&String::from_utf8_lossy(&self.bytes));
+        if text.is_empty() {
+            None
+        } else if self.truncated {
+            Some(format!("…{text}"))
+        } else {
+            Some(text)
+        }
+    }
+}
+
+enum CliOutput {
+    Stdout(Vec<u8>),
+    Stderr(Vec<u8>),
+}
+
+fn send_cli_output(
+    sender: &std::sync::mpsc::SyncSender<CliOutput>,
+    mut chunk: CliOutput,
+    stop: &AtomicBool,
+) -> bool {
+    loop {
+        if stop.load(Ordering::Acquire) {
+            return false;
+        }
+        match sender.try_send(chunk) {
+            Ok(()) => return true,
+            Err(std::sync::mpsc::TrySendError::Full(returned)) => {
+                if stop.load(Ordering::Acquire) {
+                    return false;
+                }
+                chunk = returned;
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => return false,
+        }
+    }
+}
+
+fn accept_stdout(
+    app: &tauri::AppHandle,
+    pass_id: u64,
+    decoder: &mut Utf8Chunks,
+    sequence: &mut u64,
+    bytes: &[u8],
+) -> Result<(), &'static str> {
+    let text = decoder.push(bytes);
+    if text.is_empty() {
+        return Ok(());
+    }
+    let state = app.state::<crate::State>();
+    state.query.append_answer(pass_id, &text)?;
+    let _ = crate::commands::query_popover::set_expanded_internal(app, true);
+    let _ = app.emit_to(
+        "query-review",
+        "query-answer-chunk",
+        serde_json::json!({
+            "queryPassId": pass_id,
+            "sequence": *sequence,
+            "text": text,
+        }),
+    );
+    *sequence += 1;
+    Ok(())
+}
+
+fn discard_remaining_output(
+    rx: &std::sync::mpsc::Receiver<CliOutput>,
+    stdout_reader: std::thread::JoinHandle<()>,
+    stderr_reader: std::thread::JoinHandle<()>,
+    stderr_tail: &mut StderrTail,
+    stop: &AtomicBool,
+) {
+    stop.store(true, Ordering::Release);
+    while !stdout_reader.is_finished() || !stderr_reader.is_finished() {
+        if let Ok(CliOutput::Stderr(bytes)) = rx.recv_timeout(Duration::from_millis(10)) {
+            stderr_tail.push(&bytes);
+        }
+    }
+    let _ = stdout_reader.join();
+    let _ = stderr_reader.join();
+    while let Ok(chunk) = rx.try_recv() {
+        if let CliOutput::Stderr(bytes) = chunk {
+            stderr_tail.push(&bytes);
+        }
+    }
+}
+
 fn run_cli(
     app: tauri::AppHandle,
     pass_id: u64,
     command: ValidatedQueryCommand,
     query: String,
-) -> Result<(), &'static str> {
-    let mut arguments = command.arguments;
+) -> Result<(), QueryRunError> {
+    let mut arguments = command.arguments.clone();
     // The transcript is one final argv element. It is never parsed, quoted,
     // substituted, or evaluated by a shell.
     arguments.push(query);
-    let (child, stdin, mut stdout) = ManagedChild::spawn_user_cli(&command.executable, &arguments)
-        .map_err(|_| "spawn_failed")?;
+    let environment: Vec<(String, String)> = command
+        .environment
+        .iter()
+        .map(|variable| (variable.name.clone(), variable.value.clone()))
+        .collect();
+    let (mut spawned_child, stdin, mut stdout, mut stderr) =
+        ManagedChild::spawn_user_cli(&command.executable, &arguments, &environment)
+            .map_err(|_| QueryRunError::code("spawn_failed"))?;
     drop(stdin);
-    let child = Arc::new(Mutex::new(child));
+    if crate::query_provider::set_pipe_nonblocking(&stdout).is_err()
+        || crate::query_provider::set_pipe_nonblocking(&stderr).is_err()
+    {
+        let _ = spawned_child.hard_kill_confirmed(Instant::now() + TERMINATION_DEADLINE);
+        return Err(QueryRunError::code("process_failed"));
+    }
+    let child = Arc::new(Mutex::new(spawned_child));
     {
         let state = app.state::<crate::State>();
         if !state.query.install_child(pass_id, Arc::clone(&child)) {
             let _ = child
                 .lock_or_recover()
                 .hard_kill_confirmed(Instant::now() + TERMINATION_DEADLINE);
-            return Err("cancelled");
+            return Err(QueryRunError::code("cancelled"));
         }
     }
 
-    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
-    let reader = std::thread::spawn(move || {
+    // Keep at most a small number of unread pipe chunks in memory. Stderr is
+    // retained only as a 16 KiB tail and is never emitted or traced.
+    let (tx, rx) = std::sync::mpsc::sync_channel::<CliOutput>(16);
+    let stop_readers = Arc::new(AtomicBool::new(false));
+    let stdout_tx = tx.clone();
+    let stdout_stop = Arc::clone(&stop_readers);
+    let stdout_reader = std::thread::spawn(move || {
         let mut buffer = [0_u8; 4096];
         loop {
+            if stdout_stop.load(Ordering::Acquire) {
+                break;
+            }
             match stdout.read(&mut buffer) {
-                Ok(0) | Err(_) => break,
+                Ok(0) => break,
                 Ok(count) => {
-                    if tx.send(buffer[..count].to_vec()).is_err() {
+                    if !send_cli_output(
+                        &stdout_tx,
+                        CliOutput::Stdout(buffer[..count].to_vec()),
+                        &stdout_stop,
+                    ) {
                         break;
                     }
                 }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if stdout_stop.load(Ordering::Acquire) {
+                        break;
+                    }
+                    std::thread::sleep(CHILD_POLL_INTERVAL);
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    let stderr_stop = Arc::clone(&stop_readers);
+    let stderr_reader = std::thread::spawn(move || {
+        let mut buffer = [0_u8; 4096];
+        loop {
+            if stderr_stop.load(Ordering::Acquire) {
+                break;
+            }
+            match stderr.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(count) => {
+                    if !send_cli_output(
+                        &tx,
+                        CliOutput::Stderr(buffer[..count].to_vec()),
+                        &stderr_stop,
+                    ) {
+                        break;
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if stderr_stop.load(Ordering::Acquire) {
+                        break;
+                    }
+                    std::thread::sleep(CHILD_POLL_INTERVAL);
+                }
+                Err(_) => break,
             }
         }
     });
@@ -677,6 +1049,7 @@ fn run_cli(
     let deadline = Instant::now() + command.timeout;
     let mut decoder = Utf8Chunks::new();
     let mut sequence = 0_u64;
+    let mut stderr_tail = StderrTail::new();
     let exit_status = loop {
         {
             let state = app.state::<crate::State>();
@@ -684,39 +1057,48 @@ fn run_cli(
                 let _ = child
                     .lock_or_recover()
                     .hard_kill_confirmed(Instant::now() + TERMINATION_DEADLINE);
-                let _ = reader.join();
+                discard_remaining_output(
+                    &rx,
+                    stdout_reader,
+                    stderr_reader,
+                    &mut stderr_tail,
+                    &stop_readers,
+                );
                 state.query.clear_child(pass_id);
-                return Err("cancelled");
+                return Err(QueryRunError::code("cancelled"));
             }
         }
-        while let Ok(bytes) = rx.try_recv() {
-            let text = decoder.push(&bytes);
-            if !text.is_empty() {
-                let state = app.state::<crate::State>();
-                if let Err(error_code) = state.query.append_answer(pass_id, &text) {
-                    let confirmed = child
-                        .lock_or_recover()
-                        .hard_kill_confirmed(Instant::now() + TERMINATION_DEADLINE)
-                        .is_some();
-                    let _ = reader.join();
-                    state.query.clear_child(pass_id);
-                    return Err(if confirmed {
+        while let Ok(chunk) = rx.try_recv() {
+            let result = match chunk {
+                CliOutput::Stdout(bytes) => {
+                    accept_stdout(&app, pass_id, &mut decoder, &mut sequence, &bytes)
+                }
+                CliOutput::Stderr(bytes) => {
+                    stderr_tail.push(&bytes);
+                    Ok(())
+                }
+            };
+            if let Err(error_code) = result {
+                let confirmed = child
+                    .lock_or_recover()
+                    .hard_kill_confirmed(Instant::now() + TERMINATION_DEADLINE)
+                    .is_some();
+                discard_remaining_output(
+                    &rx,
+                    stdout_reader,
+                    stderr_reader,
+                    &mut stderr_tail,
+                    &stop_readers,
+                );
+                app.state::<crate::State>().query.clear_child(pass_id);
+                return Err(QueryRunError::with_stderr(
+                    if confirmed {
                         error_code
                     } else {
                         "termination_unconfirmed"
-                    });
-                }
-                let _ = crate::commands::query_popover::set_expanded_internal(&app, true);
-                let _ = app.emit_to(
-                    "query-review",
-                    "query-answer-chunk",
-                    serde_json::json!({
-                        "queryPassId": pass_id,
-                        "sequence": sequence,
-                        "text": text,
-                    }),
-                );
-                sequence += 1;
+                    },
+                    &stderr_tail,
+                ));
             }
         }
         if Instant::now() >= deadline {
@@ -724,93 +1106,146 @@ fn run_cli(
                 .lock_or_recover()
                 .hard_kill_confirmed(Instant::now() + TERMINATION_DEADLINE)
                 .is_some();
-            let _ = reader.join();
+            discard_remaining_output(
+                &rx,
+                stdout_reader,
+                stderr_reader,
+                &mut stderr_tail,
+                &stop_readers,
+            );
             app.state::<crate::State>().query.clear_child(pass_id);
-            return Err(if confirmed {
-                "timed_out"
-            } else {
-                "termination_unconfirmed"
-            });
+            return Err(QueryRunError::with_stderr(
+                if confirmed {
+                    "timed_out"
+                } else {
+                    "termination_unconfirmed"
+                },
+                &stderr_tail,
+            ));
         }
         let wait_result = { child.lock_or_recover().try_wait() };
         match wait_result {
             Ok(Some(status)) => {
-                // A wrapper CLI can exit while a descendant still inherits
-                // stdout. Confirm (and, if necessary, kill) the entire owned
-                // process group before joining the reader, otherwise that
-                // inherited pipe could keep this pass blocked indefinitely.
-                let confirmed = child
+                // A wrapper CLI can exit while a descendant still inherits a
+                // pipe. Confirm the entire owned process group before joining.
+                if child
                     .lock_or_recover()
                     .wait_for_exit(Instant::now() + TERMINATION_DEADLINE)
-                    .is_some();
-                if !confirmed {
+                    .is_none()
+                {
+                    discard_remaining_output(
+                        &rx,
+                        stdout_reader,
+                        stderr_reader,
+                        &mut stderr_tail,
+                        &stop_readers,
+                    );
                     app.state::<crate::State>().query.clear_child(pass_id);
-                    return Err("termination_unconfirmed");
+                    return Err(QueryRunError::with_stderr(
+                        "termination_unconfirmed",
+                        &stderr_tail,
+                    ));
                 }
                 break status;
             }
-            Ok(None) => {}
+            Ok(None) => std::thread::sleep(CHILD_POLL_INTERVAL),
             Err(_) => {
                 let confirmed = child
                     .lock_or_recover()
                     .hard_kill_confirmed(Instant::now() + TERMINATION_DEADLINE)
                     .is_some();
-                let _ = reader.join();
+                discard_remaining_output(
+                    &rx,
+                    stdout_reader,
+                    stderr_reader,
+                    &mut stderr_tail,
+                    &stop_readers,
+                );
                 app.state::<crate::State>().query.clear_child(pass_id);
-                return Err(if confirmed {
-                    "process_failed"
-                } else {
-                    "termination_unconfirmed"
-                });
+                return Err(QueryRunError::with_stderr(
+                    if confirmed {
+                        "process_failed"
+                    } else {
+                        "termination_unconfirmed"
+                    },
+                    &stderr_tail,
+                ));
             }
         }
-        std::thread::sleep(CHILD_POLL_INTERVAL);
     };
 
-    let _ = reader.join();
-    while let Ok(bytes) = rx.try_recv() {
-        let text = decoder.push(&bytes);
-        if !text.is_empty() {
-            let state = app.state::<crate::State>();
-            if let Err(error_code) = state.query.append_answer(pass_id, &text) {
-                let confirmed = child
-                    .lock_or_recover()
-                    .hard_kill_confirmed(Instant::now() + TERMINATION_DEADLINE)
-                    .is_some();
-                state.query.clear_child(pass_id);
-                return Err(if confirmed {
-                    error_code
-                } else {
-                    "termination_unconfirmed"
-                });
+    // A successfully reaped process group normally closes both pipes
+    // immediately. Give readers a short bounded drain window, then stop them
+    // so an escaped descendant retaining a pipe cannot hang the query pass.
+    let reader_drain_deadline = Instant::now() + Duration::from_millis(250);
+    let mut drain_error = None;
+    while (!stdout_reader.is_finished() || !stderr_reader.is_finished())
+        && Instant::now() < reader_drain_deadline
+    {
+        if let Ok(chunk) = rx.recv_timeout(Duration::from_millis(10)) {
+            match chunk {
+                CliOutput::Stdout(bytes) => {
+                    if let Err(code) =
+                        accept_stdout(&app, pass_id, &mut decoder, &mut sequence, &bytes)
+                    {
+                        drain_error = Some(code);
+                        break;
+                    }
+                }
+                CliOutput::Stderr(bytes) => stderr_tail.push(&bytes),
             }
-            let _ = app.emit_to(
-                "query-review",
-                "query-answer-chunk",
-                serde_json::json!({
-                    "queryPassId": pass_id,
-                    "sequence": sequence,
-                    "text": text,
-                }),
-            );
-            sequence += 1;
         }
+    }
+    if let Some(code) = drain_error {
+        discard_remaining_output(
+            &rx,
+            stdout_reader,
+            stderr_reader,
+            &mut stderr_tail,
+            &stop_readers,
+        );
+        app.state::<crate::State>().query.clear_child(pass_id);
+        return Err(QueryRunError::with_stderr(code, &stderr_tail));
+    }
+    stop_readers.store(true, Ordering::Release);
+    while !stdout_reader.is_finished() || !stderr_reader.is_finished() {
+        if let Ok(chunk) = rx.recv_timeout(Duration::from_millis(10)) {
+            match chunk {
+                CliOutput::Stdout(bytes) => {
+                    if let Err(code) =
+                        accept_stdout(&app, pass_id, &mut decoder, &mut sequence, &bytes)
+                    {
+                        drain_error = Some(code);
+                    }
+                }
+                CliOutput::Stderr(bytes) => stderr_tail.push(&bytes),
+            }
+        }
+    }
+    let _ = stdout_reader.join();
+    let _ = stderr_reader.join();
+    while let Ok(chunk) = rx.try_recv() {
+        match chunk {
+            CliOutput::Stdout(bytes) => {
+                if let Err(code) = accept_stdout(&app, pass_id, &mut decoder, &mut sequence, &bytes)
+                {
+                    drain_error = Some(code);
+                }
+            }
+            CliOutput::Stderr(bytes) => stderr_tail.push(&bytes),
+        }
+    }
+    if let Some(code) = drain_error {
+        app.state::<crate::State>().query.clear_child(pass_id);
+        return Err(QueryRunError::with_stderr(code, &stderr_tail));
     }
     let tail = decoder.finish();
     if !tail.is_empty() {
         let state = app.state::<crate::State>();
-        if let Err(error_code) = state.query.append_answer(pass_id, &tail) {
-            let confirmed = child
-                .lock_or_recover()
-                .hard_kill_confirmed(Instant::now() + TERMINATION_DEADLINE)
-                .is_some();
-            state.query.clear_child(pass_id);
-            return Err(if confirmed {
-                error_code
-            } else {
-                "termination_unconfirmed"
-            });
-        }
+        state
+            .query
+            .append_answer(pass_id, &tail)
+            .map_err(|code| QueryRunError::with_stderr(code, &stderr_tail))?;
         let _ = app.emit_to(
             "query-review",
             "query-answer-chunk",
@@ -821,16 +1256,20 @@ fn run_cli(
             }),
         );
     }
-    let confirmed = child
-        .lock_or_recover()
-        .wait_for_exit(Instant::now() + TERMINATION_DEADLINE)
-        .is_some();
     app.state::<crate::State>().query.clear_child(pass_id);
-    if !confirmed {
-        return Err("termination_unconfirmed");
-    }
     if !exit_status.success() {
-        return Err("exit_nonzero");
+        let answer = app
+            .state::<crate::State>()
+            .query
+            .answer(pass_id)
+            .unwrap_or_default();
+        let stderr = stderr_tail.text().unwrap_or_default();
+        let code = if crate::query_provider::is_auth_failure(command.provider, &answer, &stderr) {
+            "provider_not_authenticated"
+        } else {
+            "exit_nonzero"
+        };
+        return Err(QueryRunError::with_stderr(code, &stderr_tail));
     }
     Ok(())
 }
@@ -902,7 +1341,7 @@ pub(crate) async fn finish_query_capture(
     let result =
         tokio::task::spawn_blocking(move || run_cli(worker_app, query_pass_id, command, query))
             .await
-            .unwrap_or(Err("process_failed"));
+            .unwrap_or_else(|_| Err(QueryRunError::code("process_failed")));
     if !state.query.is_active(query_pass_id) {
         return Ok(());
     }
@@ -935,8 +1374,11 @@ pub(crate) async fn finish_query_capture(
                 );
             }
         }
-        Err("cancelled") => {}
-        Err(error_code) => fail_query(&app_handle, &state, query_pass_id, error_code),
+        Err(error) if error.code == "cancelled" => {}
+        Err(error) => {
+            state.query.set_error_detail(query_pass_id, error.detail);
+            fail_query(&app_handle, &state, query_pass_id, error.code);
+        }
     }
     Ok(())
 }
@@ -1011,11 +1453,20 @@ pub(crate) fn get_query_review_content(
         return QueryReviewContent::default();
     }
     let query_pass_id = state.query.active_pass_id();
+    let session = query_pass_id.and_then(|pass_id| state.query.session(pass_id));
     QueryReviewContent {
         query_pass_id,
-        answer: query_pass_id
-            .and_then(|pass_id| state.query.answer(pass_id))
+        answer: session
+            .as_ref()
+            .map(|session| session.answer.clone())
             .unwrap_or_default(),
+        error_detail: session
+            .as_ref()
+            .and_then(|session| session.error_detail.clone()),
+        provider: session.as_ref().map(|session| session.command.provider),
+        sign_in_fix: session
+            .as_ref()
+            .and_then(|session| crate::query_provider::auth_fix(session.command.provider)),
     }
 }
 
@@ -1026,18 +1477,23 @@ mod tests {
     #[test]
     fn validates_only_absolute_executable_and_bounded_fixed_arguments() {
         let invalid = QueryCommandConfig {
+            provider: QueryProviderId::Claude,
             executable: "claude".into(),
             arguments: vec!["-p".into()],
             timeout_seconds: 60,
         };
-        assert_eq!(validate_command(invalid).unwrap_err(), "invalid_executable");
+        assert_eq!(
+            validate_command(invalid, vec![]).unwrap_err(),
+            "invalid_executable"
+        );
 
         let valid = QueryCommandConfig {
+            provider: QueryProviderId::Custom,
             executable: "/usr/bin/printf".into(),
             arguments: vec!["%s".into()],
             timeout_seconds: 60,
         };
-        let valid = validate_command(valid).expect("printf must be executable");
+        let valid = validate_command(valid, vec![]).expect("printf must be executable");
         assert_eq!(valid.arguments, vec!["%s"]);
     }
 
@@ -1108,11 +1564,14 @@ mod tests {
                 pass_id,
                 context,
                 command: ValidatedQueryCommand {
+                    provider: QueryProviderId::Custom,
                     executable: PathBuf::from("/usr/bin/printf"),
                     arguments: vec![],
                     timeout: Duration::from_secs(5),
+                    environment: vec![],
                 },
                 answer: "a".repeat(MAX_ANSWER_BYTES),
+                error_detail: None,
             },
         );
         assert_eq!(query.append_answer(pass_id, "b"), Err("output_too_large"));
