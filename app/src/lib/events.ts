@@ -6,10 +6,18 @@ export interface AppEvent {
   data: Record<string, unknown>;
 }
 
-export type StreamName = 'pipeline' | 'audio' | 'keyboard' | 'transform' | 'query' | 'system';
+export type StreamName = 'pipeline' | 'audio' | 'keyboard' | 'transform' | 'meeting' | 'query' | 'system';
 export type LevelName = 'trace' | 'debug' | 'info' | 'warn' | 'error';
 
-export const STREAMS: StreamName[] = ['pipeline', 'audio', 'keyboard', 'transform', 'query', 'system'];
+export const STREAMS: StreamName[] = [
+  'pipeline',
+  'audio',
+  'keyboard',
+  'transform',
+  'meeting',
+  'query',
+  'system',
+];
 export const LEVELS: LevelName[] = ['trace', 'debug', 'info', 'warn', 'error'];
 
 export const STREAM_COLORS: Record<StreamName, { bg: string; text: string; dot: string }> = {
@@ -32,6 +40,11 @@ export const STREAM_COLORS: Record<StreamName, { bg: string; text: string; dot: 
     bg: 'bg-warning/10',
     text: 'text-warning',
     dot: 'bg-warning',
+  },
+  meeting: {
+    bg: 'bg-surface-container-low',
+    text: 'text-on-surface',
+    dot: 'bg-error',
   },
   query: {
     bg: 'bg-primary/10',

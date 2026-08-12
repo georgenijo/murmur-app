@@ -2,6 +2,7 @@ import type { DoubleTapKey, RecordingMode } from '../lib/settings';
 import type { DictationStatus } from '../lib/types';
 import type { ReactNode } from 'react';
 import { WindowHeader } from './ui/WindowHeader';
+import type { MeetingRuntimePhase } from '../lib/meetings';
 
 interface MainHeaderProps {
   status: DictationStatus;
@@ -17,6 +18,8 @@ interface MainHeaderProps {
   updateIndicator?: ReactNode;
   mode?: 'main' | 'settings';
   buildBadge?: string;
+  meetingPhase?: MeetingRuntimePhase;
+  meetingElapsedMs?: number;
 }
 
 const KEY_LABELS: Record<DoubleTapKey, string> = {
@@ -60,10 +63,21 @@ export function MainHeader({
   updateIndicator,
   mode = 'main',
   buildBadge,
+  meetingPhase = 'idle',
+  meetingElapsedMs = 0,
 }: MainHeaderProps) {
   const isCapturing = status === 'recording' || status === 'starting';
   const busy = status === 'processing' || status === 'recovering';
-  const label = statusLabel(status, initialized);
+  const meetingBusy = meetingPhase !== 'idle' && meetingPhase !== 'failed';
+  const label = meetingPhase === 'recording'
+    ? `Meeting ${formatTimer(meetingElapsedMs / 1000)}`
+    : meetingPhase === 'starting'
+      ? 'Meeting connecting'
+      : meetingPhase === 'stopping'
+        ? 'Meeting stopping'
+        : meetingPhase === 'processing'
+          ? 'Meeting finishing'
+          : statusLabel(status, initialized);
   const normalizedAudioLevel = Math.min(1, Math.max(0, audioLevel) * 16);
   const waveformEnvelope = [0.55, 0.8, 1, 0.8, 0.55];
 
@@ -72,13 +86,13 @@ export function MainHeader({
       <div
         data-testid="main-status-chip"
         className={`ui-status-chip ${
-          status === 'recording' ? 'text-error' : 'text-on-surface'
+          status === 'recording' || meetingPhase === 'recording' ? 'text-error' : 'text-on-surface'
         }`}
         aria-live="polite"
       >
-        {status === 'processing' || status === 'starting' ? (
+        {meetingPhase === 'starting' || meetingPhase === 'stopping' || meetingPhase === 'processing' || status === 'processing' || status === 'starting' ? (
           <span className="h-2 w-2 animate-spin rounded-full border border-primary/25 border-t-primary" aria-hidden="true" />
-        ) : status === 'recording' ? (
+        ) : status === 'recording' || meetingPhase === 'recording' ? (
           <span
             data-testid="main-recording-waveform"
             className="flex h-3 w-4 shrink-0 items-center justify-center gap-px"
@@ -132,7 +146,7 @@ export function MainHeader({
           <p
             data-testid="hotkey-hint"
             className={`hidden shrink-0 select-none whitespace-nowrap text-xs text-on-surface-variant transition-opacity sm:block ${
-              isCapturing || busy ? 'pointer-events-none opacity-0' : 'opacity-100'
+              isCapturing || busy || meetingBusy ? 'pointer-events-none opacity-0' : 'opacity-100'
             }`}
           >
             {hotkeyHint(recordingMode, triggerKey)}
@@ -142,13 +156,13 @@ export function MainHeader({
             data-testid="record-pill"
             type="button"
             onClick={() => void (isCapturing ? onStop() : onRecord())}
-            disabled={!initialized || busy}
+            disabled={!initialized || busy || meetingBusy}
             aria-label={
               status === 'recording'
                 ? `Stop recording, ${formatTimer(recordingDuration)}`
                 : status === 'starting'
                   ? 'Cancel recording'
-                  : busy
+                : busy || meetingBusy
                     ? label
                     : 'Record'
             }
@@ -169,7 +183,7 @@ export function MainHeader({
                 ? 'Cancel'
                 : status === 'recording'
                   ? 'Stop'
-                  : busy
+                  : busy || meetingBusy
                     ? 'Wait'
                     : 'Record'}
             </span>

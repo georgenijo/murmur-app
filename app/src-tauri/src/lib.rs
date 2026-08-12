@@ -28,6 +28,8 @@ mod knowledge_store;
 pub mod llm_sidecar;
 mod log_shipper;
 pub mod managed_child;
+mod meeting_capture;
+mod meeting_store;
 mod microphone_preview;
 mod model_artifact;
 mod model_runtime;
@@ -127,6 +129,8 @@ pub(crate) struct State {
     #[cfg(feature = "internal-benchmark")]
     pub(crate) corpus: commands::corpus::CorpusRecorderState,
     pub(crate) knowledge: knowledge_store::KnowledgeStore,
+    pub(crate) meeting_store: meeting_store::MeetingStore,
+    pub(crate) meetings: meeting_capture::MeetingCoordinator,
     pub(crate) correct_and_teach: correct_and_teach::CorrectAndTeachState,
     pub(crate) capture_health: capture_health::CaptureHealthDiagnostics,
     pub(crate) performance: performance_metrics::PerformanceMetrics,
@@ -177,6 +181,13 @@ impl llm_sidecar::HostGuard for AppHostGuard {
             .load(std::sync::atomic::Ordering::SeqCst)
         {
             return Some("fileTranscription");
+        }
+        if state
+            .app_state
+            .meeting_inference_active
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Some("meeting");
         }
         if state.app_state.dictation.lock_or_recover().status != state::DictationStatus::Idle {
             return Some("recording");
@@ -252,6 +263,8 @@ pub fn run() {
             #[cfg(feature = "internal-benchmark")]
             corpus: commands::corpus::CorpusRecorderState::default(),
             knowledge: knowledge_store::KnowledgeStore::default(),
+            meeting_store: meeting_store::MeetingStore::default(),
+            meetings: meeting_capture::MeetingCoordinator::default(),
             correct_and_teach: correct_and_teach::CorrectAndTeachState::default(),
             capture_health: capture_health::CaptureHealthDiagnostics::default(),
             performance: performance_metrics::PerformanceMetrics::default(),
@@ -285,6 +298,7 @@ pub fn run() {
             commands::correct_and_teach::confirm_learned_correction,
             commands::correct_and_teach::discard_learned_correction_proposal,
             commands::permissions::open_system_preferences,
+            commands::permissions::open_system_audio_preferences,
             commands::permissions::check_accessibility_permission,
             commands::permissions::request_accessibility_permission,
             commands::permissions::reset_accessibility_permission,
@@ -338,6 +352,18 @@ pub fn run() {
             commands::knowledge::inspect_knowledge_import,
             commands::knowledge::import_knowledge_from_file,
             commands::knowledge::delete_all_knowledge,
+            commands::meeting::start_meeting,
+            commands::meeting::stop_meeting,
+            commands::meeting::get_meeting_status,
+            commands::meeting::get_system_audio_permission_status,
+            commands::meeting::request_system_audio_permission,
+            commands::meeting::get_meeting_store_status,
+            commands::meeting::list_meetings,
+            commands::meeting::get_meeting,
+            commands::meeting::get_meeting_export_text,
+            commands::meeting::delete_meeting,
+            commands::meeting::delete_all_meetings,
+            commands::meeting::prune_meetings,
             commands::export::save_text_export,
             commands::settings_store::load_settings_blob,
             commands::settings_store::save_settings_blob,
@@ -478,6 +504,25 @@ pub fn run() {
                 record_count = knowledge_status.record_count,
                 "personal knowledge store initialized"
             );
+
+            let meeting_root = app.path().app_data_dir()?.join("meetings");
+            let meeting_status = app
+                .state::<State>()
+                .meeting_store
+                .initialize(meeting_root);
+            tracing::info!(
+                target: "meeting",
+                availability = ?meeting_status.availability,
+                schema_version = meeting_status.schema_version,
+                session_count = meeting_status.session_count,
+                pending_segment_count = meeting_status.pending_segment_count,
+                "meeting transcript store initialized"
+            );
+            if let Ok(repository) = app.state::<State>().meeting_store.repository() {
+                app.state::<State>()
+                    .meetings
+                    .recover_pending(app.handle().clone(), repository);
+            }
 
             tracing::info!(target: "system", "app setup — Murmur v{}", env!("CARGO_PKG_VERSION"));
 
@@ -651,6 +696,7 @@ pub fn run() {
         #[cfg(target_os = "macos")]
         if let RunEvent::Exit = &_event {
             if let Some(state) = _app_handle.try_state::<State>() {
+                state.meetings.shutdown(_app_handle);
                 state.transform_runtime.shutdown();
                 state.query.shutdown();
             }

@@ -1056,6 +1056,10 @@ pub async fn process_audio(
     audio_data: String,
     state: tauri::State<'_, State>,
 ) -> Result<serde_json::Value, String> {
+    let transition = state.app_state.recording_transition.lock().await;
+    if state.app_state.meeting_blocks_asr() {
+        return Err("Cannot process audio while a meeting transcript is active.".to_string());
+    }
     // Auto-dismiss a parked transform review, refuse on an active transform
     // (issue #338 — same policy as start_native_recording). The in-lock
     // transform guard below stays as a race guard.
@@ -1110,6 +1114,7 @@ pub async fn process_audio(
         dictation.status = DictationStatus::Processing;
         state.app_state.next_recording_id()
     };
+    drop(transition);
     keyboard::set_processing(true);
     let _ = app_handle.emit("recording-status-changed", "processing");
     let app_identity = crate::frontmost::frontmost_app_identity();
@@ -2538,6 +2543,13 @@ pub async fn start_native_recording(
     // critical section so no concurrent cancel/start can slip between them.
     let rid = {
         let mut dictation = state.app_state.dictation.lock_or_recover();
+        if state.app_state.meeting_blocks_asr() {
+            tracing::warn!(target: "pipeline", "start_native_recording: blocked — meeting capture in progress");
+            return Ok(serde_json::json!({
+                "type": "busy_meeting",
+                "state": "idle"
+            }));
+        }
         // Refuse if a file transcription holds the shared Whisper backend.
         // Checked under the dictation lock (which `transcribe_file` takes only
         // after claiming the flag) so the two paths can't both start.
@@ -3163,6 +3175,12 @@ pub async fn transcribe_file(
     state: tauri::State<'_, State>,
     file_path: String,
 ) -> Result<serde_json::Value, String> {
+    let transition = state.app_state.recording_transition.lock().await;
+    if state.app_state.meeting_blocks_asr() {
+        return Err(
+            "Wait for the meeting transcript to finish before transcribing a file.".to_string(),
+        );
+    }
     // Mutual exclusion with live dictation: both share one Whisper backend.
     // Claim the slot first (so a racing `start_native_recording` is blocked),
     // then refuse if a live recording/processing is already underway. The guard
@@ -3174,6 +3192,7 @@ pub async fn transcribe_file(
     {
         return Err("Already transcribing a file.".to_string());
     }
+    drop(transition);
     // Auto-dismiss a parked transform review, refuse on an active transform
     // (issue #338 — same policy as start_native_recording; a parked review
     // never finishes on its own, so "wait for the transform" would never
@@ -3520,6 +3539,8 @@ mod tests {
                 #[cfg(feature = "internal-benchmark")]
                 corpus: crate::commands::corpus::CorpusRecorderState::default(),
                 knowledge: crate::knowledge_store::KnowledgeStore::default(),
+                meeting_store: crate::meeting_store::MeetingStore::default(),
+                meetings: crate::meeting_capture::MeetingCoordinator::default(),
                 correct_and_teach: crate::correct_and_teach::CorrectAndTeachState::default(),
                 capture_health: crate::capture_health::CaptureHealthDiagnostics::default(),
                 performance: performance.clone(),
@@ -3611,6 +3632,8 @@ mod tests {
                 #[cfg(feature = "internal-benchmark")]
                 corpus: crate::commands::corpus::CorpusRecorderState::default(),
                 knowledge: crate::knowledge_store::KnowledgeStore::default(),
+                meeting_store: crate::meeting_store::MeetingStore::default(),
+                meetings: crate::meeting_capture::MeetingCoordinator::default(),
                 correct_and_teach: crate::correct_and_teach::CorrectAndTeachState::default(),
                 capture_health: crate::capture_health::CaptureHealthDiagnostics::default(),
                 performance: crate::performance_metrics::PerformanceMetrics::default(),

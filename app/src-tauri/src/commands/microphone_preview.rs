@@ -95,6 +95,11 @@ pub async fn start_microphone_preview(
         if dictation.status != DictationStatus::Idle {
             return Err("Finish the current dictation before testing the microphone".to_string());
         }
+        if state.app_state.meeting_blocks_asr() {
+            return Err(
+                "Finish the current meeting transcript before testing the microphone".to_string(),
+            );
+        }
         if state.app_state.transform_status().blocks_recording()
             || state.transform_runtime.is_transform_busy()
         {

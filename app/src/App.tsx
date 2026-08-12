@@ -15,12 +15,13 @@ import { saveHistoryExport } from './lib/historyExport';
 import { PermissionsBanner } from './components/PermissionsBanner';
 import { AboutModal } from './components/AboutModal';
 import { MainHeader } from './components/MainHeader';
-import { TranscriptionView } from './components/TranscriptionView';
+import { TranscriptionView, type HistoryWorkspace } from './components/TranscriptionView';
 import { FooterStats } from './components/FooterStats';
 import { FileTranscriptionToasts } from './components/FileTranscriptionToasts';
 import { useInitialization } from './lib/hooks/useInitialization';
 import { useSettings } from './lib/hooks/useSettings';
 import { useHistoryManagement } from './lib/hooks/useHistoryManagement';
+import { useMeetings } from './lib/hooks/useMeetings';
 import { useFileTranscription } from './lib/hooks/useFileTranscription';
 import { useRecordingState } from './lib/hooks/useRecordingState';
 import { useHoldDownToggle } from './lib/hooks/useHoldDownToggle';
@@ -77,6 +78,7 @@ function App() {
   const [modelReady, setModelReady] = useState<boolean | null>(null);
 
   const { settings, updateSettings, applyExternalSettings, configureError } = useSettings();
+  const meetings = useMeetings(settings);
   const markModelReady = useCallback((downloadedModel: typeof settings.model) => {
     if (downloadedModel !== settings.model) {
       updateSettings({ model: downloadedModel });
@@ -357,8 +359,10 @@ function App() {
 
   // Bumped to move focus into the history search box (command palette action).
   const [historySearchToken, setHistorySearchToken] = useState<number | undefined>(undefined);
+  const [historyWorkspace, setHistoryWorkspace] = useState<HistoryWorkspace>('transcripts');
   const focusHistorySearch = useCallback((trigger: UiLatencyTrigger = 'programmatic') => {
     closeSettings(trigger);
+    setHistoryWorkspace('transcripts');
     setHistorySearchToken((token) => (token ?? 0) + 1);
   }, [closeSettings]);
 
@@ -410,9 +414,11 @@ function App() {
 
   const commands = useMemo<PaletteCommand[]>(() => {
     const isRecording = status === 'recording' || status === 'starting';
+    const meetingBusy = !['idle', 'failed'].includes(meetings.status.phase);
+    const meetingCanStop = ['starting', 'recording'].includes(meetings.status.phase);
     const lastEntry = historyEntries[historyEntries.length - 1];
     const items: PaletteCommand[] = [
-      {
+      ...(!meetingBusy ? [{
         id: 'recording-toggle',
         title: status === 'starting'
           ? 'Cancel microphone connection'
@@ -422,6 +428,22 @@ function App() {
         section: 'Recording',
         keywords: ['dictate', 'microphone', 'transcribe'],
         run: () => { void (isRecording ? handleStop() : handleStart()); },
+      }] : []),
+      {
+        id: 'meeting-toggle',
+        title: meetings.status.phase === 'processing' || meetings.status.phase === 'stopping'
+          ? 'Show meeting transcript progress'
+          : meetingCanStop
+            ? 'Stop meeting capture'
+            : 'Start meeting capture',
+        section: 'Meeting',
+        keywords: ['system audio', 'call', 'me', 'them', 'record'],
+        run: () => {
+          closeSettings('programmatic');
+          setHistoryWorkspace('meetings');
+          if (meetings.status.phase === 'processing' || meetings.status.phase === 'stopping') return;
+          void (meetingCanStop ? meetings.stop() : meetings.start());
+        },
       },
       {
         id: 'app-disable-toggle',
@@ -470,7 +492,14 @@ function App() {
         title: 'Show transcription history',
         section: 'Navigation',
         keywords: ['record', 'main'],
-        run: () => closeSettings('programmatic'),
+        run: () => { closeSettings('programmatic'); setHistoryWorkspace('transcripts'); },
+      },
+      {
+        id: 'show-meetings',
+        title: 'Show meeting transcripts',
+        section: 'Navigation',
+        keywords: ['system audio', 'calls', 'me', 'them'],
+        run: () => { closeSettings('programmatic'); setHistoryWorkspace('meetings'); },
       },
       ...SETTINGS_CATEGORIES.map((category) => ({
         id: `settings-${category.id}`,
@@ -512,6 +541,7 @@ function App() {
   }, [
     status, historyEntries, settings.disabled, updateSettings, handleStart, handleStop,
     focusHistorySearch, openSettingsPage, closeSettings, checkForUpdate, setShowAbout, pickAudioFiles,
+    meetings,
   ]);
 
   const error = initError || recordingError;
@@ -561,6 +591,8 @@ function App() {
         settingsOpen={isSettingsOpen}
         mode={isSettingsOpen ? 'settings' : 'main'}
         buildBadge={PERFORMANCE_BUILD_BADGE}
+        meetingPhase={meetings.status.phase}
+        meetingElapsedMs={meetings.status.elapsedMs}
         updateIndicator={!INTERNAL_BENCHMARK_BUILD ? (
           <UpdateIndicator
             status={updateStatus}
@@ -584,6 +616,9 @@ function App() {
             onUpdateHistoryEntry={updateEntry}
             focusSearchToken={historySearchToken}
             onTranscribeFile={pickAudioFiles}
+            workspace={historyWorkspace}
+            onWorkspaceChange={setHistoryWorkspace}
+            meetings={meetings}
           />
 
           {error && (

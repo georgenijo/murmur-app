@@ -42,6 +42,16 @@ pub async fn run_benchmark(
     request: BenchmarkRequest,
 ) -> Result<BenchmarkReport, String> {
     let coordinator = state.benchmark.clone();
+    // Serialize the benchmark claim with every live microphone owner. This
+    // closes the check/claim race in both directions with preview startup.
+    let transition = crate::commands::microphone_preview::transition_after_stopping_preview(
+        &app_handle,
+        state.inner(),
+    )
+    .await?;
+    if state.app_state.meeting_blocks_asr() {
+        return Err("Wait for the meeting transcript to finish before benchmarking".to_string());
+    }
     // Auto-dismiss a parked transform review, refuse on an active transform
     // (issue #338 — this path previously ignored the transform status
     // entirely and would run a benchmark right over a parked review). The
@@ -58,13 +68,6 @@ pub async fn run_benchmark(
             "Wait for the transform to finish before benchmarking",
         )?;
     }
-    // Serialize the benchmark claim with every live microphone owner. This
-    // closes the check/claim race in both directions with preview startup.
-    let transition = crate::commands::microphone_preview::transition_after_stopping_preview(
-        &app_handle,
-        state.inner(),
-    )
-    .await?;
     {
         let dictation = state.app_state.dictation.lock_or_recover();
         // An ACTIVE transform (Capturing/Listening/Thinking/Applying) holds

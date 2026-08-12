@@ -6,7 +6,7 @@ permissions were a dismissible banner.
 
 ## Flow
 
-Six steps with a persistent top-left Back control after Welcome and per-step
+Seven steps with a persistent top-left Back control after Welcome and per-step
 Skip where the app can partially function without the grant. Back remains
 visible but disabled while a model download is active, because leaving the
 step cannot cancel the underlying download safely:
@@ -19,11 +19,14 @@ step cannot cancel the underlying download safely:
 3. **Accessibility** — explains the global recording key + auto-paste need,
    triggers `request_accessibility_permission` (system dialog + opens the pane).
    Skippable.
-4. **Model** — embeds `ModelDownloadPanel` (shared with the standalone
+4. **System Audio (optional)** — creates a short-lived native tap only after an
+   explicit click, reports granted/denied/unsupported, and links a denial to
+   Privacy & Security → Screen & System Audio Recording. Skippable.
+5. **Model** — embeds `ModelDownloadPanel` (shared with the standalone
    `ModelDownloader` gate); reads every offered model's install state from the
    shared runtime catalog and shows "already installed" on re-runs.
-5. **Hotkey** — chooses Hold / Double-tap / Both and the trigger key.
-6. **Done** — live summary of the checks plus a quick-start card derived from
+6. **Hotkey** — chooses Hold / Double-tap / Both and the trigger key.
+7. **Done** — live summary of the checks plus a quick-start card derived from
    the selected recording mode and trigger key.
 
 ## Permission-state handling
@@ -37,6 +40,8 @@ step live. The wishy-washy TCC states are handled explicitly:
 | mic `notDetermined` / `unknown` | "Allow Microphone Access" → native in-app dialog |
 | mic `denied` | Open System Settings + "Reset the permission" (`tccutil reset` via `reset_microphone_permission`) — the reset returns the status to `notDetermined`, so the in-app dialog works again |
 | accessibility not granted | Grant button (dialog + pane); after an attempt, a reset path for the listed-but-stale entry (common after reinstall/rebuild — see DEVELOPMENT.md) |
+| system audio `unknown` / `denied` | Explicit check button; denial links to Screen & System Audio Recording. Passive status reads never create a tap. |
+| system audio `unsupported` | Meeting capture requires macOS 14.2+, while the rest of Murmur remains available. |
 
 ## Gating and grandfathering
 

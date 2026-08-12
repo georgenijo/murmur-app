@@ -230,6 +230,12 @@ export interface Settings {
   smartPunctuation: boolean;
   /** Persist completed microphone and file transcripts in local history. */
   retainHistory: boolean;
+  /** Keep meeting chunk WAV files after their durable transcript commits. */
+  meetingRetainAudio: boolean;
+  /** Delete completed meetings older than this many days; 0 keeps them by age. */
+  meetingRetentionDays: number;
+  /** Maximum completed/interrupted meeting sessions retained in SQLite. */
+  meetingMaxSessions: number;
   saveTranscript: boolean;
   saveAudio: boolean;
   /** Mirror each final transcript to a local file NotchPill can show in the notch. */
@@ -405,6 +411,9 @@ export const DEFAULT_SETTINGS: Settings = {
   disabled: false,
   smartPunctuation: true,
   retainHistory: true,
+  meetingRetainAudio: false,
+  meetingRetentionDays: 0,
+  meetingMaxSessions: 100,
   saveTranscript: false,
   saveAudio: false,
   mirrorToNotchPill: false,
@@ -769,6 +778,31 @@ export function loadSettings(): Settings {
 
       if (typeof parsed.retainHistory !== 'boolean') {
         parsed.retainHistory = DEFAULT_SETTINGS.retainHistory;
+      }
+      if (typeof parsed.meetingRetainAudio !== 'boolean') {
+        parsed.meetingRetainAudio = DEFAULT_SETTINGS.meetingRetainAudio;
+      }
+      if (
+        typeof parsed.meetingRetentionDays !== 'number'
+        || !Number.isFinite(parsed.meetingRetentionDays)
+      ) {
+        parsed.meetingRetentionDays = DEFAULT_SETTINGS.meetingRetentionDays;
+      } else {
+        parsed.meetingRetentionDays = Math.max(
+          0,
+          Math.min(3650, Math.trunc(parsed.meetingRetentionDays)),
+        );
+      }
+      if (
+        typeof parsed.meetingMaxSessions !== 'number'
+        || !Number.isFinite(parsed.meetingMaxSessions)
+      ) {
+        parsed.meetingMaxSessions = DEFAULT_SETTINGS.meetingMaxSessions;
+      } else {
+        parsed.meetingMaxSessions = Math.max(
+          1,
+          Math.min(10_000, Math.trunc(parsed.meetingMaxSessions)),
+        );
       }
 
       // autoStopSilenceMs ends a recording on its own, so an unrecognised or

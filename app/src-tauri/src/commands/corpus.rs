@@ -530,6 +530,9 @@ pub async fn start_corpus_recording(
         )
         .await?;
         let dictation = state.app_state.dictation.lock_or_recover();
+        if state.app_state.meeting_blocks_asr() {
+            return Err("Finish the current meeting transcript first".to_string());
+        }
         if dictation.status != DictationStatus::Idle {
             return Err("Finish the current dictation before recording corpus audio".to_string());
         }

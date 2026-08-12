@@ -5,7 +5,7 @@ use crate::microphone_preview::{
 };
 use crate::MutexExt;
 use murmur_capture_helper_protocol::{
-    read_production_frame, write_production_control, CaptureBackend, CapturePhase,
+    read_production_frame, write_production_control, CaptureBackend, CaptureChannel, CapturePhase,
     CaptureSetupStep, FailureCode, ProductionFrame, ProductionHelperMessage, ProductionHostMessage,
     SessionNonce, SetupTransition,
 };
@@ -163,6 +163,8 @@ impl fmt::Display for AudioFailure {
 fn failure_kind(code: FailureCode) -> AudioFailureKind {
     match code {
         FailureCode::PermissionDenied => AudioFailureKind::PermissionDenied,
+        FailureCode::UnsupportedOs => AudioFailureKind::UnsupportedConfig,
+        FailureCode::SystemAudioUnavailable => AudioFailureKind::HostUnavailable,
         FailureCode::NoInputDevice => AudioFailureKind::DeviceUnavailable,
         FailureCode::ConfigurationFailed => AudioFailureKind::UnsupportedConfig,
         FailureCode::CallbackStalled => AudioFailureKind::FirstBufferTimeout,
@@ -351,7 +353,7 @@ fn spawn_helper(
     }
     let signature_ms = signature_started.elapsed().as_millis() as u64;
     let capture_id_text = capture_id.to_string();
-    let mut arguments = vec!["--production-v3", capture_id_text.as_str(), nonce_hex];
+    let mut arguments = vec!["--production-v4", capture_id_text.as_str(), nonce_hex];
     if let Some(fault) = fault {
         arguments.extend(["--fault", fault]);
     }
@@ -1197,7 +1199,8 @@ fn run_backend(
 
         match reader_rx.recv_timeout(CAPTURE_COMMAND_POLL_INTERVAL) {
             Ok(HelperRead::Frame(ProductionFrame::Pcm(pcm))) => {
-                if pcm.sequence != expected_sequence
+                if pcm.channel != CaptureChannel::Microphone
+                    || pcm.sequence != expected_sequence
                     || pcm.samples.is_empty()
                     || sample_rate.is_some_and(|rate| rate != pcm.sample_rate)
                 {

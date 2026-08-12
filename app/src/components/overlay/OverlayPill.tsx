@@ -66,6 +66,15 @@ export function OverlayPill({
             />
           ) : indicator.kind === 'recording' ? (
             <div className="w-2.5 h-2.5 rounded-full bg-red-500" style={{ animation: 'pulse 0.8s ease-in-out infinite' }} />
+          ) : indicator.kind === 'meeting' ? (
+            indicator.processing ? (
+              <span className="block h-3 w-3 animate-spin rounded-full border-[1.5px] border-cyan-300/25 border-t-cyan-300" aria-label="finishing meeting transcript" />
+            ) : (
+              <span className="flex items-center gap-0.5" aria-label="meeting capture active">
+                <span className="h-2 w-2 animate-pulse rounded-full bg-cyan-300" />
+                <span className="h-2 w-2 animate-pulse rounded-full bg-violet-300" />
+              </span>
+            )
           ) : indicator.kind === 'processing' ? (
             <span className="w-3 h-3 border-[1.5px] border-white/20 border-t-white/70 rounded-full animate-spin block" />
           ) : indicator.kind === 'recovering' ? (

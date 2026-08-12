@@ -293,6 +293,7 @@ pub enum PreparationReason {
     StartupWarm,
     Pipeline,
     FileTranscription,
+    Meeting,
 }
 
 impl PreparationReason {
@@ -302,6 +303,7 @@ impl PreparationReason {
             Self::StartupWarm => "startupWarm",
             Self::Pipeline => "pipeline",
             Self::FileTranscription => "fileTranscription",
+            Self::Meeting => "meeting",
         }
     }
 }

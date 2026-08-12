@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- Meeting Capture records the selected microphone and Mac playback as separate
+  Me/Them channels, transcribes VAD-sized chunks incrementally with the local
+  model, and keeps crash-safe searchable sessions in SQLite. System Audio
+  access is explicit and optional; meeting audio is discarded after each
+  durable transcript commit unless retention is enabled (#539).
+
 - Settings → Dictation now has an automatic, local-only microphone input meter
   with RMS/peak guidance, safe device switching, and transparent pause/resume
   around real dictation, with no transcription, history, telemetry content, or

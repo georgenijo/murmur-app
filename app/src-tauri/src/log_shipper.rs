@@ -78,6 +78,25 @@ struct Batch {
     next_offset: u64,
 }
 
+/// Meeting sessions stay local even though their content-free lifecycle events
+/// remain useful in the on-device log viewer. Malformed JSONL lines are also
+/// dropped fail-closed rather than uploaded verbatim.
+fn shippable_payload(data: &[u8]) -> Vec<u8> {
+    let mut output = Vec::with_capacity(data.len());
+    for line in data.split_inclusive(|byte| *byte == b'\n') {
+        let body = line.strip_suffix(b"\n").unwrap_or(line);
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
+            continue;
+        };
+        if value.get("stream").and_then(|stream| stream.as_str()) == Some("meeting") {
+            continue;
+        }
+        output.extend_from_slice(body);
+        output.push(b'\n');
+    }
+    output
+}
+
 /// Read the next batch from `log` at `offset`, falling back to the rotated
 /// file when the current file is shorter than the offset (telemetry.rs renames
 /// `events.jsonl` → `events.jsonl.1` at 5 MB and starts fresh).
@@ -334,8 +353,9 @@ async fn tick(client: &reqwest::Client, endpoint: &str, device: &DeviceInfo) {
         let Some(batch) = next_batch(&log, &rotated, state.offset) else {
             break;
         };
-        if !batch.data.is_empty()
-            && !ship(client, endpoint, &state.install_id, device, batch.data).await
+        let outbound = shippable_payload(&batch.data);
+        if !outbound.is_empty()
+            && !ship(client, endpoint, &state.install_id, device, outbound).await
         {
             break; // endpoint unreachable — offset stays put, retry next tick
         }
@@ -439,6 +459,20 @@ mod tests {
         let batch = next_batch(&log, &dir.join("events.jsonl.1"), 8).unwrap();
         assert_eq!(batch.data, b"{\"b\":2}\n");
         assert_eq!(batch.next_offset, 16);
+    }
+
+    #[test]
+    fn meeting_sessions_and_malformed_lines_are_excluded_from_shipper_output() {
+        const TRANSCRIPT_SENTINEL: &str = "PRIVATE MEETING TRANSCRIPT SENTINEL";
+        let input = format!(
+            "{{\"stream\":\"meeting\",\"data\":{{\"transcript\":\"{TRANSCRIPT_SENTINEL}\"}}}}\n{{\"stream\":\"pipeline\",\"data\":{{\"event_code\":\"recording.started\"}}}}\nnot-json\n"
+        );
+        let output = shippable_payload(input.as_bytes());
+        let output = String::from_utf8(output).unwrap();
+        assert!(!output.contains(TRANSCRIPT_SENTINEL));
+        assert!(!output.contains("meeting"));
+        assert!(!output.contains("not-json"));
+        assert!(output.contains("pipeline"));
     }
 
     #[test]

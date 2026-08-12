@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The 134 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
+The 147 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -43,7 +43,25 @@ For Rust → frontend events see [events.md](events.md). For the hooks that call
 | `request_microphone_permission` | — | `Result<(), String>` | Opens the Microphone privacy pane. |
 | `reset_microphone_permission` | — | `Result<(), String>` | Clears a stale microphone TCC entry. |
 | `open_system_preferences` | — | `Result<(), String>` | Opens System Settings to the Microphone pane. |
+| `open_system_audio_preferences` | — | `Result<(), String>` | Opens Privacy & Security → Screen & System Audio Recording. |
 | `list_audio_devices` | — | `Result<Vec<AudioDeviceDescriptor>, String>` | CPAL input descriptors: backend-native stable `id` plus presentation-only `name`. |
+
+## Meeting capture (`commands/meeting.rs`)
+
+| Command | Parameters | Returns | Description |
+|---------|-----------|---------|-------------|
+| `start_meeting` | `request: {deviceName?, retainAudio, retentionDays?, maxSessions}` | `Result<MeetingSession, String>` | Freezes model/language/punctuation and retention policy, prunes configured history, creates the SQLite session, and starts separate microphone/System Audio capture. Refuses every competing audio/model owner. |
+| `stop_meeting` | — | `Result<(), String>` | Requests capture teardown; the worker must destroy the IOProc, aggregate device, and tap before acknowledging. Pending durable chunks continue through serialized inference. |
+| `get_meeting_status` | — | `MeetingRuntimeStatus` | Current generation, session, phase, elapsed time, per-channel activity, and stable failure code. |
+| `get_system_audio_permission_status` | — | `SystemAudioPermissionState` | Returns the cached `unknown` / `granted` / `denied` / `unsupported` state without creating a tap. |
+| `request_system_audio_permission` | — | `Result<SystemAudioPermissionState, String>` | Explicitly creates one short-lived tap probe, then tears it down and emits the resulting permission state. |
+| `get_meeting_store_status` | — | `MeetingStoreStatus` | Store availability, schema version, session count, and pending-segment count. |
+| `list_meetings` | `query?`, `offset?`, `limit?` | `Result<MeetingPage, String>` | Bounded newest-first list; a non-empty query searches finalized transcript text through FTS5. |
+| `get_meeting` | `id` | `Result<MeetingDetail, String>` | One session plus its ordered Me/Them segments. |
+| `get_meeting_export_text` | `id` | `Result<String, String>` | Renders `[MM:SS] Me/Them` plain text for clipboard or validated file export. |
+| `delete_meeting` | `id` | `Result<(), String>` | Deletes one inactive session, its segments/FTS rows, and owned chunk audio. |
+| `delete_all_meetings` | — | `Result<(), String>` | Deletes all sessions and owned chunk audio; refused while a meeting is active. |
+| `prune_meetings` | `retentionDays?`, `maxSessions` | `Result<u64, String>` | Deletes completed/interrupted sessions beyond the bounded age/count policy. |
 
 ## Microphone input test (`commands/microphone_preview.rs`)
 
