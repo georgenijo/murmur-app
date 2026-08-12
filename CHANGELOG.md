@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-08-11
+
 ### Fixed
 
 - Diagnostic microphone-state refreshes now wait until dictation or transform
