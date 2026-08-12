@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.31.2] - 2026-08-12
+
+### Fixed
+
+- Voice Query now authenticates correctly with Claude Code: the cleared child
+  environment forwards `USER` and `LOGNAME`, which Claude Code requires to
+  locate its macOS Keychain credential. Without them it resolved a nonexistent
+  "unknown" account and reported "Not logged in" despite a valid sign-in.
+
 ## [0.31.1] - 2026-08-12
 
 ### Fixed
