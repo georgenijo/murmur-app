@@ -165,7 +165,12 @@ def decode_otool_info_plist(output: str) -> dict[str, object]:
         except ValueError:
             continue
         for word in fields[1:]:
-            if len(word) != 8:
+            # `otool -X` normally emits four-byte groups, but its final group
+            # is allowed to contain one, two, or three bytes when an embedded
+            # section is not four-byte aligned. Keep accepting only complete
+            # bytes with a bounded group size; plist decoding below still
+            # verifies the reconstructed payload exactly.
+            if len(word) not in (2, 4, 6, 8):
                 raise SystemExit("embedded Info.plist has malformed words")
             try:
                 payload.extend(bytes.fromhex(word)[::-1])

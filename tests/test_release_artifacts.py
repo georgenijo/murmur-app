@@ -20,7 +20,11 @@ from scripts.capture_helper_evidence import (
     structured_signature_evidence,
     validate_probe_evidence,
 )
-from scripts.finalize_macos_bundle import HELPERS, require_exact_macos_executables
+from scripts.finalize_macos_bundle import (
+    HELPERS,
+    decode_otool_info_plist,
+    require_exact_macos_executables,
+)
 from scripts.release_artifacts import (
     ArtifactError,
     create_provenance,
@@ -534,6 +538,30 @@ class ReleaseArtifactTests(unittest.TestCase):
             require_exact_macos_executables(
                 app, main, [capture_agent, capture_helper, capture_worker, helper]
             )
+
+    def test_embedded_info_plist_accepts_otool_short_final_word(self) -> None:
+        payload = plistlib.dumps({"CFBundleIdentifier": "com.localdictation.test"})
+        # XML permits trailing whitespace. Make the final `otool -X` group
+        # deliberately shorter than four bytes, matching valid Mach-O sections
+        # whose embedded plist length is not word-aligned.
+        while len(payload) % 4 == 0:
+            payload += b"\n"
+        words = [
+            chunk[::-1].hex()
+            for start in range(0, len(payload), 4)
+            for chunk in (payload[start : start + 4],)
+        ]
+        self.assertLess(len(words[-1]), 8)
+        output = "0000000100000000\t" + " ".join(words) + "\n"
+
+        self.assertEqual(
+            decode_otool_info_plist(output),
+            {"CFBundleIdentifier": "com.localdictation.test"},
+        )
+
+    def test_embedded_info_plist_rejects_odd_length_otool_word(self) -> None:
+        with self.assertRaisesRegex(SystemExit, "malformed words"):
+            decode_otool_info_plist("0000000100000000\t123\n")
 
     def test_capture_agent_identity_entitlements_and_launchd_plist_are_exact(
         self,
