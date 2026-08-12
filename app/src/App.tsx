@@ -4,6 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { flog } from './lib/log';
 import {
   SettingsPanel,
+  SettingsSurfaceActiveContext,
   SETTINGS_CATEGORIES,
   settingsLatencyView,
 } from './components/settings';
@@ -46,6 +47,7 @@ import { checkAccessibilityPermission, checkMicrophonePermissionStatus, checkMod
 import { getModelRuntimeCatalog } from './lib/modelRuntime';
 import { open } from '@tauri-apps/plugin-dialog';
 import { INTERNAL_BENCHMARK_BUILD } from './lib/buildFlavor';
+import { cancelMicrophonePreview } from './lib/microphonePreview';
 import {
   beginCurrentUiTransition,
   useUiLatencyDestination,
@@ -323,6 +325,16 @@ function App() {
   const settingsViewRef = useRef('settings.dictation');
   const settingsActiveRef = useRef(isSettingsOpen);
   settingsActiveRef.current = isSettingsOpen;
+  useEffect(() => {
+    if (isSettingsOpen) return;
+    // Settings is warm-mounted behind the main surface. Explicitly cancel its
+    // capture-only preview whenever that surface is hidden.
+    void cancelMicrophonePreview().catch((error: unknown) => {
+      flog.warn('audio', 'could not cancel hidden microphone preview', {
+        error: String(error),
+      });
+    });
+  }, [isSettingsOpen]);
   const trackSettingsView = useCallback((view: string) => {
     settingsViewRef.current = view;
   }, []);
@@ -638,20 +650,23 @@ function App() {
           {...(!isSettingsOpen ? { inert: '' } : {})}
           className={`ui-persistent-surface absolute inset-0 flex min-h-0 overflow-hidden ${isSettingsOpen ? 'opacity-100' : 'pointer-events-none opacity-0'}`}
         >
-          <SettingsPanel
-            settings={settings}
-            onUpdateSettings={updateSettings}
-            status={status}
-            onResetStats={handleResetStats}
-            onRerunSetup={rerunSetup}
-            accessibilityGranted={accessibilityGranted}
-            onCheckForUpdate={checkForUpdate}
-            updateStatus={updateStatus}
-            configureError={configureError}
-            pageRequest={settingsPageRequest}
-            onLatencyViewChange={trackSettingsView}
-            activeRef={settingsActiveRef}
-          />
+          <SettingsSurfaceActiveContext.Provider value={isSettingsOpen}>
+            <SettingsPanel
+              settings={settings}
+              onUpdateSettings={updateSettings}
+              initialized={initialized}
+              status={status}
+              onResetStats={handleResetStats}
+              onRerunSetup={rerunSetup}
+              accessibilityGranted={accessibilityGranted}
+              onCheckForUpdate={checkForUpdate}
+              updateStatus={updateStatus}
+              configureError={configureError}
+              pageRequest={settingsPageRequest}
+              onLatencyViewChange={trackSettingsView}
+              activeRef={settingsActiveRef}
+            />
+          </SettingsSurfaceActiveContext.Provider>
         </section>
       </div>
 

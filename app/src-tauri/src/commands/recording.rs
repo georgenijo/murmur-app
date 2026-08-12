@@ -747,7 +747,7 @@ async fn run_transcription_pipeline(
         tracing::info!(target: "pipeline", "VAD disabled for lowest-latency transcription");
         (samples.to_vec(), false)
     } else {
-        let vad_threshold = 1.0 - (transcription.vad_sensitivity as f32 / 100.0);
+        let vad_threshold = vad::threshold_for_sensitivity(transcription.vad_sensitivity);
         match vad::vad_model_path() {
             Some(vad_path) if vad_path.exists() => {
                 let vad_path_str = vad_path.to_string_lossy().to_string();
@@ -2497,7 +2497,11 @@ pub async fn start_native_recording(
 ) -> Result<serde_json::Value, String> {
     // This lock covers only the synchronous ownership transition. Core Audio
     // initialization happens on the supervisor and never waits under it.
-    let _transition = state.app_state.recording_transition.lock().await;
+    let _transition = crate::commands::microphone_preview::transition_after_stopping_preview(
+        &app_handle,
+        state.inner(),
+    )
+    .await?;
     if keyboard::is_app_disabled() {
         tracing::info!(target: "pipeline", "start_native_recording: app disabled — ignoring");
         return Ok(serde_json::json!({ "type": "app_disabled", "state": "idle" }));
@@ -3320,7 +3324,7 @@ pub async fn transcribe_file(
         tracing::info!(target: "pipeline", "transcribe_file: VAD disabled for lowest-latency transcription");
         (samples.clone(), false)
     } else {
-        let vad_threshold = 1.0 - (vad_sensitivity as f32 / 100.0);
+        let vad_threshold = vad::threshold_for_sensitivity(vad_sensitivity);
         match vad::vad_model_path() {
             Some(vad_path) if vad_path.exists() => {
                 let vad_path_str = vad_path.to_string_lossy().to_string();

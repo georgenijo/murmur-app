@@ -1711,7 +1711,11 @@ pub(crate) async fn start_transform_capture(
     // same order (`recording_transition` then `dictation`) as
     // `start_native_recording`, so the two audio paths can't tear each other's
     // recorder down.
-    let _transition = state.app_state.recording_transition.lock().await;
+    let _transition = crate::commands::microphone_preview::transition_after_stopping_preview(
+        &app_handle,
+        state.inner(),
+    )
+    .await?;
 
     let claim_result: Result<(), &'static str> = {
         let dictation = state.app_state.dictation.lock_or_recover();
@@ -2453,7 +2457,11 @@ pub(crate) async fn retry_transform_instruction(
     state: tauri::State<'_, crate::State>,
     device_name: Option<String>,
 ) -> Result<(), String> {
-    let _transition = state.app_state.recording_transition.lock().await;
+    let _transition = crate::commands::microphone_preview::transition_after_stopping_preview(
+        &app_handle,
+        state.inner(),
+    )
+    .await?;
 
     let fx = TauriFlowEffects {
         app: &app_handle,

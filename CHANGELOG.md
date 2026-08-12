@@ -14,6 +14,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   access is explicit and optional; meeting audio is discarded after each
   durable transcript commit unless retention is enabled (#539).
 
+- Settings → Dictation now has an automatic, local-only microphone input meter
+  with RMS/peak guidance, safe device switching, and transparent pause/resume
+  around real dictation, with no transcription, history, telemetry content, or
+  retained audio (#524).
 - Opt-in Voice Query dispatches a locally transcribed spoken question to one
   explicitly configured CLI argument without a shell, streams its bounded
   answer in a popover, and never auto-pastes or records query content in

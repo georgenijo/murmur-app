@@ -356,6 +356,10 @@ pub struct AppState {
     /// transcription share one Whisper backend, so they must be mutually
     /// exclusive — this flag lets each path refuse to start over the other.
     pub file_transcribing: AtomicBool,
+    /// Session-only microphone input-test owner. The exact preview generation
+    /// remains claimed through capture recovery so no competing pipeline can
+    /// start until the signed worker has exited and been joined.
+    pub microphone_preview: crate::microphone_preview::MicrophonePreviewState,
     /// Compiled post-model correction matcher, rebuilt on settings-change in
     /// `configure_dictation`. Lives outside `DictationState` because the compiled
     /// Aho-Corasick automaton isn't serializable.
@@ -623,6 +627,7 @@ impl Default for AppState {
             active_context: Mutex::new(None),
             cancelled_id: AtomicU64::new(0),
             file_transcribing: AtomicBool::new(false),
+            microphone_preview: crate::microphone_preview::MicrophonePreviewState::default(),
             correction_matcher: Mutex::new(None),
             knowledge_replacements: Mutex::new(Arc::new(Vec::new())),
             ide_context: Mutex::new(crate::ide_context::IdeContextStore::default()),

@@ -30,6 +30,7 @@ mod log_shipper;
 pub mod managed_child;
 mod meeting_capture;
 mod meeting_store;
+mod microphone_preview;
 mod model_artifact;
 mod model_runtime;
 mod performance_metrics;
@@ -307,6 +308,11 @@ pub fn run() {
             commands::permissions::check_microphone_permission_status,
             commands::permissions::reset_microphone_permission,
             commands::permissions::list_audio_devices,
+            commands::microphone_preview::get_microphone_preview_status,
+            commands::microphone_preview::start_microphone_preview,
+            commands::microphone_preview::update_microphone_preview_vad_sensitivity,
+            commands::microphone_preview::stop_microphone_preview,
+            commands::microphone_preview::cancel_microphone_preview,
             commands::integrations::is_notchpill_installed,
             commands::keyboard::start_keyboard_listener,
             commands::keyboard::stop_keyboard_listener,
@@ -424,6 +430,11 @@ pub fn run() {
                 // Hide instead of destroy for persistent windows
                 if window.label() == "main" || window.label() == "diagnostics" {
                     api.prevent_close();
+                    if window.label() == "main" {
+                        commands::microphone_preview::cancel_for_window_close(
+                            window.app_handle().clone(),
+                        );
+                    }
                     let _ = window.hide();
                     tracing::info!(target: "system", "{} window hidden on close request", window.label());
                 }

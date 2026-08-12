@@ -74,6 +74,21 @@ The VAD execution time is logged as `vad_ms` in the structured telemetry output 
 
 Every live recording with non-zero sensitivity runs VAD once against the final full buffer after recording stops. At zero, or if VAD is unavailable or fails, Murmur proceeds once with the unfiltered full buffer.
 
+### Live Settings preview
+
+While Dictation Settings is visible and no productive capture owns the
+microphone, the input monitor also runs the same Silero model and threshold on
+a bounded trailing audio window. It reports `Speech detected · kept` or
+`No speech · filtered` beside the raw RMS/peak meter, and slider movement
+updates the preview generation immediately. Analysis runs off the capture read
+thread at most once every 400 ms; only one inference may be in flight, and a
+result from an older slider revision or preview generation is discarded.
+
+The rolling window is capped at 1.4 seconds, remains in memory, and is discarded
+continuously. It is never appended to the recording buffer, persisted,
+transcribed, transformed, delivered, or included in content telemetry. The
+full-buffer post-recording VAD remains authoritative for actual dictation.
+
 ## Settings
 
 - `vadSensitivity: number` — Sensitivity value (0 = Off; 5-100 = enabled; default 50). Persisted to localStorage. Sent to Rust via `configure_dictation`.

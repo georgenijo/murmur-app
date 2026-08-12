@@ -42,7 +42,13 @@ pub async fn run_benchmark(
     request: BenchmarkRequest,
 ) -> Result<BenchmarkReport, String> {
     let coordinator = state.benchmark.clone();
-    let transition = state.app_state.recording_transition.lock().await;
+    // Serialize the benchmark claim with every live microphone owner. This
+    // closes the check/claim race in both directions with preview startup.
+    let transition = crate::commands::microphone_preview::transition_after_stopping_preview(
+        &app_handle,
+        state.inner(),
+    )
+    .await?;
     if state.app_state.meeting_blocks_asr() {
         return Err("Wait for the meeting transcript to finish before benchmarking".to_string());
     }
