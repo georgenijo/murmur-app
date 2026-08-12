@@ -1,4 +1,6 @@
 import { useEffect, useMemo } from 'react';
+import Markdown from 'react-markdown';
+import rehypeSanitize from 'rehype-sanitize';
 import { useQueryReviewDriver, type QueryReviewState } from '../../lib/hooks/useQueryReviewDriver';
 
 const ERROR_MESSAGES: Record<string, string> = {
@@ -31,14 +33,21 @@ function statusLabel(state: QueryReviewState, errorCode: string | null): string 
     case 'listening': return 'Listening — tap the query key once when done';
     case 'transcribing': return 'Transcribing locally…';
     case 'running': return 'Agent is answering…';
-    case 'ready': return errorCode === 'clipboard_unavailable' ? 'Answer ready' : 'Answer copied to clipboard';
+    case 'ready':
+      if (errorCode === 'clipboard_unavailable') return 'Answer ready';
+      if (errorCode === 'clipboard_superseded') return 'Answer ready — clipboard left alone';
+      return 'Answer copied to clipboard';
     case 'failed': return 'Voice query failed';
     default: return 'Voice Query';
   }
 }
 
 export function queryErrorMessage(errorCode: string | null): string | null {
-  if (!errorCode || errorCode === 'audio_stalled') return null;
+  // `clipboard_superseded` is a successful answer whose auto-copy deferred to a
+  // clipboard write the user made while it was generating — not a failure.
+  if (!errorCode || errorCode === 'audio_stalled' || errorCode === 'clipboard_superseded') {
+    return null;
+  }
   return ERROR_MESSAGES[errorCode] ?? 'The voice query could not be completed.';
 }
 
@@ -89,16 +98,20 @@ export function QueryReviewApp() {
           <div
             aria-label="Query answer"
             aria-live="polite"
-            className="min-h-0 flex-1 select-text overflow-y-auto whitespace-pre-wrap break-words px-4 py-3 text-[13px] leading-relaxed text-white/85"
+            className="min-h-0 flex-1 select-text overflow-y-auto break-words px-4 py-3 text-[13px] leading-relaxed text-white/85 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_a]:text-violet-300 [&_a]:underline [&_blockquote]:my-2 [&_blockquote]:border-l-2 [&_blockquote]:border-white/20 [&_blockquote]:pl-3 [&_blockquote]:text-white/70 [&_code]:rounded [&_code]:bg-white/10 [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-[12px] [&_em]:italic [&_h1]:mb-1 [&_h1]:mt-3 [&_h1]:text-[15px] [&_h1]:font-semibold [&_h1]:text-white [&_h2]:mb-1 [&_h2]:mt-3 [&_h2]:text-[14px] [&_h2]:font-semibold [&_h2]:text-white [&_h3]:mb-1 [&_h3]:mt-2 [&_h3]:text-[13px] [&_h3]:font-semibold [&_h3]:text-white [&_hr]:my-3 [&_hr]:border-white/10 [&_li]:my-0.5 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_pre]:my-2 [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:bg-black/40 [&_pre]:p-3 [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_strong]:font-semibold [&_strong]:text-white [&_table]:my-2 [&_table]:w-full [&_td]:pr-3 [&_th]:pr-3 [&_th]:text-left [&_th]:font-semibold [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5"
           >
-            {driver.answer || errorMessage || 'No answer was returned.'}
+            {driver.answer
+              ? <Markdown rehypePlugins={[rehypeSanitize]}>{driver.answer}</Markdown>
+              : <p className="whitespace-pre-wrap">{errorMessage || 'No answer was returned.'}</p>}
             {driver.state === 'running' && <span aria-hidden="true" className="ml-0.5 inline-block h-3 w-px animate-pulse bg-white/60 align-middle" />}
           </div>
           <footer className="flex items-center justify-between border-t border-white/10 px-3 py-2">
             <span className={`text-[10px] ${driver.errorCode === 'clipboard_unavailable' ? 'text-amber-300/80' : 'text-white/35'}`}>
               {driver.errorCode === 'clipboard_unavailable'
                 ? 'Clipboard unavailable · never auto-pasted'
-                : driver.state === 'ready' ? 'Never auto-pasted' : 'Esc to cancel'}
+                : driver.errorCode === 'clipboard_superseded'
+                  ? 'Clipboard left as-is · press Copy for the answer'
+                  : driver.state === 'ready' ? 'Never auto-pasted' : 'Esc to cancel'}
             </span>
             <div className="flex gap-2">
               {driver.state === 'ready' && (

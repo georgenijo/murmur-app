@@ -1,5 +1,20 @@
 use arboard::Clipboard;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
+
+/// Monotonic count of successful clipboard writes made by Murmur.
+///
+/// A caller that plans to write the clipboard after a long asynchronous gap can
+/// snapshot this first and re-check it before writing, so it never silently
+/// overwrites something the user produced in the meantime. Voice Query uses it
+/// to leave a dictation that landed while an answer was generating in place —
+/// the answer stays one Copy click away, but text the user already pasted
+/// somewhere is never yanked out from under them.
+static CLIPBOARD_WRITE_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn clipboard_write_generation() -> u64 {
+    CLIPBOARD_WRITE_GENERATION.load(Ordering::SeqCst)
+}
 
 pub(crate) fn read_clipboard_text() -> Result<String, String> {
     let mut clipboard =
@@ -20,7 +35,9 @@ pub(crate) fn write_clipboard_text(text: &str) -> Result<(), String> {
         Clipboard::new().map_err(|e| format!("Failed to access clipboard: {}", e))?;
     clipboard
         .set_text(text)
-        .map_err(|e| format!("Failed to copy to clipboard: {}", e))
+        .map_err(|e| format!("Failed to copy to clipboard: {}", e))?;
+    CLIPBOARD_WRITE_GENERATION.fetch_add(1, Ordering::SeqCst);
+    Ok(())
 }
 
 /// Mirror the final transcript to a local file NotchPill (a separate notch-overlay

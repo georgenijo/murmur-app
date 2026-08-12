@@ -1,4 +1,12 @@
 //! Native window transport for the voice-query answer popover (#538).
+//!
+//! The popover stays non-activating for its whole lifetime. It used to become
+//! focusable (and call `set_focus`) on reaching a terminal state, which
+//! activated Murmur the moment an answer arrived — so dismissing the popover
+//! left the main window frontmost instead of returning the user to whatever
+//! they were working in. Clicks and text selection work fine on a
+//! non-activating window, and Escape is delivered by the global rdev listener
+//! rather than the webview's own key handler, so nothing needed focus.
 
 use tauri::Manager;
 
@@ -71,23 +79,6 @@ pub(crate) fn set_expanded_internal(app: &tauri::AppHandle, expanded: bool) -> R
     window
         .set_position(tauri::LogicalPosition::new(x, y))
         .map_err(|_| "query-review window could not be positioned".to_string())
-}
-
-pub(crate) fn set_focusable_internal(
-    app: &tauri::AppHandle,
-    focusable: bool,
-) -> Result<(), String> {
-    let Some(window) = app.get_webview_window("query-review") else {
-        return Err("query-review window is unavailable".to_string());
-    };
-    apply_treatment(&window, !focusable);
-    window
-        .set_focusable(focusable)
-        .map_err(|_| "query-review focus mode could not be set".to_string())?;
-    if focusable {
-        let _ = window.set_focus();
-    }
-    Ok(())
 }
 
 pub(crate) fn hide_internal(app: &tauri::AppHandle) -> Result<(), String> {
