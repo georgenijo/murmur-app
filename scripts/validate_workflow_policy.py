@@ -228,8 +228,9 @@ def validate_release_build(workflow: str) -> int:
     # enter the queue concurrently instead of serializing behind typecheck.
     assert "needs: [typecheck]" not in workflow
     assert "macos-release-${{ needs.context.outputs.source-sha }}" in workflow
-    for forbidden in ("release-linux:", "linux-release-", "AppImage", "--bundles deb"):
-        assert forbidden not in workflow
+    normalized = workflow.casefold()
+    for forbidden in ("release-linux:", "linux-release-", "appimage", "--bundles deb"):
+        assert forbidden not in normalized
     assert "capture-helper-tcc-evidence-${{ needs.context.outputs.source-sha }}" in workflow
     assert (
         "--capture-helper-entitlements app/src-tauri/capture-helper.entitlements.plist"
@@ -332,8 +333,9 @@ def validate_release_rehearsal(workflow: str) -> int:
     assert workflow.count("ref: ${{ needs.context.outputs.source-sha }}") == 2
     assert workflow.count("persist-credentials: false") == 3
     assert "uses: ./.github/actions/setup-linux-build" not in workflow
-    for forbidden in ("rehearse-linux:", "Linux", "linux", "CUDA", "cuda", "AppImage"):
-        assert forbidden not in workflow
+    normalized = workflow.casefold()
+    for forbidden in ("rehearse-linux:", "linux", "cuda", "appimage"):
+        assert forbidden not in normalized
 
     assert (
         "shared-key: macos-release-rehearsal-${{ needs.context.outputs.source-sha }}"
@@ -441,8 +443,9 @@ def validate_promotion_policy(workflow: str) -> int:
     assert 'split("@")[0]) == ".github/workflows/release-build.yml"' in workflow
     assert "expired == false" in workflow
     assert "scripts/release_artifacts.py validate" in workflow
-    for forbidden in ("linux-release-", "artifacts/linux", "AppImage"):
-        assert forbidden not in workflow
+    normalized = workflow.casefold()
+    for forbidden in ("linux-release-", "artifacts/linux", "appimage"):
+        assert forbidden not in normalized
     assert 'for NAME in "macos-release-${SOURCE_SHA}"; do' in workflow
     assert "scripts/release_version.py check" in workflow
     assert '--git-ref "$SOURCE_SHA"' in workflow

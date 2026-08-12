@@ -36,9 +36,12 @@ capture worker, completes its production-v4 hello handshake, sends a bounded
 AUHAL start request, and requires the worker's stream-open phase. This catches
 sandbox or entitlement failures that static plist and signature checks cannot.
 
-Each artifact contains `provenance.json` with the exact commit SHA, workflow
-run ID, updater names, sizes, and SHA-256 hashes. Promotion accepts exactly one
-unexpired macOS artifact from a successful `Release Build` on `main` for the
+The macOS release artifact contains `provenance.json` with the exact commit SHA,
+workflow run ID, updater names, sizes, and SHA-256 hashes. The separate TCC
+evidence artifact contains only its allowlisted signature, entitlement, probe,
+and manifest evidence; its validator enforces the cross-field probe contract
+described above, and it carries no updater metadata. Promotion accepts exactly
+one unexpired macOS artifact from a successful `Release Build` on `main` for the
 exact source commit. Automatic promotion also requires a successful `push`
 event, the version-bump commit prefix, and matching semver values in
 `tauri.conf.json`, `Cargo.toml`, `Cargo.lock`, `package.json`, and

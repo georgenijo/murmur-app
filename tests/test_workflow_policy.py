@@ -334,9 +334,10 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
 
     def test_release_rehearsal_rejects_linux_jobs(self) -> None:
         workflow = (ROOT / ".github/workflows/release-rehearsal.yml").read_text()
-        mutated = workflow + "\n# rehearse-linux:\n"
-        with self.assertRaises(AssertionError):
-            validate_release_rehearsal(mutated)
+        for marker in ("rehearse-linux:", "--bundles appimage"):
+            with self.subTest(marker=marker):
+                with self.assertRaises(AssertionError):
+                    validate_release_rehearsal(workflow + f"\n# {marker}\n")
 
     def test_cuda_cache_restore_requires_writable_target(self) -> None:
         action = (ROOT / ".github/actions/setup-linux-build/action.yml").read_text()
@@ -366,15 +367,17 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
 
     def test_release_build_rejects_linux_packaging(self) -> None:
         workflow = (ROOT / ".github/workflows/release-build.yml").read_text()
-        mutated = workflow + "\n# release-linux:\n# AppImage\n"
-        with self.assertRaises(AssertionError):
-            validate_release_build(mutated)
+        for marker in ("release-linux:", "--bundles appimage"):
+            with self.subTest(marker=marker):
+                with self.assertRaises(AssertionError):
+                    validate_release_build(workflow + f"\n# {marker}\n")
 
     def test_promotion_rejects_linux_artifact_paths(self) -> None:
         workflow = (ROOT / ".github/workflows/release.yml").read_text()
-        mutated = workflow + "\n# artifacts/linux\n"
-        with self.assertRaises(AssertionError):
-            validate_promotion_policy(mutated)
+        for marker in ("artifacts/linux", "--pattern '*.appimage'"):
+            with self.subTest(marker=marker):
+                with self.assertRaises(AssertionError):
+                    validate_promotion_policy(workflow + f"\n# {marker}\n")
 
     def test_release_profile_must_retain_tauri_bundle_marker(self) -> None:
         cargo_toml = (ROOT / "app/src-tauri/Cargo.toml").read_text()
