@@ -7,7 +7,7 @@ Issue [#538](https://github.com/georgenijo/murmur-app/issues/538). Voice Query i
 - Microphone capture and transcription stay in Murmur's existing local ASR runtime.
 - Murmur starts the exact absolute executable path directly. It never invokes a shell, builds a command string, expands variables, or interprets the transcript.
 - Fixed arguments remain separate argv elements. The recognized question is appended as exactly one final argv element.
-- The child receives a cleared environment with only `HOME`, `PATH`, `TMPDIR`, `LANG`, `LC_ALL`, and `LC_CTYPE` forwarded when present. Arbitrary parent secrets are not inherited.
+- The child receives a cleared environment with only `HOME`, `PATH`, `TMPDIR`, `LANG`, `LC_ALL`, `LC_CTYPE`, `USER`, and `LOGNAME` forwarded when present. Arbitrary parent secrets are not inherited. `USER` is required on macOS: Claude Code derives its Keychain credential account name from it and reports "Not logged in" without it.
 - The configured CLI is outside Murmur's local-only trust boundary. It may send the question or answer to cloud services according to its own configuration; Settings states this before the user opts in. Murmur cannot verify or prevent that egress.
 - No executable is selected by default and the shortcut is disabled by default.
 - Question and answer content never enters structured telemetry, dictation history, usage statistics, transcript/audio file output, or broadcast state events. Answer chunks are targeted only to the `query-review` webview; full answer retrieval is requester-gated to that window.
