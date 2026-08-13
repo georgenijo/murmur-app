@@ -180,7 +180,7 @@ describe('useAutoUpdater presentation state', () => {
     expect(mocks.flogError).not.toHaveBeenCalled();
   });
 
-  it('fails closed when update availability is known but policy cannot be verified', async () => {
+  it('offers a verified update as optional when policy cannot be verified', async () => {
     mocks.check.mockResolvedValue({
       available: true,
       version: '0.24.2',
@@ -192,11 +192,18 @@ describe('useAutoUpdater presentation state', () => {
     await act(async () => current.checkForUpdate());
 
     expect(current.updateStatus).toMatchObject({
-      phase: 'error',
-      stage: 'check',
-      message: expect.stringContaining('verify the update policy'),
+      phase: 'available',
+      version: '0.24.2',
+      isForced: false,
     });
-    expect(localStorage.getItem('updater-last-check')).toBeNull();
+    expect(current.isUpdateDialogOpen).toBe(true);
+    expect(localStorage.getItem('updater-last-check')).not.toBeNull();
+    expect(mocks.flogWarn).toHaveBeenCalledWith(
+      'updater',
+      'could not verify update policy',
+      { error: 'Update manifest was not an object.' },
+    );
+    expect(mocks.flogError).not.toHaveBeenCalled();
   });
 
   it('uses an absent policy from the native response without a webview fetch', async () => {

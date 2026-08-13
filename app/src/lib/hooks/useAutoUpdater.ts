@@ -28,8 +28,6 @@ import { getUpdateInstallEnvironment } from '../updaterEnvironment';
 
 const APP_TRANSLOCATION_MESSAGE =
   'macOS opened Murmur from a read-only security location. Quit Murmur, then use Finder to move or reinstall it in Applications before reopening it and trying the update again.';
-const UPDATE_POLICY_UNAVAILABLE_MESSAGE =
-  'Could not verify the update policy. Check your connection and try again.';
 
 type UpdaterOperation = 'idle' | 'checking' | 'installing';
 
@@ -158,18 +156,10 @@ export function useAutoUpdater(
         flog.warn('updater', 'could not verify update policy', {
           error: policy.message,
         });
-        if (shouldPresentManualResult()) {
-          setIsUpdateDialogOpen(false);
-          setUpdateStatus({
-            phase: 'error',
-            stage: 'check',
-            message: UPDATE_POLICY_UNAVAILABLE_MESSAGE,
-            isForced: false,
-          });
-        }
-        return;
       }
       setLastCheckTimestamp(Date.now());
+      // A secondary policy read may fail to force an update; it must never
+      // fail to offer a verified update.
       const isForced =
         policy.status === 'present' &&
         isBelowMinVersion(currentVersion, policy.minVersion);
