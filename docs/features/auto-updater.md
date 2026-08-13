@@ -47,6 +47,78 @@ The modern channel's policy is version-controlled in
 `major.minor.patch` value publishes it after verifying that it is not newer
 than the release. The legacy bridge manifest intentionally omits this policy.
 
+## Post-release OTA canary
+
+The trusted Mac mini has an opt-in canary installation in a dedicated
+`Murmur OTA Canary` directory. The release operator runs:
+
+```bash
+python3 scripts/murmur_canary_fleet.py --tag vX.Y.Z
+```
+
+The runner finds the previous public release, installs its signed
+`Murmur.app.tar.gz` into that directory (never the daily `/Applications`
+install), launches it with `MURMUR_UPDATER_CANARY=/path/to/result.json`, and
+waits for the relaunched client. The app-side marker is absent for ordinary
+launches, so the canary path is inert; canary runs also disable the log shipper.
+The app still uses the normal updater hook, including native `Update.rawJson`
+policy parsing, download, signature verification, install, and relaunch.
+
+The result file is JSON with this schema:
+
+```json
+{
+  "schemaVersion": 1,
+  "status": "passed",
+  "checkedVersion": "0.31.3",
+  "offeredVersion": "0.31.4",
+  "forced": false,
+  "dryRun": false,
+  "stages": {
+    "discover": "passed",
+    "policy": "passed",
+    "download": "passed",
+    "signatureVerify": "passed",
+    "install": "passed",
+    "relaunch": "passed"
+  },
+  "error": null
+}
+```
+
+`status` must be `passed`, every stage must be `passed`, and `checkedVersion`
+must equal the exact resolved previous release while `offeredVersion` equals
+the target release. The runner validates all field types and this contract and
+exits nonzero with the captured error for any failure. `--dry-run` launches the
+previous canary-capable bundle with a second marker, exercises discovery and
+policy, writes an identifiable `status: "dry-run"` result with production
+stages still `pending`, and exits before download/install/relaunch.
+
+The canary proves manifest consumability, native policy parsing, signature
+verification, installation, and relaunch into the new version. It does not
+prove per-user network conditions, Gatekeeper App Translocation behavior, or
+the many possible daily-install locations.
+
+### One-time Mac mini setup and bootstrap exception
+
+The first public build containing this canary support cannot be tested by the
+previous public build: that older client has no canary marker or result writer.
+This is a one-time bootstrap exception. Physically install the first
+canary-capable public build into the dedicated `Murmur OTA Canary` location on
+the trusted mini and launch it once there to grant permissions. Do not run the
+normal release gate against this bootstrap build: its predecessor is not
+canary-capable. Use `--dry-run` beginning with the next release, when this
+installed build is the previous public client. Never use the daily
+`/Applications` install for this bootstrap.
+
+On the trusted mini, install Fleet and GitHub CLI access, then run the command
+above from a checkout at `/Users/george-mac-mini/Documents/code/murmur-app`.
+Grant Murmur the required macOS permissions to the dedicated canary bundle,
+and keep the mini on AC power with the screen session available for any first
+launch prompts. Confirm `--dry-run` first. The first real run creates
+`~/Library/Application Support/Murmur OTA Canary/Murmur Canary.app`; do not
+move it into `/Applications` or point the runner at the daily installation.
+
 ## Update Flow
 
 ### Normal Updates
