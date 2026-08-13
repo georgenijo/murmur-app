@@ -6,11 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.31.3] - 2026-08-12
+
 ### Changed
 
 - Releases now build, rehearse, promote, and publish macOS artifacts only;
   Linux packaging and its AppImage dependencies no longer gate Mac releases
   (#549).
+
+### Fixed
+
+- Voice Query no longer blocks normal dictation while an answer is generating;
+  query review popovers remain available across macOS Spaces and explain any
+  busy recording state (#556).
+- Query review popovers stay non-activating, render CLI answers as sanitized
+  Markdown, and preserve newer clipboard contents rather than overwriting them
+  when a delayed answer completes (#557).
 
 ## [0.31.2] - 2026-08-12
 
