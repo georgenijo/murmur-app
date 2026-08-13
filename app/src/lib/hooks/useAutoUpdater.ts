@@ -35,10 +35,11 @@ type CanaryStage = 'pending' | 'passed' | 'failed';
 
 export interface UpdaterCanaryResult {
   schemaVersion: 1;
-  status: 'pending' | 'passed' | 'failed';
+  status: 'pending' | 'passed' | 'failed' | 'dry-run';
   checkedVersion: string;
   offeredVersion: string | null;
   forced: boolean;
+  dryRun: boolean;
   stages: {
     discover: CanaryStage;
     policy: CanaryStage;
@@ -53,6 +54,7 @@ export interface UpdaterCanaryResult {
 interface UpdaterCanaryState {
   path: string | null;
   result: UpdaterCanaryResult | null;
+  dryRun: boolean;
 }
 
 type CheckOutcome =
@@ -62,7 +64,11 @@ type CheckOutcome =
 
 type InstallOutcome =
   | { kind: 'installed'; version: string }
-  | { kind: 'failed'; version: string; message: string };
+  | { kind: 'failed'; version: string; stage: 'download' | 'install' | 'relaunch'; message: string };
+
+interface InstallLifecycle {
+  onInstalled?: () => Promise<void>;
+}
 
 const UPDATE_CHECK_ATTEMPTS = 2;
 
@@ -76,7 +82,7 @@ export interface UseAutoUpdaterReturn {
   isUpdateDialogOpen: boolean;
   checkForUpdate: () => Promise<void>;
   showAvailableUpdate: () => void;
-  startDownload: () => Promise<InstallOutcome | undefined>;
+  startDownload: (lifecycle?: InstallLifecycle) => Promise<InstallOutcome | undefined>;
   skipVersion: () => void;
   dismissUpdate: () => void;
   dismissCompletedUpdate: () => void;
@@ -124,7 +130,7 @@ export function useAutoUpdater(
     };
   }, []);
 
-  const performCheck = useCallback(async (opts: { isBackground: boolean }): Promise<CheckOutcome> => {
+  const performCheck = useCallback(async (opts: { isBackground: boolean; canary?: boolean }): Promise<CheckOutcome> => {
     if (operationRef.current === 'installing') {
       flog.info('updater', 'check ignored while install owns updater');
       return { kind: 'failed', version: 'unknown', stage: 'discover', message: 'Updater is installing.' };
@@ -202,7 +208,7 @@ export function useAutoUpdater(
       setLastCheckTimestamp(Date.now());
 
       // If not forced and user previously skipped this version, suppress
-      if (!isForced && getSkippedVersion() === update.version) {
+      if (!opts.canary && !isForced && getSkippedVersion() === update.version) {
         flog.info('updater', 'user skipped this version', { version: update.version });
         if (shouldPresentManualResult()) {
           setUpdateStatus({ phase: 'idle' });
@@ -222,7 +228,7 @@ export function useAutoUpdater(
       setIsUpdateDialogOpen(isForced || shouldPresentManualResult());
 
       // Background check: fire macOS notification
-      if (opts.isBackground && !wasAlreadyAvailable) {
+      if (opts.isBackground && !opts.canary && !wasAlreadyAvailable) {
         try {
           let permGranted = await isPermissionGranted();
           if (!permGranted) {
@@ -284,7 +290,7 @@ export function useAutoUpdater(
     }
   }, [updateStatus]);
 
-  const startDownload = useCallback(async (): Promise<InstallOutcome | undefined> => {
+  const startDownload = useCallback(async (lifecycle?: InstallLifecycle): Promise<InstallOutcome | undefined> => {
     if (operationRef.current === 'checking') {
       flog.info('updater', 'install waiting for in-flight update check');
       await pendingCheckRef.current;
@@ -301,6 +307,8 @@ export function useAutoUpdater(
     const version =
       updateStatus.phase === 'available' ? updateStatus.version
       : updateRef.current?.version ?? 'unknown';
+    let downloadFinished = false;
+    let relaunchStarted = false;
     operationRef.current = 'installing';
     setUpdateStatus({ phase: 'preparing', version });
 
@@ -318,7 +326,7 @@ export function useAutoUpdater(
           recovery: 'reinstall',
         });
         operationRef.current = 'idle';
-        return { kind: 'failed', version, message: APP_TRANSLOCATION_MESSAGE };
+        return { kind: 'failed', version, stage: 'install', message: APP_TRANSLOCATION_MESSAGE };
       }
 
       setUpdateStatus({ phase: 'downloading', version, progress: 0 });
@@ -327,7 +335,6 @@ export function useAutoUpdater(
 
       let totalContentLength = 0;
       let totalDownloaded = 0;
-
       await update.downloadAndInstall((event) => {
         switch (event.event) {
           case 'Started':
@@ -346,6 +353,7 @@ export function useAutoUpdater(
             break;
           case 'Finished':
             flog.info('updater', 'download finished');
+            downloadFinished = true;
             break;
         }
       });
@@ -355,6 +363,8 @@ export function useAutoUpdater(
         event_code: 'updater.install_ready',
       });
       clearSkippedVersion();
+      await lifecycle?.onInstalled?.();
+      relaunchStarted = true;
       await relaunch();
       return { kind: 'installed', version };
     } catch (err) {
@@ -369,7 +379,12 @@ export function useAutoUpdater(
         message: String(err),
         isForced: isForcedRef.current,
       });
-      return { kind: 'failed', version, message: String(err) };
+      return {
+        kind: 'failed',
+        version,
+        stage: relaunchStarted ? 'relaunch' : downloadFinished ? 'install' : 'download',
+        message: String(err),
+      };
     }
   }, [updateStatus]);
 
@@ -377,11 +392,11 @@ export function useAutoUpdater(
     await invoke<UpdaterCanaryState>('updater_canary', { action: 'write', result });
   }, []);
 
-  const runCanary = useCallback(async (previous: UpdaterCanaryResult | null) => {
+  const runCanary = useCallback(async (previous: UpdaterCanaryResult | null, dryRun: boolean) => {
     const checkedVersion = await getVersion();
     // A pending result with the offered version means this is the post-install
     // launch. The running version is the final assertion of the OTA.
-    if (previous?.status === 'pending' && previous.offeredVersion === checkedVersion) {
+    if (!dryRun && previous?.status === 'pending' && previous.offeredVersion === checkedVersion) {
       await writeCanary({
         ...previous,
         status: 'passed',
@@ -391,7 +406,51 @@ export function useAutoUpdater(
       return;
     }
 
-    const outcome = await performCheck({ isBackground: true });
+    const outcome = await performCheck({ isBackground: true, canary: true });
+    if (outcome.kind === 'available' && !outcome.policyVerified) {
+      await writeCanary({
+        schemaVersion: 1,
+        status: 'failed',
+        checkedVersion,
+        offeredVersion: outcome.version,
+        forced: outcome.forced,
+        dryRun,
+        stages: {
+          discover: 'passed',
+          policy: 'failed',
+          download: 'pending',
+          signatureVerify: 'pending',
+          install: 'pending',
+          relaunch: 'pending',
+        },
+        error: 'Update policy could not be parsed from the native updater response.',
+      });
+      return;
+    }
+
+    if (dryRun) {
+      await writeCanary({
+        schemaVersion: 1,
+        status: outcome.kind === 'available' ? 'dry-run' : 'failed',
+        checkedVersion,
+        offeredVersion: outcome.kind === 'available' ? outcome.version : null,
+        forced: outcome.kind === 'available' ? outcome.forced : false,
+        dryRun: true,
+        stages: {
+          discover: outcome.kind === 'failed' && outcome.stage === 'discover' ? 'failed' : 'passed',
+          policy: outcome.kind === 'failed' && outcome.stage === 'policy' ? 'failed' : 'passed',
+          download: 'pending',
+          signatureVerify: 'pending',
+          install: 'pending',
+          relaunch: 'pending',
+        },
+        error: outcome.kind === 'available' ? null : outcome.kind === 'current'
+          ? 'No update was available for the canary dry run.'
+          : outcome.message,
+      });
+      return;
+    }
+
     if (outcome.kind !== 'available') {
       await writeCanary({
         schemaVersion: 1,
@@ -399,6 +458,7 @@ export function useAutoUpdater(
         checkedVersion,
         offeredVersion: null,
         forced: false,
+        dryRun: false,
         stages: {
           discover: outcome.kind === 'current' ? 'passed' : 'failed',
           policy: outcome.kind === 'current' ? 'passed' : outcome.stage === 'policy' ? 'failed' : 'pending',
@@ -414,46 +474,43 @@ export function useAutoUpdater(
       return;
     }
 
-    if (!outcome.policyVerified) {
-      await writeCanary({
-        schemaVersion: 1,
-        status: 'failed',
-        checkedVersion,
-        offeredVersion: outcome.version,
-        forced: outcome.forced,
-        stages: {
-          discover: 'passed',
-          policy: 'failed',
-          download: 'pending',
-          signatureVerify: 'pending',
-          install: 'pending',
-          relaunch: 'pending',
-        },
-        error: 'Update policy could not be parsed from the native updater response.',
-      });
-      return;
-    }
-
     await writeCanary({
       schemaVersion: 1,
       status: 'pending',
       checkedVersion,
       offeredVersion: outcome.version,
       forced: outcome.forced,
+      dryRun: false,
       stages: {
         discover: 'passed',
         policy: 'passed',
-        // downloadAndInstall owns all three production operations; these are
-        // marked ready before the call so the file survives relaunch.
-        download: 'passed',
-        signatureVerify: 'passed',
-        install: 'passed',
+        download: 'pending',
+        signatureVerify: 'pending',
+        install: 'pending',
         relaunch: 'pending',
       },
       error: null,
     });
 
-    const install = await startDownload();
+    const install = await startDownload({
+      onInstalled: () => writeCanary({
+        schemaVersion: 1,
+        status: 'pending',
+        checkedVersion,
+        offeredVersion: outcome.version,
+        forced: outcome.forced,
+        dryRun: false,
+        stages: {
+          discover: 'passed',
+          policy: 'passed',
+          download: 'passed',
+          signatureVerify: 'passed',
+          install: 'passed',
+          relaunch: 'pending',
+        },
+        error: null,
+      }),
+    });
     if (!install || install.kind === 'installed') return;
     await writeCanary({
       schemaVersion: 1,
@@ -461,13 +518,14 @@ export function useAutoUpdater(
       checkedVersion,
       offeredVersion: outcome.version,
       forced: outcome.forced,
+      dryRun: false,
       stages: {
         discover: 'passed',
         policy: 'passed',
-        download: 'failed',
-        signatureVerify: 'failed',
-        install: 'failed',
-        relaunch: 'pending',
+        download: install.stage === 'download' ? 'failed' : 'passed',
+        signatureVerify: install.stage === 'download' ? 'pending' : 'passed',
+        install: install.stage === 'download' ? 'pending' : install.stage === 'install' ? 'failed' : 'passed',
+        relaunch: install.stage === 'relaunch' ? 'failed' : 'pending',
       },
       error: install.message,
     });
@@ -488,7 +546,7 @@ export function useAutoUpdater(
       try {
         const canary = await invoke<UpdaterCanaryState>('updater_canary', { action: 'read' });
         if (disposed) return;
-        if (canary.path) await runCanary(canary.result);
+        if (canary.path) await runCanary(canary.result, canary.dryRun);
         else await performCheck({ isBackground: true });
       } catch (error) {
         flog.warn('updater', 'could not inspect updater canary state', { error: String(error) });

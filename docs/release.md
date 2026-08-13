@@ -59,7 +59,11 @@ release is emitted as `min_version` on the modern channel. Invalid or future
 minimum versions fail promotion.
 
 After publication, the release is not done until the previous public build
-passes the real OTA canary on the trusted Mac mini. Run the documented manual
+passes the real OTA canary on the trusted Mac mini. There is one bootstrap
+exception: the first public build containing canary support must be physically
+installed once in the dedicated canary location because its previous public
+client cannot write a canary result. Mandatory gating starts with the next
+release. For all later releases, run the documented manual
 gate (the mini is tailnet-only, so it is not run on a GitHub-hosted runner):
 
 ```bash

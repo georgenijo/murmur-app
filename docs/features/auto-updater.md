@@ -73,6 +73,7 @@ The result file is JSON with this schema:
   "checkedVersion": "0.31.3",
   "offeredVersion": "0.31.4",
   "forced": false,
+  "dryRun": false,
   "stages": {
     "discover": "passed",
     "policy": "passed",
@@ -85,18 +86,29 @@ The result file is JSON with this schema:
 }
 ```
 
-`status` must be `passed`, every stage must be `passed`, and the checked and
-offered versions must differ. The runner validates this contract and exits
-nonzero with the captured error for any failure. `--dry-run` prepares the
-previous signed bundle and prints the launch command but stops before launching
-or installing it.
+`status` must be `passed`, every stage must be `passed`, and `checkedVersion`
+must equal the exact resolved previous release while `offeredVersion` equals
+the target release. The runner validates all field types and this contract and
+exits nonzero with the captured error for any failure. `--dry-run` launches the
+previous canary-capable bundle with a second marker, exercises discovery and
+policy, writes an identifiable `status: "dry-run"` result with production
+stages still `pending`, and exits before download/install/relaunch.
 
 The canary proves manifest consumability, native policy parsing, signature
 verification, installation, and relaunch into the new version. It does not
 prove per-user network conditions, Gatekeeper App Translocation behavior, or
 the many possible daily-install locations.
 
-### One-time Mac mini setup
+### One-time Mac mini setup and bootstrap exception
+
+The first public build containing this canary support cannot be tested by the
+previous public build: that older client has no canary marker or result writer.
+This is a one-time bootstrap exception. Physically install the first
+canary-capable public build into the dedicated `Murmur OTA Canary` location on
+the trusted mini, launch it once there, and verify `--dry-run`. Mandatory OTA
+canary gating begins with the next release, when that installed build is the
+previous public client. Never use the daily `/Applications` install for this
+bootstrap.
 
 On the trusted mini, install Fleet and GitHub CLI access, then run the command
 above from a checkout at `/Users/george-mac-mini/Documents/code/murmur-app`.

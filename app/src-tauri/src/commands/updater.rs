@@ -10,6 +10,7 @@ pub struct UpdateInstallEnvironment {
 }
 
 const CANARY_ENV: &str = "MURMUR_UPDATER_CANARY";
+const CANARY_DRY_RUN_ENV: &str = "MURMUR_UPDATER_CANARY_DRY_RUN";
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -23,6 +24,7 @@ pub struct UpdaterCanaryRequest {
 pub struct UpdaterCanaryState {
     pub path: Option<String>,
     pub result: Option<serde_json::Value>,
+    pub dry_run: bool,
 }
 
 fn canary_path_from_env<F>(get: F) -> Option<String>
@@ -36,6 +38,20 @@ where
 
 fn canary_path() -> Option<String> {
     canary_path_from_env(|key| std::env::var_os(key))
+}
+
+fn canary_dry_run_from_env<F>(get: F) -> bool
+where
+    F: FnOnce(&str) -> Option<std::ffi::OsString>,
+{
+    get(CANARY_DRY_RUN_ENV)
+        .map(|value| {
+            matches!(
+                value.to_string_lossy().as_ref(),
+                "1" | "true" | "TRUE" | "True"
+            )
+        })
+        .unwrap_or(false)
 }
 
 fn read_canary_result(path: &Path) -> Option<serde_json::Value> {
@@ -80,7 +96,11 @@ pub fn updater_canary(request: UpdaterCanaryRequest) -> Result<UpdaterCanaryStat
     let result = path
         .as_deref()
         .and_then(|path| read_canary_result(Path::new(path)));
-    Ok(UpdaterCanaryState { path, result })
+    Ok(UpdaterCanaryState {
+        path,
+        result,
+        dry_run: canary_dry_run_from_env(|key| std::env::var_os(key)),
+    })
 }
 
 fn is_app_translocated(path: &Path) -> bool {
@@ -132,5 +152,12 @@ mod tests {
             canary_path_from_env(|_| Some(std::ffi::OsString::new())),
             None
         );
+    }
+
+    #[test]
+    fn canary_dry_run_is_false_without_explicit_marker() {
+        assert!(!canary_dry_run_from_env(|_| None));
+        assert!(!canary_dry_run_from_env(|_| Some("0".into())));
+        assert!(canary_dry_run_from_env(|_| Some("1".into())));
     }
 }

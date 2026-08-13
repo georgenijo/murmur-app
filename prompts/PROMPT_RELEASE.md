@@ -51,7 +51,10 @@ policy and emits the immutable updater manifest.
 Include the min_version decision in the release summary.
 
 Never set `min_version` to force an update until the currently shipped public
-version has passed the post-release OTA canary. After publication, run
+version has passed the post-release OTA canary. The first public
+canary-capable build is a one-time bootstrap exception: physically install it
+in the dedicated canary location and verify `--dry-run`; mandatory OTA gating
+starts with the next release. After publication, run
 `python3 scripts/murmur_canary_fleet.py --tag v{new_version}` on the trusted
 Mac mini and do not announce the release unless it exits zero. The one-time
 canary installation setup and result schema are in

@@ -18,13 +18,14 @@ def passing_result() -> dict:
         "checkedVersion": "0.31.3",
         "offeredVersion": "0.31.4",
         "forced": False,
+        "dryRun": False,
         "stages": {stage: "passed" for stage in canary.STAGES},
         "error": None,
     }
 
 
 def test_evaluate_accepts_complete_pass() -> None:
-    canary.evaluate_canary_result(passing_result(), "0.31.4")
+    canary.evaluate_canary_result(passing_result(), "0.31.3", "0.31.4")
 
 
 @pytest.mark.parametrize(
@@ -41,11 +42,40 @@ def test_evaluate_rejects_incomplete_or_mismatched_result(mutate, message: str) 
     result = passing_result()
     mutate(result)
     with pytest.raises(canary.CanaryError, match=message):
-        canary.evaluate_canary_result(result, "0.31.4")
+        canary.evaluate_canary_result(result, "0.31.3", "0.31.4")
 
 
 def test_evaluate_requires_all_stage_names() -> None:
     result = passing_result()
     del result["stages"]["signatureVerify"]
     with pytest.raises(canary.CanaryError, match="signatureVerify"):
-        canary.evaluate_canary_result(result, "0.31.4")
+        canary.evaluate_canary_result(result, "0.31.3", "0.31.4")
+
+
+@pytest.mark.parametrize("field, value", [("forced", "false"), ("dryRun", 0), ("checkedVersion", None), ("error", 3)])
+def test_evaluate_rejects_wrong_required_field_types(field, value) -> None:
+    result = passing_result()
+    result[field] = value
+    with pytest.raises(canary.CanaryError, match=field):
+        canary.evaluate_canary_result(result, "0.31.3", "0.31.4")
+
+
+def test_evaluate_rejects_missing_required_field() -> None:
+    result = passing_result()
+    del result["dryRun"]
+    with pytest.raises(canary.CanaryError, match="dryRun"):
+        canary.evaluate_canary_result(result, "0.31.3", "0.31.4")
+
+
+def test_evaluate_requires_exact_previous_version() -> None:
+    with pytest.raises(canary.CanaryError, match="checkedVersion"):
+        canary.evaluate_canary_result(passing_result(), "0.31.2", "0.31.4")
+
+
+def test_evaluate_accepts_identifiable_dry_run() -> None:
+    result = passing_result()
+    result["status"] = "dry-run"
+    result["dryRun"] = True
+    for stage in canary.STAGES[2:]:
+        result["stages"][stage] = "pending"
+    canary.evaluate_dry_run_result(result, "0.31.3", "0.31.4")
