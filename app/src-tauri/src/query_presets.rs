@@ -631,7 +631,11 @@ mod tests {
         );
         // The refusals themselves are still recognised.
         assert_eq!(
-            verdict_for(preset("codex"), Some(1), "Not logged in. Run `codex login`."),
+            verdict_for(
+                preset("codex"),
+                Some(1),
+                "Not logged in. Run `codex login`."
+            ),
             AuthVerdict::NotAuthenticated
         );
     }
