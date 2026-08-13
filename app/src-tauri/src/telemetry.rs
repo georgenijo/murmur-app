@@ -160,10 +160,10 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for TauriEmitterLayer 
         let mut visitor = JsonVisitor::new();
         event.record(&mut visitor);
 
-        let summary = sanitized_summary(&stream, visitor.message);
         let mut data = serde_json::Value::Object(visitor.fields);
 
         sanitize_event_data(&stream, &mut data, cfg!(debug_assertions));
+        let summary = sanitized_summary(&stream, visitor.message, &data, cfg!(debug_assertions));
 
         let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
 
@@ -217,8 +217,12 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "audio.capture_ready" => Some("audio.capture_ready"),
         "audio.capture_failed" => Some("audio.capture_failed"),
         "audio.lifecycle_failed" => Some("audio.lifecycle_failed"),
+        "pipeline.dictation_requested" => Some("pipeline.dictation_requested"),
+        "pipeline.dictation_stop_handoff" => Some("pipeline.dictation_stop_handoff"),
+        "pipeline.dictation_terminal" => Some("pipeline.dictation_terminal"),
         "pipeline.dictation_completed" => Some("pipeline.dictation_completed"),
         "pipeline.dictation_failed" => Some("pipeline.dictation_failed"),
+        "system.startup_baseline" => Some("system.startup_baseline"),
         "transform.pass_outcome" => Some("transform.pass_outcome"),
         "meeting.capture_started" => Some("meeting.capture_started"),
         "meeting.capture_stopped" => Some("meeting.capture_stopped"),
@@ -236,11 +240,79 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
     }
 }
 
-fn sanitized_summary(stream: &str, summary: Option<String>) -> String {
+fn is_safe_dictation_outcome(value: &str) -> bool {
+    matches!(
+        value,
+        "success"
+            | "no_speech"
+            | "too_short"
+            | "user_cancelled_starting"
+            | "user_cancelled_recording"
+            | "user_cancelled_processing"
+            | "capture_init_failure"
+            | "runtime_interruption"
+            | "stop_failure"
+            | "pipeline_failure"
+            | "superseded"
+    )
+}
+
+fn is_safe_dictation_error_code(value: &str) -> bool {
+    matches!(
+        value,
+        "none"
+            | "empty_audio"
+            | "vad_no_speech"
+            | "empty_output"
+            | "coreml_vad_retry_exhausted"
+            | "below_minimum_duration"
+            | "cancelled_starting"
+            | "cancelled_recording"
+            | "cancelled_processing"
+            | "missing_context"
+            | "stale_owner"
+            | "stop_finalization_failed"
+            | "transcription_failed"
+            | "runtime_failure"
+            | "device_changed"
+            | "system_sleep"
+            | "system_wake"
+            | "permission_denied"
+            | "device_unavailable"
+            | "host_unavailable"
+            | "invalid_input"
+            | "resource_exhausted"
+            | "stream_invalidated"
+            | "unsupported_config"
+            | "backend_error"
+            | "protocol_error"
+            | "first_buffer_timeout"
+            | "initialization_timeout"
+            | "permission_prompt_timeout"
+            | "termination_unconfirmed"
+            | "worker_panicked"
+            | "signature_invalid"
+    )
+}
+
+fn sanitized_summary(
+    stream: &str,
+    summary: Option<String>,
+    data: &serde_json::Value,
+    debug_build: bool,
+) -> String {
     if stream == "meeting" {
         // Event codes carry the useful lifecycle meaning. Keep the JSONL/UI
         // summary constant so formatted content cannot leak from a call site.
         "Meeting event".to_string()
+    } else if !debug_build {
+        // Release summaries must never depend on caller-provided text. Retain
+        // useful semantics only through the exact event-code allowlist.
+        data.get("event_code")
+            .and_then(serde_json::Value::as_str)
+            .and_then(canonical_event_code)
+            .unwrap_or("Structured event")
+            .to_string()
     } else {
         summary.unwrap_or_default()
     }
@@ -455,10 +527,12 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
     if !debug_build && stream == "pipeline" {
         obj.retain(|key, value| {
             !value.is_string()
-                || (key == "event_code"
-                    && value
-                        .as_str()
-                        .is_some_and(|code| canonical_event_code(code).is_some()))
+                || value.as_str().is_some_and(|value| match key.as_str() {
+                    "event_code" => canonical_event_code(value).is_some(),
+                    "outcome" => is_safe_dictation_outcome(value),
+                    "error_code" => is_safe_dictation_error_code(value),
+                    _ => false,
+                })
         });
         return;
     }
@@ -875,11 +949,13 @@ mod tests {
     }
 
     #[test]
-    fn release_pipeline_keeps_only_allowlisted_event_codes_from_string_fields() {
+    fn release_pipeline_keeps_only_allowlisted_dictation_lifecycle_strings() {
         let mut data = serde_json::json!({
             "recording_id": 9,
             "total_ms": 420,
-            "event_code": "pipeline.dictation_completed",
+            "event_code": "pipeline.dictation_terminal",
+            "outcome": "runtime_interruption",
+            "error_code": "stream_invalidated",
             "model": "PRIVATE_MODEL",
             "error": "/Users/private/project"
         });
@@ -888,13 +964,19 @@ mod tests {
 
         assert_eq!(data["recording_id"], 9);
         assert_eq!(data["total_ms"], 420);
-        assert_eq!(data["event_code"], "pipeline.dictation_completed");
+        assert_eq!(data["event_code"], "pipeline.dictation_terminal");
+        assert_eq!(data["outcome"], "runtime_interruption");
+        assert_eq!(data["error_code"], "stream_invalidated");
         assert!(data.get("model").is_none());
         assert!(data.get("error").is_none());
 
         data["event_code"] = serde_json::Value::String("private.content".to_string());
+        data["outcome"] = serde_json::Value::String("private transcript".to_string());
+        data["error_code"] = serde_json::Value::String("/Users/private".to_string());
         sanitize_event_data("pipeline", &mut data, false);
         assert!(data.get("event_code").is_none());
+        assert!(data.get("outcome").is_none());
+        assert!(data.get("error_code").is_none());
     }
 
     #[test]
@@ -918,8 +1000,40 @@ mod tests {
         assert!(!encoded.contains("/Users/private"));
         assert!(!encoded.contains("private-session"));
         assert!(!encoded.contains("private-model"));
-        let summary = sanitized_summary("meeting", Some("SENTINEL_PRIVATE_TRANSCRIPT".to_string()));
+        let summary = sanitized_summary(
+            "meeting",
+            Some("SENTINEL_PRIVATE_TRANSCRIPT".to_string()),
+            &data,
+            true,
+        );
         assert_eq!(summary, "Meeting event");
         assert!(!summary.contains("SENTINEL"));
+    }
+
+    #[test]
+    fn release_summaries_use_only_allowlisted_event_codes() {
+        let safe_data = serde_json::json!({
+            "event_code": "pipeline.dictation_terminal"
+        });
+        let safe = sanitized_summary(
+            "pipeline",
+            Some("SENTINEL_PRIVATE_TRANSCRIPT".to_string()),
+            &safe_data,
+            false,
+        );
+        assert_eq!(safe, "pipeline.dictation_terminal");
+
+        let unsafe_data = serde_json::json!({
+            "event_code": "SENTINEL_PRIVATE_EVENT"
+        });
+        let unsafe_summary = sanitized_summary(
+            "system",
+            Some("/Users/private/project".to_string()),
+            &unsafe_data,
+            false,
+        );
+        assert_eq!(unsafe_summary, "Structured event");
+        assert!(!unsafe_summary.contains("SENTINEL"));
+        assert!(!unsafe_summary.contains("/Users/private"));
     }
 }

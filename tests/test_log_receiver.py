@@ -110,6 +110,53 @@ class LogReceiverHealthTests(unittest.TestCase):
         self.assertEqual(receiver.event_code(item), "keyboard.listener_failed")
         self.assertEqual(receiver.classify_event(item)["status"], "action")
 
+    def test_dictation_terminal_classification_and_audio_owner_filter_are_stable(self) -> None:
+        terminal = event(
+            "untrusted summary",
+            timestamp="2026-08-05T00:00:00Z",
+            stream="pipeline",
+            data={
+                "event_code": "pipeline.dictation_terminal",
+                "recording_id": 7,
+                "outcome": "runtime_interruption",
+                "error_code": "stream_invalidated",
+            },
+        )
+        transform_ready = event(
+            "audio readiness accepted",
+            timestamp="2026-08-05T00:00:01Z",
+            stream="audio",
+            data={
+                "event_code": "audio.capture_ready",
+                "owner_kind": "transform",
+                "owner": 7,
+            },
+        )
+
+        classified = receiver.classify_event(terminal)
+        self.assertEqual(classified["status"], "degraded")
+        self.assertEqual(classified["group"], "pipeline.dictation_terminal.runtime_interruption")
+        self.assertIsNone(receiver.classify_event(transform_ready))
+
+        unknown = event(
+            "untrusted summary",
+            timestamp="2026-08-05T00:00:02Z",
+            stream="pipeline",
+            data={
+                "event_code": "pipeline.dictation_terminal",
+                "recording_id": 8,
+                "outcome": "private transcript content",
+                "error_code": "/Users/private/project",
+            },
+        )
+        unknown_classified = receiver.classify_event(unknown)
+        self.assertEqual(unknown_classified["group"], "pipeline.dictation_terminal.unknown")
+        presentation = {
+            key: value for key, value in unknown_classified.items() if key != "events"
+        }
+        self.assertNotIn("private transcript content", str(presentation))
+        self.assertNotIn("/Users/private/project", str(presentation))
+
     def test_listener_silence_is_diagnostic_and_deduplicated(self) -> None:
         events = [
             event(
@@ -510,6 +557,57 @@ class LogReceiverActivityMetricTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
+            metrics = receiver.find_activity_metrics(str(path))
+
+        self.assertEqual(
+            metrics["last_activated"]["timestamp"],
+            "2026-08-05T00:01:00Z",
+        )
+        self.assertEqual(
+            metrics["last_successful_transcription"]["timestamp"],
+            "2026-08-05T00:02:00Z",
+        )
+
+    def test_activity_scan_uses_stable_dictation_codes_and_excludes_transform_audio(self) -> None:
+        events = [
+            event(
+                "ignored",
+                timestamp="2026-08-05T00:01:00Z",
+                stream="audio",
+                data={
+                    "event_code": "audio.capture_ready",
+                    "recording_id": 1,
+                    "owner_kind": "dictation",
+                },
+            ),
+            event(
+                "ignored",
+                timestamp="2026-08-05T00:02:00Z",
+                stream="pipeline",
+                data={
+                    "event_code": "pipeline.dictation_terminal",
+                    "recording_id": 1,
+                    "outcome": "success",
+                    "char_count": 18,
+                },
+            ),
+            event(
+                "ignored",
+                timestamp="2026-08-05T00:03:00Z",
+                stream="audio",
+                data={
+                    "event_code": "audio.capture_ready",
+                    "owner": 1,
+                    "owner_kind": "transform",
+                },
+            ),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "events.jsonl"
+            path.write_text(
+                "\n".join(json.dumps(item) for item in events) + "\n",
+                encoding="utf-8",
+            )
             metrics = receiver.find_activity_metrics(str(path))
 
         self.assertEqual(

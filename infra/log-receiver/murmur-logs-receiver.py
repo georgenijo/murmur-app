@@ -44,6 +44,53 @@ MAX_ACTIVITY_EVENT_BYTES = 512 * 1024
 LLM_REPORT_FORMAT = "murmur-fleet-llm/v1"
 CAPTURE_WATCH_REPORT = "capture-watch.json"
 APP_VERSION_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+-]{0,39}$")
+DICTATION_TERMINAL_OUTCOMES = {
+    "success",
+    "no_speech",
+    "too_short",
+    "user_cancelled_starting",
+    "user_cancelled_recording",
+    "user_cancelled_processing",
+    "capture_init_failure",
+    "runtime_interruption",
+    "stop_failure",
+    "pipeline_failure",
+    "superseded",
+}
+DICTATION_ERROR_CODES = {
+    "none",
+    "empty_audio",
+    "vad_no_speech",
+    "empty_output",
+    "coreml_vad_retry_exhausted",
+    "below_minimum_duration",
+    "cancelled_starting",
+    "cancelled_recording",
+    "cancelled_processing",
+    "missing_context",
+    "stale_owner",
+    "stop_finalization_failed",
+    "transcription_failed",
+    "runtime_failure",
+    "device_changed",
+    "system_sleep",
+    "system_wake",
+    "permission_denied",
+    "device_unavailable",
+    "host_unavailable",
+    "invalid_input",
+    "resource_exhausted",
+    "stream_invalidated",
+    "unsupported_config",
+    "backend_error",
+    "protocol_error",
+    "first_buffer_timeout",
+    "initialization_timeout",
+    "permission_prompt_timeout",
+    "termination_unconfirmed",
+    "worker_panicked",
+    "signature_invalid",
+}
 _usage_cache = {"t": 0.0, "bytes": 0, "dirs": 0}
 
 
@@ -149,6 +196,24 @@ def render_capture_watch(report):
                     install,
                     html.escape(str(alert.get("app_version", ""))[:40]),
                     html.escape(str(alert.get("zero_ready_sessions", ""))[:20]),
+                )
+            )
+        elif alert.get("kind") in (
+            "missing_dictation_terminals",
+            "duplicate_dictation_terminals",
+        ):
+            label = (
+                "accepted dictations had no terminal outcome"
+                if alert.get("kind") == "missing_dictation_terminals"
+                else "accepted dictations had duplicate terminal outcomes"
+            )
+            rows.append(
+                "<li><code>%s</code> v%s: %s %s</li>"
+                % (
+                    install,
+                    html.escape(str(alert.get("app_version", ""))[:40]),
+                    html.escape(str(alert.get("count", ""))[:20]),
+                    label,
                 )
             )
     return (
@@ -876,8 +941,26 @@ def find_activity_metrics(path, max_line_bytes=MAX_ACTIVITY_EVENT_BYTES):
             continue
         code = event_code(event)
         metric = None
-        if code == "recording.native_audio_ready":
+        if code == "audio.capture_ready" and event_value(event, "owner_kind") in (
+            None,
+            "dictation",
+        ):
+            # Missing owner_kind is legacy dictation telemetry. New shared
+            # audio producers always stamp their owner and remain fail-closed
+            # for any explicit non-dictation value.
             metric = "last_activated"
+        elif code == "recording.native_audio_ready":
+            metric = "last_activated"
+        elif code == "pipeline.dictation_terminal" and event_value(event, "outcome") == "success":
+            data = event.get("data")
+            data = data if isinstance(data, dict) else {}
+            char_count = data.get("char_count")
+            if (
+                isinstance(char_count, int)
+                and not isinstance(char_count, bool)
+                and char_count > 0
+            ):
+                metric = "last_successful_transcription"
         elif code == "pipeline.dictation_completed":
             data = event.get("data")
             data = data if isinstance(data, dict) else {}
@@ -993,6 +1076,12 @@ def signal(
 def classify_event(event):
     """Translate one event without guessing beyond its stable evidence."""
     code = event_code(event)
+    if code and code.startswith("audio."):
+        owner_kind = event_value(event, "owner_kind")
+        # Preserve pre-owner_kind dictation health history while excluding all
+        # explicitly scoped transform/query/preview audio events.
+        if owner_kind is not None and owner_kind != "dictation":
+            return None
     if code == "keyboard.listener_started":
         return signal(
             "shortcuts",
@@ -1112,6 +1201,52 @@ def classify_event(event):
             "Retry once; inspect Technical details if it happens again.",
             [event],
         )
+    if code == "pipeline.dictation_terminal":
+        outcome = event_label(event, "outcome", "unknown")
+        error_code = event_label(event, "error_code", "none")
+        if outcome not in DICTATION_TERMINAL_OUTCOMES:
+            outcome = "unknown"
+        if error_code not in DICTATION_ERROR_CODES:
+            error_code = "unknown"
+        if outcome == "success":
+            status = "healthy"
+            title = "Dictation completed"
+            explanation = "The accepted dictation completed successfully."
+            action = "No action required."
+        elif outcome in (
+            "no_speech",
+            "too_short",
+            "user_cancelled_starting",
+            "user_cancelled_recording",
+            "user_cancelled_processing",
+            "superseded",
+        ):
+            status = "diagnostic"
+            title = "Dictation ended without delivered text"
+            explanation = "The accepted dictation ended as %s." % outcome.replace("_", " ")
+            action = "No action required unless this was unexpected."
+        elif outcome == "runtime_interruption":
+            status = "degraded"
+            title = "Dictation capture was interrupted"
+            explanation = "The accepted dictation ended after a bounded runtime interruption."
+            action = "Retry once; inspect Technical details if interruptions repeat."
+        else:
+            status = "action"
+            title = "Dictation failed"
+            explanation = "The accepted dictation ended as %s." % outcome.replace("_", " ")
+            action = "Retry once; inspect Technical details if the failure repeats."
+        if error_code not in ("", "none"):
+            explanation += " The bounded error code was %s." % error_code.replace("_", " ")
+        return signal(
+            "dictation",
+            status,
+            code,
+            title,
+            explanation,
+            action,
+            [event],
+            group="pipeline.dictation_terminal.%s" % outcome,
+        )
     if code == "updater.check_current":
         return signal(
             "updates",
@@ -1215,6 +1350,16 @@ def classify_event(event):
 
 
 def correlation_key(event):
+    owner_kind = event_value(event, "owner_kind")
+    if owner_kind is not None and owner_kind != "dictation":
+        return None
+    recording_id = event_value(event, "recording_id")
+    if (
+        isinstance(recording_id, int)
+        and not isinstance(recording_id, bool)
+        and 0 < recording_id < 2**64
+    ):
+        return str(recording_id)
     owner = event_value(event, "owner")
     if isinstance(owner, int) and not isinstance(owner, bool) and 0 <= owner < 2**64:
         return str(owner)

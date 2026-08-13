@@ -45,12 +45,13 @@ pub(crate) fn handle_audio_lifecycle(
     let state = app_handle.state::<State>();
     let preview = &state.app_state.microphone_preview;
     let changed = match event {
+        AudioLifecycleEvent::Accepted => false,
         AudioLifecycleEvent::Ready => preview.set_phase_if(preview_id, PreviewPhase::Active),
         AudioLifecycleEvent::StillConnecting => preview.set_still_connecting_if(preview_id),
         AudioLifecycleEvent::Recovering { .. } => {
             preview.set_phase_if(preview_id, PreviewPhase::Stopping)
         }
-        AudioLifecycleEvent::InitializationFailed { error, kind } => {
+        AudioLifecycleEvent::InitializationFailed { error, kind, .. } => {
             preview.set_error_if(preview_id, kind.as_str(), error)
         }
         AudioLifecycleEvent::RecoveryStalled => preview.set_error_if(

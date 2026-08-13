@@ -17,6 +17,7 @@ mod commands;
 mod correct_and_teach;
 mod correction;
 mod dictation_context;
+mod dictation_telemetry;
 pub mod evaluation;
 mod file_output;
 mod frontmost;
@@ -531,7 +532,7 @@ pub fn run() {
                 let rss = resource_monitor::get_process_rss_mb();
                 let heap = rust_heap_mb();
                 let ffi = ffi_heap_mb();
-                tracing::info!(target: "system", rss_mb = rss, rust_heap_mb = heap, ffi_heap_mb = ffi, "startup_baseline");
+                tracing::info!(target: "system", event_code = "system.startup_baseline", rss_mb = rss, rust_heap_mb = heap, ffi_heap_mb = ffi, "startup_baseline");
             }
 
             // Periodic heartbeat: memory telemetry + idle timeout

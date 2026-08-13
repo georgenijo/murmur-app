@@ -119,6 +119,41 @@ Transcription processing is local. Network access occurs for model setup and may
 - Resamples to 16kHz (expected sample rate for the backend)
 - Samples stored as `Vec<f32>` in memory — no temp files
 
+## Per-recording lifecycle telemetry
+
+Live dictation has one content-free correlation contract. Every stage below
+uses the same positive `recording_id`; audio stages also retain
+`owner_kind: "dictation"` so transform, query, preview, corpus, and benchmark
+capture cannot enter dictation reports.
+
+| Stage | Stable `event_code` | Denominator |
+|---|---|---|
+| Input request | `pipeline.dictation_requested` | Unique requested recording IDs in one app session |
+| Capture accepted | `audio.capture_started` | Requested IDs for which the audio supervisor accepted ownership |
+| Capture ready | `audio.capture_ready` | Accepted IDs that retained their first nonempty PCM buffer |
+| Stop handoff | `pipeline.dictation_stop_handoff` | Accepted IDs handed from capture to final processing |
+| Terminal | `pipeline.dictation_terminal` | Accepted IDs that emitted exactly one terminal event |
+
+The terminal `outcome` vocabulary is `success`, `no_speech`, `too_short`,
+`user_cancelled_starting`, `user_cancelled_recording`,
+`user_cancelled_processing`, `capture_init_failure`,
+`runtime_interruption`, `stop_failure`, `pipeline_failure`, or `superseded`.
+`error_code` further classifies the result with a fixed enum (for example
+`vad_no_speech`, `coreml_vad_retry_exhausted`, `first_buffer_timeout`, or
+`stale_owner`); it is never a raw backend error. Core ML returning empty output
+after its one full-audio retry is therefore a terminal, bounded failure class
+instead of an uncorrelated blank result.
+
+The producer registers an attempt only after capture ownership is accepted and
+claims its terminal event atomically. Late cancellation, worker exit, pipeline
+completion, or stale-generation callbacks may race, but only the first terminal
+claim is emitted. A later `system.startup_baseline` closes the preceding app
+session for reporting. The correlator joins only `(app session, recording_id)`
+and stable codes—not timestamps or summary text. An accepted attempt without a
+terminal is reported as missing only after that session closes; the currently
+open session remains pending. No stage contains audio, transcript text, a
+device label, a path, or a free-form error.
+
 ## Transcription Backend (`transcriber/`)
 
 The backend implements the `TranscriptionBackend` trait (`transcriber/mod.rs`):

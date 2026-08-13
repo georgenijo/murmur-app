@@ -23,6 +23,7 @@ of truth and redeploy from it.
 | `murmur-logs-receiver.py` | `/home/george/murmur-logs-receiver.py` | stdlib HTTP server on `127.0.0.1:8600`: ingest, state, dashboard |
 | `murmur-logs.service` | `/etc/systemd/system/` | runs the receiver as `george`, restart-always |
 | `murmur-capture-watch.py` | `/home/george/murmur-capture-watch.py` | bounded stdlib aggregation of shipped capture-startup metrics |
+| `dictation_lifecycle.py` | `/home/george/dictation_lifecycle.py` | deterministic per-session dictation funnel and terminal correlator |
 | `murmur-capture-watch.service` | `/etc/systemd/system/` | one-shot capture regression analysis |
 | `murmur-capture-watch.timer` | `/etc/systemd/system/` | runs the watch hourly with a randomized delay |
 | `nginx-murmur-ingest-opti.conf` | `/etc/nginx/sites-available/murmur-ingest` (+ symlink in sites-enabled; default site removed) | local-only proxy on `127.0.0.1:8601` for `/murmur/ingest`, `/murmur/state`, `/murmur/healthz` |
@@ -66,6 +67,7 @@ Instead:
 
 ```bash
 cat infra/log-receiver/murmur-logs-receiver.py | tailscale ssh george@opti "cat > /home/george/murmur-logs-receiver.py"
+cat infra/log-receiver/dictation_lifecycle.py | tailscale ssh george@opti "cat > /home/george/dictation_lifecycle.py"
 cat infra/log-receiver/murmur-capture-watch.py | tailscale ssh george@opti "cat > /home/george/murmur-capture-watch.py"
 cat infra/log-receiver/murmur-capture-watch.service | tailscale ssh george@opti "cat > /tmp/murmur-capture-watch.service"
 cat infra/log-receiver/murmur-capture-watch.timer | tailscale ssh george@opti "cat > /tmp/murmur-capture-watch.timer"
@@ -127,7 +129,7 @@ watch groups them under `unknown`, which is never used for version comparisons.
 
 `capture-watch.json` is a versioned, atomically replaced derived report. It
 contains no source event text or device metadata: only install UUID, bounded app
-version/backend/setup-step labels, counts, and startup durations.
+version/backend/setup-step/outcome labels, counts, and startup durations.
 
 ## Capture regression watch
 
@@ -140,7 +142,9 @@ cohorts per install. Further versions collapse into a non-comparable
 - active-budget timeouts split by stable backend and native setup step;
 - fallback and both-backends-failed counts;
 - a histogram of ready recordings for the five most recent completed,
-  attempted dictation sessions in each cohort.
+  attempted dictation sessions in each cohort;
+- a stable-code dictation funnel with terminal outcome counts, per-stage
+  drop-off, and missing/duplicate terminal counts.
 
 `startup_baseline` begins an app session. A session contributes to the
 zero-ready signal only after a later baseline proves it ended and only when it
@@ -164,11 +168,12 @@ preserves `last_setup_step: "none"` as the explicit pre-native-call state.
 The receiver stays stdlib-only. Its plain-English classification, recovery
 correlation, grouping, unknown-event fallback, exact newest-N downloads,
 LLM-ready Markdown rendering, bounded retained-log activity metrics, route
-bounds, and HTML escaping are covered by:
+bounds, HTML escaping, and dictation lifecycle correlation are covered by:
 
 ```bash
 python3 -m unittest tests/test_log_receiver.py
 python3 -m unittest tests/test_capture_regression_watch.py
+python3 -m unittest tests/test_dictation_lifecycle.py
 ```
 
 Install pages expose raw JSONL downloads for the latest 200, latest 500, or the

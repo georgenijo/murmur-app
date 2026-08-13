@@ -116,6 +116,17 @@ Transcript stage telemetry uses the versioned stage vocabulary from
 identity, timing, outcome, and changed state; transcript and command content
 remain excluded.
 
+Live dictation lifecycle telemetry is separately correlated by a positive
+`recording_id` and the stable codes `pipeline.dictation_requested`,
+`audio.capture_started`, `audio.capture_ready`,
+`pipeline.dictation_stop_handoff`, and `pipeline.dictation_terminal`. Audio
+stages must also carry `owner_kind: "dictation"`. The terminal event contains
+only an allowlisted `outcome`, an allowlisted `error_code`, numeric
+`char_count`, and the correlation ID. Release stripping preserves those exact
+vocabularies while dropping arbitrary string values. See
+[Transcription Pipeline](../features/transcription.md#per-recording-lifecycle-telemetry)
+for stage denominators and terminal semantics.
+
 ## Updater
 
 | Event | Payload | Source | When it fires | Listeners |

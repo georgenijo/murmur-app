@@ -47,15 +47,15 @@ When the JSONL file exceeds 5MB, it is rotated — renamed to `.jsonl.1` — and
 
 ### Privacy Stripping
 
-In release builds, all string-valued fields from `pipeline` target events are stripped from the `data` object. Only numeric fields survive. For the `transform` stream in both debug and release builds, each string must match an explicit key-specific enum/bucket vocabulary; unknown keys or values are dropped. Numeric and boolean diagnostic fields are retained. The `summary` (message) field is not stripped and transform summaries are constant. This prevents transcription or transform content from being persisted in structured log data.
+In release builds, arbitrary string-valued fields from `pipeline` target events are stripped from the `data` object. Numeric fields survive, and the dictation lifecycle's exact `event_code`, `outcome`, and `error_code` values survive only when they match their key-specific allowlists. For the `transform` stream in both debug and release builds, each string must likewise match an explicit key-specific enum/bucket vocabulary; unknown keys or values are dropped. Numeric and boolean diagnostic fields are retained. Release `summary` values are derived only from an allowlisted `event_code`, with `Structured event` as the fallback; meeting and frontend summaries are constant in every build. This prevents transcription, transform, or caller-provided frontend content from being persisted in structured log data.
 
-The one exception to pipeline string removal is an exact allowlisted
-`event_code`. Event codes are fixed identifiers such as
-`pipeline.dictation_completed`; arbitrary values are removed. Transform event
-codes pass through the same exact-value allowlist. Frontend-originated codes
-are validated by Rust before entering the structured event. This gives local
-and fleet presentation layers a stable semantic key without permitting user
-content or arbitrary labels.
+The pipeline string exceptions are exact allowlisted `event_code` values and
+the bounded terminal `outcome` / `error_code` vocabularies. Event codes are
+fixed identifiers such as `pipeline.dictation_terminal`; arbitrary values are
+removed. Transform event codes pass through the same exact-value allowlist.
+Frontend-originated codes are validated by Rust before entering the structured
+event. This gives local and fleet presentation layers stable semantic keys
+without permitting user content or arbitrary labels.
 
 ### Pretty-Printed Log File
 
