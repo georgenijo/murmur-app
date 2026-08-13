@@ -1,6 +1,6 @@
 # Voice query
 
-Issues [#538](https://github.com/georgenijo/murmur-app/issues/538), [#550](https://github.com/georgenijo/murmur-app/issues/550), [#551](https://github.com/georgenijo/murmur-app/issues/551), [#552](https://github.com/georgenijo/murmur-app/issues/552), and [#554](https://github.com/georgenijo/murmur-app/issues/554). Voice Query is an opt-in bridge from Murmur's local speech recognition to one user-configured CLI executable. Double-tap its dedicated shortcut, ask a question, tap once to finish, and read the CLI's streaming answer in a separate popover.
+Issues [#538](https://github.com/georgenijo/murmur-app/issues/538), [#550](https://github.com/georgenijo/murmur-app/issues/550), [#551](https://github.com/georgenijo/murmur-app/issues/551), [#552](https://github.com/georgenijo/murmur-app/issues/552), [#553](https://github.com/georgenijo/murmur-app/issues/553), and [#554](https://github.com/georgenijo/murmur-app/issues/554). Voice Query is an opt-in bridge from Murmur's local speech recognition to one user-configured CLI executable. Double-tap its dedicated shortcut, ask a question, tap once to finish, and read the CLI's streaming answer in a separate popover.
 
 ## Privacy and trust boundary
 
@@ -11,7 +11,7 @@ Issues [#538](https://github.com/georgenijo/murmur-app/issues/538), [#550](https
 - A provider may add only its declared config-directory selector: `CLAUDE_CONFIG_DIR` for Claude and `CODEX_HOME` for Codex (Custom may use either). Base allowlist keys, undeclared names, API keys, and tokens are rejected. Values are owner-only Rust app data, never localStorage; Settings receives only the configured variable names after saving and never reads saved values back. Explicit **Clear saved values** also repairs a malformed or future-version store by replacing the untrusted file with an empty current-version store.
 - The configured CLI is outside Murmur's local-only trust boundary. It may send the question, enabled context, or answer to cloud services according to its own configuration; Settings states this before the user opts in. Murmur cannot verify or prevent that egress.
 - No executable is selected by default and the shortcut is disabled by default.
-- Question, answer, and context content never enters structured telemetry, logs, dictation history, usage statistics, transcript/audio file output, or broadcast state events. Usage statistics accept only content-free counters. Answer chunks are targeted only to the `query-review` webview; full answer and context-summary retrieval is requester-gated to that window, while numeric usage may also reach the main window for local aggregation.
+- Question, answer, and context content never enters structured telemetry, logs, dictation history, usage statistics, performance diagnostics, transcript/audio file output, or broadcast state events. The separate Voice Query history store is the one exception for question and answer content, and only when **Keep Voice Query history on this Mac** was enabled at the start of that pass. Context content is excluded even then. Usage statistics accept only content-free counters. Answer chunks are targeted only to the `query-review` webview; full answer and context-summary retrieval is requester-gated to that window, while numeric usage may also reach the main window for local aggregation.
 
 ## Opt-in app context
 
@@ -71,6 +71,34 @@ The main window folds each exact terminal pass into the existing durable local s
 
 The broadcast terminal state may carry the same typed numeric usage object for local aggregation, but never answer or question content. Query telemetry keeps its exact allowlist: token counts and provider cost converted to integer micro-US-dollars may accompany `query.pass_state`; nested objects, provider names, floating costs, byte counts, and unknown numeric keys are rejected. Provider quota and OAuth usage endpoints remain out of scope—Murmur never reads another app's credentials.
 
+## Opt-in local history and diagnostics
+
+**Keep Voice Query history on this Mac** is off by default. Each pass freezes
+that choice when it starts, so changing Settings never changes or cancels the
+pass already in flight. When enabled, the terminal pass is written best-effort
+to a separate Rust-owned SQLite store. A record contains only its timestamp,
+provider preset, original transcribed question, answer (including a bounded
+partial answer on failure), provider-reported token counts, total duration, and
+stable error code. It never contains the composed prompt, app/window/selection
+context, provider stderr or typed error detail, executable path, argv,
+environment values, or secrets.
+
+The store retains the newest 200 records and prunes in the same transaction as
+each insert. History → Queries reads it through main-window-only, paged IPC,
+offers a provider filter, and exposes a direct **Delete all query history**
+action. Turning retention off stops future inserts but does not silently delete
+existing records. Query content is never mirrored into localStorage, dictation
+history, Correct and Teach, exports, logs, telemetry, stats, or the performance
+database. Insert and purge notifications contain only `inserted` or `cleared`.
+
+Every pass still writes a content-free record to the existing Performance
+diagnostics store, whether or not content retention is enabled. The Runs
+workspace shows Capture, Transcription, Provider spawn, First answer, and Total
+timings, plus the process exit code and whether stderr was present. It never
+stores stderr bytes, provider detail, question, answer, or context. Clear
+Performance Data and Delete all query history therefore remain independent
+operations.
+
 ## Related modules
 
 | Area | Path |
@@ -86,3 +114,6 @@ The broadcast terminal state may carry the same typed numeric usage object for l
 | Main-window hotkey driver | `app/src/lib/hooks/useQueryFlow.ts` |
 | Review window | `app/src/lib/hooks/useQueryReviewDriver.ts`, `app/src/components/query-review/` |
 | Content-free aggregate counters | `app/src/lib/stats.ts`, `app/src/components/UsageDashboard.tsx` |
+| Opt-in local history store and IPC | `app/src-tauri/src/query_history/`, `app/src/lib/queryHistory.ts` |
+| Queries workspace | `app/src/lib/hooks/useQueryHistory.ts`, `app/src/components/history/QueryHistoryPanel.tsx` |
+| Content-free per-pass diagnostics | `app/src-tauri/src/performance_metrics/`, `app/src/components/log-viewer/` |

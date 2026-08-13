@@ -15,12 +15,14 @@ export type MeasurementV1<T> =
 export type PerformanceRunKindV1 =
   | 'dictation'
   | 'fileTranscription'
-  | 'selectedTextTransform';
+  | 'selectedTextTransform'
+  | 'voiceQuery';
 
 export type RunCorrelationV1 =
   | { kind: 'dictation'; recordingId: number }
   | { kind: 'fileTranscription'; fileRunId: number }
-  | { kind: 'selectedTextTransform'; transformPassId: number };
+  | { kind: 'selectedTextTransform'; transformPassId: number }
+  | { kind: 'voiceQuery'; queryPassId: number };
 
 export type PerformanceStageV1 =
   | 'captureFinalization'
@@ -138,6 +140,7 @@ export type RunOutcomeV1 =
         | 'inferenceFailed'
         | 'transformStageFailed'
         | 'deliveryFailed'
+        | 'queryFailed'
         | 'internalEarlyExit'
         | 'interruptedByRestart';
     };
@@ -161,6 +164,11 @@ export interface PerformanceRunV1 {
     durationMs: MeasurementV1<number>;
     outcome: StageOutcomeV1;
   }>;
+  /** Voice Query child facts only. Never contains stderr text or provider detail. */
+  queryProcess?: {
+    exitCode: number | null;
+    stderrPresent: boolean;
+  };
 }
 
 export interface PerformanceRunListV1 {
@@ -193,7 +201,7 @@ const stageOutcomes = new Set<StageOutcomeV1>([
 const stableErrors = new Set([
   'audioCaptureFailed', 'decodeFailed', 'vadFailed', 'modelFailed',
   'inferenceFailed', 'transformStageFailed', 'deliveryFailed',
-  'internalEarlyExit', 'interruptedByRestart',
+  'queryFailed', 'internalEarlyExit', 'interruptedByRestart',
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -202,6 +210,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isPositiveSafeInteger(value: unknown): value is number {
+  return typeof value === 'number'
+    && Number.isSafeInteger(value)
+    && value > 0;
 }
 
 export function isMeasurementV1<T>(
@@ -322,12 +336,26 @@ function isFollowUp(value: unknown): boolean {
     && stageOutcomes.has(value.outcome as StageOutcomeV1);
 }
 
+function isQueryProcess(value: unknown): boolean {
+  return isRecord(value)
+    && Object.keys(value).length === 2
+    && Object.prototype.hasOwnProperty.call(value, 'exitCode')
+    && Object.prototype.hasOwnProperty.call(value, 'stderrPresent')
+    && (value.exitCode === null || (
+      typeof value.exitCode === 'number'
+      && Number.isSafeInteger(value.exitCode)
+      && value.exitCode >= -2_147_483_648
+      && value.exitCode <= 2_147_483_647
+    ))
+    && typeof value.stderrPresent === 'boolean';
+}
+
 export function isPerformanceRunV1(value: unknown): value is PerformanceRunV1 {
   if (!isRecord(value)
     || value.schemaVersion !== 1
     || typeof value.runId !== 'string'
     || !/^[a-f0-9]{32}$/.test(value.runId)
-    || !['dictation', 'fileTranscription', 'selectedTextTransform'].includes(String(value.kind))
+    || !['dictation', 'fileTranscription', 'selectedTextTransform', 'voiceQuery'].includes(String(value.kind))
     || !isFiniteNumber(value.startedAtMs)
     || !isFiniteNumber(value.finishedAtMs)
     || typeof value.appVersion !== 'string'
@@ -340,7 +368,8 @@ export function isPerformanceRunV1(value: unknown): value is PerformanceRunV1 {
     || !Array.isArray(value.followUps)
     || !value.runtimes.every(isRuntime)
     || !value.stages.every(isStageTiming)
-    || !value.followUps.every(isFollowUp)) {
+    || !value.followUps.every(isFollowUp)
+    || ('queryProcess' in value && !isQueryProcess(value.queryProcess))) {
     return false;
   }
   const stages = new Set(value.stages.map(stage => isRecord(stage) ? stage.stage : undefined));
@@ -357,8 +386,12 @@ export function isPerformanceRunV1(value: unknown): value is PerformanceRunV1 {
       && isFiniteNumber(value.correlation.fileRunId))
     || (value.kind === 'selectedTextTransform'
       && value.correlation.kind === 'selectedTextTransform'
-      && isFiniteNumber(value.correlation.transformPassId));
-  return correlationMatches;
+      && isFiniteNumber(value.correlation.transformPassId))
+    || (value.kind === 'voiceQuery'
+      && value.correlation.kind === 'voiceQuery'
+      && isPositiveSafeInteger(value.correlation.queryPassId));
+  return correlationMatches
+    && (value.kind === 'voiceQuery' || !('queryProcess' in value));
 }
 
 export async function listPerformanceRuns(limit = 50): Promise<PerformanceRunListV1> {

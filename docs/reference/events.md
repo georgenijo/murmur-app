@@ -88,6 +88,7 @@ Question and context content never appears in events. Only the dedicated review 
 | `query-answer-chunk` | `{queryPassId, sequence, text, replace}` | `query_flow.rs` | A decoded raw chunk or structured Claude/Codex answer chunk accepted within the 256 KiB cap. `replace: true` atomically resets optimistic structured text to the complete raw stream when JSONL parsing falls back, including incomplete EOF without a typed terminal event; otherwise text appends. Targeted with `emit_to("query-review", …)`, never broadcast. | Query popover only. |
 | `query-review-hidden` | `()` | `query_flow.rs` | Exact-pass cancellation/close completes and the popover is hidden. | Main window and query popover. |
 | `query-busy` | `()` | `keyboard.rs`, `query_flow.rs` | A query press is refused because another pass or pipeline owner is active. | Reserved for UI feedback. |
+| `query-history-changed` | `{kind: "inserted" \| "cleared"}` | `query_history` | A retained record committed or the local query store was purged. The exact two-value payload is content-free and only prompts the main window to refresh through gated IPC. | Main-window Queries workspace. |
 
 ## Overlay
 
@@ -100,7 +101,7 @@ Question and context content never appears in events. Only the dedicated review 
 
 | Event | Payload | Source | When it fires | Listeners |
 |-------|---------|--------|---------------|-----------|
-| `performance-run-completed` | `PerformanceRunV1` | `performance_metrics/mod.rs` | A dictation, file, or transform run finishes and is persisted. | Log viewer (`usePerformanceDiagnostics`). |
+| `performance-run-completed` | `PerformanceRunV1` | `performance_metrics/mod.rs` | A dictation, file, transform, or Voice Query run finishes and is persisted. Voice Query records contain only timings, stable outcome, exit code, and stderr presence—not query, answer, context, or stderr content. | Log viewer (`usePerformanceDiagnostics`). |
 | `performance-resource-sample` | `ResourceSampleV1` | `performance_metrics/mod.rs` | Once per second from the resource heartbeat: host CPU, main-process CPU/RSS/Rust-heap/FFI-heap, and sidecar process figures. | Log viewer charts. |
 | `performance-diagnostics-cleared` | `()` | `performance_metrics/mod.rs` | Local run history and samples were deleted. | Log viewer (resets views). |
 | `benchmark-progress` | `BenchmarkProgress {completed, …}` | `benchmark.rs` | During a Performance Lab run, per completed model/fixture unit. | Performance Lab. |

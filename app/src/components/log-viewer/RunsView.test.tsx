@@ -46,7 +46,13 @@ function runs(): PerformanceRunV1[] {
       return stage;
     }),
   });
-  return [transform, file, dictation];
+  const query = makeRun({
+    runId: '3123456789abcdef0123456789abcdef',
+    kind: 'voiceQuery',
+    correlation: { kind: 'voiceQuery', queryPassId: 43 },
+    queryProcess: { exitCode: 0, stderrPresent: true },
+  });
+  return [query, transform, file, dictation];
 }
 
 describe('RunsView', () => {
@@ -93,6 +99,7 @@ describe('RunsView', () => {
     expect(container.textContent).toContain('Dictation');
     expect(container.textContent).toContain('File transcription');
     expect(container.textContent).toContain('Selected-text transform');
+    expect(container.textContent).toContain('Voice Query');
     expect(container.textContent).toContain('Success');
     expect(container.textContent).toContain('No speech');
     expect(container.textContent).toContain('Failed');
@@ -108,8 +115,30 @@ describe('RunsView', () => {
     expect(tableBodyText).not.toContain('Dictation');
   });
 
+  it('shows Voice Query timing labels and content-free process facts', async () => {
+    const query = runs()[0];
+    mocks.getPerformanceRun.mockResolvedValue(query);
+    await renderRuns([query]);
+    const detailButton = container.querySelector('button[aria-label^="View details"]') as HTMLButtonElement;
+    await act(async () => {
+      detailButton.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('Provider spawn');
+    expect(container.textContent).toContain('First answer');
+    expect(container.textContent).toContain('Provider exit code');
+    expect(container.textContent).toContain('Provider stderr');
+    expect(container.textContent).toContain('Presence only; stderr text is never retained');
+    const eventButton = Array.from(container.querySelectorAll('button'))
+      .find(button => button.textContent === 'Show correlated Events')!;
+    await act(async () => eventButton.click());
+    expect(onShowEvents).toHaveBeenCalledWith({ field: 'query_pass_id', value: '43' });
+  });
+
   it('opens typed detail, renders ordered durations without offsets, and jumps to Events', async () => {
-    const transform = runs()[0];
+    const transform = runs()[1];
     mocks.getPerformanceRun.mockResolvedValue(transform);
     await renderRuns([transform]);
     const detailButton = container.querySelector('button[aria-label^="View details"]') as HTMLButtonElement;

@@ -67,6 +67,7 @@ interface Settings {
   queryArguments: string[];                // fixed argv before question
   queryTimeoutSeconds: number;             // 5–300, default 60
   queryContextLevel: QueryContextLevel;     // none | application | selection
+  retainQueryHistory: boolean;             // opt-in local question/answer history
 
   // Delivery
   autoPaste: boolean;
@@ -170,10 +171,11 @@ model-selection side effects.
 | `queryArguments` | `string[]` | `[]` | At most 32 fixed arguments, 4096 bytes each and 32 KiB total | Passed literally before the locally transcribed question and any opted-in context, which together remain one final argv element. |
 | `queryTimeoutSeconds` | `number` | `60` | Integer 5–300 | Deadline after which the owned CLI process group is terminated and confirmed empty. |
 | `queryContextLevel` | `QueryContextLevel` | `'none'` | `'none'`, `'application'`, `'selection'` | Opt-in immutable per-pass context. Application adds the native app name and AX window title; Selection additionally includes selected text bounded to 8 KiB on a UTF-8 boundary after secure-field-aware capture. All context stays inside the one final prompt argv element and is summarized visibly in the popover. |
+| `retainQueryHistory` | `boolean` | `false` | `true` / `false` | Snapshotted at pass start. When true, the original question and answer plus bounded content-free metadata enter the separate Rust-owned query-history SQLite store. Context, composed prompts, stderr/detail, argv, paths, environment, and secrets never do. Turning it off affects new passes; existing records remain until History → Queries → Delete all query history. |
 
 Declared provider environment values are not settings fields. Rust stores only `CLAUDE_CONFIG_DIR` and/or `CODEX_HOME` under owner-only app data; `HOME`, base allowlist overrides, API keys, tokens, and arbitrary names are rejected. Webviews can stage a replacement value for Save, but saved values are never returned to the frontend or copied into localStorage. Settings receives configured names only.
 
-The Settings disclosure explicitly states that the configured CLI may send the question, enabled context, or answer to cloud services and that Murmur cannot control its network behavior. Enabling validates the configuration immediately; Test runs a bounded preset auth probe and keeps its stdout/stderr within Settings. Provider-reported numeric usage is shown per Ready pass and aggregated into the local Stats store by provider and stable failure code; Reset Stats clears those counters. No query content is stored there. See [Voice Query](../features/voice-query.md).
+The Settings disclosure explicitly states that the configured CLI may send the question, enabled context, or answer to cloud services and that Murmur cannot control its network behavior. Enabling validates the configuration immediately; Test runs a bounded preset auth probe and keeps its stdout/stderr within Settings. Provider-reported numeric usage is shown per Ready pass and aggregated into the local Stats store by provider and stable failure code; Reset Stats clears those counters. No query content is stored in Stats. The separate opt-in query-history setting does not restart a listener or alter the active pass. See [Voice Query](../features/voice-query.md).
 
 ### Recording Mode Details
 
@@ -319,6 +321,11 @@ same durable-source/localStorage-cache contract. On main-window boot,
 renders. Disk wins over stale caches; when a durable file is absent, the
 corresponding existing localStorage blob migrates to disk once. Failures are
 isolated per file and never block boot.
+
+Voice Query history is intentionally outside this cache contract. Its content
+stays in `query-history/query-history.sqlite3` and enters main-window memory
+only through bounded paging while History → Queries is active. It has no
+localStorage key, cache migration, dictation export, or Stats mirror.
 
 Other localStorage caches and browser-scoped state:
 

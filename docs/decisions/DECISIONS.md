@@ -6,6 +6,38 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 ---
 
+## 2026-08-12: Voice Query content retention is explicit, bounded, and isolated
+
+**Decision:** Supersede Voice Query's blanket “never in history” rule with one
+narrow exception: **Keep Voice Query history on this Mac** is off by default
+and is frozen independently for each pass. When enabled, a Rust-owned SQLite
+store may retain the original transcribed question, bounded answer, timestamp,
+provider preset, token counts, total duration, and stable error code. It keeps
+the newest 200 records and exposes main-window-only paging, provider filtering,
+and direct purge. Turning retention off stops new inserts but does not silently
+delete existing records. A clear epoch prevents a pass that began before purge
+from restoring deleted content.
+
+The exception does not include composed prompts, app/window/selected-text
+context, stderr or typed provider detail, executable paths, argv, environment
+values, or secrets. Query records never enter localStorage, dictation history,
+Correct and Teach, transcript exports, saved output, logs, telemetry, stats, or
+the performance database. Diagnostics remain unconditional and content-free:
+capture/transcription/provider-spawn/first-answer/total timings, stable outcome,
+exit code, and stderr presence only.
+
+**Rationale:** George wants local visibility into past questions and answers,
+but content persistence must remain a deliberate per-pass choice rather than a
+side effect of enabling Voice Query. A dedicated Rust store keeps that consent,
+retention, purge, and recovery boundary enforceable without widening any
+telemetry or frontend cache contract. Keeping diagnostics separate preserves
+useful failure evidence even when content history is disabled.
+
+**Status:** active
+
+**References:** #553; `query_history/`, `query_flow.rs`,
+`performance_metrics/`, `docs/features/voice-query.md`
+
 ## 2026-08-12: Voice Query environment additions are named, provider-scoped, and Rust-owned
 
 **Decision:** Keep `spawn_user_cli` fail-closed with only `HOME`, `PATH`,

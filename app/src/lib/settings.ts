@@ -216,6 +216,8 @@ export interface Settings {
   queryTimeoutSeconds: number;
   /** Optional context appended inside the one literal query argv element. */
   queryContextLevel: QueryContextLevel;
+  /** Opt-in Rust-owned local question/answer history; false keeps content ephemeral. */
+  retainQueryHistory: boolean;
   language: string;
   autoPaste: boolean;
   autoPasteDelayMs: number;
@@ -407,6 +409,7 @@ export const DEFAULT_SETTINGS: Settings = {
   queryArguments: [],
   queryTimeoutSeconds: 60,
   queryContextLevel: 'none',
+  retainQueryHistory: false,
   // 'auto' lets Whisper auto-detect the spoken language ("just works"); the
   // non-Whisper models may auto-detect or ignore this value.
   language: 'auto',
@@ -693,6 +696,9 @@ export function loadSettings(): Settings {
         || !QUERY_CONTEXT_LEVEL_OPTIONS.some((option) => option.value === parsed.queryContextLevel)
       ) {
         parsed.queryContextLevel = DEFAULT_SETTINGS.queryContextLevel;
+      }
+      if (typeof parsed.retainQueryHistory !== 'boolean') {
+        parsed.retainQueryHistory = DEFAULT_SETTINGS.retainQueryHistory;
       }
       if (
         parsed.queryHotkey !== null

@@ -4,7 +4,8 @@ export type CorrelationField =
   | 'run_id'
   | 'recording_id'
   | 'file_run_id'
-  | 'transform_pass_id';
+  | 'transform_pass_id'
+  | 'query_pass_id';
 
 export interface CorrelationFilter {
   field: CorrelationField;
@@ -16,12 +17,14 @@ export const CORRELATION_FIELD_LABELS: Record<CorrelationField, string> = {
   recording_id: 'Recording ID',
   file_run_id: 'File run ID',
   transform_pass_id: 'Transform pass ID',
+  query_pass_id: 'Query pass ID',
 };
 
 const NUMERIC_CORRELATION_FIELDS = new Set<CorrelationField>([
   'recording_id',
   'file_run_id',
   'transform_pass_id',
+  'query_pass_id',
 ]);
 
 export function matchesCorrelation(

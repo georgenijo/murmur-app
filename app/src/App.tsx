@@ -22,6 +22,7 @@ import { useInitialization } from './lib/hooks/useInitialization';
 import { useSettings } from './lib/hooks/useSettings';
 import { useHistoryManagement } from './lib/hooks/useHistoryManagement';
 import { useMeetings } from './lib/hooks/useMeetings';
+import { useQueryHistory } from './lib/hooks/useQueryHistory';
 import { useFileTranscription } from './lib/hooks/useFileTranscription';
 import { useRecordingState } from './lib/hooks/useRecordingState';
 import { useHoldDownToggle } from './lib/hooks/useHoldDownToggle';
@@ -86,6 +87,8 @@ function App() {
     setModelReady(true);
   }, [settings.model, updateSettings]);
   const { initialized, error: initError } = useInitialization(settings);
+  const [historyWorkspace, setHistoryWorkspace] = useState<HistoryWorkspace>('transcripts');
+  const queryHistory = useQueryHistory(historyWorkspace === 'queries');
 
   // First-launch gate: is the currently-selected model present? Checked once on
   // mount (not reactively) so changing models in Settings uses the inline
@@ -214,6 +217,7 @@ function App() {
       arguments: settings.queryArguments,
       timeoutSeconds: settings.queryTimeoutSeconds,
       contextLevel: settings.queryContextLevel,
+      retainQueryHistory: settings.retainQueryHistory,
     },
     onQueryCompleted: handleQueryCompleted,
   });
@@ -367,7 +371,6 @@ function App() {
 
   // Bumped to move focus into the history search box (command palette action).
   const [historySearchToken, setHistorySearchToken] = useState<number | undefined>(undefined);
-  const [historyWorkspace, setHistoryWorkspace] = useState<HistoryWorkspace>('transcripts');
   const focusHistorySearch = useCallback((trigger: UiLatencyTrigger = 'programmatic') => {
     closeSettings(trigger);
     setHistoryWorkspace('transcripts');
@@ -509,6 +512,13 @@ function App() {
         keywords: ['system audio', 'calls', 'me', 'them'],
         run: () => { closeSettings('programmatic'); setHistoryWorkspace('meetings'); },
       },
+      {
+        id: 'show-query-history',
+        title: 'Show Voice Query history',
+        section: 'Navigation',
+        keywords: ['questions', 'answers', 'agent', 'queries'],
+        run: () => { closeSettings('programmatic'); setHistoryWorkspace('queries'); },
+      },
       ...SETTINGS_CATEGORIES.map((category) => ({
         id: `settings-${category.id}`,
         title: `Settings: ${category.label}`,
@@ -627,6 +637,8 @@ function App() {
             workspace={historyWorkspace}
             onWorkspaceChange={setHistoryWorkspace}
             meetings={meetings}
+            queryHistory={queryHistory}
+            retainQueryHistory={settings.retainQueryHistory}
           />
 
           {error && (

@@ -237,7 +237,7 @@ const SETTINGS_SEARCH_ITEMS = [
   { tab: 'text', title: 'Cleanup', detail: 'Remove filler words and tidy transcript spacing.', keywords: 'filler capitalization' },
   { tab: 'text', title: 'Vocabulary & Aliases', detail: 'Manage preferred words and spoken variants.', keywords: 'names spelling project scan developer terms' },
   { tab: 'text', title: 'Knowledge', detail: 'Manage local corrections, snippets, and transforms.', keywords: 'voice commands replacement' },
-  { tab: 'text', title: 'Voice Query', detail: 'Ask a configured local CLI agent with a dedicated shortcut.', keywords: 'agent command executable cloud answer hotkey' },
+  { tab: 'text', title: 'Voice Query', detail: 'Ask a configured local CLI agent with a dedicated shortcut.', keywords: 'agent command executable cloud answer hotkey history logging privacy question' },
   { tab: 'text', title: 'Selected-text Transform', detail: 'Configure on-device rewriting.', keywords: 'llm rewrite shortcut' },
   { tab: 'app', title: 'Launch at Login', detail: 'Start Murmur when you sign in.', keywords: 'startup autostart' },
   { tab: 'app', title: 'Appearance', detail: 'Theme, accent, contrast, and color controls.', keywords: 'dark light colors' },
@@ -281,6 +281,7 @@ function queryCommand(settings: Settings): QueryCommandConfig {
     arguments: settings.queryArguments,
     timeoutSeconds: settings.queryTimeoutSeconds,
     contextLevel: settings.queryContextLevel,
+    retainQueryHistory: settings.retainQueryHistory,
   };
 }
 
@@ -1344,6 +1345,13 @@ export const SettingsPanel = memo(function SettingsPanel({
                 </p>
               </div>
 
+              <SettingToggle
+                title="Keep Voice Query history on this Mac"
+                description="Off by default. When on, Murmur keeps up to 200 questions, answers, provider IDs, token counts, durations, and stable errors in a separate Rust-owned local store. Turning it off affects new queries; existing entries remain until you delete them from History → Queries."
+                checked={settings.retainQueryHistory}
+                onChange={() => onUpdateSettings({ retainQueryHistory: !settings.retainQueryHistory })}
+              />
+
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="mb-1.5 block text-sm font-medium text-on-surface">Query shortcut</label>
@@ -1391,7 +1399,8 @@ export const SettingsPanel = memo(function SettingsPanel({
 
             <div className="border-t border-outline-variant/20 pt-4 text-xs leading-relaxed text-on-surface-variant">
               Answers stream into a popover and are copied to the clipboard when complete. They are never
-              auto-pasted. Murmur does not add question, answer, or context content to history, saved files, usage stats, or telemetry.
+              auto-pasted. Question and answer content enters only the separate local query store when you explicitly enable it.
+              Context content never enters history, saved files, usage stats, diagnostics, logs, or telemetry.
             </div>
           </SettingsSection>
 

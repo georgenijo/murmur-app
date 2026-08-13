@@ -27,6 +27,7 @@ const DEFAULT_COMMAND: QueryCommandConfig = {
   arguments: ['%s'],
   timeoutSeconds: 60,
   contextLevel: 'selection',
+  retainQueryHistory: true,
 };
 
 function Harness({
@@ -85,6 +86,7 @@ describe('useQueryFlow', () => {
         arguments: ['%s'],
         timeoutSeconds: 60,
         contextLevel: 'selection',
+        retainQueryHistory: true,
       },
     });
     expect(mocks.invoke).toHaveBeenCalledWith('start_query_listener', { hotkey: 'alt_r' });
@@ -102,6 +104,7 @@ describe('useQueryFlow', () => {
         arguments: ['%s'],
         timeoutSeconds: 60,
         contextLevel: 'selection',
+        retainQueryHistory: true,
       },
     });
 
@@ -179,6 +182,31 @@ describe('useQueryFlow', () => {
       deviceName: null,
       command: { ...DEFAULT_COMMAND, timeoutSeconds: 120 },
     });
+  });
+
+  it('applies history retention to the next pass without restarting the listener', async () => {
+    await renderFlow(undefined, {
+      ...DEFAULT_COMMAND,
+      contextLevel: 'none',
+      retainQueryHistory: false,
+    });
+    mocks.invoke.mockClear();
+    await renderFlow(undefined, {
+      ...DEFAULT_COMMAND,
+      contextLevel: 'none',
+      retainQueryHistory: true,
+    });
+    expect(mocks.invoke).not.toHaveBeenCalledWith('stop_query_listener');
+    expect(mocks.invoke).not.toHaveBeenCalledWith('validate_query_command', expect.anything());
+
+    await act(async () => {
+      mocks.listeners.get('query-toggle')?.({ payload: { queryPassId: 19, action: 'start' } });
+      await Promise.resolve();
+    });
+    expect(mocks.invoke).toHaveBeenCalledWith('start_query_capture', expect.objectContaining({
+      queryPassId: 19,
+      command: expect.objectContaining({ retainQueryHistory: true }),
+    }));
   });
 
   it('records one content-free completion for the exact active pass', async () => {

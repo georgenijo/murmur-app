@@ -214,6 +214,13 @@ describe('SettingsPanel information architecture', () => {
     expect(container.textContent).toContain('Context shared with the CLI');
     expect(container.textContent).toContain('Off by default');
     expect(container.textContent).toContain('never auto-pasted');
+    const historyToggle = container.querySelector(
+      '[role="switch"][aria-label="Keep Voice Query history on this Mac"]',
+    ) as HTMLButtonElement;
+    expect(historyToggle.getAttribute('aria-checked')).toBe('false');
+    await act(async () => historyToggle.click());
+    expect(onUpdateSettings).toHaveBeenCalledWith({ retainQueryHistory: true });
+    expect(container.textContent).toContain('Context content never enters history');
   });
 
   it('opens editors as a Text settings drill-down with explicit back navigation', async () => {

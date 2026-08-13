@@ -42,6 +42,7 @@ describe('transform pass event filtering', () => {
       recording_id: 17,
       file_run_id: 9,
       transform_pass_id: 42,
+      query_pass_id: 43,
     });
     expect(matchesCorrelation(candidate, {
       field: 'run_id',
@@ -54,6 +55,10 @@ describe('transform pass event filtering', () => {
     expect(matchesCorrelation(candidate, {
       field: 'file_run_id',
       value: '9',
+    })).toBe(true);
+    expect(matchesCorrelation(candidate, {
+      field: 'query_pass_id',
+      value: '43',
     })).toBe(true);
     expect(matchesCorrelation(candidate, {
       field: 'recording_id',

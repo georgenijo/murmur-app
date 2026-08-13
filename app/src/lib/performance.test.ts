@@ -102,5 +102,30 @@ describe('performance contracts', () => {
       ...base,
       correlation: { kind: 'fileTranscription', fileRunId: 4 },
     })).toBe(false);
+
+    const voiceQuery = {
+      ...base,
+      kind: 'voiceQuery',
+      correlation: { kind: 'voiceQuery', queryPassId: 9 },
+      queryProcess: { exitCode: 0, stderrPresent: false },
+    };
+    expect(isPerformanceRunV1(voiceQuery)).toBe(true);
+    expect(isPerformanceRunV1({
+      ...voiceQuery,
+      correlation: { kind: 'selectedTextTransform', transformPassId: 9 },
+    })).toBe(false);
+    expect(isPerformanceRunV1({
+      ...voiceQuery,
+      queryProcess: { exitCode: 0, stderrPresent: true, stderr: 'secret' },
+    })).toBe(false);
+    expect(isPerformanceRunV1({
+      ...voiceQuery,
+      queryProcess: { exitCode: '0', stderrPresent: true },
+    })).toBe(false);
+    expect(isPerformanceRunV1({
+      ...voiceQuery,
+      kind: 'dictation',
+      correlation: { kind: 'dictation', recordingId: 9 },
+    })).toBe(false);
   });
 });

@@ -7,6 +7,7 @@ export interface QueryCommandConfig {
   arguments: string[];
   timeoutSeconds: number;
   contextLevel: QueryContextLevel;
+  retainQueryHistory: boolean;
 }
 
 export interface QueryProviderPreset {

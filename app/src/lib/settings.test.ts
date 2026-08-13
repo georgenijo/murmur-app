@@ -852,6 +852,7 @@ describe('Voice Query settings', () => {
     expect(DEFAULT_SETTINGS.queryArguments).toEqual([]);
     expect(DEFAULT_SETTINGS.queryTimeoutSeconds).toBe(60);
     expect(DEFAULT_SETTINGS.queryContextLevel).toBe('none');
+    expect(DEFAULT_SETTINGS.retainQueryHistory).toBe(false);
   });
 
   it('fails closed when a persisted query key conflicts with transform', () => {
@@ -875,6 +876,7 @@ describe('Voice Query settings', () => {
       queryArguments: [...Array.from({ length: 40 }, (_, index) => `arg-${index}`), 7],
       queryTimeoutSeconds: 999,
       queryContextLevel: 'desktop_screenshot',
+      retainQueryHistory: 'yes',
     }));
 
     const settings = loadSettings();
@@ -886,6 +888,7 @@ describe('Voice Query settings', () => {
     expect(settings.queryArguments.every((argument) => typeof argument === 'string')).toBe(true);
     expect(settings.queryTimeoutSeconds).toBe(60);
     expect(settings.queryContextLevel).toBe('none');
+    expect(settings.retainQueryHistory).toBe(false);
   });
 
   it('keeps valid context levels and fails closed for per-app exclusions', () => {
