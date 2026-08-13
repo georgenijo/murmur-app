@@ -776,7 +776,9 @@ mod tests {
         for definition in MODEL_DEFINITIONS {
             let platforms = supported_platforms(definition);
             assert!(!platforms.is_empty());
-            assert!(platforms.iter().all(|platform| platform.starts_with("macos")));
+            assert!(platforms
+                .iter()
+                .all(|platform| platform.starts_with("macos")));
         }
     }
 
