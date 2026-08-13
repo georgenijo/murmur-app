@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- Voice Query now shows recognized words in the review popover while listening
+  when Core ML Parakeet is selected, then clears them when the question is sent
+  or cancelled (#561).
+
 ### Changed
 
 - Murmur now enforces its macOS-only product boundary across app builds, CI,

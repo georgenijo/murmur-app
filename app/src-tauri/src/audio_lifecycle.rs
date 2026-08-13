@@ -365,6 +365,10 @@ enum SupervisorMessage {
         starting_only: bool,
         response: Sender<Result<bool, String>>,
     },
+    Peek {
+        owner: AudioOwner,
+        response: Sender<Option<Vec<f32>>>,
+    },
     Worker(AudioWorkerEvent),
     #[cfg(test)]
     CheckDeadlines {
@@ -607,6 +611,21 @@ fn handle_message(
             }
             let cancelled = should_abandon;
             let _ = response.send(Ok(cancelled));
+        }
+        SupervisorMessage::Peek { owner, response } => {
+            let samples = attempt.as_ref().and_then(|current| {
+                if current.owner != owner || current.phase != AttemptPhase::Recording {
+                    return None;
+                }
+                Some(
+                    current
+                        .shared
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .clone(),
+                )
+            });
+            let _ = response.send(samples);
         }
         SupervisorMessage::Worker(event) => {
             handle_worker_event(event, attempt, sink, public);
@@ -1395,6 +1414,24 @@ pub(crate) fn stop_dictation_recording(recording_id: u64) -> Result<Vec<f32>, St
 
 pub(crate) fn stop_query_recording(query_pass_id: u64) -> Result<Vec<f32>, String> {
     stop(Some(AudioOwner::Query(query_pass_id)))
+}
+
+/// Clone the live query buffer without stopping capture.
+///
+/// Returns `None` when this pass is not the recording owner. The clone is a
+/// snapshot; later PCM stays in the retained buffer for the authoritative pass.
+pub(crate) fn peek_query_samples(query_pass_id: u64) -> Option<Vec<f32>> {
+    let (response_sender, response_receiver) = mpsc::channel();
+    supervisor()
+        .sender
+        .send(SupervisorMessage::Peek {
+            owner: AudioOwner::Query(query_pass_id),
+            response: response_sender,
+        })
+        .ok()?;
+    response_receiver
+        .recv_timeout(SUPERVISOR_RESPONSE_TIMEOUT)
+        .ok()?
 }
 
 pub(crate) fn stop_preview_recording(preview_id: u64) -> Result<Vec<f32>, String> {
@@ -2232,6 +2269,82 @@ mod tests {
         assert!(supervisor.public.is_active());
         gate.open();
         wait_until("stopped initializing worker did not exit", || {
+            !supervisor.public.is_active()
+        });
+        shutdown(&supervisor);
+    }
+
+    #[test]
+    fn query_peek_clones_samples_without_stopping_capture() {
+        let (supervisor, gate, _, sink, _) =
+            harness(AudioInitPhase::FirstBufferWait, SupervisorConfig::default());
+        let owner = AudioOwner::Query(56);
+        assert_eq!(start(&supervisor, owner).recv().unwrap(), Ok(()));
+
+        let (peek_sender, peek_receiver) = mpsc::channel();
+        supervisor
+            .sender
+            .send(SupervisorMessage::Peek {
+                owner,
+                response: peek_sender,
+            })
+            .unwrap();
+        assert_eq!(
+            peek_receiver.recv_timeout(Duration::from_millis(100)).unwrap(),
+            None,
+            "starting capture must not expose a buffer"
+        );
+
+        gate.open();
+        wait_until("query capture did not become ready", || {
+            sink.events
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, event)| *event == AudioLifecycleEvent::Ready)
+        });
+
+        let (peek_sender, peek_receiver) = mpsc::channel();
+        supervisor
+            .sender
+            .send(SupervisorMessage::Peek {
+                owner,
+                response: peek_sender,
+            })
+            .unwrap();
+        assert_eq!(
+            peek_receiver.recv_timeout(Duration::from_millis(100)).unwrap(),
+            Some(vec![0.25])
+        );
+        assert!(supervisor.public.is_active());
+
+        let (stale_sender, stale_receiver) = mpsc::channel();
+        supervisor
+            .sender
+            .send(SupervisorMessage::Peek {
+                owner: AudioOwner::Query(99),
+                response: stale_sender,
+            })
+            .unwrap();
+        assert_eq!(
+            stale_receiver.recv_timeout(Duration::from_millis(100)).unwrap(),
+            None
+        );
+        assert!(supervisor.public.is_active());
+
+        let (stop_sender, stop_receiver) = mpsc::channel();
+        supervisor
+            .sender
+            .send(SupervisorMessage::Stop {
+                owner: Some(owner),
+                response: stop_sender,
+            })
+            .unwrap();
+        assert_eq!(
+            stop_receiver.recv_timeout(Duration::from_secs(2)).unwrap(),
+            Ok(vec![0.25])
+        );
+        wait_until("query peek stop did not finish teardown", || {
             !supervisor.public.is_active()
         });
         shutdown(&supervisor);

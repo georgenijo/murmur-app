@@ -79,11 +79,12 @@ All transform events carry a `transformPassId` where a pass exists, so a delayed
 
 ## Voice Query
 
-Query content never appears in broadcast events. Only the dedicated review webview receives answer chunks.
+Query content never appears in broadcast events. Only the dedicated review webview receives answer chunks and listening partials.
 
 | Event | Payload | Source | When it fires | Listeners |
 |-------|---------|--------|---------------|-----------|
 | `query-state-changed` | `{queryPassId, state, errorCode}` | `query_flow.rs` | Every content-free state transition: connecting, listening, transcribing, running, ready, or failed. | Query popover (`useQueryReviewDriver`). |
+| `query-partial` | `{queryPassId, text}` | `query_flow.rs` | A display-only listening transcript snapshot is decoded. Targeted with `emit_to("query-review", …)`, never broadcast. Replaces the previous partial; never feeds the CLI. | Query popover only. |
 | `query-answer-chunk` | `{queryPassId, sequence, text}` | `query_flow.rs` | A contiguous decoded stdout chunk is accepted within the 256 KiB cap. Targeted with `emit_to("query-review", …)`, never broadcast. | Query popover only. |
 | `query-review-hidden` | `()` | `query_flow.rs` | Exact-pass cancellation/close completes and the popover is hidden. | Main window and query popover. |
 | `query-busy` | `()` | `keyboard.rs`, `query_flow.rs` | A query press is refused because another pass or pipeline owner is active. | Reserved for UI feedback. |

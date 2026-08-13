@@ -24,6 +24,11 @@ interface QueryChunkPayload {
   text: string;
 }
 
+interface QueryPartialPayload {
+  queryPassId: number;
+  text: string;
+}
+
 interface QueryContent {
   queryPassId: number | null;
   answer: string;
@@ -52,17 +57,26 @@ function isChunkPayload(value: unknown): value is QueryChunkPayload {
     && typeof payload.text === 'string';
 }
 
+function isPartialPayload(value: unknown): value is QueryPartialPayload {
+  if (!value || typeof value !== 'object') return false;
+  const payload = value as Record<string, unknown>;
+  return validPassId(payload.queryPassId) && typeof payload.text === 'string';
+}
+
 export function useQueryReviewDriver() {
   const [state, setState] = useState<QueryReviewState>('idle');
   const [errorCode, setErrorCode] = useState<string | null>(null);
   const [answer, setAnswer] = useState('');
+  const [partial, setPartial] = useState('');
   const passIdRef = useRef<number | null>(null);
+  const stateRef = useRef<QueryReviewState>('idle');
   const nextSequenceRef = useRef(0);
 
   useEffect(() => {
     let disposed = false;
     let unlistenState: (() => void) | null = null;
     let unlistenChunk: (() => void) | null = null;
+    let unlistenPartial: (() => void) | null = null;
     let unlistenHidden: (() => void) | null = null;
 
     const refresh = async (expectedPassId: number) => {
@@ -84,9 +98,14 @@ export function useQueryReviewDriver() {
           passIdRef.current = payload.queryPassId;
           nextSequenceRef.current = 0;
           setAnswer('');
+          setPartial('');
         }
+        stateRef.current = payload.state;
         setState(payload.state);
         setErrorCode(payload.errorCode);
+        if (payload.state !== 'listening') {
+          setPartial('');
+        }
         if (payload.state === 'ready' || payload.state === 'failed') {
           void refresh(payload.queryPassId);
         }
@@ -107,20 +126,32 @@ export function useQueryReviewDriver() {
       });
       if (disposed) { unlistenState(); unlistenChunk(); return; }
 
+      unlistenPartial = await listen<unknown>('query-partial', (event) => {
+        if (disposed || !isPartialPayload(event.payload)) return;
+        const payload = event.payload;
+        if (payload.queryPassId !== passIdRef.current) return;
+        if (stateRef.current !== 'listening') return;
+        setPartial(payload.text);
+      });
+      if (disposed) { unlistenState(); unlistenChunk(); unlistenPartial(); return; }
+
       unlistenHidden = await listen('query-review-hidden', () => {
         passIdRef.current = null;
         nextSequenceRef.current = 0;
+        stateRef.current = 'idle';
         setState('idle');
         setErrorCode(null);
         setAnswer('');
+        setPartial('');
       });
-      if (disposed) { unlistenState(); unlistenChunk(); unlistenHidden(); }
+      if (disposed) { unlistenState(); unlistenChunk(); unlistenPartial(); unlistenHidden(); }
     };
     void setup();
     return () => {
       disposed = true;
       unlistenState?.();
       unlistenChunk?.();
+      unlistenPartial?.();
       unlistenHidden?.();
     };
   }, []);
@@ -144,5 +175,5 @@ export function useQueryReviewDriver() {
     });
   }, []);
 
-  return { state, errorCode, answer, cancel, copy };
+  return { state, errorCode, answer, partial, cancel, copy };
 }

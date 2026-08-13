@@ -918,6 +918,8 @@ mod tests {
             "error_code": "spawn_failed",
             "question": "SENTINEL_QUESTION ; rm -rf",
             "answer": "SENTINEL_ANSWER",
+            "text": "SENTINEL_PARTIAL",
+            "partial": "SENTINEL_PARTIAL",
             "command": "/Users/private/bin/agent",
             "arguments": ["SENTINEL_ARGUMENTS"],
             "structured_answer": { "content": "SENTINEL_OBJECT" },
