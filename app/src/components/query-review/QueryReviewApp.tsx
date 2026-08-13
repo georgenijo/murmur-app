@@ -2,6 +2,7 @@ import { useEffect, useMemo } from 'react';
 import Markdown from 'react-markdown';
 import rehypeSanitize from 'rehype-sanitize';
 import { useQueryReviewDriver, type QueryReviewState } from '../../lib/hooks/useQueryReviewDriver';
+import { formatQueryCost, type QueryUsage } from '../../lib/queryUsage';
 
 const ERROR_MESSAGES: Record<string, string> = {
   not_configured: 'Choose a CLI executable in Voice Query settings.',
@@ -53,13 +54,35 @@ export function queryErrorMessage(errorCode: string | null): string | null {
   return ERROR_MESSAGES[errorCode] ?? 'The voice query could not be completed.';
 }
 
+export function formatQueryUsage(usage: QueryUsage | null): string | null {
+  if (!usage) return null;
+  const parts = [
+    `${usage.inputTokens.toLocaleString()} in`,
+    `${usage.outputTokens.toLocaleString()} out`,
+  ];
+  if (usage.costUsd !== null) parts.push(formatQueryCost(usage.costUsd));
+  return parts.join(' · ');
+}
+
 export function QueryReviewApp() {
   const driver = useQueryReviewDriver();
   const errorMessage = useMemo(() => queryErrorMessage(driver.errorCode), [driver.errorCode]);
   const terminal = driver.state === 'ready' || driver.state === 'failed';
+  const usageText = driver.state === 'ready' ? formatQueryUsage(driver.usage) : null;
   const primaryText = driver.state === 'failed'
     ? errorMessage ?? 'The voice query could not be completed.'
     : driver.answer || errorMessage || (terminal ? 'No answer was returned.' : '');
+  const footerText = driver.errorCode === 'clipboard_unavailable'
+    ? usageText
+      ? `Clipboard unavailable · ${usageText} · never auto-pasted`
+      : 'Clipboard unavailable · never auto-pasted'
+    : driver.errorCode === 'clipboard_superseded'
+      ? usageText
+        ? `Clipboard left as-is · ${usageText} · press Copy for the answer`
+        : 'Clipboard left as-is · press Copy for the answer'
+      : driver.state === 'ready'
+        ? usageText ? `${usageText} · Never auto-pasted` : 'Never auto-pasted'
+        : 'Esc to cancel';
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -130,11 +153,7 @@ export function QueryReviewApp() {
           </div>
           <footer className="flex items-center justify-between border-t border-white/10 px-3 py-2">
             <span className={`text-[10px] ${driver.errorCode === 'clipboard_unavailable' ? 'text-amber-300/80' : 'text-white/35'}`}>
-              {driver.errorCode === 'clipboard_unavailable'
-                ? 'Clipboard unavailable · never auto-pasted'
-                : driver.errorCode === 'clipboard_superseded'
-                  ? 'Clipboard left as-is · press Copy for the answer'
-                  : driver.state === 'ready' ? 'Never auto-pasted' : 'Esc to cancel'}
+              {footerText}
             </span>
             <div className="flex gap-2">
               {driver.errorCode === 'provider_not_authenticated' && driver.signInFix && (

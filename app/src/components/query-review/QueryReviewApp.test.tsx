@@ -5,10 +5,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   signIn: vi.fn(async () => undefined),
   driver: {
-    state: 'failed' as const,
-    errorCode: 'provider_not_authenticated',
+    state: 'failed' as 'failed' | 'ready',
+    errorCode: 'provider_not_authenticated' as string | null,
     answer: 'partial stdout must not mask failure',
-    errorDetail: 'Error: Not logged in',
+    errorDetail: 'Error: Not logged in' as string | null,
+    usage: null as null | {
+      inputTokens: number;
+      outputTokens: number;
+      reasoningOutputTokens: number;
+      cachedInputTokens: number;
+      cacheCreationInputTokens: number;
+      costUsd: number | null;
+    },
     signInFix: 'Run claude /login in Terminal.',
     signInStatus: null,
     signInBusy: false,
@@ -22,13 +30,18 @@ vi.mock('../../lib/hooks/useQueryReviewDriver', () => ({
   useQueryReviewDriver: () => mocks.driver,
 }));
 
-import { QueryReviewApp, queryErrorMessage } from './QueryReviewApp';
+import { QueryReviewApp, formatQueryUsage, queryErrorMessage } from './QueryReviewApp';
 
 describe('QueryReviewApp', () => {
   let container: HTMLDivElement;
   let root: Root;
 
   beforeEach(() => {
+    mocks.driver.state = 'failed';
+    mocks.driver.errorCode = 'provider_not_authenticated';
+    mocks.driver.answer = 'partial stdout must not mask failure';
+    mocks.driver.errorDetail = 'Error: Not logged in';
+    mocks.driver.usage = null;
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -43,6 +56,17 @@ describe('QueryReviewApp', () => {
     expect(queryErrorMessage('provider_error')).toBe('The configured provider reported an error.');
   });
 
+  it('formats provider-reported tokens and optional cost', () => {
+    expect(formatQueryUsage({
+      inputTokens: 1234,
+      outputTokens: 56,
+      reasoningOutputTokens: 0,
+      cachedInputTokens: 100,
+      cacheCreationInputTokens: 2,
+      costUsd: 0.012,
+    })).toBe('1,234 in · 56 out · $0.012');
+  });
+
   it('shows terminal failure ahead of partial stdout and keeps stderr distinct', async () => {
     await act(async () => root.render(<QueryReviewApp />));
 
@@ -54,5 +78,24 @@ describe('QueryReviewApp', () => {
     expect(Array.from(container.querySelectorAll('button')).some(
       (button) => button.textContent === 'Sign in…',
     )).toBe(true);
+  });
+
+  it('shows pass-scoped usage in the Ready footer', async () => {
+    mocks.driver.state = 'ready';
+    mocks.driver.errorCode = null;
+    mocks.driver.answer = 'answer';
+    mocks.driver.errorDetail = null;
+    mocks.driver.usage = {
+      inputTokens: 21,
+      outputTokens: 13,
+      reasoningOutputTokens: 5,
+      cachedInputTokens: 8,
+      cacheCreationInputTokens: 2,
+      costUsd: 0.0004,
+    };
+    await act(async () => root.render(<QueryReviewApp />));
+
+    expect(container.textContent).toContain('21 in · 13 out · $0.0004');
+    expect(container.textContent).toContain('Never auto-pasted');
   });
 });

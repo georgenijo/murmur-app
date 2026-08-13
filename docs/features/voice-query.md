@@ -1,6 +1,6 @@
 # Voice query
 
-Issues [#538](https://github.com/georgenijo/murmur-app/issues/538), [#550](https://github.com/georgenijo/murmur-app/issues/550), and [#551](https://github.com/georgenijo/murmur-app/issues/551). Voice Query is an opt-in bridge from Murmur's local speech recognition to one user-configured CLI executable. Double-tap its dedicated shortcut, ask a question, tap once to finish, and read the CLI's streaming answer in a separate popover.
+Issues [#538](https://github.com/georgenijo/murmur-app/issues/538), [#550](https://github.com/georgenijo/murmur-app/issues/550), [#551](https://github.com/georgenijo/murmur-app/issues/551), and [#552](https://github.com/georgenijo/murmur-app/issues/552). Voice Query is an opt-in bridge from Murmur's local speech recognition to one user-configured CLI executable. Double-tap its dedicated shortcut, ask a question, tap once to finish, and read the CLI's streaming answer in a separate popover.
 
 ## Privacy and trust boundary
 
@@ -11,7 +11,7 @@ Issues [#538](https://github.com/georgenijo/murmur-app/issues/538), [#550](https
 - A provider may add only its declared config-directory selector: `CLAUDE_CONFIG_DIR` for Claude and `CODEX_HOME` for Codex (Custom may use either). Base allowlist keys, undeclared names, API keys, and tokens are rejected. Values are owner-only Rust app data, never localStorage; Settings receives only the configured variable names after saving and never reads saved values back. Explicit **Clear saved values** also repairs a malformed or future-version store by replacing the untrusted file with an empty current-version store.
 - The configured CLI is outside Murmur's local-only trust boundary. It may send the question or answer to cloud services according to its own configuration; Settings states this before the user opts in. Murmur cannot verify or prevent that egress.
 - No executable is selected by default and the shortcut is disabled by default.
-- Question and answer content never enters structured telemetry, dictation history, usage statistics, transcript/audio file output, or broadcast state events. Answer chunks are targeted only to the `query-review` webview; full answer retrieval is requester-gated to that window.
+- Question and answer content never enters structured telemetry, dictation history, usage statistics, transcript/audio file output, or broadcast state events. Usage statistics accept only content-free counters. Answer chunks are targeted only to the `query-review` webview and full answer retrieval is requester-gated to that window; numeric usage may also reach the main window for local aggregation.
 
 ## Lifecycle
 
@@ -45,11 +45,19 @@ Configuration limits are 32 fixed arguments, 4 KiB per argument, 32 KiB total fi
 
 ## Structured provider output
 
-One `VoiceQueryAdapter` seam sits after the shared bounded stdout reader. Claude stream-json text deltas map to the existing sequence-numbered answer events; its terminal result supplies input/output/cache token counts and provider-reported cost for the pass. Codex JSONL emits completed `agent_message` items and terminal usage in the same typed form. Provider banners, reasoning, tool activity, session IDs, and other metadata are not answer text. Usage remains Rust-side and pass-scoped until the separate opt-in presentation and aggregate work in #552.
+One `VoiceQueryAdapter` seam sits after the shared bounded stdout reader. Claude stream-json text deltas map to the existing sequence-numbered answer events; its terminal result supplies input/output/cache token counts and provider-reported cost for the pass. Codex JSONL emits completed `agent_message` items and terminal usage in the same typed form. Provider banners, reasoning, tool activity, session IDs, and other metadata are not answer text. Usage remains Rust-side and pass-scoped while the query is active.
 
 Typed Claude assistant/result errors (including the SDK `errors[]` field) and Codex `turn.failed`/fatal `error` events fail the pass even if the process exits zero. Claude's typed authentication failures and known provider authentication details map to `provider_not_authenticated`; other typed failures map to content-free `provider_error`. Provider detail remains UTF-8-safe, bounded to the same requester-only 16 KiB field, and never enters telemetry.
 
 Custom, Grok, and Cursor retain raw stdout behavior. If a Claude or Codex line is malformed, a recognized frame has the wrong shape, an event is outside the recognized JSONL contract, or EOF arrives before an authoritative terminal frame, parsing never fails the pass: the adapter atomically replaces any optimistic extracted chunks with the complete raw stdout received so far, then streams later bytes in raw mode. The replacement flag and sequence number prevent duplicated content during this fail-safe transition. The structured raw archive shares the existing 256 KiB output cap.
+
+## Token and usage monitoring
+
+After a pass reaches Ready, the query popover footer shows provider-reported input and output tokens and cost when the provider supplied one. Custom, Grok, Cursor, malformed-JSON raw fallback, and provider versions that omit usage remain valid passes and simply show no token summary. Cache and reasoning counts stay in the typed pass record but are not presented as answer content.
+
+The main window folds each exact terminal pass into the existing durable local statistics blob once: completed queries, successes/failures, input/output tokens, provider split, provider-reported cost, and failures by stable error code. The Insights popover presents those all-time counters. Reset Stats clears query counters with dictation statistics. The stats schema accepts only known provider IDs, known error codes, and finite non-negative numbers; arbitrary strings and unknown fields are discarded, so questions, answers, stderr, paths, commands, and credentials cannot become usage-stat fields.
+
+The broadcast terminal state may carry the same typed numeric usage object for local aggregation, but never answer or question content. Query telemetry keeps its exact allowlist: token counts and provider cost converted to integer micro-US-dollars may accompany `query.pass_state`; nested objects, provider names, floating costs, byte counts, and unknown numeric keys are rejected. Provider quota and OAuth usage endpoints remain out of scope—Murmur never reads another app's credentials.
 
 ## Related modules
 
@@ -63,3 +71,4 @@ Custom, Grok, and Cursor retain raw stdout behavior. If a Claude or Codex line i
 | Native popover geometry | `app/src-tauri/src/commands/query_popover.rs` |
 | Main-window hotkey driver | `app/src/lib/hooks/useQueryFlow.ts` |
 | Review window | `app/src/lib/hooks/useQueryReviewDriver.ts`, `app/src/components/query-review/` |
+| Content-free aggregate counters | `app/src/lib/stats.ts`, `app/src/components/UsageDashboard.tsx` |

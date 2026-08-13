@@ -25,13 +25,31 @@ import { useQueryReviewDriver } from './useQueryReviewDriver';
 
 type Driver = ReturnType<typeof useQueryReviewDriver>;
 
-function content(queryPassId: number, answer: string, detail: string, fix: string) {
+function content(
+  queryPassId: number,
+  answer: string,
+  detail: string,
+  fix: string,
+  usage: unknown = null,
+) {
   return {
     queryPassId,
     answer,
     errorDetail: detail,
     provider: 'claude',
+    usage,
     signInFix: fix,
+  };
+}
+
+function usage(inputTokens: number) {
+  return {
+    inputTokens,
+    outputTokens: 8,
+    reasoningOutputTokens: 1,
+    cachedInputTokens: 2,
+    cacheCreationInputTokens: 3,
+    costUsd: 0.004,
   };
 }
 
@@ -74,7 +92,13 @@ describe('useQueryReviewDriver ownership', () => {
     const prior = new Promise<ReturnType<typeof content>>((resolve) => { resolvePrior = resolve; });
     mocks.invoke
       .mockImplementationOnce(() => prior)
-      .mockResolvedValueOnce(content(62, 'current answer', 'current detail', 'current fix'));
+      .mockResolvedValueOnce(content(
+        62,
+        'current answer',
+        'current detail',
+        'current fix',
+        usage(62),
+      ));
     await mount();
 
     await act(async () => {
@@ -91,15 +115,17 @@ describe('useQueryReviewDriver ownership', () => {
     expect(current!.answer).toBe('current answer');
     expect(current!.errorDetail).toBe('current detail');
     expect(current!.signInFix).toBe('current fix');
+    expect(current!.usage?.inputTokens).toBe(62);
 
     await act(async () => {
-      resolvePrior(content(61, 'stale answer', 'stale detail', 'stale fix'));
+      resolvePrior(content(61, 'stale answer', 'stale detail', 'stale fix', usage(61)));
       await Promise.resolve();
       await Promise.resolve();
     });
     expect(current!.answer).toBe('current answer');
     expect(current!.errorDetail).toBe('current detail');
     expect(current!.signInFix).toBe('current fix');
+    expect(current!.usage?.inputTokens).toBe(62);
   });
 
   it('keeps only the newest same-pass recovery snapshot across a replace gap race', async () => {
@@ -122,18 +148,19 @@ describe('useQueryReviewDriver ownership', () => {
       await Promise.resolve();
     });
     await act(async () => {
-      resolveNewer(content(71, 'complete latest', 'latest detail', 'latest fix'));
+      resolveNewer(content(71, 'complete latest', 'latest detail', 'latest fix', usage(72)));
       await Promise.resolve();
       await Promise.resolve();
     });
     await act(async () => {
-      resolveOlder(content(71, 'older partial', 'older detail', 'older fix'));
+      resolveOlder(content(71, 'older partial', 'older detail', 'older fix', usage(71)));
       await Promise.resolve();
       await Promise.resolve();
     });
     expect(current!.answer).toBe('complete latest');
     expect(current!.errorDetail).toBe('latest detail');
     expect(current!.signInFix).toBe('latest fix');
+    expect(current!.usage?.inputTokens).toBe(72);
   });
 
   it('keeps the terminal snapshot authoritative over a concurrent replace event', async () => {
@@ -341,5 +368,41 @@ describe('useQueryReviewDriver ownership', () => {
       });
     });
     expect(current!.answer).toBe('');
+  });
+
+  it('accepts only typed numeric usage from the exact terminal pass', async () => {
+    await mount();
+    mocks.invoke.mockResolvedValueOnce({
+      queryPassId: 23,
+      answer: 'done',
+      errorDetail: null,
+      provider: 'claude',
+      usage: {
+        inputTokens: 1234,
+        outputTokens: 56,
+        reasoningOutputTokens: 0,
+        cachedInputTokens: 100,
+        cacheCreationInputTokens: 2,
+        costUsd: 0.012,
+      },
+      signInFix: null,
+    });
+
+    await act(async () => {
+      mocks.listeners['query-state-changed']?.({
+        payload: { queryPassId: 23, state: 'ready', errorCode: null },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(current!.usage).toEqual({
+      inputTokens: 1234,
+      outputTokens: 56,
+      reasoningOutputTokens: 0,
+      cachedInputTokens: 100,
+      cacheCreationInputTokens: 2,
+      costUsd: 0.012,
+    });
   });
 });

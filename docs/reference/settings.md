@@ -171,7 +171,7 @@ model-selection side effects.
 
 Declared provider environment values are not settings fields. Rust stores only `CLAUDE_CONFIG_DIR` and/or `CODEX_HOME` under owner-only app data; `HOME`, base allowlist overrides, API keys, tokens, and arbitrary names are rejected. Webviews can stage a replacement value for Save, but saved values are never returned to the frontend or copied into localStorage. Settings receives configured names only.
 
-The Settings disclosure explicitly states that the configured CLI may send the question or answer to cloud services and that Murmur cannot control its network behavior. Enabling validates the configuration immediately; Test runs a bounded preset auth probe and keeps its stdout/stderr within Settings. See [Voice Query](../features/voice-query.md).
+The Settings disclosure explicitly states that the configured CLI may send the question or answer to cloud services and that Murmur cannot control its network behavior. Enabling validates the configuration immediately; Test runs a bounded preset auth probe and keeps its stdout/stderr within Settings. Provider-reported numeric usage is shown per Ready pass and aggregated into the local Stats store by provider and stable failure code; Reset Stats clears those counters. No query content is stored there. See [Voice Query](../features/voice-query.md).
 
 ### Recording Mode Details
 

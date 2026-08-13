@@ -39,7 +39,7 @@ import { UpdateModal } from './components/UpdateModal';
 import { WhatsNewModal } from './components/WhatsNewModal';
 import { UpdateIndicator } from './components/UpdateIndicator';
 import type { CompletedUpdate, UpdateStatus } from './lib/updater';
-import { resetStats } from './lib/stats';
+import { resetStats, updateQueryStats, type QueryCompletion } from './lib/stats';
 import { ModelDownloader } from './components/ModelDownloader';
 import { OnboardingFlow } from './components/onboarding/OnboardingFlow';
 import { isOnboardingComplete, markOnboardingComplete, resetOnboarding } from './lib/onboarding';
@@ -162,10 +162,15 @@ function App() {
     handleStart, handleHoldStart, handleStop, toggleRecording, audioLevel, statsVersion,
   } = useRecordingState({ addEntry, microphone: settings.microphone });
   const [statsResetVersion, setStatsResetVersion] = useState(0);
-  const combinedStatsVersion = statsVersion + statsResetVersion;
+  const [queryStatsVersion, setQueryStatsVersion] = useState(0);
+  const combinedStatsVersion = statsVersion + statsResetVersion + queryStatsVersion;
   const handleResetStats = useCallback(() => {
     resetStats();
     setStatsResetVersion(v => v + 1);
+  }, []);
+  const handleQueryCompleted = useCallback((completion: QueryCompletion) => {
+    updateQueryStats(completion);
+    setQueryStatsVersion(v => v + 1);
   }, []);
   // Keep the global hotkeys disarmed until onboarding completes — accessibility
   // can be granted mid-wizard, and a hold/double-tap must not start a recording
@@ -209,6 +214,7 @@ function App() {
       arguments: settings.queryArguments,
       timeoutSeconds: settings.queryTimeoutSeconds,
     },
+    onQueryCompleted: handleQueryCompleted,
   });
   const { showAbout, setShowAbout } = useShowAboutListener();
   const updater = useAutoUpdater({ automaticChecksEnabled: !INTERNAL_BENCHMARK_BUILD });

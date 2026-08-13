@@ -13,8 +13,10 @@
 //! malformed provider JSON fail the query pass.
 
 use crate::query_provider::{QueryProviderId, MAX_STDERR_BYTES};
+use serde::Serialize;
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct QueryUsage {
     pub(crate) input_tokens: u64,
     pub(crate) output_tokens: u64,

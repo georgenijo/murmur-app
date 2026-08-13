@@ -281,6 +281,18 @@ impl QueryCoordinator {
         true
     }
 
+    fn usage_snapshot(&self, pass_id: u64) -> Option<QueryUsage> {
+        let _ownership = self.ownership.lock_or_recover();
+        if !self.is_active(pass_id) {
+            return None;
+        }
+        self.session
+            .lock_or_recover()
+            .as_ref()
+            .filter(|session| session.pass_id == pass_id)
+            .and_then(|session| session.usage)
+    }
+
     fn set_error_detail(&self, pass_id: u64, detail: Option<String>) -> bool {
         let _ownership = self.ownership.lock_or_recover();
         if !self.is_active(pass_id) {
@@ -457,6 +469,7 @@ pub(crate) struct QueryReviewContent {
     answer: String,
     error_detail: Option<String>,
     provider: Option<QueryProviderId>,
+    usage: Option<QueryUsage>,
     sign_in_fix: Option<&'static str>,
 }
 
@@ -655,22 +668,71 @@ fn emit_state(
     status: QueryStatus,
     error_code: Option<&'static str>,
 ) {
+    let usage = app.state::<crate::State>().query.usage_snapshot(pass_id);
     let _ = app.emit(
         "query-state-changed",
         serde_json::json!({
             "queryPassId": pass_id,
             "state": status.as_str(),
             "errorCode": error_code,
+            "usage": usage,
         }),
     );
-    tracing::info!(
-        target: "query",
-        event_code = "query.pass_state",
-        query_pass_id = pass_id,
-        state = status.as_str(),
-        error_code,
-        "query state changed"
-    );
+    trace_query_state(pass_id, status, error_code, usage);
+}
+
+fn trace_query_state(
+    pass_id: u64,
+    status: QueryStatus,
+    error_code: Option<&'static str>,
+    usage: Option<QueryUsage>,
+) {
+    let cost_microusd = usage.and_then(|usage| {
+        let micros = usage.cost_usd? * 1_000_000.0;
+        (micros.is_finite() && micros >= 0.0 && micros <= u64::MAX as f64)
+            .then(|| micros.round() as u64)
+    });
+    if let Some(usage) = usage {
+        if let Some(cost_microusd) = cost_microusd {
+            tracing::info!(
+                target: "query",
+                event_code = "query.pass_state",
+                query_pass_id = pass_id,
+                state = status.as_str(),
+                error_code,
+                input_tokens = usage.input_tokens,
+                output_tokens = usage.output_tokens,
+                reasoning_output_tokens = usage.reasoning_output_tokens,
+                cached_input_tokens = usage.cached_input_tokens,
+                cache_creation_input_tokens = usage.cache_creation_input_tokens,
+                cost_microusd,
+                "query state changed"
+            );
+        } else {
+            tracing::info!(
+                target: "query",
+                event_code = "query.pass_state",
+                query_pass_id = pass_id,
+                state = status.as_str(),
+                error_code,
+                input_tokens = usage.input_tokens,
+                output_tokens = usage.output_tokens,
+                reasoning_output_tokens = usage.reasoning_output_tokens,
+                cached_input_tokens = usage.cached_input_tokens,
+                cache_creation_input_tokens = usage.cache_creation_input_tokens,
+                "query state changed"
+            );
+        }
+    } else {
+        tracing::info!(
+            target: "query",
+            event_code = "query.pass_state",
+            query_pass_id = pass_id,
+            state = status.as_str(),
+            error_code,
+            "query state changed"
+        );
+    }
 }
 
 /// True when the answer may claim the clipboard: nothing else has written it
@@ -1669,6 +1731,7 @@ pub(crate) fn get_query_review_content(
             .as_ref()
             .and_then(|session| session.error_detail.clone()),
         provider: session.as_ref().map(|session| session.command.provider),
+        usage: session.as_ref().and_then(|session| session.usage),
         sign_in_fix: session
             .as_ref()
             .and_then(|session| crate::query_provider::auth_fix(session.command.provider)),

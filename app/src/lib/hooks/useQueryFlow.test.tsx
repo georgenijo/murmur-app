@@ -18,6 +18,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 }));
 
 import { useQueryFlow } from './useQueryFlow';
+import type { QueryCompletion } from '../stats';
 
 describe('useQueryFlow', () => {
   let container: HTMLDivElement;
@@ -36,7 +37,7 @@ describe('useQueryFlow', () => {
     container.remove();
   });
 
-  async function renderFlow() {
+  async function renderFlow(onQueryCompleted?: (completion: QueryCompletion) => void) {
     function Harness() {
       useQueryFlow({
         enabled: true,
@@ -50,6 +51,7 @@ describe('useQueryFlow', () => {
           arguments: ['%s'],
           timeoutSeconds: 60,
         },
+        onQueryCompleted,
       });
       return null;
     }
@@ -105,5 +107,80 @@ describe('useQueryFlow', () => {
     });
 
     expect(mocks.invoke).not.toHaveBeenCalled();
+  });
+
+  it('records one content-free completion for the exact active pass', async () => {
+    const onQueryCompleted = vi.fn();
+    await renderFlow(onQueryCompleted);
+
+    await act(async () => {
+      mocks.listeners.get('query-toggle')?.({
+        payload: { queryPassId: 21, action: 'start' },
+      });
+      const terminal = {
+        payload: {
+          queryPassId: 21,
+          state: 'ready',
+          errorCode: null,
+          usage: {
+            inputTokens: 120,
+            outputTokens: 45,
+            reasoningOutputTokens: 3,
+            cachedInputTokens: 20,
+            cacheCreationInputTokens: 4,
+            costUsd: 0.012,
+          },
+        },
+      };
+      mocks.listeners.get('query-state-changed')?.(terminal);
+      mocks.listeners.get('query-state-changed')?.(terminal);
+    });
+
+    expect(onQueryCompleted).toHaveBeenCalledTimes(1);
+    expect(onQueryCompleted).toHaveBeenCalledWith({
+      provider: 'custom',
+      succeeded: true,
+      errorCode: null,
+      usage: {
+        inputTokens: 120,
+        outputTokens: 45,
+        reasoningOutputTokens: 3,
+        cachedInputTokens: 20,
+        cacheCreationInputTokens: 4,
+        costUsd: 0.012,
+      },
+    });
+  });
+
+  it('drops malformed usage content and ignores terminal events for another pass', async () => {
+    const onQueryCompleted = vi.fn();
+    await renderFlow(onQueryCompleted);
+    await act(async () => {
+      mocks.listeners.get('query-toggle')?.({
+        payload: { queryPassId: 22, action: 'start' },
+      });
+      mocks.listeners.get('query-state-changed')?.({
+        payload: {
+          queryPassId: 22,
+          state: 'ready',
+          errorCode: null,
+          usage: { inputTokens: 'private content' },
+        },
+      });
+      mocks.listeners.get('query-state-changed')?.({
+        payload: { queryPassId: 99, state: 'failed', errorCode: 'timed_out', usage: null },
+      });
+      mocks.listeners.get('query-state-changed')?.({
+        payload: { queryPassId: 22, state: 'failed', errorCode: 'timed_out', usage: null },
+      });
+    });
+
+    expect(onQueryCompleted).toHaveBeenCalledTimes(1);
+    expect(onQueryCompleted).toHaveBeenCalledWith({
+      provider: 'custom',
+      succeeded: true,
+      errorCode: null,
+      usage: null,
+    });
   });
 });

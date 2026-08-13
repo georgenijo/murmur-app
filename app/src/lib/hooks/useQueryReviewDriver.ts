@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { flog } from '../log';
+import { isQueryUsage, type QueryUsage } from '../queryUsage';
 
 export type QueryReviewState =
   | 'idle'
@@ -30,6 +31,7 @@ interface QueryContent {
   answer: string;
   errorDetail: string | null;
   provider: 'claude' | 'codex' | 'grok' | 'cursor' | 'custom' | null;
+  usage: QueryUsage | null;
   signInFix: string | null;
 }
 
@@ -62,6 +64,7 @@ export function useQueryReviewDriver() {
   const [errorCode, setErrorCode] = useState<string | null>(null);
   const [answer, setAnswer] = useState('');
   const [errorDetail, setErrorDetail] = useState<string | null>(null);
+  const [usage, setUsage] = useState<QueryUsage | null>(null);
   const [signInFix, setSignInFix] = useState<string | null>(null);
   const [signInStatus, setSignInStatus] = useState<string | null>(null);
   const [signInBusy, setSignInBusy] = useState(false);
@@ -94,6 +97,7 @@ export function useQueryReviewDriver() {
         ) {
           setAnswer(content.answer);
           setErrorDetail(typeof content.errorDetail === 'string' ? content.errorDetail : null);
+          setUsage(isQueryUsage(content.usage) ? content.usage : null);
           setSignInFix(typeof content.signInFix === 'string' ? content.signInFix : null);
           if (terminal || terminalPassIdRef.current === expectedPassId) {
             terminalContentSnapshotRef.current = true;
@@ -117,6 +121,7 @@ export function useQueryReviewDriver() {
           terminalContentSnapshotRef.current = false;
           setAnswer('');
           setErrorDetail(null);
+          setUsage(null);
           setSignInFix(null);
           setSignInStatus(null);
           setSignInBusy(false);
@@ -173,6 +178,7 @@ export function useQueryReviewDriver() {
         setErrorCode(null);
         setAnswer('');
         setErrorDetail(null);
+        setUsage(null);
         setSignInFix(null);
         setSignInStatus(null);
         setSignInBusy(false);
@@ -262,6 +268,7 @@ export function useQueryReviewDriver() {
     errorCode,
     answer,
     errorDetail,
+    usage,
     signInFix,
     signInStatus,
     signInBusy,

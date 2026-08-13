@@ -115,7 +115,7 @@ delivery. Live VAD uses only a bounded rolling in-memory window.
 | `finish_query_capture` | `query_pass_id: u64` | `Result<(), String>` | Stops capture, transcribes locally, appends the transcript as one final argv element, and streams bounded stdout to the query popover. |
 | `cancel_query` | `query_pass_id: u64` | `Result<(), String>` | Cancels the exact pass, confirms capture/owned process-group teardown, and hides the popover. Stale IDs no-op. |
 | `copy_query_answer` | `query_pass_id: u64` | `Result<(), String>` | Copies a completed answer. It never pastes into another app. |
-| `get_query_review_content` | — | `QueryReviewContent` | Returns `{queryPassId, answer, errorDetail, provider, signInFix}` only to the `query-review` webview. `errorDetail` is the bounded stderr tail and remains distinct from answer content; every other window receives empty content. |
+| `get_query_review_content` | — | `QueryReviewContent` | Returns `{queryPassId, answer, errorDetail, provider, usage, signInFix}` only to the `query-review` webview. `usage` contains provider-reported numbers only. `errorDetail` is the bounded stderr tail and remains distinct from answer content; every other window receives empty content. |
 
 ## Selected-text transform (`transform_flow.rs`, `transform_apply.rs`)
 

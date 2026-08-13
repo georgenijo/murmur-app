@@ -517,7 +517,13 @@ fn is_safe_query_field(key: &str, value: &serde_json::Value) -> bool {
                     .as_str()
                     .is_some_and(|value| is_safe_query_string(key, value))
         }
-        "query_pass_id" => value.as_u64().is_some(),
+        "query_pass_id"
+        | "input_tokens"
+        | "output_tokens"
+        | "reasoning_output_tokens"
+        | "cached_input_tokens"
+        | "cache_creation_input_tokens"
+        | "cost_microusd" => value.as_u64().is_some(),
         _ => false,
     }
 }
@@ -948,6 +954,60 @@ mod tests {
         });
         sanitize_event_data("query", &mut data, true);
         assert_eq!(data["error_code"], serde_json::Value::Null);
+        assert_eq!(data.as_object().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn query_event_sanitizer_allows_only_declared_numeric_usage_fields() {
+        let mut data = serde_json::json!({
+            "event_code": "query.pass_state",
+            "query_pass_id": 11,
+            "state": "ready",
+            "error_code": null,
+            "input_tokens": 21,
+            "output_tokens": 13,
+            "reasoning_output_tokens": 5,
+            "cached_input_tokens": 8,
+            "cache_creation_input_tokens": 2,
+            "cost_microusd": 12000,
+            "provider": "claude",
+            "question_bytes": 99,
+            "cost_usd": 0.012,
+            "usage": { "input_tokens": 21 },
+            "answer": "SENTINEL_ANSWER"
+        });
+        sanitize_event_data("query", &mut data, true);
+
+        assert_eq!(data["input_tokens"], 21);
+        assert_eq!(data["output_tokens"], 13);
+        assert_eq!(data["reasoning_output_tokens"], 5);
+        assert_eq!(data["cached_input_tokens"], 8);
+        assert_eq!(data["cache_creation_input_tokens"], 2);
+        assert_eq!(data["cost_microusd"], 12000);
+        assert!(data.get("provider").is_none());
+        assert!(data.get("question_bytes").is_none());
+        assert!(data.get("cost_usd").is_none());
+        assert!(data.get("usage").is_none());
+        assert!(data.get("answer").is_none());
+        assert_eq!(data.as_object().unwrap().len(), 10);
+    }
+
+    #[test]
+    fn query_event_sanitizer_rejects_wrong_usage_field_types() {
+        let mut data = serde_json::json!({
+            "event_code": "query.pass_state",
+            "query_pass_id": 12,
+            "state": "ready",
+            "error_code": null,
+            "input_tokens": "21",
+            "output_tokens": -1,
+            "reasoning_output_tokens": 1.5,
+            "cached_input_tokens": null,
+            "cache_creation_input_tokens": true,
+            "cost_microusd": 0.1
+        });
+        sanitize_event_data("query", &mut data, true);
+
         assert_eq!(data.as_object().unwrap().len(), 4);
     }
 
