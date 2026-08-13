@@ -480,8 +480,11 @@ fn is_safe_query_string(key: &str, value: &str) -> bool {
                 | "invalid_executable"
                 | "invalid_arguments"
                 | "invalid_timeout"
+                | "invalid_environment"
+                | "environment_unavailable"
                 | "busy"
                 | "audio_start_failed"
+                | "audio_capture_failed"
                 | "audio_not_ready"
                 | "audio_stalled"
                 | "audio_recovering"
@@ -493,8 +496,11 @@ fn is_safe_query_string(key: &str, value: &str) -> bool {
                 | "spawn_failed"
                 | "timed_out"
                 | "exit_nonzero"
+                | "provider_not_authenticated"
+                | "provider_error"
                 | "empty_answer"
                 | "clipboard_unavailable"
+                | "clipboard_superseded"
                 | "output_too_large"
                 | "process_failed"
                 | "termination_unconfirmed"
@@ -515,7 +521,13 @@ fn is_safe_query_field(key: &str, value: &serde_json::Value) -> bool {
                     .as_str()
                     .is_some_and(|value| is_safe_query_string(key, value))
         }
-        "query_pass_id" => value.as_u64().is_some(),
+        "query_pass_id"
+        | "input_tokens"
+        | "output_tokens"
+        | "reasoning_output_tokens"
+        | "cached_input_tokens"
+        | "cache_creation_input_tokens"
+        | "cost_microusd" => value.as_u64().is_some(),
         _ => false,
     }
 }
@@ -910,17 +922,21 @@ mod tests {
     }
 
     #[test]
-    fn query_event_sanitizer_rejects_question_answer_command_and_paths() {
+    fn query_event_sanitizer_rejects_question_answer_context_command_and_paths() {
         let mut data = serde_json::json!({
             "event_code": "query.pass_state",
             "query_pass_id": 8,
             "state": "running",
-            "error_code": "spawn_failed",
+            "error_code": "provider_not_authenticated",
             "question": "SENTINEL_QUESTION ; rm -rf",
             "answer": "SENTINEL_ANSWER",
+            "context": "SENTINEL_CONTEXT",
+            "window_title": "SENTINEL_WINDOW",
+            "selection": "SENTINEL_SELECTION",
             "command": "/Users/private/bin/agent",
             "arguments": ["SENTINEL_ARGUMENTS"],
             "structured_answer": { "content": "SENTINEL_OBJECT" },
+            "stderr": "SENTINEL_STDERR secret-token",
             "unknown_numeric": 42
         });
         sanitize_event_data("query", &mut data, true);
@@ -928,7 +944,7 @@ mod tests {
         assert_eq!(data["event_code"], "query.pass_state");
         assert_eq!(data["query_pass_id"], 8);
         assert_eq!(data["state"], "running");
-        assert_eq!(data["error_code"], "spawn_failed");
+        assert_eq!(data["error_code"], "provider_not_authenticated");
         assert!(!encoded.contains("SENTINEL"));
         assert!(!encoded.contains("/Users/private"));
         assert!(!encoded.contains("rm -rf"));
@@ -946,6 +962,104 @@ mod tests {
         sanitize_event_data("query", &mut data, true);
         assert_eq!(data["error_code"], serde_json::Value::Null);
         assert_eq!(data.as_object().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn query_event_sanitizer_allows_only_declared_numeric_usage_fields() {
+        let mut data = serde_json::json!({
+            "event_code": "query.pass_state",
+            "query_pass_id": 11,
+            "state": "ready",
+            "error_code": null,
+            "input_tokens": 21,
+            "output_tokens": 13,
+            "reasoning_output_tokens": 5,
+            "cached_input_tokens": 8,
+            "cache_creation_input_tokens": 2,
+            "cost_microusd": 12000,
+            "provider": "claude",
+            "question_bytes": 99,
+            "cost_usd": 0.012,
+            "usage": { "input_tokens": 21 },
+            "answer": "SENTINEL_ANSWER"
+        });
+        sanitize_event_data("query", &mut data, true);
+
+        assert_eq!(data["input_tokens"], 21);
+        assert_eq!(data["output_tokens"], 13);
+        assert_eq!(data["reasoning_output_tokens"], 5);
+        assert_eq!(data["cached_input_tokens"], 8);
+        assert_eq!(data["cache_creation_input_tokens"], 2);
+        assert_eq!(data["cost_microusd"], 12000);
+        assert!(data.get("provider").is_none());
+        assert!(data.get("question_bytes").is_none());
+        assert!(data.get("cost_usd").is_none());
+        assert!(data.get("usage").is_none());
+        assert!(data.get("answer").is_none());
+        assert_eq!(data.as_object().unwrap().len(), 10);
+    }
+
+    #[test]
+    fn query_event_sanitizer_rejects_wrong_usage_field_types() {
+        let mut data = serde_json::json!({
+            "event_code": "query.pass_state",
+            "query_pass_id": 12,
+            "state": "ready",
+            "error_code": null,
+            "input_tokens": "21",
+            "output_tokens": -1,
+            "reasoning_output_tokens": 1.5,
+            "cached_input_tokens": null,
+            "cache_creation_input_tokens": true,
+            "cost_microusd": 0.1
+        });
+        sanitize_event_data("query", &mut data, true);
+
+        assert_eq!(data.as_object().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn query_event_sanitizer_allows_typed_provider_error_without_detail() {
+        let mut data = serde_json::json!({
+            "event_code": "query.pass_state",
+            "query_pass_id": 10,
+            "state": "failed",
+            "error_code": "provider_error",
+            "provider_detail": "SENTINEL_PROVIDER_CONTENT",
+            "usage": { "input_tokens": 12, "output_tokens": 3 }
+        });
+        sanitize_event_data("query", &mut data, true);
+        assert_eq!(data["error_code"], "provider_error");
+        assert!(data.get("provider_detail").is_none());
+        assert!(data.get("usage").is_none());
+    }
+
+    #[test]
+    fn query_event_sanitizer_allows_only_declared_environment_and_clipboard_codes() {
+        for (state, error_code) in [
+            ("failed", "invalid_environment"),
+            ("failed", "environment_unavailable"),
+            ("failed", "audio_capture_failed"),
+            ("ready", "clipboard_superseded"),
+        ] {
+            let mut data = serde_json::json!({
+                "event_code": "query.pass_state",
+                "query_pass_id": 13,
+                "state": state,
+                "error_code": error_code,
+            });
+            sanitize_event_data("query", &mut data, true);
+            assert_eq!(data["error_code"], error_code);
+        }
+
+        let mut data = serde_json::json!({
+            "event_code": "query.pass_state",
+            "query_pass_id": 13,
+            "state": "failed",
+            "error_code": "environment_failed: /Users/private/SENTINEL",
+        });
+        sanitize_event_data("query", &mut data, true);
+        assert!(data.get("error_code").is_none());
     }
 
     #[test]

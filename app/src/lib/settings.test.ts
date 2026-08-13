@@ -63,6 +63,7 @@ describe('loadSettings', () => {
         writingStyle: 'code_technical' as const,
         ideContextEnabled: true,
         ideProjectRoots: ['/tmp/project'],
+        queryContextExcluded: true,
       }],
       voiceCommandsEnabled: true,
       voiceCommands: [{ phrase: 'standup', replacement: 'Yesterday:\nToday:' }],
@@ -841,9 +842,12 @@ describe('durable settings store', () => {
 describe('Voice Query settings', () => {
   it('is fully opt-in with no default executable', () => {
     expect(DEFAULT_SETTINGS.queryHotkey).toBeNull();
+    expect(DEFAULT_SETTINGS.queryProvider).toBe('custom');
     expect(DEFAULT_SETTINGS.queryExecutable).toBe('');
     expect(DEFAULT_SETTINGS.queryArguments).toEqual([]);
     expect(DEFAULT_SETTINGS.queryTimeoutSeconds).toBe(60);
+    expect(DEFAULT_SETTINGS.queryContextLevel).toBe('none');
+    expect(DEFAULT_SETTINGS.retainQueryHistory).toBe(false);
   });
 
   it('fails closed when a persisted query key conflicts with transform', () => {
@@ -862,17 +866,43 @@ describe('Voice Query settings', () => {
   it('bounds malformed CLI configuration before IPC', () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       queryHotkey: 'unexpected_key',
+      queryProvider: 'untrusted-provider',
       queryExecutable: 42,
       queryArguments: [...Array.from({ length: 40 }, (_, index) => `arg-${index}`), 7],
       queryTimeoutSeconds: 999,
+      queryContextLevel: 'desktop_screenshot',
+      retainQueryHistory: 'yes',
     }));
 
     const settings = loadSettings();
 
     expect(settings.queryHotkey).toBeNull();
+    expect(settings.queryProvider).toBe('custom');
     expect(settings.queryExecutable).toBe('');
     expect(settings.queryArguments).toHaveLength(32);
     expect(settings.queryArguments.every((argument) => typeof argument === 'string')).toBe(true);
     expect(settings.queryTimeoutSeconds).toBe(60);
+    expect(settings.queryContextLevel).toBe('none');
+    expect(settings.retainQueryHistory).toBe(false);
+  });
+
+  it('keeps valid context levels and fails closed for per-app exclusions', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      queryContextLevel: 'selection',
+      appProfiles: [
+        { bundleId: 'com.example.Private', queryContextExcluded: true },
+        { bundleId: 'com.example.Legacy' },
+        { bundleId: 'com.example.Tampered', queryContextExcluded: 'yes' },
+      ],
+    }));
+
+    const settings = loadSettings();
+    expect(settings.queryContextLevel).toBe('selection');
+    expect(settings.appProfiles.map((profile) => profile.queryContextExcluded)).toEqual([
+      true,
+      false,
+      false,
+    ]);
   });
 });

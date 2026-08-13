@@ -6,6 +6,8 @@ import {
   getCurrentStreak,
   type DaySummary,
 } from '../lib/stats';
+import { QUERY_PROVIDER_IDS, formatQueryCost } from '../lib/queryUsage';
+import type { QueryProviderId } from '../lib/settings';
 
 const STORAGE_KEY = 'usage-dashboard-collapsed';
 const HEATMAP_WEEKS = 8;
@@ -21,6 +23,13 @@ const CHART_W = 100;
 const CHART_H = 40;
 
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const PROVIDER_LABELS: Record<QueryProviderId, string> = {
+  claude: 'Claude',
+  codex: 'Codex',
+  grok: 'Grok',
+  cursor: 'Cursor',
+  custom: 'Custom',
+};
 
 function loadCollapsed(): boolean {
   try {
@@ -50,6 +59,10 @@ const HEAT_FILL: Record<number, string> = {
 
 function shortDay(d: Date): string {
   return DOW[d.getDay()].slice(0, 1);
+}
+
+function failureLabel(code: string): string {
+  return code.split('_').join(' ');
 }
 
 interface UsageDashboardProps {
@@ -87,6 +100,12 @@ export function UsageDashboard({ statsVersion, displayMode = 'inline' }: UsageDa
   const maxHeat = Math.max(0, ...weeks.flat().map(d => d.words));
   const maxWords = Math.max(1, ...recent.map(d => d.words));
   const maxWpm = Math.max(1, ...recent.map(d => d.wpm));
+  const activeQueryProviders = stats
+    ? QUERY_PROVIDER_IDS.filter(provider => stats.query.byProvider[provider].queriesRun > 0)
+    : [];
+  const queryFailures = stats
+    ? Object.entries(stats.query.failuresByErrorCode).filter(([, count]) => (count ?? 0) > 0)
+    : [];
 
   const toggle = () => {
     const next = !isCollapsed;
@@ -144,6 +163,42 @@ export function UsageDashboard({ statsVersion, displayMode = 'inline' }: UsageDa
 
       {expanded && stats && (
         <div className={`px-3 pb-3 flex flex-col gap-4 ${displayMode === 'popover' ? 'pt-3' : ''}`}>
+          <Section title="Voice Query · all time">
+            <div className="grid grid-cols-3 gap-2">
+              <QueryMetric label="Queries" value={stats.query.queriesRun.toLocaleString()} />
+              <QueryMetric label="Tokens in" value={stats.query.inputTokens.toLocaleString()} />
+              <QueryMetric label="Tokens out" value={stats.query.outputTokens.toLocaleString()} />
+            </div>
+            {stats.query.reportedCostUsd > 0 && (
+              <p className="mt-1.5 text-[10px] text-on-surface-variant">
+                Provider-reported cost · {formatQueryCost(stats.query.reportedCostUsd)}
+              </p>
+            )}
+            {activeQueryProviders.length > 0 && (
+              <div className="mt-2 space-y-1 border-t border-outline-variant/20 pt-2">
+                {activeQueryProviders.map(provider => {
+                  const providerStats = stats.query.byProvider[provider];
+                  return (
+                    <div key={provider} className="flex items-center justify-between gap-3 text-[10px] text-on-surface-variant">
+                      <span className="font-medium text-on-surface">{PROVIDER_LABELS[provider]}</span>
+                      <span className="tabular-nums">
+                        {providerStats.queriesRun.toLocaleString()} queries · {providerStats.inputTokens.toLocaleString()} in · {providerStats.outputTokens.toLocaleString()} out
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {queryFailures.length > 0 && (
+              <p className="mt-2 text-[10px] leading-relaxed text-on-surface-variant">
+                Failures · {queryFailures.map(([code, count]) => `${failureLabel(code)} ${count}`).join(' · ')}
+              </p>
+            )}
+            <p className="mt-1.5 text-[9px] leading-relaxed text-on-surface-variant/75">
+              Content-free counters only; questions and answers are never stored here.
+            </p>
+          </Section>
+
           {/* Heatmap — last ~8 weeks of words/day */}
           <Section title={`Activity · last ${HEATMAP_WEEKS} weeks`}>
             <svg
@@ -246,6 +301,15 @@ export function UsageDashboard({ statsVersion, displayMode = 'inline' }: UsageDa
           </Section>
         </div>
       )}
+    </div>
+  );
+}
+
+function QueryMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md bg-surface-container px-2 py-1.5">
+      <div className="text-[9px] uppercase tracking-wider text-on-surface-variant">{label}</div>
+      <div className="mt-0.5 text-xs font-semibold tabular-nums text-on-surface">{value}</div>
     </div>
   );
 }

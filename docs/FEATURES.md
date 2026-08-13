@@ -160,10 +160,7 @@ Double-tap a dedicated key, ask a question, and stream an answer from an explici
 - Opt-in with no default executable and explicit warning that the chosen CLI may use cloud services.
 - Local ASR; the transcript is one literal final argv element passed through direct process spawn with no shell or interpolation.
 - Owned process group with confirmed termination on cancel, timeout, Escape, and app exit.
-- Provider presets (Claude Code, Codex, Grok, Cursor Agent, or a custom command) that discover the binary, fill in one-shot arguments, and preflight sign-in through the identical spawn path before the shortcut is armed.
-- Failures name the cause and the fix: a bounded stderr tail is shown in the popover, a signed-out provider gets an actionable error and a one-click launch of the vendor's own login.
-- Explicitly declared environment variables layered underneath the fail-closed allowlist, stored outside localStorage, and never able to redefine `HOME`.
-- Question and answer content stay out of telemetry, history, stats, and file output. The completed answer is copied but never auto-pasted.
+- Question, answer, and context stay out of telemetry, logs, stats, diagnostics, and file output. An off-by-default setting may retain only questions and answers in a separate bounded Rust-owned local history store. The completed answer is copied but never auto-pasted.
 
 ---
 
@@ -181,7 +178,9 @@ appear as cancelable bottom-right toasts.
 The Transcripts tab provides match highlighting and Mic/File filters over a
 rolling 200-entry history. The Meetings tab lists and searches durable Me/Them
 sessions, supports copy/text export, and deletes one or all sessions locally.
-Teaching context is never exported.
+The Queries tab pages through the separate opt-in Voice Query store by provider
+and can purge it directly. Query context and teaching context are never
+exported.
 
 ### Command palette — [features/command-palette.md](features/command-palette.md)
 `⌘K` opens a keyboard-first launcher for every settings page and the common main-window actions, with deterministic tiered ranking. `⌘F` focuses transcript search, `⌘,` opens Settings, `⌘L` opens Settings → Performance.
@@ -270,7 +269,7 @@ Every transform-key hold is recorded as a content-free `TransformAttemptV1` with
 
 | Area | Location |
 |------|----------|
-| Rust backend | `app/src-tauri/src/` — 148 Tauri commands |
+| Rust backend | `app/src-tauri/src/` — 158 Tauri commands |
 | Frontend | `app/src/` — React 18 + TypeScript + Tailwind 4 |
 | LLM sidecar | `app/src-tauri/sidecars/local-llm/`, protocol in `crates/local-llm-protocol` |
 | Capture worker | `app/src-tauri/sidecars/capture/`, protocol in `crates/capture-helper-protocol` |

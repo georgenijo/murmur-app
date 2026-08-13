@@ -1,7 +1,8 @@
-import { act } from 'react';
+import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DEFAULT_SETTINGS } from '../../lib/settings';
+import { DEFAULT_SETTINGS, type Settings } from '../../lib/settings';
+import { CUSTOM_QUERY_PRESET } from '../../lib/queryProviders';
 import type { TransformModelStatus } from '../../lib/transformSettings';
 import {
   SETTINGS_CATEGORIES,
@@ -15,9 +16,48 @@ vi.mock('@tauri-apps/api/app', () => ({ getVersion: vi.fn(async () => '0.18.0') 
 const coreMocks = vi.hoisted(() => ({
   notchPillInstalled: false,
   notchPillDetectionError: false,
+  invoke: vi.fn(),
 }));
 vi.mock('@tauri-apps/api/core', () => ({
-  invoke: vi.fn(async (command: string) => {
+  invoke: coreMocks.invoke,
+}));
+vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async () => () => {}) }));
+vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }));
+vi.mock('../../lib/modelRuntime', () => ({ useModelRuntimeCatalog: () => ({ models: [], byName: new Map(), error: null }) }));
+vi.mock('../../lib/hooks/useVocabScan', () => ({
+  useVocabScan: () => ({ status: 'idle', walker: null, stats: null, scan: vi.fn(), cancel: vi.fn() }),
+}));
+vi.mock('./AppOverridesEditor', () => ({ AppOverridesEditor: () => <div>App overrides editor</div> }));
+vi.mock('./AppearanceSettings', () => ({ AppearanceSettings: () => <div>Appearance settings</div> }));
+vi.mock('./KnowledgeManager', () => ({ KnowledgeManager: () => <div>Knowledge manager</div> }));
+vi.mock('./PerformanceLab', () => ({ PerformanceLab: () => <div>Performance lab</div> }));
+vi.mock('../log-viewer/DiagnosticsWorkspace', () => ({ DiagnosticsWorkspace: () => <div>Diagnostics workspace</div> }));
+vi.mock('./VocabularyAliasesEditor', () => ({ VocabularyAliasesEditor: () => <div>Vocabulary editor</div> }));
+vi.mock('./VoiceCommandsManager', () => ({ VoiceCommandsManager: () => <div>Voice commands editor</div> }));
+vi.mock('./TransformsManager', () => ({ TransformsManager: () => <div>Transforms manager</div> }));
+vi.mock('./VocabScanStrip', () => ({ VocabScanStrip: () => <div>Vocabulary scan</div> }));
+
+const transformMocks = vi.hoisted(() => ({
+  status: null as TransformModelStatus | null,
+  setTransformKey: vi.fn(async () => {}),
+  startTransformListener: vi.fn(async () => {}),
+}));
+vi.mock('../../lib/transformSettings', () => ({
+  TRANSFORM_MODEL_SIZE_LABEL: '1.1 GB',
+  transformModelStatus: vi.fn(async () => transformMocks.status),
+  downloadTransformModel: vi.fn(async () => {}),
+  removeTransformModel: vi.fn(async () => {}),
+  resetTransformRuntime: vi.fn(async () => {}),
+  setTransformKey: transformMocks.setTransformKey,
+  startTransformListener: transformMocks.startTransformListener,
+  stopTransformListener: vi.fn(async () => {}),
+}));
+
+beforeEach(() => {
+  coreMocks.notchPillInstalled = false;
+  coreMocks.notchPillDetectionError = false;
+  coreMocks.invoke.mockReset();
+  coreMocks.invoke.mockImplementation(async (command: string) => {
     if (command === 'list_audio_devices') return [];
     if (command === 'get_microphone_preview_status') {
       return {
@@ -52,39 +92,8 @@ vi.mock('@tauri-apps/api/core', () => ({
       return coreMocks.notchPillInstalled;
     }
     return undefined;
-  }),
-}));
-vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async () => () => {}) }));
-vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }));
-vi.mock('../../lib/modelRuntime', () => ({ useModelRuntimeCatalog: () => ({ models: [], byName: new Map(), error: null }) }));
-vi.mock('../../lib/hooks/useVocabScan', () => ({
-  useVocabScan: () => ({ status: 'idle', walker: null, stats: null, scan: vi.fn(), cancel: vi.fn() }),
-}));
-vi.mock('./AppOverridesEditor', () => ({ AppOverridesEditor: () => <div>App overrides editor</div> }));
-vi.mock('./AppearanceSettings', () => ({ AppearanceSettings: () => <div>Appearance settings</div> }));
-vi.mock('./KnowledgeManager', () => ({ KnowledgeManager: () => <div>Knowledge manager</div> }));
-vi.mock('./PerformanceLab', () => ({ PerformanceLab: () => <div>Performance lab</div> }));
-vi.mock('../log-viewer/DiagnosticsWorkspace', () => ({ DiagnosticsWorkspace: () => <div>Diagnostics workspace</div> }));
-vi.mock('./VocabularyAliasesEditor', () => ({ VocabularyAliasesEditor: () => <div>Vocabulary editor</div> }));
-vi.mock('./VoiceCommandsManager', () => ({ VoiceCommandsManager: () => <div>Voice commands editor</div> }));
-vi.mock('./TransformsManager', () => ({ TransformsManager: () => <div>Transforms manager</div> }));
-vi.mock('./VocabScanStrip', () => ({ VocabScanStrip: () => <div>Vocabulary scan</div> }));
-
-const transformMocks = vi.hoisted(() => ({
-  status: null as TransformModelStatus | null,
-  setTransformKey: vi.fn(async () => {}),
-  startTransformListener: vi.fn(async () => {}),
-}));
-vi.mock('../../lib/transformSettings', () => ({
-  TRANSFORM_MODEL_SIZE_LABEL: '1.1 GB',
-  transformModelStatus: vi.fn(async () => transformMocks.status),
-  downloadTransformModel: vi.fn(async () => {}),
-  removeTransformModel: vi.fn(async () => {}),
-  resetTransformRuntime: vi.fn(async () => {}),
-  setTransformKey: transformMocks.setTransformKey,
-  startTransformListener: transformMocks.startTransformListener,
-  stopTransformListener: vi.fn(async () => {}),
-}));
+  });
+});
 
 describe('SettingsPanel information architecture', () => {
   let container: HTMLDivElement;
@@ -111,8 +120,6 @@ describe('SettingsPanel information architecture', () => {
   }
 
   beforeEach(async () => {
-    coreMocks.notchPillInstalled = false;
-    coreMocks.notchPillDetectionError = false;
     scrollTo.mockReset();
     onUpdateSettings.mockReset();
     Object.defineProperty(HTMLElement.prototype, 'scrollTo', { value: scrollTo, configurable: true });
@@ -205,7 +212,17 @@ describe('SettingsPanel information architecture', () => {
     expect(container.textContent).toContain('Voice Query');
     expect(container.textContent).toContain('may send the question or answer to cloud services');
     expect(container.textContent).toContain('No shell is ever invoked');
+    expect(container.textContent).toContain('Context shared with the CLI');
+    expect(container.textContent).toContain('Off by default');
     expect(container.textContent).toContain('never auto-pasted');
+    const historyToggle = container.querySelector(
+      '[role="switch"][aria-label="Keep Voice Query history on this Mac"]',
+    ) as HTMLButtonElement;
+    expect(historyToggle.getAttribute('aria-checked')).toBe('false');
+    await act(async () => historyToggle.click());
+    expect(onUpdateSettings).toHaveBeenCalledWith({ retainQueryHistory: true });
+    expect(container.textContent).toContain('Context content never enters history');
+    expect(container.textContent).toContain('stays display-only and is not saved');
   });
 
   it('opens editors as a Text settings drill-down with explicit back navigation', async () => {
@@ -300,6 +317,569 @@ describe('SettingsPanel information architecture', () => {
       (details) => details.textContent?.includes('Diagnostics workspace'),
     ) as HTMLDetailsElement;
     expect(diagnostics.open).toBe(true);
+  });
+});
+
+describe('SettingsPanel Voice Query async ownership', () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let currentSettings: Settings;
+  let updateSettings!: (updates: Partial<Settings>) => void;
+
+  const previewStatus = {
+    previewId: null,
+    state: 'idle',
+    stillConnecting: false,
+    errorKind: null,
+    message: null,
+  };
+
+  const idleInvoke = async (command: string) => {
+    if (command === 'list_audio_devices' || command === 'load_query_environment') return [];
+    if (command === 'get_microphone_preview_status' || command === 'stop_microphone_preview') {
+      return previewStatus;
+    }
+    if (command === 'cancel_microphone_preview') return false;
+    if (command === 'list_query_provider_presets') return [];
+    return undefined;
+  };
+
+  function installVoiceQueryInvoke(commandName: string, response: Promise<unknown>) {
+    coreMocks.invoke.mockImplementation((command: string) => {
+      if (command === commandName) return response;
+      return idleInvoke(command);
+    });
+  }
+
+  beforeEach(() => {
+    coreMocks.invoke.mockImplementation(idleInvoke);
+    Object.defineProperty(HTMLElement.prototype, 'scrollTo', { value: vi.fn(), configurable: true });
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { value: vi.fn(), configurable: true });
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  async function renderVoiceQuery(overrides: Partial<Settings> = {}) {
+    function Harness() {
+      const [settings, setSettings] = useState<Settings>({
+        ...DEFAULT_SETTINGS,
+        queryProvider: 'custom',
+        queryExecutable: '/usr/bin/printf',
+        queryArguments: ['%s'],
+        queryHotkey: null,
+        ...overrides,
+      });
+      currentSettings = settings;
+      updateSettings = (updates) => setSettings((current) => ({ ...current, ...updates }));
+      return (
+        <SettingsPanel
+          settings={settings}
+          onUpdateSettings={updateSettings}
+          initialized
+          status="idle"
+          onResetStats={vi.fn()}
+          onRerunSetup={vi.fn()}
+          accessibilityGranted
+          onCheckForUpdate={vi.fn(async () => {})}
+          updateStatus={{ phase: 'idle' }}
+          configureError={null}
+          pageRequest={{ page: 'text', token: 1 }}
+        />
+      );
+    }
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  }
+
+  async function chooseProvider(label: string) {
+    const provider = Array.from(container.querySelectorAll('[role="combobox"]')).find(
+      (element) => element.textContent?.trim() === currentSettings.queryProvider.charAt(0).toUpperCase()
+        + currentSettings.queryProvider.slice(1),
+    ) as HTMLButtonElement;
+    await act(async () => provider.click());
+    const option = Array.from(container.querySelectorAll('[role="option"]')).find(
+      (element) => element.textContent?.includes(label),
+    ) as HTMLLIElement;
+    await act(async () => {
+      option.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  }
+
+  it('does not enable an edited command after an older validation resolves', async () => {
+    let resolveValidation!: () => void;
+    const validation = new Promise<void>((resolve) => { resolveValidation = resolve; });
+    installVoiceQueryInvoke('validate_query_command', validation);
+    await renderVoiceQuery();
+
+    const enable = container.querySelector('[role="switch"][aria-label="Enable Voice Query"]') as HTMLButtonElement;
+    await act(async () => {
+      enable.click();
+      await Promise.resolve();
+    });
+    const executable = container.querySelector('#query-executable') as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => {
+      setter.call(executable, '/usr/bin/false');
+      executable.dispatchEvent(new Event('input', { bubbles: true }));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      resolveValidation();
+      await validation;
+      await Promise.resolve();
+    });
+
+    expect(currentSettings.queryExecutable).toBe('/usr/bin/false');
+    expect(currentSettings.queryHotkey).toBeNull();
+    expect(enable.getAttribute('aria-checked')).toBe('false');
+  });
+
+  it('shows custom-provider setup guidance and enable errors beside the toggle', async () => {
+    await renderVoiceQuery({ queryExecutable: '', queryArguments: [] });
+
+    expect(container.textContent).toContain('For a local smoke test');
+    expect(container.textContent).toContain('/usr/bin/printf');
+    const enable = container.querySelector(
+      '[role="switch"][aria-label="Enable Voice Query"]',
+    ) as HTMLButtonElement;
+    await act(async () => enable.click());
+
+    const alert = container.querySelector('[role="alert"]') as HTMLParagraphElement;
+    const executable = container.querySelector('#query-executable') as HTMLInputElement;
+    expect(alert.textContent).toContain('Choose the absolute path');
+    expect(alert.compareDocumentPosition(executable) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(currentSettings.queryHotkey).toBeNull();
+  });
+
+  it('keeps the same shortcut after the exact new preset validates and passes preflight', async () => {
+    coreMocks.invoke.mockImplementation((command: string) => {
+      if (command === 'list_query_provider_presets') {
+        return Promise.resolve([
+          {
+            id: 'custom',
+            label: 'Custom',
+            discoveryPaths: [],
+            discoveredExecutable: null,
+            recommendedArguments: [],
+            authProbeArguments: [],
+            authFailureSignatures: [],
+            signInArguments: [],
+            signInFix: null,
+            permittedEnvironmentVariables: [],
+          },
+          {
+            id: 'cursor',
+            label: 'Cursor',
+            discoveryPaths: [],
+            discoveredExecutable: '/usr/local/bin/cursor-agent',
+            recommendedArguments: ['--print', '--mode', 'ask', '--single-turn', '--trust'],
+            authProbeArguments: ['status'],
+            authFailureSignatures: [],
+            signInArguments: ['login'],
+            signInFix: 'Run cursor-agent login in Terminal.',
+            permittedEnvironmentVariables: [],
+          },
+        ]);
+      }
+      if (command === 'validate_query_command') return Promise.resolve();
+      if (command === 'test_query_provider') {
+        return Promise.resolve({
+          ok: true,
+          authenticated: true,
+          errorCode: null,
+          stdout: 'ready',
+          stderr: '',
+          stdoutTruncated: false,
+          stderrTruncated: false,
+          signInFix: null,
+        });
+      }
+      return idleInvoke(command);
+    });
+    await renderVoiceQuery({ queryHotkey: 'ctrl_l' });
+
+    await chooseProvider('Cursor');
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(currentSettings.queryProvider).toBe('cursor');
+    expect(currentSettings.queryHotkey).toBe('ctrl_l');
+    expect(container.textContent).toContain('Voice Query stayed enabled after validation and preflight');
+    const expectedCommand = {
+      provider: 'cursor',
+      executable: '/usr/local/bin/cursor-agent',
+      arguments: ['--print', '--mode', 'ask', '--single-turn', '--trust'],
+      timeoutSeconds: DEFAULT_SETTINGS.queryTimeoutSeconds,
+      contextLevel: DEFAULT_SETTINGS.queryContextLevel,
+      retainQueryHistory: DEFAULT_SETTINGS.retainQueryHistory,
+    };
+    expect(coreMocks.invoke).toHaveBeenCalledWith('validate_query_command', {
+      command: expectedCommand,
+    });
+    expect(coreMocks.invoke).toHaveBeenCalledWith('test_query_provider', {
+      command: expectedCommand,
+    });
+  });
+
+  it('leaves Voice Query disabled with an actionable error when the new preflight fails', async () => {
+    coreMocks.invoke.mockImplementation((command: string) => {
+      if (command === 'list_query_provider_presets') {
+        return Promise.resolve([
+          CUSTOM_QUERY_PRESET,
+          {
+            ...CUSTOM_QUERY_PRESET,
+            id: 'cursor',
+            label: 'Cursor',
+            discoveredExecutable: '/usr/local/bin/cursor-agent',
+            recommendedArguments: ['--print', '--mode', 'ask', '--single-turn', '--trust'],
+            authProbeArguments: ['status'],
+            signInArguments: ['login'],
+            signInFix: 'Run cursor-agent login in Terminal.',
+          },
+        ]);
+      }
+      if (command === 'validate_query_command') return Promise.resolve();
+      if (command === 'test_query_provider') {
+        return Promise.resolve({
+          ok: false,
+          authenticated: false,
+          errorCode: 'provider_not_authenticated',
+          stdout: '',
+          stderr: 'Not logged in',
+          stdoutTruncated: false,
+          stderrTruncated: false,
+          signInFix: 'Run cursor-agent login in Terminal.',
+        });
+      }
+      return idleInvoke(command);
+    });
+    await renderVoiceQuery({ queryHotkey: 'ctrl_l' });
+
+    await chooseProvider('Cursor');
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(currentSettings.queryProvider).toBe('cursor');
+    expect(currentSettings.queryHotkey).toBeNull();
+    expect(container.textContent).toContain('Voice Query remains off. Run cursor-agent login in Terminal.');
+  });
+
+  it('does not auto-enable or preflight a provider switch that started disabled', async () => {
+    coreMocks.invoke.mockImplementation((command: string) => {
+      if (command === 'list_query_provider_presets') {
+        return Promise.resolve([
+          CUSTOM_QUERY_PRESET,
+          {
+            ...CUSTOM_QUERY_PRESET,
+            id: 'cursor',
+            label: 'Cursor',
+            discoveredExecutable: '/usr/local/bin/cursor-agent',
+            recommendedArguments: ['--print', '--mode', 'ask', '--single-turn', '--trust'],
+          },
+        ]);
+      }
+      return idleInvoke(command);
+    });
+    await renderVoiceQuery({ queryHotkey: null });
+
+    await chooseProvider('Cursor');
+
+    expect(currentSettings.queryProvider).toBe('cursor');
+    expect(currentSettings.queryHotkey).toBeNull();
+    expect(coreMocks.invoke).not.toHaveBeenCalledWith(
+      'validate_query_command',
+      expect.anything(),
+    );
+    expect(coreMocks.invoke).not.toHaveBeenCalledWith(
+      'test_query_provider',
+      expect.anything(),
+    );
+  });
+
+  it('lets only the latest rapid provider switch restore the carried shortcut', async () => {
+    let resolveCursor!: (value: Record<string, unknown>) => void;
+    let resolveClaude!: (value: Record<string, unknown>) => void;
+    const cursorResult = new Promise<Record<string, unknown>>((resolve) => { resolveCursor = resolve; });
+    const claudeResult = new Promise<Record<string, unknown>>((resolve) => { resolveClaude = resolve; });
+    coreMocks.invoke.mockImplementation((command: string, args?: { command?: { provider?: string } }) => {
+      if (command === 'list_query_provider_presets') {
+        return Promise.resolve([
+          CUSTOM_QUERY_PRESET,
+          {
+            ...CUSTOM_QUERY_PRESET,
+            id: 'cursor',
+            label: 'Cursor',
+            discoveredExecutable: '/usr/local/bin/cursor-agent',
+            recommendedArguments: ['--trust'],
+          },
+          {
+            ...CUSTOM_QUERY_PRESET,
+            id: 'claude',
+            label: 'Claude',
+            discoveredExecutable: '/usr/local/bin/claude',
+            recommendedArguments: ['--print'],
+          },
+        ]);
+      }
+      if (command === 'validate_query_command') return Promise.resolve();
+      if (command === 'test_query_provider') {
+        return args?.command?.provider === 'cursor' ? cursorResult : claudeResult;
+      }
+      return idleInvoke(command);
+    });
+    await renderVoiceQuery({ queryHotkey: 'ctrl_l' });
+
+    await chooseProvider('Cursor');
+    await chooseProvider('Claude');
+    await act(async () => {
+      resolveClaude({
+        ok: true,
+        authenticated: true,
+        errorCode: null,
+        stdout: '',
+        stderr: '',
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        signInFix: null,
+      });
+      await claudeResult;
+      await Promise.resolve();
+    });
+    expect(currentSettings.queryProvider).toBe('claude');
+    expect(currentSettings.queryHotkey).toBe('ctrl_l');
+
+    await act(async () => {
+      resolveCursor({
+        ok: true,
+        authenticated: true,
+        errorCode: null,
+        stdout: 'STALE_CURSOR_RESULT',
+        stderr: '',
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        signInFix: null,
+      });
+      await cursorResult;
+      await Promise.resolve();
+    });
+    expect(currentSettings.queryProvider).toBe('claude');
+    expect(currentSettings.queryHotkey).toBe('ctrl_l');
+    expect(container.textContent).not.toContain('STALE_CURSOR_RESULT');
+  });
+
+  it('does not restore the shortcut when the preset command changes during deferred preflight', async () => {
+    let resolvePreflight!: (value: Record<string, unknown>) => void;
+    const preflight = new Promise<Record<string, unknown>>((resolve) => { resolvePreflight = resolve; });
+    coreMocks.invoke.mockImplementation((command: string) => {
+      if (command === 'list_query_provider_presets') {
+        return Promise.resolve([
+          CUSTOM_QUERY_PRESET,
+          {
+            ...CUSTOM_QUERY_PRESET,
+            id: 'cursor',
+            label: 'Cursor',
+            discoveredExecutable: '/usr/local/bin/cursor-agent',
+            recommendedArguments: ['--trust'],
+          },
+        ]);
+      }
+      if (command === 'validate_query_command') return Promise.resolve();
+      if (command === 'test_query_provider') return preflight;
+      return idleInvoke(command);
+    });
+    await renderVoiceQuery({ queryHotkey: 'ctrl_l' });
+
+    await chooseProvider('Cursor');
+    const executable = container.querySelector('#query-executable') as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => {
+      setter.call(executable, '/usr/bin/false');
+      executable.dispatchEvent(new Event('input', { bubbles: true }));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      resolvePreflight({
+        ok: true,
+        authenticated: true,
+        errorCode: null,
+        stdout: 'STALE_SUCCESS',
+        stderr: '',
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        signInFix: null,
+      });
+      await preflight;
+      await Promise.resolve();
+    });
+
+    expect(currentSettings.queryProvider).toBe('cursor');
+    expect(currentSettings.queryExecutable).toBe('/usr/bin/false');
+    expect(currentSettings.queryHotkey).toBeNull();
+    expect(container.textContent).toContain(
+      'Configuration changed during provider preflight. Voice Query remains off.',
+    );
+    expect(container.textContent).not.toContain('STALE_SUCCESS');
+  });
+
+  it('diagnoses an incomplete Codex platform package from its ENOENT probe output', async () => {
+    installVoiceQueryInvoke('test_query_provider', Promise.resolve({
+      ok: false,
+      authenticated: false,
+      errorCode: 'probe_failed',
+      stdout: '',
+      stderr: 'Error: spawn /opt/homebrew/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex/codex ENOENT',
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      signInFix: null,
+    }));
+    await renderVoiceQuery({
+      queryProvider: 'codex',
+      queryExecutable: '/opt/homebrew/bin/codex',
+      queryArguments: ['exec', '--json'],
+    });
+
+    const testButton = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Test',
+    ) as HTMLButtonElement;
+    await act(async () => {
+      testButton.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain('The Codex CLI installation is incomplete');
+    expect(container.textContent).not.toContain('/opt/homebrew');
+    expect(container.textContent).not.toContain('ENOENT');
+  });
+
+  it('does not render a pending provider test under a newly selected provider', async () => {
+    let resolveTest!: (result: Record<string, unknown>) => void;
+    const pendingTest = new Promise<Record<string, unknown>>((resolve) => { resolveTest = resolve; });
+    installVoiceQueryInvoke('test_query_provider', pendingTest);
+    await renderVoiceQuery();
+
+    const testButton = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Test',
+    ) as HTMLButtonElement;
+    await act(async () => {
+      testButton.click();
+      await Promise.resolve();
+      updateSettings({
+        queryProvider: 'codex',
+        queryExecutable: '/opt/homebrew/bin/codex',
+        queryArguments: ['exec'],
+      });
+      await Promise.resolve();
+    });
+    await act(async () => {
+      resolveTest({
+        ok: false,
+        authenticated: false,
+        errorCode: 'provider_not_authenticated',
+        stdout: 'STALE_PROVIDER_OUTPUT',
+        stderr: '',
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        signInFix: 'Run the old provider login.',
+      });
+      await pendingTest;
+      await Promise.resolve();
+    });
+
+    expect(currentSettings.queryProvider).toBe('codex');
+    expect(container.textContent).not.toContain('STALE_PROVIDER_OUTPUT');
+    expect(container.textContent).not.toContain('Run the old provider login.');
+  });
+
+  it('exposes Clear as the recovery action after a corrupt environment load', async () => {
+    coreMocks.invoke.mockImplementation((command: string) => {
+      if (command === 'load_query_environment') return Promise.reject(new Error('invalid_environment'));
+      if (command === 'save_query_environment') return Promise.resolve();
+      return idleInvoke(command);
+    });
+    await renderVoiceQuery();
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('Clear saved values to repair it.');
+    const clear = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Clear saved values',
+    ) as HTMLButtonElement;
+    expect(clear).toBeDefined();
+    await act(async () => {
+      clear.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(coreMocks.invoke).toHaveBeenCalledWith('save_query_environment', {
+      provider: 'custom',
+      variables: [],
+    });
+    expect(container.textContent).toContain('Saved config-directory values cleared.');
+  });
+
+  it('exposes corrupt-store recovery for a provider with no declared environment inputs', async () => {
+    coreMocks.invoke.mockImplementation((command: string) => {
+      if (command === 'list_query_provider_presets') {
+        return Promise.resolve([{
+          id: 'grok',
+          label: 'Grok',
+          discoveryPaths: [],
+          discoveredExecutable: '/usr/bin/printf',
+          recommendedArguments: ['%s'],
+          authProbeArguments: ['models'],
+          authFailureSignatures: [],
+          signInArguments: ['login'],
+          signInFix: 'Run grok login in Terminal.',
+          permittedEnvironmentVariables: [],
+        }]);
+      }
+      if (command === 'load_query_environment') return Promise.reject(new Error('invalid_environment'));
+      if (command === 'save_query_environment') return Promise.resolve();
+      return idleInvoke(command);
+    });
+    await renderVoiceQuery({ queryProvider: 'grok' });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('Clear saved values to repair it.');
+    expect(container.querySelector('#query-env-CLAUDE_CONFIG_DIR')).toBeNull();
+    expect(container.querySelector('#query-env-CODEX_HOME')).toBeNull();
+    const clear = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Clear saved values',
+    ) as HTMLButtonElement;
+    expect(clear).toBeDefined();
+    await act(async () => {
+      clear.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(coreMocks.invoke).toHaveBeenCalledWith('save_query_environment', {
+      provider: 'grok',
+      variables: [],
+    });
+    expect(container.textContent).toContain('Saved config-directory values cleared.');
   });
 });
 

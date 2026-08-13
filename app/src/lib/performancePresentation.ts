@@ -14,6 +14,7 @@ const KIND_LABELS: Record<PerformanceRunKindV1, string> = {
   dictation: 'Dictation',
   fileTranscription: 'File transcription',
   selectedTextTransform: 'Selected-text transform',
+  voiceQuery: 'Voice Query',
 };
 
 const STAGE_LABELS: Record<PerformanceStageV1, string> = {
@@ -92,6 +93,13 @@ const STAGES_BY_KIND: Record<PerformanceRunKindV1, readonly PerformanceStageV1[]
     'generation',
     'reviewReady',
   ],
+  voiceQuery: [
+    'instructionCapture',
+    'instructionAsr',
+    'sidecarSpawnLoad',
+    'generation',
+    'totalProcessing',
+  ],
 };
 
 const UNAVAILABLE_LABELS: Record<UnavailableReasonV1, string> = {
@@ -115,7 +123,17 @@ export function kindLabel(kind: PerformanceRunKindV1): string {
   return KIND_LABELS[kind];
 }
 
-export function stageLabel(stage: PerformanceStageV1): string {
+export function stageLabel(stage: PerformanceStageV1, kind?: PerformanceRunKindV1): string {
+  if (kind === 'voiceQuery') {
+    const queryLabels: Partial<Record<PerformanceStageV1, string>> = {
+      instructionCapture: 'Capture',
+      instructionAsr: 'Transcription',
+      sidecarSpawnLoad: 'Provider spawn',
+      generation: 'First answer',
+      totalProcessing: 'Total',
+    };
+    return queryLabels[stage] ?? STAGE_LABELS[stage];
+  }
   return STAGE_LABELS[stage];
 }
 
@@ -176,12 +194,12 @@ export function runOutcomeLabel(outcome: RunOutcomeV1): string {
   }
 }
 
-export function runOutcomeDetail(outcome: RunOutcomeV1): string | null {
+export function runOutcomeDetail(outcome: RunOutcomeV1, kind?: PerformanceRunKindV1): string | null {
   if (outcome.status === 'success' || outcome.status === 'noSpeech') return null;
   if (outcome.status === 'cancelled' || outcome.status === 'timedOut') {
-    return stageLabel(outcome.stage);
+    return stageLabel(outcome.stage, kind);
   }
-  return `${stageLabel(outcome.stage)} · ${outcome.errorCode}`;
+  return `${stageLabel(outcome.stage, kind)} · ${outcome.errorCode}`;
 }
 
 export function orderedStages(run: PerformanceRunV1): StageTimingV1[] {
@@ -228,6 +246,10 @@ export function rateForRun(run: PerformanceRunV1): RateDisplay {
       };
     }
     return unavailableRate('Throughput', [generation, tokens]);
+  }
+
+  if (run.kind === 'voiceQuery') {
+    return { label: 'Throughput', text: 'Not applicable', status: 'notApplicable' };
   }
 
   const total = totalProcessingMeasurement(run);
@@ -287,6 +309,8 @@ export function correlationFilterForRun(run: PerformanceRunV1): CorrelationFilte
       return { field: 'file_run_id', value: String(run.correlation.fileRunId) };
     case 'selectedTextTransform':
       return { field: 'transform_pass_id', value: String(run.correlation.transformPassId) };
+    case 'voiceQuery':
+      return { field: 'query_pass_id', value: String(run.correlation.queryPassId) };
   }
 }
 
@@ -297,6 +321,7 @@ export function correlationLabel(run: PerformanceRunV1): string {
     recording_id: 'Recording',
     file_run_id: 'File run',
     transform_pass_id: 'Transform pass',
+    query_pass_id: 'Query pass',
   };
   return `${labels[filter.field]} ${filter.value}`;
 }

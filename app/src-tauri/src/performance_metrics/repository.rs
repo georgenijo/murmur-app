@@ -4,7 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 
 const DB_FILE: &str = "performance.sqlite3";
-const LATEST_DB_SCHEMA_VERSION: u32 = 1;
+const LATEST_DB_SCHEMA_VERSION: u32 = 2;
 const MAX_COMPLETED_RUNS: usize = 200;
 const MAX_RESOURCE_SAMPLES: usize = 600;
 const MAX_TRANSFORM_FOLLOW_UPS: usize = 8;
@@ -65,6 +65,7 @@ impl PerformanceRepository {
             stages: Vec::new(),
             input,
             clear_epoch,
+            query_process: None,
         };
         insert_active(&transaction, &active)?;
         transaction.commit().map_err(db_error)?;
@@ -151,6 +152,7 @@ impl PerformanceRepository {
             input: active.input,
             resources,
             follow_ups: Vec::new(),
+            query_process: active.query_process,
         };
         let payload = serde_json::to_string(&run).map_err(|_| invalid_record())?;
         let (correlation_kind, correlation_id) = run.correlation.storage_parts();
@@ -428,6 +430,15 @@ fn migrate(connection: &mut Connection) -> Result<(), String> {
             .pragma_update(None, "user_version", LATEST_DB_SCHEMA_VERSION)
             .map_err(db_error)?;
         transaction.commit().map_err(db_error)?;
+    } else if current == 1 {
+        // V2 only extends the versioned JSON payload with an optional,
+        // content-free Voice Query process summary. The relational shape and
+        // V1 run envelope remain unchanged.
+        let transaction = connection.transaction().map_err(db_error)?;
+        transaction
+            .pragma_update(None, "user_version", LATEST_DB_SCHEMA_VERSION)
+            .map_err(db_error)?;
+        transaction.commit().map_err(db_error)?;
     }
     Ok(())
 }
@@ -600,24 +611,27 @@ fn resource_summary_tx(
         .iter()
         .filter_map(|sample| sample.main_process.ffi_native_heap_bytes.value().copied())
         .collect::<Vec<_>>();
-    let sidecar = if kind == PerformanceRunKindV1::SelectedTextTransform {
-        let sidecar_cpu = samples
-            .iter()
-            .filter_map(|sample| sample.sidecar_process.cpu_percent.value().copied())
-            .collect::<Vec<_>>();
-        let sidecar_rss = samples
-            .iter()
-            .filter_map(|sample| sample.sidecar_process.rss_bytes.value().copied())
-            .collect::<Vec<_>>();
-        SidecarResourceSummaryV1 {
-            cpu_percent: range_f32(&sidecar_cpu),
-            rss_bytes: range_u64(&sidecar_rss),
+    let sidecar = match kind {
+        PerformanceRunKindV1::SelectedTextTransform => {
+            let sidecar_cpu = samples
+                .iter()
+                .filter_map(|sample| sample.sidecar_process.cpu_percent.value().copied())
+                .collect::<Vec<_>>();
+            let sidecar_rss = samples
+                .iter()
+                .filter_map(|sample| sample.sidecar_process.rss_bytes.value().copied())
+                .collect::<Vec<_>>();
+            SidecarResourceSummaryV1 {
+                cpu_percent: range_f32(&sidecar_cpu),
+                rss_bytes: range_u64(&sidecar_rss),
+            }
         }
-    } else {
-        SidecarResourceSummaryV1 {
+        PerformanceRunKindV1::Dictation
+        | PerformanceRunKindV1::FileTranscription
+        | PerformanceRunKindV1::VoiceQuery => SidecarResourceSummaryV1 {
             cpu_percent: ResourceRangeV1::not_applicable(),
             rss_bytes: ResourceRangeV1::not_applicable(),
-        }
+        },
     };
     Ok(ResourceSummaryV1 {
         sample_count: samples.len().try_into().unwrap_or(u32::MAX),
@@ -696,6 +710,7 @@ fn initial_stage(kind: PerformanceRunKindV1) -> PerformanceStageV1 {
         PerformanceRunKindV1::Dictation => PerformanceStageV1::CaptureFinalization,
         PerformanceRunKindV1::FileTranscription => PerformanceStageV1::FileDecode,
         PerformanceRunKindV1::SelectedTextTransform => PerformanceStageV1::SelectedTextCapture,
+        PerformanceRunKindV1::VoiceQuery => PerformanceStageV1::InstructionCapture,
     }
 }
 
@@ -1042,5 +1057,123 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
         assert_eq!(version, 99);
+    }
+
+    #[test]
+    fn v1_database_migrates_without_losing_completed_or_active_runs() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("diagnostics");
+        let repository = PerformanceRepository::initialize(root.clone()).unwrap();
+        repository
+            .begin(
+                PerformanceRunKindV1::Dictation,
+                correlation(71),
+                Vec::new(),
+                ContentFreeInputSummaryV1::default(),
+            )
+            .unwrap();
+        let completed = repository
+            .complete(
+                &correlation(71),
+                RunOutcomeV1::Success,
+                Vec::new(),
+                None,
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        repository
+            .begin(
+                PerformanceRunKindV1::Dictation,
+                correlation(72),
+                Vec::new(),
+                ContentFreeInputSummaryV1::default(),
+            )
+            .unwrap();
+        drop(repository);
+
+        let db = root.join(DB_FILE);
+        let connection = Connection::open(&db).unwrap();
+        for table in ["completed_runs", "active_runs"] {
+            let payload: String = connection
+                .query_row(
+                    &format!("SELECT payload_json FROM {table} LIMIT 1"),
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(!payload.contains("queryProcess"));
+        }
+        connection.pragma_update(None, "user_version", 1).unwrap();
+        drop(connection);
+
+        let migrated = PerformanceRepository::initialize(root).unwrap();
+        let connection = migrated.open().unwrap();
+        let version: u32 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 2);
+        drop(connection);
+        let runs = migrated.list(10).unwrap();
+        assert_eq!(runs.len(), 2);
+        assert!(runs.iter().any(|run| run.run_id == completed.run_id));
+        assert!(runs.iter().any(|run| matches!(
+            run.outcome,
+            RunOutcomeV1::Interrupted {
+                error_code: StableRunErrorV1::InterruptedByRestart,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn voice_query_keeps_v1_run_envelope_and_canonical_stage_count() {
+        let (_temp, repository) = repository();
+        let correlation = RunCorrelationV1::VoiceQuery { query_pass_id: 9 };
+        repository
+            .begin(
+                PerformanceRunKindV1::VoiceQuery,
+                correlation.clone(),
+                Vec::new(),
+                ContentFreeInputSummaryV1::default(),
+            )
+            .unwrap();
+        repository
+            .update_active(&correlation, |active| {
+                active.query_process = Some(QueryProcessSummaryV1 {
+                    exit_code: Some(7),
+                    stderr_present: true,
+                });
+            })
+            .unwrap();
+        let run = repository
+            .complete(
+                &correlation,
+                RunOutcomeV1::Failed {
+                    stage: PerformanceStageV1::Generation,
+                    error_code: StableRunErrorV1::QueryFailed,
+                },
+                vec![StageTimingV1::measured(
+                    PerformanceStageV1::TotalProcessing,
+                    12,
+                )],
+                None,
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(run.schema_version, 1);
+        assert_eq!(run.stages.len(), 27);
+        assert_eq!(
+            run.query_process,
+            Some(QueryProcessSummaryV1 {
+                exit_code: Some(7),
+                stderr_present: true,
+            })
+        );
+        assert!(matches!(
+            run.resources.sidecar_process.rss_bytes.start,
+            MeasurementV1::NotApplicable
+        ));
     }
 }

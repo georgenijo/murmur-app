@@ -1,9 +1,10 @@
-import { HistoryPanel, MeetingsPanel } from './history';
+import { HistoryPanel, MeetingsPanel, QueryHistoryPanel } from './history';
 import { HistoryEntry } from '../lib/history';
 import { memo } from 'react';
 import type { useMeetings } from '../lib/hooks/useMeetings';
+import type { useQueryHistory } from '../lib/hooks/useQueryHistory';
 
-export type HistoryWorkspace = 'transcripts' | 'meetings';
+export type HistoryWorkspace = 'transcripts' | 'meetings' | 'queries';
 
 interface TranscriptionViewProps {
   historyEntries: HistoryEntry[];
@@ -14,6 +15,9 @@ interface TranscriptionViewProps {
   workspace: HistoryWorkspace;
   onWorkspaceChange: (workspace: HistoryWorkspace) => void;
   meetings: ReturnType<typeof useMeetings>;
+  queryHistory: ReturnType<typeof useQueryHistory>;
+  queryHistoryActive: boolean;
+  retainQueryHistory: boolean;
 }
 
 export const TranscriptionView = memo(function TranscriptionView({
@@ -25,12 +29,15 @@ export const TranscriptionView = memo(function TranscriptionView({
   workspace,
   onWorkspaceChange,
   meetings,
+  queryHistory,
+  queryHistoryActive,
+  retainQueryHistory,
 }: TranscriptionViewProps) {
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <div className="flex shrink-0 justify-center border-b border-outline-variant/15 px-4 py-2">
         <div className="inline-flex rounded-full bg-surface-container-high p-0.5" role="tablist" aria-label="History workspace">
-          {(['transcripts', 'meetings'] as const).map((value) => (
+          {(['transcripts', 'meetings', 'queries'] as const).map((value) => (
             <button
               key={value}
               type="button"
@@ -54,9 +61,11 @@ export const TranscriptionView = memo(function TranscriptionView({
           focusSearchToken={focusSearchToken}
           onTranscribeFile={onTranscribeFile}
         />
-      ) : (
+      ) : workspace === 'meetings' ? (
         <MeetingsPanel meetings={meetings} />
-      )}
+      ) : queryHistoryActive ? (
+        <QueryHistoryPanel history={queryHistory} retentionEnabled={retainQueryHistory} />
+      ) : null}
     </div>
   );
 });

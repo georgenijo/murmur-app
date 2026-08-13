@@ -254,6 +254,96 @@ fn classify_selection(text: &str) -> Result<(), SelectionError> {
     Ok(())
 }
 
+fn query_clipboard_identity_is_safe(
+    expected: Option<&crate::frontmost::FrontmostAppIdentity>,
+    captured: &crate::frontmost::FrontmostAppIdentity,
+    matched_before: bool,
+    matched_after: bool,
+) -> bool {
+    match expected {
+        None => true,
+        Some(expected) => {
+            matched_before
+                && matched_after
+                && crate::frontmost::query_identity_matches(expected, captured)
+        }
+    }
+}
+
+/// Selection capture is shared by Transform and opt-in Voice Query context.
+/// Query capture deliberately runs without Transform tracing: even
+/// content-free selection metadata belongs to the query privacy boundary and
+/// must not be mislabeled or persisted in the transform diagnostics stream.
+#[derive(Clone, Copy)]
+enum CaptureTrace {
+    Transform(u64),
+    Silent,
+}
+
+impl CaptureTrace {
+    fn attempt(self, attempt: u32, outcome: &'static str, duration_ms: u64) {
+        if let Self::Transform(transform_pass_id) = self {
+            crate::transform_trace::capture_attempt(
+                transform_pass_id,
+                attempt,
+                outcome,
+                duration_ms,
+            );
+        }
+    }
+
+    fn path(
+        self,
+        via: &'static str,
+        outcome: &'static str,
+        duration_ms: u64,
+        length_bucket: Option<&'static str>,
+    ) {
+        if let Self::Transform(transform_pass_id) = self {
+            crate::transform_trace::capture_path(
+                transform_pass_id,
+                via,
+                outcome,
+                duration_ms,
+                length_bucket,
+            );
+        }
+    }
+
+    fn retry(self, attempt: u32) {
+        if let Self::Transform(transform_pass_id) = self {
+            tracing::info!(
+                target: "transform",
+                transform_pass_id,
+                attempt,
+                "AX capture incomplete — retrying after warm-up gap"
+            );
+        }
+    }
+
+    fn fallback(self, ax_outcome: &'static str) {
+        if let Self::Transform(transform_pass_id) = self {
+            tracing::info!(
+                target: "transform",
+                transform_pass_id,
+                ax_outcome,
+                "AX capture incomplete — attempting clipboard fallback"
+            );
+        }
+    }
+
+    fn restore_refused(self, items: usize) {
+        if let Self::Transform(transform_pass_id) = self {
+            tracing::warn!(
+                target: "transform",
+                transform_pass_id,
+                items,
+                "pasteboard restore write was refused"
+            );
+        }
+    }
+}
+
 /// Capture the current AX text selection.
 ///
 /// AX calls must run on the main thread (same constraint as
@@ -276,15 +366,33 @@ pub async fn capture_selection(
     app_handle: &tauri::AppHandle,
     transform_pass_id: u64,
 ) -> Result<TransformSnapshot, SelectionError> {
+    capture_selection_with_trace(app_handle, CaptureTrace::Transform(transform_pass_id), None).await
+}
+
+/// Capture selected text for an opt-in Voice Query context snapshot while
+/// preserving the exact Transform capture safety policy (secure-field checks,
+/// bounded retries, and guarded clipboard fallback). Query content and its
+/// derived metadata are intentionally not traced.
+pub async fn capture_query_selection(
+    app_handle: &tauri::AppHandle,
+    expected_identity: &crate::frontmost::FrontmostAppIdentity,
+) -> Result<TransformSnapshot, SelectionError> {
+    capture_selection_with_trace(
+        app_handle,
+        CaptureTrace::Silent,
+        Some(expected_identity.clone()),
+    )
+    .await
+}
+
+async fn capture_selection_with_trace(
+    app_handle: &tauri::AppHandle,
+    trace: CaptureTrace,
+    query_identity: Option<crate::frontmost::FrontmostAppIdentity>,
+) -> Result<TransformSnapshot, SelectionError> {
     if !crate::injector::is_accessibility_enabled() {
-        crate::transform_trace::capture_attempt(
-            transform_pass_id,
-            0,
-            SelectionError::AccessibilityDenied.as_str(),
-            0,
-        );
-        crate::transform_trace::capture_path(
-            transform_pass_id,
+        trace.attempt(0, SelectionError::AccessibilityDenied.as_str(), 0);
+        trace.path(
             "preflight",
             SelectionError::AccessibilityDenied.as_str(),
             0,
@@ -337,8 +445,7 @@ pub async fn capture_selection(
                 Ok(_) => "ok",
                 Err(error) => error.as_str(),
             };
-            crate::transform_trace::capture_attempt(
-                transform_pass_id,
+            trace.attempt(
                 attempt + 1,
                 attempt_outcome,
                 attempt_started.elapsed().as_millis() as u64,
@@ -357,12 +464,7 @@ pub async fn capture_selection(
                         .and_then(|(_, bundle_id)| bundle_id.as_deref())
                         .is_some_and(is_known_chromium_browser);
                     if attempt + 1 < AX_ATTEMPTS && !known_chromium {
-                        tracing::info!(
-                            target: "transform",
-                            transform_pass_id,
-                            attempt = attempt + 1,
-                            "AX capture incomplete — retrying after warm-up gap"
-                        );
+                        trace.retry(attempt + 1);
                     } else {
                         break;
                     }
@@ -397,22 +499,50 @@ pub async fn capture_selection(
             // an errored secure check on ANY attempt bars the fallback even if
             // a later attempt fails shallower (`AxUnavailable`).
             (Err(err), Some((pid, bundle_id))) if fallback_allowed(err, secure_check_errored) => {
-                tracing::info!(
-                    target: "transform",
-                    transform_pass_id,
-                    ax_outcome = err.as_str(),
-                    "AX capture incomplete — attempting clipboard fallback"
-                );
-                tokio::task::spawn_blocking(move || {
+                trace.fallback(err.as_str());
+                let captured_identity = crate::frontmost::FrontmostAppIdentity {
+                    bundle_id: bundle_id.clone(),
+                    process_id: Some(pid),
+                };
+                let matched_before = match query_identity.as_ref() {
+                    Some(expected) => {
+                        crate::frontmost::query_identity_is_current(app_handle, expected).await
+                    }
+                    None => true,
+                };
+                if !query_clipboard_identity_is_safe(
+                    query_identity.as_ref(),
+                    &captured_identity,
+                    matched_before,
+                    true,
+                ) {
+                    return Err(err);
+                }
+                let target_pid = query_identity
+                    .as_ref()
+                    .and_then(|identity| identity.process_id);
+                let result = tokio::task::spawn_blocking(move || {
                     clipboard_fallback::capture_via_clipboard(
-                        pid,
-                        bundle_id,
-                        err,
-                        transform_pass_id,
+                        pid, bundle_id, err, trace, target_pid,
                     )
                 })
                 .await
-                .unwrap_or(Err(err))
+                .unwrap_or(Err(err));
+                let matched_after = match query_identity.as_ref() {
+                    Some(expected) => {
+                        crate::frontmost::query_identity_is_current(app_handle, expected).await
+                    }
+                    None => true,
+                };
+                if !query_clipboard_identity_is_safe(
+                    query_identity.as_ref(),
+                    &captured_identity,
+                    matched_before,
+                    matched_after,
+                ) {
+                    return Err(err);
+                }
+                result
             }
             (result, _) => {
                 let outcome = match &result {
@@ -423,8 +553,7 @@ pub async fn capture_selection(
                     .as_ref()
                     .ok()
                     .map(|snapshot| length_bucket(snapshot.text.len()));
-                crate::transform_trace::capture_path(
-                    transform_pass_id,
+                trace.path(
                     "ax_attempt",
                     outcome,
                     capture_started.elapsed().as_millis() as u64,
@@ -532,7 +661,10 @@ mod clipboard_fallback {
                 .collect()
         }
 
-        pub(in super::super) fn restore(snapshot: &PasteboardSnapshot, transform_pass_id: u64) {
+        pub(in super::super) fn restore(
+            snapshot: &PasteboardSnapshot,
+            trace: super::super::CaptureTrace,
+        ) {
             let pb = NSPasteboard::generalPasteboard();
             pb.clearContents();
             if snapshot.is_empty() {
@@ -553,12 +685,7 @@ mod clipboard_fallback {
             let array = NSArray::from_retained_slice(&items);
             if !pb.writeObjects(&array) {
                 // Content-free by design: item/type counts only.
-                tracing::warn!(
-                    target: "transform",
-                    transform_pass_id,
-                    items = snapshot.len(),
-                    "pasteboard restore write was refused"
-                );
+                trace.restore_refused(snapshot.len());
             }
         }
     }
@@ -572,7 +699,7 @@ mod clipboard_fallback {
 
     #[cfg(test)]
     pub(super) fn pasteboard_restore_for_tests(snapshot: &PasteboardSnapshot) {
-        pasteboard::restore(snapshot, 0)
+        pasteboard::restore(snapshot, super::CaptureTrace::Silent)
     }
 
     /// Unique-per-attempt sentinel. Never derived from clipboard or selection
@@ -587,7 +714,7 @@ mod clipboard_fallback {
 
     /// Post a synthetic Cmd+C, mirroring `injector`'s Cmd+V CGEvent shape
     /// (down, 3ms hardware-like gap, up).
-    fn post_copy_keystroke() -> Result<(), String> {
+    fn post_copy_keystroke(target_pid: Option<i32>) -> Result<(), String> {
         use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation, KeyCode};
         use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 
@@ -599,9 +726,17 @@ mod clipboard_fallback {
             .map_err(|_| "could not create Cmd+C key-up event".to_string())?;
         key_down.set_flags(CGEventFlags::CGEventFlagCommand);
         key_up.set_flags(CGEventFlags::CGEventFlagCommand);
-        key_down.post(CGEventTapLocation::HID);
+        if let Some(pid) = target_pid {
+            key_down.post_to_pid(pid);
+        } else {
+            key_down.post(CGEventTapLocation::HID);
+        }
         std::thread::sleep(Duration::from_millis(3));
-        key_up.post(CGEventTapLocation::HID);
+        if let Some(pid) = target_pid {
+            key_up.post_to_pid(pid);
+        } else {
+            key_up.post(CGEventTapLocation::HID);
+        }
         Ok(())
     }
 
@@ -683,7 +818,8 @@ mod clipboard_fallback {
         pid: i32,
         bundle_id: Option<String>,
         ax_outcome: SelectionError,
-        transform_pass_id: u64,
+        trace: super::CaptureTrace,
+        target_pid: Option<i32>,
     ) -> Result<TransformSnapshot, SelectionError> {
         let started = Instant::now();
         let original = pasteboard::snapshot();
@@ -692,9 +828,8 @@ mod clipboard_fallback {
             // arboard clears the pasteboard BEFORE writing, so a failed
             // sentinel write can still have destroyed the contents — restore
             // the snapshot (harmless if the pasteboard was never touched).
-            pasteboard::restore(&original, transform_pass_id);
-            crate::transform_trace::capture_path(
-                transform_pass_id,
+            pasteboard::restore(&original, trace);
+            trace.path(
                 "clipboard_fallback",
                 "sentinel_write_failed",
                 started.elapsed().as_millis() as u64,
@@ -704,7 +839,11 @@ mod clipboard_fallback {
         }
         let baseline = pasteboard::change_count();
 
-        let copied = match post_copy_keystroke() {
+        // Query capture targets the exact frozen process instead of the global
+        // HID focus. Even a transient A→B→A focus change therefore cannot copy
+        // B's selection and relabel it as A. Transform retains its established
+        // global user-gesture behavior.
+        let copied = match post_copy_keystroke(target_pid) {
             Ok(()) => poll_for_copy(
                 &sentinel,
                 baseline,
@@ -724,13 +863,12 @@ mod clipboard_fallback {
         // type — whether or not the capture succeeded. An empty snapshot
         // restores to an empty (cleared) pasteboard, which also removes our
         // sentinel on the failure path.
-        pasteboard::restore(&original, transform_pass_id);
+        pasteboard::restore(&original, trace);
 
         let text = match copied {
             Some(text) => text,
             None => {
-                crate::transform_trace::capture_path(
-                    transform_pass_id,
+                trace.path(
                     "clipboard_fallback",
                     ax_outcome.as_str(),
                     started.elapsed().as_millis() as u64,
@@ -740,8 +878,7 @@ mod clipboard_fallback {
             }
         };
         if let Err(error) = super::classify_selection(&text) {
-            crate::transform_trace::capture_path(
-                transform_pass_id,
+            trace.path(
                 "clipboard_fallback",
                 error.as_str(),
                 started.elapsed().as_millis() as u64,
@@ -749,8 +886,7 @@ mod clipboard_fallback {
             );
             return Err(error);
         }
-        crate::transform_trace::capture_path(
-            transform_pass_id,
+        trace.path(
             "clipboard_fallback",
             "ok",
             started.elapsed().as_millis() as u64,
@@ -1227,6 +1363,45 @@ mod tests {
         assert!(!debug.contains("secret"));
         assert!(debug.contains("17-64"));
         assert!(debug.contains("com.example.app"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn query_clipboard_identity_guard_requires_matching_pre_and_post_samples() {
+        let frozen = crate::frontmost::FrontmostAppIdentity {
+            bundle_id: Some("com.example.A".to_string()),
+            process_id: Some(41),
+        };
+        let same = frozen.clone();
+        let other = crate::frontmost::FrontmostAppIdentity {
+            bundle_id: Some("com.example.B".to_string()),
+            process_id: Some(42),
+        };
+        assert!(query_clipboard_identity_is_safe(
+            Some(&frozen),
+            &same,
+            true,
+            true,
+        ));
+        assert!(!query_clipboard_identity_is_safe(
+            Some(&frozen),
+            &same,
+            true,
+            false,
+        ));
+        assert!(!query_clipboard_identity_is_safe(
+            Some(&frozen),
+            &other,
+            true,
+            true,
+        ));
+        assert!(!query_clipboard_identity_is_safe(
+            Some(&frozen),
+            &same,
+            false,
+            true,
+        ));
+        assert!(query_clipboard_identity_is_safe(None, &other, false, false));
     }
 
     #[cfg(target_os = "macos")]

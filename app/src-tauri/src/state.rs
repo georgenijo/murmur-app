@@ -137,6 +137,10 @@ pub struct AppProfile {
     /// contents remain memory-only and are rebuilt locally.
     #[serde(default)]
     pub ide_project_roots: Vec<String>,
+    /// Explicit privacy exclusion for Voice Query context. This can only deny
+    /// the global/preset context level; it never enables context for an app.
+    #[serde(default)]
+    pub query_context_excluded: bool,
 }
 
 /// Resolve the effective technical-context signal for an app profile. A

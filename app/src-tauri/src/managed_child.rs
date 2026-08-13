@@ -15,11 +15,25 @@ use std::time::{Duration, Instant};
 
 const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
-/// The only parent variables a user CLI ever inherits. Declared pairs (#550)
-/// are layered underneath this list, never over it.
-pub const USER_CLI_ENVIRONMENT_ALLOWLIST: [&str; 8] = [
+pub(crate) const USER_CLI_BASE_ENVIRONMENT: [&str; 8] = [
     "HOME", "PATH", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "USER", "LOGNAME",
 ];
+
+pub(crate) fn apply_user_cli_base_environment(command: &mut Command) {
+    command.env_clear();
+    for key in USER_CLI_BASE_ENVIRONMENT {
+        if let Some(value) = std::env::var_os(key) {
+            command.env(key, value);
+        }
+    }
+}
+
+pub(crate) fn user_cli_base_environment() -> Vec<(String, std::ffi::OsString)> {
+    USER_CLI_BASE_ENVIRONMENT
+        .into_iter()
+        .filter_map(|key| std::env::var_os(key).map(|value| (key.to_string(), value)))
+        .collect()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConfirmedTermination {
@@ -83,46 +97,91 @@ impl ManagedChild {
     /// content as its own element and never build a command string.
     ///
     /// The child receives only the small environment needed by common CLI
-    /// shims and credential stores. Arbitrary parent variables (including API
-    /// keys) are deliberately not forwarded. `USER`/`LOGNAME` carry no secret
-    /// (the username is already visible in `HOME`) and are required on macOS:
-    /// Claude Code derives its Keychain credential account name from `USER`
-    /// and resolves to a nonexistent "unknown" account without it, reporting
-    /// "Not logged in" even when the user is signed in.
-    ///
-    /// `declared_environment` carries the explicit name/value pairs the user
-    /// added in Settings (#550). They are applied *before* the inherited
-    /// allowlist so a declared pair can never shadow `HOME` or any other
-    /// allowlist key even if the caller's validation were bypassed.
-    ///
-    /// stderr is piped rather than discarded: a provider CLI reports "not
-    /// logged in", quota, and network failures there, and that tail is what
-    /// makes an otherwise blank failure diagnosable.
+    /// shims and credential stores plus the two explicitly declared config-dir
+    /// additions. Arbitrary parent variables (including API keys) are
+    /// deliberately not forwarded, and callers cannot override a base key.
+    /// `USER`/`LOGNAME` carry no secret (the username is already visible in
+    /// `HOME`) and are required on macOS: Claude Code derives its Keychain
+    /// credential account name from `USER` and resolves to a nonexistent
+    /// "unknown" account without it, reporting "Not logged in" even when the
+    /// user is signed in.
     pub fn spawn_user_cli(
         executable: &Path,
         arguments: &[String],
         declared_environment: &[(String, String)],
+        working_directory: &Path,
     ) -> std::io::Result<(Self, ChildStdin, ChildStdout, ChildStderr)> {
+        const DECLARED_ENVIRONMENT: [&str; 2] = ["CLAUDE_CONFIG_DIR", "CODEX_HOME"];
+        let mut seen = std::collections::HashSet::new();
+        for (key, value) in declared_environment {
+            if !DECLARED_ENVIRONMENT.contains(&key.as_str())
+                || USER_CLI_BASE_ENVIRONMENT.contains(&key.as_str())
+                || !seen.insert(key.as_str())
+                || key.contains(['\0', '='])
+                || value.contains('\0')
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "invalid declared user CLI environment",
+                ));
+            }
+        }
+        if !working_directory.is_absolute() || !working_directory.is_dir() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "invalid user CLI working directory",
+            ));
+        }
         let mut command = Command::new(executable);
         command
             .args(arguments)
-            .current_dir("/")
+            .current_dir(working_directory)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .env_clear();
+            .stderr(Stdio::piped());
+        apply_user_cli_base_environment(&mut command);
         for (key, value) in declared_environment {
             command.env(key, value);
         }
-        for key in USER_CLI_ENVIRONMENT_ALLOWLIST {
-            if let Some(value) = std::env::var_os(key) {
-                command.env(key, value);
-            }
-        }
-        Self::spawn_piped_command(command)
+        Self::spawn_user_cli_command(command)
     }
 
-    fn spawn_owned_group(mut command: Command) -> std::io::Result<Child> {
+    fn spawn_user_cli_command(
+        mut command: Command,
+    ) -> std::io::Result<(Self, ChildStdin, ChildStdout, ChildStderr)> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            unsafe {
+                command.pre_exec(|| {
+                    if libc::setpgid(0, 0) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    let max_fd = libc::getdtablesize();
+                    let mut fd = 3;
+                    while fd < max_fd {
+                        libc::close(fd);
+                        fd += 1;
+                    }
+                    Ok(())
+                });
+            }
+        }
+
+        let mut child = command.spawn()?;
+        let stdin = child.stdin.take().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::BrokenPipe, "missing user CLI stdin")
+        })?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::BrokenPipe, "missing user CLI stdout")
+        })?;
+        let stderr = child.stderr.take().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::BrokenPipe, "missing user CLI stderr")
+        })?;
+        Ok((Self::from_spawned_child(child), stdin, stdout, stderr))
+    }
+
+    fn spawn_command(mut command: Command) -> std::io::Result<(Self, ChildStdin, ChildStdout)> {
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
@@ -144,46 +203,15 @@ impl ManagedChild {
                 });
             }
         }
-        command.spawn()
-    }
 
-    fn missing_pipe(name: &str) -> std::io::Error {
-        std::io::Error::new(
-            std::io::ErrorKind::BrokenPipe,
-            format!("missing helper {name}"),
-        )
-    }
-
-    fn spawn_command(command: Command) -> std::io::Result<(Self, ChildStdin, ChildStdout)> {
-        let mut child = Self::spawn_owned_group(command)?;
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| Self::missing_pipe("stdin"))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| Self::missing_pipe("stdout"))?;
+        let mut child = command.spawn()?;
+        let stdin = child.stdin.take().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::BrokenPipe, "missing helper stdin")
+        })?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::BrokenPipe, "missing helper stdout")
+        })?;
         Ok((Self::from_spawned_child(child), stdin, stdout))
-    }
-
-    fn spawn_piped_command(
-        command: Command,
-    ) -> std::io::Result<(Self, ChildStdin, ChildStdout, ChildStderr)> {
-        let mut child = Self::spawn_owned_group(command)?;
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| Self::missing_pipe("stdin"))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| Self::missing_pipe("stdout"))?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| Self::missing_pipe("stderr"))?;
-        Ok((Self::from_spawned_child(child), stdin, stdout, stderr))
     }
 
     pub fn pid(&self) -> u32 {
@@ -195,6 +223,14 @@ impl ManagedChild {
     }
 
     pub fn wait_for_exit(&mut self, deadline: Instant) -> Option<ConfirmedTermination> {
+        if !self.termination_armed {
+            return self
+                .child
+                .try_wait()
+                .ok()
+                .flatten()
+                .map(|status| self.confirmed(status));
+        }
         loop {
             match self.child.try_wait() {
                 Ok(Some(status)) => {
@@ -214,6 +250,11 @@ impl ManagedChild {
     }
 
     pub fn hard_kill_confirmed(&mut self, deadline: Instant) -> Option<ConfirmedTermination> {
+        // Once normal exit and an empty process group have been confirmed, do
+        // not signal the numeric PGID again: the OS may eventually reuse it.
+        if !self.termination_armed {
+            return self.wait_for_exit(deadline);
+        }
         #[cfg(unix)]
         unsafe {
             // The direct child is the process-group leader created by setpgid().
@@ -309,6 +350,10 @@ mod tests {
             .expect("normal exit and empty process group must be confirmed");
         assert_eq!(termination.exit_code, Some(0));
         assert!(!child.termination_armed);
+        let repeated = child
+            .hard_kill_confirmed(Instant::now() + Duration::from_secs(1))
+            .expect("an already confirmed child remains confirmed without signalling");
+        assert_eq!(repeated.exit_code, Some(0));
         drop(child);
         assert_eq!(observer.load(Ordering::SeqCst), 0);
     }
@@ -334,8 +379,13 @@ mod tests {
         let marker = directory.path().join("shell-interpolation-must-not-run");
         let question = format!("what?; $(touch {}) && echo unsafe", marker.display());
         let arguments = vec!["%s".to_string(), question.clone()];
-        let (mut child, stdin, mut stdout, stderr) =
-            ManagedChild::spawn_user_cli(Path::new("/usr/bin/printf"), &arguments, &[]).unwrap();
+        let (mut child, stdin, mut stdout, stderr) = ManagedChild::spawn_user_cli(
+            Path::new("/usr/bin/printf"),
+            &arguments,
+            &[],
+            directory.path(),
+        )
+        .unwrap();
         drop((stdin, stderr));
         let mut output = String::new();
         stdout.read_to_string(&mut output).unwrap();
@@ -350,73 +400,80 @@ mod tests {
         );
     }
 
-    fn user_cli_environment(declared: &[(String, String)]) -> Vec<(String, String)> {
+    #[test]
+    fn user_cli_environment_contains_only_explicit_allowlist() {
+        let directory = tempfile::tempdir().unwrap();
         let (mut child, stdin, mut stdout, stderr) =
-            ManagedChild::spawn_user_cli(Path::new("/usr/bin/env"), &[], declared).unwrap();
+            ManagedChild::spawn_user_cli(Path::new("/usr/bin/env"), &[], &[], directory.path())
+                .unwrap();
         drop((stdin, stderr));
         let mut output = String::new();
         stdout.read_to_string(&mut output).unwrap();
         child
             .wait_for_exit(Instant::now() + Duration::from_secs(1))
             .expect("env must exit cleanly");
-        output
-            .lines()
-            .filter_map(|line| line.split_once('='))
-            .map(|(key, value)| (key.to_string(), value.to_string()))
-            .collect()
-    }
-
-    #[test]
-    fn user_cli_environment_contains_only_explicit_allowlist() {
-        for (key, _) in user_cli_environment(&[]) {
+        let allowed = [
+            "HOME", "PATH", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "USER", "LOGNAME",
+        ];
+        for line in output.lines() {
+            let key = line.split_once('=').map(|(key, _)| key).unwrap_or(line);
             assert!(
-                USER_CLI_ENVIRONMENT_ALLOWLIST.contains(&key.as_str()),
+                allowed.contains(&key),
                 "unexpected inherited environment key: {key}"
             );
         }
     }
 
     #[test]
-    fn declared_variables_extend_the_allowlist_but_can_never_shadow_it() {
-        // `CLAUDE_CONFIG_DIR` is exactly the kind of pair Settings declares.
-        // `HOME` is the pair the validator refuses; even if one reached this
-        // far, the inherited allowlist is applied last and still wins.
-        let inherited_home = std::env::var("HOME").unwrap();
-        let declared = vec![
-            (
-                "CLAUDE_CONFIG_DIR".to_string(),
-                "/tmp/murmur-cfg".to_string(),
-            ),
-            ("HOME".to_string(), "/tmp/hijacked".to_string()),
-        ];
-        let environment = user_cli_environment(&declared);
-        assert!(environment
-            .iter()
-            .any(|(key, value)| key == "CLAUDE_CONFIG_DIR" && value == "/tmp/murmur-cfg"));
-        assert!(environment
-            .iter()
-            .any(|(key, value)| key == "HOME" && *value == inherited_home));
-    }
-
-    #[test]
-    fn user_cli_stderr_is_captured_rather_than_discarded() {
-        let arguments = vec!["-c".to_string(), "echo not logged in 1>&2".to_string()];
-        let (mut child, stdin, stdout, mut stderr) =
-            ManagedChild::spawn_user_cli(Path::new("/bin/sh"), &arguments, &[]).unwrap();
-        drop((stdin, stdout));
-        let mut captured = String::new();
-        stderr.read_to_string(&mut captured).unwrap();
+    fn user_cli_accepts_only_explicit_config_directory_additions() {
+        let directory = tempfile::tempdir().unwrap();
+        let additions = vec![("CODEX_HOME".to_string(), "/tmp/codex-home".to_string())];
+        let (mut child, stdin, mut stdout, stderr) = ManagedChild::spawn_user_cli(
+            Path::new("/usr/bin/env"),
+            &[],
+            &additions,
+            directory.path(),
+        )
+        .unwrap();
+        drop((stdin, stderr));
+        let mut output = String::new();
+        stdout.read_to_string(&mut output).unwrap();
         child
-            .wait_for_exit(Instant::now() + Duration::from_secs(2))
-            .expect("sh must exit cleanly");
-        assert_eq!(captured.trim(), "not logged in");
+            .wait_for_exit(Instant::now() + Duration::from_secs(1))
+            .expect("env must exit cleanly");
+        assert!(output
+            .lines()
+            .any(|line| line == "CODEX_HOME=/tmp/codex-home"));
+
+        for key in [
+            "HOME", "PATH", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "USER", "LOGNAME",
+        ] {
+            let rejected = vec![(key.to_string(), "/tmp/override".to_string())];
+            assert!(ManagedChild::spawn_user_cli(
+                Path::new("/usr/bin/env"),
+                &[],
+                &rejected,
+                directory.path(),
+            )
+            .is_err());
+        }
+        let secret = vec![("ANTHROPIC_API_KEY".to_string(), "secret".to_string())];
+        assert!(ManagedChild::spawn_user_cli(
+            Path::new("/usr/bin/env"),
+            &[],
+            &secret,
+            directory.path(),
+        )
+        .is_err());
     }
 
     #[test]
     fn user_cli_hard_kill_confirms_descendant_process_group_is_empty() {
+        let directory = tempfile::tempdir().unwrap();
         let arguments = vec!["-c".to_string(), "sleep 30 & wait".to_string()];
         let (mut child, stdin, stdout, stderr) =
-            ManagedChild::spawn_user_cli(Path::new("/bin/sh"), &arguments, &[]).unwrap();
+            ManagedChild::spawn_user_cli(Path::new("/bin/sh"), &arguments, &[], directory.path())
+                .unwrap();
         drop((stdin, stdout, stderr));
         let termination = child
             .hard_kill_confirmed(Instant::now() + Duration::from_secs(2))
