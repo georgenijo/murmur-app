@@ -8,7 +8,7 @@
 use crate::dictation_context::DictationContextSnapshot;
 use crate::managed_child::ManagedChild;
 use crate::model_runtime::PreparationReason;
-use crate::query_adapter::{AnswerUpdate, QueryUsage, VoiceQueryAdapter};
+use crate::query_adapter::{AnswerUpdate, ProviderFailureKind, QueryUsage, VoiceQueryAdapter};
 use crate::query_provider::{
     QueryEnvironmentVariable, QueryProviderId, QueryProviderTestResult, MAX_STDERR_BYTES,
 };
@@ -1308,13 +1308,10 @@ fn run_cli(
 
     if let Some(failure) = completion.failure {
         let typed_detail = failure.detail.unwrap_or_default();
-        let stderr = stderr_tail.text().unwrap_or_default();
-        let code =
-            if crate::query_provider::is_auth_failure(command.provider, &typed_detail, &stderr) {
-                "provider_not_authenticated"
-            } else {
-                "provider_error"
-            };
+        let code = match failure.kind {
+            ProviderFailureKind::Authentication => "provider_not_authenticated",
+            ProviderFailureKind::Provider => "provider_error",
+        };
         if !typed_detail.is_empty() {
             if !stderr_tail.bytes.is_empty() {
                 stderr_tail.push(b"\n");

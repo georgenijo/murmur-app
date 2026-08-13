@@ -74,6 +74,7 @@ const CLAUDE: ProviderPresetData = ProviderPresetData {
     ],
     recommended_arguments: &[
         "--print",
+        "--verbose",
         "--output-format",
         "stream-json",
         "--include-partial-messages",
@@ -877,10 +878,19 @@ mod tests {
             claude.recommended_arguments,
             vec![
                 "--print",
+                "--verbose",
                 "--output-format",
                 "stream-json",
                 "--include-partial-messages"
             ]
+        );
+        assert_eq!(
+            claude
+                .recommended_arguments
+                .iter()
+                .filter(|argument| **argument == "--verbose")
+                .count(),
+            1
         );
         assert_eq!(claude.auth_probe_arguments, vec!["auth", "status"]);
         assert_eq!(claude.sign_in_fix, Some("Run claude /login in Terminal."));
