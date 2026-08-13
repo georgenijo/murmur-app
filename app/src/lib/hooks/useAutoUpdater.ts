@@ -28,8 +28,6 @@ import { getUpdateInstallEnvironment } from '../updaterEnvironment';
 
 const APP_TRANSLOCATION_MESSAGE =
   'macOS opened Murmur from a read-only security location. Quit Murmur, then use Finder to move or reinstall it in Applications before reopening it and trying the update again.';
-const UPDATE_POLICY_UNAVAILABLE_MESSAGE =
-  'Could not verify the update policy. Check your connection and try again.';
 
 type UpdaterOperation = 'idle' | 'checking' | 'installing';
 
@@ -152,27 +150,20 @@ export function useAutoUpdater(
 
       // Tauri exposes the exact native response as rawJson, so policy parsing
       // does not need a second cross-origin request from the webview.
-      const currentVersion = await getVersion();
       const policy = parseMinVersionPolicy(update.rawJson);
       if (policy.status === 'unavailable') {
         flog.warn('updater', 'could not verify update policy', {
           error: policy.message,
         });
-        if (shouldPresentManualResult()) {
-          setIsUpdateDialogOpen(false);
-          setUpdateStatus({
-            phase: 'error',
-            stage: 'check',
-            message: UPDATE_POLICY_UNAVAILABLE_MESSAGE,
-            isForced: false,
-          });
-        }
-        return;
+      }
+      // A secondary policy read may fail to force an update; it must never
+      // fail to offer a verified update.
+      let isForced = false;
+      if (policy.status === 'present') {
+        const currentVersion = await getVersion();
+        isForced = isBelowMinVersion(currentVersion, policy.minVersion);
       }
       setLastCheckTimestamp(Date.now());
-      const isForced =
-        policy.status === 'present' &&
-        isBelowMinVersion(currentVersion, policy.minVersion);
 
       // If not forced and user previously skipped this version, suppress
       if (!isForced && getSkippedVersion() === update.version) {
