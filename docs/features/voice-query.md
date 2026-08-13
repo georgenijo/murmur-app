@@ -48,6 +48,12 @@ Claude, Codex, Grok, Cursor, and Custom are data presets rather than alternate p
 
 Enabling Voice Query validates the exact executable, argv limits, timeout, provider, and Rust-owned environment before the global listener is armed. Settings' **Test** action additionally runs the preset's authentication probe (for example, `claude auth status` or `codex login status`) through the identical direct `spawn_user_cli` path. Probe stdout and stderr are bounded to 16 KiB tails and shown only in Settings; they never enter telemetry or logs. Custom has no built-in authentication probe, so Test validates its executable and configuration only.
 
+The known Codex npm-wrapper failure where its nested macOS platform binary is
+missing is normalized at the Rust boundary. Settings and the review popover
+show a concise reinstall/update action while retaining the existing stable
+`probe_failed` or `exit_nonzero` code; the Node stack, install path, and raw
+stderr are not sent to either webview.
+
 Known authentication output maps to `provider_not_authenticated` and an exact repair such as “Run claude /login in Terminal.” **Sign in…** is an explicit exception that opens the provider-owned interactive command in Terminal, then re-runs the direct bounded probe until it succeeds or the polling window ends. Both the AppleScript launcher and Terminal command start from the same exact environment allowlist; the provider command uses `/usr/bin/env -i` before adding declared values. Query execution and probes never use Terminal or a shell.
 
 ## Process and output bounds
@@ -86,7 +92,11 @@ environment values, or secrets. If a pass actually appends app context to its
 provider prompt, the whole pass is display-only and no history row is written;
 this prevents raw or structured provider output that quotes that context from
 persisting it indirectly. Context configured but unavailable or disabled for
-the current app is not appended and does not by itself suppress history.
+the current app is not appended and does not by itself suppress history. When
+retention was enabled, the terminal review explicitly says whether the result
+was not saved because app context was included or because Claude/Codex entered
+structured raw fallback. That content-free reason is available only through
+the requester-gated review IPC and is not broadcast or added to telemetry.
 
 The store retains the newest 200 records and prunes in the same transaction as
 each insert. History → Queries reads it through main-window-only, paged IPC,

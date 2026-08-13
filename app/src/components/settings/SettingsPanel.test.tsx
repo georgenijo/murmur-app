@@ -522,6 +522,8 @@ describe('SettingsPanel Voice Query async ownership', () => {
       await Promise.resolve();
     });
     expect(container.textContent).toContain('The Codex CLI installation is incomplete');
+    expect(container.textContent).not.toContain('/opt/homebrew');
+    expect(container.textContent).not.toContain('ENOENT');
   });
 
   it('does not render a pending provider test under a newly selected provider', async () => {

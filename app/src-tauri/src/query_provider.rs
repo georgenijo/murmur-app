@@ -591,6 +591,28 @@ pub(crate) fn sanitize_output(value: &str) -> String {
         .to_string()
 }
 
+pub(crate) const CODEX_INSTALL_INCOMPLETE_DETAIL: &str =
+    "The Codex CLI installation is incomplete. Reinstall or update Codex, then try again.";
+
+/// Recognize the npm wrapper failure produced when Codex's platform package is
+/// missing. Keep this provider-scoped and deliberately narrow: arbitrary CLI
+/// stderr remains provider detail, while this known stack is replaced before
+/// it can reach Settings or the query-review webview.
+pub(crate) fn is_codex_install_incomplete(
+    provider: QueryProviderId,
+    stdout: &str,
+    stderr: &str,
+) -> bool {
+    if provider != QueryProviderId::Codex {
+        return false;
+    }
+    let output = format!("{stdout}\n{stderr}").to_ascii_lowercase();
+    output.contains("enoent")
+        && output.contains("@openai/codex-darwin-")
+        && output.contains("/vendor/")
+        && output.contains("/codex/codex")
+}
+
 #[derive(Debug)]
 struct BoundedCommandOutput {
     success: bool,
@@ -800,6 +822,21 @@ pub(crate) fn run_auth_probe(
         .collect();
     match run_bounded_command(executable, &arguments, environment, working_directory) {
         Ok(output) => {
+            if is_codex_install_incomplete(provider, &output.stdout, &output.stderr) {
+                return QueryProviderTestResult {
+                    ok: false,
+                    authenticated: Some(false),
+                    // Preserve the existing stable failure code. The bounded
+                    // detail carries the actionable diagnosis without adding
+                    // a telemetry/stats vocabulary entry.
+                    error_code: Some("probe_failed"),
+                    stdout: String::new(),
+                    stderr: CODEX_INSTALL_INCOMPLETE_DETAIL.to_string(),
+                    stdout_truncated: false,
+                    stderr_truncated: false,
+                    sign_in_fix: None,
+                };
+            }
             let auth_failure = is_auth_failure(provider, &output.stdout, &output.stderr);
             let ok = output.success && !auth_failure;
             QueryProviderTestResult {
@@ -1202,6 +1239,26 @@ mod tests {
         assert_eq!(result.error_code, Some("probe_failed"));
         assert_eq!(result.sign_in_fix, None);
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn recognizes_only_the_codex_nested_platform_binary_enoent() {
+        let screenshot_detail = "Error: spawn /opt/homebrew/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex/codex ENOENT";
+        assert!(is_codex_install_incomplete(
+            QueryProviderId::Codex,
+            "",
+            screenshot_detail
+        ));
+        assert!(!is_codex_install_incomplete(
+            QueryProviderId::Claude,
+            "",
+            screenshot_detail
+        ));
+        assert!(!is_codex_install_incomplete(
+            QueryProviderId::Codex,
+            "",
+            "ENOENT: unrelated user file"
+        ));
     }
 
     #[test]

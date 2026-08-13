@@ -329,6 +329,13 @@ struct QueryTerminalSnapshot {
     terminal_intent: Option<QueryTerminal>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum QueryHistorySkipReason {
+    ContextIncluded,
+    StructuredRawFallback,
+}
+
 fn elapsed_ms(start: Instant) -> u64 {
     start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
 }
@@ -892,6 +899,29 @@ impl QueryCoordinator {
             .and_then(|session| session.usage)
     }
 
+    fn history_skip_reason(&self, pass_id: u64) -> Option<QueryHistorySkipReason> {
+        let _ownership = self.ownership.lock_or_recover();
+        if !self.is_active(pass_id) {
+            return None;
+        }
+        let tracker = self.tracker.lock_or_recover();
+        let tracker = tracker
+            .as_ref()
+            .filter(|tracker| tracker.pass_id == pass_id && tracker.retain_history)?;
+        let session = self.session.lock_or_recover();
+        if session
+            .as_ref()
+            .filter(|session| session.pass_id == pass_id)
+            .is_some_and(|session| session.query_context.was_included_in_prompt())
+        {
+            Some(QueryHistorySkipReason::ContextIncluded)
+        } else if tracker.structured_raw_fallback {
+            Some(QueryHistorySkipReason::StructuredRawFallback)
+        } else {
+            None
+        }
+    }
+
     fn set_error_detail(&self, pass_id: u64, detail: Option<String>) -> bool {
         let _ownership = self.ownership.lock_or_recover();
         if !self.is_active(pass_id) {
@@ -1112,6 +1142,7 @@ pub(crate) struct QueryReviewContent {
     usage: Option<QueryUsage>,
     sign_in_fix: Option<&'static str>,
     context_summary: Option<String>,
+    history_skip_reason: Option<QueryHistorySkipReason>,
 }
 
 fn validate_command(
@@ -1949,6 +1980,27 @@ impl QueryRunError {
             detail: stderr.text(),
         }
     }
+
+    fn with_provider_stderr(
+        code: &'static str,
+        provider: QueryProviderId,
+        stderr: &StderrTail,
+    ) -> Self {
+        let detail = stderr.text();
+        if code == "exit_nonzero"
+            && detail.as_deref().is_some_and(|detail| {
+                crate::query_provider::is_codex_install_incomplete(provider, "", detail)
+            })
+        {
+            return Self {
+                // Retain the existing stable code while ensuring the
+                // requester-gated detail never receives the Node stack.
+                code,
+                detail: Some(crate::query_provider::CODEX_INSTALL_INCOMPLETE_DETAIL.to_string()),
+            };
+        }
+        Self { code, detail }
+    }
 }
 
 struct StderrTail {
@@ -2547,7 +2599,11 @@ fn run_cli(
         } else {
             "exit_nonzero"
         };
-        return Err(QueryRunError::with_stderr(code, &stderr_tail));
+        return Err(QueryRunError::with_provider_stderr(
+            code,
+            command.provider,
+            &stderr_tail,
+        ));
     }
     Ok(())
 }
@@ -2808,6 +2864,8 @@ pub(crate) fn get_query_review_content(
     }
     let query_pass_id = state.query.active_pass_id();
     let session = query_pass_id.and_then(|pass_id| state.query.session(pass_id));
+    let history_skip_reason =
+        query_pass_id.and_then(|pass_id| state.query.history_skip_reason(pass_id));
     QueryReviewContent {
         query_pass_id,
         answer: session
@@ -2823,6 +2881,7 @@ pub(crate) fn get_query_review_content(
             .as_ref()
             .and_then(|session| crate::query_provider::auth_fix(session.command.provider)),
         context_summary: session.and_then(|session| session.query_context.summary()),
+        history_skip_reason,
     }
 }
 
@@ -3089,6 +3148,11 @@ mod tests {
         let completion = finish_adapter_for_pass(&query, pass_id, &mut adapter).unwrap();
         assert!(completion.updates.is_empty());
 
+        assert_eq!(
+            query.history_skip_reason(pass_id),
+            Some(QueryHistorySkipReason::StructuredRawFallback)
+        );
+
         let snapshot = query.claim_terminal(pass_id).unwrap();
         assert!(snapshot.structured_raw_fallback);
         assert_eq!(snapshot.answer, format!("{user_frame}{malformed}"));
@@ -3171,6 +3235,11 @@ mod tests {
         apply_query_updates(&query, pass_id, updates);
         let completion = finish_adapter_for_pass(&query, pass_id, &mut adapter).unwrap();
         apply_query_updates(&query, pass_id, completion.updates);
+
+        assert_eq!(
+            query.history_skip_reason(pass_id),
+            Some(QueryHistorySkipReason::ContextIncluded)
+        );
 
         let snapshot = query.claim_terminal(pass_id).unwrap();
         assert!(snapshot.context_was_included);
@@ -3591,6 +3660,22 @@ mod tests {
         let next_pass_id = query.allocate_keyboard_pass().unwrap();
         assert_eq!(next_pass_id, pass_id + 1);
         assert_eq!(query.answer(next_pass_id), None);
+    }
+
+    #[test]
+    fn codex_nested_binary_enoent_keeps_stable_code_but_replaces_raw_stack() {
+        let raw = "Error: spawn /opt/homebrew/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex/codex ENOENT";
+        let mut stderr = StderrTail::new();
+        stderr.push(raw.as_bytes());
+
+        let error =
+            QueryRunError::with_provider_stderr("exit_nonzero", QueryProviderId::Codex, &stderr);
+        assert_eq!(error.code, "exit_nonzero");
+        assert_eq!(
+            error.detail.as_deref(),
+            Some(crate::query_provider::CODEX_INSTALL_INCOMPLETE_DETAIL)
+        );
+        assert!(!error.detail.unwrap().contains("/opt/homebrew"));
     }
     #[test]
     fn no_context_preserves_the_question_byte_for_byte() {

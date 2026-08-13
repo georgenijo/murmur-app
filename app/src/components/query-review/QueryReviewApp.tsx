@@ -1,7 +1,11 @@
 import { useEffect, useMemo } from 'react';
 import Markdown from 'react-markdown';
 import rehypeSanitize from 'rehype-sanitize';
-import { useQueryReviewDriver, type QueryReviewState } from '../../lib/hooks/useQueryReviewDriver';
+import {
+  useQueryReviewDriver,
+  type QueryHistorySkipReason,
+  type QueryReviewState,
+} from '../../lib/hooks/useQueryReviewDriver';
 import { formatQueryCost, type QueryUsage } from '../../lib/queryUsage';
 
 const ERROR_MESSAGES: Record<string, string> = {
@@ -33,6 +37,19 @@ const ERROR_MESSAGES: Record<string, string> = {
   clipboard_unavailable: 'The answer is ready, but the clipboard is unavailable. Use Copy to try again.',
 };
 
+const CODEX_INSTALL_INCOMPLETE = 'The Codex CLI installation is incomplete';
+
+function isIncompleteCodexDetail(errorDetail?: string | null): boolean {
+  if (!errorDetail) return false;
+  return errorDetail.includes(CODEX_INSTALL_INCOMPLETE)
+    || (
+      /ENOENT/i.test(errorDetail)
+      && /@openai\/codex-darwin-/i.test(errorDetail)
+      && /\/vendor\//i.test(errorDetail)
+      && /\/codex\/codex/i.test(errorDetail)
+    );
+}
+
 function statusLabel(state: QueryReviewState, errorCode: string | null): string {
   switch (state) {
     case 'connecting': return 'Connecting microphone…';
@@ -56,13 +73,21 @@ export function queryErrorMessage(errorCode: string | null, errorDetail?: string
   }
   if (
     errorCode === 'exit_nonzero'
-    && errorDetail
-    && /ENOENT/i.test(errorDetail)
-    && /codex(?:-darwin|\/codex)/i.test(errorDetail)
+    && isIncompleteCodexDetail(errorDetail)
   ) {
     return 'The Codex CLI installation is incomplete. Reinstall or update Codex, then try again.';
   }
   return ERROR_MESSAGES[errorCode] ?? 'The voice query could not be completed.';
+}
+
+export function queryHistoryNotice(reason: QueryHistorySkipReason | null): string | null {
+  if (reason === 'context_included') {
+    return 'Not saved to history — app context was included.';
+  }
+  if (reason === 'structured_raw_fallback') {
+    return 'Not saved to history — structured provider output could not be safely parsed.';
+  }
+  return null;
 }
 
 export function formatQueryUsage(usage: QueryUsage | null): string | null {
@@ -82,6 +107,10 @@ export function QueryReviewApp() {
     [driver.errorCode, driver.errorDetail],
   );
   const terminal = driver.state === 'ready' || driver.state === 'failed';
+  const historyNotice = queryHistoryNotice(driver.historySkipReason);
+  const showErrorDetail = driver.state === 'failed'
+    && driver.errorDetail
+    && !isIncompleteCodexDetail(driver.errorDetail);
   const usageText = driver.state === 'ready' ? formatQueryUsage(driver.usage) : null;
   const primaryText = driver.state === 'failed'
     ? errorMessage ?? 'The voice query could not be completed.'
@@ -153,7 +182,7 @@ export function QueryReviewApp() {
                 ? <Markdown rehypePlugins={[rehypeSanitize]}>{driver.answer}</Markdown>
                 : <p className="whitespace-pre-wrap">{primaryText}</p>}
             {driver.state === 'running' && <span aria-hidden="true" className="ml-0.5 inline-block h-3 w-px animate-pulse bg-white/60 align-middle" />}
-            {driver.state === 'failed' && driver.errorDetail && (
+            {showErrorDetail && (
               <div className="mt-3 rounded-lg border border-red-300/15 bg-red-950/30 p-2.5">
                 <p className="select-none text-[10px] font-semibold uppercase tracking-[0.12em] text-red-200/55">
                   Provider detail
@@ -170,6 +199,14 @@ export function QueryReviewApp() {
               <p aria-live="polite" className="mt-2 text-xs text-white/60">{driver.signInStatus}</p>
             )}
           </div>
+          {terminal && historyNotice && (
+            <p
+              aria-label="Voice Query history status"
+              className="border-t border-white/10 px-4 py-2 text-[10px] text-amber-200/70"
+            >
+              {historyNotice}
+            </p>
+          )}
           <footer className="flex items-center justify-between border-t border-white/10 px-3 py-2">
             <span className={`text-[10px] ${driver.errorCode === 'clipboard_unavailable' ? 'text-amber-300/80' : 'text-white/35'}`}>
               {footerText}

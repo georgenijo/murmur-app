@@ -20,6 +20,8 @@ const mocks = vi.hoisted(() => ({
     signInFix: 'Run claude /login in Terminal.',
     signInStatus: null,
     signInBusy: false,
+    contextSummary: null as string | null,
+    historySkipReason: null as 'context_included' | 'structured_raw_fallback' | null,
     cancel: vi.fn(),
     copy: vi.fn(),
     signIn: vi.fn(async () => undefined),
@@ -30,7 +32,12 @@ vi.mock('../../lib/hooks/useQueryReviewDriver', () => ({
   useQueryReviewDriver: () => mocks.driver,
 }));
 
-import { QueryReviewApp, formatQueryUsage, queryErrorMessage } from './QueryReviewApp';
+import {
+  QueryReviewApp,
+  formatQueryUsage,
+  queryErrorMessage,
+  queryHistoryNotice,
+} from './QueryReviewApp';
 
 describe('QueryReviewApp', () => {
   let container: HTMLDivElement;
@@ -42,6 +49,8 @@ describe('QueryReviewApp', () => {
     mocks.driver.answer = 'partial stdout must not mask failure';
     mocks.driver.errorDetail = 'Error: Not logged in';
     mocks.driver.usage = null;
+    mocks.driver.contextSummary = null;
+    mocks.driver.historySkipReason = null;
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -76,6 +85,20 @@ describe('QueryReviewApp', () => {
       'exit_nonzero',
       'Error: spawn /opt/homebrew/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex/codex ENOENT',
     )).toBe('The Codex CLI installation is incomplete. Reinstall or update Codex, then try again.');
+    expect(queryErrorMessage(
+      'exit_nonzero',
+      'The Codex CLI installation is incomplete. Reinstall or update Codex, then try again.',
+    )).toBe('The Codex CLI installation is incomplete. Reinstall or update Codex, then try again.');
+  });
+
+  it('maps requester-gated history skip reasons without including query content', () => {
+    expect(queryHistoryNotice('context_included')).toBe(
+      'Not saved to history — app context was included.',
+    );
+    expect(queryHistoryNotice('structured_raw_fallback')).toBe(
+      'Not saved to history — structured provider output could not be safely parsed.',
+    );
+    expect(queryHistoryNotice(null)).toBeNull();
   });
 
   it('formats provider-reported tokens and optional cost', () => {
@@ -102,6 +125,17 @@ describe('QueryReviewApp', () => {
     )).toBe(true);
   });
 
+  it('replaces the exact nested Codex ENOENT stack without rendering raw provider detail', async () => {
+    mocks.driver.errorCode = 'exit_nonzero';
+    mocks.driver.errorDetail = 'Error: spawn /opt/homebrew/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex/codex ENOENT';
+    await act(async () => root.render(<QueryReviewApp />));
+
+    expect(container.textContent).toContain('The Codex CLI installation is incomplete');
+    expect(container.textContent).not.toContain('Provider detail');
+    expect(container.textContent).not.toContain('/opt/homebrew');
+    expect(container.textContent).not.toContain('ENOENT');
+  });
+
   it('shows pass-scoped usage in the Ready footer', async () => {
     mocks.driver.state = 'ready';
     mocks.driver.errorCode = null;
@@ -119,5 +153,16 @@ describe('QueryReviewApp', () => {
 
     expect(container.textContent).toContain('21 in · 13 out · $0.0004');
     expect(container.textContent).toContain('Never auto-pasted');
+  });
+
+  it('explains why an otherwise successful context-bearing result was not saved', async () => {
+    mocks.driver.state = 'ready';
+    mocks.driver.errorCode = null;
+    mocks.driver.answer = 'answer';
+    mocks.driver.errorDetail = null;
+    mocks.driver.historySkipReason = 'context_included';
+    await act(async () => root.render(<QueryReviewApp />));
+
+    expect(container.textContent).toContain('Not saved to history — app context was included.');
   });
 });

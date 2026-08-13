@@ -278,13 +278,7 @@ function queryProviderTestMessage(
   provider: QueryProviderId,
   result: QueryProviderTestResult,
 ): string {
-  const detail = `${result.stdout}\n${result.stderr}`;
-  if (
-    provider === 'codex'
-    && result.errorCode === 'probe_failed'
-    && /ENOENT/i.test(detail)
-    && /codex(?:-darwin|\/codex)/i.test(detail)
-  ) {
+  if (isIncompleteCodexProbe(provider, result)) {
     return 'The Codex CLI installation is incomplete. Reinstall or update Codex, then choose Test again.';
   }
   if (result.authenticated === null) {
@@ -295,6 +289,21 @@ function queryProviderTestMessage(
     return result.signInFix ?? 'The provider is not authenticated.';
   }
   return 'The provider probe failed. Review its output below.';
+}
+
+function isIncompleteCodexProbe(
+  provider: QueryProviderId,
+  result: QueryProviderTestResult,
+): boolean {
+  if (provider !== 'codex' || result.errorCode !== 'probe_failed') return false;
+  const detail = `${result.stdout}\n${result.stderr}`;
+  return detail.includes('The Codex CLI installation is incomplete')
+    || (
+      /ENOENT/i.test(detail)
+      && /@openai\/codex-darwin-/i.test(detail)
+      && /\/vendor\//i.test(detail)
+      && /\/codex\/codex/i.test(detail)
+    );
 }
 
 function queryCommand(settings: Settings): QueryCommandConfig {
@@ -1264,7 +1273,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                     <p className={queryTestResult.ok ? 'text-primary' : 'text-error'}>
                       {queryProviderTestMessage(settings.queryProvider, queryTestResult)}
                     </p>
-                    {queryTestResult.stdout && (
+                    {queryTestResult.stdout && !isIncompleteCodexProbe(settings.queryProvider, queryTestResult) && (
                       <div>
                         <p className="font-semibold text-on-surface-variant">stdout{queryTestResult.stdoutTruncated ? ' · tail only' : ''}</p>
                         <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-surface-container-lowest p-2 font-mono text-[11px] text-on-surface">
@@ -1272,7 +1281,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                         </pre>
                       </div>
                     )}
-                    {queryTestResult.stderr && (
+                    {queryTestResult.stderr && !isIncompleteCodexProbe(settings.queryProvider, queryTestResult) && (
                       <div>
                         <p className="font-semibold text-on-surface-variant">stderr{queryTestResult.stderrTruncated ? ' · tail only' : ''}</p>
                         <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-surface-container-lowest p-2 font-mono text-[11px] text-on-surface">
