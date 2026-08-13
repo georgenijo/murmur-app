@@ -25,6 +25,7 @@ export const QUERY_FAILURE_CODES = [
   'environment_unavailable',
   'busy',
   'audio_start_failed',
+  'audio_capture_failed',
   'audio_not_ready',
   'audio_stalled',
   'audio_recovering',

@@ -26,13 +26,19 @@ pass, Rust stores the original question and answer with bounded metadata in a
 separate local SQLite database. History → Queries loads at most 50 records at a
 time, filters by provider, and offers **Delete all query history** as a direct
 one-click purge. The store keeps at most 200 newest entries. Turning the toggle
-off affects new passes only; it never silently deletes old records.
+off affects new passes only; it never silently deletes old records. A pass that
+actually appends app/window/selection context to its provider prompt is
+display-only and skips the entire history row, because raw or structured
+provider output may quote that context. Context configured but unavailable or
+excluded for the active app is never appended and does not suppress history.
 
 Query records are never cached in localStorage or merged into
 `dictation-history`. They are not editable, teachable, searchable through the
 transcript index, copied into transcript exports, or included in saved files.
 Optional app/window/selection context, composed prompts, stderr/error detail,
-paths, argv, and environment values are excluded from the store. The provider
+paths, argv, and environment values are excluded from the store. Structured
+Claude/Codex raw-fallback passes also skip the whole row because their raw
+archives can contain user frames that echo the composed prompt. The provider
 filter and pagination cross only main-window-gated IPC, and live change events
 contain no content.
 

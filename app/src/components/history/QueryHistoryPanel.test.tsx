@@ -105,4 +105,10 @@ describe('QueryHistoryPanel', () => {
     expect(state.clear).toHaveBeenCalledOnce();
     expect(container.textContent).toContain('Voice Query history deleted from this Mac.');
   });
+
+  it('explains why a context-bearing pass is intentionally not saved', async () => {
+    const state = history({ entries: [], total: 0 });
+    await act(async () => root.render(<QueryHistoryPanel history={state} retentionEnabled />));
+    expect(container.textContent).toContain('Context-bearing passes stay display-only and are not saved');
+  });
 });

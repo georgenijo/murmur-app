@@ -65,6 +65,12 @@ describe('QueryReviewApp', () => {
     );
   });
 
+  it('maps a terminal capture failure to actionable microphone guidance', () => {
+    expect(queryErrorMessage('audio_capture_failed')).toBe(
+      'Microphone capture failed while stopping. Check the selected input and try again.',
+    );
+  });
+
   it('formats provider-reported tokens and optional cost', () => {
     expect(formatQueryUsage({
       inputTokens: 1234,

@@ -221,6 +221,7 @@ describe('SettingsPanel information architecture', () => {
     await act(async () => historyToggle.click());
     expect(onUpdateSettings).toHaveBeenCalledWith({ retainQueryHistory: true });
     expect(container.textContent).toContain('Context content never enters history');
+    expect(container.textContent).toContain('stays display-only and is not saved');
   });
 
   it('opens editors as a Text settings drill-down with explicit back navigation', async () => {

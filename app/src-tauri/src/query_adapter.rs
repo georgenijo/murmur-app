@@ -97,6 +97,16 @@ impl VoiceQueryAdapter {
             AdapterKind::JsonLines(adapter) => adapter.finish(),
         }
     }
+
+    /// True once a structured provider has degraded to its exact raw stdout.
+    /// Raw-only providers return false because their output is the declared
+    /// contract, while structured fallback may contain echoed prompt/context.
+    pub(crate) fn used_structured_raw_fallback(&self) -> bool {
+        match &self.inner {
+            AdapterKind::Raw(_) => false,
+            AdapterKind::JsonLines(adapter) => adapter.used_raw_fallback,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -171,6 +181,7 @@ struct JsonLinesAdapter {
     raw_bytes: Vec<u8>,
     pending_line: Vec<u8>,
     raw_fallback: Option<RawAdapter>,
+    used_raw_fallback: bool,
     emitted_answer: bool,
     terminal_seen: bool,
     claude_assistant_answer: Option<String>,
@@ -189,6 +200,7 @@ impl JsonLinesAdapter {
             raw_bytes: Vec::new(),
             pending_line: Vec::new(),
             raw_fallback: None,
+            used_raw_fallback: false,
             emitted_answer: false,
             terminal_seen: false,
             claude_assistant_answer: None,
@@ -531,6 +543,7 @@ impl JsonLinesAdapter {
     }
 
     fn enable_raw_fallback(&mut self) -> AnswerUpdate {
+        self.used_raw_fallback = true;
         let mut raw = RawAdapter::default();
         let text = raw.decoder.push(&self.raw_bytes);
         self.raw_bytes.clear();
@@ -545,6 +558,7 @@ impl JsonLinesAdapter {
     }
 
     fn finish_as_raw_fallback(&mut self) -> AdapterCompletion {
+        self.used_raw_fallback = true;
         let text = String::from_utf8_lossy(&self.raw_bytes).into_owned();
         let mut updates = vec![AnswerUpdate::Replace(text)];
         if !self.pending_line.is_empty() {
@@ -1115,6 +1129,7 @@ mod tests {
         apply(&mut answer, adapter.push_stdout(&bytes[8..]).unwrap());
         apply(&mut answer, adapter.finish().unwrap().updates);
         assert_eq!(answer, "hello 🦀");
+        assert!(!adapter.used_structured_raw_fallback());
     }
 
     #[test]
@@ -1458,6 +1473,7 @@ mod tests {
             &mut answer,
             adapter.push_stdout(malformed.as_bytes()).unwrap(),
         );
+        assert!(adapter.used_structured_raw_fallback());
         assert_eq!(answer, format!("{first}{malformed}"));
         apply(&mut answer, adapter.push_stdout(tail.as_bytes()).unwrap());
         apply(&mut answer, adapter.finish().unwrap().updates);
@@ -1480,6 +1496,7 @@ mod tests {
         let completion = claude.finish().unwrap();
         assert_eq!(completion.updates, vec![AnswerUpdate::Replace(claude_raw)]);
         assert!(!completion.used_structured_output);
+        assert!(claude.used_structured_raw_fallback());
 
         let codex_raw = line(json!({
             "type": "item.completed",
@@ -1493,6 +1510,7 @@ mod tests {
         let completion = codex.finish().unwrap();
         assert_eq!(completion.updates, vec![AnswerUpdate::Replace(codex_raw)]);
         assert!(!completion.used_structured_output);
+        assert!(codex.used_structured_raw_fallback());
     }
 
     #[test]

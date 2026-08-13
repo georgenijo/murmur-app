@@ -128,9 +128,12 @@ impl QueryContextSnapshot {
         }
     }
 
+    fn was_included_in_prompt(&self) -> bool {
+        self.level != QueryContextLevel::None && !self.excluded && self.application_name.is_some()
+    }
+
     fn build_prompt(&self, question: String) -> Result<String, &'static str> {
-        if self.level == QueryContextLevel::None || self.excluded || self.application_name.is_none()
-        {
+        if !self.was_included_in_prompt() {
             return (question.len() <= MAX_QUERY_PROMPT_BYTES)
                 .then_some(question)
                 .ok_or("query_too_large");
@@ -291,6 +294,7 @@ struct QueryPassTracker {
     first_chunk_duration_ms: Option<u64>,
     current_stage: PerformanceStageV1,
     original_question: Option<String>,
+    structured_raw_fallback: bool,
     exit_code: Option<i32>,
     stderr_present: Arc<AtomicBool>,
     terminal_intent: Option<QueryTerminal>,
@@ -308,6 +312,8 @@ struct QueryTerminalSnapshot {
     original_question: Option<String>,
     answer: String,
     usage: Option<QueryUsage>,
+    context_was_included: bool,
+    structured_raw_fallback: bool,
     exit_code: Option<i32>,
     stderr_present: bool,
     terminal_intent: Option<QueryTerminal>,
@@ -420,6 +426,7 @@ impl QueryCoordinator {
             first_chunk_duration_ms: None,
             current_stage: PerformanceStageV1::InstructionCapture,
             original_question: None,
+            structured_raw_fallback: false,
             exit_code: None,
             stderr_present: Arc::new(AtomicBool::new(false)),
             terminal_intent: None,
@@ -662,6 +669,14 @@ impl QueryCoordinator {
         });
     }
 
+    fn mark_structured_raw_fallback(&self, pass_id: u64) {
+        let _ = self.update_tracker(pass_id, |tracker| {
+            // Sticky for the whole pass: a raw structured-provider archive can
+            // echo the composed prompt and is never eligible for persistence.
+            tracker.structured_raw_fallback = true;
+        });
+    }
+
     fn stderr_flag(&self, pass_id: u64) -> Arc<AtomicBool> {
         let _ownership = self.ownership.lock_or_recover();
         self.tracker
@@ -742,6 +757,10 @@ impl QueryCoordinator {
                 .map(|session| session.answer.clone())
                 .unwrap_or_default(),
             usage: session.as_ref().and_then(|session| session.usage),
+            context_was_included: session
+                .as_ref()
+                .is_some_and(|session| session.query_context.was_included_in_prompt()),
+            structured_raw_fallback: tracker.structured_raw_fallback,
             exit_code: tracker.exit_code,
             stderr_present: tracker.stderr_present.load(Ordering::Acquire),
             terminal_intent: tracker.terminal_intent,
@@ -1404,6 +1423,39 @@ fn history_tokens(usage: QueryUsage) -> QueryHistoryTokenCountsV1 {
     }
 }
 
+fn persist_query_history_snapshot(
+    history: &crate::query_history::QueryHistoryStore,
+    snapshot: &QueryTerminalSnapshot,
+    error_code: Option<&str>,
+) -> Result<bool, String> {
+    // Context-bearing passes and structured raw fallback are display-only.
+    // Any provider can echo the composed prompt, while Claude/Codex JSONL raw
+    // archives can directly contain it. Skip the entire row, including the
+    // original question, whenever either boundary applies.
+    if !snapshot.retain_history || snapshot.context_was_included || snapshot.structured_raw_fallback
+    {
+        return Ok(false);
+    }
+    let (Some(epoch), Some(question)) = (snapshot.history_epoch, &snapshot.original_question)
+    else {
+        return Ok(false);
+    };
+    history
+        .insert_if_epoch(
+            epoch,
+            QueryHistoryDraft {
+                timestamp_ms: snapshot.timestamp_ms,
+                provider: snapshot.provider,
+                question: question.clone(),
+                answer: snapshot.answer.clone(),
+                tokens: snapshot.usage.map(history_tokens),
+                duration_ms: snapshot.duration_ms,
+                error_code: error_code.map(str::to_string),
+            },
+        )
+        .map(|entry| entry.is_some())
+}
+
 /// Claim and persist a pass exactly once. Both stores are explicitly
 /// best-effort and can never alter the user-visible query result.
 fn finalize_query_pass(state: &crate::State, pass_id: u64, fallback: QueryTerminal) {
@@ -1438,7 +1490,7 @@ fn finalize_query_pass(state: &crate::State, pass_id: u64, fallback: QueryTermin
             query_pass_id: pass_id,
         },
         outcome,
-        snapshot.stages,
+        snapshot.stages.clone(),
         None,
         None,
     );
@@ -1448,29 +1500,12 @@ fn finalize_query_pass(state: &crate::State, pass_id: u64, fallback: QueryTermin
         QueryTerminal::Failed(error_code) => Some(error_code),
         QueryTerminal::Cancelled => Some("cancelled"),
     };
-    if snapshot.retain_history {
-        if let (Some(epoch), Some(question)) = (snapshot.history_epoch, snapshot.original_question)
-        {
-            let inserted = state.query_history.insert_if_epoch(
-                epoch,
-                QueryHistoryDraft {
-                    timestamp_ms: snapshot.timestamp_ms,
-                    provider: snapshot.provider,
-                    question,
-                    answer: snapshot.answer,
-                    tokens: snapshot.usage.map(history_tokens),
-                    duration_ms: snapshot.duration_ms,
-                    error_code: error_code.map(str::to_string),
-                },
-            );
-            if inserted.is_err() {
-                tracing::warn!(
-                    target: "system",
-                    query_history_write = false,
-                    "Voice Query history entry could not be persisted"
-                );
-            }
-        }
+    if persist_query_history_snapshot(&state.query_history, &snapshot, error_code).is_err() {
+        tracing::warn!(
+            target: "system",
+            query_history_write = false,
+            "Voice Query history entry could not be persisted"
+        );
     }
 }
 
@@ -1487,7 +1522,10 @@ fn finish_cancelled_query(app: &tauri::AppHandle, state: &crate::State, pass_id:
     finalize_query_pass(state, pass_id, QueryTerminal::Cancelled);
     if state.query.complete_cancel(pass_id) {
         let _ = crate::commands::query_popover::hide_internal(app);
-        let _ = app.emit("query-review-hidden", ());
+        let _ = app.emit(
+            "query-review-hidden",
+            serde_json::json!({ "queryPassId": pass_id }),
+        );
     }
 }
 
@@ -1978,9 +2016,39 @@ fn accept_stdout(
     sequence: &mut u64,
     bytes: &[u8],
 ) -> Result<(), &'static str> {
-    let updates = adapter.push_stdout(bytes)?;
+    let updates =
+        adapt_stdout_for_pass(&app.state::<crate::State>().query, pass_id, adapter, bytes)?;
     accept_answer_updates(app, pass_id, sequence, updates)?;
     Ok(())
+}
+
+fn adapt_stdout_for_pass(
+    query: &QueryCoordinator,
+    pass_id: u64,
+    adapter: &mut VoiceQueryAdapter,
+    bytes: &[u8],
+) -> Result<Vec<AnswerUpdate>, &'static str> {
+    let updates = adapter.push_stdout(bytes)?;
+    // Mark persistence ineligible before applying/emitting the raw Replace.
+    // Cancellation waits for this worker, so terminal claim observes it.
+    if adapter.used_structured_raw_fallback() {
+        query.mark_structured_raw_fallback(pass_id);
+    }
+    Ok(updates)
+}
+
+fn finish_adapter_for_pass(
+    query: &QueryCoordinator,
+    pass_id: u64,
+    adapter: &mut VoiceQueryAdapter,
+) -> Result<crate::query_adapter::AdapterCompletion, &'static str> {
+    let completion = adapter.finish()?;
+    // An otherwise-valid structured prefix can first degrade at EOF. Record
+    // that fact before its raw replacement reaches the session/UI.
+    if adapter.used_structured_raw_fallback() {
+        query.mark_structured_raw_fallback(pass_id);
+    }
+    Ok(completion)
 }
 
 fn accept_answer_updates(
@@ -2418,9 +2486,9 @@ fn run_cli(
     // release the ownership record before parser finalization so even a
     // bounded-output refusal cannot leave a dead child blocking a later pass.
     app.state::<crate::State>().query.clear_child(pass_id);
-    let completion = adapter
-        .finish()
-        .map_err(|code| QueryRunError::with_stderr(code, &stderr_tail))?;
+    let completion =
+        finish_adapter_for_pass(&app.state::<crate::State>().query, pass_id, &mut adapter)
+            .map_err(|code| QueryRunError::with_stderr(code, &stderr_tail))?;
     accept_answer_updates(&app, pass_id, &mut sequence, completion.updates)
         .map_err(|code| QueryRunError::with_stderr(code, &stderr_tail))?;
     app.state::<crate::State>()
@@ -2743,6 +2811,30 @@ pub(crate) fn get_query_review_content(
 mod tests {
     use super::*;
 
+    fn test_dictation_context() -> Arc<DictationContextSnapshot> {
+        Arc::new(crate::dictation_context::resolve(
+            crate::dictation_context::ResolverInputs {
+                bundle_id: None,
+                global: &crate::state::DictationState::default(),
+                prompt: None,
+                correction_matcher: None,
+                ide_context_index: None,
+                vocabulary_version: 0,
+                voice_commands: None,
+                session_overrides: crate::dictation_context::SessionOverrides::default(),
+            },
+        ))
+    }
+
+    fn apply_query_updates(query: &QueryCoordinator, pass_id: u64, updates: Vec<AnswerUpdate>) {
+        for update in updates {
+            match update {
+                AnswerUpdate::Append(text) => query.append_answer(pass_id, &text).unwrap(),
+                AnswerUpdate::Replace(text) => query.replace_answer(pass_id, text).unwrap(),
+            }
+        }
+    }
+
     #[test]
     fn validates_only_absolute_executable_and_bounded_fixed_arguments() {
         let invalid = QueryCommandConfig {
@@ -2920,6 +3012,224 @@ mod tests {
         let tokens = history_tokens(usage);
         assert_eq!(tokens.input_tokens, 9_007_199_254_740_991);
         assert_eq!(tokens.output_tokens, 1);
+    }
+
+    #[test]
+    fn structured_raw_fallback_displays_exact_bytes_but_skips_history() {
+        let temp = tempfile::tempdir().unwrap();
+        let history = crate::query_history::QueryHistoryStore::default();
+        history
+            .initialize(temp.path().join("query-history"), None)
+            .unwrap();
+        let epoch = history.clear_epoch().unwrap();
+
+        let query = QueryCoordinator::default();
+        let pass_id = query.allocate_keyboard_pass().unwrap();
+        assert!(query.begin_tracking(pass_id, QueryProviderId::Claude, true, Some(epoch)));
+        query.mark_transcription_finished(pass_id, Some("What is selected?".into()), false);
+        assert!(query.install_session(
+            pass_id,
+            QuerySession {
+                pass_id,
+                context: test_dictation_context(),
+                query_context: QueryContextSnapshot::default(),
+                command: ValidatedQueryCommand {
+                    provider: QueryProviderId::Claude,
+                    executable: PathBuf::from("/usr/bin/printf"),
+                    arguments: vec![],
+                    timeout: Duration::from_secs(5),
+                    environment: vec![],
+                    context_level: QueryContextLevel::Selection,
+                },
+                answer: String::new(),
+                usage: None,
+                error_detail: None,
+            },
+        ));
+
+        let private_context = "PRIVATE_SELECTED_CONTEXT_SENTINEL";
+        let user_frame = format!(
+            "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":\"{private_context}\"}},\"parent_tool_use_id\":null,\"uuid\":\"user-uuid\",\"session_id\":\"private-session\"}}\n"
+        );
+        let malformed = "{\"type\":\"result\"\n";
+        let mut adapter = VoiceQueryAdapter::new(QueryProviderId::Claude, 4096);
+        assert!(
+            adapt_stdout_for_pass(&query, pass_id, &mut adapter, user_frame.as_bytes())
+                .unwrap()
+                .is_empty()
+        );
+        let updates =
+            adapt_stdout_for_pass(&query, pass_id, &mut adapter, malformed.as_bytes()).unwrap();
+        assert_eq!(
+            updates,
+            vec![AnswerUpdate::Replace(format!("{user_frame}{malformed}"))]
+        );
+        apply_query_updates(&query, pass_id, updates);
+        let completion = finish_adapter_for_pass(&query, pass_id, &mut adapter).unwrap();
+        assert!(completion.updates.is_empty());
+
+        let snapshot = query.claim_terminal(pass_id).unwrap();
+        assert!(snapshot.structured_raw_fallback);
+        assert_eq!(snapshot.answer, format!("{user_frame}{malformed}"));
+        assert!(snapshot.answer.contains(private_context));
+        assert!(!persist_query_history_snapshot(&history, &snapshot, None).unwrap());
+        assert_eq!(history.list(0, 10, None).unwrap().total, 0);
+
+        let raw_adapter = VoiceQueryAdapter::new(QueryProviderId::Custom, 4096);
+        assert!(!raw_adapter.used_structured_raw_fallback());
+        let raw_snapshot = QueryTerminalSnapshot {
+            provider: QueryProviderId::Custom,
+            retain_history: true,
+            history_epoch: Some(epoch),
+            timestamp_ms: 1,
+            duration_ms: 1,
+            current_stage: PerformanceStageV1::Generation,
+            stages: vec![],
+            original_question: Some("Raw provider question".into()),
+            answer: "Raw provider answer".into(),
+            usage: None,
+            context_was_included: false,
+            structured_raw_fallback: false,
+            exit_code: Some(0),
+            stderr_present: false,
+            terminal_intent: None,
+        };
+        assert!(persist_query_history_snapshot(&history, &raw_snapshot, None).unwrap());
+        assert_eq!(history.list(0, 10, None).unwrap().total, 1);
+    }
+
+    #[test]
+    fn context_bearing_raw_provider_echo_is_display_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let history = crate::query_history::QueryHistoryStore::default();
+        history
+            .initialize(temp.path().join("query-history"), None)
+            .unwrap();
+        let epoch = history.clear_epoch().unwrap();
+        let private_context = "PRIVATE_CUSTOM_CONTEXT_SENTINEL";
+        let query_context = QueryContextSnapshot {
+            level: QueryContextLevel::Selection,
+            excluded: false,
+            application_name: Some("Notes".into()),
+            window_title: Some("Private note".into()),
+            selection: Some(private_context.into()),
+            selection_truncated: false,
+        };
+        let question = "Summarize this".to_string();
+        let composed_prompt = query_context.build_prompt(question.clone()).unwrap();
+        assert!(query_context.was_included_in_prompt());
+
+        let query = QueryCoordinator::default();
+        let pass_id = query.allocate_keyboard_pass().unwrap();
+        assert!(query.begin_tracking(pass_id, QueryProviderId::Custom, true, Some(epoch)));
+        query.mark_transcription_finished(pass_id, Some(question), false);
+        assert!(query.install_session(
+            pass_id,
+            QuerySession {
+                pass_id,
+                context: test_dictation_context(),
+                query_context,
+                command: ValidatedQueryCommand {
+                    provider: QueryProviderId::Custom,
+                    executable: PathBuf::from("/usr/bin/printf"),
+                    arguments: vec!["%s".into()],
+                    timeout: Duration::from_secs(5),
+                    environment: vec![],
+                    context_level: QueryContextLevel::Selection,
+                },
+                answer: String::new(),
+                usage: None,
+                error_detail: None,
+            },
+        ));
+        let mut adapter = VoiceQueryAdapter::new(QueryProviderId::Custom, MAX_ANSWER_BYTES);
+        let updates =
+            adapt_stdout_for_pass(&query, pass_id, &mut adapter, composed_prompt.as_bytes())
+                .unwrap();
+        apply_query_updates(&query, pass_id, updates);
+        let completion = finish_adapter_for_pass(&query, pass_id, &mut adapter).unwrap();
+        apply_query_updates(&query, pass_id, completion.updates);
+
+        let snapshot = query.claim_terminal(pass_id).unwrap();
+        assert!(snapshot.context_was_included);
+        assert!(!snapshot.structured_raw_fallback);
+        assert_eq!(snapshot.answer, composed_prompt);
+        assert!(snapshot.answer.contains(private_context));
+        assert!(!persist_query_history_snapshot(&history, &snapshot, None).unwrap());
+        assert_eq!(history.list(0, 10, None).unwrap().total, 0);
+    }
+
+    #[test]
+    fn context_bearing_valid_structured_answer_is_display_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let history = crate::query_history::QueryHistoryStore::default();
+        history
+            .initialize(temp.path().join("query-history"), None)
+            .unwrap();
+        let epoch = history.clear_epoch().unwrap();
+        let private_context = "PRIVATE_STRUCTURED_CONTEXT_SENTINEL";
+        let query_context = QueryContextSnapshot {
+            level: QueryContextLevel::Application,
+            excluded: false,
+            application_name: Some("Safari".into()),
+            window_title: Some(private_context.into()),
+            selection: None,
+            selection_truncated: false,
+        };
+        assert!(query_context.was_included_in_prompt());
+
+        let query = QueryCoordinator::default();
+        let pass_id = query.allocate_keyboard_pass().unwrap();
+        assert!(query.begin_tracking(pass_id, QueryProviderId::Claude, true, Some(epoch)));
+        query.mark_transcription_finished(pass_id, Some("What is this?".into()), false);
+        assert!(query.install_session(
+            pass_id,
+            QuerySession {
+                pass_id,
+                context: test_dictation_context(),
+                query_context,
+                command: ValidatedQueryCommand {
+                    provider: QueryProviderId::Claude,
+                    executable: PathBuf::from("/usr/bin/printf"),
+                    arguments: vec![],
+                    timeout: Duration::from_secs(5),
+                    environment: vec![],
+                    context_level: QueryContextLevel::Application,
+                },
+                answer: String::new(),
+                usage: None,
+                error_detail: None,
+            },
+        ));
+        let answer = format!("Quoted context: {private_context}");
+        let result = format!(
+            "{}\n",
+            serde_json::json!({
+                "type": "result",
+                "subtype": "success",
+                "is_error": false,
+                "result": answer,
+                "usage": {"input_tokens": 1, "output_tokens": 2},
+                "total_cost_usd": 0.0,
+                "uuid": "result-uuid",
+                "session_id": "private-session"
+            })
+        );
+        let mut adapter = VoiceQueryAdapter::new(QueryProviderId::Claude, MAX_ANSWER_BYTES);
+        let updates =
+            adapt_stdout_for_pass(&query, pass_id, &mut adapter, result.as_bytes()).unwrap();
+        apply_query_updates(&query, pass_id, updates);
+        let completion = finish_adapter_for_pass(&query, pass_id, &mut adapter).unwrap();
+        assert!(completion.used_structured_output);
+        assert!(!adapter.used_structured_raw_fallback());
+        apply_query_updates(&query, pass_id, completion.updates);
+
+        let snapshot = query.claim_terminal(pass_id).unwrap();
+        assert!(snapshot.context_was_included);
+        assert!(!snapshot.structured_raw_fallback);
+        assert_eq!(snapshot.answer, answer);
+        assert!(!persist_query_history_snapshot(&history, &snapshot, None).unwrap());
+        assert_eq!(history.list(0, 10, None).unwrap().total, 0);
     }
 
     #[test]
@@ -3241,6 +3551,7 @@ mod tests {
     #[test]
     fn no_context_preserves_the_question_byte_for_byte() {
         let question = "what does `$HOME` mean?\nkeep this literal".to_string();
+        assert!(!QueryContextSnapshot::default().was_included_in_prompt());
         assert_eq!(
             QueryContextSnapshot::default().build_prompt(question.clone()),
             Ok(question)
@@ -3260,6 +3571,7 @@ mod tests {
         let prompt = context
             .build_prompt("What is this?".to_string())
             .expect("bounded prompt");
+        assert!(context.was_included_in_prompt());
         assert!(prompt.starts_with("What is this?\n\n"));
         assert!(prompt.contains("Application: Safari"));
         assert!(prompt.contains("Window title: Private window title"));
@@ -3287,6 +3599,7 @@ mod tests {
     #[test]
     fn excluded_context_never_changes_the_question() {
         let context = QueryContextSnapshot::excluded(QueryContextLevel::Selection);
+        assert!(!context.was_included_in_prompt());
         assert_eq!(
             context.build_prompt("literal question".to_string()),
             Ok("literal question".to_string())
@@ -3294,6 +3607,16 @@ mod tests {
         assert_eq!(
             context.summary().as_deref(),
             Some("Context: off for this app")
+        );
+
+        let unavailable = QueryContextSnapshot {
+            level: QueryContextLevel::Application,
+            ..QueryContextSnapshot::default()
+        };
+        assert!(!unavailable.was_included_in_prompt());
+        assert_eq!(
+            unavailable.build_prompt("literal question".to_string()),
+            Ok("literal question".to_string())
         );
     }
 

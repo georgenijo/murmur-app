@@ -215,7 +215,12 @@ export function useQueryReviewDriver() {
       });
       if (disposed) { unlistenState(); unlistenChunk(); unlistenContext(); return; }
 
-      unlistenHidden = await listen('query-review-hidden', () => {
+      unlistenHidden = await listen<unknown>('query-review-hidden', (event) => {
+        if (disposed || !event.payload || typeof event.payload !== 'object') return;
+        const payload = event.payload as Record<string, unknown>;
+        if (Object.keys(payload).length !== 1
+          || !validPassId(payload.queryPassId)
+          || payload.queryPassId !== passIdRef.current) return;
         passIdRef.current = null;
         nextSequenceRef.current = 0;
         contentRefreshTicketRef.current += 1;

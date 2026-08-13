@@ -26,6 +26,13 @@ the performance database. Diagnostics remain unconditional and content-free:
 capture/transcription/provider-spawn/first-answer/total timings, stable outcome,
 exit code, and stderr presence only.
 
+Because any provider can quote its input, a pass that actually appended app
+context is display-only and skips the whole history row. Claude/Codex passes
+that degrade to raw JSONL fallback do the same because their raw archive can
+contain a user frame with the composed prompt. Context configured but not
+available—or explicitly excluded for the app—is not appended and does not by
+itself suppress history.
+
 **Rationale:** George wants local visibility into past questions and answers,
 but content persistence must remain a deliberate per-pass choice rather than a
 side effect of enabling Voice Query. A dedicated Rust store keeps that consent,

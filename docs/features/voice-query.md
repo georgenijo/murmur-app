@@ -81,7 +81,11 @@ provider preset, original transcribed question, answer (including a bounded
 partial answer on failure), provider-reported token counts, total duration, and
 stable error code. It never contains the composed prompt, app/window/selection
 context, provider stderr or typed error detail, executable path, argv,
-environment values, or secrets.
+environment values, or secrets. If a pass actually appends app context to its
+provider prompt, the whole pass is display-only and no history row is written;
+this prevents raw or structured provider output that quotes that context from
+persisting it indirectly. Context configured but unavailable or disabled for
+the current app is not appended and does not by itself suppress history.
 
 The store retains the newest 200 records and prunes in the same transaction as
 each insert. History → Queries reads it through main-window-only, paged IPC,

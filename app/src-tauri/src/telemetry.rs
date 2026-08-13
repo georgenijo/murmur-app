@@ -484,6 +484,7 @@ fn is_safe_query_string(key: &str, value: &str) -> bool {
                 | "environment_unavailable"
                 | "busy"
                 | "audio_start_failed"
+                | "audio_capture_failed"
                 | "audio_not_ready"
                 | "audio_stalled"
                 | "audio_recovering"
@@ -1038,6 +1039,7 @@ mod tests {
         for (state, error_code) in [
             ("failed", "invalid_environment"),
             ("failed", "environment_unavailable"),
+            ("failed", "audio_capture_failed"),
             ("ready", "clipboard_superseded"),
         ] {
             let mut data = serde_json::json!({

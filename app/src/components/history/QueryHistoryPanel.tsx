@@ -107,7 +107,7 @@ export function QueryHistoryPanel({ history, retentionEnabled }: QueryHistoryPan
               <p className="text-sm font-medium text-on-surface">No saved Voice Queries</p>
               <p className="mt-1 text-xs leading-relaxed text-on-surface-variant">
                 {retentionEnabled
-                  ? 'Completed and failed queries will appear here without their optional app context.'
+                  ? 'Queries without attached app context will appear here. Context-bearing passes stay display-only and are not saved because providers can quote that context.'
                   : 'Turn on “Keep Voice Query history on this Mac” in Settings to save future questions and answers.'}
               </p>
             </div>

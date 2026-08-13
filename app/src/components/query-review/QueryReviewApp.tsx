@@ -13,6 +13,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   environment_unavailable: 'Murmur could not read the protected Voice Query environment. Open Settings and clear or re-save it.',
   busy: 'Murmur is already recording or running another local task.',
   audio_start_failed: 'The microphone could not start. Check the selected input and permission.',
+  audio_capture_failed: 'Microphone capture failed while stopping. Check the selected input and try again.',
   audio_not_ready: 'The microphone was not ready yet. Try the shortcut again.',
   audio_recovering: 'Audio capture is recovering. Try again in a moment.',
   audio_recovery_stalled: 'Audio capture recovery stalled. Reopen Murmur and try again.',

@@ -120,6 +120,12 @@ describe('Voice Query stats', () => {
       usage: null,
     });
     updateQueryStats({
+      provider: 'grok',
+      succeeded: false,
+      errorCode: 'audio_capture_failed',
+      usage: null,
+    });
+    updateQueryStats({
       provider: 'custom',
       succeeded: true,
       errorCode: 'clipboard_superseded',
@@ -128,10 +134,11 @@ describe('Voice Query stats', () => {
 
     const query = loadStats().query;
     expect(query.successfulQueries).toBe(1);
-    expect(query.failedQueries).toBe(2);
+    expect(query.failedQueries).toBe(3);
     expect(query.failuresByErrorCode).toEqual({
       invalid_environment: 1,
       environment_unavailable: 1,
+      audio_capture_failed: 1,
     });
     expect(query.failuresByErrorCode).not.toHaveProperty('clipboard_superseded');
   });

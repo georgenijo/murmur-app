@@ -476,7 +476,17 @@ describe('useQueryReviewDriver ownership', () => {
     expect(mocks.invoke).not.toHaveBeenCalled();
 
     await act(async () => {
-      mocks.listeners['query-review-hidden']?.({ payload: null });
+      mocks.listeners['query-review-hidden']?.({ payload: { queryPassId: 51 } });
+      mocks.listeners['query-review-hidden']?.({
+        payload: { queryPassId: 52, extra: 'SENTINEL_CONTENT' },
+      });
+      await Promise.resolve();
+    });
+    expect(current!.state).toBe('ready');
+    expect(current!.contextSummary).toBe('Context: Editor — window title');
+
+    await act(async () => {
+      mocks.listeners['query-review-hidden']?.({ payload: { queryPassId: 52 } });
       await Promise.resolve();
     });
     expect(current!.state).toBe('idle');
