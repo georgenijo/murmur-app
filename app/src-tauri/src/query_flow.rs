@@ -123,6 +123,24 @@ struct ActiveQueryChild {
     child: Arc<Mutex<ManagedChild>>,
 }
 
+enum QueryChildOwnership {
+    /// Reserved before `spawn_user_cli` begins. Cancellation must not complete
+    /// while the spawn syscall can still publish a child for this pass.
+    Starting {
+        pass_id: u64,
+    },
+    Active(ActiveQueryChild),
+}
+
+impl QueryChildOwnership {
+    fn pass_id(&self) -> u64 {
+        match self {
+            Self::Starting { pass_id } => *pass_id,
+            Self::Active(active) => active.pass_id,
+        }
+    }
+}
+
 pub(crate) struct QueryCoordinator {
     ownership: Mutex<()>,
     pass_sequence: AtomicU64,
@@ -130,7 +148,7 @@ pub(crate) struct QueryCoordinator {
     cancelled_pass_id: AtomicU64,
     status: Mutex<QueryStatus>,
     session: Mutex<Option<QuerySession>>,
-    child: Mutex<Option<ActiveQueryChild>>,
+    child: Mutex<Option<QueryChildOwnership>>,
 }
 
 impl Default for QueryCoordinator {
@@ -276,13 +294,66 @@ impl QueryCoordinator {
         true
     }
 
-    fn install_child(&self, pass_id: u64, child: Arc<Mutex<ManagedChild>>) -> bool {
+    /// Reserve process ownership before entering the spawn syscall. This
+    /// closes the cancel-before-publication window: `complete_cancel` and a
+    /// newer keyboard pass both remain blocked until spawning either fails or
+    /// publishes the exact child into this slot.
+    fn reserve_child_start(&self, pass_id: u64) -> bool {
         let _ownership = self.ownership.lock_or_recover();
-        if !self.is_active(pass_id) {
+        let mut slot = self.child.lock_or_recover();
+        if !self.is_active(pass_id) || slot.is_some() {
             return false;
         }
-        *self.child.lock_or_recover() = Some(ActiveQueryChild { pass_id, child });
+        *slot = Some(QueryChildOwnership::Starting { pass_id });
         true
+    }
+
+    fn release_child_start(&self, pass_id: u64) {
+        let _ownership = self.ownership.lock_or_recover();
+        let mut slot = self.child.lock_or_recover();
+        if slot.as_ref().is_some_and(|ownership| {
+            matches!(ownership, QueryChildOwnership::Starting { pass_id: owner } if *owner == pass_id)
+        }) {
+            *slot = None;
+        }
+    }
+
+    fn publish_spawned_child(&self, pass_id: u64, child: Arc<Mutex<ManagedChild>>) -> bool {
+        let _ownership = self.ownership.lock_or_recover();
+        let mut slot = self.child.lock_or_recover();
+        if !slot.as_ref().is_some_and(|ownership| {
+            matches!(ownership, QueryChildOwnership::Starting { pass_id: owner } if *owner == pass_id)
+        }) {
+            return false;
+        }
+        *slot = Some(QueryChildOwnership::Active(ActiveQueryChild {
+            pass_id,
+            child,
+        }));
+        true
+    }
+
+    fn retain_unconfirmed_child(&self, pass_id: u64, child: Arc<Mutex<ManagedChild>>) -> bool {
+        let _ownership = self.ownership.lock_or_recover();
+        let mut slot = self.child.lock_or_recover();
+        match slot.as_ref() {
+            Some(QueryChildOwnership::Active(active)) if active.pass_id == pass_id => true,
+            Some(QueryChildOwnership::Starting { pass_id: owner }) if *owner == pass_id => {
+                *slot = Some(QueryChildOwnership::Active(ActiveQueryChild {
+                    pass_id,
+                    child,
+                }));
+                true
+            }
+            None if self.active_pass_id() == Some(pass_id) => {
+                *slot = Some(QueryChildOwnership::Active(ActiveQueryChild {
+                    pass_id,
+                    child,
+                }));
+                true
+            }
+            _ => false,
+        }
     }
 
     fn clear_child(&self, pass_id: u64) {
@@ -290,7 +361,7 @@ impl QueryCoordinator {
         let mut slot = self.child.lock_or_recover();
         if slot
             .as_ref()
-            .is_some_and(|active| active.pass_id == pass_id)
+            .is_some_and(|ownership| ownership.pass_id() == pass_id)
         {
             *slot = None;
         }
@@ -309,11 +380,15 @@ impl QueryCoordinator {
     fn terminate_child(&self, pass_id: u64) -> bool {
         let child = {
             let _ownership = self.ownership.lock_or_recover();
-            self.child
-                .lock_or_recover()
-                .as_ref()
-                .filter(|active| active.pass_id == pass_id)
-                .map(|active| Arc::clone(&active.child))
+            match self.child.lock_or_recover().as_ref() {
+                Some(QueryChildOwnership::Starting { pass_id: owner }) if *owner == pass_id => {
+                    return false;
+                }
+                Some(QueryChildOwnership::Active(active)) if active.pass_id == pass_id => {
+                    Some(Arc::clone(&active.child))
+                }
+                _ => None,
+            }
         };
         let Some(child) = child else {
             return true;
@@ -329,11 +404,12 @@ impl QueryCoordinator {
     }
 
     pub(crate) fn shutdown(&self) {
-        let active = self
-            .child
-            .lock_or_recover()
-            .as_ref()
-            .map(|active| (active.pass_id, Arc::clone(&active.child)));
+        let active = match self.child.lock_or_recover().as_ref() {
+            Some(QueryChildOwnership::Active(active)) => {
+                Some((active.pass_id, Arc::clone(&active.child)))
+            }
+            Some(QueryChildOwnership::Starting { .. }) | None => None,
+        };
         if let Some((pass_id, child)) = active {
             let confirmed = child
                 .lock_or_recover()
@@ -357,6 +433,14 @@ impl QueryCoordinator {
     fn complete_cancel(&self, pass_id: u64) -> bool {
         let _ownership = self.ownership.lock_or_recover();
         if self.active_pass_id() != Some(pass_id) {
+            return false;
+        }
+        if self
+            .child
+            .lock_or_recover()
+            .as_ref()
+            .is_some_and(|ownership| ownership.pass_id() == pass_id)
+        {
             return false;
         }
         *self.session.lock_or_recover() = None;
@@ -1021,25 +1105,60 @@ fn run_cli(
         .iter()
         .map(|variable| (variable.name.clone(), variable.value.clone()))
         .collect();
-    let (mut spawned_child, stdin, mut stdout, mut stderr) =
-        ManagedChild::spawn_user_cli(&command.executable, &arguments, &environment)
-            .map_err(|_| QueryRunError::code("spawn_failed"))?;
+    {
+        let state = app.state::<crate::State>();
+        if !state.query.reserve_child_start(pass_id) {
+            return Err(QueryRunError::code("cancelled"));
+        }
+    }
+    let (spawned_child, stdin, mut stdout, mut stderr) =
+        match ManagedChild::spawn_user_cli(&command.executable, &arguments, &environment) {
+            Ok(spawned) => spawned,
+            Err(_) => {
+                app.state::<crate::State>()
+                    .query
+                    .release_child_start(pass_id);
+                return Err(QueryRunError::code("spawn_failed"));
+            }
+        };
     drop(stdin);
+    let child = Arc::new(Mutex::new(spawned_child));
+    if !app
+        .state::<crate::State>()
+        .query
+        .publish_spawned_child(pass_id, Arc::clone(&child))
+    {
+        let confirmed = child
+            .lock_or_recover()
+            .hard_kill_confirmed(Instant::now() + TERMINATION_DEADLINE)
+            .is_some();
+        if !confirmed {
+            let _ = app
+                .state::<crate::State>()
+                .query
+                .retain_unconfirmed_child(pass_id, Arc::clone(&child));
+        }
+        return Err(QueryRunError::code(if confirmed {
+            "cancelled"
+        } else {
+            "termination_unconfirmed"
+        }));
+    }
     if crate::query_provider::set_pipe_nonblocking(&stdout).is_err()
         || crate::query_provider::set_pipe_nonblocking(&stderr).is_err()
     {
-        let _ = spawned_child.hard_kill_confirmed(Instant::now() + TERMINATION_DEADLINE);
-        return Err(QueryRunError::code("process_failed"));
-    }
-    let child = Arc::new(Mutex::new(spawned_child));
-    {
-        let state = app.state::<crate::State>();
-        if !state.query.install_child(pass_id, Arc::clone(&child)) {
-            let _ = child
-                .lock_or_recover()
-                .hard_kill_confirmed(Instant::now() + TERMINATION_DEADLINE);
-            return Err(QueryRunError::code("cancelled"));
-        }
+        let confirmed = child
+            .lock_or_recover()
+            .hard_kill_confirmed(Instant::now() + TERMINATION_DEADLINE)
+            .is_some();
+        app.state::<crate::State>()
+            .query
+            .clear_child_if_confirmed(pass_id, confirmed);
+        return Err(QueryRunError::code(if confirmed {
+            "process_failed"
+        } else {
+            "termination_unconfirmed"
+        }));
     }
 
     // Keep at most a small number of unread pipe chunks in memory. Stderr is
@@ -1637,6 +1756,50 @@ mod tests {
     }
 
     #[test]
+    fn cancellation_cannot_complete_during_child_start_reservation() {
+        let query = QueryCoordinator::default();
+        let pass_id = query.allocate_keyboard_pass().unwrap();
+        query.set_status(pass_id, QueryStatus::Running);
+
+        assert!(query.reserve_child_start(pass_id));
+        assert!(query.begin_cancel(pass_id));
+        assert!(!query.terminate_child(pass_id));
+        assert!(!query.complete_cancel(pass_id));
+        assert!(query.fail_cancel_termination(pass_id));
+        assert_eq!(query.allocate_keyboard_pass(), None);
+
+        // A failed spawn releases the reservation. With no process to own, a
+        // terminal pass may then be superseded safely.
+        query.release_child_start(pass_id);
+        assert_eq!(query.allocate_keyboard_pass(), Some(pass_id + 1));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn child_published_after_cancel_remains_owned_until_confirmed_dead() {
+        let query = QueryCoordinator::default();
+        let pass_id = query.allocate_keyboard_pass().unwrap();
+        query.set_status(pass_id, QueryStatus::Running);
+        assert!(query.reserve_child_start(pass_id));
+        assert!(query.begin_cancel(pass_id));
+
+        let arguments = vec!["30".to_string()];
+        let (child, stdin, stdout, stderr) =
+            ManagedChild::spawn_user_cli(Path::new("/bin/sleep"), &arguments, &[]).unwrap();
+        drop((stdin, stdout, stderr));
+        assert!(query.publish_spawned_child(pass_id, Arc::new(Mutex::new(child))));
+
+        query.clear_child_if_confirmed(pass_id, false);
+        assert!(query.child.lock_or_recover().is_some());
+        assert!(!query.complete_cancel(pass_id));
+        assert_eq!(query.allocate_keyboard_pass(), None);
+
+        assert!(query.terminate_child(pass_id));
+        assert!(query.complete_cancel(pass_id));
+        assert_eq!(query.allocate_keyboard_pass(), Some(pass_id + 1));
+    }
+
+    #[test]
     #[cfg(unix)]
     fn unconfirmed_child_ownership_blocks_a_new_pass() {
         let query = QueryCoordinator::default();
@@ -1645,7 +1808,8 @@ mod tests {
         let (child, stdin, stdout, stderr) =
             ManagedChild::spawn_user_cli(Path::new("/bin/sleep"), &arguments, &[]).unwrap();
         drop((stdin, stdout, stderr));
-        assert!(query.install_child(pass_id, Arc::new(Mutex::new(child))));
+        assert!(query.reserve_child_start(pass_id));
+        assert!(query.publish_spawned_child(pass_id, Arc::new(Mutex::new(child))));
 
         query.clear_child_if_confirmed(pass_id, false);
         query.set_status(pass_id, QueryStatus::Failed);
