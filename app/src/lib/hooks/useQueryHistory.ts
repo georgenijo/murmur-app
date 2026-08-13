@@ -118,17 +118,21 @@ export function useQueryHistory(active: boolean) {
   useEffect(() => {
     if (!active) {
       requestRef.current += 1;
+      // Keep the content-free provider filter as a workspace preference, but
+      // release every value derived from the Rust-owned content store.
       setEntries([]);
       setTotal(0);
       setHasMore(false);
       setError(null);
       setLoading(false);
+      setClearing(false);
       return;
     }
     void refresh();
   }, [active, provider, refresh]);
 
   useEffect(() => {
+    if (!active) return;
     let disposed = false;
     let unlisten: (() => void) | null = null;
     void listen<unknown>('query-history-changed', (event) => {
@@ -151,7 +155,7 @@ export function useQueryHistory(active: boolean) {
       disposed = true;
       unlisten?.();
     };
-  }, [refresh]);
+  }, [active, refresh]);
 
   return {
     entries,

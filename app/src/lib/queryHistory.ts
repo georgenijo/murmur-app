@@ -10,6 +10,39 @@ export interface QueryHistoryTokenCountsV1 {
   cacheCreationInputTokens: number;
 }
 
+export const QUERY_HISTORY_ERROR_CODES = [
+  'not_configured',
+  'invalid_executable',
+  'invalid_arguments',
+  'invalid_timeout',
+  'invalid_environment',
+  'environment_unavailable',
+  'busy',
+  'audio_start_failed',
+  'audio_not_ready',
+  'audio_capture_failed',
+  'audio_recovering',
+  'audio_recovery_stalled',
+  'no_speech',
+  'transcription_failed',
+  'empty_query',
+  'query_too_large',
+  'spawn_failed',
+  'process_failed',
+  'termination_unconfirmed',
+  'timed_out',
+  'output_too_large',
+  'provider_not_authenticated',
+  'provider_error',
+  'exit_nonzero',
+  'empty_answer',
+  'clipboard_superseded',
+  'clipboard_unavailable',
+  'cancelled',
+] as const;
+
+export type QueryHistoryErrorCodeV1 = typeof QUERY_HISTORY_ERROR_CODES[number];
+
 export interface QueryHistoryEntryV1 {
   schemaVersion: 1;
   id: string;
@@ -19,7 +52,7 @@ export interface QueryHistoryEntryV1 {
   answer: string;
   tokens: QueryHistoryTokenCountsV1 | null;
   durationMs: number;
-  errorCode: string | null;
+  errorCode: QueryHistoryErrorCodeV1 | null;
 }
 
 export interface QueryHistoryPageV1 {
@@ -43,7 +76,7 @@ export const QUERY_HISTORY_MAX_ENTRIES = 200;
 
 const MAX_QUESTION_BYTES = 32 * 1024;
 const MAX_ANSWER_BYTES = 256 * 1024;
-const MAX_ERROR_CODE_LENGTH = 64;
+const queryHistoryErrorCodes = new Set<string>(QUERY_HISTORY_ERROR_CODES);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -110,8 +143,7 @@ export function isQueryHistoryEntryV1(value: unknown): value is QueryHistoryEntr
   }
   return value.errorCode === null || (
     typeof value.errorCode === 'string'
-    && /^[a-z_]+$/.test(value.errorCode)
-    && value.errorCode.length <= MAX_ERROR_CODE_LENGTH
+    && queryHistoryErrorCodes.has(value.errorCode)
   );
 }
 

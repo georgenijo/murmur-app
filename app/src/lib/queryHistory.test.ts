@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
 
 import {
+  QUERY_HISTORY_ERROR_CODES,
   clearQueryHistory,
   isQueryHistoryChanged,
   isQueryHistoryEntryV1,
@@ -58,6 +59,10 @@ describe('Voice Query history IPC boundary', () => {
       tokens: { ...entry.tokens, costUsd: 0.25 },
     })).toBe(false);
     expect(isQueryHistoryEntryV1({ ...entry, errorCode: 'raw error: secret' })).toBe(false);
+    expect(isQueryHistoryEntryV1({ ...entry, errorCode: 'syntactically_valid_but_unknown' })).toBe(false);
+    QUERY_HISTORY_ERROR_CODES.forEach((errorCode) => {
+      expect(isQueryHistoryEntryV1({ ...entry, errorCode })).toBe(true);
+    });
     expect(isQueryHistoryPageV1({
       schemaVersion: 1,
       entries: [entry],

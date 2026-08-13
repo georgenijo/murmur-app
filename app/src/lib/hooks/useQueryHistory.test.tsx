@@ -7,6 +7,7 @@ type Listener = (event: { payload: unknown }) => void;
 const mocks = vi.hoisted(() => ({
   list: vi.fn(),
   clear: vi.fn(),
+  unlisten: vi.fn(),
   listeners: new Map<string, Listener>(),
 }));
 
@@ -18,7 +19,10 @@ vi.mock('../queryHistory', async importOriginal => ({
 vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn(async (name: string, listener: Listener) => {
     mocks.listeners.set(name, listener);
-    return () => mocks.listeners.delete(name);
+    return () => {
+      mocks.unlisten(name);
+      mocks.listeners.delete(name);
+    };
   }),
 }));
 
@@ -45,6 +49,7 @@ describe('useQueryHistory', () => {
   beforeEach(() => {
     mocks.list.mockReset().mockResolvedValue(emptyPage());
     mocks.clear.mockReset().mockResolvedValue(undefined);
+    mocks.unlisten.mockReset();
     mocks.listeners.clear();
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -59,6 +64,7 @@ describe('useQueryHistory', () => {
   it('does not retrieve content until the Queries workspace is active', async () => {
     await act(async () => root.render(<Harness active={false} />));
     expect(mocks.list).not.toHaveBeenCalled();
+    expect(mocks.listeners.has('query-history-changed')).toBe(false);
 
     await act(async () => {
       root.render(<Harness active />);
@@ -66,10 +72,35 @@ describe('useQueryHistory', () => {
       await Promise.resolve();
     });
     expect(mocks.list).toHaveBeenCalledWith({ offset: 0, limit: 50, provider: null });
+    const staleListener = mocks.listeners.get('query-history-changed');
+    expect(staleListener).toBeDefined();
+    let finishClear!: () => void;
+    mocks.clear.mockImplementationOnce(() => new Promise<void>((resolve) => { finishClear = resolve; }));
+    await act(async () => {
+      void latest.clear();
+      await Promise.resolve();
+    });
+    expect(latest.clearing).toBe(true);
 
     await act(async () => root.render(<Harness active={false} />));
+    expect(mocks.unlisten).toHaveBeenCalledWith('query-history-changed');
+    expect(mocks.listeners.has('query-history-changed')).toBe(false);
     expect(latest.entries).toEqual([]);
     expect(latest.total).toBe(0);
+    expect(latest.hasMore).toBe(false);
+    expect(latest.loading).toBe(false);
+    expect(latest.clearing).toBe(false);
+    expect(latest.error).toBeNull();
+
+    mocks.list.mockClear();
+    await act(async () => {
+      staleListener?.({ payload: { kind: 'inserted' } });
+      staleListener?.({ payload: { kind: 'cleared' } });
+      finishClear();
+      await Promise.resolve();
+    });
+    expect(mocks.list).not.toHaveBeenCalled();
+    expect(latest.entries).toEqual([]);
   });
 
   it('uses the selected provider and ignores a superseded response', async () => {
