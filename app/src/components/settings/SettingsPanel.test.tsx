@@ -2,6 +2,7 @@ import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_SETTINGS, type Settings } from '../../lib/settings';
+import { CUSTOM_QUERY_PRESET } from '../../lib/queryProviders';
 import type { TransformModelStatus } from '../../lib/transformSettings';
 import {
   SETTINGS_CATEGORIES,
@@ -402,6 +403,22 @@ describe('SettingsPanel Voice Query async ownership', () => {
     });
   }
 
+  async function chooseProvider(label: string) {
+    const provider = Array.from(container.querySelectorAll('[role="combobox"]')).find(
+      (element) => element.textContent?.trim() === currentSettings.queryProvider.charAt(0).toUpperCase()
+        + currentSettings.queryProvider.slice(1),
+    ) as HTMLButtonElement;
+    await act(async () => provider.click());
+    const option = Array.from(container.querySelectorAll('[role="option"]')).find(
+      (element) => element.textContent?.includes(label),
+    ) as HTMLLIElement;
+    await act(async () => {
+      option.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  }
+
   it('does not enable an edited command after an older validation resolves', async () => {
     let resolveValidation!: () => void;
     const validation = new Promise<void>((resolve) => { resolveValidation = resolve; });
@@ -448,7 +465,7 @@ describe('SettingsPanel Voice Query async ownership', () => {
     expect(currentSettings.queryHotkey).toBeNull();
   });
 
-  it('explains that provider changes intentionally disable the previous command', async () => {
+  it('keeps the same shortcut after the exact new preset validates and passes preflight', async () => {
     coreMocks.invoke.mockImplementation((command: string) => {
       if (command === 'list_query_provider_presets') {
         return Promise.resolve([
@@ -478,22 +495,248 @@ describe('SettingsPanel Voice Query async ownership', () => {
           },
         ]);
       }
+      if (command === 'validate_query_command') return Promise.resolve();
+      if (command === 'test_query_provider') {
+        return Promise.resolve({
+          ok: true,
+          authenticated: true,
+          errorCode: null,
+          stdout: 'ready',
+          stderr: '',
+          stdoutTruncated: false,
+          stderrTruncated: false,
+          signInFix: null,
+        });
+      }
       return idleInvoke(command);
     });
     await renderVoiceQuery({ queryHotkey: 'ctrl_l' });
 
-    const provider = Array.from(container.querySelectorAll('[role="combobox"]')).find(
-      (element) => element.textContent?.trim() === 'Custom',
-    ) as HTMLButtonElement;
-    await act(async () => provider.click());
-    const cursor = Array.from(container.querySelectorAll('[role="option"]')).find(
-      (element) => element.textContent?.includes('Cursor'),
-    ) as HTMLLIElement;
-    await act(async () => cursor.click());
+    await chooseProvider('Cursor');
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(currentSettings.queryProvider).toBe('cursor');
+    expect(currentSettings.queryHotkey).toBe('ctrl_l');
+    expect(container.textContent).toContain('Voice Query stayed enabled after validation and preflight');
+    const expectedCommand = {
+      provider: 'cursor',
+      executable: '/usr/local/bin/cursor-agent',
+      arguments: ['--print', '--mode', 'ask', '--single-turn', '--trust'],
+      timeoutSeconds: DEFAULT_SETTINGS.queryTimeoutSeconds,
+      contextLevel: DEFAULT_SETTINGS.queryContextLevel,
+      retainQueryHistory: DEFAULT_SETTINGS.retainQueryHistory,
+    };
+    expect(coreMocks.invoke).toHaveBeenCalledWith('validate_query_command', {
+      command: expectedCommand,
+    });
+    expect(coreMocks.invoke).toHaveBeenCalledWith('test_query_provider', {
+      command: expectedCommand,
+    });
+  });
+
+  it('leaves Voice Query disabled with an actionable error when the new preflight fails', async () => {
+    coreMocks.invoke.mockImplementation((command: string) => {
+      if (command === 'list_query_provider_presets') {
+        return Promise.resolve([
+          CUSTOM_QUERY_PRESET,
+          {
+            ...CUSTOM_QUERY_PRESET,
+            id: 'cursor',
+            label: 'Cursor',
+            discoveredExecutable: '/usr/local/bin/cursor-agent',
+            recommendedArguments: ['--print', '--mode', 'ask', '--single-turn', '--trust'],
+            authProbeArguments: ['status'],
+            signInArguments: ['login'],
+            signInFix: 'Run cursor-agent login in Terminal.',
+          },
+        ]);
+      }
+      if (command === 'validate_query_command') return Promise.resolve();
+      if (command === 'test_query_provider') {
+        return Promise.resolve({
+          ok: false,
+          authenticated: false,
+          errorCode: 'provider_not_authenticated',
+          stdout: '',
+          stderr: 'Not logged in',
+          stdoutTruncated: false,
+          stderrTruncated: false,
+          signInFix: 'Run cursor-agent login in Terminal.',
+        });
+      }
+      return idleInvoke(command);
+    });
+    await renderVoiceQuery({ queryHotkey: 'ctrl_l' });
+
+    await chooseProvider('Cursor');
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
 
     expect(currentSettings.queryProvider).toBe('cursor');
     expect(currentSettings.queryHotkey).toBeNull();
-    expect(container.textContent).toContain('Provider changed. Voice Query was turned off');
+    expect(container.textContent).toContain('Voice Query remains off. Run cursor-agent login in Terminal.');
+  });
+
+  it('does not auto-enable or preflight a provider switch that started disabled', async () => {
+    coreMocks.invoke.mockImplementation((command: string) => {
+      if (command === 'list_query_provider_presets') {
+        return Promise.resolve([
+          CUSTOM_QUERY_PRESET,
+          {
+            ...CUSTOM_QUERY_PRESET,
+            id: 'cursor',
+            label: 'Cursor',
+            discoveredExecutable: '/usr/local/bin/cursor-agent',
+            recommendedArguments: ['--print', '--mode', 'ask', '--single-turn', '--trust'],
+          },
+        ]);
+      }
+      return idleInvoke(command);
+    });
+    await renderVoiceQuery({ queryHotkey: null });
+
+    await chooseProvider('Cursor');
+
+    expect(currentSettings.queryProvider).toBe('cursor');
+    expect(currentSettings.queryHotkey).toBeNull();
+    expect(coreMocks.invoke).not.toHaveBeenCalledWith(
+      'validate_query_command',
+      expect.anything(),
+    );
+    expect(coreMocks.invoke).not.toHaveBeenCalledWith(
+      'test_query_provider',
+      expect.anything(),
+    );
+  });
+
+  it('lets only the latest rapid provider switch restore the carried shortcut', async () => {
+    let resolveCursor!: (value: Record<string, unknown>) => void;
+    let resolveClaude!: (value: Record<string, unknown>) => void;
+    const cursorResult = new Promise<Record<string, unknown>>((resolve) => { resolveCursor = resolve; });
+    const claudeResult = new Promise<Record<string, unknown>>((resolve) => { resolveClaude = resolve; });
+    coreMocks.invoke.mockImplementation((command: string, args?: { command?: { provider?: string } }) => {
+      if (command === 'list_query_provider_presets') {
+        return Promise.resolve([
+          CUSTOM_QUERY_PRESET,
+          {
+            ...CUSTOM_QUERY_PRESET,
+            id: 'cursor',
+            label: 'Cursor',
+            discoveredExecutable: '/usr/local/bin/cursor-agent',
+            recommendedArguments: ['--trust'],
+          },
+          {
+            ...CUSTOM_QUERY_PRESET,
+            id: 'claude',
+            label: 'Claude',
+            discoveredExecutable: '/usr/local/bin/claude',
+            recommendedArguments: ['--print'],
+          },
+        ]);
+      }
+      if (command === 'validate_query_command') return Promise.resolve();
+      if (command === 'test_query_provider') {
+        return args?.command?.provider === 'cursor' ? cursorResult : claudeResult;
+      }
+      return idleInvoke(command);
+    });
+    await renderVoiceQuery({ queryHotkey: 'ctrl_l' });
+
+    await chooseProvider('Cursor');
+    await chooseProvider('Claude');
+    await act(async () => {
+      resolveClaude({
+        ok: true,
+        authenticated: true,
+        errorCode: null,
+        stdout: '',
+        stderr: '',
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        signInFix: null,
+      });
+      await claudeResult;
+      await Promise.resolve();
+    });
+    expect(currentSettings.queryProvider).toBe('claude');
+    expect(currentSettings.queryHotkey).toBe('ctrl_l');
+
+    await act(async () => {
+      resolveCursor({
+        ok: true,
+        authenticated: true,
+        errorCode: null,
+        stdout: 'STALE_CURSOR_RESULT',
+        stderr: '',
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        signInFix: null,
+      });
+      await cursorResult;
+      await Promise.resolve();
+    });
+    expect(currentSettings.queryProvider).toBe('claude');
+    expect(currentSettings.queryHotkey).toBe('ctrl_l');
+    expect(container.textContent).not.toContain('STALE_CURSOR_RESULT');
+  });
+
+  it('does not restore the shortcut when the preset command changes during deferred preflight', async () => {
+    let resolvePreflight!: (value: Record<string, unknown>) => void;
+    const preflight = new Promise<Record<string, unknown>>((resolve) => { resolvePreflight = resolve; });
+    coreMocks.invoke.mockImplementation((command: string) => {
+      if (command === 'list_query_provider_presets') {
+        return Promise.resolve([
+          CUSTOM_QUERY_PRESET,
+          {
+            ...CUSTOM_QUERY_PRESET,
+            id: 'cursor',
+            label: 'Cursor',
+            discoveredExecutable: '/usr/local/bin/cursor-agent',
+            recommendedArguments: ['--trust'],
+          },
+        ]);
+      }
+      if (command === 'validate_query_command') return Promise.resolve();
+      if (command === 'test_query_provider') return preflight;
+      return idleInvoke(command);
+    });
+    await renderVoiceQuery({ queryHotkey: 'ctrl_l' });
+
+    await chooseProvider('Cursor');
+    const executable = container.querySelector('#query-executable') as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => {
+      setter.call(executable, '/usr/bin/false');
+      executable.dispatchEvent(new Event('input', { bubbles: true }));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      resolvePreflight({
+        ok: true,
+        authenticated: true,
+        errorCode: null,
+        stdout: 'STALE_SUCCESS',
+        stderr: '',
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        signInFix: null,
+      });
+      await preflight;
+      await Promise.resolve();
+    });
+
+    expect(currentSettings.queryProvider).toBe('cursor');
+    expect(currentSettings.queryExecutable).toBe('/usr/bin/false');
+    expect(currentSettings.queryHotkey).toBeNull();
+    expect(container.textContent).toContain(
+      'Configuration changed during provider preflight. Voice Query remains off.',
+    );
+    expect(container.textContent).not.toContain('STALE_SUCCESS');
   });
 
   it('diagnoses an incomplete Codex platform package from its ENOENT probe output', async () => {

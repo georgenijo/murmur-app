@@ -317,6 +317,23 @@ function queryCommand(settings: Settings): QueryCommandConfig {
   };
 }
 
+const QUERY_SWITCH_INTERRUPTED_NOTICE =
+  'Configuration changed during provider preflight. Voice Query remains off.';
+
+function queryCommandFingerprintFor(
+  command: QueryCommandConfig,
+  transformHoldKey: TransformKey | null,
+): string {
+  return JSON.stringify([
+    command.provider,
+    command.executable,
+    command.arguments,
+    command.timeoutSeconds,
+    command.contextLevel,
+    transformHoldKey,
+  ]);
+}
+
 export const SettingsPanel = memo(function SettingsPanel({
   settings,
   onUpdateSettings,
@@ -560,22 +577,25 @@ export const SettingsPanel = memo(function SettingsPanel({
   const [querySignInStatus, setQuerySignInStatus] = useState<string | null>(null);
   const signInPollRef = useRef(0);
   const queryConfigGenerationRef = useRef(0);
-  const queryCommandFingerprint = JSON.stringify([
-    settings.queryProvider,
-    settings.queryExecutable,
-    settings.queryArguments,
-    settings.queryTimeoutSeconds,
-    settings.queryContextLevel,
-  ]);
+  const queryProviderSwitchRef = useRef<{ generation: number; hotkey: QueryKey } | null>(null);
+  const queryCommandFingerprint = queryCommandFingerprintFor(
+    queryCommand(settings),
+    settings.transformHoldKey,
+  );
   const queryCommandFingerprintRef = useRef(queryCommandFingerprint);
 
   const invalidateQueryRequests = () => {
+    const interruptedProviderSwitch = queryProviderSwitchRef.current !== null;
     queryConfigGenerationRef.current += 1;
     signInPollRef.current += 1;
+    queryProviderSwitchRef.current = null;
     setQueryConfigBusy(false);
     setQueryTestBusy(false);
     setQueryTestResult(null);
     setQuerySignInStatus(null);
+    if (interruptedProviderSwitch) {
+      setQueryConfigNotice(QUERY_SWITCH_INTERRUPTED_NOTICE);
+    }
     return queryConfigGenerationRef.current;
   };
 
@@ -586,17 +606,24 @@ export const SettingsPanel = memo(function SettingsPanel({
   useEffect(() => () => {
     signInPollRef.current += 1;
     queryConfigGenerationRef.current += 1;
+    queryProviderSwitchRef.current = null;
   }, []);
 
   useLayoutEffect(() => {
     if (queryCommandFingerprintRef.current === queryCommandFingerprint) return;
+    const interruptedProviderSwitch = queryProviderSwitchRef.current !== null;
     queryCommandFingerprintRef.current = queryCommandFingerprint;
     queryConfigGenerationRef.current += 1;
     signInPollRef.current += 1;
+    queryProviderSwitchRef.current = null;
     setQueryConfigBusy(false);
     setQueryTestBusy(false);
     setQueryTestResult(null);
     setQuerySignInStatus(null);
+    if (interruptedProviderSwitch) {
+      setQueryConfigError(null);
+      setQueryConfigNotice(QUERY_SWITCH_INTERRUPTED_NOTICE);
+    }
   }, [queryCommandFingerprint]);
 
   useEffect(() => {
@@ -777,14 +804,39 @@ export const SettingsPanel = memo(function SettingsPanel({
     }
   };
 
-  const selectQueryProvider = (provider: QueryProviderId) => {
+  const selectQueryProvider = async (provider: QueryProviderId) => {
     const selected = queryPresets.find((preset) => preset.id === provider)
       ?? (provider === 'custom' ? CUSTOM_QUERY_PRESET : null);
     if (!selected) return;
-    invalidateQueryRequests();
+    // A rapid second selection sees the hotkey carried by the still-current
+    // switch transaction even though Settings has already persisted the
+    // fail-closed temporary `null`. No completed or failed transaction keeps
+    // this ref alive.
+    const hotkeyToPreserve = settings.queryHotkey
+      ?? queryProviderSwitchRef.current?.hotkey
+      ?? null;
+    const command: QueryCommandConfig = {
+      provider,
+      executable: selected.discoveredExecutable ?? '',
+      arguments: [...selected.recommendedArguments],
+      timeoutSeconds: settings.queryTimeoutSeconds,
+      contextLevel: settings.queryContextLevel,
+      retainQueryHistory: settings.retainQueryHistory,
+    };
+    const generation = invalidateQueryRequests();
+    if (hotkeyToPreserve !== null) {
+      queryProviderSwitchRef.current = { generation, hotkey: hotkeyToPreserve };
+    }
+    // This is the exact command being committed below. Priming the ref keeps
+    // the controlled-settings layout effect from invalidating its own switch;
+    // any different edit still changes the fingerprint and wins the race.
+    queryCommandFingerprintRef.current = queryCommandFingerprintFor(
+      command,
+      settings.transformHoldKey,
+    );
     setQueryConfigError(null);
-    setQueryConfigNotice(settings.queryHotkey !== null
-      ? 'Provider changed. Voice Query was turned off so the new command can be tested before use.'
+    setQueryConfigNotice(hotkeyToPreserve !== null
+      ? `Checking ${selected.label} before keeping Voice Query enabled…`
       : null);
     setQueryTestResult(null);
     setQuerySignInStatus(null);
@@ -794,10 +846,49 @@ export const SettingsPanel = memo(function SettingsPanel({
     setConfiguredQueryEnvironment([]);
     onUpdateSettings({
       queryProvider: provider,
-      queryExecutable: selected.discoveredExecutable ?? '',
-      queryArguments: selected.recommendedArguments,
+      queryExecutable: command.executable,
+      queryArguments: command.arguments,
       queryHotkey: null,
     });
+    if (hotkeyToPreserve === null) return;
+
+    setQueryConfigBusy(true);
+    setQueryTestBusy(true);
+    try {
+      await validateQueryCommand(command);
+      if (!queryRequestIsCurrent(generation)) return;
+      const result = await testQueryProvider(command);
+      if (!queryRequestIsCurrent(generation)) return;
+      setQueryTestResult(result);
+      if (!result.ok) {
+        queryProviderSwitchRef.current = null;
+        setQueryConfigNotice(null);
+        setQueryConfigError(
+          `Voice Query remains off. ${queryProviderTestMessage(provider, result)}`,
+        );
+        return;
+      }
+      const pending = queryProviderSwitchRef.current;
+      if (!pending || pending.generation !== generation || pending.hotkey !== hotkeyToPreserve) {
+        return;
+      }
+      queryProviderSwitchRef.current = null;
+      setQueryConfigNotice(
+        `Provider changed to ${selected.label}. Voice Query stayed enabled after validation and preflight.`,
+      );
+      onUpdateSettings({ queryHotkey: hotkeyToPreserve });
+    } catch (error) {
+      if (queryRequestIsCurrent(generation)) {
+        queryProviderSwitchRef.current = null;
+        setQueryConfigNotice(null);
+        setQueryConfigError(`Voice Query remains off. ${queryConfigurationMessage(error)}`);
+      }
+    } finally {
+      if (queryRequestIsCurrent(generation)) {
+        setQueryConfigBusy(false);
+        setQueryTestBusy(false);
+      }
+    }
   };
 
   const saveDeclaredEnvironment = async () => {
@@ -1160,7 +1251,7 @@ export const SettingsPanel = memo(function SettingsPanel({
               <label className="mb-1.5 block text-sm font-medium text-on-surface">Provider</label>
               <Select
                 value={settings.queryProvider}
-                onChange={(value) => selectQueryProvider(value as QueryProviderId)}
+                onChange={(value) => void selectQueryProvider(value as QueryProviderId)}
                 items={queryProviderItems.length > 0
                   ? queryProviderItems
                   : [{ value: 'custom', label: 'Custom' }]}
