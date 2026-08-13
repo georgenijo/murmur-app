@@ -76,6 +76,9 @@ pub async fn run_benchmark(
         if state.app_state.transform_status().blocks_recording() {
             return Err("Wait for the transform to finish before benchmarking".to_string());
         }
+        // Deliberately the strict predicate, not `blocks_capture`: a query in
+        // `Running` still has a CLI child competing for CPU, which would skew
+        // the latency numbers this harness exists to measure.
         if state.query.status().blocks_pipeline() {
             return Err("Wait for the voice query to finish before benchmarking".to_string());
         }

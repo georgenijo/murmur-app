@@ -16,9 +16,15 @@ Issue [#538](https://github.com/georgenijo/murmur-app/issues/538). Voice Query i
 
 The shared `rdev` listener owns a third detector for the query shortcut (`alt_r`, `ctrl_l`, or `shift_r`). It uses the same double-tap timing as toggle dictation but has no spoken-keyword path. A query and selected-text transform cannot use the same physical key.
 
-Each accepted press allocates a monotonic `query_pass_id`. Capture, ASR, process ownership, streamed chunks, completion, Copy, Escape, and cancellation carry that exact ID. Stale continuations no-op. Query capture is mutually exclusive with dictation, file transcription, Performance Lab, corpus capture, and selected-text transform.
+Each accepted press allocates a monotonic `query_pass_id`. Capture, ASR, process ownership, streamed chunks, completion, Copy, Escape, and cancellation carry that exact ID. Stale continuations no-op.
+
+Exclusivity is scoped to what a query actually holds, and the two predicates in `query_flow.rs` are deliberately different. While the query owns the microphone or the shared ASR backend (`connecting`, `listening`, `transcribing`), `blocks_capture` refuses dictation, file transcription, and the Settings microphone test. Once the query reaches `running` it holds only its CLI child — capture stopped and joined before `transcribing`, ASR finished before `running` — so dictation is free to start again during answer generation, which is the longest phase. The stricter `blocks_pipeline` additionally covers `running` and continues to exclude Performance Lab, corpus capture, and selected-text transform, because the child competes for CPU and may itself be a heavy inference runtime. Dictation refused during capture reports `busy_querying` rather than failing silently.
+
+Dictation and a query answer both finish on the clipboard, and neither defers to the other: an answer that completes after a dictation lands overwrites it, matching the more recent user action.
 
 The state sequence is `connecting → listening → transcribing → running → ready|failed`. A single tap stops capture after the double-tap start. Escape and Cancel are valid throughout. The completed answer is copied to the clipboard and remains selectable in the popover; Copy repeats that action. It is never pasted automatically.
+
+Like the notch overlay, the answer popover is configured `visibleOnAllWorkspaces` so it joins every Space instead of staying pinned to the one it was created on. Its position still derives from the main window's monitor, so on a multi-display setup it follows that display rather than the active one.
 
 ## Process and output bounds
 
