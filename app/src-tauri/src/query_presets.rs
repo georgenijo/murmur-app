@@ -98,7 +98,10 @@ pub(crate) const PRESETS: &[QueryPreset] = &[
         recommended_arguments: &["exec"],
         auth_probe_arguments: &["login", "status"],
         login_arguments: &["login"],
-        auth_failure_signatures: &["run `codex login`", "codex login"],
+        // Deliberately narrower than a bare "codex login": a signed-in CLI can
+        // still mention its own login command (e.g. to switch accounts), and a
+        // false "not signed in" is worse than falling back to the generic set.
+        auth_failure_signatures: &["run `codex login`", "please run codex login"],
         suggested_env_keys: &["CODEX_HOME"],
         login_hint: "codex login",
     },
@@ -113,7 +116,7 @@ pub(crate) const PRESETS: &[QueryPreset] = &[
         // that only succeeds with working credentials.
         auth_probe_arguments: &["models"],
         login_arguments: &["login"],
-        auth_failure_signatures: &["run `grok login`", "grok login", "sign in to grok"],
+        auth_failure_signatures: &["run `grok login`", "sign in to grok"],
         suggested_env_keys: &["GROK_HOME"],
         login_hint: "grok login",
     },
@@ -602,6 +605,34 @@ mod tests {
         assert_eq!(
             verdict_for(preset("claude"), Some(0), signed_in),
             AuthVerdict::Authenticated
+        );
+    }
+
+    #[test]
+    fn a_signed_in_provider_that_mentions_its_own_login_is_not_read_as_signed_out() {
+        // Reporting a signed-in provider as signed out sends the user through a
+        // pointless login, so a signature must match a refusal — not any
+        // sentence that happens to name the login command.
+        assert_eq!(
+            verdict_for(
+                preset("codex"),
+                Some(0),
+                "Logged in using ChatGPT. Use codex login to switch accounts."
+            ),
+            AuthVerdict::Authenticated
+        );
+        assert_eq!(
+            verdict_for(
+                preset("grok"),
+                Some(0),
+                "You are logged in with grok.com. Run grok logout first, then grok login again."
+            ),
+            AuthVerdict::Authenticated
+        );
+        // The refusals themselves are still recognised.
+        assert_eq!(
+            verdict_for(preset("codex"), Some(1), "Not logged in. Run `codex login`."),
+            AuthVerdict::NotAuthenticated
         );
     }
 
