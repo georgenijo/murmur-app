@@ -13,7 +13,7 @@
 git clone https://github.com/georgenijo/murmur-app.git
 cd murmur-app
 
-# 1. Build the bundled helpers FIRST (macOS only — no-op elsewhere)
+# 1. Build the bundled macOS helpers FIRST
 python3 scripts/build_local_llm_sidecar.py
 
 # 2. Install Node dependencies

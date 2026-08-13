@@ -49,7 +49,7 @@ def output(command: list[str], *, cwd: Path | None = None) -> str:
 def _validate_result_shape(result: Any) -> None:
     """Validate the app-written result schema and successful OTA contract.
 
-    This function intentionally has no macOS or Fleet dependencies so Linux CI
+    This function intentionally has no macOS or Fleet dependencies so unit tests
     can exercise the gate's acceptance logic.
     """
     if not isinstance(result, dict):

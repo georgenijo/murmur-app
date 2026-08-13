@@ -11,7 +11,6 @@ CI_WORKFLOW = ROOT / ".github/workflows/ci.yml"
 RELEASE_BUILD_WORKFLOW = ROOT / ".github/workflows/release-build.yml"
 RELEASE_REHEARSAL_WORKFLOW = ROOT / ".github/workflows/release-rehearsal.yml"
 RELEASE_WORKFLOW = ROOT / ".github/workflows/release.yml"
-LINUX_SETUP_ACTION = ROOT / ".github/actions/setup-linux-build/action.yml"
 CARGO_TOML = ROOT / "app/src-tauri/Cargo.toml"
 
 CI_GUARD = (
@@ -25,9 +24,6 @@ CI_PASS_GUARD = (
 RELEASE_BUILD_GUARD = (
     '"${{ github.event_name == \'workflow_dispatch\' || '
     "startsWith(github.event.head_commit.message, 'chore: bump version') }}\""
-)
-TRUSTED_MAIN_CACHE_DEFAULT = (
-    '"${{ github.event_name == \'push\' && github.ref == \'refs/heads/main\' }}\"'
 )
 SEMVER = re.compile(
     r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"
@@ -139,11 +135,11 @@ def validate_ci(ci: str) -> int:
     dependency_audit = job_block(ci, "dependency-audit")
     ci_pass = job_block(ci, "ci-pass")
     assert scalar(changes, "if") == CI_GUARD
-    for job in ("typecheck", "visual-regression", "rust-macos", "linux"):
+    for job in ("typecheck", "visual-regression", "rust-macos"):
         assert scalar(job_block(ci, job), "needs") == "changes"
     assert scalar(dependency_audit, "if") == CI_GUARD
     assert scalar(ci_pass, "needs") == (
-        "[changes, typecheck, visual-regression, rust-macos, linux]"
+        "[changes, typecheck, visual-regression, rust-macos]"
     )
     assert scalar(ci_pass, "if") == CI_PASS_GUARD
     ci_pass_step = named_step_block(ci_pass, "Check CI result", 6)
@@ -190,11 +186,6 @@ def validate_ci(ci: str) -> int:
     assert (
         "cargo test --workspace --exclude murmur-llm-sidecar --lib -- --test-threads=1"
         in macos_lib_tests
-    )
-    linux_tests = named_step_block(job_block(ci, "linux"), "Run tests", 6)
-    assert (
-        "cargo test --workspace --exclude murmur-llm-sidecar --lib -- --test-threads=1"
-        in linux_tests
     )
     assert "swiftc -warnings-as-errors" in capture_build
     assert "sidecars/capture-agent/main.swift" in capture_build
@@ -247,9 +238,6 @@ def validate_release_build(workflow: str) -> int:
     # enter the queue concurrently instead of serializing behind typecheck.
     assert "needs: [typecheck]" not in workflow
     assert "macos-release-${{ needs.context.outputs.source-sha }}" in workflow
-    normalized = workflow.casefold()
-    for forbidden in ("release-linux:", "linux-release-", "appimage", "--bundles deb"):
-        assert forbidden not in normalized
     assert "capture-helper-tcc-evidence-${{ needs.context.outputs.source-sha }}" in workflow
     assert (
         "--capture-helper-entitlements app/src-tauri/capture-helper.entitlements.plist"
@@ -351,10 +339,6 @@ def validate_release_rehearsal(workflow: str) -> int:
         assert scalar(job_block(workflow, job), "needs") == "context"
     assert workflow.count("ref: ${{ needs.context.outputs.source-sha }}") == 2
     assert workflow.count("persist-credentials: false") == 3
-    assert "uses: ./.github/actions/setup-linux-build" not in workflow
-    normalized = workflow.casefold()
-    for forbidden in ("rehearse-linux:", "linux", "cuda", "appimage"):
-        assert forbidden not in normalized
 
     assert (
         "shared-key: macos-release-rehearsal-${{ needs.context.outputs.source-sha }}"
@@ -368,60 +352,6 @@ def validate_release_rehearsal(workflow: str) -> int:
     assert '"build_seconds": int(os.environ["BUILD_SECONDS"])' in workflow
     assert workflow.count("uses: actions/upload-artifact@v4") == 1
     return 2
-
-
-def validate_linux_cache_policy(action: str) -> None:
-    assert action.count(TRUSTED_MAIN_CACHE_DEFAULT) == 2
-    assert "cuda-cache-key-prefix:" in action
-    assert "default: 'cuda-minimal'" in action
-    cache_key = (
-        "${{ inputs.cuda-cache-key-prefix }}-${{ runner.os }}-"
-        "${{ runner.arch }}-${{ inputs.cuda-version }}-v1"
-    )
-    assert action.count(cache_key) == 3
-    assert 'sub-packages: \'["nvcc", "cudart-dev"]\'' in action
-    assert 'non-cuda-sub-packages: \'["libcublas-dev"]\'' in action
-    assert 'STUB_DIR="$RUNNER_TEMP/murmur-cuda-driver-stub"' in action
-    assert "CUDA_DRIVER_STUB_DIR=$STUB_DIR" in action
-    for forbidden in ("linuxdeploy", "AppImage", "appimage", "type2-runtime"):
-        assert forbidden not in action
-
-    prepare = named_step_block(action, "Prepare CUDA cache restore path", 4)
-    assert 'sudo mkdir -p "/usr/local/cuda-${CUDA_MM}"' in prepare
-    assert 'sudo chown -R "$(id -u):$(id -g)"' in prepare
-
-    restore = named_step_block(action, "Restore CUDA toolkit cache", 4)
-    save = named_step_block(action, "Save CUDA toolkit cache", 4)
-    assert "path: /usr/local/cuda-${{ env.CUDA_MM }}" in restore
-    assert "path: /usr/local/cuda-${{ env.CUDA_MM }}" in save
-    for forbidden in (
-        "/usr/local/cuda\n",
-        "/usr/lib/x86_64-linux-gnu/libcuda",
-        "/usr/lib/x86_64-linux-gnu/libnvidia",
-        "/etc/ld.so.conf.d",
-    ):
-        assert forbidden not in restore
-        assert forbidden not in save
-    assert "$RUNNER_TEMP" not in restore
-    assert "$RUNNER_TEMP" not in save
-    assert (
-        "if: steps.cuda-cache.outputs.cache-hit != 'true' && "
-        "inputs.cuda-cache-save-if == 'true'"
-    ) in save
-
-    verify = named_step_block(action, "Verify CUDA install", 4)
-    assert "nvcc --version" not in verify  # absolute versioned nvcc path is required
-    assert '"$NVCC" --version' in verify
-    assert "cache-hit=${{ steps.cuda-cache.outputs.cache-hit }}" in verify
-    assert "release ${CUDA_MM}" in verify
-
-    configure = named_step_block(action, "Configure CUDA environment", 4)
-    assert (
-        "LD_LIBRARY_PATH=$STUB_DIR:/usr/local/cuda/lib64:"
-        "/usr/local/cuda/targets/x86_64-linux/lib"
-        "${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
-    ) in configure
-    assert "${LD_LIBRARY_PATH:-}" not in configure
 
 
 def validate_release_profile(cargo_toml: str) -> None:
@@ -462,9 +392,6 @@ def validate_promotion_policy(workflow: str) -> int:
     assert 'split("@")[0]) == ".github/workflows/release-build.yml"' in workflow
     assert "expired == false" in workflow
     assert "scripts/release_artifacts.py validate" in workflow
-    normalized = workflow.casefold()
-    for forbidden in ("linux-release-", "artifacts/linux", "appimage"):
-        assert forbidden not in normalized
     assert 'for NAME in "macos-release-${SOURCE_SHA}"; do' in workflow
     assert "scripts/release_version.py check" in workflow
     assert '--git-ref "$SOURCE_SHA"' in workflow
@@ -544,13 +471,11 @@ def main() -> None:
     release_build = RELEASE_BUILD_WORKFLOW.read_text()
     release_rehearsal = RELEASE_REHEARSAL_WORKFLOW.read_text()
     release = RELEASE_WORKFLOW.read_text()
-    linux_action = LINUX_SETUP_ACTION.read_text()
     cargo_toml = CARGO_TOML.read_text()
 
     ci_cases = validate_ci(ci)
     release_build_cases = validate_release_build(release_build)
     rehearsal_jobs = validate_release_rehearsal(release_rehearsal)
-    validate_linux_cache_policy(linux_action)
     validate_release_profile(cargo_toml)
     publication_steps = validate_promotion_policy(release)
 

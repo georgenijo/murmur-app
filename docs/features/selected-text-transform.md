@@ -46,7 +46,7 @@ preset name or alias.
 - Download streams to a `.partial` file, hashes while streaming, fsyncs, then atomically publishes under the hash directory.
 - **Remove** deletes the hash directory (and any partial). The helper is shut down first so the file is not open.
 - **Reset runtime** clears the circuit breaker after repeated helper faults (`reset_transform_runtime`).
-- Apple Silicon + macOS only; other platforms report unsupported.
+- Requires Apple Silicon and macOS.
 
 ## Permissions
 

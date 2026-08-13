@@ -202,7 +202,7 @@ available for packaging and callback-boundary validation. See the
 | `llm_sidecar.rs` | Host supervisor for the signed local-LLM helper: spawn, handshake, RSS ceilings, idle unload, circuit breaker |
 | `model_runtime.rs` | Model catalog + lifecycle manager (load/warm/readiness/unload, generation-ordered status events) |
 | `performance_metrics/` | SQLite run history, stage timings, resource samples, retention |
-| `platform/` | Platform abstraction seams (macOS / Linux) |
+| `platform/` | macOS CPU/resource metrics seam |
 | `resource_monitor.rs` | CPU/RSS sampling, 1s heartbeat, idle-timeout enforcement |
 | `selection.rs` | AX selection capture with secure-field fail-closed and clipboard fallback |
 | `smart_formatting.rs` | Deterministic prose formatting and same-utterance backtracking |

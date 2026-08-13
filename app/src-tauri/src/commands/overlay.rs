@@ -394,7 +394,7 @@ pub fn get_overlay_geometry(state: tauri::State<'_, State>) -> OverlayGeometry {
     geometry_for(*state.notch_info.lock_or_recover())
 }
 
-/// Show the always-on-top overlay window (macOS notch overlay; no-op on Linux).
+/// Show the always-on-top macOS notch overlay window.
 #[tauri::command]
 pub fn show_overlay(app: tauri::AppHandle, state: tauri::State<'_, State>) -> Result<(), String> {
     #[cfg(not(target_os = "macos"))]

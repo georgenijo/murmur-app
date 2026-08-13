@@ -228,26 +228,6 @@ jobs:
           cargo run --example murmur-eval -- deterministic
           --output target/murmur-eval/ci-report.json
 
-  linux:
-    needs: changes
-    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.github == 'true'
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-
-      # actions/checkout above must run first so the local composite action is on disk.
-      - name: Setup Linux build environment
-        uses: ./.github/actions/setup-linux-build
-        with:
-          cuda-version: '12.8.0'
-          rust-cache-shared-key: linux-cuda-debug
-
-      - name: Run tests
-        run: |
-          cd app/src-tauri
-          LD_LIBRARY_PATH="$CUDA_DRIVER_STUB_DIR:${LD_LIBRARY_PATH:-}" \
-            cargo test --workspace --exclude murmur-llm-sidecar --lib -- --test-threads=1
-
   dependency-audit:
     if: "${{ github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'chore: bump version') }}"
     runs-on: ubuntu-latest
@@ -278,7 +258,7 @@ jobs:
           npm audit --audit-level=high
 
   ci-pass:
-    needs: [changes, typecheck, visual-regression, rust-macos, linux]
+    needs: [changes, typecheck, visual-regression, rust-macos]
     # Keep this guard aligned with `changes`; otherwise the sentinel would turn
     # an intentionally skipped release-bump run into a failure.
     if: "${{ always() && (github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'chore: bump version')) }}"
@@ -294,8 +274,7 @@ jobs:
           for result in \
             "${{ needs.typecheck.result }}" \
             "${{ needs.visual-regression.result }}" \
-            "${{ needs.rust-macos.result }}" \
-            "${{ needs.linux.result }}"; do
+            "${{ needs.rust-macos.result }}"; do
             if [ "$result" != "success" ] && [ "$result" != "skipped" ]; then
               echo "required CI job failed or was cancelled: $result"
               exit 1

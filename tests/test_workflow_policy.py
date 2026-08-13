@@ -6,7 +6,6 @@ from scripts.validate_workflow_policy import (
     should_auto_promote,
     tag_action,
     validate_ci,
-    validate_linux_cache_policy,
     validate_promotion_policy,
     validate_release_build,
     validate_release_rehearsal,
@@ -264,7 +263,7 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     validate_promotion_policy(mutated)
 
-    def test_tag_workflow_rejects_cuda_cache_save_action(self) -> None:
+    def test_tag_workflow_rejects_cache_save_action(self) -> None:
         workflow = (ROOT / ".github/workflows/release.yml").read_text()
         mutated = workflow.replace(
             "jobs:\n", "jobs:\n  # uses: actions/cache/save@v4\n", 1
@@ -279,17 +278,6 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
         )
         with self.assertRaises(AssertionError):
             validate_promotion_policy(mutated)
-
-    def test_cuda_cache_save_requires_explicit_trusted_condition(self) -> None:
-        action = (ROOT / ".github/actions/setup-linux-build/action.yml").read_text()
-        mutated = action.replace(
-            "if: steps.cuda-cache.outputs.cache-hit != 'true' && "
-            "inputs.cuda-cache-save-if == 'true'",
-            "if: steps.cuda-cache.outputs.cache-hit != 'true'",
-            1,
-        )
-        with self.assertRaises(AssertionError):
-            validate_linux_cache_policy(mutated)
 
     def test_release_build_rejects_pull_request_trigger(self) -> None:
         workflow = (ROOT / ".github/workflows/release-build.yml").read_text()
@@ -367,53 +355,6 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
         )
         with self.assertRaises(AssertionError):
             validate_release_rehearsal(mutated)
-
-    def test_release_rehearsal_rejects_linux_jobs(self) -> None:
-        workflow = (ROOT / ".github/workflows/release-rehearsal.yml").read_text()
-        for marker in ("rehearse-linux:", "--bundles appimage"):
-            with self.subTest(marker=marker):
-                with self.assertRaises(AssertionError):
-                    validate_release_rehearsal(workflow + f"\n# {marker}\n")
-
-    def test_cuda_cache_restore_requires_writable_target(self) -> None:
-        action = (ROOT / ".github/actions/setup-linux-build/action.yml").read_text()
-        mutated = action.replace(
-            'sudo mkdir -p "/usr/local/cuda-${CUDA_MM}"',
-            'echo "skip restore path preparation"',
-            1,
-        )
-        with self.assertRaises(AssertionError):
-            validate_linux_cache_policy(mutated)
-
-    def test_linux_ci_action_rejects_release_packaging_tooling(self) -> None:
-        action = (ROOT / ".github/actions/setup-linux-build/action.yml").read_text()
-        mutated = action + "\n# AppImage type2-runtime\n"
-        with self.assertRaises(AssertionError):
-            validate_linux_cache_policy(mutated)
-
-    def test_cuda_stub_paths_reject_empty_loader_segments(self) -> None:
-        action = (ROOT / ".github/actions/setup-linux-build/action.yml").read_text()
-        mutated_action = action.replace(
-            "${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}",
-            ":${LD_LIBRARY_PATH:-}",
-            1,
-        )
-        with self.assertRaises(AssertionError):
-            validate_linux_cache_policy(mutated_action)
-
-    def test_release_build_rejects_linux_packaging(self) -> None:
-        workflow = (ROOT / ".github/workflows/release-build.yml").read_text()
-        for marker in ("release-linux:", "--bundles appimage"):
-            with self.subTest(marker=marker):
-                with self.assertRaises(AssertionError):
-                    validate_release_build(workflow + f"\n# {marker}\n")
-
-    def test_promotion_rejects_linux_artifact_paths(self) -> None:
-        workflow = (ROOT / ".github/workflows/release.yml").read_text()
-        for marker in ("artifacts/linux", "--pattern '*.appimage'"):
-            with self.subTest(marker=marker):
-                with self.assertRaises(AssertionError):
-                    validate_promotion_policy(workflow + f"\n# {marker}\n")
 
     def test_release_profile_must_retain_tauri_bundle_marker(self) -> None:
         cargo_toml = (ROOT / "app/src-tauri/Cargo.toml").read_text()
