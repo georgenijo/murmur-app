@@ -83,12 +83,15 @@ meaningful only on the same hardware, OS, power state, model set, and corpus.
 The remote helper accepts explicit paths so it cannot infer or delete a broad
 home/workspace target. It fetches refs in a clean source repository, creates
 detached temporary worktrees under the supplied cache root, shares one Cargo
-release cache, copies the four exact gitignored helper build prerequisites from
-the clean source checkout, runs both commits, compares their reports, then
-removes only those temporary worktrees. It never modifies the source helpers.
+release cache per immutable ref, copies the four exact gitignored helper build
+prerequisites from the clean source checkout, runs both commits, compares their
+reports, then removes only those temporary worktrees. It never modifies the
+source helpers.
 
-Fleet comparisons use the `conditioned-timed-path-v2` cache policy. Immediately
-before each measured ref, the helper first runs a discarded Quick pass of the
+Fleet comparisons use the `conditioned-timed-path-v4` cache policy. Each
+immutable ref is compiled once into its own Cargo target cache, and that exact
+benchmark binary is reused for every pass. Immediately before each measured
+ref, the helper first runs a discarded Quick pass of the
 same commit and exact selected model set. This absorbs release compilation and
 conditions every selected model's filesystem, model-weight, Core ML, and Metal
 caches. It then reads that report's declared `sharedInitOrder` and runs two
