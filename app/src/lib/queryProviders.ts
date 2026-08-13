@@ -1,11 +1,12 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { QueryProviderId } from './settings';
+import type { QueryContextLevel, QueryProviderId } from './settings';
 
 export interface QueryCommandConfig {
   provider: QueryProviderId;
   executable: string;
   arguments: string[];
   timeoutSeconds: number;
+  contextLevel: QueryContextLevel;
 }
 
 export interface QueryProviderPreset {

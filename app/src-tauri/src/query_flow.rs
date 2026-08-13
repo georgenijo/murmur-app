@@ -951,14 +951,13 @@ fn selection_matches_identity(
     snapshot: &crate::selection::TransformSnapshot,
     identity: &crate::frontmost::FrontmostAppIdentity,
 ) -> bool {
-    match (identity.process_id, identity.bundle_id.as_deref()) {
-        (Some(process_id), Some(bundle_id)) => {
-            snapshot.pid == process_id && snapshot.bundle_id.as_deref() == Some(bundle_id)
-        }
-        (Some(process_id), None) => snapshot.pid == process_id,
-        (None, Some(bundle_id)) => snapshot.bundle_id.as_deref() == Some(bundle_id),
-        (None, None) => false,
-    }
+    crate::frontmost::query_identity_matches(
+        identity,
+        &crate::frontmost::FrontmostAppIdentity {
+            bundle_id: snapshot.bundle_id.clone(),
+            process_id: Some(snapshot.pid),
+        },
+    )
 }
 
 async fn resolve_query_context(
@@ -2408,9 +2407,16 @@ mod tests {
         assert!(!selection_matches_identity(
             &crate::selection::TransformSnapshot {
                 bundle_id: Some("com.example.Other".to_string()),
-                ..snapshot
+                ..snapshot.clone()
             },
             &identity
+        ));
+        assert!(!selection_matches_identity(
+            &snapshot,
+            &crate::frontmost::FrontmostAppIdentity {
+                bundle_id: None,
+                process_id: Some(42),
+            },
         ));
     }
 }

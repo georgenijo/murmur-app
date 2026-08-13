@@ -280,6 +280,7 @@ function queryCommand(settings: Settings): QueryCommandConfig {
     executable: settings.queryExecutable,
     arguments: settings.queryArguments,
     timeoutSeconds: settings.queryTimeoutSeconds,
+    contextLevel: settings.queryContextLevel,
   };
 }
 
@@ -530,6 +531,7 @@ export const SettingsPanel = memo(function SettingsPanel({
     settings.queryExecutable,
     settings.queryArguments,
     settings.queryTimeoutSeconds,
+    settings.queryContextLevel,
   ]);
   const queryCommandFingerprintRef = useRef(queryCommandFingerprint);
 

@@ -71,6 +71,7 @@ describe('useQueryFlow', () => {
         executable: '/usr/bin/printf',
         arguments: ['%s'],
         timeoutSeconds: 60,
+        contextLevel: 'selection',
       },
     });
     expect(mocks.invoke).toHaveBeenCalledWith('start_query_listener', { hotkey: 'alt_r' });
