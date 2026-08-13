@@ -33,7 +33,7 @@ EXTERNAL_BINARIES = (
     "murmur-capture-worker-aarch64-apple-darwin",
     "murmur-llm-sidecar-aarch64-apple-darwin",
 )
-CACHE_POLICY = "conditioned-timed-path-v3"
+CACHE_POLICY = "conditioned-timed-path-v4"
 CONDITIONING_PRESET = "quick"
 CONDITIONING_STAGES = (
     "all-selected-quick",
@@ -53,7 +53,7 @@ def run(command: list[str], *, cwd: Path | None = None, env: dict[str, str] | No
     subprocess.run(command, cwd=cwd, env=env, check=True)
 
 
-def output(command: list[str], *, cwd: Path | None = None) -> str:
+def command_output(command: list[str], *, cwd: Path | None = None) -> str:
     return subprocess.run(
         command, cwd=cwd, check=True, capture_output=True, text=True
     ).stdout.strip()
@@ -65,7 +65,7 @@ def safe_label(value: str) -> str:
 
 
 def resolve_ref(repo: Path, ref: str) -> str:
-    return output(["git", "rev-parse", "--verify", f"{ref}^{{commit}}"], cwd=repo)
+    return command_output(["git", "rev-parse", "--verify", f"{ref}^{{commit}}"], cwd=repo)
 
 
 def benchmark_environment(
@@ -89,7 +89,7 @@ def benchmark_environment(
 
 
 def process_table() -> dict[int, tuple[int, str]]:
-    processes = output(["/bin/ps", "-A", "-o", "pid=,ppid=,comm="])
+    processes = command_output(["/bin/ps", "-A", "-o", "pid=,ppid=,comm="])
     table: dict[int, tuple[int, str]] = {}
     for line in processes.splitlines():
         fields = line.strip().split(maxsplit=2)
@@ -154,15 +154,15 @@ def terminate_process_group(process: subprocess.Popen[Any]) -> None:
 
 
 def host_snapshot() -> dict[str, Any]:
-    battery = output(["/usr/bin/pmset", "-g", "batt"])
+    battery = command_output(["/usr/bin/pmset", "-g", "batt"])
     power_match = re.search(r"Now drawing from '([^']+)'", battery)
     power_source = power_match.group(1) if power_match else "unknown"
 
-    custom = output(["/usr/bin/pmset", "-g", "custom"])
+    custom = command_output(["/usr/bin/pmset", "-g", "custom"])
     low_power_match = re.search(r"^\s*lowpowermode\s+(\d+)\s*$", custom, re.MULTILINE)
     low_power_mode = None if low_power_match is None else low_power_match.group(1) != "0"
 
-    thermal = output(["/usr/bin/pmset", "-g", "therm"])
+    thermal = command_output(["/usr/bin/pmset", "-g", "therm"])
     thermal_state = (
         "nominal"
         if "No thermal warning level has been recorded" in thermal
@@ -170,7 +170,7 @@ def host_snapshot() -> dict[str, Any]:
         else "warning"
     )
 
-    cpu_values = output(["/bin/ps", "-A", "-o", "%cpu="])
+    cpu_values = command_output(["/bin/ps", "-A", "-o", "%cpu="])
     total_cpu = sum(float(value) for value in cpu_values.split() if value)
     processor_count = os.cpu_count() or 1
     normalized_cpu = total_cpu / processor_count
@@ -275,7 +275,7 @@ def seed_external_binaries(source: Path, worktree: Path) -> None:
 
 def run_benchmark(
     *,
-    runner: Path,
+    benchmark_binary: Path,
     worktree: Path,
     output: Path,
     corpus_dir: Path,
@@ -284,36 +284,30 @@ def run_benchmark(
     machine_label: str,
     environment: dict[str, str],
 ) -> None:
-    # ui_lib emits lib, cdylib, and staticlib artifacts. Reusing its prior
-    # package outputs across feature-identical test invocations can make Cargo
-    # link two type identities for dependencies such as Tauri and Serde. Keep
-    # dependency artifacts cached, but rebuild the app package for every pass.
-    run(
-        ["cargo", "clean", "--release", "-p", "ui"],
-        cwd=worktree / "app" / "src-tauri",
-        env=environment,
-    )
     command = [
-        sys.executable,
-        str(runner),
-        "run",
-        "--repo",
-        str(worktree),
-        "--output",
-        str(output),
-        "--corpus",
-        "personal",
-        "--corpus-dir",
-        str(corpus_dir),
-        "--preset",
-        preset,
-        "--machine-label",
-        machine_label,
+        str(benchmark_binary),
+        "headless_benchmark",
+        "--ignored",
+        "--nocapture",
+        "--test-threads=1",
     ]
+    benchmark_environment = environment.copy()
+    benchmark_environment.update(
+        {
+            "MURMUR_BENCH_OUT": str(output),
+            "MURMUR_BENCH_PRESET": preset,
+            "MURMUR_BENCH_CORPUS": "personal",
+            "MURMUR_BENCH_CORPUS_DIR": str(corpus_dir),
+        }
+    )
     if models:
-        command.extend(["--models", models])
+        benchmark_environment["MURMUR_BENCH_MODELS"] = models
     print("+", " ".join(command), flush=True)
-    process = subprocess.Popen(command, env=environment, start_new_session=True)
+    started_at = dt.datetime.now(dt.timezone.utc)
+    process = subprocess.Popen(
+        command, cwd=worktree / "app" / "src-tauri", env=benchmark_environment,
+        start_new_session=True,
+    )
     try:
         while True:
             detected_interference = conflicting_processes(
@@ -333,6 +327,63 @@ def run_benchmark(
         raise
     if return_code != 0:
         raise subprocess.CalledProcessError(return_code, command)
+    finished_at = dt.datetime.now(dt.timezone.utc)
+    with output.open("r", encoding="utf-8") as handle:
+        report = json.load(handle)
+    if not isinstance(report, dict) or not isinstance(report.get("results"), list):
+        raise ValueError("benchmark harness wrote an invalid report")
+    metadata = {
+        "schemaVersion": 1,
+        "reportFile": output.name,
+        "gitCommit": command_output(["git", "rev-parse", "HEAD"], cwd=worktree),
+        "gitBranch": command_output(["git", "branch", "--show-current"], cwd=worktree),
+        "gitDirty": bool(command_output(["git", "status", "--porcelain"], cwd=worktree)),
+        "machineLabel": machine_label,
+        "corpus": "personal",
+        "preset": preset,
+        "models": models or "all-installed",
+        "startedAt": started_at.isoformat(),
+        "finishedAt": finished_at.isoformat(),
+        "durationSeconds": round((finished_at - started_at).total_seconds(), 3),
+    }
+    output.with_suffix(".meta.json").write_text(
+        json.dumps(metadata, indent=2) + "\n", encoding="utf-8"
+    )
+
+
+def prepare_benchmark_binary(
+    *, worktree: Path, environment: dict[str, str]
+) -> Path:
+    command = [
+        "cargo", "test", "--release", "--features", "internal-benchmark",
+        "--test", "headless_benchmark", "--no-run", "--message-format=json",
+    ]
+    print("+", " ".join(command), flush=True)
+    completed = subprocess.run(
+        command,
+        cwd=worktree / "app" / "src-tauri",
+        env=environment,
+        check=True,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    executable: Path | None = None
+    for line in completed.stdout.splitlines():
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        target = message.get("target") or {}
+        candidate = message.get("executable")
+        if (
+            message.get("reason") == "compiler-artifact"
+            and target.get("name") == "headless_benchmark"
+            and isinstance(candidate, str)
+        ):
+            executable = Path(candidate)
+    if executable is None or not executable.is_file():
+        raise ValueError("Cargo did not produce the headless benchmark executable")
+    return executable
 
 
 def annotate_metadata(report: Path, values: dict[str, Any]) -> None:
@@ -382,7 +433,7 @@ def load_cache_summary(report: Path) -> dict[str, Any]:
 
 def run_conditioned_benchmark(
     *,
-    runner: Path,
+    benchmark_binary: Path,
     worktree: Path,
     report: Path,
     cache_root: Path,
@@ -410,7 +461,7 @@ def run_conditioned_benchmark(
     with tempfile.TemporaryDirectory(prefix=f"conditioning-{role}-", dir=cache_root) as temp:
         conditioning_report = Path(temp) / "conditioning.json"
         run_benchmark(
-            runner=runner,
+            benchmark_binary=benchmark_binary,
             worktree=worktree,
             output=conditioning_report,
             corpus_dir=corpus_dir,
@@ -434,7 +485,7 @@ def run_conditioned_benchmark(
         for probe in range(1, TARGET_CONDITIONING_PASSES + 1):
             tail_report = Path(temp) / f"conditioning-targets-{probe}.json"
             run_benchmark(
-                runner=runner,
+                benchmark_binary=benchmark_binary,
                 worktree=worktree,
                 output=tail_report,
                 corpus_dir=corpus_dir,
@@ -465,7 +516,7 @@ def run_conditioned_benchmark(
             consecutive_samples=idle_samples,
         )
         run_benchmark(
-            runner=runner,
+            benchmark_binary=benchmark_binary,
             worktree=worktree,
             output=report,
             corpus_dir=corpus_dir,
@@ -540,7 +591,6 @@ def run_ref(
     models: str | None,
     machine_label: str,
     stamp: str,
-    runner: Path,
     binary_source: Path,
     order_position: int,
     idle_timeout_seconds: float,
@@ -559,9 +609,12 @@ def run_ref(
         environment = benchmark_environment(
             cache_root, worktree / "app" / "src-tauri" / "Cargo.lock", sha
         )
+        benchmark_binary = prepare_benchmark_binary(
+            worktree=worktree, environment=environment
+        )
         report = report_root / f"{stamp}-{role}-{safe_label(ref)}-{sha[:12]}.json"
         run_conditioned_benchmark(
-            runner=runner,
+            benchmark_binary=benchmark_binary,
             worktree=worktree,
             report=report,
             cache_root=cache_root,
@@ -669,7 +722,6 @@ def main() -> int:
             models=args.models,
             machine_label=args.machine_label,
             stamp=stamp,
-            runner=runner,
             binary_source=binary_source,
             order_position=order_position,
             idle_timeout_seconds=args.idle_timeout_seconds,
