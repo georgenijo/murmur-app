@@ -344,6 +344,12 @@ fn emit_state(
     );
 }
 
+/// True when the answer may claim the clipboard: nothing else has written it
+/// since `snapshot` was taken at the start of the CLI run.
+fn may_claim_clipboard(snapshot: u64, current: u64) -> bool {
+    snapshot == current
+}
+
 fn fail_query(
     app: &tauri::AppHandle,
     state: &crate::State,
@@ -356,7 +362,6 @@ fn fail_query(
         // popover show, so terminal failures must make themselves visible too.
         let _ = crate::commands::query_popover::show_internal(app, true);
         let _ = crate::commands::query_popover::set_expanded_internal(app, true);
-        let _ = crate::commands::query_popover::set_focusable_internal(app, true);
         emit_state(app, pass_id, QueryStatus::Failed, Some(error_code));
     }
 }
@@ -886,6 +891,11 @@ pub(crate) async fn finish_query_capture(
     }
     emit_state(&app_handle, query_pass_id, QueryStatus::Running, None);
 
+    // Snapshot the clipboard before the CLI runs. Dictation is allowed to start
+    // during `Running`, so the user may deliberately produce and paste text
+    // while the answer generates; if that happened we must not overwrite it.
+    let clipboard_generation = crate::injector::clipboard_write_generation();
+
     let command = session.command;
     let worker_app = app_handle.clone();
     let result =
@@ -901,11 +911,21 @@ pub(crate) async fn finish_query_capture(
             if answer.trim().is_empty() {
                 fail_query(&app_handle, &state, query_pass_id, "empty_answer");
             } else if state.query.set_status(query_pass_id, QueryStatus::Ready) {
-                let clipboard_error = crate::injector::write_clipboard_text(&answer)
-                    .err()
-                    .map(|_| "clipboard_unavailable");
+                let clipboard_error = if !may_claim_clipboard(
+                    clipboard_generation,
+                    crate::injector::clipboard_write_generation(),
+                ) {
+                    // Something else claimed the clipboard while the answer was
+                    // generating. Defer to it: the answer stays in the popover
+                    // behind Copy, rather than silently replacing text the user
+                    // may already have pasted somewhere.
+                    Some("clipboard_superseded")
+                } else {
+                    crate::injector::write_clipboard_text(&answer)
+                        .err()
+                        .map(|_| "clipboard_unavailable")
+                };
                 let _ = crate::commands::query_popover::set_expanded_internal(&app_handle, true);
-                let _ = crate::commands::query_popover::set_focusable_internal(&app_handle, true);
                 emit_state(
                     &app_handle,
                     query_pass_id,
@@ -1018,6 +1038,14 @@ mod tests {
         };
         let valid = validate_command(valid).expect("printf must be executable");
         assert_eq!(valid.arguments, vec!["%s"]);
+    }
+
+    #[test]
+    fn answer_defers_to_a_clipboard_write_made_while_it_was_generating() {
+        // Nothing else wrote: the answer copies itself as usual.
+        assert!(may_claim_clipboard(7, 7));
+        // A dictation (or transform) landed mid-run — leave its text in place.
+        assert!(!may_claim_clipboard(7, 8));
     }
 
     #[test]
