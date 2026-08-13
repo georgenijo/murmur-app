@@ -73,6 +73,7 @@ export function OverlayWidget() {
     stillConnecting,
     calibrating,
     meetingPhase,
+    runtime.showClipboardOnly,
   );
 
   useEffect(() => {
