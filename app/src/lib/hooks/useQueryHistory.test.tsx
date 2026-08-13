@@ -26,7 +26,7 @@ vi.mock('@tauri-apps/api/event', () => ({
   }),
 }));
 
-import { useQueryHistory } from './useQueryHistory';
+import { isQueryHistorySurfaceActive, useQueryHistory } from './useQueryHistory';
 
 const emptyPage = (providerOffset = 0): QueryHistoryPageV1 => ({
   schemaVersion: 1,
@@ -36,6 +36,25 @@ const emptyPage = (providerOffset = 0): QueryHistoryPageV1 => ({
   hasMore: false,
 });
 
+const privateEntry = {
+  schemaVersion: 1 as const,
+  id: '1123456789abcdef0123456789abcdef',
+  timestampMs: 20,
+  provider: 'codex' as const,
+  question: 'private question',
+  answer: 'private answer',
+  tokens: null,
+  durationMs: 2,
+  errorCode: null,
+};
+
+interface SurfaceHarnessProps {
+  workspace: 'transcripts' | 'queries';
+  settingsOpen: boolean;
+  onboardingState: 'unknown' | 'needed' | 'done';
+  modelReady: boolean | null;
+}
+
 describe('useQueryHistory', () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -44,6 +63,17 @@ describe('useQueryHistory', () => {
   function Harness({ active }: { active: boolean }) {
     latest = useQueryHistory(active);
     return null;
+  }
+
+  function SurfaceHarness(props: SurfaceHarnessProps) {
+    const active = isQueryHistorySurfaceActive({
+      queriesSelected: props.workspace === 'queries',
+      settingsOpen: props.settingsOpen,
+      onboardingState: props.onboardingState,
+      modelReady: props.modelReady,
+    });
+    latest = useQueryHistory(active);
+    return active ? <>{latest.entries.map((entry) => entry.question)}</> : null;
   }
 
   beforeEach(() => {
@@ -114,26 +144,81 @@ describe('useQueryHistory', () => {
     await act(async () => latest.setProvider('codex'));
     expect(mocks.list).toHaveBeenLastCalledWith({ offset: 0, limit: 50, provider: 'codex' });
 
-    const codexEntry = {
-      schemaVersion: 1 as const,
-      id: '1123456789abcdef0123456789abcdef',
-      timestampMs: 20,
-      provider: 'codex' as const,
-      question: 'new',
-      answer: 'answer',
-      tokens: null,
-      durationMs: 2,
-      errorCode: null,
-    };
     await act(async () => {
-      resolveSecond({ schemaVersion: 1, entries: [codexEntry], total: 1, offset: 0, hasMore: false });
+      resolveSecond({ schemaVersion: 1, entries: [privateEntry], total: 1, offset: 0, hasMore: false });
       await Promise.resolve();
     });
     await act(async () => {
       resolveFirst(emptyPage());
       await Promise.resolve();
     });
-    expect(latest.entries).toEqual([codexEntry]);
+    expect(latest.entries).toEqual([privateEntry]);
+  });
+
+  it('tears down the selected Queries tab when the warm-mounted Settings surface opens', async () => {
+    mocks.list.mockResolvedValue({
+      schemaVersion: 1,
+      entries: [privateEntry],
+      total: 1,
+      offset: 0,
+      hasMore: false,
+    });
+    const visible = {
+      workspace: 'queries' as const,
+      settingsOpen: false,
+      onboardingState: 'done' as const,
+      modelReady: true,
+    };
+    await act(async () => {
+      root.render(<SurfaceHarness {...visible} />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain('private question');
+    const staleListener = mocks.listeners.get('query-history-changed');
+
+    await act(async () => root.render(<SurfaceHarness {...visible} settingsOpen />));
+    expect(container.textContent).not.toContain('private question');
+    expect(latest.entries).toEqual([]);
+    expect(mocks.unlisten).toHaveBeenCalledWith('query-history-changed');
+    expect(mocks.listeners.has('query-history-changed')).toBe(false);
+
+    mocks.list.mockClear();
+    await act(async () => {
+      staleListener?.({ payload: { kind: 'inserted' } });
+      await Promise.resolve();
+    });
+    expect(mocks.list).not.toHaveBeenCalled();
+  });
+
+  it('tears down query content when onboarding becomes the visible surface', async () => {
+    mocks.list.mockResolvedValue({
+      schemaVersion: 1,
+      entries: [privateEntry],
+      total: 1,
+      offset: 0,
+      hasMore: false,
+    });
+    const visible = {
+      workspace: 'queries' as const,
+      settingsOpen: false,
+      onboardingState: 'done' as const,
+      modelReady: true,
+    };
+    await act(async () => {
+      root.render(<SurfaceHarness {...visible} />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain('private question');
+
+    await act(async () => root.render(
+      <SurfaceHarness {...visible} onboardingState="needed" />,
+    ));
+    expect(container.textContent).not.toContain('private question');
+    expect(latest.entries).toEqual([]);
+    expect(mocks.unlisten).toHaveBeenCalledWith('query-history-changed');
+    expect(mocks.listeners.has('query-history-changed')).toBe(false);
   });
 
   it('refreshes on a valid content-free insertion event and clears in one action', async () => {

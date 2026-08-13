@@ -22,7 +22,7 @@ import { useInitialization } from './lib/hooks/useInitialization';
 import { useSettings } from './lib/hooks/useSettings';
 import { useHistoryManagement } from './lib/hooks/useHistoryManagement';
 import { useMeetings } from './lib/hooks/useMeetings';
-import { useQueryHistory } from './lib/hooks/useQueryHistory';
+import { isQueryHistorySurfaceActive, useQueryHistory } from './lib/hooks/useQueryHistory';
 import { useFileTranscription } from './lib/hooks/useFileTranscription';
 import { useRecordingState } from './lib/hooks/useRecordingState';
 import { useHoldDownToggle } from './lib/hooks/useHoldDownToggle';
@@ -77,6 +77,8 @@ function App() {
   }, []);
 
   const [modelReady, setModelReady] = useState<boolean | null>(null);
+  const [onboardingState, setOnboardingState] = useState<'unknown' | 'needed' | 'done'>('unknown');
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   const { settings, updateSettings, applyExternalSettings, configureError } = useSettings();
   const meetings = useMeetings(settings);
@@ -88,7 +90,13 @@ function App() {
   }, [settings.model, updateSettings]);
   const { initialized, error: initError } = useInitialization(settings);
   const [historyWorkspace, setHistoryWorkspace] = useState<HistoryWorkspace>('transcripts');
-  const queryHistory = useQueryHistory(historyWorkspace === 'queries');
+  const queryHistorySurfaceActive = isQueryHistorySurfaceActive({
+    queriesSelected: historyWorkspace === 'queries',
+    settingsOpen: isSettingsOpen,
+    onboardingState,
+    modelReady,
+  });
+  const queryHistory = useQueryHistory(queryHistorySurfaceActive);
 
   // First-launch gate: is the currently-selected model present? Checked once on
   // mount (not reactively) so changing models in Settings uses the inline
@@ -106,7 +114,6 @@ function App() {
   // Checking every model (not just the settings default) keeps a fresh webview
   // data store (e.g. tauri dev vs installed app) from re-running the wizard
   // when models are already on disk (#240).
-  const [onboardingState, setOnboardingState] = useState<'unknown' | 'needed' | 'done'>('unknown');
   useEffect(() => {
     if (isOnboardingComplete()) {
       setOnboardingState('done');
@@ -332,7 +339,6 @@ function App() {
     });
   }, [updateStatus]);
 
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settingsPageRequest, setSettingsPageRequest] = useState<{ page: string; token: number } | null>(null);
   const settingsViewRef = useRef('settings.dictation');
   const settingsActiveRef = useRef(isSettingsOpen);
@@ -638,6 +644,7 @@ function App() {
             onWorkspaceChange={setHistoryWorkspace}
             meetings={meetings}
             queryHistory={queryHistory}
+            queryHistoryActive={queryHistorySurfaceActive}
             retainQueryHistory={settings.retainQueryHistory}
           />
 

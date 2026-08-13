@@ -76,6 +76,7 @@ export const QUERY_HISTORY_MAX_ENTRIES = 200;
 
 const MAX_QUESTION_BYTES = 32 * 1024;
 const MAX_ANSWER_BYTES = 256 * 1024;
+const ECMASCRIPT_DATE_MAX_MS = 8_640_000_000_000_000;
 const queryHistoryErrorCodes = new Set<string>(QUERY_HISTORY_ERROR_CODES);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -129,6 +130,7 @@ export function isQueryHistoryEntryV1(value: unknown): value is QueryHistoryEntr
     || typeof value.id !== 'string'
     || !/^[a-f0-9]{32}$/.test(value.id)
     || !isSafeNonNegativeInteger(value.timestampMs)
+    || value.timestampMs > ECMASCRIPT_DATE_MAX_MS
     || !isQueryProviderId(value.provider)
     || typeof value.question !== 'string'
     || value.question.length === 0
@@ -160,8 +162,9 @@ export function isQueryHistoryPageV1(value: unknown): value is QueryHistoryPageV
     || typeof value.hasMore !== 'boolean') {
     return false;
   }
-  return value.entries.length <= Math.max(0, value.total - value.offset)
-    && (!value.hasMore || value.offset + value.entries.length < value.total);
+  return value.offset <= value.total
+    && value.entries.length <= value.total - value.offset
+    && value.hasMore === (value.offset + value.entries.length < value.total);
 }
 
 export function isQueryHistoryChanged(value: unknown): value is QueryHistoryChanged {
@@ -188,6 +191,9 @@ export async function listQueryHistory({
   });
   if (!isQueryHistoryPageV1(value)) {
     throw new Error('Murmur returned an unsupported Voice Query history schema.');
+  }
+  if (value.offset !== boundedOffset) {
+    throw new Error('Murmur returned an inconsistent Voice Query history page.');
   }
   return value;
 }

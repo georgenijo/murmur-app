@@ -50,6 +50,14 @@ describe('Voice Query history IPC boundary', () => {
       offset: 0,
       hasMore: false,
     })).toBe(true);
+    expect(isQueryHistoryEntryV1({
+      ...entry,
+      timestampMs: 8_640_000_000_000_000,
+    })).toBe(true);
+    expect(isQueryHistoryEntryV1({
+      ...entry,
+      timestampMs: 8_640_000_000_000_001,
+    })).toBe(false);
   });
 
   it('rejects undeclared content and usage cost fields', () => {
@@ -94,7 +102,14 @@ describe('Voice Query history IPC boundary', () => {
       total: 0,
       offset: 50,
       hasMore: false,
-    })).toBe(true);
+    })).toBe(false);
+    expect(isQueryHistoryPageV1({
+      schemaVersion: 1,
+      entries: [],
+      total: 2,
+      offset: 0,
+      hasMore: false,
+    })).toBe(false);
   });
 
   it('uses bounded list arguments and a no-content clear command', async () => {
@@ -125,6 +140,19 @@ describe('Voice Query history IPC boundary', () => {
       limit: 50,
       provider: null,
     });
+  });
+
+  it('rejects a page whose returned offset differs from the bounded request', async () => {
+    mocks.invoke.mockResolvedValue({
+      schemaVersion: 1,
+      entries: [],
+      total: 0,
+      offset: 0,
+      hasMore: false,
+    });
+    await expect(listQueryHistory({ offset: 5 })).rejects.toThrow(
+      'inconsistent Voice Query history page',
+    );
   });
 
   it('accepts only exact content-free change notifications', () => {

@@ -16,6 +16,7 @@ interface TranscriptionViewProps {
   onWorkspaceChange: (workspace: HistoryWorkspace) => void;
   meetings: ReturnType<typeof useMeetings>;
   queryHistory: ReturnType<typeof useQueryHistory>;
+  queryHistoryActive: boolean;
   retainQueryHistory: boolean;
 }
 
@@ -29,6 +30,7 @@ export const TranscriptionView = memo(function TranscriptionView({
   onWorkspaceChange,
   meetings,
   queryHistory,
+  queryHistoryActive,
   retainQueryHistory,
 }: TranscriptionViewProps) {
   return (
@@ -61,9 +63,9 @@ export const TranscriptionView = memo(function TranscriptionView({
         />
       ) : workspace === 'meetings' ? (
         <MeetingsPanel meetings={meetings} />
-      ) : (
+      ) : queryHistoryActive ? (
         <QueryHistoryPanel history={queryHistory} retentionEnabled={retainQueryHistory} />
-      )}
+      ) : null}
     </div>
   );
 });

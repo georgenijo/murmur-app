@@ -11,6 +11,25 @@ import type { QueryProviderId } from '../settings';
 
 export type QueryHistoryProviderFilter = 'all' | QueryProviderId;
 
+interface QueryHistorySurfaceState {
+  queriesSelected: boolean;
+  settingsOpen: boolean;
+  onboardingState: 'unknown' | 'needed' | 'done';
+  modelReady: boolean | null;
+}
+
+export function isQueryHistorySurfaceActive({
+  queriesSelected,
+  settingsOpen,
+  onboardingState,
+  modelReady,
+}: QueryHistorySurfaceState): boolean {
+  return queriesSelected
+    && !settingsOpen
+    && onboardingState === 'done'
+    && modelReady === true;
+}
+
 export function mergeQueryHistoryEntries(
   current: QueryHistoryEntryV1[],
   additions: QueryHistoryEntryV1[],
