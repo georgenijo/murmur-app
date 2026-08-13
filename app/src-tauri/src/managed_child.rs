@@ -156,7 +156,10 @@ impl ManagedChild {
 
     fn spawn_command(command: Command) -> std::io::Result<(Self, ChildStdin, ChildStdout)> {
         let mut child = Self::spawn_owned_group(command)?;
-        let stdin = child.stdin.take().ok_or_else(|| Self::missing_pipe("stdin"))?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| Self::missing_pipe("stdin"))?;
         let stdout = child
             .stdout
             .take()
@@ -168,7 +171,10 @@ impl ManagedChild {
         command: Command,
     ) -> std::io::Result<(Self, ChildStdin, ChildStdout, ChildStderr)> {
         let mut child = Self::spawn_owned_group(command)?;
-        let stdin = child.stdin.take().ok_or_else(|| Self::missing_pipe("stdin"))?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| Self::missing_pipe("stdin"))?;
         let stdout = child
             .stdout
             .take()
@@ -377,7 +383,10 @@ mod tests {
         // far, the inherited allowlist is applied last and still wins.
         let inherited_home = std::env::var("HOME").unwrap();
         let declared = vec![
-            ("CLAUDE_CONFIG_DIR".to_string(), "/tmp/murmur-cfg".to_string()),
+            (
+                "CLAUDE_CONFIG_DIR".to_string(),
+                "/tmp/murmur-cfg".to_string(),
+            ),
             ("HOME".to_string(), "/tmp/hijacked".to_string()),
         ];
         let environment = user_cli_environment(&declared);

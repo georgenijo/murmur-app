@@ -22,6 +22,9 @@ import {
   type Settings,
   type TransformKey,
 } from '../../lib/settings';
+import { queryErrorMessage } from '../../lib/queryErrors';
+import { validateQueryCommand } from '../../lib/queryProviders';
+import { VoiceQueryProvider } from './VoiceQueryProvider';
 import { useVocabScan } from '../../lib/hooks/useVocabScan';
 import { useModelRuntimeCatalog } from '../../lib/modelRuntime';
 import {
@@ -585,7 +588,7 @@ export const SettingsPanel = memo(function SettingsPanel({
     ? 'Hold to record, or double-tap to start and single-tap to stop.'
     : isDoubleTap ? 'Double-tap to start and single-tap to stop.' : 'Hold to start and release to stop.';
 
-  const toggleVoiceQuery = () => {
+  const toggleVoiceQuery = async () => {
     setQueryConfigError(null);
     if (settings.queryHotkey !== null) {
       onUpdateSettings({ queryHotkey: null });
@@ -598,6 +601,21 @@ export const SettingsPanel = memo(function SettingsPanel({
     const key = QUERY_KEY_OPTIONS.find((option) => option.value !== settings.transformHoldKey)?.value;
     if (!key) {
       setQueryConfigError('No dedicated shortcut is available.');
+      return;
+    }
+    // Preflight at enable time rather than at the first keypress: a missing or
+    // non-executable path used to surface only mid-question, after the user had
+    // already spoken (#550).
+    try {
+      await validateQueryCommand({
+        executable: settings.queryExecutable,
+        arguments: settings.queryArguments,
+        timeoutSeconds: settings.queryTimeoutSeconds,
+        presetId: settings.queryPresetId === 'custom' ? null : settings.queryPresetId,
+      });
+    } catch (error) {
+      setQueryConfigError(queryErrorMessage(typeof error === 'string' ? error : null)
+        ?? 'The configured CLI could not be verified.');
       return;
     }
     onUpdateSettings({ queryHotkey: key });
@@ -838,7 +856,18 @@ export const SettingsPanel = memo(function SettingsPanel({
               title="Enable Voice Query"
               description="Double-tap a dedicated key to record; tap once to finish. No spoken keyword is used."
               checked={settings.queryHotkey !== null}
-              onChange={toggleVoiceQuery}
+              onChange={() => { void toggleVoiceQuery(); }}
+            />
+
+            <VoiceQueryProvider
+              presetId={settings.queryPresetId}
+              executable={settings.queryExecutable}
+              args={settings.queryArguments}
+              timeoutSeconds={settings.queryTimeoutSeconds}
+              onChange={(patch) => {
+                setQueryConfigError(null);
+                onUpdateSettings(patch);
+              }}
             />
 
             <div className="space-y-4">

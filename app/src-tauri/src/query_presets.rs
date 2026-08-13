@@ -480,7 +480,9 @@ pub(crate) async fn probe_query_provider_auth(
     command: crate::query_flow::QueryCommandConfig,
 ) -> Result<QueryAuthProbeReport, String> {
     if window.label() != MAIN_WINDOW_LABEL {
-        return Err("Voice Query provider checks are only available from the main window.".to_string());
+        return Err(
+            "Voice Query provider checks are only available from the main window.".to_string(),
+        );
     }
     let preset = preset_id.as_deref().and_then(preset);
     let Some(preset) = preset else {
@@ -563,9 +565,14 @@ mod tests {
         for preset in PRESETS {
             assert!(!preset.auth_probe_arguments.is_empty(), "{}", preset.id);
             assert!(!preset.login_arguments.is_empty(), "{}", preset.id);
-            assert!(preset.login_hint.contains(preset.binary_name), "{}", preset.id);
             assert!(
-                preset.auth_failure_signatures
+                preset.login_hint.contains(preset.binary_name),
+                "{}",
+                preset.id
+            );
+            assert!(
+                preset
+                    .auth_failure_signatures
                     .iter()
                     .all(|signature| signature.to_lowercase() == *signature),
                 "{} signatures must be lowercase to match",
@@ -598,17 +605,17 @@ mod tests {
             verdict_for(preset("codex"), Some(1), "network unreachable"),
             AuthVerdict::Unknown
         );
-        assert_eq!(
-            verdict_for(preset("codex"), None, ""),
-            AuthVerdict::Unknown
-        );
+        assert_eq!(verdict_for(preset("codex"), None, ""), AuthVerdict::Unknown);
     }
 
     #[test]
     fn generic_signatures_cover_a_custom_executable_with_no_preset() {
         assert!(indicates_auth_failure(None, "Error: Not logged in"));
         assert!(indicates_auth_failure(None, "HTTP 401 Unauthorized"));
-        assert!(indicates_auth_failure(None, "invalid API key · fix external"));
+        assert!(indicates_auth_failure(
+            None,
+            "invalid API key · fix external"
+        ));
         assert!(!indicates_auth_failure(None, "The answer is 42."));
         assert!(!indicates_auth_failure(None, ""));
     }
@@ -636,7 +643,8 @@ mod tests {
     fn probe_output_is_bounded_and_marked_when_truncated() {
         let (bytes, truncated) = read_bounded(std::io::Cursor::new(vec![
             b'a';
-            MAX_PROBE_OUTPUT_BYTES + 512
+            MAX_PROBE_OUTPUT_BYTES
+                + 512
         ]));
         assert_eq!(bytes.len(), MAX_PROBE_OUTPUT_BYTES);
         assert!(truncated);

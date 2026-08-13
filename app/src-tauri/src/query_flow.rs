@@ -247,10 +247,7 @@ impl QueryCoordinator {
     /// Executable and argv for the provider's own login, for the popover's
     /// "Sign in…" button. `None` when the pass is gone or was configured by
     /// hand, in which case no vendor login is known.
-    pub(crate) fn login_target(
-        &self,
-        pass_id: u64,
-    ) -> Option<(PathBuf, &'static [&'static str])> {
+    pub(crate) fn login_target(&self, pass_id: u64) -> Option<(PathBuf, &'static [&'static str])> {
         let session = self.session(pass_id)?;
         let preset = session.command.preset?;
         Some((session.command.executable, preset.login_arguments))

@@ -3,12 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { DEFAULT_SETTINGS, type QueryKey } from '../settings';
 import { flog } from '../log';
-
-interface QueryCommandSnapshot {
-  executable: string;
-  arguments: string[];
-  timeoutSeconds: number;
-}
+import type { QueryCommandSnapshot } from '../queryProviders';
 
 interface QueryTogglePayload {
   queryPassId: number;

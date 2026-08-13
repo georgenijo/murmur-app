@@ -47,7 +47,10 @@ fn require_main_window(label: &str) -> Result<(), String> {
     if label == MAIN_WINDOW_LABEL {
         Ok(())
     } else {
-        Err("Voice Query environment variables are only available from the main window.".to_string())
+        Err(
+            "Voice Query environment variables are only available from the main window."
+                .to_string(),
+        )
     }
 }
 
@@ -63,9 +66,7 @@ fn valid_name(name: &str) -> bool {
 ///
 /// Every refusal names the offending variable so Settings can point at the row
 /// the user has to fix, and never echoes the value.
-pub(crate) fn validate(
-    variables: &[DeclaredEnvVar],
-) -> Result<Vec<(String, String)>, String> {
+pub(crate) fn validate(variables: &[DeclaredEnvVar]) -> Result<Vec<(String, String)>, String> {
     if variables.len() > MAX_DECLARED_VARIABLES {
         return Err(format!(
             "Voice Query accepts at most {MAX_DECLARED_VARIABLES} declared environment variables."
@@ -237,8 +238,14 @@ mod tests {
         assert_eq!(
             pairs,
             vec![
-                ("CLAUDE_CONFIG_DIR".to_string(), "/Users/someone/.claude".to_string()),
-                ("CODEX_HOME".to_string(), "/Users/someone/.codex".to_string()),
+                (
+                    "CLAUDE_CONFIG_DIR".to_string(),
+                    "/Users/someone/.claude".to_string()
+                ),
+                (
+                    "CODEX_HOME".to_string(),
+                    "/Users/someone/.codex".to_string()
+                ),
             ]
         );
     }
@@ -298,7 +305,11 @@ mod tests {
     fn a_tampered_file_is_refused_rather_than_trusted() {
         let dir = temp_dir("tampered");
         let path = dir.join(FILE_NAME);
-        std::fs::write(&path, r#"{"variables":[{"name":"HOME","value":"/tmp/evil"}]}"#).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"variables":[{"name":"HOME","value":"/tmp/evil"}]}"#,
+        )
+        .unwrap();
         assert!(read_file(&path).is_err());
         std::fs::write(&path, "not json at all").unwrap();
         assert!(read_file(&path).is_err());
