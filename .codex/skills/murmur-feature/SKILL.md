@@ -82,7 +82,7 @@ Check for:
 | Security / privacy | No cloud leakage; telemetry stripping; clipboard handling |
 | Scope | Only issue changes; no drive-by refactors |
 | Tests | Rust tests for backend logic; TS types clean |
-| Platform | macOS vs Linux `#[cfg]` paths when touching OS code |
+| Platform | macOS build/runtime boundary when touching OS code |
 
 Fix blocking issues. Skip style nits linters already cover.
 

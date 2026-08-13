@@ -315,24 +315,7 @@ export const MODEL_OPTIONS: { value: ModelOption; label: string; size: string; b
   { value: 'parakeet-tdt-0.6b-v2-fp16', label: 'Parakeet TDT 0.6B (English, fast)', size: '~1.2 GB', backend: 'parakeet' },
 ];
 
-export function isMacOSPlatform(platform: string): boolean {
-  return platform.startsWith('Mac');
-}
-
-export function modelOptionsForPlatform(platform: string): typeof MODEL_OPTIONS {
-  return isMacOSPlatform(platform)
-    ? MODEL_OPTIONS
-    : MODEL_OPTIONS.filter((model) => model.backend !== 'coreml');
-}
-
-export function defaultModelForPlatform(platform: string): ModelOption {
-  return isMacOSPlatform(platform)
-    ? 'parakeet-tdt-0.6b-v3-coreml'
-    : 'parakeet-tdt-0.6b-v2-fp16';
-}
-
-const runtimePlatform = typeof navigator === 'undefined' ? '' : navigator.platform;
-export const AVAILABLE_MODEL_OPTIONS = modelOptionsForPlatform(runtimePlatform);
+export const AVAILABLE_MODEL_OPTIONS = MODEL_OPTIONS;
 
 export const DOUBLE_TAP_KEY_OPTIONS: { value: DoubleTapKey; label: string }[] = [
   { value: 'shift_l', label: 'Shift' },
@@ -399,7 +382,7 @@ export const LANGUAGE_OPTIONS: { value: string; label: string }[] = [
 export const DEFAULT_SETTINGS: Settings = {
   // FluidAudio runs Parakeet v3 on the Apple Neural Engine. Existing persisted
   // Whisper and sherpa selections remain valid and are never force-migrated.
-  model: defaultModelForPlatform(runtimePlatform),
+  model: 'parakeet-tdt-0.6b-v3-coreml',
   doubleTapKey: 'shift_l',
   // Disabled by default — no settings UI to configure it yet (Phase D).
   transformHoldKey: null,

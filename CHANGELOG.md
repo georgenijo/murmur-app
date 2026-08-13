@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+
+- Murmur now enforces its macOS-only product boundary across app builds, CI,
+  runtime platform paths, model metadata, and contributor documentation; the
+  retired Linux/CUDA build lane and X11/Wayland compatibility code are removed
+  (#570).
+
+## [0.32.0] - 2026-08-13
+
+### Changed
+
+- Releases now run a real-path OTA canary on a trusted Mac before announcement,
+  exercising update discovery, policy parsing, download, signature verification,
+  installation, and relaunch from a prior public build (#560).
+
 ### Fixed
 
 - Clipboard-only auto-paste outcomes now show a bounded `⌘V` cue in the
@@ -16,6 +31,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   outcome correlated from capture acceptance through final processing. Fleet
   diagnostics report stage drop-off plus missing or duplicate terminals using
   stable codes, without transcript, audio, paths, or free-form errors (#535).
+- Update checks now preserve a verified update as optional when its
+  minimum-version policy cannot be read or validated, and offer Retry plus a
+  direct download option when a check fails (#558, #559).
 
 ## [0.31.3] - 2026-08-12
 

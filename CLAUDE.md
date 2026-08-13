@@ -158,7 +158,7 @@ Read these before working on a feature:
 | `performance_metrics/` (`repository.rs`, `types.rs`) | SQLite run history, typed stage/resource records, retention |
 | `resource_monitor.rs` | CPU/RSS sampling, 1s heartbeat, idle-timeout enforcement |
 | `alloc.rs` | Custom malloc zone separating Rust heap from whisper.cpp's FFI heap |
-| `platform/` | Platform abstraction seams (macOS / Linux) |
+| `platform/` | macOS CPU/resource metrics seam |
 | `sidecars/capture/` | Killable production capture worker and isolated audio callback boundary |
 | `sidecars/local-llm/` | The signed `murmur-llm-sidecar` crate (llama.cpp) |
 | `crates/capture-helper-protocol` | Host ↔ capture worker framing, handshake, and control protocol |

@@ -2,7 +2,7 @@
 
 ## Overview
 
-After transcription, text is always copied to the clipboard. Optionally, the app simulates a paste keystroke into the focused application: native CoreGraphics `Cmd+V` events on macOS, `Ctrl+V` via `xdotool` (X11) or `wtype` (Wayland) on Linux.
+After transcription, text is always copied to the clipboard. Optionally, the app simulates a native CoreGraphics `Cmd+V` keystroke into the focused application.
 
 ## Clipboard (`injector.rs`)
 
@@ -44,45 +44,9 @@ When paste fails (injection error, sender dropped, or 2s timeout), the Rust pipe
 
 The primary path avoids launching System Events twice per dictation: `NSWorkspace` and `AXUIElement` inspect focus in-process, while `CGEvent` posts Cmd+V in-process. The previous `osascript` implementation remains as a compatibility fallback because earlier `enigo` and `rdev` key simulation approaches had reliability issues on macOS Sonoma and Sequoia.
 
-## Linux Auto-Paste
-
-On Linux, `simulate_paste()` uses external tools to simulate `Ctrl+V`. No accessibility permission is required — `is_accessibility_enabled()` always returns `true` on Linux.
-
-### Session Detection
-
-The session type is detected by checking the `WAYLAND_DISPLAY` environment variable:
-- **Non-empty** → Wayland session: prefer `wtype`, fall back to `xdotool` (for XWayland apps)
-- **Empty or unset** → X11 session: use `xdotool` only
-
-### Wayland path
-
-```
-wtype -M ctrl -k v
-```
-
-If `wtype` is not installed (`NotFound`), falls back to `xdotool key ctrl+v` to support XWayland-backed applications. If `wtype` runs but exits non-zero (compositor rejected it), the error surfaces for the existing retry-once + `auto-paste-failed` path — no silent swap to `xdotool`.
-
-### X11 path
-
-```
-xdotool key ctrl+v
-```
-
-### Graceful fallback when tools are missing
-
-If neither `xdotool` nor `wtype` is installed, `simulate_paste()` logs a warning via `tracing` and returns `Ok(())`. The text remains in the clipboard; the caller does **not** emit an `auto-paste-failed` event. This matches the "accessibility not granted" pattern on macOS.
-
-Non-`NotFound` errors (process ran but exited non-zero, permission denied, etc.) still return `Err` and drive the existing retry-once + `auto-paste-failed` banner flow.
-
-### Known limitations
-
-- **Terminal emulators**: `Ctrl+V` does not paste in most terminal emulators (they use `Ctrl+Shift+V`). Users who dictate into terminals should use the clipboard-manual path.
-- **Wayland compositor compatibility**: Some compositors (older GNOME/KDE) may reject `wtype`. In that case `wtype` exits non-zero, which triggers the `auto-paste-failed` banner. Disable auto-paste on such systems and use the clipboard.
-- **XWayland focus heuristic**: When focused on an XWayland window under a Wayland compositor, `wtype` may target the compositor rather than the XWayland app. The `xdotool` fallback only fires when `wtype` is missing, not when it has no visible effect.
-
 ### Threading
 
-`inject_text()` runs on the main thread via `app_handle.run_on_main_thread()` so its AppKit focus lookup and macOS keyboard APIs execute in the expected context. On Linux, `std::process::Command` is safe from any thread, so this constraint has no effect.
+`inject_text()` runs on the main thread via `app_handle.run_on_main_thread()` so its AppKit focus lookup and macOS keyboard APIs execute in the expected context.
 
 ## Permissions
 

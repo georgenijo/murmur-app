@@ -49,7 +49,7 @@ pub enum InstallKind {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PlatformRequirement {
-    Desktop,
+    Mac,
     AppleSiliconMac,
 }
 
@@ -127,7 +127,7 @@ pub const MODEL_DEFINITIONS: &[ModelDefinition] = &[
         install_kind: InstallKind::Parakeet,
         warm_on_startup: false,
         retry_unfiltered_on_empty: false,
-        platform: PlatformRequirement::Desktop,
+        platform: PlatformRequirement::Mac,
     },
     ModelDefinition {
         model_name: "tiny.en",
@@ -139,7 +139,7 @@ pub const MODEL_DEFINITIONS: &[ModelDefinition] = &[
         install_kind: InstallKind::Whisper,
         warm_on_startup: false,
         retry_unfiltered_on_empty: false,
-        platform: PlatformRequirement::Desktop,
+        platform: PlatformRequirement::Mac,
     },
     ModelDefinition {
         model_name: "base.en",
@@ -151,7 +151,7 @@ pub const MODEL_DEFINITIONS: &[ModelDefinition] = &[
         install_kind: InstallKind::Whisper,
         warm_on_startup: false,
         retry_unfiltered_on_empty: false,
-        platform: PlatformRequirement::Desktop,
+        platform: PlatformRequirement::Mac,
     },
     ModelDefinition {
         model_name: "small.en",
@@ -163,7 +163,7 @@ pub const MODEL_DEFINITIONS: &[ModelDefinition] = &[
         install_kind: InstallKind::Whisper,
         warm_on_startup: false,
         retry_unfiltered_on_empty: false,
-        platform: PlatformRequirement::Desktop,
+        platform: PlatformRequirement::Mac,
     },
     ModelDefinition {
         model_name: "medium.en",
@@ -175,7 +175,7 @@ pub const MODEL_DEFINITIONS: &[ModelDefinition] = &[
         install_kind: InstallKind::Whisper,
         warm_on_startup: false,
         retry_unfiltered_on_empty: false,
-        platform: PlatformRequirement::Desktop,
+        platform: PlatformRequirement::Mac,
     },
     ModelDefinition {
         model_name: "large-v3-turbo",
@@ -187,7 +187,7 @@ pub const MODEL_DEFINITIONS: &[ModelDefinition] = &[
         install_kind: InstallKind::Whisper,
         warm_on_startup: false,
         retry_unfiltered_on_empty: false,
-        platform: PlatformRequirement::Desktop,
+        platform: PlatformRequirement::Mac,
     },
 ];
 
@@ -200,7 +200,7 @@ pub fn model_definition(model_name: &str) -> Result<&'static ModelDefinition, St
 
 pub fn model_supported(definition: &ModelDefinition) -> bool {
     match definition.platform {
-        PlatformRequirement::Desktop => true,
+        PlatformRequirement::Mac => true,
         PlatformRequirement::AppleSiliconMac => {
             cfg!(all(target_os = "macos", target_arch = "aarch64"))
         }
@@ -208,16 +208,12 @@ pub fn model_supported(definition: &ModelDefinition) -> bool {
 }
 
 pub fn model_accelerator(definition: &ModelDefinition) -> &'static str {
-    if definition.backend == BackendKind::Whisper && !cfg!(target_os = "macos") {
-        "GPU / CPU"
-    } else {
-        definition.accelerator
-    }
+    definition.accelerator
 }
 
 fn supported_platforms(definition: &ModelDefinition) -> Vec<String> {
     match definition.platform {
-        PlatformRequirement::Desktop => vec!["macos".to_string(), "linux".to_string()],
+        PlatformRequirement::Mac => vec!["macos".to_string()],
         PlatformRequirement::AppleSiliconMac => vec!["macos-arm64".to_string()],
     }
 }
@@ -776,6 +772,17 @@ mod tests {
     }
 
     #[test]
+    fn shipped_catalog_reports_only_macos_platforms() {
+        for definition in MODEL_DEFINITIONS {
+            let platforms = supported_platforms(definition);
+            assert!(!platforms.is_empty());
+            assert!(platforms
+                .iter()
+                .all(|platform| platform.starts_with("macos")));
+        }
+    }
+
+    #[test]
     fn shipped_capabilities_match_current_backend_facts() {
         assert!(
             model_definition("base.en")
@@ -836,7 +843,7 @@ mod tests {
             install_kind: InstallKind::Whisper,
             warm_on_startup: false,
             retry_unfiltered_on_empty: false,
-            platform: PlatformRequirement::Desktop,
+            platform: PlatformRequirement::Mac,
         },
         ModelDefinition {
             model_name: "fake-second",
@@ -848,7 +855,7 @@ mod tests {
             install_kind: InstallKind::Whisper,
             warm_on_startup: false,
             retry_unfiltered_on_empty: false,
-            platform: PlatformRequirement::Desktop,
+            platform: PlatformRequirement::Mac,
         },
     ];
 

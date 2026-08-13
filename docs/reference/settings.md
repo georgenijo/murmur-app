@@ -115,7 +115,7 @@ interface Settings {
 
 | Setting | Type | Default | Valid Options/Range | Description |
 |---------|------|---------|-------------------|-------------|
-| `model` | `ModelOption` | Platform default | Seven catalog identifiers listed below | The exact transcription model to use. Unknown identifiers fail closed; Murmur does not automatically choose another model. |
+| `model` | `ModelOption` | Core ML Parakeet v3 | Seven catalog identifiers listed below | The exact transcription model to use. Unknown identifiers fail closed; Murmur does not automatically choose another model. |
 | `language` | `string` | `'en'` | Any language code string | Transcription language. The runtime capability catalog disables language selection for English-only models. |
 
 ### Model Options
@@ -130,9 +130,8 @@ interface Settings {
 | `medium.en` | Whisper Medium (English) | ~1.5 GB | Whisper (Metal GPU) |
 | `large-v3-turbo` | Whisper Large Turbo | ~3 GB | Whisper (Metal GPU) |
 
-New Apple Silicon macOS installs default to Core ML; other frontend builds
-default to CPU Parakeet. Rust initializes `base.en` until the frontend applies
-the persisted/platform default. Runtime capabilities, install state, and
+New installs default to Core ML. Rust initializes `base.en` until the frontend
+applies the persisted default. Runtime capabilities, install state, and
 lifecycle state are not settings and are never persisted to localStorage.
 Settings exposes this through the single model selector and marks the supported
 Core ML entry Recommended; there is no second accelerator switch with hidden
@@ -280,7 +279,7 @@ A `settings.json` that is oversized, not UTF-8, not valid JSON, or not a JSON ob
 2. If found, parses as JSON and merges with `DEFAULT_SETTINGS` (stored values override defaults). Legacy comma/newline-separated `customVocabulary` values migrate to enabled global `vocabularyEntries` with no aliases.
 3. Applies migration: if `recordingMode` is missing or invalid (including the legacy `'hotkey'` value), resets to `'hold_down'`.
 4. Strips the legacy `hotkey` field if present.
-5. Validates `model` against the platform allow-list. Any invalid or removed model (e.g. `moonshine-tiny`, `moonshine-base`) resets to the platform default — Core ML Parakeet v3 on Apple Silicon macOS, CPU Parakeet elsewhere. `language` is validated against `LANGUAGE_OPTIONS` the same way.
+5. Validates `model` against the macOS catalog allow-list. Any invalid or removed model (e.g. `moonshine-tiny`, `moonshine-base`) resets to Core ML Parakeet v3. `language` is validated against `LANGUAGE_OPTIONS` the same way.
 6. Coerces `transformHoldKey` to `null` unless it matches `TRANSFORM_KEY_OPTIONS`, and sanitizes every structured field — `appProfiles`, `voiceCommands`, `vocabularyEntries`, `codeVocabLastScan` — dropping malformed entries and clamping list lengths so a tampered blob can't reach the Rust side or render bad numbers.
 7. Removes fields from deleted features (`hotkey`, `liveTranscriptPreview`).
 8. If not found or on parse error, returns `DEFAULT_SETTINGS`.

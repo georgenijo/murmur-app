@@ -6,6 +6,28 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 ---
 
+## 2026-08-13: Application builds and runtime support are macOS-only
+
+**Decision:** Enforce macOS as the only Murmur application target. The Rust
+build script rejects non-macOS targets, Tauri bundles only `.app` and DMG
+artifacts, and the catalog reports macOS support exclusively. Remove the Linux
+compile/test lane, CUDA dependencies and cache action, platform implementation,
+WebKitGTK defaults, and X11/Wayland paste path. Platform-neutral automation may
+still run on hosted Ubuntu when it does not build or execute the app.
+
+**Rationale:** The product, signed helpers, permissions, window behavior, and
+release contract are macOS-specific. Retaining an unshipped compatibility lane
+created maintenance and CI cost while implying a support promise the product
+does not make. A fail-fast build boundary keeps contributor expectations and
+runtime metadata aligned with the shipped product.
+
+**Status:** active; supersedes the 2026-08-12 release-only decision below
+
+**References:** #570; `app/src-tauri/build.rs`, `app/src-tauri/tauri.conf.json`,
+`.github/workflows/ci.yml`
+
+---
+
 ## 2026-08-12: Voice Query content retention is explicit, bounded, and isolated
 
 **Decision:** Supersede Voice Query's blanket “never in history” rule with one
@@ -44,6 +66,8 @@ useful failure evidence even when content history is disabled.
 
 **References:** #553; `query_history/`, `query_flow.rs`,
 `performance_metrics/`, `docs/features/voice-query.md`
+
+---
 
 ## 2026-08-12: Voice Query environment additions are named, provider-scoped, and Rust-owned
 

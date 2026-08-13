@@ -27,7 +27,7 @@ LATENCY_RELATIVE_LIMIT = 0.10
 LATENCY_ABSOLUTE_LIMIT_MS = 25.0
 WER_ABSOLUTE_LIMIT = 0.01
 MEMORY_ABSOLUTE_LIMIT_MB = 128.0
-CONDITIONED_CACHE_POLICY = "conditioned-timed-path-v2"
+CONDITIONED_CACHE_POLICY = "conditioned-timed-path-v4"
 CONDITIONING_STAGES = (
     "all-selected-quick",
     "shared-init-targets-quick-x2",

@@ -1,6 +1,6 @@
 [package]
 name = "ui"
-version = "0.31.3"
+version = "0.32.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -103,14 +103,10 @@ security-framework = "3.7"
 [target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
 fluidaudio-rs = { git = "https://github.com/FluidInference/fluidaudio-rs", rev = "2d1083314104c812944b5150866d1e334db8eed7", default-features = false, features = ["asr"] }
 
-[target.'cfg(target_os = "linux")'.dependencies]
-rdev = { git = "https://github.com/georgenijo/rdev", rev = "9f510e406327b797eaf2acdc30adcda3dc1e1bb3", features = ["x11"] }
-whisper-rs = { version = "0.15", features = ["cuda"] }
-
 [profile.release]
 panic = "abort"
 # Parallel codegen without LTO: release CI was dominated by fat LTO + CGU=1
-# (cold Linux cargo ~11m). Hot paths are whisper/CUDA/Metal native code, so
+# (cold release builds took ~11m). Hot paths are whisper/Metal native code, so
 # Rust LTO bought little runtime while burning link time. Keep strip off so
 # Tauri can still patch the updater bundle-type marker after compilation.
 codegen-units = 16
