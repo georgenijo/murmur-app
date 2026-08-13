@@ -10,10 +10,16 @@
 //! is therefore forbidden from exposing any process-spawn surface.
 
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::{Duration, Instant};
 
 const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(1);
+
+/// The only parent variables a user CLI ever inherits. Declared pairs (#550)
+/// are layered underneath this list, never over it.
+pub const USER_CLI_ENVIRONMENT_ALLOWLIST: [&str; 8] = [
+    "HOME", "PATH", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "USER", "LOGNAME",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConfirmedTermination {
@@ -83,29 +89,40 @@ impl ManagedChild {
     /// Claude Code derives its Keychain credential account name from `USER`
     /// and resolves to a nonexistent "unknown" account without it, reporting
     /// "Not logged in" even when the user is signed in.
+    ///
+    /// `declared_environment` carries the explicit name/value pairs the user
+    /// added in Settings (#550). They are applied *before* the inherited
+    /// allowlist so a declared pair can never shadow `HOME` or any other
+    /// allowlist key even if the caller's validation were bypassed.
+    ///
+    /// stderr is piped rather than discarded: a provider CLI reports "not
+    /// logged in", quota, and network failures there, and that tail is what
+    /// makes an otherwise blank failure diagnosable.
     pub fn spawn_user_cli(
         executable: &Path,
         arguments: &[String],
-    ) -> std::io::Result<(Self, ChildStdin, ChildStdout)> {
+        declared_environment: &[(String, String)],
+    ) -> std::io::Result<(Self, ChildStdin, ChildStdout, ChildStderr)> {
         let mut command = Command::new(executable);
         command
             .args(arguments)
             .current_dir("/")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .env_clear();
-        for key in [
-            "HOME", "PATH", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "USER", "LOGNAME",
-        ] {
+        for (key, value) in declared_environment {
+            command.env(key, value);
+        }
+        for key in USER_CLI_ENVIRONMENT_ALLOWLIST {
             if let Some(value) = std::env::var_os(key) {
                 command.env(key, value);
             }
         }
-        Self::spawn_command(command)
+        Self::spawn_piped_command(command)
     }
 
-    fn spawn_command(mut command: Command) -> std::io::Result<(Self, ChildStdin, ChildStdout)> {
+    fn spawn_owned_group(mut command: Command) -> std::io::Result<Child> {
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
@@ -127,15 +144,40 @@ impl ManagedChild {
                 });
             }
         }
+        command.spawn()
+    }
 
-        let mut child = command.spawn()?;
-        let stdin = child.stdin.take().ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::BrokenPipe, "missing helper stdin")
-        })?;
-        let stdout = child.stdout.take().ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::BrokenPipe, "missing helper stdout")
-        })?;
+    fn missing_pipe(name: &str) -> std::io::Error {
+        std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            format!("missing helper {name}"),
+        )
+    }
+
+    fn spawn_command(command: Command) -> std::io::Result<(Self, ChildStdin, ChildStdout)> {
+        let mut child = Self::spawn_owned_group(command)?;
+        let stdin = child.stdin.take().ok_or_else(|| Self::missing_pipe("stdin"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| Self::missing_pipe("stdout"))?;
         Ok((Self::from_spawned_child(child), stdin, stdout))
+    }
+
+    fn spawn_piped_command(
+        command: Command,
+    ) -> std::io::Result<(Self, ChildStdin, ChildStdout, ChildStderr)> {
+        let mut child = Self::spawn_owned_group(command)?;
+        let stdin = child.stdin.take().ok_or_else(|| Self::missing_pipe("stdin"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| Self::missing_pipe("stdout"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| Self::missing_pipe("stderr"))?;
+        Ok((Self::from_spawned_child(child), stdin, stdout, stderr))
     }
 
     pub fn pid(&self) -> u32 {
@@ -286,9 +328,9 @@ mod tests {
         let marker = directory.path().join("shell-interpolation-must-not-run");
         let question = format!("what?; $(touch {}) && echo unsafe", marker.display());
         let arguments = vec!["%s".to_string(), question.clone()];
-        let (mut child, stdin, mut stdout) =
-            ManagedChild::spawn_user_cli(Path::new("/usr/bin/printf"), &arguments).unwrap();
-        drop(stdin);
+        let (mut child, stdin, mut stdout, stderr) =
+            ManagedChild::spawn_user_cli(Path::new("/usr/bin/printf"), &arguments, &[]).unwrap();
+        drop((stdin, stderr));
         let mut output = String::new();
         stdout.read_to_string(&mut output).unwrap();
         let termination = child
@@ -302,34 +344,71 @@ mod tests {
         );
     }
 
-    #[test]
-    fn user_cli_environment_contains_only_explicit_allowlist() {
-        let (mut child, stdin, mut stdout) =
-            ManagedChild::spawn_user_cli(Path::new("/usr/bin/env"), &[]).unwrap();
-        drop(stdin);
+    fn user_cli_environment(declared: &[(String, String)]) -> Vec<(String, String)> {
+        let (mut child, stdin, mut stdout, stderr) =
+            ManagedChild::spawn_user_cli(Path::new("/usr/bin/env"), &[], declared).unwrap();
+        drop((stdin, stderr));
         let mut output = String::new();
         stdout.read_to_string(&mut output).unwrap();
         child
             .wait_for_exit(Instant::now() + Duration::from_secs(1))
             .expect("env must exit cleanly");
-        let allowed = [
-            "HOME", "PATH", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "USER", "LOGNAME",
-        ];
-        for line in output.lines() {
-            let key = line.split_once('=').map(|(key, _)| key).unwrap_or(line);
+        output
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn user_cli_environment_contains_only_explicit_allowlist() {
+        for (key, _) in user_cli_environment(&[]) {
             assert!(
-                allowed.contains(&key),
+                USER_CLI_ENVIRONMENT_ALLOWLIST.contains(&key.as_str()),
                 "unexpected inherited environment key: {key}"
             );
         }
     }
 
     #[test]
+    fn declared_variables_extend_the_allowlist_but_can_never_shadow_it() {
+        // `CLAUDE_CONFIG_DIR` is exactly the kind of pair Settings declares.
+        // `HOME` is the pair the validator refuses; even if one reached this
+        // far, the inherited allowlist is applied last and still wins.
+        let inherited_home = std::env::var("HOME").unwrap();
+        let declared = vec![
+            ("CLAUDE_CONFIG_DIR".to_string(), "/tmp/murmur-cfg".to_string()),
+            ("HOME".to_string(), "/tmp/hijacked".to_string()),
+        ];
+        let environment = user_cli_environment(&declared);
+        assert!(environment
+            .iter()
+            .any(|(key, value)| key == "CLAUDE_CONFIG_DIR" && value == "/tmp/murmur-cfg"));
+        assert!(environment
+            .iter()
+            .any(|(key, value)| key == "HOME" && *value == inherited_home));
+    }
+
+    #[test]
+    fn user_cli_stderr_is_captured_rather_than_discarded() {
+        let arguments = vec!["-c".to_string(), "echo not logged in 1>&2".to_string()];
+        let (mut child, stdin, stdout, mut stderr) =
+            ManagedChild::spawn_user_cli(Path::new("/bin/sh"), &arguments, &[]).unwrap();
+        drop((stdin, stdout));
+        let mut captured = String::new();
+        stderr.read_to_string(&mut captured).unwrap();
+        child
+            .wait_for_exit(Instant::now() + Duration::from_secs(2))
+            .expect("sh must exit cleanly");
+        assert_eq!(captured.trim(), "not logged in");
+    }
+
+    #[test]
     fn user_cli_hard_kill_confirms_descendant_process_group_is_empty() {
         let arguments = vec!["-c".to_string(), "sleep 30 & wait".to_string()];
-        let (mut child, stdin, stdout) =
-            ManagedChild::spawn_user_cli(Path::new("/bin/sh"), &arguments).unwrap();
-        drop((stdin, stdout));
+        let (mut child, stdin, stdout, stderr) =
+            ManagedChild::spawn_user_cli(Path::new("/bin/sh"), &arguments, &[]).unwrap();
+        drop((stdin, stdout, stderr));
         let termination = child
             .hard_kill_confirmed(Instant::now() + Duration::from_secs(2))
             .expect("owned child and its descendant must be confirmed stopped");
