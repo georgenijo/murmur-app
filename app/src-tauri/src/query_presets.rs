@@ -646,8 +646,11 @@ mod tests {
         assert!(!truncated);
     }
 
+    #[cfg(unix)]
     #[test]
     fn discovery_finds_an_executable_under_a_home_relative_path() {
+        use std::os::unix::fs::PermissionsExt;
+
         let preset = QueryPreset {
             id: "test",
             label: "Test",
@@ -666,11 +669,7 @@ mod tests {
         std::fs::create_dir_all(&directory).unwrap();
         let tool = directory.join("tool");
         std::fs::write(&tool, "#!/bin/sh\nexit 0\n").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(
             discover(&preset),
             Some(std::fs::canonicalize(&tool).unwrap())
