@@ -104,19 +104,28 @@ impl QueryContextSnapshot {
         if self.window_title.is_some() {
             details.push("window title".to_string());
         }
-        if self.level == QueryContextLevel::Selection {
-            details.push(match self.selection.as_ref() {
-                Some(selection) => format!(
-                    "{} selection{}",
-                    readable_byte_count(selection.len()),
-                    if self.selection_truncated {
-                        " (truncated)"
-                    } else {
-                        ""
-                    }
-                ),
-                None => "no readable selection".to_string(),
-            });
+        match self.level {
+            QueryContextLevel::None => {}
+            QueryContextLevel::Application => {
+                if self.window_title.is_none() {
+                    details.push("app only".to_string());
+                }
+                details.push("selection off".to_string());
+            }
+            QueryContextLevel::Selection => {
+                details.push(match self.selection.as_ref() {
+                    Some(selection) => format!(
+                        "{} selection{}",
+                        readable_byte_count(selection.len()),
+                        if self.selection_truncated {
+                            " (truncated)"
+                        } else {
+                            ""
+                        }
+                    ),
+                    None => "no readable selection".to_string(),
+                });
+            }
         }
         if details.is_empty() {
             Some(format!("Context: {application_name}"))
@@ -3619,6 +3628,44 @@ mod tests {
         let debug = format!("{context:?}");
         assert!(!debug.contains("Private window title"));
         assert!(!debug.contains("selected secret text"));
+    }
+
+    #[test]
+    fn context_summary_distinguishes_application_mode_from_failed_selection_capture() {
+        let application_only = QueryContextSnapshot {
+            level: QueryContextLevel::Application,
+            excluded: false,
+            application_name: Some("TextEdit".to_string()),
+            window_title: None,
+            selection: None,
+            selection_truncated: false,
+        };
+        assert_eq!(
+            application_only.summary().as_deref(),
+            Some("Context: TextEdit — app only · selection off")
+        );
+
+        let application_and_window = QueryContextSnapshot {
+            window_title: Some("Private document title".to_string()),
+            ..application_only.clone()
+        };
+        assert_eq!(
+            application_and_window.summary().as_deref(),
+            Some("Context: TextEdit — window title · selection off")
+        );
+        assert!(!application_and_window
+            .summary()
+            .expect("context summary")
+            .contains("Private document title"));
+
+        let unreadable_selection = QueryContextSnapshot {
+            level: QueryContextLevel::Selection,
+            ..application_only
+        };
+        assert_eq!(
+            unreadable_selection.summary().as_deref(),
+            Some("Context: TextEdit — no readable selection")
+        );
     }
 
     #[test]

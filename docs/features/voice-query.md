@@ -24,7 +24,7 @@ Context is off by default. Each pass freezes one level at query start; focus or 
 
 The app identity is sampled first and later metadata/selection reads are accepted only for that exact PID and bundle ID, so a focus change cannot combine two applications. Secure fields, ambiguous secure-field checks, unavailable Accessibility data, and selection failures fail closed: no selection is included, while the query can continue with whatever lower-level app metadata was safely captured. There is no screenshot, OCR, Screen Recording permission, or other phase-2 visual capture path.
 
-The final literal prompt argument contains the question followed by a labeled, explicitly untrusted context block. The popover shows a requester-gated summary such as `Context: Safari — window title · 1.2 KB selection`; it never silently attaches context. Settings → App Overrides can deny Voice Query context for a specific bundle ID. That deny rule overrides every global or preset context level and never enables context on its own.
+The final literal prompt argument contains the question followed by a labeled, explicitly untrusted context block. The popover shows a requester-gated summary such as `Context: Safari — window title · 1.2 KB selection`; it never silently attaches context. App/window mode explicitly says `selection off` (and `app only` when no window title was readable), while selection mode says `no readable selection` when its secure capture fails closed. Settings → App Overrides can deny Voice Query context for a specific bundle ID. That deny rule overrides every global or preset context level and never enables context on its own.
 
 ## Lifecycle
 
