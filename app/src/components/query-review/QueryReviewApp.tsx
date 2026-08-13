@@ -9,6 +9,8 @@ const ERROR_MESSAGES: Record<string, string> = {
   invalid_executable: 'The configured CLI executable is missing or cannot be run.',
   invalid_arguments: 'The configured fixed arguments are invalid.',
   invalid_timeout: 'Choose a timeout between 5 seconds and 5 minutes.',
+  invalid_environment: 'The saved Voice Query environment is invalid. Clear and re-enter it in Settings.',
+  environment_unavailable: 'Murmur could not read the protected Voice Query environment. Open Settings and clear or re-save it.',
   busy: 'Murmur is already recording or running another local task.',
   audio_start_failed: 'The microphone could not start. Check the selected input and permission.',
   audio_not_ready: 'The microphone was not ready yet. Try the shortcut again.',

@@ -21,6 +21,8 @@ export const QUERY_FAILURE_CODES = [
   'invalid_executable',
   'invalid_arguments',
   'invalid_timeout',
+  'invalid_environment',
+  'environment_unavailable',
   'busy',
   'audio_start_failed',
   'audio_not_ready',

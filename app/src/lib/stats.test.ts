@@ -106,6 +106,36 @@ describe('Voice Query stats', () => {
     expect(JSON.stringify(query)).not.toContain('raw private error');
   });
 
+  it('counts typed environment failures but not a successful clipboard warning', () => {
+    updateQueryStats({
+      provider: 'claude',
+      succeeded: false,
+      errorCode: 'invalid_environment',
+      usage: null,
+    });
+    updateQueryStats({
+      provider: 'codex',
+      succeeded: false,
+      errorCode: 'environment_unavailable',
+      usage: null,
+    });
+    updateQueryStats({
+      provider: 'custom',
+      succeeded: true,
+      errorCode: 'clipboard_superseded',
+      usage: null,
+    });
+
+    const query = loadStats().query;
+    expect(query.successfulQueries).toBe(1);
+    expect(query.failedQueries).toBe(2);
+    expect(query.failuresByErrorCode).toEqual({
+      invalid_environment: 1,
+      environment_unavailable: 1,
+    });
+    expect(query.failuresByErrorCode).not.toHaveProperty('clipboard_superseded');
+  });
+
   it('drops undeclared fields, providers, failure keys, and malformed numbers on load', () => {
     localStorage.setItem(STATS_STORE.storageKey, JSON.stringify({
       totalWords: 5,

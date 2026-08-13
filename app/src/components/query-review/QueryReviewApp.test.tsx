@@ -56,6 +56,15 @@ describe('QueryReviewApp', () => {
     expect(queryErrorMessage('provider_error')).toBe('The configured provider reported an error.');
   });
 
+  it('maps declared-environment failures to actionable Settings recovery', () => {
+    expect(queryErrorMessage('invalid_environment')).toBe(
+      'The saved Voice Query environment is invalid. Clear and re-enter it in Settings.',
+    );
+    expect(queryErrorMessage('environment_unavailable')).toBe(
+      'Murmur could not read the protected Voice Query environment. Open Settings and clear or re-save it.',
+    );
+  });
+
   it('formats provider-reported tokens and optional cost', () => {
     expect(formatQueryUsage({
       inputTokens: 1234,

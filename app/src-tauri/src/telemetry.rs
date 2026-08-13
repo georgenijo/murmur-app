@@ -480,6 +480,8 @@ fn is_safe_query_string(key: &str, value: &str) -> bool {
                 | "invalid_executable"
                 | "invalid_arguments"
                 | "invalid_timeout"
+                | "invalid_environment"
+                | "environment_unavailable"
                 | "busy"
                 | "audio_start_failed"
                 | "audio_not_ready"
@@ -497,6 +499,7 @@ fn is_safe_query_string(key: &str, value: &str) -> bool {
                 | "provider_error"
                 | "empty_answer"
                 | "clipboard_unavailable"
+                | "clipboard_superseded"
                 | "output_too_large"
                 | "process_failed"
                 | "termination_unconfirmed"
@@ -1028,6 +1031,33 @@ mod tests {
         assert_eq!(data["error_code"], "provider_error");
         assert!(data.get("provider_detail").is_none());
         assert!(data.get("usage").is_none());
+    }
+
+    #[test]
+    fn query_event_sanitizer_allows_only_declared_environment_and_clipboard_codes() {
+        for (state, error_code) in [
+            ("failed", "invalid_environment"),
+            ("failed", "environment_unavailable"),
+            ("ready", "clipboard_superseded"),
+        ] {
+            let mut data = serde_json::json!({
+                "event_code": "query.pass_state",
+                "query_pass_id": 13,
+                "state": state,
+                "error_code": error_code,
+            });
+            sanitize_event_data("query", &mut data, true);
+            assert_eq!(data["error_code"], error_code);
+        }
+
+        let mut data = serde_json::json!({
+            "event_code": "query.pass_state",
+            "query_pass_id": 13,
+            "state": "failed",
+            "error_code": "environment_failed: /Users/private/SENTINEL",
+        });
+        sanitize_event_data("query", &mut data, true);
+        assert!(data.get("error_code").is_none());
     }
 
     #[test]
