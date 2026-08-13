@@ -46,6 +46,13 @@ pub(crate) struct QueryPreset {
     pub login_arguments: &'static [&'static str],
     /// Lowercase substrings that prove the provider is *not* authenticated.
     pub auth_failure_signatures: &'static [&'static str],
+    /// Lowercase substrings that prove the provider *is* authenticated.
+    ///
+    /// A probe that merely exits 0 proves nothing — an unrecognised
+    /// subcommand, a stubbed binary, or a changed CLI all exit 0 with output
+    /// this code has never seen. Settings promises that a green check means the
+    /// real query will work, so a green check requires a positive signal.
+    pub auth_success_signatures: &'static [&'static str],
     /// Environment names this provider actually reads, offered in Settings.
     pub suggested_env_keys: &'static [&'static str],
     /// The exact thing to type in a terminal, shown verbatim in the error.
@@ -65,8 +72,12 @@ const GENERIC_AUTH_FAILURE_SIGNATURES: &[&str] = &[
     "authentication failed",
     "invalid api key",
     "invalid_api_key",
-    "unauthorized",
+    // Deliberately not a bare "unauthorized": remapping fires on failures whose
+    // output Murmur did not produce, and a permission or quota error that
+    // happens to contain the word is not a sign-in problem.
     "401 unauthorized",
+    "http 401",
+    "status 401",
     "credentials not found",
     "no credentials",
     "session expired",
@@ -86,6 +97,7 @@ pub(crate) const PRESETS: &[QueryPreset] = &[
         // `claude auth status` reports `"loggedIn": false` and still exits 0,
         // so the signature — not the exit code — is what decides.
         auth_failure_signatures: &["\"loggedin\": false", "\"loggedin\":false", "run /login"],
+        auth_success_signatures: &["\"loggedin\": true", "\"loggedin\":true"],
         suggested_env_keys: &["CLAUDE_CONFIG_DIR"],
         login_hint: "claude auth login",
     },
@@ -102,6 +114,7 @@ pub(crate) const PRESETS: &[QueryPreset] = &[
         // still mention its own login command (e.g. to switch accounts), and a
         // false "not signed in" is worse than falling back to the generic set.
         auth_failure_signatures: &["run `codex login`", "please run codex login"],
+        auth_success_signatures: &["logged in using", "logged in with"],
         suggested_env_keys: &["CODEX_HOME"],
         login_hint: "codex login",
     },
@@ -117,6 +130,7 @@ pub(crate) const PRESETS: &[QueryPreset] = &[
         auth_probe_arguments: &["models"],
         login_arguments: &["login"],
         auth_failure_signatures: &["run `grok login`", "sign in to grok"],
+        auth_success_signatures: &["you are logged in", "available models"],
         suggested_env_keys: &["GROK_HOME"],
         login_hint: "grok login",
     },
@@ -130,6 +144,7 @@ pub(crate) const PRESETS: &[QueryPreset] = &[
         auth_probe_arguments: &["status"],
         login_arguments: &["login"],
         auth_failure_signatures: &["run `cursor-agent login`", "not signed in"],
+        auth_success_signatures: &["logged in as", "signed in as"],
         suggested_env_keys: &[],
         login_hint: "cursor-agent login",
     },
@@ -236,6 +251,12 @@ pub(crate) enum AuthVerdict {
 }
 
 /// Decide a verdict from what the probe actually produced.
+///
+/// Failure signatures decide first (a signed-out `claude auth status` still
+/// exits 0). A clean exit alone is then *not* enough for a preset that declares
+/// what success looks like: without that positive signal the result is
+/// `Unknown`, which shows the raw output instead of a green check the run has
+/// not earned.
 pub(crate) fn verdict_for(
     preset: Option<&QueryPreset>,
     exit_code: Option<i32>,
@@ -244,9 +265,23 @@ pub(crate) fn verdict_for(
     if indicates_auth_failure(preset, output) {
         return AuthVerdict::NotAuthenticated;
     }
-    match exit_code {
-        Some(0) => AuthVerdict::Authenticated,
-        _ => AuthVerdict::Unknown,
+    if exit_code != Some(0) {
+        return AuthVerdict::Unknown;
+    }
+    let expectations = preset
+        .map(|preset| preset.auth_success_signatures)
+        .unwrap_or(&[]);
+    if expectations.is_empty() {
+        return AuthVerdict::Authenticated;
+    }
+    let haystack = output.to_lowercase();
+    if expectations
+        .iter()
+        .any(|signature| haystack.contains(signature))
+    {
+        AuthVerdict::Authenticated
+    } else {
+        AuthVerdict::Unknown
     }
 }
 
@@ -334,14 +369,19 @@ fn run_probe(
             }
         }
     };
-    let (out_bytes, out_truncated) = stdout_reader.join().unwrap_or_default();
-    let (err_bytes, err_truncated) = stderr_reader.join().unwrap_or_default();
+    // A wrapper CLI can exit while a descendant still inherits its stdout and
+    // stderr. Confirm the whole owned process group is gone — killing it if it
+    // is not — *before* joining the readers, exactly as the query path does:
+    // joining first would block this probe on that leaked pipe forever, with no
+    // timeout left to rescue it.
     if child
         .wait_for_exit(Instant::now() + TERMINATION_DEADLINE)
         .is_none()
     {
         let _ = child.hard_kill_confirmed(Instant::now() + TERMINATION_DEADLINE);
     }
+    let (out_bytes, out_truncated) = stdout_reader.join().unwrap_or_default();
+    let (err_bytes, err_truncated) = stderr_reader.join().unwrap_or_default();
 
     let mut output = String::from_utf8_lossy(&out_bytes).into_owned();
     let stderr_text = String::from_utf8_lossy(&err_bytes);
@@ -419,6 +459,28 @@ fn launch_login_in_terminal(executable: &Path, arguments: &[&str]) -> Result<(),
     Err("Opening a provider login is only supported on macOS.".to_string())
 }
 
+/// True when something latency- or process-sensitive is already running.
+///
+/// Mirrors the gate `start_query_capture` applies, minus the checks that only
+/// make sense for capture: the probe never touches the microphone, but it does
+/// start a provider CLI that can be a heavy inference runtime.
+fn is_pipeline_busy(state: &crate::State) -> bool {
+    use std::sync::atomic::Ordering;
+
+    #[cfg(feature = "internal-benchmark")]
+    let corpus_busy = state.corpus.is_active();
+    #[cfg(not(feature = "internal-benchmark"))]
+    let corpus_busy = false;
+
+    state.query.status().blocks_pipeline()
+        || state.app_state.dictation.lock_or_recover().status != crate::state::DictationStatus::Idle
+        || state.app_state.file_transcribing.load(Ordering::SeqCst)
+        || state.benchmark.is_running()
+        || state.app_state.transform_status().blocks_recording()
+        || state.transform_runtime.is_transform_busy()
+        || corpus_busy
+}
+
 fn require_configuration_window(label: &str) -> Result<(), String> {
     if label == MAIN_WINDOW_LABEL || label == REVIEW_WINDOW_LABEL {
         Ok(())
@@ -479,12 +541,22 @@ pub(crate) fn validate_query_command(
 pub(crate) async fn probe_query_provider_auth(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
+    state: tauri::State<'_, crate::State>,
     preset_id: Option<String>,
     command: crate::query_flow::QueryCommandConfig,
 ) -> Result<QueryAuthProbeReport, String> {
     if window.label() != MAIN_WINDOW_LABEL {
         return Err(
             "Voice Query provider checks are only available from the main window.".to_string(),
+        );
+    }
+    // The probe spawns the same user CLI a query does, so it takes the same
+    // exclusivity. Without this, pressing Test mid-question would run a second
+    // provider process against the pipeline a real pass is already using.
+    if is_pipeline_busy(&state) {
+        return Err(
+            "Murmur is recording or running another local task. Try the check again in a moment."
+                .to_string(),
         );
     }
     let preset = preset_id.as_deref().and_then(preset);
@@ -641,6 +713,57 @@ mod tests {
     }
 
     #[test]
+    fn a_clean_exit_alone_is_never_reported_as_signed_in() {
+        // Settings promises a green check means the real query will work. A
+        // probe that exits 0 with output this code has never seen — a renamed
+        // subcommand, a shim, a stubbed binary — has not shown that.
+        for preset_id in ["claude", "codex", "grok", "cursor"] {
+            assert_eq!(
+                verdict_for(preset(preset_id), Some(0), ""),
+                AuthVerdict::Unknown,
+                "{preset_id} must not go green on silence"
+            );
+            assert_eq!(
+                verdict_for(preset(preset_id), Some(0), "usage: see --help"),
+                AuthVerdict::Unknown,
+                "{preset_id} must not go green on unrecognised output"
+            );
+        }
+        // Each preset's real signed-in output still reads as authenticated.
+        for (preset_id, output) in [
+            ("claude", r#"{"loggedIn": true, "authMethod": "claude.ai"}"#),
+            ("codex", "Logged in using ChatGPT"),
+            ("grok", "You are logged in with grok.com."),
+            ("cursor", "✓ Logged in as someone@example.com"),
+        ] {
+            assert_eq!(
+                verdict_for(preset(preset_id), Some(0), output),
+                AuthVerdict::Authenticated,
+                "{preset_id} must recognise its own success output"
+            );
+        }
+        // A custom executable declares no success wording, so a clean exit is
+        // all there is to go on and remains the answer.
+        assert_eq!(
+            verdict_for(None, Some(0), "anything"),
+            AuthVerdict::Authenticated
+        );
+    }
+
+    #[test]
+    fn a_bare_unauthorized_mention_is_not_treated_as_a_sign_in_failure() {
+        // Remapping fires on failures whose output Murmur did not write; a
+        // permission or quota error that merely contains the word must keep its
+        // own error code rather than send the user to a pointless login.
+        assert!(!indicates_auth_failure(
+            None,
+            "error: unauthorized to write to that repository"
+        ));
+        assert!(indicates_auth_failure(None, "HTTP 401 Unauthorized"));
+        assert!(indicates_auth_failure(None, "request failed with status 401"));
+    }
+
+    #[test]
     fn a_non_zero_exit_without_a_signature_stays_unknown() {
         assert_eq!(
             verdict_for(preset("codex"), Some(1), "network unreachable"),
@@ -710,6 +833,7 @@ mod tests {
             auth_probe_arguments: &["status"],
             login_arguments: &["login"],
             auth_failure_signatures: &[],
+            auth_success_signatures: &[],
             suggested_env_keys: &[],
             login_hint: "murmur-discovery-probe login",
         };
@@ -728,6 +852,20 @@ mod tests {
         std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o644)).unwrap();
         assert_eq!(discover(&preset), None);
         std::fs::remove_dir_all(home.join("murmur-discovery-test")).unwrap();
+    }
+
+    #[test]
+    fn a_probe_returns_even_when_a_descendant_outlives_the_command() {
+        // `sh` exits immediately while the background sleep keeps the inherited
+        // stdout open. Joining the readers before confirming the owned group is
+        // empty would hang here forever instead of returning a verdict.
+        let arguments = vec![
+            "-c".to_string(),
+            "echo not logged in; sleep 30 &".to_string(),
+        ];
+        let (exit_code, output, _) = run_probe(Path::new("/bin/sh"), &arguments, &[]).unwrap();
+        assert_eq!(exit_code, Some(0));
+        assert!(output.contains("not logged in"), "{output}");
     }
 
     #[test]

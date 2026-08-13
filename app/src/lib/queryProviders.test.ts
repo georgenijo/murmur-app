@@ -86,15 +86,36 @@ describe('queryEnvVarError', () => {
     }
   });
 
-  it('refuses dynamic-linker injection, malformed names, and duplicates', () => {
-    expect(queryEnvVarError([{ name: 'DYLD_INSERT_LIBRARIES', value: '/tmp/x.dylib' }])).not.toBeNull();
-    expect(queryEnvVarError([{ name: 'LD_PRELOAD', value: '/tmp/x.so' }])).not.toBeNull();
+  it('refuses code injection and traffic interception in any case', () => {
+    // Every preset is a Node/Python/Ruby program behind a shim, so a loader
+    // variable runs attacker code in the child as surely as DYLD_ does; the
+    // proxy and CA variables are the privacy half of the same rule.
+    for (const name of [
+      'DYLD_INSERT_LIBRARIES', 'LD_PRELOAD', 'NODE_OPTIONS', 'NODE_PATH', 'PYTHONPATH',
+      'RUBYOPT', 'PERL5OPT', 'BASH_ENV', 'JAVA_TOOL_OPTIONS',
+      'HTTPS_PROXY', 'HTTP_PROXY', 'ALL_PROXY', 'SSLKEYLOGFILE', 'NODE_EXTRA_CA_CERTS',
+      'SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE',
+    ]) {
+      expect(queryEnvVarError([{ name, value: 'x' }]), name).not.toBeNull();
+    }
+    // Environment lookup is case-sensitive on Unix, so the lowercase spellings
+    // are real variables and a deny list that misses them denies nothing.
+    for (const name of ['https_proxy', 'node_options', 'home', 'Path']) {
+      expect(queryEnvVarError([{ name, value: 'x' }]), name).not.toBeNull();
+    }
+  });
+
+  it('refuses malformed names and duplicates', () => {
     expect(queryEnvVarError([{ name: '1BAD', value: 'x' }])).not.toBeNull();
     expect(queryEnvVarError([{ name: 'HAS SPACE', value: 'x' }])).not.toBeNull();
     expect(queryEnvVarError([{ name: '', value: 'x' }])).not.toBeNull();
     expect(queryEnvVarError([
       { name: 'CODEX_HOME', value: '/a' },
       { name: 'CODEX_HOME', value: '/b' },
+    ])).toContain('more than once');
+    expect(queryEnvVarError([
+      { name: 'CODEX_HOME', value: '/a' },
+      { name: 'codex_home', value: '/b' },
     ])).toContain('more than once');
   });
 

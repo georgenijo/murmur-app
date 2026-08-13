@@ -31,6 +31,47 @@ const MAIN_WINDOW_LABEL: &str = "main";
 /// than configure it. Refused outright, on every platform.
 const DENIED_PREFIXES: [&str; 2] = ["DYLD_", "LD_"];
 
+/// Names that change *which code the CLI loads* or *where its traffic goes*.
+///
+/// Every provider preset is a Node, Python, or Ruby program behind a shim, so
+/// the runtime loader variables are as good as `DYLD_INSERT_LIBRARIES` for
+/// running attacker code inside the child. The proxy and CA variables are the
+/// privacy half of the same rule: they can silently redirect, intercept, or log
+/// the provider's TLS, which is precisely what the cleared environment exists
+/// to prevent. Configuration is what this surface is for; neither of these is
+/// configuration.
+///
+/// Matched case-insensitively: `http_proxy` is the conventional spelling of
+/// `HTTP_PROXY`, and a deny list that misses the lowercase form denies nothing.
+const DENIED_NAMES: [&str; 24] = [
+    // Loader / interpreter injection.
+    "NODE_OPTIONS",
+    "NODE_PATH",
+    "NODE_REPL_EXTERNAL_MODULE",
+    "NODE_EXTRA_CA_CERTS",
+    "PYTHONPATH",
+    "PYTHONHOME",
+    "PYTHONSTARTUP",
+    "RUBYOPT",
+    "RUBYLIB",
+    "PERL5OPT",
+    "PERL5LIB",
+    "BASH_ENV",
+    "ENV",
+    "SHELLOPTS",
+    "JAVA_TOOL_OPTIONS",
+    "_JAVA_OPTIONS",
+    "CLASSPATH",
+    // TLS redirection, interception, and key logging.
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "SSLKEYLOGFILE",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "REQUESTS_CA_BUNDLE",
+];
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct DeclaredEnvVar {
     pub name: String,
@@ -83,17 +124,22 @@ pub(crate) fn validate(variables: &[DeclaredEnvVar]) -> Result<Vec<(String, Stri
                 "“{name}” is not a valid environment variable name. Use letters, digits, and underscores."
             ));
         }
-        if crate::managed_child::USER_CLI_ENVIRONMENT_ALLOWLIST.contains(&name) {
+        // Every refusal below compares case-insensitively: environment lookup is
+        // case-sensitive on Unix, so a deny list that only knows `HTTPS_PROXY`
+        // is trivially bypassed by `https_proxy`.
+        let upper = name.to_ascii_uppercase();
+        if crate::managed_child::USER_CLI_ENVIRONMENT_ALLOWLIST.contains(&upper.as_str()) {
             return Err(format!(
                 "{name} is forwarded by Murmur itself and cannot be redeclared."
             ));
         }
         if DENIED_PREFIXES
             .iter()
-            .any(|prefix| name.starts_with(prefix))
+            .any(|prefix| upper.starts_with(prefix))
+            || DENIED_NAMES.contains(&upper.as_str())
         {
             return Err(format!(
-                "{name} can change which code the CLI loads and is not allowed."
+                "{name} can change which code the CLI loads or where its traffic goes, and is not allowed."
             ));
         }
         if pairs.iter().any(|(existing, _)| existing == name) {
@@ -259,9 +305,43 @@ mod tests {
     }
 
     #[test]
-    fn refuses_dynamic_linker_injection_and_malformed_names() {
-        assert!(validate(&[declared("DYLD_INSERT_LIBRARIES", "/tmp/evil.dylib")]).is_err());
-        assert!(validate(&[declared("LD_PRELOAD", "/tmp/evil.so")]).is_err());
+    fn refuses_code_injection_and_traffic_interception_in_any_case() {
+        // Loading attacker code into the child, by any runtime the presets use.
+        for name in [
+            "DYLD_INSERT_LIBRARIES",
+            "LD_PRELOAD",
+            "NODE_OPTIONS",
+            "NODE_PATH",
+            "PYTHONPATH",
+            "RUBYOPT",
+            "PERL5OPT",
+            "BASH_ENV",
+            "JAVA_TOOL_OPTIONS",
+        ] {
+            assert!(validate(&[declared(name, "/tmp/evil")]).is_err(), "{name}");
+        }
+        // Redirecting, intercepting, or key-logging the provider's TLS.
+        for name in [
+            "HTTPS_PROXY",
+            "HTTP_PROXY",
+            "ALL_PROXY",
+            "SSLKEYLOGFILE",
+            "NODE_EXTRA_CA_CERTS",
+            "SSL_CERT_FILE",
+            "REQUESTS_CA_BUNDLE",
+        ] {
+            assert!(validate(&[declared(name, "http://attacker")]).is_err(), "{name}");
+        }
+        // Environment lookup is case-sensitive on Unix, so the lowercase
+        // spellings are real variables and must be refused too.
+        for name in ["https_proxy", "http_proxy", "node_options", "dyld_insert_libraries"] {
+            assert!(validate(&[declared(name, "x")]).is_err(), "{name}");
+        }
+        assert!(validate(&[declared("home", "/tmp/evil")]).is_err());
+    }
+
+    #[test]
+    fn refuses_malformed_names() {
         assert!(validate(&[declared("1BAD", "x")]).is_err());
         assert!(validate(&[declared("HAS SPACE", "x")]).is_err());
         assert!(validate(&[declared("HAS=EQUALS", "x")]).is_err());

@@ -116,6 +116,18 @@ export function probeSummary(report: QueryAuthProbeReport, providerLabel: string
  */
 const RESERVED_ENV_NAMES = ['HOME', 'PATH', 'TMPDIR', 'LANG', 'LC_ALL', 'LC_CTYPE', 'USER', 'LOGNAME'];
 
+/**
+ * Names that load code into the child or redirect its TLS. Mirrors
+ * `DENIED_NAMES` in `query_env.rs` — keep the two in step.
+ */
+const DENIED_ENV_NAMES = [
+  'NODE_OPTIONS', 'NODE_PATH', 'NODE_REPL_EXTERNAL_MODULE', 'NODE_EXTRA_CA_CERTS',
+  'PYTHONPATH', 'PYTHONHOME', 'PYTHONSTARTUP', 'RUBYOPT', 'RUBYLIB', 'PERL5OPT', 'PERL5LIB',
+  'BASH_ENV', 'ENV', 'SHELLOPTS', 'JAVA_TOOL_OPTIONS', '_JAVA_OPTIONS', 'CLASSPATH',
+  'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'SSLKEYLOGFILE', 'SSL_CERT_FILE', 'SSL_CERT_DIR',
+  'REQUESTS_CA_BUNDLE',
+];
+
 export function queryEnvVarError(variables: QueryEnvVar[]): string | null {
   if (variables.length > MAX_QUERY_ENV_VARS) {
     return `Voice Query accepts at most ${MAX_QUERY_ENV_VARS} declared environment variables.`;
@@ -127,14 +139,17 @@ export function queryEnvVarError(variables: QueryEnvVar[]): string | null {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
       return `“${name}” is not a valid environment variable name. Use letters, digits, and underscores.`;
     }
-    if (RESERVED_ENV_NAMES.includes(name)) {
+    // Case-insensitive, like the Rust validator: `https_proxy` is as real a
+    // variable as `HTTPS_PROXY`.
+    const upper = name.toUpperCase();
+    if (RESERVED_ENV_NAMES.includes(upper)) {
       return `${name} is forwarded by Murmur itself and cannot be redeclared.`;
     }
-    if (name.startsWith('DYLD_') || name.startsWith('LD_')) {
-      return `${name} can change which code the CLI loads and is not allowed.`;
+    if (upper.startsWith('DYLD_') || upper.startsWith('LD_') || DENIED_ENV_NAMES.includes(upper)) {
+      return `${name} can change which code the CLI loads or where its traffic goes, and is not allowed.`;
     }
-    if (seen.has(name)) return `${name} is declared more than once.`;
-    seen.add(name);
+    if (seen.has(upper)) return `${name} is declared more than once.`;
+    seen.add(upper);
     if (variable.value.length > 4096) {
       return `The value for ${name} exceeds the 4096 byte limit.`;
     }

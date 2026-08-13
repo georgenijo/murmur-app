@@ -775,6 +775,17 @@ impl Utf8Chunks {
     }
 }
 
+/// Joins the stderr drain when `run_cli` leaves by any path.
+struct StderrDrain(Option<std::thread::JoinHandle<()>>);
+
+impl Drop for StderrDrain {
+    fn drop(&mut self) {
+        if let Some(handle) = self.0.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
 fn run_cli(
     app: tauri::AppHandle,
     pass_id: u64,
@@ -793,11 +804,17 @@ fn run_cli(
     let child = Arc::new(Mutex::new(child));
 
     // stderr must be drained continuously or a chatty CLI fills the pipe buffer
-    // and blocks forever. The thread ends at EOF, which the confirmed
-    // process-group teardown below guarantees on every exit path, so the tail
-    // stays readable through the shared bound without joining first.
+    // and blocks forever.
+    //
+    // The guard joins that drain on *every* exit path, including the early
+    // returns below. Reading the tail while the thread still had bytes in
+    // flight would race the failure classification: the line that proves the
+    // provider is signed out is the last one written, so a missed join means a
+    // "not signed in" failure reported as a bare non-zero exit. Every path
+    // first confirms or kills the owned process group, which closes the pipe,
+    // so the join is bounded.
     let tail_writer = Arc::clone(&stderr_tail);
-    drop(std::thread::spawn(move || {
+    let _drain = StderrDrain(Some(std::thread::spawn(move || {
         let mut buffer = [0_u8; 4096];
         loop {
             match stderr.read(&mut buffer) {
@@ -805,7 +822,7 @@ fn run_cli(
                 Ok(count) => tail_writer.lock_or_recover().push(&buffer[..count]),
             }
         }
-    }));
+    })));
     {
         let state = app.state::<crate::State>();
         if !state.query.install_child(pass_id, Arc::clone(&child)) {

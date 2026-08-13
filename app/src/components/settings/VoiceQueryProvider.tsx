@@ -86,6 +86,10 @@ export function VoiceQueryProvider({
       window.clearTimeout(watchdogRef.current.timer);
       watchdogRef.current.timer = null;
     }
+    // Clearing the deadline as well as the timer: a tick already awaiting its
+    // probe would otherwise see a future `until` and reschedule itself, so the
+    // watch would outlive an unmount or a provider change by up to two minutes.
+    watchdogRef.current.until = 0;
     setWatching(false);
   }, []);
 
@@ -117,6 +121,7 @@ export function VoiceQueryProvider({
     setWatching(true);
     const tick = async () => {
       const report = await runProbe();
+      if (watchdogRef.current.until === 0) return;
       if (report?.verdict === 'authenticated' || Date.now() >= watchdogRef.current.until) {
         stopWatching();
         return;
@@ -344,18 +349,19 @@ export function VoiceQueryProvider({
             </div>
           ))}
         </div>
-        {envVars.length > 0 && (
-          <div className="mt-2 flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => void saveEnv()}
-              className="rounded-lg border border-outline-variant/30 px-3 py-1.5 text-xs font-semibold text-on-surface hover:bg-surface-container"
-            >
-              Save variables
-            </button>
-            {envSaved && <span className="text-xs text-on-surface-variant">Saved.</span>}
-          </div>
-        )}
+        {/* Always saveable, including with no rows left: hiding this at zero
+            rows made deleting the last variable impossible to persist, so the
+            removed pair kept being handed to the CLI. */}
+        <div className="mt-2 flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void saveEnv()}
+            className="rounded-lg border border-outline-variant/30 px-3 py-1.5 text-xs font-semibold text-on-surface hover:bg-surface-container"
+          >
+            {envVars.length === 0 ? 'Save (none)' : 'Save variables'}
+          </button>
+          {envSaved && <span className="text-xs text-on-surface-variant">Saved.</span>}
+        </div>
         {envError && <p role="alert" className="mt-2 text-xs text-error">{envError}</p>}
       </div>
     </div>

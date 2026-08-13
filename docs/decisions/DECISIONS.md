@@ -12,8 +12,12 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 `TMPDIR`, `LANG`, `LC_ALL`, `LC_CTYPE`, `USER`, `LOGNAME`) as the only inherited
 environment for a user CLI, and layer explicit user-declared name/value pairs
 *underneath* it inside `spawn_user_cli`. The validator refuses any allowlist
-name, `DYLD_*`/`LD_*`, malformed names, duplicates, and anything past 16 pairs
-or a 4 KiB value; the spawn ordering enforces the same rule again even if
+name, every loader variable that changes which code the child runs
+(`DYLD_*`/`LD_*`, `NODE_OPTIONS`, `PYTHONPATH`, `RUBYOPT`, `BASH_ENV`, …), every
+proxy/CA variable that changes where its traffic goes (`HTTPS_PROXY`,
+`SSLKEYLOGFILE`, `NODE_EXTRA_CA_CERTS`, …), malformed names, duplicates, and
+anything past 16 pairs or a 4 KiB value — all matched case-insensitively,
+because `https_proxy` is as real a variable as `HTTPS_PROXY`; the spawn ordering enforces the same rule again even if
 validation were bypassed. Pairs persist in a Rust-owned `query-env.json` (0600)
 behind main-window-gated commands, not in the frontend settings blob, and are
 re-validated on read. Values are stored in plain text and Settings states that
