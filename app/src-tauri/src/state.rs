@@ -328,6 +328,8 @@ pub struct AppState {
     pub idle_timeout_minutes: Mutex<u32>,
     /// Monotonically increasing ID assigned to each recording session.
     pub recording_id: AtomicU64,
+    /// Exactly-once producer guard for accepted live-dictation terminal events.
+    pub dictation_telemetry: crate::dictation_telemetry::DictationTelemetry,
     /// Monotonically increasing opaque ID assigned to every post-recognition
     /// transformation pass (live recordings and imported files).
     pub transcript_session_id: AtomicU64,
@@ -618,6 +620,7 @@ impl Default for AppState {
             last_transcription_at: Mutex::new(None),
             idle_timeout_minutes: Mutex::new(5),
             recording_id: AtomicU64::new(0),
+            dictation_telemetry: crate::dictation_telemetry::DictationTelemetry::default(),
             transcript_session_id: AtomicU64::new(0),
             file_run_id: AtomicU64::new(0),
             meeting_generation: AtomicU64::new(0),

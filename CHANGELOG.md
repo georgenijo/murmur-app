@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Every accepted live dictation now emits exactly one privacy-safe terminal
+  outcome correlated from capture acceptance through final processing. Fleet
+  diagnostics report stage drop-off plus missing or duplicate terminals using
+  stable codes, without transcript, audio, paths, or free-form errors (#535).
+
 ## [0.31.3] - 2026-08-12
 
 ### Changed

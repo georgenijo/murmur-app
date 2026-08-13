@@ -17,6 +17,12 @@ import tempfile
 from collections import Counter, deque
 from datetime import datetime, timezone
 
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
+
+from dictation_lifecycle import DictationLifecycleCorrelator
+
 
 SCHEMA_VERSION = 1
 REPORT_NAME = "capture-watch.json"
@@ -125,6 +131,7 @@ def new_cohort(install_id, version):
         "last_attempted_session_at": "",
         "first_event_at": "",
         "last_event_at": "",
+        "dictation_lifecycle": DictationLifecycleCorrelator(),
     }
 
 
@@ -167,6 +174,7 @@ def finish_session(session, cohorts, install_id, finished_at):
 def scan_install(path, install_id, cohorts):
     malformed = 0
     session = None
+    session_id = 0
     with open(path, encoding="utf-8", errors="replace") as handle:
         for line in handle:
             try:
@@ -183,8 +191,13 @@ def scan_install(path, install_id, cohorts):
             cohort = cohort_for(cohorts, install_id, version)
             touch_cohort(cohort, timestamp)
 
-            if event.get("summary") == "startup_baseline":
+            code = event_code(event)
+            if code == "system.startup_baseline" or event.get("summary") == "startup_baseline":
+                for (cohort_install, _), existing in cohorts.items():
+                    if cohort_install == install_id:
+                        existing["dictation_lifecycle"].close_session(session_id)
                 finish_session(session, cohorts, install_id, timestamp)
+                session_id += 1
                 session = {
                     "version": version,
                     "attempted": False,
@@ -192,7 +205,7 @@ def scan_install(path, install_id, cohorts):
                 }
                 continue
 
-            code = event_code(event)
+            cohort["dictation_lifecycle"].observe(event, session_id)
             data = event_data(event)
             if code == "audio.capture_started":
                 if (
@@ -283,6 +296,7 @@ def serialize_cohort(cohort):
                 session_ready_histogram.items()
             )
         ],
+        "dictation_lifecycle": cohort["dictation_lifecycle"].report(),
     }
 
 
@@ -295,6 +309,36 @@ def regression_alerts(cohort_rows):
         by_install.setdefault(row["install_id"], []).append(row)
 
     for install_id, rows in by_install.items():
+        lifecycle_rows = [
+            row
+            for row in rows
+            if row["dictation_lifecycle"]["accepted"] > 0
+            and row["last_event_at"]
+        ]
+        if lifecycle_rows:
+            latest_lifecycle = max(
+                lifecycle_rows,
+                key=lambda row: (row["last_event_at"], row["app_version"]),
+            )
+            lifecycle = latest_lifecycle["dictation_lifecycle"]
+            if lifecycle["missing_terminals"]:
+                alerts.append(
+                    {
+                        "kind": "missing_dictation_terminals",
+                        "install_id": install_id,
+                        "app_version": latest_lifecycle["app_version"],
+                        "count": lifecycle["missing_terminals"],
+                    }
+                )
+            if lifecycle["duplicate_terminals"]:
+                alerts.append(
+                    {
+                        "kind": "duplicate_dictation_terminals",
+                        "install_id": install_id,
+                        "app_version": latest_lifecycle["app_version"],
+                        "count": lifecycle["duplicate_terminals"],
+                    }
+                )
         attempted_rows = [
             row
             for row in rows

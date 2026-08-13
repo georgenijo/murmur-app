@@ -121,9 +121,11 @@ latest-200, latest-500, or complete JSONL downloads. Served by the same receiver
 process.
 
 The per-install **quick info** table shows two retained-log activity metrics:
-**Last activated** is the newest native recording event that proves microphone
-audio became ready, while **Last successful transcription** is the newest
-completed live dictation with a positive character count. Start requests,
+**Last activated** is the newest dictation-owned `audio.capture_ready` event
+that proves microphone audio became ready, while **Last successful
+transcription** is the newest `pipeline.dictation_terminal` success with a
+positive character count. The old native-ready/completed codes remain bounded
+historical fallbacks. Start requests,
 failed initialization, cancelled/no-speech runs, empty output, and imported-file
 transcription do not advance those metrics. Each value includes relative age and
 an exact Eastern timestamp. The receiver scans the complete retained JSONL with
@@ -154,7 +156,9 @@ capture metrics by install and receiver-observed app version:
   `last_setup_step`;
 - fallback and both-backends-failed counts;
 - ready-recording counts for the five most recent completed attempted
-  dictation sessions per cohort.
+  dictation sessions per cohort;
+- per-recording request → accepted → ready → stop-handoff → terminal counts,
+  bounded terminal outcomes, stage drop-off, and missing/duplicate terminals.
 
 The watch alerts when a newest comparable cohort (at least five readiness
 samples) has a p50 above twice the best retained earlier eligible cohort on the
@@ -165,7 +169,12 @@ outcomes among its five most recent attempts. A newer healthy cohort supersedes
 an older failed cohort, and enough later healthy attempts age failures out of
 the window. An app session is delimited by `startup_baseline`; idle launches,
 transform captures, and the currently open session cannot create a zero-ready
-verdict.
+verdict or a missing-terminal alert. Lifecycle records join only the app-session
+boundary and positive `recording_id`; timestamps and free-form summaries are
+never correlation keys. Audio lifecycle records must carry
+`owner_kind: "dictation"`, so other microphone owners cannot contaminate the
+funnel. Closed sessions are reduced into aggregate counters, leaving only the
+currently open session's per-attempt correlation state in memory.
 
 Reports contain no raw event summaries, device fields, content, paths, or free
 form errors. Backend/setup-step values are allowlisted (including the explicit
@@ -184,7 +193,7 @@ High-value producers attach an allowlisted, privacy-safe `event_code` inside
 the structured `data` object. Examples include
 `audio.capture_backend_timeout`, `audio.fallback_started`,
 `audio.capture_ready`, `audio.capture_failed`,
-`keyboard.listener_silent`, `pipeline.dictation_completed`,
+`keyboard.listener_silent`, `pipeline.dictation_terminal`,
 `transform.pass_outcome`, and `updater.install_failed`.
 
 The dashboard maps those stable codes plus bounded fields to operator-facing

@@ -477,6 +477,7 @@ pub(crate) fn handle_audio_lifecycle(
         return;
     }
     match event {
+        crate::audio_lifecycle::AudioLifecycleEvent::Accepted => {}
         crate::audio_lifecycle::AudioLifecycleEvent::Ready => {
             if state
                 .query

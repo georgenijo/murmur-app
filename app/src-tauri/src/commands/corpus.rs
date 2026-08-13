@@ -477,6 +477,7 @@ pub(crate) fn handle_audio_lifecycle(
         return;
     }
     match event {
+        AudioLifecycleEvent::Accepted => {}
         AudioLifecycleEvent::Ready => {
             state
                 .corpus

@@ -36,7 +36,7 @@ impl AudioOwner {
         }
     }
 
-    fn kind(self) -> &'static str {
+    pub(crate) fn kind(self) -> &'static str {
         match self {
             Self::Dictation(_) => "dictation",
             Self::Transform(_) => "transform",
@@ -56,6 +56,13 @@ impl AudioOwner {
     pub(crate) fn preview_id(self) -> Option<u64> {
         match self {
             Self::Preview(id) => Some(id),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn dictation_id(self) -> Option<u64> {
+        match self {
+            Self::Dictation(id) => Some(id),
             _ => None,
         }
     }
@@ -86,6 +93,7 @@ impl AudioCancelReason {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum AudioLifecycleEvent {
+    Accepted,
     Ready,
     StillConnecting,
     Recovering {
@@ -94,6 +102,7 @@ pub(crate) enum AudioLifecycleEvent {
     InitializationFailed {
         error: String,
         kind: AudioFailureKind,
+        recovery_reason: Option<AudioCancelReason>,
     },
     RecoveryStalled,
     Interrupted {
@@ -539,7 +548,7 @@ fn handle_message(
 ) {
     match message {
         SupervisorMessage::Start(request) => {
-            handle_start(request, attempt, worker_event_sender, factory, public);
+            handle_start(request, attempt, worker_event_sender, factory, sink, public);
         }
         SupervisorMessage::Stop { owner, response } => {
             let Some(current) = attempt.as_ref() else {
@@ -614,6 +623,7 @@ fn handle_start(
     attempt: &mut Option<Attempt>,
     worker_event_sender: &AudioWorkerEventSender,
     factory: &dyn WorkerFactory,
+    sink: &dyn LifecycleSink,
     public: &PublicState,
 ) {
     if let Some(current) = attempt.as_ref() {
@@ -663,24 +673,14 @@ fn handle_start(
         }
     };
 
-    tracing::info!(
-        target: "audio",
-        event_code = "audio.capture_started",
-        owner = request.owner.telemetry_id(),
-        owner_kind = request.owner.kind(),
-        origin = request.origin.as_str(),
-        "audio initialization accepted"
-    );
-    let start_response = if request.wait_until_ready {
-        Some(request.response)
-    } else {
-        let _ = request.response.send(Ok(()));
-        None
-    };
+    let owner = request.owner;
+    let app_handle = request.app_handle;
+    let wait_until_ready = request.wait_until_ready;
+    let origin = request.origin;
     *attempt = Some(Attempt {
-        owner: request.owner,
-        app_handle: request.app_handle,
-        origin: request.origin,
+        owner,
+        app_handle,
+        origin,
         phase: AttemptPhase::Starting,
         accepted_at: Instant::now(),
         tcc_pending_since: None,
@@ -698,9 +698,43 @@ fn handle_start(
         shared,
         active,
         sample_rate: WHISPER_SAMPLE_RATE,
-        start_response,
+        start_response: Some(request.response),
         stop_response: None,
     });
+    let current = attempt.as_ref().expect("accepted attempt was installed");
+    if let Some(recording_id) = owner.dictation_id() {
+        tracing::info!(
+            target: "audio",
+            event_code = "audio.capture_started",
+            recording_id,
+            owner = owner.telemetry_id(),
+            owner_kind = owner.kind(),
+            origin = current.origin.as_str(),
+            "audio initialization accepted"
+        );
+    } else {
+        tracing::info!(
+            target: "audio",
+            event_code = "audio.capture_started",
+            owner = owner.telemetry_id(),
+            owner_kind = owner.kind(),
+            origin = current.origin.as_str(),
+            "audio initialization accepted"
+        );
+    }
+    sink.notify(
+        current.app_handle.as_ref(),
+        owner,
+        AudioLifecycleEvent::Accepted,
+    );
+    if !wait_until_ready {
+        if let Some(response) = attempt
+            .as_mut()
+            .and_then(|current| current.start_response.take())
+        {
+            let _ = response.send(Ok(()));
+        }
+    }
 }
 
 fn handle_worker_event(
@@ -822,15 +856,28 @@ fn handle_worker_event(
                 public.still_connecting.store(false, Ordering::SeqCst);
                 current.phase = AttemptPhase::Recording;
                 public.set_phase(PublicPhase::Recording);
-                tracing::info!(
-                    target: "audio",
-                    event_code = "audio.capture_ready",
-                    owner = owner.telemetry_id(),
-                    owner_kind = owner.kind(),
-                    startup_ms = current.accepted_at.elapsed().as_millis() as u64,
-                    origin = current.origin.as_str(),
-                    "audio readiness accepted"
-                );
+                if let Some(recording_id) = owner.dictation_id() {
+                    tracing::info!(
+                        target: "audio",
+                        event_code = "audio.capture_ready",
+                        recording_id,
+                        owner = owner.telemetry_id(),
+                        owner_kind = owner.kind(),
+                        startup_ms = current.accepted_at.elapsed().as_millis() as u64,
+                        origin = current.origin.as_str(),
+                        "audio readiness accepted"
+                    );
+                } else {
+                    tracing::info!(
+                        target: "audio",
+                        event_code = "audio.capture_ready",
+                        owner = owner.telemetry_id(),
+                        owner_kind = owner.kind(),
+                        startup_ms = current.accepted_at.elapsed().as_millis() as u64,
+                        origin = current.origin.as_str(),
+                        "audio readiness accepted"
+                    );
+                }
                 sink.notify(
                     current.app_handle.as_ref(),
                     current.owner,
@@ -1137,6 +1184,7 @@ fn report_failure_once(attempt: &mut Attempt, sink: &dyn LifecycleSink, failure:
         AudioLifecycleEvent::InitializationFailed {
             error: failure.to_string(),
             kind: failure.kind,
+            recovery_reason: attempt.recovery_reason,
         },
     );
 }

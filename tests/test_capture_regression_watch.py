@@ -440,6 +440,74 @@ class CaptureRegressionWatchTests(unittest.TestCase):
             ],
         )
 
+    def test_stable_lifecycle_codes_flag_closed_missing_and_duplicate_terminals(self) -> None:
+        version = "1.2.3"
+        events = [
+            event(
+                "startup_baseline",
+                "2026-08-01T00:00:00Z",
+                version=version,
+                data={"event_code": "system.startup_baseline"},
+            ),
+            event(
+                "ignored",
+                "2026-08-01T00:00:01Z",
+                version=version,
+                data={
+                    "event_code": "audio.capture_started",
+                    "recording_id": 1,
+                    "owner_kind": "dictation",
+                },
+            ),
+            event(
+                "ignored",
+                "2026-08-01T00:00:02Z",
+                version=version,
+                data={
+                    "event_code": "audio.capture_started",
+                    "recording_id": 2,
+                    "owner_kind": "dictation",
+                },
+            ),
+            event(
+                "ignored",
+                "2026-08-01T00:00:03Z",
+                version=version,
+                data={
+                    "event_code": "pipeline.dictation_terminal",
+                    "recording_id": 2,
+                    "outcome": "success",
+                },
+            ),
+            event(
+                "ignored",
+                "2026-08-01T00:00:04Z",
+                version=version,
+                data={
+                    "event_code": "pipeline.dictation_terminal",
+                    "recording_id": 2,
+                    "outcome": "success",
+                },
+            ),
+            event(
+                "startup_baseline",
+                "2026-08-02T00:00:00Z",
+                version=version,
+                data={"event_code": "system.startup_baseline"},
+            ),
+        ]
+        with tempfile.TemporaryDirectory() as root:
+            self.write_install(root, "12345678-abcd", events)
+            report = watch.build_report(root)
+
+        lifecycle_report = report["cohorts"][0]["dictation_lifecycle"]
+        self.assertEqual(lifecycle_report["missing_terminals"], 1)
+        self.assertEqual(lifecycle_report["duplicate_terminals"], 1)
+        self.assertEqual(
+            {alert["kind"] for alert in report["alerts"]},
+            {"missing_dictation_terminals", "duplicate_dictation_terminals"},
+        )
+
     def test_version_cohort_cardinality_is_bounded(self) -> None:
         events = [
             event(
