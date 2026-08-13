@@ -639,6 +639,33 @@ fn validate_claude_system(value: &serde_json::Value) -> Option<()> {
             }
             claude_assistant_failure_kind(value.get("error")?.as_str()?)?;
         }
+        "hook_started" => {
+            nonempty_string(value.get("hook_id")?)?;
+            nonempty_string(value.get("hook_name")?)?;
+            nonempty_string(value.get("hook_event")?)?;
+        }
+        "hook_response" => {
+            nonempty_string(value.get("hook_id")?)?;
+            nonempty_string(value.get("hook_name")?)?;
+            nonempty_string(value.get("hook_event")?)?;
+            value.get("output")?.as_str()?;
+            value.get("stdout")?.as_str()?;
+            value.get("stderr")?.as_str()?;
+            match value.get("exit_code")? {
+                serde_json::Value::Null => {}
+                exit_code => {
+                    exit_code.as_i64()?;
+                }
+            }
+            nonempty_string(value.get("outcome")?)?;
+        }
+        "status" => {
+            nonempty_string(value.get("status")?)?;
+        }
+        "thinking_tokens" => {
+            value.get("estimated_tokens")?.as_u64()?;
+            value.get("estimated_tokens_delta")?.as_u64()?;
+        }
         _ => return None,
     }
     Some(())
@@ -1302,6 +1329,75 @@ mod tests {
             .unwrap()
             .contains(&AnswerUpdate::Append("answer".into())));
         assert!(adapter.finish().unwrap().used_structured_output);
+    }
+
+    #[test]
+    fn current_claude_hook_and_status_frames_never_replace_the_answer_with_jsonl() {
+        let mut adapter = VoiceQueryAdapter::new(QueryProviderId::Claude, 16 * 1024);
+        let private_hook_output = "PRIVATE_STARTUP_HOOK_PROMPT";
+        let frames = [
+            json!({
+                "type": "system",
+                "subtype": "hook_started",
+                "hook_id": "hook-id",
+                "hook_name": "SessionStart:startup",
+                "hook_event": "SessionStart",
+                "uuid": "hook-started-uuid",
+                "session_id": "private-session"
+            }),
+            json!({
+                "type": "system",
+                "subtype": "hook_response",
+                "hook_id": "hook-id",
+                "hook_name": "SessionStart:startup",
+                "hook_event": "SessionStart",
+                "output": private_hook_output,
+                "stdout": private_hook_output,
+                "stderr": "",
+                "exit_code": 0,
+                "outcome": "success",
+                "uuid": "hook-response-uuid",
+                "session_id": "private-session"
+            }),
+            json!({
+                "type": "system",
+                "subtype": "status",
+                "status": "requesting",
+                "uuid": "status-uuid",
+                "session_id": "private-session"
+            }),
+            json!({
+                "type": "system",
+                "subtype": "thinking_tokens",
+                "estimated_tokens": 50,
+                "estimated_tokens_delta": 50,
+                "uuid": "tokens-uuid",
+                "session_id": "private-session"
+            }),
+        ];
+        let mut answer = String::new();
+        for frame in frames {
+            apply(
+                &mut answer,
+                adapter.push_stdout(line(frame).as_bytes()).unwrap(),
+            );
+        }
+        apply(
+            &mut answer,
+            adapter
+                .push_stdout(
+                    line(claude_result("success", false, Some("Clean answer"), None)).as_bytes(),
+                )
+                .unwrap(),
+        );
+        let completion = adapter.finish().unwrap();
+        apply(&mut answer, completion.updates);
+
+        assert_eq!(answer, "Clean answer");
+        assert!(!answer.contains(private_hook_output));
+        assert!(!answer.contains("hook_response"));
+        assert!(completion.used_structured_output);
+        assert!(!adapter.used_structured_raw_fallback());
     }
 
     #[test]

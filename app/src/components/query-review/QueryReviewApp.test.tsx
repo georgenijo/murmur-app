@@ -71,6 +71,13 @@ describe('QueryReviewApp', () => {
     );
   });
 
+  it('diagnoses a missing Codex platform binary from bounded provider detail', () => {
+    expect(queryErrorMessage(
+      'exit_nonzero',
+      'Error: spawn /opt/homebrew/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex/codex ENOENT',
+    )).toBe('The Codex CLI installation is incomplete. Reinstall or update Codex, then try again.');
+  });
+
   it('formats provider-reported tokens and optional cost', () => {
     expect(formatQueryUsage({
       inputTokens: 1234,

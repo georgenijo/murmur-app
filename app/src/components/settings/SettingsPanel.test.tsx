@@ -431,6 +431,99 @@ describe('SettingsPanel Voice Query async ownership', () => {
     expect(enable.getAttribute('aria-checked')).toBe('false');
   });
 
+  it('shows custom-provider setup guidance and enable errors beside the toggle', async () => {
+    await renderVoiceQuery({ queryExecutable: '', queryArguments: [] });
+
+    expect(container.textContent).toContain('For a local smoke test');
+    expect(container.textContent).toContain('/usr/bin/printf');
+    const enable = container.querySelector(
+      '[role="switch"][aria-label="Enable Voice Query"]',
+    ) as HTMLButtonElement;
+    await act(async () => enable.click());
+
+    const alert = container.querySelector('[role="alert"]') as HTMLParagraphElement;
+    const executable = container.querySelector('#query-executable') as HTMLInputElement;
+    expect(alert.textContent).toContain('Choose the absolute path');
+    expect(alert.compareDocumentPosition(executable) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(currentSettings.queryHotkey).toBeNull();
+  });
+
+  it('explains that provider changes intentionally disable the previous command', async () => {
+    coreMocks.invoke.mockImplementation((command: string) => {
+      if (command === 'list_query_provider_presets') {
+        return Promise.resolve([
+          {
+            id: 'custom',
+            label: 'Custom',
+            discoveryPaths: [],
+            discoveredExecutable: null,
+            recommendedArguments: [],
+            authProbeArguments: [],
+            authFailureSignatures: [],
+            signInArguments: [],
+            signInFix: null,
+            permittedEnvironmentVariables: [],
+          },
+          {
+            id: 'cursor',
+            label: 'Cursor',
+            discoveryPaths: [],
+            discoveredExecutable: '/usr/local/bin/cursor-agent',
+            recommendedArguments: ['--print', '--mode', 'ask', '--single-turn', '--trust'],
+            authProbeArguments: ['status'],
+            authFailureSignatures: [],
+            signInArguments: ['login'],
+            signInFix: 'Run cursor-agent login in Terminal.',
+            permittedEnvironmentVariables: [],
+          },
+        ]);
+      }
+      return idleInvoke(command);
+    });
+    await renderVoiceQuery({ queryHotkey: 'ctrl_l' });
+
+    const provider = Array.from(container.querySelectorAll('[role="combobox"]')).find(
+      (element) => element.textContent?.trim() === 'Custom',
+    ) as HTMLButtonElement;
+    await act(async () => provider.click());
+    const cursor = Array.from(container.querySelectorAll('[role="option"]')).find(
+      (element) => element.textContent?.includes('Cursor'),
+    ) as HTMLLIElement;
+    await act(async () => cursor.click());
+
+    expect(currentSettings.queryProvider).toBe('cursor');
+    expect(currentSettings.queryHotkey).toBeNull();
+    expect(container.textContent).toContain('Provider changed. Voice Query was turned off');
+  });
+
+  it('diagnoses an incomplete Codex platform package from its ENOENT probe output', async () => {
+    installVoiceQueryInvoke('test_query_provider', Promise.resolve({
+      ok: false,
+      authenticated: false,
+      errorCode: 'probe_failed',
+      stdout: '',
+      stderr: 'Error: spawn /opt/homebrew/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex/codex ENOENT',
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      signInFix: null,
+    }));
+    await renderVoiceQuery({
+      queryProvider: 'codex',
+      queryExecutable: '/opt/homebrew/bin/codex',
+      queryArguments: ['exec', '--json'],
+    });
+
+    const testButton = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Test',
+    ) as HTMLButtonElement;
+    await act(async () => {
+      testButton.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain('The Codex CLI installation is incomplete');
+  });
+
   it('does not render a pending provider test under a newly selected provider', async () => {
     let resolveTest!: (result: Record<string, unknown>) => void;
     const pendingTest = new Promise<Record<string, unknown>>((resolve) => { resolveTest = resolve; });

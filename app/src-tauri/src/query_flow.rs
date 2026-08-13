@@ -264,6 +264,7 @@ struct ValidatedQueryCommand {
     arguments: Vec<String>,
     timeout: Duration,
     environment: Vec<QueryEnvironmentVariable>,
+    working_directory: PathBuf,
     context_level: QueryContextLevel,
 }
 
@@ -1107,6 +1108,7 @@ pub(crate) struct QueryReviewContent {
 fn validate_command(
     config: QueryCommandConfig,
     environment: Vec<QueryEnvironmentVariable>,
+    working_directory: PathBuf,
 ) -> Result<ValidatedQueryCommand, &'static str> {
     let executable = config.executable.trim();
     if executable.is_empty() {
@@ -1149,6 +1151,7 @@ fn validate_command(
         arguments: config.arguments,
         timeout: Duration::from_secs(config.timeout_seconds),
         environment,
+        working_directory,
         context_level: config.context_level,
     })
 }
@@ -1158,7 +1161,8 @@ fn validate_command_for_app(
     config: QueryCommandConfig,
 ) -> Result<ValidatedQueryCommand, &'static str> {
     let environment = crate::query_provider::load_environment(app, config.provider)?;
-    validate_command(config, environment)
+    let working_directory = crate::query_provider::query_working_directory(app)?;
+    validate_command(config, environment, working_directory)
 }
 
 fn require_window(window: &tauri::WebviewWindow, expected: &str) -> Result<(), String> {
@@ -1230,6 +1234,7 @@ pub(crate) async fn test_query_provider(
             command.provider,
             &command.executable,
             &command.environment,
+            &command.working_directory,
         )
     })
     .await
@@ -1287,6 +1292,7 @@ pub(crate) async fn probe_query_sign_in_for_pass(
             session.command.provider,
             &session.command.executable,
             &session.command.environment,
+            &session.command.working_directory,
         )
     })
     .await
@@ -2140,7 +2146,12 @@ fn run_cli(
         }
     }
     let spawn_started_at = Instant::now();
-    let spawned = ManagedChild::spawn_user_cli(&command.executable, &arguments, &environment);
+    let spawned = ManagedChild::spawn_user_cli(
+        &command.executable,
+        &arguments,
+        &environment,
+        &command.working_directory,
+    );
     app.state::<crate::State>().query.mark_spawn_finished(
         pass_id,
         spawn_started_at,
@@ -2845,7 +2856,7 @@ mod tests {
             retain_query_history: false,
         };
         assert_eq!(
-            validate_command(invalid, vec![]).unwrap_err(),
+            validate_command(invalid, vec![], std::env::temp_dir()).unwrap_err(),
             "invalid_executable"
         );
 
@@ -2857,7 +2868,8 @@ mod tests {
             context_level: QueryContextLevel::None,
             retain_query_history: false,
         };
-        let valid = validate_command(valid, vec![]).expect("printf must be executable");
+        let valid = validate_command(valid, vec![], std::env::temp_dir())
+            .expect("printf must be executable");
         assert_eq!(valid.arguments, vec!["%s"]);
     }
 
@@ -3038,6 +3050,7 @@ mod tests {
                     arguments: vec![],
                     timeout: Duration::from_secs(5),
                     environment: vec![],
+                    working_directory: temp.path().to_path_buf(),
                     context_level: QueryContextLevel::Selection,
                 },
                 answer: String::new(),
@@ -3134,6 +3147,7 @@ mod tests {
                     arguments: vec!["%s".into()],
                     timeout: Duration::from_secs(5),
                     environment: vec![],
+                    working_directory: temp.path().to_path_buf(),
                     context_level: QueryContextLevel::Selection,
                 },
                 answer: String::new(),
@@ -3193,6 +3207,7 @@ mod tests {
                     arguments: vec![],
                     timeout: Duration::from_secs(5),
                     environment: vec![],
+                    working_directory: temp.path().to_path_buf(),
                     context_level: QueryContextLevel::Application,
                 },
                 answer: String::new(),
@@ -3334,8 +3349,10 @@ mod tests {
         let query = QueryCoordinator::default();
         let pass_id = query.allocate_keyboard_pass().unwrap();
         assert!(query.begin_tracking(pass_id, QueryProviderId::Custom, false, None));
+        let directory = tempfile::tempdir().unwrap();
         let (child, stdin, stdout, stderr) =
-            ManagedChild::spawn_user_cli(Path::new("/usr/bin/false"), &[], &[]).unwrap();
+            ManagedChild::spawn_user_cli(Path::new("/usr/bin/false"), &[], &[], directory.path())
+                .unwrap();
         drop((stdin, stdout, stderr));
         assert!(query.reserve_child_start(pass_id));
         assert!(query.publish_spawned_child(pass_id, Arc::new(Mutex::new(child))));
@@ -3381,8 +3398,14 @@ mod tests {
         assert!(query.begin_cancel(pass_id));
 
         let arguments = vec!["30".to_string()];
-        let (child, stdin, stdout, stderr) =
-            ManagedChild::spawn_user_cli(Path::new("/bin/sleep"), &arguments, &[]).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let (child, stdin, stdout, stderr) = ManagedChild::spawn_user_cli(
+            Path::new("/bin/sleep"),
+            &arguments,
+            &[],
+            directory.path(),
+        )
+        .unwrap();
         drop((stdin, stdout, stderr));
         assert!(query.publish_spawned_child(pass_id, Arc::new(Mutex::new(child))));
 
@@ -3427,8 +3450,14 @@ mod tests {
         ));
 
         let arguments = vec!["30".to_string()];
-        let (child, stdin, stdout, stderr) =
-            ManagedChild::spawn_user_cli(Path::new("/bin/sleep"), &arguments, &[]).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let (child, stdin, stdout, stderr) = ManagedChild::spawn_user_cli(
+            Path::new("/bin/sleep"),
+            &arguments,
+            &[],
+            directory.path(),
+        )
+        .unwrap();
         drop((stdin, stdout, stderr));
         assert!(query.publish_spawned_child(pass_id, Arc::new(Mutex::new(child))));
 
@@ -3446,8 +3475,14 @@ mod tests {
         let query = QueryCoordinator::default();
         let pass_id = query.allocate_keyboard_pass().unwrap();
         let arguments = vec!["30".to_string()];
-        let (child, stdin, stdout, stderr) =
-            ManagedChild::spawn_user_cli(Path::new("/bin/sleep"), &arguments, &[]).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let (child, stdin, stdout, stderr) = ManagedChild::spawn_user_cli(
+            Path::new("/bin/sleep"),
+            &arguments,
+            &[],
+            directory.path(),
+        )
+        .unwrap();
         drop((stdin, stdout, stderr));
         assert!(query.reserve_child_start(pass_id));
         assert!(query.publish_spawned_child(pass_id, Arc::new(Mutex::new(child))));
@@ -3534,6 +3569,7 @@ mod tests {
                     arguments: vec![],
                     timeout: Duration::from_secs(5),
                     environment: vec![],
+                    working_directory: std::env::temp_dir(),
                     context_level: QueryContextLevel::None,
                 },
                 answer: "a".repeat(MAX_ANSWER_BYTES),

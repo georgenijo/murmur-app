@@ -48,11 +48,19 @@ function statusLabel(state: QueryReviewState, errorCode: string | null): string 
   }
 }
 
-export function queryErrorMessage(errorCode: string | null): string | null {
+export function queryErrorMessage(errorCode: string | null, errorDetail?: string | null): string | null {
   // `clipboard_superseded` is a successful answer whose auto-copy deferred to a
   // clipboard write the user made while it was generating — not a failure.
   if (!errorCode || errorCode === 'audio_stalled' || errorCode === 'clipboard_superseded') {
     return null;
+  }
+  if (
+    errorCode === 'exit_nonzero'
+    && errorDetail
+    && /ENOENT/i.test(errorDetail)
+    && /codex(?:-darwin|\/codex)/i.test(errorDetail)
+  ) {
+    return 'The Codex CLI installation is incomplete. Reinstall or update Codex, then try again.';
   }
   return ERROR_MESSAGES[errorCode] ?? 'The voice query could not be completed.';
 }
@@ -69,7 +77,10 @@ export function formatQueryUsage(usage: QueryUsage | null): string | null {
 
 export function QueryReviewApp() {
   const driver = useQueryReviewDriver();
-  const errorMessage = useMemo(() => queryErrorMessage(driver.errorCode), [driver.errorCode]);
+  const errorMessage = useMemo(
+    () => queryErrorMessage(driver.errorCode, driver.errorDetail),
+    [driver.errorCode, driver.errorDetail],
+  );
   const terminal = driver.state === 'ready' || driver.state === 'failed';
   const usageText = driver.state === 'ready' ? formatQueryUsage(driver.usage) : null;
   const primaryText = driver.state === 'failed'

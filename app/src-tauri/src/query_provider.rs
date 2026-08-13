@@ -24,6 +24,7 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 const TERMINATION_DEADLINE: Duration = Duration::from_secs(2);
 const CHILD_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const ENVIRONMENT_FILE: &str = "query-environment.json";
+const QUERY_WORKSPACE_DIR: &str = "voice-query-workspace";
 const ENVIRONMENT_VERSION: u32 = 1;
 const MAX_ENV_VALUE_BYTES: usize = 4096;
 
@@ -78,6 +79,10 @@ const CLAUDE: ProviderPresetData = ProviderPresetData {
         "--output-format",
         "stream-json",
         "--include-partial-messages",
+        "--safe-mode",
+        "--tools",
+        "",
+        "--no-session-persistence",
     ],
     auth_probe_arguments: &["auth", "status"],
     auth_failure_signatures: &[
@@ -161,7 +166,7 @@ const CURSOR: ProviderPresetData = ProviderPresetData {
         "/opt/homebrew/bin/cursor-agent",
         "/usr/local/bin/cursor-agent",
     ],
-    recommended_arguments: &["--print", "--mode", "ask", "--single-turn"],
+    recommended_arguments: &["--print", "--mode", "ask", "--single-turn", "--trust"],
     auth_probe_arguments: &["status"],
     auth_failure_signatures: &[
         "not authenticated",
@@ -420,6 +425,37 @@ fn app_data_dir(app: &tauri::AppHandle) -> Result<PathBuf, &'static str> {
         .map_err(|_| "environment_unavailable")
 }
 
+/// Return a private, content-free workspace for user CLIs. Query providers do
+/// not need Murmur's source tree (or the filesystem root) as ambient context.
+/// Cursor additionally receives its explicit `--trust` flag for this exact
+/// isolated workspace so its non-interactive Ask preset cannot stall on a trust
+/// prompt.
+pub(crate) fn query_working_directory(app: &tauri::AppHandle) -> Result<PathBuf, &'static str> {
+    prepare_query_working_directory(app_data_dir(app)?)
+}
+
+fn prepare_query_working_directory(app_data_directory: PathBuf) -> Result<PathBuf, &'static str> {
+    let directory = app_data_directory.join(QUERY_WORKSPACE_DIR);
+    if directory
+        .symlink_metadata()
+        .is_ok_and(|metadata| metadata.file_type().is_symlink())
+    {
+        return Err("environment_unavailable");
+    }
+    std::fs::create_dir_all(&directory).map_err(|_| "environment_unavailable")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
+            .map_err(|_| "environment_unavailable")?;
+    }
+    let directory = std::fs::canonicalize(directory).map_err(|_| "environment_unavailable")?;
+    directory
+        .is_dir()
+        .then_some(directory)
+        .ok_or("environment_unavailable")
+}
+
 pub(crate) fn load_environment(
     app: &tauri::AppHandle,
     provider: QueryProviderId,
@@ -607,6 +643,7 @@ fn run_bounded_command_with_timeout(
     executable: &Path,
     arguments: &[String],
     environment: &[QueryEnvironmentVariable],
+    working_directory: &Path,
     timeout: Duration,
 ) -> Result<BoundedCommandOutput, &'static str> {
     let environment: Vec<(String, String)> = environment
@@ -614,7 +651,7 @@ fn run_bounded_command_with_timeout(
         .map(|variable| (variable.name.clone(), variable.value.clone()))
         .collect();
     let (mut child, stdin, stdout, stderr) =
-        ManagedChild::spawn_user_cli(executable, arguments, &environment)
+        ManagedChild::spawn_user_cli(executable, arguments, &environment, working_directory)
             .map_err(|_| "spawn_failed")?;
     drop(stdin);
     if set_pipe_nonblocking(&stdout).is_err() || set_pipe_nonblocking(&stderr).is_err() {
@@ -707,8 +744,15 @@ fn run_bounded_command(
     executable: &Path,
     arguments: &[String],
     environment: &[QueryEnvironmentVariable],
+    working_directory: &Path,
 ) -> Result<BoundedCommandOutput, &'static str> {
-    run_bounded_command_with_timeout(executable, arguments, environment, PROBE_TIMEOUT)
+    run_bounded_command_with_timeout(
+        executable,
+        arguments,
+        environment,
+        working_directory,
+        PROBE_TIMEOUT,
+    )
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -734,6 +778,7 @@ pub(crate) fn run_auth_probe(
     provider: QueryProviderId,
     executable: &Path,
     environment: &[QueryEnvironmentVariable],
+    working_directory: &Path,
 ) -> QueryProviderTestResult {
     let data = preset(provider);
     if data.auth_probe_arguments.is_empty() {
@@ -753,7 +798,7 @@ pub(crate) fn run_auth_probe(
         .iter()
         .map(|argument| (*argument).to_string())
         .collect();
-    match run_bounded_command(executable, &arguments, environment) {
+    match run_bounded_command(executable, &arguments, environment, working_directory) {
         Ok(output) => {
             let auth_failure = is_auth_failure(provider, &output.stdout, &output.stderr);
             let ok = output.success && !auth_failure;
@@ -881,7 +926,11 @@ mod tests {
                 "--verbose",
                 "--output-format",
                 "stream-json",
-                "--include-partial-messages"
+                "--include-partial-messages",
+                "--safe-mode",
+                "--tools",
+                "",
+                "--no-session-persistence",
             ]
         );
         assert_eq!(
@@ -911,6 +960,22 @@ mod tests {
                 .count(),
             1
         );
+        let cursor = presets
+            .iter()
+            .find(|preset| preset.id == QueryProviderId::Cursor)
+            .unwrap();
+        assert_eq!(
+            cursor.recommended_arguments,
+            vec!["--print", "--mode", "ask", "--single-turn", "--trust"]
+        );
+        assert_eq!(
+            cursor
+                .recommended_arguments
+                .iter()
+                .filter(|argument| **argument == "--trust")
+                .count(),
+            1
+        );
         assert_eq!(
             codex
                 .recommended_arguments
@@ -919,6 +984,43 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn query_workspace_is_private_and_not_the_filesystem_root() {
+        let app_data = temp_dir("query_workspace");
+        let workspace = prepare_query_working_directory(app_data.clone()).unwrap();
+        assert_eq!(
+            workspace,
+            std::fs::canonicalize(app_data.join(QUERY_WORKSPACE_DIR)).unwrap()
+        );
+        assert_ne!(workspace, Path::new("/"));
+        assert!(workspace.is_dir());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&workspace).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+        std::fs::remove_dir_all(app_data).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn query_workspace_rejects_a_preexisting_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let app_data = temp_dir("query_workspace_symlink");
+        let target = app_data.join("target");
+        std::fs::create_dir(&target).unwrap();
+        symlink(&target, app_data.join(QUERY_WORKSPACE_DIR)).unwrap();
+        assert_eq!(
+            prepare_query_working_directory(app_data.clone()),
+            Err("environment_unavailable")
+        );
+        std::fs::remove_dir_all(app_data).unwrap();
     }
 
     #[test]
@@ -1089,10 +1191,17 @@ mod tests {
 
     #[test]
     fn generic_probe_failure_does_not_offer_auth_repair() {
-        let result = run_auth_probe(QueryProviderId::Claude, Path::new("/usr/bin/false"), &[]);
+        let directory = temp_dir("generic_probe_failure");
+        let result = run_auth_probe(
+            QueryProviderId::Claude,
+            Path::new("/usr/bin/false"),
+            &[],
+            &directory,
+        );
         assert!(!result.ok);
         assert_eq!(result.error_code, Some("probe_failed"));
         assert_eq!(result.sign_in_fix, None);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -1110,8 +1219,14 @@ mod tests {
             // Leave enough headroom for a cold `/usr/bin/python3` launch on a
             // saturated macOS CI runner; the dedicated hostile-child test
             // below keeps the 150 ms deadline assertion.
-            run_bounded_command_with_timeout(python, &arguments, &[], Duration::from_secs(5))
-                .unwrap();
+            run_bounded_command_with_timeout(
+                python,
+                &arguments,
+                &[],
+                &std::env::temp_dir(),
+                Duration::from_secs(5),
+            )
+            .unwrap();
         assert!(output.success);
         assert_eq!(output.stdout, "ready");
         assert_eq!(output.stderr, "detail");
@@ -1183,8 +1298,14 @@ time.sleep(5)
         ];
         let started = Instant::now();
         assert_eq!(
-            run_bounded_command_with_timeout(python, &arguments, &[], Duration::from_millis(150),)
-                .unwrap_err(),
+            run_bounded_command_with_timeout(
+                python,
+                &arguments,
+                &[],
+                &dir,
+                Duration::from_millis(150),
+            )
+            .unwrap_err(),
             "timed_out"
         );
         assert!(

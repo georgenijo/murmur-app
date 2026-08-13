@@ -109,6 +109,7 @@ impl ManagedChild {
         executable: &Path,
         arguments: &[String],
         declared_environment: &[(String, String)],
+        working_directory: &Path,
     ) -> std::io::Result<(Self, ChildStdin, ChildStdout, ChildStderr)> {
         const DECLARED_ENVIRONMENT: [&str; 2] = ["CLAUDE_CONFIG_DIR", "CODEX_HOME"];
         let mut seen = std::collections::HashSet::new();
@@ -125,10 +126,16 @@ impl ManagedChild {
                 ));
             }
         }
+        if !working_directory.is_absolute() || !working_directory.is_dir() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "invalid user CLI working directory",
+            ));
+        }
         let mut command = Command::new(executable);
         command
             .args(arguments)
-            .current_dir("/")
+            .current_dir(working_directory)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -372,8 +379,13 @@ mod tests {
         let marker = directory.path().join("shell-interpolation-must-not-run");
         let question = format!("what?; $(touch {}) && echo unsafe", marker.display());
         let arguments = vec!["%s".to_string(), question.clone()];
-        let (mut child, stdin, mut stdout, stderr) =
-            ManagedChild::spawn_user_cli(Path::new("/usr/bin/printf"), &arguments, &[]).unwrap();
+        let (mut child, stdin, mut stdout, stderr) = ManagedChild::spawn_user_cli(
+            Path::new("/usr/bin/printf"),
+            &arguments,
+            &[],
+            directory.path(),
+        )
+        .unwrap();
         drop((stdin, stderr));
         let mut output = String::new();
         stdout.read_to_string(&mut output).unwrap();
@@ -390,8 +402,10 @@ mod tests {
 
     #[test]
     fn user_cli_environment_contains_only_explicit_allowlist() {
+        let directory = tempfile::tempdir().unwrap();
         let (mut child, stdin, mut stdout, stderr) =
-            ManagedChild::spawn_user_cli(Path::new("/usr/bin/env"), &[], &[]).unwrap();
+            ManagedChild::spawn_user_cli(Path::new("/usr/bin/env"), &[], &[], directory.path())
+                .unwrap();
         drop((stdin, stderr));
         let mut output = String::new();
         stdout.read_to_string(&mut output).unwrap();
@@ -412,9 +426,15 @@ mod tests {
 
     #[test]
     fn user_cli_accepts_only_explicit_config_directory_additions() {
+        let directory = tempfile::tempdir().unwrap();
         let additions = vec![("CODEX_HOME".to_string(), "/tmp/codex-home".to_string())];
-        let (mut child, stdin, mut stdout, stderr) =
-            ManagedChild::spawn_user_cli(Path::new("/usr/bin/env"), &[], &additions).unwrap();
+        let (mut child, stdin, mut stdout, stderr) = ManagedChild::spawn_user_cli(
+            Path::new("/usr/bin/env"),
+            &[],
+            &additions,
+            directory.path(),
+        )
+        .unwrap();
         drop((stdin, stderr));
         let mut output = String::new();
         stdout.read_to_string(&mut output).unwrap();
@@ -429,19 +449,31 @@ mod tests {
             "HOME", "PATH", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "USER", "LOGNAME",
         ] {
             let rejected = vec![(key.to_string(), "/tmp/override".to_string())];
-            assert!(
-                ManagedChild::spawn_user_cli(Path::new("/usr/bin/env"), &[], &rejected).is_err()
-            );
+            assert!(ManagedChild::spawn_user_cli(
+                Path::new("/usr/bin/env"),
+                &[],
+                &rejected,
+                directory.path(),
+            )
+            .is_err());
         }
         let secret = vec![("ANTHROPIC_API_KEY".to_string(), "secret".to_string())];
-        assert!(ManagedChild::spawn_user_cli(Path::new("/usr/bin/env"), &[], &secret).is_err());
+        assert!(ManagedChild::spawn_user_cli(
+            Path::new("/usr/bin/env"),
+            &[],
+            &secret,
+            directory.path(),
+        )
+        .is_err());
     }
 
     #[test]
     fn user_cli_hard_kill_confirms_descendant_process_group_is_empty() {
+        let directory = tempfile::tempdir().unwrap();
         let arguments = vec!["-c".to_string(), "sleep 30 & wait".to_string()];
         let (mut child, stdin, stdout, stderr) =
-            ManagedChild::spawn_user_cli(Path::new("/bin/sh"), &arguments, &[]).unwrap();
+            ManagedChild::spawn_user_cli(Path::new("/bin/sh"), &arguments, &[], directory.path())
+                .unwrap();
         drop((stdin, stdout, stderr));
         let termination = child
             .hard_kill_confirmed(Instant::now() + Duration::from_secs(2))

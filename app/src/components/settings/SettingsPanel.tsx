@@ -274,6 +274,29 @@ function queryConfigurationMessage(error: unknown): string {
   return 'Murmur could not validate this Voice Query configuration.';
 }
 
+function queryProviderTestMessage(
+  provider: QueryProviderId,
+  result: QueryProviderTestResult,
+): string {
+  const detail = `${result.stdout}\n${result.stderr}`;
+  if (
+    provider === 'codex'
+    && result.errorCode === 'probe_failed'
+    && /ENOENT/i.test(detail)
+    && /codex(?:-darwin|\/codex)/i.test(detail)
+  ) {
+    return 'The Codex CLI installation is incomplete. Reinstall or update Codex, then choose Test again.';
+  }
+  if (result.authenticated === null) {
+    return 'Executable validated. Custom providers do not have a built-in authentication probe.';
+  }
+  if (result.ok) return 'Authenticated and ready.';
+  if (result.errorCode === 'provider_not_authenticated') {
+    return result.signInFix ?? 'The provider is not authenticated.';
+  }
+  return 'The provider probe failed. Review its output below.';
+}
+
 function queryCommand(settings: Settings): QueryCommandConfig {
   return {
     provider: settings.queryProvider,
@@ -516,6 +539,7 @@ export const SettingsPanel = memo(function SettingsPanel({
   const [transformKeyError, setTransformKeyError] = useState<string | null>(null);
   const [transformDownloadPct, setTransformDownloadPct] = useState<number | null>(null);
   const [queryConfigError, setQueryConfigError] = useState<string | null>(null);
+  const [queryConfigNotice, setQueryConfigNotice] = useState<string | null>(null);
   const [queryPresets, setQueryPresets] = useState<QueryProviderPreset[]>([CUSTOM_QUERY_PRESET]);
   const [queryEnvironment, setQueryEnvironment] = useState<QueryEnvironmentVariable[]>([]);
   const [configuredQueryEnvironment, setConfiguredQueryEnvironment] = useState<string[]>([]);
@@ -711,6 +735,7 @@ export const SettingsPanel = memo(function SettingsPanel({
     setQueryConfigError(null);
     if (settings.queryHotkey !== null) {
       invalidateQueryRequests();
+      setQueryConfigNotice(null);
       onUpdateSettings({ queryHotkey: null });
       return;
     }
@@ -729,6 +754,7 @@ export const SettingsPanel = memo(function SettingsPanel({
     try {
       await validateQueryCommand(command);
       if (queryRequestIsCurrent(generation)) {
+        setQueryConfigNotice(null);
         onUpdateSettings({ queryHotkey: key });
       }
     } catch (error) {
@@ -748,6 +774,9 @@ export const SettingsPanel = memo(function SettingsPanel({
     if (!selected) return;
     invalidateQueryRequests();
     setQueryConfigError(null);
+    setQueryConfigNotice(settings.queryHotkey !== null
+      ? 'Provider changed. Voice Query was turned off so the new command can be tested before use.'
+      : null);
     setQueryTestResult(null);
     setQuerySignInStatus(null);
     setQueryEnvironmentStatus(null);
@@ -878,6 +907,9 @@ export const SettingsPanel = memo(function SettingsPanel({
       const selected = await open({ directory: false, multiple: false });
       if (typeof selected === 'string' && queryRequestIsCurrent(generation)) {
         setQueryConfigError(null);
+        setQueryConfigNotice(settings.queryHotkey !== null
+          ? 'Command changed. Voice Query was turned off so the new command can be tested before use.'
+          : null);
         setQueryTestResult(null);
         setQuerySignInStatus(null);
         invalidateQueryRequests();
@@ -1131,6 +1163,12 @@ export const SettingsPanel = memo(function SettingsPanel({
                     : `Not found in ${selectedQueryPreset.discoveryPaths.join(', ')}`}
                 </p>
               )}
+              {settings.queryProvider === 'custom' && (
+                <p className="mt-1 text-xs text-on-surface-variant">
+                  Choose an absolute executable and its fixed arguments below. For a local smoke test,
+                  use <code>/usr/bin/printf</code> with one fixed argument: <code>%s</code>.
+                </p>
+              )}
             </div>
 
             <SettingToggle
@@ -1140,6 +1178,10 @@ export const SettingsPanel = memo(function SettingsPanel({
               disabled={queryConfigBusy}
               onChange={() => void toggleVoiceQuery()}
             />
+            {queryConfigError && <p role="alert" className="text-xs text-error">{queryConfigError}</p>}
+            {queryConfigNotice && (
+              <p role="status" className="text-xs text-on-surface-variant">{queryConfigNotice}</p>
+            )}
 
             <div className="space-y-4">
               <div>
@@ -1151,6 +1193,9 @@ export const SettingsPanel = memo(function SettingsPanel({
                     value={settings.queryExecutable}
                     onChange={(event) => {
                       setQueryConfigError(null);
+                      setQueryConfigNotice(settings.queryHotkey !== null
+                        ? 'Command changed. Voice Query was turned off so the new command can be tested before use.'
+                        : null);
                       setQueryTestResult(null);
                       setQuerySignInStatus(null);
                       invalidateQueryRequests();
@@ -1176,6 +1221,10 @@ export const SettingsPanel = memo(function SettingsPanel({
                   rows={3}
                   value={settings.queryArguments.join('\n')}
                   onChange={(event) => {
+                    setQueryConfigError(null);
+                    setQueryConfigNotice(settings.queryHotkey !== null
+                      ? 'Command changed. Voice Query was turned off so the new command can be tested before use.'
+                      : null);
                     setQueryTestResult(null);
                     setQuerySignInStatus(null);
                     invalidateQueryRequests();
@@ -1213,13 +1262,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                 {queryTestResult && (
                   <div className="mt-3 space-y-2 text-xs">
                     <p className={queryTestResult.ok ? 'text-primary' : 'text-error'}>
-                      {queryTestResult.authenticated === null
-                        ? 'Executable validated. Custom providers do not have a built-in authentication probe.'
-                        : queryTestResult.ok
-                          ? 'Authenticated and ready.'
-                          : queryTestResult.errorCode === 'provider_not_authenticated'
-                            ? queryTestResult.signInFix ?? 'The provider is not authenticated.'
-                            : 'The provider probe failed. Review its output below.'}
+                      {queryProviderTestMessage(settings.queryProvider, queryTestResult)}
                     </p>
                     {queryTestResult.stdout && (
                       <div>
@@ -1341,7 +1384,10 @@ export const SettingsPanel = memo(function SettingsPanel({
                   items={QUERY_CONTEXT_LEVEL_OPTIONS}
                 />
                 <p className="mt-1 text-xs text-on-surface-variant">
-                  Off by default. App &amp; window adds the frontmost app name and window title. Selection also adds up to 8 KiB of selected text after secure-field checks. The popover always shows what kind of context was included, and per-app exclusions take precedence.
+                  Off by default. App &amp; window adds only the frontmost app name and window title.
+                  Choose App, window &amp; selection (the third option) to also add up to 8 KiB of
+                  selected text after secure-field checks. The popover always shows what kind of
+                  context was included, and per-app exclusions take precedence.
                 </p>
               </div>
 
@@ -1351,6 +1397,9 @@ export const SettingsPanel = memo(function SettingsPanel({
                 checked={settings.retainQueryHistory}
                 onChange={() => onUpdateSettings({ retainQueryHistory: !settings.retainQueryHistory })}
               />
+              <p className="text-xs text-on-surface-variant">
+                Voice Query counters and token usage appear under Insights in the main-window footer.
+              </p>
 
               <div className="grid grid-cols-2 gap-4">
                 <div>
@@ -1388,7 +1437,6 @@ export const SettingsPanel = memo(function SettingsPanel({
                 </div>
               </div>
 
-              {queryConfigError && <p role="alert" className="text-xs text-error">{queryConfigError}</p>}
               {accessibilityGranted === false && settings.queryHotkey !== null && (
                 <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-on-surface">
                   <span>Accessibility permission is required for the global query shortcut.</span>
