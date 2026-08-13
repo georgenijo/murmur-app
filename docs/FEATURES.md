@@ -160,6 +160,9 @@ Double-tap a dedicated key, ask a question, and stream an answer from an explici
 - Opt-in with no default executable and explicit warning that the chosen CLI may use cloud services.
 - Local ASR; the transcript is one literal final argv element passed through direct process spawn with no shell or interpolation.
 - Owned process group with confirmed termination on cancel, timeout, Escape, and app exit.
+- Provider presets (Claude Code, Codex, Grok, Cursor Agent, or a custom command) that discover the binary, fill in one-shot arguments, and preflight sign-in through the identical spawn path before the shortcut is armed.
+- Failures name the cause and the fix: a bounded stderr tail is shown in the popover, a signed-out provider gets an actionable error and a one-click launch of the vendor's own login.
+- Explicitly declared environment variables layered underneath the fail-closed allowlist, stored outside localStorage, and never able to redefine `HOME`.
 - Question and answer content stay out of telemetry, history, stats, and file output. The completed answer is copied but never auto-pasted.
 
 ---

@@ -6,6 +6,63 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 ---
 
+## 2026-08-13: Voice Query declared environment variables never shadow the allowlist, and hold no secrets
+
+**Decision:** Keep the fail-closed environment allowlist (`HOME`, `PATH`,
+`TMPDIR`, `LANG`, `LC_ALL`, `LC_CTYPE`, `USER`, `LOGNAME`) as the only inherited
+environment for a user CLI, and layer explicit user-declared name/value pairs
+*underneath* it inside `spawn_user_cli`. The validator refuses any allowlist
+name, `DYLD_*`/`LD_*`, malformed names, duplicates, and anything past 16 pairs
+or a 4 KiB value; the spawn ordering enforces the same rule again even if
+validation were bypassed. Pairs persist in a Rust-owned `query-env.json` (0600)
+behind main-window-gated commands, not in the frontend settings blob, and are
+re-validated on read. Values are stored in plain text and Settings states that
+API keys and other secrets do not belong there. Storing secrets is deferred
+until a Keychain-backed design exists.
+
+**Rationale:** Provider CLIs need a few configuration variables
+(`CLAUDE_CONFIG_DIR`, `CODEX_HOME`) that the allowlist cannot anticipate, but a
+declared pair that could redefine `HOME` or preload a library would hand the
+child a different identity or different code — the exact thing the cleared
+environment exists to prevent. Keeping the pairs out of the settings blob keeps
+them out of localStorage and out of every webview that has not been handed them.
+Plain-text-at-rest is honest for configuration and unacceptable for
+credentials, so the surface refuses to imply it can hold them.
+
+**Status:** active
+
+**References:** #550; `app/src-tauri/src/query_env.rs`,
+`app/src-tauri/src/managed_child.rs`
+
+---
+
+## 2026-08-13: Voice Query captures a bounded stderr tail and shows it only in the answer popover
+
+**Decision:** Pipe and continuously drain the user CLI's stderr into a bounded
+16 KiB tail instead of discarding it. On a terminal failure, store that tail on
+the session and serve it to the `query-review` window through the same
+requester-gated command as the answer; never broadcast it in a state event,
+write it to telemetry, or persist it. When the tail or the partial stdout
+matches a known auth-failure signature, remap `exit_nonzero`, `process_failed`,
+and `empty_answer` to `provider_not_authenticated` with the exact fix; never
+remap codes that describe Murmur's own bounds. The popover shows the error
+first and any partial stdout below it as labelled evidence.
+
+**Rationale:** The incident this came from was a provider that printed "Not
+logged in" and exited non-zero while the popover rendered `answer ||
+errorMessage` — the stdout won and the failure was invisible. Without stderr
+there was nothing to diagnose from; with unbounded stderr a chatty CLI could
+grow Murmur's memory or block on a full pipe. A tail is the right bound because
+the explanatory line is the last one, and the content is as sensitive as the
+answer, so it inherits the answer's requester gating rather than a looser path.
+
+**Status:** active
+
+**References:** #550; `app/src-tauri/src/query_flow.rs`,
+`app/src/components/query-review/QueryReviewApp.tsx`
+
+---
+
 ## 2026-08-13: Application builds and runtime support are macOS-only
 
 **Decision:** Enforce macOS as the only Murmur application target. The Rust

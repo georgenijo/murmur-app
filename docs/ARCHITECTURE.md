@@ -192,7 +192,9 @@ available for packaging and callback-boundary validation. See the
 | `evaluation.rs` | Versioned fixture evaluation harness (`murmur-eval`) |
 | `file_output.rs` | Numbered `.txt` / `.wav` output |
 | `frontmost.rs` | Native frontmost-app query + running-application list |
-| `query_flow.rs` | Voice Query capture, local ASR, literal argv dispatch, bounded stdout streaming, and exact-pass cancellation |
+| `query_flow.rs` | Voice Query capture, local ASR, literal argv dispatch, bounded stdout streaming, bounded stderr tail, and exact-pass cancellation |
+| `query_presets.rs` | Voice Query provider presets: binary discovery, auth preflight, failure-signature mapping, vendor login launch |
+| `query_env.rs` | Declared Voice Query environment variables: validation, owner-only store, allowlist-shadowing refusal |
 | `ide_context.rs` | Memory-only bounded IDE symbol / root-relative file index |
 | `injector.rs` | Clipboard write, CGEvent paste (osascript fallback), focused-field AX role checks |
 | `keyboard.rs` | Hold-down, double-tap, and transform-hold detectors on one shared rdev thread |

@@ -62,6 +62,7 @@ interface Settings {
 
   // Voice Query (configured CLI)
   queryHotkey: QueryKey | null;            // null = disabled (default)
+  queryPresetId: string;                   // 'claude' | 'codex' | 'grok' | 'cursor' | 'custom'
   queryExecutable: string;                 // absolute executable path
   queryArguments: string[];                // fixed argv before question
   queryTimeoutSeconds: number;             // 5–300, default 60
@@ -162,11 +163,14 @@ model-selection side effects.
 | Setting | Type | Default | Valid Options/Range | Description |
 |---------|------|---------|-------------------|-------------|
 | `queryHotkey` | `QueryKey \| null` | `null` | `'alt_r'`, `'ctrl_l'`, `'shift_r'`, or `null` | Dedicated double-tap-to-start / single-tap-to-stop shortcut. It may not equal `transformHoldKey`; a persisted conflict disables Voice Query. |
+| `queryPresetId` | `string` | `'custom'` | A known preset id or `'custom'`, at most 32 bytes | Provider the command was configured from. Selects the auth-failure signatures and the offered sign-in; it never changes what Murmur spawns. An unrecognised id fails the pass closed with `invalid_preset`. |
 | `queryExecutable` | `string` | `''` | Absolute executable path, at most 4096 bytes | Exact CLI program to spawn. Murmur never provides a default and never invokes a shell. |
 | `queryArguments` | `string[]` | `[]` | At most 32 fixed arguments, 4096 bytes each and 32 KiB total | Passed literally before the locally transcribed question, which is one final argv element. |
 | `queryTimeoutSeconds` | `number` | `60` | Integer 5–300 | Deadline after which the owned CLI process group is terminated and confirmed empty. |
 
 The Settings disclosure explicitly states that the configured CLI may send the question or answer to cloud services and that Murmur cannot control its network behavior. See [Voice Query](../features/voice-query.md).
+
+Declared environment variables for the query CLI are **not** part of this blob. They live in a Rust-owned `query-env.json` (0600) behind the main-window-gated `load_query_env_vars` / `save_query_env_vars` commands, so they are never mirrored into localStorage.
 
 ### Recording Mode Details
 

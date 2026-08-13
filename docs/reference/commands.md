@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The 148 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
+The 155 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -103,11 +103,25 @@ delivery. Live VAD uses only a bounded rolling in-memory window.
 
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
-| `start_query_capture` | `device_name: Option<String>`, `query_pass_id: u64`, `command: QueryCommandConfig` | `Result<(), String>` | Validates the configured executable/fixed argv, freezes local ASR context, and starts query capture for the exact pass. |
+| `start_query_capture` | `device_name: Option<String>`, `query_pass_id: u64`, `command: QueryCommandConfig` | `Result<(), String>` | Validates the configured executable/fixed argv/preset, resolves the declared environment, freezes local ASR context, and starts query capture for the exact pass. |
 | `finish_query_capture` | `query_pass_id: u64` | `Result<(), String>` | Stops capture, transcribes locally, appends the transcript as one final argv element, and streams bounded stdout to the query popover. |
 | `cancel_query` | `query_pass_id: u64` | `Result<(), String>` | Cancels the exact pass, confirms capture/owned process-group teardown, and hides the popover. Stale IDs no-op. |
 | `copy_query_answer` | `query_pass_id: u64` | `Result<(), String>` | Copies a completed answer. It never pastes into another app. |
-| `get_query_review_content` | — | `QueryReviewContent` | Returns `{queryPassId, answer}` only when invoked by the `query-review` webview; every other window receives empty content. |
+| `get_query_review_content` | — | `QueryReviewContent` | Returns `{queryPassId, answer, errorDetail, signIn}` only when invoked by the `query-review` webview; every other window receives empty content. `errorDetail` is the bounded stderr tail of a failed run. |
+
+## Voice Query providers (`query_presets.rs`, `query_env.rs`)
+
+Every command here is window-gated. Probe output can name an account and organisation, so it is returned to the requesting window and never logged or persisted.
+
+| Command | Parameters | Returns | Description |
+|---------|-----------|---------|-------------|
+| `list_query_presets` | — | `Result<Vec<QueryPresetInfo>, String>` | Main window only. The static preset catalogue plus the absolute path discovery found for each installed provider. |
+| `validate_query_command` | `command: QueryCommandConfig` | `Result<(), String>` | Main window only. Preflight through the identical validator the query uses; `Err` is a stable error code. |
+| `probe_query_provider_auth` | `preset_id: Option<String>`, `command: QueryCommandConfig` | `Result<QueryAuthProbeReport, String>` | Main window only. Runs the preset's auth probe through the same `spawn_user_cli` path and returns a verdict with bounded merged stdout+stderr. |
+| `launch_query_provider_login` | `preset_id: String`, `command: QueryCommandConfig` | `Result<(), String>` | Main or `query-review` window. Opens the vendor CLI's own login in Terminal. Murmur never handles the credential. |
+| `launch_query_pass_login` | `query_pass_id: u64` | `Result<(), String>` | Main or `query-review` window. Same launch for the exact command a failed pass used, so the popover names no path itself. |
+| `load_query_env_vars` | — | `Result<Vec<DeclaredEnvVar>, String>` | Main window only. Declared name/value pairs from the Rust-owned store; a tampered file is refused rather than returned. |
+| `save_query_env_vars` | `variables: Vec<DeclaredEnvVar>` | `Result<(), String>` | Main window only. Validates and atomically publishes the pairs at 0600. |
 
 ## Selected-text transform (`transform_flow.rs`, `transform_apply.rs`)
 

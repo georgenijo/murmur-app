@@ -2,15 +2,39 @@
 
 Issue [#538](https://github.com/georgenijo/murmur-app/issues/538). Voice Query is an opt-in bridge from Murmur's local speech recognition to one user-configured CLI executable. Double-tap its dedicated shortcut, ask a question, tap once to finish, and read the CLI's streaming stdout in a separate answer popover.
 
+Issue [#550](https://github.com/georgenijo/murmur-app/issues/550) added provider presets, sign-in preflight, actionable failures, and declared environment variables around that generic bridge. The bridge itself did not change: Murmur still spawns one absolute executable with fixed argv and no shell.
+
 ## Privacy and trust boundary
 
 - Microphone capture and transcription stay in Murmur's existing local ASR runtime.
 - Murmur starts the exact absolute executable path directly. It never invokes a shell, builds a command string, expands variables, or interprets the transcript.
 - Fixed arguments remain separate argv elements. The recognized question is appended as exactly one final argv element.
-- The child receives a cleared environment with only `HOME`, `PATH`, `TMPDIR`, `LANG`, `LC_ALL`, `LC_CTYPE`, `USER`, and `LOGNAME` forwarded when present. Arbitrary parent secrets are not inherited. `USER` is required on macOS: Claude Code derives its Keychain credential account name from it and reports "Not logged in" without it.
+- The child receives a cleared environment with only `HOME`, `PATH`, `TMPDIR`, `LANG`, `LC_ALL`, `LC_CTYPE`, `USER`, and `LOGNAME` forwarded when present, plus any variables the user declared explicitly (below). Arbitrary parent secrets are not inherited. `USER` is required on macOS: Claude Code derives its Keychain credential account name from it and reports "Not logged in" without it.
 - The configured CLI is outside Murmur's local-only trust boundary. It may send the question or answer to cloud services according to its own configuration; Settings states this before the user opts in. Murmur cannot verify or prevent that egress.
 - No executable is selected by default and the shortcut is disabled by default.
 - Question and answer content never enters structured telemetry, dictation history, usage statistics, transcript/audio file output, or broadcast state events. Answer chunks are targeted only to the `query-review` webview; full answer retrieval is requester-gated to that window.
+
+## Provider presets
+
+A preset is static data in `query_presets.rs`, not a code path: binary name, home-relative install fallbacks, the arguments that put the provider in one-shot print mode, an auth-probe argv, the argv for its own interactive login, its "you are not signed in" output signatures, and the environment names it actually reads. Claude Code, Codex, Grok, and Cursor Agent ship as presets; Custom leaves every field to the user. Choosing a preset only *fills in* the executable and arguments — Murmur always spawns exactly what those fields say afterwards, and a preset whose binary was not found leaves a manually chosen path alone.
+
+Discovery probes the standard absolute prefixes (`/opt/homebrew/bin`, `/usr/local/bin`, …), per-user install prefixes under `$HOME`, each preset's own private locations, and finally the host process `PATH`. The fixed prefixes are what make discovery work for a Finder or Dock launch, where `PATH` is the bare system default.
+
+## Preflight and sign-in
+
+`validate_query_command` runs the identical validator the query uses when Voice Query is enabled, so a missing or non-executable path is refused at configuration time rather than mid-question, after the user has already spoken.
+
+Settings' "Test sign-in" runs the preset's auth probe through the same `spawn_user_cli` path — same cleared environment, same declared pairs, same process-group ownership — so a green check proves the real thing will work. The verdict is decided by signature first and exit code second, because `claude auth status` reports `"loggedIn": false` and still exits 0. A non-zero exit with no recognised signature stays `unknown` and shows the raw output rather than guessing. That output routinely names an account and organisation, so it is returned only to the requesting main window and never written to telemetry, history, or the event log.
+
+"Sign in…" launches the vendor CLI's own login in Terminal (`claude auth login`, `codex login`, …). Murmur never sees, prompts for, or proxies the credential; it opens the flow and then re-probes every few seconds for up to two minutes until the provider reports signed in. The only string ever built for a shell is that Terminal command line, and both the validated executable path and the preset's static argv are single-quoted rather than trusted.
+
+## Declared environment variables
+
+The fail-closed allowlist is right for secrets and wrong for the handful of pairs a provider CLI needs to find its own configuration, so Settings accepts explicit name/value pairs (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, …). They are applied *underneath* the inherited allowlist, so a declared pair can never shadow `HOME` or any other allowlist key; the validator refuses those names outright, along with `DYLD_*`/`LD_*` (which change which code the child loads), malformed names, duplicates, and anything past 16 pairs or a 4 KiB value.
+
+The pairs live in a Rust-owned `query-env.json` (0600) in the app data directory rather than the frontend settings blob, so they are never mirrored into localStorage. Both commands are main-window gated, and a hand-edited file is re-validated on read: a tampered one is refused rather than trusted, and the query still runs with the inherited allowlist. Values are stored in plain text — this surface is for configuration, not credentials, and Settings says so. Accepting secrets needs a Keychain-backed design first.
+
+The declared set is resolved once at the start of a pass, like every other piece of per-recording context: editing it mid-question applies to the next query.
 
 ## Lifecycle
 
@@ -32,13 +56,21 @@ Like the notch overlay, the answer popover is configured `visibleOnAllWorkspaces
 
 `managed_child` creates a dedicated process group for the exact direct child. Normal completion, timeout, cancellation, Escape, and app exit wait for confirmed child exit and an empty owned process group. A process that cannot be confirmed stopped fails closed and prevents a new query from replacing its ownership record.
 
-Configuration limits are 32 fixed arguments, 4 KiB per argument, 32 KiB total fixed arguments, a 32 KiB question, a 256 KiB answer, and a 5–300 second timeout. Stdout is decoded incrementally across split UTF-8 sequences. Missing/non-executable paths, non-zero exits, timeouts, oversized output, and empty output surface stable actionable errors without paths or content in telemetry.
+Configuration limits are 32 fixed arguments, 4 KiB per argument, 32 KiB total fixed arguments, a 32 KiB question, a 256 KiB answer, 16 declared environment variables of 4 KiB each, and a 5–300 second timeout. Stdout is decoded incrementally across split UTF-8 sequences. Missing/non-executable paths, non-zero exits, timeouts, oversized output, and empty output surface stable actionable errors without paths or content in telemetry.
+
+stderr is piped rather than discarded and drained continuously — a chatty CLI would otherwise fill the pipe buffer and block — into a bounded 16 KiB *tail*, because the line that explains a failure is the last one. On a failure that tail is stored on the session and read back by the popover through the same requester-gated path as the answer; it is never broadcast, since it can quote a path, a prompt, or an account name. When the tail or the partial stdout carries a recognised auth-failure signature, `exit_nonzero`/`process_failed`/`empty_answer` become `provider_not_authenticated`, which names the exact fix and offers the vendor sign-in. Codes that describe Murmur's own bounds (`timed_out`, `termination_unconfirmed`, `output_too_large`) are never reinterpreted.
+
+On a failure the popover shows the error, the fix, and the CLI's own words, with any partial stdout labelled as evidence below. It previously rendered `answer || errorMessage`, so a provider that printed "Not logged in" on stdout and exited non-zero looked as though it had answered — the failure was invisible.
 
 ## Related modules
 
 | Area | Path |
 |------|------|
 | Orchestration and process streaming | `app/src-tauri/src/query_flow.rs` |
+| Provider presets, discovery, auth probe, login launch | `app/src-tauri/src/query_presets.rs` |
+| Declared environment variables | `app/src-tauri/src/query_env.rs` |
+| Settings provider block | `app/src/components/settings/VoiceQueryProvider.tsx` |
+| Shared error codes and fixes | `app/src/lib/queryErrors.ts`, `app/src/lib/queryProviders.ts` |
 | Direct child/process-group ownership | `app/src-tauri/src/managed_child.rs` |
 | Shared keyboard detector | `app/src-tauri/src/keyboard.rs` |
 | Native popover geometry | `app/src-tauri/src/commands/query_popover.rs` |
