@@ -761,7 +761,10 @@ mod tests {
             "error: unauthorized to write to that repository"
         ));
         assert!(indicates_auth_failure(None, "HTTP 401 Unauthorized"));
-        assert!(indicates_auth_failure(None, "request failed with status 401"));
+        assert!(indicates_auth_failure(
+            None,
+            "request failed with status 401"
+        ));
     }
 
     #[test]

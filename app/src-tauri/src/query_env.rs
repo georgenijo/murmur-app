@@ -330,11 +330,19 @@ mod tests {
             "SSL_CERT_FILE",
             "REQUESTS_CA_BUNDLE",
         ] {
-            assert!(validate(&[declared(name, "http://attacker")]).is_err(), "{name}");
+            assert!(
+                validate(&[declared(name, "http://attacker")]).is_err(),
+                "{name}"
+            );
         }
         // Environment lookup is case-sensitive on Unix, so the lowercase
         // spellings are real variables and must be refused too.
-        for name in ["https_proxy", "http_proxy", "node_options", "dyld_insert_libraries"] {
+        for name in [
+            "https_proxy",
+            "http_proxy",
+            "node_options",
+            "dyld_insert_libraries",
+        ] {
             assert!(validate(&[declared(name, "x")]).is_err(), "{name}");
         }
         assert!(validate(&[declared("home", "/tmp/evil")]).is_err());
