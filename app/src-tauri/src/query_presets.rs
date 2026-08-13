@@ -526,13 +526,19 @@ pub(crate) async fn probe_query_provider_auth(
 }
 
 /// Settings' "Sign in…" button: launch the chosen preset's own login.
+///
+/// Main window only. This is the one entry point that takes an executable path
+/// from its caller, so it stays with the window the user configures in; the
+/// popover uses the pass-scoped command below and names no path itself.
 #[tauri::command]
 pub(crate) fn launch_query_provider_login(
     window: tauri::WebviewWindow,
     preset_id: String,
     command: crate::query_flow::QueryCommandConfig,
 ) -> Result<(), String> {
-    require_configuration_window(window.label())?;
+    if window.label() != MAIN_WINDOW_LABEL {
+        return Err("Voice Query sign-in is only available from the main window.".to_string());
+    }
     let preset =
         preset(&preset_id).ok_or_else(|| "That provider is not recognised.".to_string())?;
     let validated = crate::query_flow::validate_command(command, Vec::new())
