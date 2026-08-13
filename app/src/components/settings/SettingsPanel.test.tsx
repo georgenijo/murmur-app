@@ -354,7 +354,7 @@ describe('SettingsPanel Voice Query async ownership', () => {
     container.remove();
   });
 
-  async function renderVoiceQuery() {
+  async function renderVoiceQuery(overrides: Partial<Settings> = {}) {
     function Harness() {
       const [settings, setSettings] = useState<Settings>({
         ...DEFAULT_SETTINGS,
@@ -362,6 +362,7 @@ describe('SettingsPanel Voice Query async ownership', () => {
         queryExecutable: '/usr/bin/printf',
         queryArguments: ['%s'],
         queryHotkey: null,
+        ...overrides,
       });
       currentSettings = settings;
       updateSettings = (updates) => setSettings((current) => ({ ...current, ...updates }));
@@ -483,6 +484,51 @@ describe('SettingsPanel Voice Query async ownership', () => {
     });
     expect(coreMocks.invoke).toHaveBeenCalledWith('save_query_environment', {
       provider: 'custom',
+      variables: [],
+    });
+    expect(container.textContent).toContain('Saved config-directory values cleared.');
+  });
+
+  it('exposes corrupt-store recovery for a provider with no declared environment inputs', async () => {
+    coreMocks.invoke.mockImplementation((command: string) => {
+      if (command === 'list_query_provider_presets') {
+        return Promise.resolve([{
+          id: 'grok',
+          label: 'Grok',
+          discoveryPaths: [],
+          discoveredExecutable: '/usr/bin/printf',
+          recommendedArguments: ['%s'],
+          authProbeArguments: ['models'],
+          authFailureSignatures: [],
+          signInArguments: ['login'],
+          signInFix: 'Run grok login in Terminal.',
+          permittedEnvironmentVariables: [],
+        }]);
+      }
+      if (command === 'load_query_environment') return Promise.reject(new Error('invalid_environment'));
+      if (command === 'save_query_environment') return Promise.resolve();
+      return idleInvoke(command);
+    });
+    await renderVoiceQuery({ queryProvider: 'grok' });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('Clear saved values to repair it.');
+    expect(container.querySelector('#query-env-CLAUDE_CONFIG_DIR')).toBeNull();
+    expect(container.querySelector('#query-env-CODEX_HOME')).toBeNull();
+    const clear = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Clear saved values',
+    ) as HTMLButtonElement;
+    expect(clear).toBeDefined();
+    await act(async () => {
+      clear.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(coreMocks.invoke).toHaveBeenCalledWith('save_query_environment', {
+      provider: 'grok',
       variables: [],
     });
     expect(container.textContent).toContain('Saved config-directory values cleared.');

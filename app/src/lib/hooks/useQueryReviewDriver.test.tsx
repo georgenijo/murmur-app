@@ -211,6 +211,86 @@ describe('useQueryReviewDriver ownership', () => {
     expect(current!.signInBusy).toBe(false);
   });
 
+  it('does not let a delayed prior-pass Copy success clear the new pass error', async () => {
+    let resolveCopy!: () => void;
+    const copy = new Promise<void>((resolve) => { resolveCopy = resolve; });
+    let contentPassId = 101;
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === 'get_query_review_content') {
+        return Promise.resolve(content(contentPassId, 'answer', '', 'Run claude /login.'));
+      }
+      if (command === 'copy_query_answer') return copy;
+      return Promise.resolve();
+    });
+    await mount();
+    await act(async () => {
+      mocks.listeners['query-state-changed']?.({
+        payload: { queryPassId: 101, state: 'ready', errorCode: 'clipboard_unavailable' },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      current!.copy();
+      await Promise.resolve();
+    });
+
+    contentPassId = 102;
+    await act(async () => {
+      mocks.listeners['query-state-changed']?.({
+        payload: { queryPassId: 102, state: 'failed', errorCode: 'provider_not_authenticated' },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(current!.errorCode).toBe('provider_not_authenticated');
+
+    await act(async () => {
+      resolveCopy();
+      await copy;
+      await Promise.resolve();
+    });
+    expect(current!.errorCode).toBe('provider_not_authenticated');
+  });
+
+  it('does not let a delayed prior-pass Copy failure overwrite the new pass error', async () => {
+    let rejectCopy!: (error: Error) => void;
+    const copy = new Promise<void>((_resolve, reject) => { rejectCopy = reject; });
+    let contentPassId = 111;
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === 'get_query_review_content') {
+        return Promise.resolve(content(contentPassId, 'answer', '', 'Run claude /login.'));
+      }
+      if (command === 'copy_query_answer') return copy;
+      return Promise.resolve();
+    });
+    await mount();
+    await act(async () => {
+      mocks.listeners['query-state-changed']?.({
+        payload: { queryPassId: 111, state: 'ready', errorCode: null },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      current!.copy();
+      await Promise.resolve();
+    });
+
+    contentPassId = 112;
+    await act(async () => {
+      mocks.listeners['query-state-changed']?.({
+        payload: { queryPassId: 112, state: 'failed', errorCode: 'provider_not_authenticated' },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(current!.errorCode).toBe('provider_not_authenticated');
+
+    await act(async () => {
+      rejectCopy(new Error('old clipboard failure'));
+      await copy.catch(() => undefined);
+      await Promise.resolve();
+    });
+    expect(current!.errorCode).toBe('provider_not_authenticated');
+  });
+
   it('replaces optimistic structured chunks when the adapter falls back to raw', async () => {
     await mount();
     await act(async () => {

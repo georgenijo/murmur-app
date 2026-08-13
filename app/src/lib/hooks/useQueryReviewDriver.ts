@@ -72,6 +72,7 @@ export function useQueryReviewDriver() {
   const terminalPassIdRef = useRef<number | null>(null);
   const terminalContentSnapshotRef = useRef(false);
   const signInAttemptRef = useRef(0);
+  const copyAttemptRef = useRef(0);
 
   useEffect(() => {
     let disposed = false;
@@ -120,6 +121,7 @@ export function useQueryReviewDriver() {
           setSignInStatus(null);
           setSignInBusy(false);
           signInAttemptRef.current += 1;
+          copyAttemptRef.current += 1;
         }
         setState(payload.state);
         setErrorCode(payload.errorCode);
@@ -175,6 +177,7 @@ export function useQueryReviewDriver() {
         setSignInStatus(null);
         setSignInBusy(false);
         signInAttemptRef.current += 1;
+        copyAttemptRef.current += 1;
       });
       if (disposed) { unlistenState(); unlistenChunk(); unlistenHidden(); }
     };
@@ -182,6 +185,7 @@ export function useQueryReviewDriver() {
     return () => {
       disposed = true;
       signInAttemptRef.current += 1;
+      copyAttemptRef.current += 1;
       unlistenState?.();
       unlistenChunk?.();
       unlistenHidden?.();
@@ -199,11 +203,18 @@ export function useQueryReviewDriver() {
   const copy = useCallback(() => {
     const queryPassId = passIdRef.current;
     if (queryPassId === null) return;
+    const attempt = copyAttemptRef.current + 1;
+    copyAttemptRef.current = attempt;
+    const ownsAttempt = () => (
+      copyAttemptRef.current === attempt && passIdRef.current === queryPassId
+    );
     void invoke('copy_query_answer', { queryPassId }).then(() => {
-      setErrorCode(null);
+      if (ownsAttempt()) setErrorCode(null);
     }).catch(() => {
-      setErrorCode('clipboard_unavailable');
-      flog.warn('query-review', 'copy failed', { query_pass_id: queryPassId });
+      if (ownsAttempt()) {
+        setErrorCode('clipboard_unavailable');
+        flog.warn('query-review', 'copy failed', { query_pass_id: queryPassId });
+      }
     });
   }, []);
 

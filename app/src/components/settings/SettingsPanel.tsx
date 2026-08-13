@@ -1251,51 +1251,65 @@ export const SettingsPanel = memo(function SettingsPanel({
                 )}
               </div>
 
-              {selectedQueryPreset && selectedQueryPreset.permittedEnvironmentVariables.length > 0 && (
+              {selectedQueryPreset && (
+                selectedQueryPreset.permittedEnvironmentVariables.length > 0
+                || queryEnvironmentNeedsRepair
+                || queryEnvironmentStatus !== null
+              ) && (
                 <div className="rounded-xl border border-outline-variant/30 bg-surface-container-low p-3">
-                  <p className="text-sm font-medium text-on-surface">Declared config directories</p>
-                  <p className="mt-1 text-xs leading-relaxed text-on-surface-variant">
-                    Optional absolute directory paths are added to the cleared child environment.
-                    HOME and the base allowlist cannot be overridden. API keys, tokens, and other
-                    secret variables are not accepted. Values live only in Rust-owned app data,
-                    never localStorage.
+                  <p className="text-sm font-medium text-on-surface">
+                    {selectedQueryPreset.permittedEnvironmentVariables.length > 0
+                      ? 'Declared config directories'
+                      : 'Voice Query environment'}
                   </p>
-                  <div className="mt-3 space-y-3">
-                    {selectedQueryPreset.permittedEnvironmentVariables.map((name) => (
-                      <div key={name}>
-                        <label htmlFor={`query-env-${name}`} className="mb-1 block font-mono text-xs font-medium text-on-surface">
-                          {name}{configuredQueryEnvironment.includes(name) ? ' · configured' : ''}
-                        </label>
-                        <input
-                          id={`query-env-${name}`}
-                          type="text"
-                          value={queryEnvironment.find((variable) => variable.name === name)?.value ?? ''}
-                          onChange={(event) => {
-                            const value = event.target.value;
-                            invalidateQueryRequests();
-                            setQueryEnvironment((current) => [
-                              ...current.filter((variable) => variable.name !== name),
-                              ...(value ? [{ name, value }] : []),
-                            ]);
-                            setQueryEnvironmentStatus(null);
-                          }}
-                          placeholder={configuredQueryEnvironment.includes(name)
-                            ? 'Enter a replacement path'
-                            : '/absolute/path/to/config'}
-                          spellCheck={false}
-                          className="w-full rounded-lg border border-outline-variant bg-surface-container-lowest px-3 py-2 font-mono text-xs text-on-surface outline-none focus:border-primary"
-                        />
-                      </div>
-                    ))}
-                  </div>
+                  {selectedQueryPreset.permittedEnvironmentVariables.length > 0 && (
+                    <p className="mt-1 text-xs leading-relaxed text-on-surface-variant">
+                      Optional absolute directory paths are added to the cleared child environment.
+                      HOME and the base allowlist cannot be overridden. API keys, tokens, and other
+                      secret variables are not accepted. Values live only in Rust-owned app data,
+                      never localStorage.
+                    </p>
+                  )}
+                  {selectedQueryPreset.permittedEnvironmentVariables.length > 0 && (
+                    <div className="mt-3 space-y-3">
+                      {selectedQueryPreset.permittedEnvironmentVariables.map((name) => (
+                        <div key={name}>
+                          <label htmlFor={`query-env-${name}`} className="mb-1 block font-mono text-xs font-medium text-on-surface">
+                            {name}{configuredQueryEnvironment.includes(name) ? ' · configured' : ''}
+                          </label>
+                          <input
+                            id={`query-env-${name}`}
+                            type="text"
+                            value={queryEnvironment.find((variable) => variable.name === name)?.value ?? ''}
+                            onChange={(event) => {
+                              const value = event.target.value;
+                              invalidateQueryRequests();
+                              setQueryEnvironment((current) => [
+                                ...current.filter((variable) => variable.name !== name),
+                                ...(value ? [{ name, value }] : []),
+                              ]);
+                              setQueryEnvironmentStatus(null);
+                            }}
+                            placeholder={configuredQueryEnvironment.includes(name)
+                              ? 'Enter a replacement path'
+                              : '/absolute/path/to/config'}
+                            spellCheck={false}
+                            className="w-full rounded-lg border border-outline-variant bg-surface-container-lowest px-3 py-2 font-mono text-xs text-on-surface outline-none focus:border-primary"
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   <div className="mt-3 flex items-center gap-3">
-                    <button
-                      type="button"
-                      onClick={() => void saveDeclaredEnvironment()}
-                      className="rounded-lg border border-outline-variant/30 px-3 py-1.5 text-xs font-semibold text-on-surface hover:bg-surface-container"
-                    >
-                      Save environment
-                    </button>
+                    {selectedQueryPreset.permittedEnvironmentVariables.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => void saveDeclaredEnvironment()}
+                        className="rounded-lg border border-outline-variant/30 px-3 py-1.5 text-xs font-semibold text-on-surface hover:bg-surface-container"
+                      >
+                        Save environment
+                      </button>
+                    )}
                     {(configuredQueryEnvironment.length > 0 || queryEnvironmentNeedsRepair) && (
                       <button
                         type="button"

@@ -296,6 +296,16 @@ impl QueryCoordinator {
         }
     }
 
+    /// Release process ownership only after the direct child and every member
+    /// of its owned process group have been confirmed gone. An unconfirmed
+    /// slot deliberately blocks `allocate_keyboard_pass`; dropping it would
+    /// let a newer pass overlap a process Murmur may still own.
+    fn clear_child_if_confirmed(&self, pass_id: u64, confirmed: bool) {
+        if confirmed {
+            self.clear_child(pass_id);
+        }
+    }
+
     fn terminate_child(&self, pass_id: u64) -> bool {
         let child = {
             let _ownership = self.ownership.lock_or_recover();
@@ -1104,9 +1114,10 @@ fn run_cli(
         {
             let state = app.state::<crate::State>();
             if !state.query.is_active(pass_id) {
-                let _ = child
+                let confirmed = child
                     .lock_or_recover()
-                    .hard_kill_confirmed(Instant::now() + TERMINATION_DEADLINE);
+                    .hard_kill_confirmed(Instant::now() + TERMINATION_DEADLINE)
+                    .is_some();
                 discard_remaining_output(
                     &rx,
                     stdout_reader,
@@ -1114,8 +1125,12 @@ fn run_cli(
                     &mut stderr_tail,
                     &stop_readers,
                 );
-                state.query.clear_child(pass_id);
-                return Err(QueryRunError::code("cancelled"));
+                state.query.clear_child_if_confirmed(pass_id, confirmed);
+                return Err(QueryRunError::code(if confirmed {
+                    "cancelled"
+                } else {
+                    "termination_unconfirmed"
+                }));
             }
         }
         while let Ok(chunk) = rx.try_recv() {
@@ -1140,7 +1155,9 @@ fn run_cli(
                     &mut stderr_tail,
                     &stop_readers,
                 );
-                app.state::<crate::State>().query.clear_child(pass_id);
+                app.state::<crate::State>()
+                    .query
+                    .clear_child_if_confirmed(pass_id, confirmed);
                 return Err(QueryRunError::with_stderr(
                     if confirmed {
                         error_code
@@ -1163,7 +1180,9 @@ fn run_cli(
                 &mut stderr_tail,
                 &stop_readers,
             );
-            app.state::<crate::State>().query.clear_child(pass_id);
+            app.state::<crate::State>()
+                .query
+                .clear_child_if_confirmed(pass_id, confirmed);
             return Err(QueryRunError::with_stderr(
                 if confirmed {
                     "timed_out"
@@ -1190,7 +1209,6 @@ fn run_cli(
                         &mut stderr_tail,
                         &stop_readers,
                     );
-                    app.state::<crate::State>().query.clear_child(pass_id);
                     return Err(QueryRunError::with_stderr(
                         "termination_unconfirmed",
                         &stderr_tail,
@@ -1215,7 +1233,9 @@ fn run_cli(
                     &mut stderr_tail,
                     &stop_readers,
                 );
-                app.state::<crate::State>().query.clear_child(pass_id);
+                app.state::<crate::State>()
+                    .query
+                    .clear_child_if_confirmed(pass_id, confirmed);
                 return Err(QueryRunError::with_stderr(
                     if confirmed {
                         "process_failed"
@@ -1614,6 +1634,27 @@ mod tests {
         let pass_id = query.allocate_keyboard_pass().unwrap();
         assert!(query.begin_cancel(pass_id));
         assert!(!query.begin_cancel(pass_id));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn unconfirmed_child_ownership_blocks_a_new_pass() {
+        let query = QueryCoordinator::default();
+        let pass_id = query.allocate_keyboard_pass().unwrap();
+        let arguments = vec!["30".to_string()];
+        let (child, stdin, stdout, stderr) =
+            ManagedChild::spawn_user_cli(Path::new("/bin/sleep"), &arguments, &[]).unwrap();
+        drop((stdin, stdout, stderr));
+        assert!(query.install_child(pass_id, Arc::new(Mutex::new(child))));
+
+        query.clear_child_if_confirmed(pass_id, false);
+        query.set_status(pass_id, QueryStatus::Failed);
+        assert!(query.child.lock_or_recover().is_some());
+        assert_eq!(query.allocate_keyboard_pass(), None);
+
+        assert!(query.terminate_child(pass_id));
+        assert!(query.child.lock_or_recover().is_none());
+        assert_eq!(query.allocate_keyboard_pass(), Some(pass_id + 1));
     }
 
     #[test]
